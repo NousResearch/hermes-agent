@@ -136,6 +136,28 @@ def test_find_live_child_returns_continuation_with_foreign_markers(
     assert child["id"] == "inherited-continuation"
 
 
+def test_compression_lineage_includes_continuation_with_foreign_markers(
+    db: SessionDB,
+) -> None:
+    """Lineage walk uses the same parent-bound marker rule as orphan recovery."""
+    _compression_parent(db, "delegate-session-3")
+    db.create_session(
+        "inherited-tip",
+        source="subagent",
+        parent_session_id="delegate-session-3",
+        model_config={"_delegate_from": "some-original-parent"},
+    )
+
+    assert db.get_compression_lineage("inherited-tip") == [
+        "delegate-session-3",
+        "inherited-tip",
+    ]
+    assert db.get_compression_lineage("delegate-session-3") == [
+        "delegate-session-3",
+        "inherited-tip",
+    ]
+
+
 def test_reopen_orphaned_compression_session_fails_closed_with_active_lease(
     db: SessionDB,
 ) -> None:
@@ -283,16 +305,21 @@ def test_publish_compression_child_rejects_lost_or_expired_lease(db: SessionDB) 
 def test_compression_lease_blocks_non_owner_but_allows_owner_flush(
     db: SessionDB,
 ) -> None:
+    """Contract flipped by the watermark commit (#75316): a live lease no
+    longer fences ordinary appends — both the owner's flush and a concurrent
+    turn land immediately, and the commit-side watermark decides what
+    survives compaction (see test_compression_watermark_commit.py)."""
     db.create_session("leased", source="webui")
     assert db.try_acquire_compression_lock("leased", "winner", ttl_seconds=60)
 
-    with pytest.raises(RuntimeError, match="being compressed"):
-        db.append_message("leased", "user", "late stale turn")
-
+    db.append_message("leased", "user", "late concurrent turn")
     db.append_message(
         "leased",
         "assistant",
         "winner flush",
         compression_lock_holder="winner",
     )
-    assert [m["content"] for m in db.get_messages("leased")] == ["winner flush"]
+    assert [m["content"] for m in db.get_messages("leased")] == [
+        "late concurrent turn",
+        "winner flush",
+    ]

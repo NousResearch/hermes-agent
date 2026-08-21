@@ -13,8 +13,10 @@ import { useQueryClient } from '@tanstack/react-query'
 import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
+import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
+import { ConfirmHost } from '@/components/confirm-host'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { FindBar } from '@/components/find-bar'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
@@ -24,9 +26,8 @@ import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shel
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { emitGatewayEvent } from '@/contrib/events'
-import { getLatestSessionMessages, triggerCronJob } from '@/hermes'
+import { getLatestSessionMessages } from '@/hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
-import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
 import { activateWakeIndicator } from '@/lib/wake-indicator'
@@ -34,13 +35,15 @@ import { playWakeSound } from '@/lib/wake-sound'
 import { $billingSettingsRequest } from '@/store/billing-block'
 import { $desktopBoot } from '@/store/boot'
 import { requestVoiceConversationStart } from '@/store/composer'
-import { setCronFocusJobId } from '@/store/cron'
+import { $activeConnectionId } from '@/store/connections'
+import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { $previewTarget } from '@/store/preview'
 import {
   $activeGatewayProfile,
   $freshSessionRequest,
   $profileScope,
+  ALL_PROFILES,
   ensureGatewayProfile,
   newSessionInProfile,
   normalizeProfileKey,
@@ -58,13 +61,16 @@ import {
   $resumeExhaustedSessionId,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
+  $sessionResumeRequest,
   $sessions,
+  rememberedSessionProfile,
   sessionMatchesStoredId,
   sessionPinId,
   setAwaitingResponse,
   setBusy,
   setMessages
 } from '@/store/session'
+import { requestForSessionProfile } from '@/store/session-request-router'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isHudWindow } from '@/store/windows'
@@ -74,6 +80,7 @@ import { closeWorkspaceTab } from '../chat/close-tab'
 import { requestComposerInsert } from '../chat/composer/focus'
 import { useComposerActions } from '../chat/hooks/use-composer-actions'
 import { CommandPalette } from '../command-palette'
+import { triggerAndRefreshCronJobs } from '../cron/cron-actions'
 import { useGatewayBoot } from '../gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from '../gateway/hooks/use-gateway-request'
 import { useKeybinds } from '../hooks/use-keybinds'
@@ -110,6 +117,7 @@ import { useSessionActions } from '../session/hooks/use-session-actions'
 import { useSessionListActions } from '../session/hooks/use-session-list-actions'
 import { useSessionStateCache } from '../session/hooks/use-session-state-cache'
 import { startWorkspaceSession } from '../session/workspace-session-target'
+import { PluginInstallModal } from '../settings/plugin-install-modal'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
 import {
@@ -122,11 +130,16 @@ import { TitlebarControls } from '../shell/titlebar-controls'
 import { UpdatesOverlay } from '../updates-overlay'
 
 import { ContribWiringContext } from './context'
-import { useBackgroundSync } from './hooks/use-background-sync'
+import {
+  reconcileActiveTranscript,
+  resolveActiveTranscriptSession,
+  useBackgroundSync
+} from './hooks/use-background-sync'
 import { useDesktopIntegrations } from './hooks/use-desktop-integrations'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
+import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
@@ -158,7 +171,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // context (the sticky toast). The shell owns `navigate`, so it consumes the
   // intent counter here; the ref skips the initial mount value.
   const billingSettingsSeenRef = useRef(0)
-  const messagingTranscriptSignatureRef = useRef(new Map<string, string>())
+  const cronReviewSeenRef = useRef(0)
+  const activeTranscriptSignatureRef = useRef(new Map<string, string>())
+  const activeTranscriptRequestSequenceRef = useRef(0)
   // Stable identity for the whole callback surface (see WiringActions). Mutated
   // in place each render so memoized surfaces never re-render on churn.
   const actionsRef = useRef<WiringActions | null>(null)
@@ -166,6 +181,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const gatewayState = useStore($gatewayState)
   const activeSessionId = useStore($activeSessionId)
   const billingSettingsRequest = useStore($billingSettingsRequest)
+  const cronReviewRequest = useStore($cronReviewRequest)
   const currentCwd = useStore($currentCwd)
 
   // eslint-disable-next-line no-restricted-syntax -- one-shot request-seen sentinel, not an atom mirror
@@ -180,12 +196,27 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       navigate(`${SETTINGS_ROUTE}?tab=billing`)
     }
   }, [billingSettingsRequest, navigate])
+
+  // eslint-disable-next-line no-restricted-syntax -- one-shot request-seen sentinel, not an atom mirror
+  useEffect(() => {
+    if (cronReviewRequest === cronReviewSeenRef.current) {
+      return
+    }
+
+    cronReviewSeenRef.current = cronReviewRequest
+
+    if (cronReviewRequest > 0) {
+      navigate(CRON_ROUTE)
+    }
+  }, [cronReviewRequest, navigate])
   const freshDraftReady = useStore($freshDraftReady)
   const resumeFailedSessionId = useStore($resumeFailedSessionId)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
+  const sessionResumeRequest = useStore($sessionResumeRequest)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const messagingSessions = useStore($messagingSessions)
   const sessions = useStore($sessions)
+  const activeConnectionId = useStore($activeConnectionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const profileScope = useStore($profileScope)
   const boot = useStore($desktopBoot)
@@ -251,7 +282,22 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     setMessages
   })
 
-  const { connectionRef, gateway, gatewayRef, requestGateway } = useGatewayRequest()
+  const { connectionRef, gateway, gatewayRef, requestGateway: ambientRequestGateway } = useGatewayRequest()
+
+  // When chrome stays on the launch backend (Bot Mode / all-profiles
+  // navigation), session-owned RPCs still have to hit the session's backend.
+  const requestGateway = useCallback(
+    <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
+      const owner = rememberedSessionProfile(
+        $sessions.get(),
+        selectedStoredSessionIdRef.current,
+        $activeGatewayProfile.get()
+      )
+
+      return requestForSessionProfile<T>(owner, ambientRequestGateway, method, params ?? {}, timeoutMs, signal)
+    },
+    [ambientRequestGateway]
+  )
 
   const { loadMoreMessagingForPlatform, loadMoreSessions, refreshCronJobs, refreshMessagingSessions, refreshSessions } =
     useSessionListActions({ profileScope })
@@ -334,7 +380,15 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           const messages = toChatMessages(latest.messages)
           updateSessionState(
             runtimeSessionId,
-            state => ({ ...state, messages: preserveLocalAssistantErrors(messages, state.messages) }),
+            state => ({
+              ...state,
+              // Post-turn rehydrate reads only the newest tail page — graft it
+              // onto any backfilled older pages instead of dropping them.
+              messages: preserveLocalAssistantErrors(
+                graftRefreshedTailOntoBackfill(messages, state.messages),
+                state.messages
+              )
+            }),
             storedSessionId
           )
 
@@ -359,44 +413,21 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
   )
 
-  // Refresh the open messaging transcript (inbound platform turns arrive via
-  // the background gateway, not the desktop websocket). Signature-gated so a
-  // no-change poll doesn't churn the thread.
-  const refreshActiveMessagingTranscript = useCallback(async () => {
-    const storedSessionId = selectedStoredSessionIdRef.current
-    const runtimeSessionId = activeSessionIdRef.current
-
-    if (!storedSessionId || !runtimeSessionId || busyRef.current) {
-      return
-    }
-
-    const stored = $messagingSessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
-
-    if (!stored || !isMessagingSource(stored.source)) {
-      return
-    }
-
-    try {
-      const latest = await getLatestSessionMessages(storedSessionId, stored.profile)
-      const signatureKey = `${stored.profile ?? 'default'}:${storedSessionId}`
-      const sig = sessionMessagesSignature(latest.messages)
-
-      if (messagingTranscriptSignatureRef.current.get(signatureKey) === sig) {
-        return
-      }
-
-      messagingTranscriptSignatureRef.current.set(signatureKey, sig)
-      const messages = toChatMessages(latest.messages)
-
-      updateSessionState(
-        runtimeSessionId,
-        state => ({ ...state, messages: preserveLocalAssistantErrors(messages, state.messages) }),
-        storedSessionId
-      )
-    } catch {
-      // Non-fatal: next poll or manual refresh can hydrate.
-    }
-  }, [activeSessionIdRef, busyRef, selectedStoredSessionIdRef, updateSessionState])
+  // Refresh any active transcript changed by another process. Signature-gated
+  // so a no-change event does not churn the thread.
+  const refreshActiveTranscript = useCallback(
+    () =>
+      reconcileActiveTranscript({
+        activeSessionIdRef,
+        busyRef,
+        requestSequenceRef: activeTranscriptRequestSequenceRef,
+        resolveSession: resolveActiveTranscriptSession,
+        selectedStoredSessionIdRef,
+        signatureRef: activeTranscriptSignatureRef,
+        updateSessionState
+      }),
+    [activeSessionIdRef, busyRef, selectedStoredSessionIdRef, updateSessionState]
+  )
 
   const { handleGatewayEvent } = useMessageStream({
     activeGatewayProfile,
@@ -480,25 +511,28 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     startFreshSessionDraft()
   }, [freshSessionRequest, startFreshSessionDraft])
 
-  // Swapping the live gateway to another profile must re-pull that profile's
-  // global model + active-profile pill (both are nanostores — the blanket
-  // invalidateQueries on swap doesn't touch them).
-  const lastGatewayProfileRef = useRef(activeGatewayProfile)
+  // Swapping the live gateway to another source or profile must re-pull that
+  // source's model/config/profile state. Two sources commonly both expose a
+  // `default` profile, so profile alone is not a sufficient identity.
+  const gatewayScope = `${activeConnectionId ?? ''}\0${activeGatewayProfile}`
+  const lastGatewayScopeRef = useRef(gatewayScope)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    if (activeGatewayProfile === lastGatewayProfileRef.current) {
+    if (gatewayScope === lastGatewayScopeRef.current) {
       return
     }
 
-    lastGatewayProfileRef.current = activeGatewayProfile
-    // Force: the new profile has its own defaults, so reseed the selector even
-    // if the composer already shows values from the previous profile. Both
-    // refreshes carry an intent token so a picker click made in flight wins.
+    lastGatewayScopeRef.current = gatewayScope
+    // Force: the new source/profile pair has its own defaults, so reseed the
+    // selector even if the composer already shows values from the previous
+    // backend. These refreshes carry intent tokens so an in-flight picker
+    // click still wins.
     void refreshCurrentModel(true)
     void refreshHermesConfig(true)
     void refreshActiveProfile()
-  }, [activeGatewayProfile, refreshCurrentModel, refreshHermesConfig])
+    resetProjectTreeState()
+  }, [gatewayScope, refreshCurrentModel, refreshHermesConfig])
 
   // New session anchored to a workspace. Seeds cwd + branch from the clicked
   // workspace; an explicit worktree path also drills the sidebar into that
@@ -588,6 +622,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     refreshSessions,
     requestGateway,
     resumeStoredSession: resumeSession,
+    runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
     startFreshSessionDraft,
     sttEnabled,
@@ -676,6 +711,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     resumeSession,
     resumeFailedSessionId,
     resumeExhaustedSessionId,
+    sessionResumeRequest,
     routedSessionId,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
@@ -754,21 +790,23 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
   }, [gatewayState, requestGateway])
 
-  // Only the open messaging transcript needs its own poll — local chats are
-  // live over the websocket already.
   const activeIsMessaging =
     !!selectedStoredSessionId &&
     isMessagingSource(messagingSessions.find(s => sessionMatchesStoredId(s, selectedStoredSessionId))?.source)
 
+  // sessions.changed refreshes every open transcript; only messaging retains
+  // the periodic safety-net it already had before this fix.
   // Keep app data live while the gateway is open (on-connect reseed + the
   // cron / messaging / transcript visibility polls + fresh-draft reseed).
   useBackgroundSync({
+    activeConnectionId,
     activeGatewayProfile,
     activeIsMessaging,
     activeSessionId,
+    activeStoredSessionId: selectedStoredSessionId,
     freshDraftReady,
     gatewayState,
-    refreshActiveMessagingTranscript,
+    refreshActiveTranscript,
     refreshCronJobs,
     refreshCurrentModel,
     refreshHermesConfig,
@@ -825,9 +863,21 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     void openNewSessionTile('center', { listed: false })
   }, [openNewSessionTile])
 
+  // Archive the selected session (rebindable `session.archive` hotkey).
+  const archiveSelectedSession = useCallback(() => {
+    const sessionId = $selectedStoredSessionId.get()
+
+    if (!sessionId) {
+      return
+    }
+
+    void archiveSession(sessionId)
+  }, [archiveSession])
+
   // Single global listener for every rebindable hotkey plus the on-screen
   // keybind editor's capture mode (same as DesktopController).
   useKeybinds({
+    archiveSelectedSession,
     openNewSessionTab,
     startFreshSession: startFreshSessionDraft,
     toggleCommandCenter,
@@ -864,6 +914,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onArchiveSession: sessionId => void archiveSession(sessionId),
     onAttachDroppedItems: composer.attachDroppedItems,
     onAttachImageBlob: composer.attachImageBlob,
+    onAttachPrCommentUrl: composer.attachPrCommentUrl,
     onBranchInNewChat: messageId => void branchInNewChat(messageId),
     onBranchSession: sessionId => void branchStoredSession(sessionId),
     onCancel: cancelRun,
@@ -902,11 +953,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onThreadMessagesChange: handleThreadMessagesChange,
     onToggleSelectedPin: toggleSelectedPin,
     onTranscribeAudio: transcribeVoiceAudio,
-    onTriggerCronJob: jobId => {
-      void triggerCronJob(jobId)
-        .then(() => refreshCronJobs())
-        .catch(() => undefined)
-    },
+    onTriggerCronJob: jobId =>
+      triggerAndRefreshCronJobs(jobId, profileScope === ALL_PROFILES ? 'all' : profileScope)
+        .then(() => undefined)
+        .catch(() => undefined),
     getGateway: () => gatewayRef.current,
     openAgents,
     openCommandCenterSection,
@@ -987,7 +1037,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // Pane-registered tools (preview's monitor/devtools cluster) anchor flush
   // against the static system cluster — in the tree layout the titlebar band
   // sits ABOVE the grid, so AppShell's pane-width anchoring doesn't apply.
-  const SYSTEM_TOOL_COUNT = 4
+  // Count every button the static cluster actually renders: four systemTools
+  // (layout, haptics, keybinds, settings) PLUS the always-present
+  // right-sidebar toggle (see titlebar-controls.tsx). A shared width that
+  // under-counts leaves the find bar, the titlebar header padding, and the
+  // pane-cluster anchor overlapping the fifth button.
+  const SYSTEM_TOOL_COUNT = 5
   const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden).length
   const systemToolsWidth = titlebarToolsWidthCss(SYSTEM_TOOL_COUNT)
 
@@ -1048,9 +1103,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       <GatewayConnectingOverlay />
       <BootFailureOverlay />
       <CommandPalette />
+      <PluginInstallModal />
       <PetGenerateOverlay />
       <SessionSwitcher />
       <FileActionDialogs />
+      <McpInstallDeepLinkDialog />
       <RemoteFolderPicker />
       <FindBar />
 
@@ -1120,6 +1177,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       {/* Toasts above everything. */}
       <NotificationStack />
+
+      {/* Backs confirm() from @/store/confirm — renders only while one is open. */}
+      <ConfirmHost />
 
       {/* Petdex floating mascot — renders nothing unless installed + enabled.
           Never in the HUD: that window is the chat bar and nothing else. */}

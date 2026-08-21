@@ -300,8 +300,19 @@ def build_top_level_parser():
         help="Interactive chat with the agent",
         description="Start an interactive chat session with Hermes Agent",
     )
-    chat_parser.add_argument(
+    _query_group = chat_parser.add_mutually_exclusive_group()
+    _query_group.add_argument(
         "-q", "--query", help="Single query (non-interactive mode)"
+    )
+    _query_group.add_argument(
+        "--query-file",
+        metavar="PATH",
+        help=(
+            "Read the single query from a file instead of the command line "
+            "('-' reads stdin). Safe for arbitrary text: nothing is shell-"
+            "interpreted, so quotes, $(...), and backticks are preserved "
+            "verbatim. Mutually exclusive with -q."
+        ),
     )
     chat_parser.add_argument(
         "--image", help="Optional local image path to attach to a single query"
@@ -407,6 +418,17 @@ def build_top_level_parser():
         help="Resume a session by name, or the most recent if no name given",
     )
     chat_parser.add_argument(
+        "--create-if-missing",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=(
+            "With -c/--continue <name>: if no session matches the name, "
+            "create a new session with that title and proceed (instead of "
+            "failing with a not-found error). Programmatic callers that "
+            "want 'send to this named thread, making it if needed'."
+        ),
+    )
+    chat_parser.add_argument(
         "--worktree",
         "-w",
         action="store_true",
@@ -436,6 +458,21 @@ def build_top_level_parser():
         default=None,
         metavar="N",
         help="Maximum tool-calling iterations per conversation turn (default: 500, or agent.max_turns in config)",
+    )
+    chat_parser.add_argument(
+        "--run-budget",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        dest="run_budget",
+        help=(
+            "Optional wall-clock budget in seconds for each conversation run. "
+            "At 80%% elapsed the agent gets a one-time wrap-up notice, and "
+            "implicit provider stale timeouts are capped to the remaining "
+            "budget so one hung call can't consume the run. Unset = off. "
+            "Also configurable as agent.run_budget_seconds in config.yaml. "
+            "Intended for one-shot/eval invocations with a hard ceiling."
+        ),
     )
     _inherited_flag(
         chat_parser,

@@ -121,6 +121,49 @@ class TestManifestParsing:
         assert e.transport.args == ["-y", "demo-mcp"]
         assert e.auth.type == "none"
         assert e.install is None
+        assert e.suggest is None
+
+    def test_suggest_block_parsed_and_normalized(self, catalog_dir):
+        _write_manifest(
+            catalog_dir,
+            "demo",
+            _basic_manifest(
+                suggest={
+                    "keywords": ["Jira ", "confluence"],
+                    "hosts": [".Atlassian.net", "atlassian.com"],
+                }
+            ),
+        )
+        from hermes_cli.mcp_catalog import list_catalog
+
+        entries = list_catalog()
+        assert len(entries) == 1
+        sg = entries[0].suggest
+        assert sg is not None
+        # Lowercased + stripped; hosts lose any leading dot.
+        assert sg.keywords == ["jira", "confluence"]
+        assert sg.hosts == ["atlassian.net", "atlassian.com"]
+
+    def test_suggest_keywords_only_is_valid(self, catalog_dir):
+        _write_manifest(catalog_dir, "demo", _basic_manifest(suggest={"keywords": ["demo"]}))
+        from hermes_cli.mcp_catalog import list_catalog
+
+        entries = list_catalog()
+        assert entries and entries[0].suggest is not None
+        assert entries[0].suggest.hosts == []
+
+    def test_suggest_empty_block_rejected(self, catalog_dir):
+        _write_manifest(catalog_dir, "demo", _basic_manifest(suggest={}))
+        from hermes_cli.mcp_catalog import list_catalog, catalog_diagnostics
+
+        assert list_catalog() == []
+        assert any(kind == "invalid" for (_n, kind, _m) in catalog_diagnostics())
+
+    def test_suggest_non_list_keywords_rejected(self, catalog_dir):
+        _write_manifest(catalog_dir, "demo", _basic_manifest(suggest={"keywords": "jira"}))
+        from hermes_cli.mcp_catalog import list_catalog
+
+        assert list_catalog() == []
 
     def test_api_key_auth(self, catalog_dir):
         body = _basic_manifest(

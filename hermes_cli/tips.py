@@ -388,7 +388,7 @@ TIPS = [
 
     # --- Env Vars & Config Gates ---
     "display.tool_progress_command: true exposes /verbose on messaging platforms; it's CLI-only by default.",
-    'HERMES_BACKGROUND_NOTIFICATIONS=result only pings when background tasks finish (vs all/error/off).',
+    'HERMES_BACKGROUND_NOTIFICATIONS=result only pings when background tasks finish (vs concise/all/error/off).',
     'HERMES_WRITE_SAFE_ROOT restricts write_file/patch to directory prefixes; multiple paths via os.pathsep (: or ;).',
     'HERMES_IGNORE_RULES skips auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills.',
     'HERMES_ACCEPT_HOOKS auto-approves unseen shell hooks declared in config.yaml without a TTY prompt.',
@@ -483,3 +483,30 @@ def get_random_tip(exclude_recent: int = 0) -> str:
             deduplication across sessions.
     """
     return random.choice(TIPS)
+
+
+# ---------------------------------------------------------------------------
+# Composer placeholders — short, task-oriented example prompts shown in the
+# empty input box to nudge new users toward high-value first actions (C-09,
+# inspired by opencode/codex rotating placeholders). Kept generic so they fit
+# any project or none — Hermes is not a coding-only agent.
+# ---------------------------------------------------------------------------
+
+COMPOSER_PLACEHOLDERS = [
+    "Ask anything, or type / for commands…",
+    "Summarize what's in this folder",
+    "Draft a reply to the last email in my inbox",
+    "Plan a feature, then build it step by step",
+    "Find and fix a failing test",
+    "Research this topic and write me a brief",
+    "What changed in this repo recently?",
+    "Turn these notes into a to-do list",
+    "Explain this error and how to fix it",
+    "Set a reminder or schedule a recurring task",
+    "Type / to browse commands, or Ctrl+P for the palette",
+]
+
+
+def get_random_composer_placeholder() -> str:
+    """Return a rotating task-oriented placeholder for the empty composer."""
+    return random.choice(COMPOSER_PLACEHOLDERS)

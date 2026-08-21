@@ -1,7 +1,9 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { codiconIcon } from '@/components/ui/codicon'
+import { KbdCombo } from '@/components/ui/kbd'
 import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -17,11 +19,18 @@ import {
   KeyRound,
   Package,
   RefreshCw,
+  Search,
   Settings2,
   Upload,
   Wrench,
   Zap
 } from '@/lib/icons'
+import { isEditableTarget } from '@/lib/keybinds/combo'
+import { typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
+import { cn } from '@/lib/utils'
+import { $commandPaletteOpen, openCommandPalettePage } from '@/store/command-palette'
+import { confirm } from '@/store/confirm'
+import { bindingsFor } from '@/store/keybinds'
 import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -48,6 +57,9 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
   'providers',
   'gateway',
+  // Legacy alias: the Connections page merged into Gateways. Kept in the enum
+  // so saved `?tab=connections` deep links still resolve (redirected below).
+  'connections',
   'keybinds',
   'keys',
   'notifications',
@@ -77,6 +89,14 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   }, [navigate, search])
 
   const [activeView, setActiveView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
+
+  // Connections merged into the unified Gateways page: land old
+  // `?tab=connections` routes/bookmarks there instead of a dead entry.
+  useEffect(() => {
+    if (activeView === 'connections') {
+      setActiveView('gateway')
+    }
+  }, [activeView, setActiveView])
   // Providers subnav (Accounts vs API keys) lives in its own param so each
   // sub-view is deep-linkable and survives a refresh.
   const [providerView, setProviderView] = useRouteEnumParam<ProviderView>('pview', PROVIDER_VIEWS, 'accounts')
@@ -128,7 +148,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   }
 
   const resetConfig = async () => {
-    if (!window.confirm(t.settings.resetConfirm)) {
+    const ok = await confirm({
+      confirmLabel: t.settings.resetToDefaults,
+      destructive: true,
+      title: t.settings.resetConfirm
+    })
+
+    if (!ok) {
       return
     }
 
@@ -262,6 +288,57 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     [activeView, keysView, providerView, t, setActiveView, openProviderView, openKeysView]
   )
 
+  // Type-to-search: printable keystrokes on the Settings surface (outside any
+  // field) open the settings-scoped palette, seeded with the character — same
+  // reflex as the chat surface's type-to-focus, pointed at search instead.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ($commandPaletteOpen.get() || isEditableTarget(event.target)) {
+        return
+      }
+
+      const char = typeToFocusChar(event)
+
+      if (char === null || char === ' ') {
+        return
+      }
+
+      event.preventDefault()
+      openCommandPalettePage('settings', char)
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
+  // Fake search pill riding the card's top edge, dead-center and half off it.
+  // Clicking (or just typing) opens the ⌘K palette scoped to settings; while
+  // the palette is up the pill hands over to it — grows slightly and fades,
+  // then fades back when the palette closes. It renders as chrome, not an
+  // input — no border, recessed fill, live ⌘K hint.
+  const searchCombo = bindingsFor('nav.commandPalette')[0]
+  const paletteOpen = useStore($commandPaletteOpen)
+
+  const searchPill = (
+    <button
+      className={cn(
+        'flex h-(--titlebar-control-height) items-center gap-1.5 rounded-full border border-(--ui-stroke-secondary) bg-(--ui-chat-surface-background) px-2.5 text-(--ui-text-tertiary) shadow-sm transition-all duration-200 ease-out hover:text-foreground motion-reduce:transition-none',
+        paletteOpen && 'pointer-events-none scale-110 opacity-0'
+      )}
+      onClick={() => {
+        triggerHaptic('open')
+        openCommandPalettePage('settings')
+      }}
+      tabIndex={paletteOpen ? -1 : undefined}
+      type="button"
+    >
+      <Search className="size-3" />
+      <span className="text-xs">{t.settings.search.pill}</span>
+      {searchCombo && <KbdCombo combo={searchCombo} size="sm" variant="ghost" />}
+    </button>
+  )
+
   const navFooter = (
     <>
       <Tip label={t.settings.exportConfig}>
@@ -293,47 +370,50 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     </>
   )
 
+  const activeSettingsContent =
+    activeView === 'config:appearance' ? (
+      <AppearanceSettings />
+    ) : activeView === 'about' ? (
+      <AboutSettings />
+    ) : activeView === 'gateway' || activeView === 'connections' ? (
+      // 'connections' renders the unified page too so the frame before
+      // the alias redirect lands doesn't flash the fallback view.
+      <GatewaySettings />
+    ) : activeView === 'keybinds' ? (
+      <KeybindSettings />
+    ) : activeView.startsWith('config:') ? (
+      <ConfigSettings
+        activeSectionId={activeView.slice('config:'.length)}
+        importInputRef={importInputRef}
+        onConfigSaved={onConfigSaved}
+        onMainModelChanged={onMainModelChanged}
+      />
+    ) : activeView === 'providers' ? (
+      <ProvidersSettings
+        onClose={onClose}
+        onConfigSaved={onConfigSaved}
+        onMainModelChanged={onMainModelChanged}
+        onViewChange={setProviderView}
+        view={providerView}
+      />
+    ) : activeView === 'keys' ? (
+      <KeysSettings view={keysView} />
+    ) : activeView === 'notifications' ? (
+      <NotificationsSettings />
+    ) : activeView === 'billing' ? (
+      <BillingSettings />
+    ) : activeView === 'plugins' ? (
+      <PluginsSettings />
+    ) : (
+      <SessionsSettings />
+    )
+
   return (
-    <OverlayView closeLabel={t.settings.closeSettings} onClose={onClose}>
+    <OverlayView closeLabel={t.settings.closeSettings} edgeBadge={searchPill} onClose={onClose}>
       <OverlaySplitLayout>
         <OverlayNav footer={navFooter} groups={navGroups} />
 
-        <OverlayMain className="px-0 pb-0">
-          {activeView === 'config:appearance' ? (
-            <AppearanceSettings />
-          ) : activeView === 'about' ? (
-            <AboutSettings />
-          ) : activeView === 'gateway' ? (
-            <GatewaySettings />
-          ) : activeView === 'keybinds' ? (
-            <KeybindSettings />
-          ) : activeView.startsWith('config:') ? (
-            <ConfigSettings
-              activeSectionId={activeView.slice('config:'.length)}
-              importInputRef={importInputRef}
-              onConfigSaved={onConfigSaved}
-              onMainModelChanged={onMainModelChanged}
-            />
-          ) : activeView === 'providers' ? (
-            <ProvidersSettings
-              onClose={onClose}
-              onConfigSaved={onConfigSaved}
-              onMainModelChanged={onMainModelChanged}
-              onViewChange={setProviderView}
-              view={providerView}
-            />
-          ) : activeView === 'keys' ? (
-            <KeysSettings view={keysView} />
-          ) : activeView === 'notifications' ? (
-            <NotificationsSettings />
-          ) : activeView === 'billing' ? (
-            <BillingSettings />
-          ) : activeView === 'plugins' ? (
-            <PluginsSettings />
-          ) : (
-            <SessionsSettings />
-          )}
-        </OverlayMain>
+        <OverlayMain className="px-0 pb-0">{activeSettingsContent}</OverlayMain>
       </OverlaySplitLayout>
     </OverlayView>
   )

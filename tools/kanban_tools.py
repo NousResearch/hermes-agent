@@ -1556,9 +1556,12 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
                 return False  # CLI / cron / test — no persistent channel
             platform = "tui"
             chat_id = session_key
+        is_gateway_session = platform != "tui"
+        chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE", "") or None
+        delivery_mode = "notify+wake" if is_gateway_session else None
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
         user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
-        chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE", "") or None
+        user_id_alt = get_session_env("HERMES_SESSION_USER_ID_ALT", "") or None
         message_id = get_session_env("HERMES_SESSION_MESSAGE_ID", "") or ""
         notifier_profile = (
             get_session_env("HERMES_SESSION_PROFILE", "")
@@ -1591,9 +1594,10 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
         _kb.add_notify_sub(
             conn, task_id=task_id,
             platform=platform, chat_id=chat_id,
+            thread_id=thread_id, user_id=user_id, user_id_alt=user_id_alt,
             chat_type=chat_type,
-            thread_id=thread_id, user_id=user_id,
             notifier_profile=notifier_profile,
+            delivery_mode=delivery_mode,
             delivery_metadata=delivery_metadata or None,
         )
         return True

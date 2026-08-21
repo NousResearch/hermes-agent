@@ -5,6 +5,7 @@ import {
   applyVoiceRecordResponse,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
+  resolveCtrlCComposerAction,
   shouldAllowIdleHotkeyExit,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
@@ -56,6 +57,28 @@ describe('shouldAllowIdleHotkeyExit', () => {
 
   it('disables idle exit hotkeys in dashboard chat', () => {
     expect(shouldAllowIdleHotkeyExit(true)).toBe(false)
+  })
+})
+
+describe('resolveCtrlCComposerAction — draft wins over interrupt', () => {
+  it('clears a non-empty composer even while the agent is streaming', () => {
+    expect(resolveCtrlCComposerAction({ busy: true, hasDraft: true, hasSession: true })).toBe('clear')
+  })
+
+  it('interrupts a running turn when the composer is empty', () => {
+    expect(resolveCtrlCComposerAction({ busy: true, hasDraft: false, hasSession: true })).toBe('interrupt')
+  })
+
+  it('clears an idle composer instead of exiting', () => {
+    expect(resolveCtrlCComposerAction({ busy: false, hasDraft: true, hasSession: true })).toBe('clear')
+  })
+
+  it('exits when idle with an empty composer', () => {
+    expect(resolveCtrlCComposerAction({ busy: false, hasDraft: false, hasSession: true })).toBe('exit')
+  })
+
+  it('does not interrupt a busy session that has no sid yet', () => {
+    expect(resolveCtrlCComposerAction({ busy: true, hasDraft: false, hasSession: false })).toBe('exit')
   })
 })
 

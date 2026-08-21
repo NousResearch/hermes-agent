@@ -226,6 +226,15 @@ export function openPreview(target: PreviewTarget, source: PreviewRecordSource =
   selectRightRailTab(id)
 }
 
+/** Open the Browser tab — the surface, not a page. Keeps whatever it was last
+ *  showing so the hotkey re-fronts your page instead of wiping it; a fresh tab
+ *  lands on `about:blank`, where the pane's empty state invites an address. */
+export function openBrowserTab() {
+  const existing = $previewTabs.get().find(tab => tab.id === BROWSER_TAB_ID)
+
+  openPreview(existing?.target ?? { kind: 'url', label: 'Browser', source: 'about:blank', url: 'about:blank' })
+}
+
 export function closeRightRailTab(tabId: string) {
   const current = $previewTabs.get()
   const index = current.findIndex(tab => tab.id === tabId)
@@ -249,7 +258,24 @@ export function closeRightRailTab(tabId: string) {
 
 /** Close the tab showing `source`, if one is open. Returns whether it closed. */
 export function closePreviewForSource(source: string): boolean {
-  const tab = $previewTabs.get().find(item => item.target.source === source)
+  return closePreviewMatching(source)
+}
+
+/** Close the first tab whose source, url, or label matches any candidate.
+ *  Empty candidates are a no-op so a missed match cannot wipe the rail —
+ *  closing the whole pane is `closeRightRail`. */
+export function closePreviewMatching(...candidates: string[]): boolean {
+  const queries = [...new Set(candidates.map(value => value.trim()).filter(Boolean))]
+
+  if (queries.length === 0) {
+    return false
+  }
+
+  const tab = $previewTabs.get().find(item => {
+    const fields = [item.target.source, item.target.url, item.target.label]
+
+    return queries.some(query => fields.includes(query))
+  })
 
   if (!tab) {
     return false

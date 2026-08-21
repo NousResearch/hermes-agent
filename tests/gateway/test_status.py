@@ -171,6 +171,84 @@ class TestGatewayPidState:
 
 
 class TestGatewayRuntimeStatus:
+    def test_clear_profile_platforms_preserves_primary_entries(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps({
+                "platforms": {
+                    "telegram": {"state": "connected"},
+                    "reviewer:discord": {
+                        "state": "fatal",
+                        "error_code": "duplicate_credential",
+                    },
+                }
+            }),
+            encoding="utf-8",
+        )
+
+        status.write_runtime_status(clear_profile_platforms=True)
+
+        payload = status.read_runtime_status()
+        assert payload["platforms"] == {"telegram": {"state": "connected"}}
+
+    def test_clear_profile_platforms_and_write_are_one_atomic_update(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps({
+                "platforms": {
+                    "old:discord": {"state": "fatal"},
+                    "telegram": {"state": "connected"},
+                }
+            }),
+            encoding="utf-8",
+        )
+
+        status.write_runtime_status(
+            platform="reviewer:slack",
+            platform_state="connected",
+            clear_profile_platforms=True,
+        )
+
+        platforms = status.read_runtime_status()["platforms"]
+        assert set(platforms) == {"telegram", "reviewer:slack"}
+        assert platforms["telegram"] == {"state": "connected"}
+        assert platforms["reviewer:slack"]["state"] == "connected"
+
+    def test_platform_writes_are_stamped_with_writer_identity(
+        self, tmp_path, monkeypatch
+    ):
+        # The /api/status cross-profile aggregation must distinguish entries
+        # written by the CURRENT process from entries preserved across a
+        # restart (a wall-clock freshness window admits stale failures
+        # written moments before a fast restart).  Every platform write is
+        # therefore stamped with the writer's (pid, start_time) identity —
+        # the same PID-reuse fingerprint the liveness checks use — so
+        # ownership is exact equality, not clock heuristics.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(platform="telegram", platform_state="connected")
+
+        entry = status.read_runtime_status()["platforms"]["telegram"]
+        assert entry["writer_pid"] == os.getpid()
+        assert entry["writer_start_time"] == status._get_process_start_time(
+            os.getpid()
+        )
+
+    def test_clear_profile_platforms_repairs_malformed_platforms(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps({"platforms": ["not", "a", "mapping"]}),
+            encoding="utf-8",
+        )
+
+        status.write_runtime_status(clear_profile_platforms=True)
+
+        assert status.read_runtime_status()["platforms"] == {}
+
 
     def test_write_runtime_status_overwrites_stale_pid_on_restart(self, tmp_path, monkeypatch):
         """Regression: setdefault() preserved stale PID from previous process (#1631)."""
@@ -602,6 +680,95 @@ class TestScopedLocks:
         assert removed == 1
         assert not target_lock.exists()
         assert other_lock.exists()
+
+    def test_acquire_scoped_lock_stamps_profile_label(self, tmp_path, monkeypatch):
+        """OOF-3: scoped locks are machine-global — record which profile owns them."""
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "lead-gen-outreach"))
+
+        acquired, existing = status.acquire_scoped_lock(
+            "telegram-bot-token", "secret", metadata={"platform": "telegram"}
+        )
+
+        assert acquired is True
+        lock_path = tmp_path / "locks" / (
+            "telegram-bot-token-" + status._scope_hash("secret") + ".lock"
+        )
+        payload = json.loads(lock_path.read_text())
+        assert payload["profile"] == "lead-gen-outreach"
+
+    def test_acquire_scoped_lock_omits_profile_when_not_inferable(self, tmp_path, monkeypatch):
+        """No label for unrecognizable custom homes — field omitted, not null."""
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "some-custom-dir"))
+        monkeypatch.setattr(status, "_profile_label_for_home", lambda home: None)
+
+        acquired, _ = status.acquire_scoped_lock("telegram-bot-token", "secret")
+
+        assert acquired is True
+        lock_path = tmp_path / "locks" / (
+            "telegram-bot-token-" + status._scope_hash("secret") + ".lock"
+        )
+        payload = json.loads(lock_path.read_text())
+        assert "profile" not in payload
+
+
+class TestScopedLockOwnerLabel:
+    """OOF-3: attribute a machine-global credential lock to its owning profile."""
+
+    def test_profile_label_for_named_profile_home(self, tmp_path):
+        home = tmp_path / "profiles" / "lead-gen-outreach"
+        assert status._profile_label_for_home(home) == "lead-gen-outreach"
+
+    def test_profile_label_for_docker_profile_home(self):
+        assert (
+            status._profile_label_for_home("/opt/data/profiles/zerocool")
+            == "zerocool"
+        )
+
+    def test_profile_label_for_root_home_is_default(self, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", "/opt/data")
+        assert status._profile_label_for_home("/opt/data") == "default"
+
+    def test_profile_label_for_unknown_layout_is_none(self, monkeypatch):
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        assert status._profile_label_for_home("/somewhere/else") is None
+
+    def test_profile_label_rejects_invalid_directory_names(self, tmp_path):
+        # Directory names outside the profile-id grammar must not be
+        # reported as profiles (they flow into a suggested CLI command).
+        home = tmp_path / "profiles" / "Bad Name!"
+        assert status._profile_label_for_home(home) is None
+
+    def test_owner_label_prefers_explicit_profile_field(self):
+        record = {"profile": "coder", "hermes_home": "/opt/data/profiles/other"}
+        assert status.scoped_lock_owner_label(record) == "coder"
+
+    def test_owner_label_rejects_malformed_profile_field(self):
+        # Lock files are plain JSON on disk — a tampered/corrupt profile
+        # string must never reach log lines or CLI guidance.
+        assert status.scoped_lock_owner_label({"profile": "Bad Name!"}) is None
+        assert status.scoped_lock_owner_label({"profile": "  "}) is None
+        assert status.scoped_lock_owner_label({"profile": 42}) is None
+
+    def test_owner_label_ignores_invalid_profile_and_uses_home(self):
+        # An invalid persisted profile string must not block the safe
+        # hermes_home fallback — attribution degrades, never corrupts.
+        record = {
+            "profile": "bad; rm -rf /",
+            "hermes_home": "/opt/data/profiles/zerocool",
+        }
+        assert status.scoped_lock_owner_label(record) == "zerocool"
+
+    def test_owner_label_falls_back_to_hermes_home(self):
+        # Locks written before the profile field existed still attribute.
+        record = {"pid": 559, "hermes_home": "/opt/data/profiles/zerocool"}
+        assert status.scoped_lock_owner_label(record) == "zerocool"
+
+    def test_owner_label_none_for_legacy_and_malformed_records(self):
+        assert status.scoped_lock_owner_label({"pid": 99999}) is None
+        assert status.scoped_lock_owner_label(None) is None
+        assert status.scoped_lock_owner_label("not-a-dict") is None
 
 
 class TestTakeoverMarker:

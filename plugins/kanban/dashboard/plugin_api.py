@@ -1013,6 +1013,12 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     (task_id, json.dumps({"priority": int(payload.priority)}),
                      int(time.time())),
                 )
+            # Mutation-boundary observer (RFC #58548): this direct-SQL write
+            # bypasses every kanban_db mutator, so report it here — after
+            # the txn commits.
+            kanban_db.notify_task_updated(
+                conn, task_id, ("priority",), board=board,
+            )
 
         # --- title / body -------------------------------------------------
         if payload.title is not None or payload.body is not None:
@@ -1035,6 +1041,13 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     "VALUES (?, 'edited', NULL, ?)",
                     (task_id, int(time.time())),
                 )
+            # Mutation-boundary observer (RFC #58548), post-commit. Field
+            # names only — values never leave the DB via this payload.
+            kanban_db.notify_task_updated(
+                conn, task_id,
+                [f for f in ("title", "body") if getattr(payload, f) is not None],
+                board=board,
+            )
 
         updated = kanban_db.get_task(conn, task_id)
         return {"task": _task_dict(updated) if updated else None}
@@ -1402,6 +1415,12 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             (tid, json.dumps({"priority": int(payload.priority)}),
                              int(time.time())),
                         )
+                    # Mutation-boundary observer (RFC #58548): the bulk
+                    # editor writes with direct SQL too — report each task's
+                    # committed write.
+                    kanban_db.notify_task_updated(
+                        conn, tid, ("priority",), board=board,
+                    )
                 if payload.clear_model_override or payload.model_override is not None:
                     new_model = (
                         None if payload.clear_model_override
@@ -2927,10 +2946,24 @@ async def stream_events(ws: WebSocket):
                 conn.close()
 
         while True:
+            # Race receive() against the poll interval to detect client
+            # disconnect even when no events are being sent. Without this,
+            # a disconnect is only detected via send_json() raising
+            # WebSocketDisconnect, so an idle board leaks zombie poll tasks.
+            try:
+                msg = await asyncio.wait_for(
+                    ws.receive(), timeout=_EVENT_POLL_SECONDS
+                )
+                if msg["type"] == "websocket.disconnect":
+                    return
+                # Any other client message (pong, text) is ignored; we
+                # continue polling.
+            except asyncio.TimeoutError:
+                pass  # no client message — poll the DB
+
             cursor, events = await asyncio.to_thread(_fetch_new, cursor)
             if events:
                 await ws.send_json({"events": events, "cursor": cursor})
-            await asyncio.sleep(_EVENT_POLL_SECONDS)
     except WebSocketDisconnect:
         return
     except asyncio.CancelledError:

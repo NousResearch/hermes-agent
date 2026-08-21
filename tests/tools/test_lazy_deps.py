@@ -358,6 +358,41 @@ class TestRefreshActiveFeatures:
             ld._unsupported_feature_reason("platform.matrix") or ""
         )
 
+    def test_restore_snapshot_skips_telegram_with_lazy_installs_disabled(
+        self, monkeypatch
+    ):
+        """The security opt-out also blocks updater-driven restoration."""
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: False)
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        monkeypatch.setattr(
+            ld,
+            "_venv_pip_install",
+            lambda *args, **kwargs: pytest.fail(
+                "pip must not run when lazy installs are disabled"
+            ),
+        )
+
+        result = ld.restore_features(["platform.telegram"])
+
+        assert result == {
+            "platform.telegram": (
+                "skipped: lazy installs disabled "
+                "(security.allow_lazy_installs=false)"
+            )
+        }
+
+    def test_restore_snapshot_does_not_install_never_activated_features(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            ld,
+            "_venv_pip_install",
+            lambda *args, **kwargs: pytest.fail(
+                "cold features must stay uninstalled"
+            ),
+        )
+
+        assert ld.restore_features([]) == {}
 
     def test_mixed_results_returns_per_feature_status(self, monkeypatch):
         monkeypatch.setattr(ld, "active_features", lambda: ["a.ok", "b.fail"])

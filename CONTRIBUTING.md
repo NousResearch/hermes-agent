@@ -130,7 +130,7 @@ cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
 # Add dev/test extras on top of the standard install.
 uv pip install -e ".[all,dev]"
 
-# Optional: browser tools / docs site dependencies.
+# Optional: docs site + workspace dependencies.
 npm install
 ```
 
@@ -167,7 +167,7 @@ export PATH="$VIRTUAL_ENV/bin:$PATH"
 # Install with all extras (messaging, cron, CLI menus, dev tools)
 uv pip install -e ".[all,dev]"
 
-# Optional: browser tools
+# Optional: workspace / docs dependencies
 npm install
 ```
 
@@ -973,7 +973,7 @@ test(tools): add unit tests for file_operations
 ## Reporting Issues
 
 - Use [GitHub Issues](https://github.com/NousResearch/hermes-agent/issues)
-- Include: OS, Python version, Hermes version (`hermes version`), full error traceback
+- Include: OS, Python version, Hermes version (`hermes --version`), full error traceback
 - Include steps to reproduce
 - Check existing issues before creating duplicates
 - For security vulnerabilities, please report privately

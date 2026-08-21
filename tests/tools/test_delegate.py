@@ -31,6 +31,7 @@ from tools.delegate_tool import (
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
 )
+from hermes_state import SessionDB
 
 
 def _make_mock_parent(depth=0):
@@ -286,6 +287,131 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["api_key"], parent.api_key)
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
+
+    def test_child_gets_dedicated_session_db_not_parents_handle(self):
+        """#81267: children must not share the parent's SessionDB object.
+
+        cron run_job closes its per-job SessionDB in its finally block while
+        a fire-and-forget background delegation subagent is still flushing on
+        a daemon thread. A SHARED handle then has ``_conn=None`` and every
+        child flush raises ``'NoneType' object has no attribute 'execute'`` —
+        the failure is downgraded to a WARNING and the child's transcript is
+        silently dropped. Each child must own a dedicated connection that no
+        parent teardown can close, released by the child's own close().
+        """
+        parent = _make_mock_parent(depth=0)
+        parent_db = SessionDB()
+        parent._session_db = parent_db
+        try:
+            with patch("run_agent.AIAgent") as MockAgent:
+                mock_child = MagicMock()
+                MockAgent.return_value = mock_child
+
+                _build_child_agent(
+                    task_index=0,
+                    goal="test",
+                    context=None,
+                    toolsets=None,
+                    model="test-model",
+                    max_iterations=5,
+                    parent_agent=parent,
+                    task_count=1,
+                )
+
+                _, kwargs = MockAgent.call_args
+                self.assertEqual(mock_child._owns_session_db, True)
+
+            child_db = kwargs["session_db"]
+            self.assertIsInstance(child_db, SessionDB)
+            self.assertIsNot(child_db, parent_db)
+
+            # Parent teardown (cron run_job finally, gateway session end)
+            # must not break the child's handle — the #81267 crash mechanism.
+            parent_db.close()
+            self.assertIsNotNone(child_db._conn)
+            child_db.create_session(
+                session_id="child-session-81267",
+                source="subagent",
+                model="test-model",
+            )
+        finally:
+            parent_db.close()
+
+    def test_child_without_parent_db_still_degrades_to_none(self):
+        """Parent without a SessionDB -> child gets None (pre-fix behaviour).
+
+        The dedicated-handle path must not change the degradation contract:
+        a parent that never opened a session store (headless/oneshot runs,
+        test doubles) still yields ``session_db=None`` children.
+        """
+        parent = _make_mock_parent(depth=0)
+        parent._session_db = None
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="test",
+                context=None,
+                toolsets=None,
+                model="test-model",
+                max_iterations=5,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertIsNone(kwargs["session_db"])
+
+    def test_child_dedicated_db_follows_parents_db_path(self):
+        """Per-profile parents: the child's dedicated handle must target the
+        parent's database FILE, not the launch profile's default state.db.
+
+        tui_gateway hands agents dedicated per-profile handles
+        (``SessionDB(db_path=<profile_home>/state.db)`` via
+        ``_transfer_db_to_agent``). A bare ``SessionDB()`` in
+        ``_build_child_agent`` would write the child's transcript into the
+        launch profile's db — cross-profile leakage that breaks
+        ``parent_session_id`` lineage and ``session_search``.
+        """
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_db_path = Path(tmp) / "profile-work" / "state.db"
+            profile_db_path.parent.mkdir(parents=True)
+            parent = _make_mock_parent(depth=0)
+            parent_db = SessionDB(db_path=profile_db_path)
+            parent._session_db = parent_db
+            child_db = None
+            try:
+                with patch("run_agent.AIAgent") as MockAgent:
+                    MockAgent.return_value = MagicMock()
+
+                    _build_child_agent(
+                        task_index=0,
+                        goal="test",
+                        context=None,
+                        toolsets=None,
+                        model="test-model",
+                        max_iterations=5,
+                        parent_agent=parent,
+                        task_count=1,
+                    )
+
+                    _, kwargs = MockAgent.call_args
+
+                child_db = kwargs["session_db"]
+                self.assertIsInstance(child_db, SessionDB)
+                self.assertIsNot(child_db, parent_db)
+                self.assertEqual(
+                    str(child_db.db_path), str(parent_db.db_path)
+                )
+            finally:
+                if child_db is not None:
+                    child_db.close()
+                parent_db.close()
 
     def test_nous_child_rederives_api_mode_from_model(self):
         """Portal is dual-wire — same provider + different model prefix must
@@ -1746,6 +1872,81 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
+
+    def test_pinned_provider_disables_parent_fallback_chain(self):
+        """An explicit delegation.provider pin must NOT inherit the parent
+        fallback chain — a mid-run failure on the pin would otherwise silently
+        reroute the quiet-mode child onto parent fallback models (#80450)."""
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = [
+            {"provider": "openrouter", "model": "gpt-4o-mini", "api_key": "sk-or-x"}
+        ]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test pinned provider",
+                context=None,
+                toolsets=None,
+                model="minimax/m2",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_provider="minimax",
+                override_base_url="https://api.minimax.example/v1",
+                override_api_key="sk-mm-x",
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertIsNone(kwargs["fallback_model"])
+
+    def test_pinned_acp_command_missing_raises(self):
+        """A pinned delegation command absent from PATH must refuse the spawn
+        loudly instead of silently falling back to the default transport
+        (#80450)."""
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = None
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            with patch("shutil.which", return_value=None):
+                with self.assertRaises(ValueError) as ctx:
+                    _build_child_agent(
+                        task_index=0,
+                        goal="test pinned acp command",
+                        context=None,
+                        toolsets=None,
+                        model=None,
+                        max_iterations=10,
+                        parent_agent=parent,
+                        task_count=1,
+                        override_acp_command="definitely-not-a-real-binary",
+                    )
+        self.assertIn("definitely-not-a-real-binary", str(ctx.exception))
+        self.assertIn("not", str(ctx.exception).lower())
+
+    def test_resolve_credentials_rejects_missing_pinned_command(self):
+        """_resolve_delegation_credentials refuses a provider whose pinned
+        command is not installed (#80450)."""
+        cfg = {"provider": "acp-provider", "model": "some-model"}
+        parent = _make_mock_parent(depth=0)
+        runtime = {
+            "api_key": "sk-x",
+            "base_url": "https://api.example/v1",
+            "api_mode": "chat_completions",
+            "provider": "acp-provider",
+            "command": "missing-acp-binary",
+            "args": [],
+        }
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=runtime,
+        ):
+            with patch("shutil.which", return_value=None):
+                with self.assertRaises(ValueError) as ctx:
+                    _resolve_delegation_credentials(cfg, parent)
+        self.assertIn("missing-acp-binary", str(ctx.exception))
 
 
 if __name__ == "__main__":

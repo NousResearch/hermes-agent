@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import { DecodeText } from '@/components/ui/decode-text'
+import { prefersReducedMotion } from '@/hooks/use-media-query'
 import { cn } from '@/lib/utils'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
@@ -33,10 +34,6 @@ function forcedPreview(): boolean {
   } catch {
     return false
   }
-}
-
-function prefersReducedMotion(): boolean {
-  return typeof window !== 'undefined' && Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
 }
 
 export function GatewayConnectingOverlay() {

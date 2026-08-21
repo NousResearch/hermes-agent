@@ -6,6 +6,7 @@ import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
+import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
 import { IdleMount } from '@/components/idle-mount'
 import { $layoutEditMode, toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { allPaneIds, group, groupLeafIds, split } from '@/components/pane-shell/tree/model'
@@ -28,6 +29,7 @@ import {
   removeTreePane,
   resetLayoutTree,
   revealTreePane,
+  setStripTabHidden,
   togglePaneVisible,
   watchContributedPanes
 } from '@/components/pane-shell/tree/store'
@@ -37,9 +39,11 @@ import { Slot } from '@/contrib/react/slot'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
+import { translateNow } from '@/i18n'
 import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
 import { Download, FileText, LayoutDashboard, PanelBottom, Terminal, Upload, Zap } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
+import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
 import { setYoloEnabled } from '@/lib/yolo-session'
 import { pruneComposerPopoutZones } from '@/store/composer-popout'
 import {
@@ -55,9 +59,17 @@ import {
   SIDEBAR_MAX_WIDTH
 } from '@/store/layout'
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
-import { $reviewOpen, closeReview, openReview, REVIEW_PANE_ID } from '@/store/review'
+import {
+  $reviewOpen,
+  $reviewScopeCwd,
+  $reviewScopeTarget,
+  closeReview,
+  openReview,
+  REVIEW_PANE_ID
+} from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
 import { watchSessionPins } from '@/store/session-pin-sync'
+import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
 import { isHudWindow } from '@/store/windows'
 
@@ -71,6 +83,7 @@ import {
   watchSessionTiles,
   WorkspaceTabMenu
 } from '../chat/session-tile'
+import { AppContextMenu } from '../context-menu/app-context-menu'
 import { HudShell } from '../hud/hud-shell'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { $workspaceIsPage } from '../routes'
@@ -150,6 +163,10 @@ registry.registerMany([
       collapsible: true,
       dock: { pane: 'workspace', pos: 'left' },
       revealAliases: ['chat-sidebar'],
+      showCloseButton: false,
+      // Standing chrome: no close gestures at all — the tab is shown/hidden
+      // (zone menu Show/Hide rows + the auto-registered ⌘K toggle below).
+      hideOnly: true,
       width: `${SIDEBAR_DEFAULT_WIDTH}px`,
       minWidth: `${SIDEBAR_DEFAULT_WIDTH}px`,
       maxWidth: `${SIDEBAR_MAX_WIDTH}px`
@@ -183,7 +200,13 @@ registry.registerMany([
     // NO minHeight: a tool panel drags all the way down to its collapsed
     // header (the sash floors it at COLLAPSED_ZONE_PX and folds the zone to
     // its rail there). A real floor left a sliver of unusable terminal.
-    data: { placement: 'bottom', height: '20vh', maxHeight: '80vh', revealOnPreset: true },
+    data: {
+      placement: 'bottom',
+      height: '20vh',
+      maxHeight: '80vh',
+      revealOnPreset: true,
+      lifecycleKeepAlive: true
+    },
     render: () => <WiredPane part="terminal" />
   },
   {
@@ -265,6 +288,19 @@ registry.registerMany([
       keywords: ['plugins', 'reload', 'refresh', 'desktop'],
       run: () => void discoverRuntimePlugins()
     } satisfies PaletteContribution
+  },
+  // The core `::preview{file="…"}` transcript directive — the model (or a
+  // skill) renders a workspace HTML file LIVE inside its own message
+  // (sandboxed srcdoc iframe; falls back to the classic preview card for
+  // non-HTML targets and remote gateways). Also the reference consumer for
+  // the `transcript.directives` area plugins register into.
+  {
+    id: 'transcript.preview',
+    area: TRANSCRIPT_DIRECTIVE_AREA,
+    data: {
+      name: 'preview',
+      render: ({ attrs, streaming }) => <InlinePreviewDirective attrs={attrs} streaming={streaming} />
+    } satisfies TranscriptDirectiveContribution
   },
   {
     id: 'layout.reset',
@@ -420,6 +456,9 @@ $layoutTree.subscribe(tree => {
 // never hides a pinned chat (and pre-existing pins migrate transparently).
 watchSessionPins()
 
+// Release unread-write guards once a list page confirms the value we wrote.
+watchUnreadWriteGuard()
+
 // The main tab reads as its SESSION (the loaded title, "New session" on a
 // fresh draft) — a stack of main + tiles is then just a row of session names.
 // register() replaces same-id in place; the render fn is the shared constant
@@ -548,7 +587,7 @@ bindPaneVisibility(
   'review',
   computed([$reviewOpen, $hasWorkspace], (open, workspace) => open && workspace),
   closeReview,
-  openReview
+  () => openReview($reviewScopeCwd.get(), $reviewScopeTarget.get())
 )
 // ⌃` / statusbar toggle — the terminal COLLAPSES to a rail (tab stays), not
 // hides; PTYs stay alive while collapsed (see PersistentTerminal).
@@ -646,6 +685,64 @@ registry.register(
   })
 )
 
+// Hide-only chrome tabs (sessions / Bots) get a ⌘K toggle each — the palette
+// door onto the same show/hide the zone menu offers. Auto-registered from the
+// panes area so a plugin's hideOnly pane (Bots registers at plugin load, after
+// this module runs) gets its row for free; disposers keep it in step when a
+// plugin unloads. Registry writes during a subscriber callback are safe (the
+// registry snapshots per-area and re-notifies), and re-registering the same
+// palette id replaces the row instead of stacking duplicates.
+{
+  const stripTabToggles = new Map<string, () => void>()
+
+  const syncStripTabToggles = () => {
+    const hideOnlyPanes = registry
+      .getArea('panes')
+      .filter(c => (c.data as { hideOnly?: boolean } | undefined)?.hideOnly)
+
+    const wanted = new Set(hideOnlyPanes.map(c => c.id))
+
+    for (const [paneId, dispose] of stripTabToggles) {
+      if (!wanted.has(paneId)) {
+        dispose()
+        stripTabToggles.delete(paneId)
+      }
+    }
+
+    for (const pane of hideOnlyPanes) {
+      if (stripTabToggles.has(pane.id)) {
+        continue
+      }
+
+      const title = String(pane.title ?? pane.id)
+
+      stripTabToggles.set(
+        pane.id,
+        registry.register(
+          paletteToggle({
+            id: `strip-tab.${pane.id}`,
+            label: translateNow('zones.toggleStripTab', title),
+            icon: LayoutDashboard,
+            keywords: [title.toLowerCase(), 'tab', 'pane', 'sidebar', 'show', 'hide'],
+            // On-screen truth, same contract as the logs toggle above.
+            get: () => isPaneVisible(pane.id),
+            set: visible => {
+              if (visible) {
+                revealTreePane(pane.id)
+              } else {
+                setStripTabHidden(pane.id, true)
+              }
+            }
+          })
+        )
+      )
+    }
+  }
+
+  syncStripTabToggles()
+  registry.subscribeArea('panes', syncStripTabToggles)
+}
+
 // YOLO (dangerous-command approval bypass) is a status-bar zap and a /yolo
 // command; ⌘K is the third door onto the SAME store function, so a user who
 // lives in the palette never has to hunt for the pill.
@@ -718,8 +815,15 @@ export function ContribController() {
       style={{ '--sidebar-width': '100%' } as CSSProperties}
     >
       <ContribWiring>
+        <AppContextMenu />
         <div
           className="flex h-screen min-h-0 w-screen flex-col bg-(--ui-bg-chrome) text-(--ui-text-primary)"
+          // Window-glass hook: this div and the sidebar-wrapper above it are
+          // the app shell's two full-window opaque painters; the
+          // [data-hermes-glass] rules in styles.css clear them so the tint
+          // painted by <body> is the only thing between the page and the
+          // vibrancy material.
+          data-contrib-shell=""
           style={{ '--titlebar-height': '0px' } as CSSProperties}
         >
           {/* Title bar: fixed chrome outside the grid, composable via slots.
@@ -764,7 +868,10 @@ export function ContribController() {
               className="pointer-events-auto absolute z-10 flex w-max items-center gap-2 [-webkit-app-region:no-drag]"
               style={{
                 right:
-                  'max(calc(var(--workspace-right, 0px) + 0.5rem), calc(var(--titlebar-tools-right, 0.75rem) + 4 * var(--titlebar-control-size, 24px) + 0.5rem))'
+                  // Five static cluster buttons: four systemTools plus the
+                  // always-present right-sidebar toggle (titlebar-controls.tsx).
+                  // Keep in sync with wiring.tsx's SYSTEM_TOOL_COUNT.
+                  'max(calc(var(--workspace-right, 0px) + 0.5rem), calc(var(--titlebar-tools-right, 0.75rem) + 5 * var(--titlebar-control-size, 24px) + 0.5rem))'
               }}
             />
           </div>

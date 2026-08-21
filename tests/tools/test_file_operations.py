@@ -679,7 +679,10 @@ class TestReadNonUtf8IsBinary:
         ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
         # A latin-1 file decoded with errors="replace" yields U+FFFD chars.
         lossy_sample = "caf\ufffd r\ufffdsum\ufffd\n"
-        assert ops._is_likely_binary("notes.txt", lossy_sample) is True
+        # Known text extensions skip the � guard (head -c 1000 boundary)
+        assert ops._is_likely_binary("notes.txt", lossy_sample) is False
+        # Unknown extensions still flagged
+        assert ops._is_likely_binary("data.xyz", lossy_sample) is True
 
     def test_plain_utf8_text_not_flagged(self, tmp_path):
         ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))

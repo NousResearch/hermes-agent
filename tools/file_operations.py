@@ -965,71 +965,23 @@ class ShellFileOperations(FileOperations):
             self._command_cache[cmd] = result.stdout.strip() == 'yes'
         return self._command_cache[cmd]
     
-    def _sample_file_bytes(self, path: str, length: int = 1000):
-        """Fetch the first ``length`` raw bytes of a file through the terminal.
-
-        File operations run through a terminal backend (possibly remote), so
-        raw bytes cannot cross the transport directly — the terminal decodes
-        stdout with ``errors="replace"`` and manufactures U+FFFD at every
-        byte it cannot decode, including a multibyte character cut in half by
-        ``head -c``. Wrapping the sample in base64 lets the original bytes
-        survive the transport, so binary detection can happen at the byte
-        layer where it is well-defined (#80308 and friends).
-
-        Returns the sample bytes, or ``None`` when the transport could not
-        produce clean base64 (exotic shells without ``base64``); callers fall
-        back to the legacy text-sample heuristic in that case.
-        """
-        result = self._exec(
-            f"head -c {length} {self._escape_shell_arg(path)} 2>/dev/null | base64"
-        )
-        if result.exit_code != 0:
-            return None
-        encoded = _strip_terminal_fence_leaks(result.stdout)
-        encoded = "".join(encoded.split())
-        if not encoded:
-            return b""
-        if not re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", encoded):
-            return None
-        try:
-            return base64.b64decode(encoded, validate=True)
-        except (binascii.Error, ValueError):
-            return None
-
-    @staticmethod
-    def _is_likely_binary_bytes(sample: bytes) -> bool:
-        """Byte-layer binary detection (the boundary for the #80308 class).
-
-        Contract: a file is text when its sample is valid UTF-8, allowing one
-        incomplete multibyte sequence at the very end (an artifact of cutting
-        the sample at a byte boundary, not a property of the file). Anything
-        else — NUL bytes, mid-stream invalid UTF-8 such as latin-1 or true
-        binaries — stays read-only, preserving the anti-mojibake guarantee
-        the old U+FFFD check existed for: a read→edit→write round-trip must
-        never rewrite undecodable bytes with replacement characters.
-
-        A file that legitimately *contains* U+FFFD (EF BF BD — e.g. logs of
-        lossy output) is valid UTF-8 and reads as text; the old text-layer
-        check misclassified it because it could not tell a stored replacement
-        character from a transport-manufactured one.
-        """
-        if not sample:
-            return False
-        if b"\x00" in sample:
-            return True
-        try:
-            sample.decode("utf-8")
-            return False
-        except UnicodeDecodeError as exc:
-            # UTF-8 sequences are at most 4 bytes: an error starting in the
-            # last 3 bytes with a clean prefix is a boundary cut, not binary.
-            if exc.start >= len(sample) - 3:
-                try:
-                    sample[: exc.start].decode("utf-8")
-                    return False
-                except UnicodeDecodeError:
-                    pass
-            return True
+    # Extensions whose content is known to be human-readable text.
+    # When a file carries one of these extensions we trust the extension
+    # over the heuristic ``�`` sample check, because ``head -c 1000``
+    # can land in the middle of a multi-byte UTF-8 sequence (CJK chars are
+    # 3 bytes), producing a spurious replacement character that would
+    # otherwise trigger a false-positive binary classification.
+    _TEXT_EXTENSIONS = frozenset({
+        ".md", ".txt", ".py", ".json", ".yaml", ".yml", ".toml",
+        ".js", ".ts", ".jsx", ".tsx", ".html", ".htm", ".css",
+        ".sh", ".bash", ".zsh", ".fish", ".bat", ".cmd", ".ps1",
+        ".rb", ".go", ".rs", ".java", ".c", ".h", ".cpp", ".hpp",
+        ".cs", ".swift", ".kt", ".scala", ".lua", ".r", ".m",
+        ".sql", ".xml", ".csv", ".tsv", ".ini", ".cfg", ".conf",
+        ".env", ".gitignore", ".dockerignore", ".editorconfig",
+        ".rst", ".adoc", ".tex", ".bib", ".log", ".diff", ".patch",
+        ".makefile", ".cmake", ".gradle", ".sbt", ".proto",
+    })
 
     def _is_likely_binary(self, path: str, content_sample: str = None) -> bool:
         """
@@ -1052,7 +1004,15 @@ class ShellFileOperations(FileOperations):
             # sample carries the replacement char as binary (read-only) so the
             # agent can't corrupt it. Legitimate UTF-8 text effectively never
             # contains U+FFFD.
-            if "\ufffd" in content_sample[:1000]:
+            #
+            # HOWEVER: when the sample is produced by `head -c 1000`, the
+            # byte boundary can land in the middle of a multi-byte UTF-8
+            # sequence (e.g. a 3-byte CJK character).  The terminal decoder
+            # then emits U+FFFD for the incomplete sequence even though the
+            # underlying file is perfectly valid UTF-8.  For files with a
+            # known text extension we skip the replacement-char guard so
+            # these false positives don't block reading.
+            if "\ufffd" in content_sample[:1000] and ext not in self._TEXT_EXTENSIONS:
                 return True
             non_printable = sum(1 for c in content_sample[:1000]
                                if ord(c) < 32 and c not in '\n\r\t')

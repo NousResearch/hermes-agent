@@ -9981,16 +9981,37 @@ def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[
         return f"⏸ {board_tag}{tag}Kanban {task_id} blocked{reason}"
     if kind == "gave_up":
         err = f"\n{str(payload.get('error'))[:200]}" if payload.get("error") else ""
-        return f"✖ {board_tag}{tag}Kanban {task_id} gave up after repeated spawn failures{err}"
+        trigger = f" ({payload['trigger_outcome']})" if payload.get("trigger_outcome") else ""
+        return f"✖ {board_tag}{tag}Kanban {task_id} gave up after repeated failures{trigger}{err}"
     if kind == "crashed":
         return f"✖ {board_tag}{tag}Kanban {task_id} worker crashed (pid gone); dispatcher will retry"
     if kind == "timed_out":
-        limit = 0
+        task_status = str(getattr(task, "status", "") or "")
+        retry_suffix = "; will retry" if task_status == "ready" else ""
+        # Iteration-budget exhaustion carries budget_used/budget_max, not a
+        # wall-clock limit — render it as such and never invent
+        # max_runtime=0s (#79399).
+        budget_used = payload.get("budget_used")
+        budget_max = payload.get("budget_max")
+        if budget_used is not None and budget_max is not None:
+            return (
+                f"⏱ {board_tag}{tag}Kanban {task_id} iteration budget exhausted "
+                f"({budget_used}/{budget_max}){retry_suffix}"
+            )
+        limit = None
         try:
-            limit = int(payload.get("limit_seconds") or 0)
+            if payload.get("limit_seconds"):
+                limit = int(payload["limit_seconds"])
         except (TypeError, ValueError):
             pass
-        return f"⏱ {board_tag}{tag}Kanban {task_id} timed out (max_runtime={limit}s); will retry"
+        if limit is None and getattr(task, "max_runtime_seconds", None):
+            # Legacy events / metadata-less payloads: fall back to the
+            # task's configured runtime, never an invented zero.
+            limit = int(task.max_runtime_seconds)
+        return (
+            f"⏱ {board_tag}{tag}Kanban {task_id} timed out "
+            f"(max_runtime={limit if limit is not None else '?'}s){retry_suffix}"
+        )
     if kind == "status":
         return f"🔄 {board_tag}{tag}Kanban {task_id} → {payload.get('status') or ''}"
     return None

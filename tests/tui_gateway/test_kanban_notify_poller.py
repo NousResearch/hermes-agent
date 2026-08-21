@@ -14,6 +14,8 @@ unsubscribe) and ``_format_kanban_event_text``.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli import kanban_db as kb
 from tui_gateway.server import (
     _collect_kanban_notifications,
@@ -261,6 +263,61 @@ class TestFormatKanbanEventText:
         ev = SimpleNamespace(kind="timed_out", payload={"limit_seconds": "not-a-number"})
         text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
         assert "timed out" in text
+
+    def test_timed_out_budget_exhaustion_renders_budget_not_runtime(self):
+        """Iteration-budget exhaustion is not a wall-clock timeout (#79399)."""
+        ev = SimpleNamespace(
+            kind="timed_out",
+            payload={"budget_used": 20, "budget_max": 20},
+        )
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert "iteration budget exhausted" in text
+        assert "20/20" in text
+        assert "max_runtime" not in text
+
+    def test_timed_out_falls_back_to_task_max_runtime(self):
+        """Legacy metadata-less payloads fall back to configured runtime (#79399)."""
+        ev = SimpleNamespace(kind="timed_out", payload={})
+        task = SimpleNamespace(
+            title="build the thing", assignee="worker",
+            result=None, max_runtime_seconds=1800,
+        )
+        text = _format_kanban_event_text(self.SUB, task, ev, "")
+        assert "max_runtime=1800s" in text
+        assert "max_runtime=0s" not in text
+
+    @pytest.mark.parametrize(
+        ("status", "expects_retry"),
+        [("ready", True), ("todo", False), ("blocked", False)],
+    )
+    def test_timed_out_retry_wording_matches_task_status(
+        self, status, expects_retry,
+    ):
+        task = SimpleNamespace(
+            title="build the thing",
+            assignee="worker",
+            result=None,
+            status=status,
+        )
+        ev = SimpleNamespace(
+            kind="timed_out",
+            payload={"budget_used": 20, "budget_max": 20},
+        )
+
+        text = _format_kanban_event_text(self.SUB, task, ev, "")
+
+        assert text is not None
+        assert ("will retry" in text) is expects_retry
+
+    def test_gave_up_names_trigger_outcome(self):
+        """gave_up names the actual failure class, not generic spawn failures (#79399)."""
+        ev = SimpleNamespace(
+            kind="gave_up",
+            payload={"trigger_outcome": "timed_out", "error": "Iteration budget exhausted"},
+        )
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert "repeated failures (timed_out)" in text
+        assert "spawn failures" not in text
 
 
 class TestNotificationPollerLoopKanbanWiring:

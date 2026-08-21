@@ -2,6 +2,8 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 
 from gateway.config import Platform
 from gateway.kanban_watchers import (
@@ -622,3 +624,53 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     finally:
         conn.close()
     assert remaining == []
+
+
+@pytest.mark.parametrize(
+    ("status", "expects_retry"),
+    [("ready", True), ("todo", False), ("blocked", False)],
+)
+def test_timeout_retry_wording_matches_task_status(
+    tmp_path, monkeypatch, status, expects_retry,
+):
+    """Only a ready task can truthfully promise an automatic retry."""
+    db_path = tmp_path / f"timeout-retry-{status}.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title=f"goal budget exhausted while {status}",
+            assignee="worker",
+            max_runtime_seconds=10_800,
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+        )
+        conn.execute("UPDATE tasks SET status=? WHERE id=?", (status, tid))
+        kb._append_event(
+            conn,
+            tid,
+            "timed_out",
+            {
+                "error": "Iteration budget exhausted (90/90)",
+                "failures": 1,
+                "budget_used": 90,
+                "budget_max": 90,
+            },
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert "iteration budget exhausted (90/90)" in text
+    assert ("will retry" in text) is expects_retry

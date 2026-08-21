@@ -8089,9 +8089,9 @@ class DispatchResult:
 # ``detect_crashed_workers`` to classify a dead-pid task.
 #
 # Entry: ``pid -> (raw_wait_status, reaped_at_epoch)``. We keep raw status
-# so both ``os.WIFEXITED`` / ``os.WEXITSTATUS`` and ``os.WIFSIGNALED`` can
-# be consulted. Entries are trimmed by age (and total size cap as a
-# belt-and-braces against unbounded growth on exotic platforms).
+# so ``os.waitstatus_to_exitcode`` can classify normal exits and signals
+# portably. Entries are trimmed by age (and total size cap as a belt-and-
+# braces against unbounded growth on exotic platforms).
 _RECENT_WORKER_EXIT_TTL_SECONDS = 600
 _RECENT_WORKER_EXITS_MAX = 4096
 _recent_worker_exits: "dict[int, tuple[int, float]]" = {}
@@ -8125,17 +8125,17 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
 
     Returns ``(kind, code)`` where ``kind`` is one of:
 
-    * ``"clean_exit"`` — ``WIFEXITED`` with ``WEXITSTATUS == 0``. When the
+    * ``"clean_exit"`` — a normal process exit with status 0. When the
       task is still ``running`` in the DB, this is a protocol violation
       (worker exited without calling ``kanban_complete`` / ``kanban_block``)
       and should be auto-blocked immediately — retrying will just loop.
-    * ``"rate_limited"`` — ``WIFEXITED`` with status
+    * ``"rate_limited"`` — a normal process exit with status
       ``KANBAN_RATE_LIMIT_EXIT_CODE``. The worker bailed because the
       provider rate-limited / exhausted quota, NOT because the task failed.
       ``detect_crashed_workers`` releases the task back to ``ready`` without
       counting a failure, so a long quota window can't trip the breaker.
-    * ``"nonzero_exit"`` — ``WIFEXITED`` with non-zero status. Real error.
-    * ``"signaled"`` — ``WIFSIGNALED`` (OOM killer, SIGKILL, etc). Real crash.
+    * ``"nonzero_exit"`` — a normal process exit with non-zero status. Real error.
+    * ``"signaled"`` — process termination by signal (OOM killer, SIGKILL, etc).
     * ``"unknown"`` — pid was not in the reap registry (either reaped by
       something else, or died between reap tick and liveness check). Fall
       back to existing crashed-counter behavior.
@@ -8149,18 +8149,16 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
         return ("unknown", None)
     raw, _ = entry
     try:
-        if os.WIFEXITED(raw):
-            code = os.WEXITSTATUS(raw)
-            if code == 0:
-                return ("clean_exit", 0)
-            if code == KANBAN_RATE_LIMIT_EXIT_CODE:
-                return ("rate_limited", code)
-            return ("nonzero_exit", code)
-        if os.WIFSIGNALED(raw):
-            return ("signaled", os.WTERMSIG(raw))
-    except Exception:
-        pass
-    return ("unknown", None)
+        return_code = os.waitstatus_to_exitcode(raw)
+    except (AttributeError, ValueError):
+        return ("unknown", None)
+    if return_code < 0:
+        return ("signaled", -return_code)
+    if return_code == 0:
+        return ("clean_exit", 0)
+    if return_code == KANBAN_RATE_LIMIT_EXIT_CODE:
+        return ("rate_limited", return_code)
+    return ("nonzero_exit", return_code)
 
 
 def reap_worker_zombies() -> "list[int]":
@@ -9187,7 +9185,10 @@ def _record_task_failure(
 
     ``event_payload_extra`` merges into the ``gave_up`` event payload
     when the breaker trips, so callers can include outcome-specific
-    context (e.g. pid on crash, elapsed on timeout).
+    context (e.g. pid on crash, elapsed on timeout). It is also merged
+    into the below-threshold ``timed_out`` run metadata + event payload
+    so budget/elapsed metadata survives for notification rendering
+    (#79399).
 
     Resolution order for the effective threshold:
       1. per-task ``max_retries`` if set (nothing else overrides)
@@ -9213,6 +9214,12 @@ def _record_task_failure(
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None:
+            return False
+        # Late finalizers: a worker that already ended its task via
+        # kanban_block / kanban_complete must not emit a bogus failure
+        # on top of the handoff. Only a still-running (or still-claimable
+        # ready/review) task may be failed (#79399).
+        if row["status"] not in ("running", "ready", "review"):
             return False
         retry_status = (
             _retry_status_for_run(conn, task_id, row["current_run_id"])
@@ -9303,22 +9310,25 @@ def _record_task_failure(
                 )
             if end_run:
                 # Spawn path: close the open run with outcome.
+                run_meta = {"failures": failures, "retry_status": retry_status}
+                if event_payload_extra:
+                    run_meta.update(event_payload_extra)
                 run_id = _end_run(
                     conn, task_id,
                     outcome=outcome, status=outcome,
                     error=error[:500],
-                    metadata={
-                        "failures": failures,
-                        "retry_status": retry_status,
-                    },
+                    metadata=run_meta,
                 )
+                event_payload = {
+                    "error": error[:500],
+                    "failures": failures,
+                    "retry_status": retry_status,
+                }
+                if event_payload_extra:
+                    event_payload.update(event_payload_extra)
                 _append_event(
                     conn, task_id, outcome,
-                    {
-                        "error": error[:500],
-                        "failures": failures,
-                        "retry_status": retry_status,
-                    },
+                    event_payload,
                     run_id=run_id,
                 )
             # Timeout/crash path's caller already emitted its own event.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -31,12 +32,12 @@ def kanban_home(tmp_path, monkeypatch):
 
 def _init_git_repo(repo: Path) -> None:
     repo.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.email", "kanban@example.com"], check=True, capture_output=True, text=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Kanban Test"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "kanban@example.com"], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Kanban Test"], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
     (repo / "README.md").write_text("hello\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +511,110 @@ def test_delete_task_removes_task_and_cascades(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# _record_task_failure metadata + late-finalizer guard (#79399)
+# ---------------------------------------------------------------------------
+
+
+def test_record_task_failure_below_threshold_preserves_budget_metadata(kanban_home):
+    """Iteration-budget exhaustion keeps budget_used/budget_max in run metadata (#79399)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="budget task")
+        claimed = kb.claim_task(conn, tid, claimer="test:1")
+        assert claimed is not None
+        assert kb.get_task(conn, tid).status == "running"
+
+        # Below the breaker threshold (failure_limit=5, this is failure 1).
+        blocked = kb._record_task_failure(
+            conn, tid,
+            error="Iteration budget exhausted (20/20)",
+            outcome="timed_out",
+            failure_limit=5,
+            release_claim=True,
+            end_run=True,
+            event_payload_extra={"budget_used": 20, "budget_max": 20},
+        )
+        assert blocked is False
+        # Task dropped back to ready for respawn.
+        assert kb.get_task(conn, tid).status == "ready"
+
+        run = conn.execute(
+            "SELECT metadata FROM task_runs WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert run is not None
+        meta = json.loads(run["metadata"] or "{}")
+        assert meta.get("budget_used") == 20
+        assert meta.get("budget_max") == 20
+
+        ev = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? "
+            "AND kind = 'timed_out' ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert ev is not None
+        payload = json.loads(ev["payload"] or "{}")
+        assert payload.get("budget_used") == 20
+        assert payload.get("budget_max") == 20
+
+
+def test_record_task_failure_noop_after_blocked_handoff(kanban_home):
+    """A late iteration finalizer must not fail a task already blocked (#79399)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="blocked handoff")
+        claimed = kb.claim_task(conn, tid, claimer="test:1")
+        assert claimed is not None
+
+        # Worker spends its final iteration on kanban_block → task blocked.
+        assert kb.block_task(conn, tid, reason="needs human input") is True
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        # Late finalizer fires after the handoff: must be a no-op.
+        result = kb._record_task_failure(
+            conn, tid,
+            error="Iteration budget exhausted (20/20)",
+            outcome="timed_out",
+            failure_limit=5,
+            release_claim=True,
+            end_run=True,
+            event_payload_extra={"budget_used": 20, "budget_max": 20},
+        )
+        assert result is False
+        assert kb.get_task(conn, tid).status == "blocked"
+        # No timed_out event appended on top of the handoff.
+        kinds = [
+            r["kind"]
+            for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (tid,)
+            ).fetchall()
+        ]
+        assert "timed_out" not in kinds
+
+
+def test_record_task_failure_noop_after_completed_handoff(kanban_home):
+    """A late iteration finalizer must not fail a task already done (#79399)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="completed handoff")
+        claimed = kb.claim_task(conn, tid, claimer="test:1")
+        assert claimed is not None
+
+        assert kb.complete_task(conn, tid, result="done") is True
+        assert kb.get_task(conn, tid).status == "done"
+
+        result = kb._record_task_failure(
+            conn, tid,
+            error="Iteration budget exhausted (20/20)",
+            outcome="timed_out",
+            failure_limit=5,
+            release_claim=True,
+            end_run=True,
+            event_payload_extra={"budget_used": 20, "budget_max": 20},
+        )
+        assert result is False
+        assert kb.get_task(conn, tid).status == "done"
+
+
 
 
 
@@ -552,12 +657,16 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout.strip()
     ws_common = subprocess.run(
         ["git", "-C", str(ws), "rev-parse", "--path-format=absolute", "--git-common-dir"],
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout.strip()
     assert ws_common == repo_common
     listed = subprocess.run(
@@ -565,8 +674,15 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout
-    assert f"worktree {target}" in listed
+    listed_worktrees = {
+        Path(line.removeprefix("worktree ")).resolve()
+        for line in listed.splitlines()
+        if line.startswith("worktree ")
+    }
+    assert target.resolve() in listed_worktrees
     assert f"branch refs/heads/{branch}" in listed
 
 
@@ -1156,6 +1272,7 @@ def test_resolve_hermes_argv_falls_back_to_module_form_when_no_path_shim(monkeyp
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(kb, "_safe_which_no_cwd", lambda name: None)
     argv = kb._resolve_hermes_argv()
     assert argv == [sys.executable, "-m", "hermes_cli.main"]
 
@@ -1176,9 +1293,18 @@ def test_resolve_hermes_argv_module_actually_runs():
 
     with mock.patch.dict(os.environ, {}, clear=False):
         os.environ.pop("HERMES_BIN", None)
-        with mock.patch.object(shutil, "which", return_value=None):
+        with mock.patch.object(shutil, "which", return_value=None), mock.patch.object(
+            kb, "_safe_which_no_cwd", return_value=None
+        ):
             argv = kb._resolve_hermes_argv()
-    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30)
+    r = subprocess.run(
+        argv + ["--version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+    )
     assert r.returncode == 0, (
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"

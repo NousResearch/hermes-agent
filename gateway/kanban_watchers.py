@@ -564,9 +564,17 @@ class GatewayKanbanWatchersMixin:
                             err = ""
                             if ev.payload and ev.payload.get("error"):
                                 err = f"\n{str(ev.payload['error'])[:200]}"
+                            # Name the actual failure class, not a generic
+                            # "spawn failures" — iteration exhaustion and
+                            # crashes are different failure modes (#79399).
+                            trigger = ""
+                            if ev.payload and ev.payload.get("trigger_outcome"):
+                                trigger = (
+                                    f" ({ev.payload['trigger_outcome']})"
+                                )
                             msg = (
                                 f"✖ {board_tag}{tag}Kanban {sub['task_id']} gave up "
-                                f"after repeated spawn failures{err}"
+                                f"after repeated failures{trigger}{err}"
                             )
                         elif kind == "crashed":
                             msg = (
@@ -574,13 +582,43 @@ class GatewayKanbanWatchersMixin:
                                 f"(pid gone); dispatcher will retry"
                             )
                         elif kind == "timed_out":
-                            limit = 0
-                            if ev.payload and ev.payload.get("limit_seconds"):
-                                limit = int(ev.payload["limit_seconds"])
-                            msg = (
-                                f"⏱ {board_tag}{tag}Kanban {sub['task_id']} timed out "
-                                f"(max_runtime={limit}s); will retry"
+                            task_status = task.status if task else ""
+                            retry_suffix = (
+                                "; will retry" if task_status == "ready" else ""
                             )
+                            limit = None
+                            msg = None
+                            if ev.payload:
+                                # Iteration-budget exhaustion carries the
+                                # budget (budget_used/budget_max), not a
+                                # wall-clock limit — render it as such and
+                                # never invent max_runtime=0s (#79399).
+                                budget_used = ev.payload.get("budget_used")
+                                budget_max = ev.payload.get("budget_max")
+                                if budget_used is not None and budget_max is not None:
+                                    msg = (
+                                        f"⏱ {board_tag}{tag}Kanban {sub['task_id']} "
+                                        f"iteration budget exhausted "
+                                        f"({budget_used}/{budget_max}){retry_suffix}"
+                                    )
+                                else:
+                                    if ev.payload.get("limit_seconds"):
+                                        limit = int(ev.payload["limit_seconds"])
+                            if limit is None and (msg is None or "iteration budget" not in msg):
+                                # Legacy events / metadata-less payloads:
+                                # fall back to the task's configured runtime,
+                                # never an invented zero.
+                                limit = sub.get("max_runtime_seconds")
+                            if limit is not None:
+                                msg = (
+                                    f"⏱ {board_tag}{tag}Kanban {sub['task_id']} timed out "
+                                    f"(max_runtime={limit}s){retry_suffix}"
+                                )
+                            elif msg is None or "iteration budget" not in msg:
+                                msg = (
+                                    f"⏱ {board_tag}{tag}Kanban {sub['task_id']} timed out "
+                                    f"(max_runtime=?s){retry_suffix}"
+                                )
                         elif kind == "status":
                             new_status = ""
                             if ev.payload and ev.payload.get("status"):

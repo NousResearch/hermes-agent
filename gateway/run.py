@@ -6901,11 +6901,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _bg_max_age_seconds = (
             _bg_max_age_hours * 3600 if _bg_max_age_hours and _bg_max_age_hours > 0 else None
         )
+        # TERMINAL_CWD was normalized by the gateway bootstrap from terminal.cwd.
+        # In multiplex mode it belongs to the launch profile, so persisting it on a
+        # routed secondary session would be a false project assignment. Stay unbound
+        # until the routed profile has a source-specific cwd resolver.
+        initial_session_cwd = None
+        if not getattr(self.config, "multiplex_profiles", False):
+            initial_session_cwd = os.environ.get("TERMINAL_CWD")
         self.session_store = SessionStore(
             self.config.sessions_dir, self.config,
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(
                 key, max_active_age=_bg_max_age_seconds,
             ),
+            initial_cwd=initial_session_cwd,
         )
         # One enforced loop-side boundary for the synchronous SessionStore.
         # Sync helpers keep using ``session_store`` directly; async gateway

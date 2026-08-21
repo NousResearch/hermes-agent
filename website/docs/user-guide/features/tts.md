@@ -72,6 +72,9 @@ tts:
   gemini:
     model: "gemini-2.5-flash-preview-tts"  # or gemini-3.1-flash-tts-preview
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
+    max_attempts: 4             # Retry transient failures (range 1-10)
+    timeout: 60                 # Connect/read-inactivity timeout (range 1-300s)
+    retry_delay_seconds: 1.0    # Delay between attempts (range 0-60s)
     audio_tags: false           # Enable hidden Gemini 3.1 TTS audio-tag insertion
     persona_prompt_file: ""      # Optional Markdown/text file with Gemini voice direction
   xai:
@@ -118,7 +121,7 @@ MiniMax TTS selects its region, endpoint, and credential together:
 
 Gemini TTS can follow natural-language performance direction. Set `tts.gemini.persona_prompt_file` to a local Markdown or text file that describes the voice persona. The file can include Gemini-style sections such as `AUDIO PROFILE`, `SCENE`, `DIRECTOR'S NOTES`, `SAMPLE CONTEXT`, and `TRANSCRIPT`.
 
-If the file contains `{transcript}` or `{{ transcript }}`, Hermes replaces that placeholder with the live TTS text. Otherwise, Hermes appends a labeled `TRANSCRIPT` section automatically. The persona prompt stays local and is not shown in the chat reply.
+If the file contains `{transcript}` or `{{ transcript }}`, Hermes replaces that placeholder with the live TTS text. Otherwise, Hermes appends a labeled `TRANSCRIPT` section automatically. The persona prompt is not shown in the chat reply, but its contents are sent to Gemini as synthesis direction. If `audio_tags` is enabled, the prompt can also be sent to the configured `auxiliary.tts_audio_tags` model during the hidden rewrite pass. Do not include secrets or context you would not send to those providers.
 
 ```yaml
 tts:
@@ -158,7 +161,7 @@ Each provider has a documented per-request input-character cap. Hermes splits lo
 | xAI | 15000 |
 | MiniMax | 10000 |
 | Mistral | 4000 |
-| Google Gemini | 32000 |
+| Google Gemini | 2000 (practical sync-generation cap; 32k-token context) |
 | ElevenLabs | Model-aware (see below) |
 | NeuTTS | 2000 |
 | KittenTTS | 2000 |

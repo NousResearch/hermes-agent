@@ -1627,9 +1627,10 @@ DEFAULT_CONFIG = {
 
     # Text-to-speech configuration
     # Each provider supports an optional `max_text_length:` override for the
-    # per-request input-character cap. Omit it to use the provider's documented
-    # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
-    # Gemini 32000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
+    # per-request input-character cap. Omit it to use the provider's default
+    # limits: OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k
+    # model-aware, Gemini practical sync cap 2000, Edge 5000, Mistral 4000,
+    # and NeuTTS/KittenTTS 2000.
     "tts": {
         # Set explicitly to pin a backend:
         # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
@@ -1652,6 +1653,9 @@ DEFAULT_CONFIG = {
         "gemini": {
             "model": "gemini-2.5-flash-preview-tts",
             "voice": "Kore",
+            "max_attempts": 4,  # Clamped to 1-10.
+            "timeout": 60,  # Connect/read-inactivity seconds; clamped to 1-300.
+            "retry_delay_seconds": 1.0,  # Clamped to 0-60 seconds.
             # When true, Gemini 3.1 TTS uses a hidden auxiliary-model rewrite
             # pass to insert freeform square-bracket audio tags into the TTS
             # script. Visible chat replies are unchanged.

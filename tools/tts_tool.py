@@ -40,6 +40,7 @@ import datetime
 import importlib.util
 import json
 import logging
+import math
 import os
 import queue
 import platform
@@ -57,6 +58,7 @@ from pathlib import Path
 from typing import Callable, Dict, Any, Iterator, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
+from agent.retry_utils import parse_retry_after_seconds
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_constants import display_hermes_home
 
@@ -258,6 +260,10 @@ DEFAULT_DEEPINFRA_TTS_VOICE = "default"
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
 GEMINI_TTS_SAMPLE_WIDTH = 2  # 16-bit PCM (L16)
+GEMINI_TTS_CONTEXT_MAX_CHARS = 32000  # conservative proxy for the 32k-token context
+GEMINI_TTS_MAX_ATTEMPTS = 10
+GEMINI_TTS_MAX_TIMEOUT_SECONDS = 300.0
+GEMINI_TTS_MAX_RETRY_DELAY_SECONDS = 60.0
 TTS_RESPONSE_BODY_LIMIT_BYTES = 16 * 1024 * 1024
 TTS_RESPONSE_BODY_CHUNK_BYTES = 64 * 1024
 
@@ -270,8 +276,10 @@ DEFAULT_OUTPUT_DIR = _get_default_output_dir()
 # ---------------------------------------------------------------------------
 # Per-provider input-character limits (from official provider docs).
 # A single global cap was wrong: OpenAI is 4096, xAI is 15k, MiniMax is 10k,
-# ElevenLabs is model-dependent (5k / 10k / 30k / 40k), Gemini has a 32k-token
-# context window.  Users can override any of these via
+# ElevenLabs is model-dependent (5k / 10k / 30k / 40k). Gemini has a 32k-token
+# context window, but its one-shot audio generation becomes unreliable well
+# before that context limit, so its practical request cap is lower. Users can
+# override any of these via
 # ``tts.<provider>.max_text_length`` in config.yaml.
 # ---------------------------------------------------------------------------
 PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
@@ -280,7 +288,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "xai": 15000,         # https://docs.x.ai/developers/model-capabilities/audio/text-to-speech
     "minimax": 10000,     # https://platform.minimax.io/docs/api-reference/speech-t2a-http (sync)
     "mistral": 4000,      # conservative; no published per-request cap
-    "gemini": 32000,      # Gemini TTS has a 32k-token context window; char cap is conservative
+    "gemini": 2000,       # practical sync cap; longer replies are split losslessly
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
@@ -2651,13 +2659,15 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         gemini_config,
         persona_prompt=persona_prompt,
     )
-    max_len = _resolve_max_text_length("gemini", tts_config)
-    if len(prompt_text) > max_len:
+    # ``tts.gemini.max_text_length`` is the practical spoken-transcript chunk
+    # size used by the public wrapper. Persona/performance direction does not
+    # produce audio duration, so validate the composed request against the
+    # model context separately rather than consuming the transcript budget.
+    if len(prompt_text) > GEMINI_TTS_CONTEXT_MAX_CHARS:
         raise ValueError(
-            "Gemini TTS composed prompt exceeds the provider request limit "
-            f"({len(prompt_text)} > {max_len} chars). Reduce the persona/audio-tag "
-            "prompt or lower tts.gemini.max_text_length so long-form text is "
-            "split with enough prompt headroom."
+            "Gemini TTS composed prompt exceeds the conservative context limit "
+            f"({len(prompt_text)} > {GEMINI_TTS_CONTEXT_MAX_CHARS} chars). "
+            "Reduce the persona or audio-tag prompt."
         )
 
     payload: Dict[str, Any] = {
@@ -2686,33 +2696,114 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         headers["X-Goog-Api-Client"] = f"hermes-agent/{_hermes_version}"
 
     endpoint = f"{base_url}/models/{model}:generateContent"
-    response = requests.post(
-        endpoint,
-        params={"key": api_key},
-        headers=headers,
-        json=payload,
-        timeout=60,
-        stream=True,
+    try:
+        max_attempts = int(gemini_config.get("max_attempts", 4))
+    except (TypeError, ValueError, OverflowError):
+        max_attempts = 4
+    max_attempts = min(GEMINI_TTS_MAX_ATTEMPTS, max(1, max_attempts))
+    try:
+        timeout_seconds = float(gemini_config.get("timeout", 60))
+    except (TypeError, ValueError, OverflowError):
+        timeout_seconds = 60.0
+    if not math.isfinite(timeout_seconds):
+        timeout_seconds = 60.0
+    timeout_seconds = min(
+        GEMINI_TTS_MAX_TIMEOUT_SECONDS,
+        max(1.0, timeout_seconds),
     )
-    if response.status_code != 200:
-        # Surface the API error message when present
-        raw_body = _read_tts_response_bytes(response, label="Gemini TTS")
+    try:
+        retry_delay = float(gemini_config.get("retry_delay_seconds", 1.0))
+    except (TypeError, ValueError, OverflowError):
+        retry_delay = 1.0
+    if not math.isfinite(retry_delay):
+        retry_delay = 1.0
+    retry_delay = min(
+        GEMINI_TTS_MAX_RETRY_DELAY_SECONDS,
+        max(0.0, retry_delay),
+    )
+    retryable_statuses = {408, 429, 500, 502, 503, 504}
+
+    data: Optional[Dict[str, Any]] = None
+    for attempt in range(1, max_attempts + 1):
+        response = None
         try:
-            if raw_body:
-                err = json.loads(raw_body.decode("utf-8")).get("error", {})
-            elif not _response_has_explicit_stream(response) and callable(getattr(response, "json", None)):
-                err = response.json().get("error", {})
-            else:
-                err = {}
-            detail = err.get("message") or raw_body.decode("utf-8", errors="replace")[:300]
-        except Exception:
-            detail = raw_body.decode("utf-8", errors="replace")[:300]
+            response = requests.post(
+                endpoint,
+                params={"key": api_key},
+                headers=headers,
+                json=payload,
+                timeout=timeout_seconds,
+                stream=True,
+            )
+
+            if response.status_code != 200:
+                # Consume and close the bounded response before deciding
+                # whether the status is transient. Deterministic client errors
+                # fail fast; common timeout, throttling, and server statuses
+                # retry within the same attempt budget as transport errors.
+                raw_body = _read_tts_response_bytes(response, label="Gemini TTS")
+                if (
+                    response.status_code in retryable_statuses
+                    and attempt < max_attempts
+                ):
+                    delay = retry_delay
+                    retry_after = parse_retry_after_seconds(
+                        getattr(response, "headers", {})
+                    )
+                    if retry_after is not None:
+                        # Bound an upstream-controlled delay to one minute.
+                        delay = min(60.0, retry_after)
+                    logger.warning(
+                        "Gemini TTS request attempt %d/%d returned retryable HTTP %d",
+                        attempt,
+                        max_attempts,
+                        response.status_code,
+                    )
+                    if delay:
+                        time.sleep(delay)
+                    continue
+                try:
+                    if raw_body:
+                        err = json.loads(raw_body.decode("utf-8")).get("error", {})
+                    elif (
+                        not _response_has_explicit_stream(response)
+                        and callable(getattr(response, "json", None))
+                    ):
+                        err = response.json().get("error", {})
+                    else:
+                        err = {}
+                    detail = (
+                        err.get("message")
+                        or raw_body.decode("utf-8", errors="replace")[:300]
+                    )
+                except Exception:
+                    detail = raw_body.decode("utf-8", errors="replace")[:300]
+                raise RuntimeError(
+                    f"Gemini TTS API error (HTTP {response.status_code}): {detail}"
+                )
+
+            # Consume the streamed response inside the retry boundary. With
+            # stream=True, read timeouts happen here rather than in post().
+            data = _read_tts_response_json(response, label="Gemini TTS")
+            break
+        except requests.RequestException as exc:
+            if response is not None:
+                _close_response(response)
+            logger.warning(
+                "Gemini TTS request attempt %d/%d failed (%s)",
+                attempt,
+                max_attempts,
+                type(exc).__name__,
+            )
+            if attempt < max_attempts and retry_delay:
+                time.sleep(retry_delay)
+
+    if data is None:
         raise RuntimeError(
-            f"Gemini TTS API error (HTTP {response.status_code}): {detail}"
+            f"Gemini TTS failed after {max_attempts} attempts due to transport errors"
         )
 
     try:
-        data = _read_tts_response_json(response, label="Gemini TTS")
         parts = data["candidates"][0]["content"]["parts"]
         audio_part = next((p for p in parts if "inlineData" in p or "inline_data" in p), None)
         if audio_part is None:

@@ -32,7 +32,10 @@ class TestResolveMaxTextLength:
         assert _resolve_max_text_length("mistral", {}) == PROVIDER_MAX_TEXT_LENGTH["mistral"]
 
     def test_gemini_default(self):
-        assert _resolve_max_text_length("gemini", {}) == PROVIDER_MAX_TEXT_LENGTH["gemini"]
+        # Gemini's 32k-token context is not a practical one-shot audio limit:
+        # multi-thousand-character generations repeatedly exceeded the 60s
+        # response deadline in production. Keep each synthesis bounded.
+        assert _resolve_max_text_length("gemini", {}) == 2000
 
     def test_unknown_provider_falls_back(self):
         assert _resolve_max_text_length("does-not-exist", {}) == FALLBACK_MAX_TEXT_LENGTH
@@ -114,6 +117,40 @@ class TestTextToSpeechToolChunking:
         assert result["success"] is True
         # xAI should accept the full 12000 chars in a single chunk
         assert len(captured_text["text"]) == 12000
+
+    def test_gemini_splits_long_reply_without_dropping_text(self, tmp_path, monkeypatch):
+        # Mirrors the 2707-character Aug 19 auto-TTS failure.
+        text = "D" * 2707
+        captured_text = []
+
+        def fake_gemini(t, out, cfg):
+            captured_text.append(t)
+            with open(out, "wb") as f:
+                f.write(b"\x00")
+            return out
+
+        def fake_combine(paths, output_path, *, voice_compatible=False):
+            with open(output_path, "wb") as destination:
+                for path in paths:
+                    with open(path, "rb") as source:
+                        destination.write(source.read())
+            return output_path
+
+        monkeypatch.setattr("tools.tts_tool._generate_gemini_tts", fake_gemini)
+        monkeypatch.setattr("tools.tts_tool._concat_audio_files", fake_combine)
+        monkeypatch.setattr(
+            "tools.tts_tool._load_tts_config",
+            lambda: {"provider": "gemini"},
+        )
+
+        from tools.tts_tool import text_to_speech_tool
+        out = str(tmp_path / "out.mp3")
+        result = json.loads(text_to_speech_tool(text=text, output_path=out))
+
+        assert result["success"] is True
+        assert [len(chunk) for chunk in captured_text] == [2000, 707]
+        assert "".join(captured_text) == text
+        assert result["chunk_count"] == 2
 
     def test_user_override_is_respected(self, tmp_path, monkeypatch):
         # User says "cap openai at 100 chars" -- we must honor it

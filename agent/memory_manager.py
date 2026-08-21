@@ -87,24 +87,11 @@ def memory_provider_tools_enabled(
     memory_tool_present: bool = False,
 ) -> bool:
     """Return whether external memory-provider tools should be exposed."""
-    if disabled_toolsets and "memory" in disabled_toolsets:
-        return False
-    if memory_tool_present:
-        return True
-    if enabled_toolsets is None:
-        return True
-    if not enabled_toolsets:
-        return False
-    if "memory" in enabled_toolsets:
-        return True
-
-    try:
-        from toolsets import resolve_toolset
-
-        return any("memory" in resolve_toolset(name) for name in enabled_toolsets)
-    except Exception:
-        logger.debug("Failed to resolve enabled toolsets for memory-provider tools", exc_info=True)
-        return False
+    # External provider tools are independent from the legacy built-in
+    # ``memory`` toolset.  A provider may be the replacement for that toolset,
+    # so merely omitting ``memory`` from enabled_toolsets must not hide the
+    # provider surface.  An explicit disable remains authoritative.
+    return not (disabled_toolsets and "memory" in disabled_toolsets)
 
 
 def inject_memory_provider_tools(agent: Any) -> int:

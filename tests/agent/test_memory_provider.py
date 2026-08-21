@@ -1159,31 +1159,30 @@ class TestMemoryToolToolsetGate:
         assert tools == []
         assert names == set()
 
-    def test_empty_toolsets_blocks_injection(self):
-        """`platform_toolsets: telegram: []` must suppress memory tools. (#5544)"""
+    def test_empty_toolsets_still_inject_provider_tools(self):
+        """An empty legacy toolset selection must not hide provider tools."""
         mgr = self._mgr_with_tools("fact_store")
         tools, names = self._run_memory_injection([], mgr)
-        assert tools == []
-        assert names == set()
+        assert "fact_store" in names
+        assert any(t["function"]["name"] == "fact_store" for t in tools)
 
-    def test_toolsets_without_memory_blocks_injection(self):
-        """Toolsets that don't include memory must suppress injection."""
+    def test_toolsets_without_memory_still_inject_provider_tools(self):
+        """External providers do not depend on the legacy memory toolset."""
         mgr = self._mgr_with_tools("fact_store")
         tools, names = self._run_memory_injection(["terminal", "web"], mgr)
-        assert tools == []
-        assert names == set()
+        assert "fact_store" in names
+        assert any(t["function"]["name"] == "fact_store" for t in tools)
 
     def test_no_memory_manager_no_injection(self):
         """Gate is moot without a memory manager."""
         tools, names = self._run_memory_injection(None, None)
         assert tools == []
 
-    def test_multiple_schemas_all_blocked_together(self):
-        """When the gate is closed, no memory tools leak — not even partially."""
+    def test_multiple_schemas_all_injected_without_legacy_toolset(self):
+        """Provider schemas remain available when legacy memory is omitted."""
         mgr = self._mgr_with_tools("fact_store", "memory_search", "memory_add")
         tools, names = self._run_memory_injection(["terminal"], mgr)
-        assert tools == []
-        assert names == set()
+        assert names == {"fact_store", "memory_search", "memory_add"}
 
     def test_multiple_schemas_all_injected_when_enabled(self):
         """When the gate is open, every memory tool schema is injected."""

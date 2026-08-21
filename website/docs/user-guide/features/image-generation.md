@@ -168,6 +168,14 @@ image tool is reachable at all has also been reported to vary between
 accounts. If you need image generation to work deterministically, configure
 the **OpenAI** (API key), **FAL**, or **xAI** backend instead.
 
+### OpenAI API-key environment override
+
+The bundled OpenAI image backend reads `OPENAI_API_KEY` by default. To use a
+separate credential, set `image_gen.openai.key_env` to the name of the
+environment variable that holds that key. `image_gen.openai.api_key_env` is a
+backward-compatible alias. This applies to both image generation and editing;
+when the configured variable is absent, Hermes falls back to `OPENAI_API_KEY`.
+
 :::
 
 The active model's editing capability is surfaced in the tool description at

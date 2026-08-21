@@ -265,7 +265,7 @@ class TestResolveToolsetIncludeRegistry:
         finally:
             registry.deregister("__probe_registry_only_tool__")
 
-        assert static == {"terminal", "process"}, static
+        assert static == {"terminal", "process", "jobs"}, static
         # Registered into 'terminal' but not part of the static definition — it
         # must only appear in the merged view.
         assert "__probe_registry_only_tool__" in merged

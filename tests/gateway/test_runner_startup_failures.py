@@ -71,7 +71,11 @@ async def test_start_gateway_clears_stale_delegated_child_marker_before_boot(
     """Gateway startup is a role boundary, while importing its module is not."""
     import os
 
-    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+    from agent.delegation_context import (
+        DELEGATED_CHILD_ENV_MARKER,
+        delegated_child_context,
+        is_delegated_child_process_context,
+    )
     from gateway.run import start_gateway
 
     class BootObserved(RuntimeError):
@@ -88,10 +92,16 @@ async def test_start_gateway_clears_stale_delegated_child_marker_before_boot(
         observe_first_boot_step,
     )
 
-    with pytest.raises(BootObserved):
-        await start_gateway(config=GatewayConfig(), replace=False, verbosity=None)
+    with delegated_child_context():
+        assert is_delegated_child_process_context() is True
+
+        with pytest.raises(BootObserved):
+            await start_gateway(config=GatewayConfig(), replace=False, verbosity=None)
+
+        assert is_delegated_child_process_context() is False
 
     assert DELEGATED_CHILD_ENV_MARKER not in os.environ
+    assert is_delegated_child_process_context() is False
 
 
 @pytest.mark.asyncio
@@ -441,4 +451,3 @@ async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_
         await start_gateway(config=GatewayConfig(), replace=False, verbosity=0)
 
     assert exc_info.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
-

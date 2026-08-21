@@ -10744,7 +10744,9 @@ def _default_spawn(
     # Dispatcher workers are authoritative owners of the task identity set
     # below, not descendants of whichever conversation happened to launch the
     # dispatcher. Clear stale delegate_task lineage at this role boundary.
-    env.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+
+    env.pop(DELEGATED_CHILD_ENV_MARKER, None)
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import gateway.run as gateway_run
+from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
 from agent.i18n import t
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
@@ -235,7 +236,7 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
     monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
     monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
     monkeypatch.setenv("_HERMES_GATEWAY", "1")
-    monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", "1")
+    monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, "1")
     monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
 
     import hermes_cli._subprocess_compat as subprocess_compat
@@ -258,7 +259,7 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
     cmd, kwargs = popen_calls[0]
     assert cmd[-3:] == ["hermes", "gateway", "restart"]
     assert kwargs["env"].get("_HERMES_GATEWAY") is None
-    assert kwargs["env"].get("HERMES_DELEGATED_CHILD_CONTEXT") is None
+    assert kwargs["env"].get(DELEGATED_CHILD_ENV_MARKER) is None
     assert kwargs["env"]["VIRTUAL_ENV"] == str(venv_dir)
     assert str(site_packages) in kwargs["env"]["PYTHONPATH"].split(gateway_run.os.pathsep)
     assert kwargs["stdout"] is subprocess.DEVNULL
@@ -319,7 +320,7 @@ async def test_posix_detached_restart_scrubs_process_role_markers(monkeypatch):
     monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
     monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
     monkeypatch.setenv("_HERMES_GATEWAY", "1")
-    monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", "1")
+    monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, "1")
     monkeypatch.setattr(
         shutil,
         "which",
@@ -338,7 +339,7 @@ async def test_posix_detached_restart_scrubs_process_role_markers(monkeypatch):
     cmd, kwargs = popen_calls[0]
     assert cmd[:2] == ["/usr/bin/setsid", "bash"]
     assert kwargs["env"].get("_HERMES_GATEWAY") is None
-    assert kwargs["env"].get("HERMES_DELEGATED_CHILD_CONTEXT") is None
+    assert kwargs["env"].get(DELEGATED_CHILD_ENV_MARKER) is None
 
 
 # ── Shutdown notification tests ──────────────────────────────────────

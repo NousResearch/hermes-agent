@@ -137,6 +137,19 @@ def is_delegated_child_process_context() -> bool:
     )
 
 
+def clear_delegated_child_process_context() -> None:
+    """Clear child lineage at an explicit long-lived owner boundary.
+
+    Ordinary delegated subprocesses must retain both signals so their guards
+    remain fail-closed. A managed process role that becomes authoritative for
+    its own work may call this once at startup to discard inherited lineage.
+    """
+    import os
+
+    _DELEGATED_CHILD_CONTEXT.set(False)
+    os.environ.pop(DELEGATED_CHILD_ENV_MARKER, None)
+
+
 def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[str, str]:
     """Return *env* with dispatcher-only Kanban variables removed."""
     cleaned = dict(env)

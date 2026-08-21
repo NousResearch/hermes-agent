@@ -1593,9 +1593,12 @@ with open(calls, 'a') as f:
     f.write(json.dumps(sys.argv[1:]) + '\\n')
 home = os.environ['HERMES_HOME']
 con = sqlite3.connect(os.path.join(home, 'state.db'))
+con.execute('CREATE TABLE IF NOT EXISTS messages (session_id TEXT, role TEXT, content TEXT, tool_calls TEXT, timestamp REAL)')
 if '--resume' not in sys.argv:
     con.execute('INSERT INTO sessions (id, source, started_at, title) VALUES (?, ?, ?, ?)', ('sess-1', 'a2a', time.time(), None))
-    con.commit()
+# A healthy worker executes tools: record a tool result as execution evidence.
+con.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)", ('sess-1', 'tool', 'ok', time.time()))
+con.commit()
 print('fake reply')
 """)
         hermes.chmod(0o755)
@@ -1618,3 +1621,125 @@ print('fake reply')
         title = con.execute("SELECT title FROM sessions WHERE id='sess-1'").fetchone()[0]
         con.close()
         assert title == "a2a-dev-ctx-unsafe-value"
+
+
+class TestZeroToolHollowCompletionGuard:
+    """#90160 — forwarded A2A tasks must fail closed when the worker reply
+    shows zero tool calls.
+
+    A served agent that resolves to a text-only / completion-only model
+    (no tool-calling) still answers, but it executes nothing. Promoting such
+    a hollow reply to STATE_COMPLETED makes downstream automation treat
+    fabricated results as executed work, so the completion chokepoint requires
+    tool-call evidence from the worker session: zero tool messages → the task
+    is failed with an explicit reason instead of a hollow-but-green success.
+    """
+
+    @staticmethod
+    def _make_adapter_and_fake_hermes(monkeypatch, tmp_path, tool_evidence):
+        """Adapter + fake `hermes` subprocess writing a worker session whose
+        messages table has (tool_evidence=True) or lacks (False) tool rows."""
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+
+        profile_home = tmp_path / "profile"
+        profile_home.mkdir()
+        db = profile_home / "state.db"
+        import sqlite3
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, title TEXT)")
+        con.execute("CREATE TABLE messages (session_id TEXT, role TEXT, content TEXT, tool_calls TEXT, timestamp REAL)")
+        con.commit()
+        con.close()
+
+        fakebin = tmp_path / "bin"
+        fakebin.mkdir()
+        calls = tmp_path / "calls.jsonl"
+        hermes = fakebin / "hermes"
+        tool_insert = (
+            "con.execute(\"INSERT INTO messages (session_id, role, content, timestamp) "
+            "VALUES (?, ?, ?, ?)\", ('sess-1', 'tool', 'result ok', time.time()))\n"
+            if tool_evidence else ""
+        )
+        hermes.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os, sqlite3, sys, time\n"
+            "with open(os.environ['FAKE_HERMES_CALLS'], 'a') as f:\n"
+            "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "con = sqlite3.connect(os.path.join(os.environ['HERMES_HOME'], 'state.db'))\n"
+            "if '--resume' not in sys.argv:\n"
+            "    con.execute('INSERT INTO sessions (id, source, started_at, title) "
+            "VALUES (?, ?, ?, ?)', ('sess-1', 'a2a', time.time(), None))\n"
+            + tool_insert +
+            "con.commit()\n"
+            "print('fake reply')\n"
+        )
+        hermes.chmod(0o755)
+        monkeypatch.setenv("PATH", str(fakebin) + os.pathsep + os.environ.get("PATH", ""))
+        monkeypatch.setenv("FAKE_HERMES_CALLS", str(calls))
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(profile_home))
+
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
+            "agents": {"dev": {"profile": "dev", "tenant": "dev", "timeout": 5}}
+        }))
+        return adapter, adapter._agents["dev"]
+
+    def test_text_only_worker_zero_tool_reply_fails_closed(self, monkeypatch, tmp_path):
+        """(a) Zero tool calls + text-only worker → STATE_FAILED, not COMPLETED."""
+        adapter, agent = self._make_adapter_and_fake_hermes(monkeypatch, tmp_path, tool_evidence=False)
+        reply, state = adapter._forward_to_profile(agent, "peer", "ctx-1", "do the thing")
+        assert state == protocol.STATE_FAILED
+        assert "tool-execution-unavailable" in reply
+        assert "zero tool" in reply
+
+    def test_worker_reply_with_tool_calls_completes(self, monkeypatch, tmp_path):
+        """(b) Normal worker reply with tool calls still completes."""
+        adapter, agent = self._make_adapter_and_fake_hermes(monkeypatch, tmp_path, tool_evidence=True)
+        reply, state = adapter._forward_to_profile(agent, "peer", "ctx-1", "do the thing")
+        assert (reply, state) == ("fake reply", protocol.STATE_COMPLETED)
+
+    def test_zero_tool_forwarded_task_lands_failed_in_task_store(self, monkeypatch, tmp_path):
+        """The hollow completion never reaches the task store as COMPLETED and
+        counts as a failed task."""
+        adapter, agent = self._make_adapter_and_fake_hermes(monkeypatch, tmp_path, tool_evidence=False)
+        before_failed = protocol.metrics.tasks_failed
+        before_zero_tool = protocol.metrics.zero_tool_completions
+        terminal, pending = adapter._prepare_task(
+            {"tenant": "dev", "message": protocol.text_message(
+                protocol.ROLE_USER, "do the thing", context_id="ctx-1")},
+            "peer-x",
+            agent=agent,
+        )
+        assert pending is None
+        assert terminal["status"]["state"] == protocol.STATE_FAILED
+        assert "tool-execution-unavailable" in protocol.extract_text(terminal["status"]["message"])
+        assert adapter.tasks.get(terminal["id"])["state"] == protocol.STATE_FAILED
+        assert protocol.metrics.tasks_failed == before_failed + 1
+        assert protocol.metrics.zero_tool_completions == before_zero_tool + 1
+
+    def test_session_tool_evidence_helper(self, tmp_path):
+        from plugins.platforms.a2a.adapter import _session_has_tool_evidence
+
+        db = tmp_path / "state.db"
+        import sqlite3
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE messages (session_id TEXT, role TEXT, content TEXT, tool_calls TEXT, timestamp REAL)")
+        con.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES ('s1', 'assistant', 'hi', 100.0)")
+        con.execute("INSERT INTO messages (session_id, role, content, tool_calls, timestamp) VALUES ('s1', 'assistant', 'calling', '[{\"id\": \"c1\"}]', 110.0)")
+        con.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES ('s2', 'tool', 'result', 100.0)")
+        con.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES ('s3', 'assistant', 'plain', 100.0)")
+        con.execute("INSERT INTO messages (session_id, role, content, tool_calls, timestamp) VALUES ('s3', 'assistant', 'empty', '[]', 110.0)")
+        con.commit()
+        con.close()
+        # tool result rows count as evidence
+        assert _session_has_tool_evidence(str(db), "s2", 0.0) is True
+        # assistant tool_calls rows count as evidence
+        assert _session_has_tool_evidence(str(db), "s1", 0.0) is True
+        # no tool rows (and empty '[]' tool_calls) → no evidence
+        assert _session_has_tool_evidence(str(db), "s3", 0.0) is False
+        # evidence older than the `since` window does not count
+        assert _session_has_tool_evidence(str(db), "s2", 200.0) is False
+        # missing db / missing session fail closed
+        assert _session_has_tool_evidence(str(tmp_path / "nope.db"), "s1", 0.0) is False
+        assert _session_has_tool_evidence(str(db), "", 0.0) is False
+        assert _session_has_tool_evidence("", "s1", 0.0) is False

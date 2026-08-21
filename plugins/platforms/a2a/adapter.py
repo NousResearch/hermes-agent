@@ -128,6 +128,48 @@ def _safe_context_slug(value: str, max_len: int = 96) -> str:
     return (slug or "ctx")[:max_len]
 
 
+# Hollow-completion guard (#90160): reason returned when a forwarded worker's
+# reply shows no tool-call evidence. Kept as a constant so tests and callers
+# can match on the canonical reason string.
+_ZERO_TOOL_FAILURE_REASON = (
+    "[task failed: tool-execution-unavailable — the worker replied without "
+    "executing any tool calls (zero tool messages in the worker session), so "
+    "this is not a valid execution receipt; the served agent likely has no "
+    "tool-calling capability]"
+)
+
+
+def _session_has_tool_evidence(db_path: Optional[str], session_id: str, since: float) -> bool:
+    """True when the worker session shows tool-call evidence at/after ``since``.
+
+    Evidence is any ``role='tool'``/``role='function'`` result row or an
+    assistant message carrying non-empty ``tool_calls``. This is the
+    execution-receipt invariant for forwarded A2A tasks (#90160): a completed
+    task must mean the worker demonstrably executed tools. Any lookup problem
+    (missing DB/table/session, unreadable file) returns False so callers fail
+    closed instead of trusting an unverifiable reply.
+    """
+    if not db_path or not session_id:
+        return False
+    try:
+        con = sqlite3.connect(db_path, timeout=5)
+        try:
+            row = con.execute(
+                "SELECT COUNT(*) FROM messages "
+                "WHERE session_id = ? AND timestamp >= ? "
+                "AND (role IN ('tool', 'function') "
+                "     OR (role = 'assistant' AND tool_calls IS NOT NULL "
+                "         AND tool_calls != '' AND tool_calls != '[]'))",
+                (session_id, since),
+            ).fetchone()
+        finally:
+            con.close()
+        return bool(row and row[0] > 0)
+    except Exception:
+        logger.debug("A2A: tool-evidence check failed for session %s", session_id, exc_info=True)
+        return False
+
+
 def _method_info(method: str) -> tuple[str, bool]:
     """Return (canonical_operation, is_v1_method).
 
@@ -891,7 +933,25 @@ class A2AAdapter(BasePlatformAdapter):
                 if session_id:
                     self._profile_sessions[key] = session_id
                     self._title_forward_session(profile, session_id, session_title)
-            return security.redact_outbound((proc.stdout or "").strip()), protocol.STATE_COMPLETED
+            reply = security.redact_outbound((proc.stdout or "").strip())
+            # Fail closed on hollow completions (#90160): a forwarded worker's
+            # reply is only a valid execution receipt when its session shows
+            # tool-call evidence. A text-only / completion-only served agent
+            # cannot call tools but still answers — promoting that to
+            # STATE_COMPLETED makes downstream automation treat fabricated
+            # results as executed work. Zero tool messages → fail the task
+            # with an explicit reason instead of a hollow-but-green success.
+            if not _session_has_tool_evidence(
+                self._profile_state_db(profile), session_id, start - 2.0
+            ):
+                protocol.metrics.zero_tool_completions += 1
+                logger.warning(
+                    "A2A: forwarded task for context %s failed closed — zero "
+                    "tool-call evidence in worker session %r (profile %r)",
+                    context_id, session_id, profile,
+                )
+                return _ZERO_TOOL_FAILURE_REASON, protocol.STATE_FAILED
+            return reply, protocol.STATE_COMPLETED
 
     def _finalize_task(self, pending: dict, state: str, reply: str) -> tuple[str, str]:
         """Record the outcome of a dispatched task. Returns (state, reply) after

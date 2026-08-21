@@ -9,6 +9,7 @@ import ast
 import logging
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -25,24 +26,22 @@ PLATFORM_MAP = {
     "windows": "win32",
 }
 
-EXCLUDED_SKILL_DIRS = frozenset(
-    (
-        ".git",
-        ".github",
-        ".hub",
-        ".archive",
-        ".venv",
-        "venv",
-        "node_modules",
-        "site-packages",
-        "__pycache__",
-        ".tox",
-        ".nox",
-        ".pytest_cache",
-        ".mypy_cache",
-        ".ruff_cache",
-    )
-)
+EXCLUDED_SKILL_DIRS = frozenset((
+    ".git",
+    ".github",
+    ".hub",
+    ".archive",
+    ".venv",
+    "venv",
+    "node_modules",
+    "site-packages",
+    "__pycache__",
+    ".tox",
+    ".nox",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+))
 
 # Supporting files live inside a skill package and are loaded explicitly via
 # skill_view(skill, file_path=...). They are not standalone skills and must not
@@ -114,6 +113,7 @@ def is_excluded_skill_path(path, *, root: Optional[Path] = None) -> bool:
         parts = path.parts  # Path
     except AttributeError:
         from pathlib import PurePath
+
         parts = PurePath(str(path)).parts
     return any(part in EXCLUDED_SKILL_DIRS for part in parts) or is_skill_support_path(
         path, root=root
@@ -341,9 +341,7 @@ def _detect_environment(env: str) -> bool:
         # its runtime scaffolding under /run/s6 and ships its admin tree under
         # /package/admin/s6-overlay. Either marker means we're inside an
         # s6-supervised container.
-        result = os.path.isdir("/run/s6") or os.path.isdir(
-            "/package/admin/s6-overlay"
-        )
+        result = os.path.isdir("/run/s6") or os.path.isdir("/package/admin/s6-overlay")
 
     _ENV_DETECT_CACHE[env] = result
     return result
@@ -457,6 +455,7 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
         return set()
 
     from gateway.session_context import get_session_env
+
     resolved_platform = (
         platform
         or os.getenv("HERMES_PLATFORM")
@@ -696,6 +695,90 @@ def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     return None
 
 
+# Timeout for the one-shot ``git worktree list`` probe that canonicalizes trust
+# identity. Short by design: this runs at agent-build time on the session's
+# fixed cwd, and any git slowness must degrade to the plain-resolve fallback
+# rather than stall prompt construction.
+_GIT_IDENTITY_TIMEOUT_S = 2.0
+
+
+def _canonical_project_identity_str(root_str: str) -> str:
+    """Canonical trust identity for *root_str* (a resolved path string).
+
+    A path shares the first registered worktree's identity only when its
+    resolved root exactly matches a worktree reported by Git. This membership
+    check prevents a forged ``.git`` file from borrowing another repository's
+    trust. Git's repository-selection environment is stripped so process-level
+    variables cannot redirect the probe.
+
+    Submodules retain their own identity because their own worktree listing is
+    independent of the superproject. Registered checkouts of separate-git-dir
+    repositories work for the same reason: identity comes from Git's listed
+    checkout paths, not metadata directory naming or layout. An initializer
+    checkout omitted from that list stays fail-closed as its own identity.
+
+    Results are intentionally not process-cached. Cache safety comes from
+    callers resolving identity once while building an agent/session, so a later
+    session observes worktree removal or path replacement correctly.
+    """
+    fallback = str(Path(root_str).resolve())
+    git_env = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
+    try:
+        result = subprocess.run(
+            ["git", "-C", fallback, "worktree", "list", "--porcelain", "-z"],
+            capture_output=True,
+            timeout=_GIT_IDENTITY_TIMEOUT_S,
+            env=git_env,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return fallback
+    # A test double or a stripped-down subprocess shim may leave stdout as
+    # None; treat unreadable output exactly like a failed listing: fall back to
+    # path-specific trust (fail-closed), never raise into the trust check.
+    if result.returncode != 0 or result.stdout is None:
+        return fallback
+
+    worktrees: List[str] = []
+    for field in result.stdout.split(b"\0"):
+        if not field.startswith(b"worktree "):
+            continue
+        try:
+            path = os.fsdecode(field.removeprefix(b"worktree "))
+            worktrees.append(str(Path(path).resolve()))
+        except OSError:
+            return fallback
+
+    if not worktrees or fallback not in worktrees:
+        return fallback
+    return worktrees[0]
+
+
+def canonical_project_identity(root: Path) -> Path:
+    """Canonical trust principal shared by all worktrees of *root*'s repo.
+
+    Thin ``Path`` wrapper over :func:`_canonical_project_identity_str`. See
+    that function for the full contract and fallback rules.
+    """
+    try:
+        root_str = str(Path(root).resolve())
+    except OSError:
+        root_str = str(root)
+    return Path(_canonical_project_identity_str(root_str))
+
+
+def _resolve_project_trust_entry(entry: Any) -> Optional[Path]:
+    """Normalize one configured project-trust entry for reads and mutations."""
+    raw = str(entry).strip()
+    if not raw:
+        return None
+    try:
+        return Path(os.path.expanduser(os.path.expandvars(raw))).resolve()
+    except OSError:
+        return None
+
+
 def _project_trusted_dirs_from_config() -> Set[Path]:
     """Resolved set of trusted project roots from ``skills.trusted_project_dirs``."""
     parsed = _load_raw_config()
@@ -711,22 +794,29 @@ def _project_trusted_dirs_from_config() -> Set[Path]:
         return set()
     result: Set[Path] = set()
     for entry in raw:
-        entry = str(entry).strip()
-        if not entry:
-            continue
-        try:
-            result.add(Path(os.path.expanduser(os.path.expandvars(entry))).resolve())
-        except OSError:
-            continue
+        resolved = _resolve_project_trust_entry(entry)
+        if resolved is not None:
+            result.add(resolved)
     return result
 
 
 def is_project_root_trusted(root: Path) -> bool:
-    """True when *root* is listed in ``skills.trusted_project_dirs``."""
+    """True when *root* — or any git worktree of the same repo — is trusted.
+
+    Trust is keyed off the repository's canonical identity (the main checkout
+    root, via :func:`canonical_project_identity`) rather than the raw worktree
+    path, so running ``hermes skills trust`` in the main checkout OR in any
+    worktree of that repo covers all of them. Non-git paths and git failures
+    degrade to a plain resolved-path comparison (identity == resolved root).
+    """
     try:
-        return Path(root).resolve() in _project_trusted_dirs_from_config()
+        target = canonical_project_identity(root)
     except OSError:
         return False
+    trusted_identities = {
+        canonical_project_identity(t) for t in _project_trusted_dirs_from_config()
+    }
+    return target in trusted_identities
 
 
 def _candidate_project_skills_dirs(root: Path) -> List[Path]:
@@ -919,6 +1009,7 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     # module cycle (tools.skills_tool imports agent.skill_utils).
     try:
         from tools import skills_tool as _skills_tool
+
         primary_root = Path(_skills_tool.SKILLS_DIR)
     except Exception:
         primary_root = get_skills_dir()
@@ -1176,7 +1267,7 @@ def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
     if not desc:
         return ""
     if len(desc) > SKILL_PROMPT_DESC_LIMIT:
-        return desc[:SKILL_PROMPT_DESC_LIMIT - 3] + "..."
+        return desc[: SKILL_PROMPT_DESC_LIMIT - 3] + "..."
     return desc
 
 
@@ -1210,7 +1301,11 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     matches: list[str] = []
     for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
         has_skill_md = "SKILL.md" in files
-        if root == skills_dir_str and ORG_MIRROR_DIR_NAME in dirs and active_org is None:
+        if (
+            root == skills_dir_str
+            and ORG_MIRROR_DIR_NAME in dirs
+            and active_org is None
+        ):
             dirs.remove(ORG_MIRROR_DIR_NAME)
         elif root == org_root:
             # Inside _org/: descend ONLY into the active org's mirror.

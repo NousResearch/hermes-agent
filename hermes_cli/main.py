@@ -12311,6 +12311,8 @@ def _cmd_skills_trust(args):
     from agent.skill_utils import (
         PROJECT_SKILLS_SUBDIRS,
         _candidate_project_skills_dirs,
+        _resolve_project_trust_entry,
+        canonical_project_identity,
         find_project_root,
         iter_skill_index_files,
     )
@@ -12332,16 +12334,30 @@ def _cmd_skills_trust(args):
             )
             return
 
+    # Store the repository's CANONICAL identity (the main checkout root) rather
+    # than the raw worktree path, so trusting from any worktree covers every
+    # worktree of the same repo. For non-git paths / git failures this is a
+    # no-op (canonical identity == resolved root). Skills still load from each
+    # worktree's own checkout — only the trust key is canonicalized.
+    identity = canonical_project_identity(root)
+
     config = load_config()
     skills_cfg = config.setdefault("skills", {})
     trusted = skills_cfg.get("trusted_project_dirs") or []
     if not isinstance(trusted, list):
         trusted = [trusted]
     trusted = [str(t) for t in trusted]
-    root_str = str(root)
+    root_str = str(identity)
 
     if action == "untrust":
-        kept = [t for t in trusted if str(Path(t).expanduser().resolve()) != root_str]
+        kept = [
+            t
+            for t in trusted
+            if (
+                (resolved := _resolve_project_trust_entry(t)) is None
+                or str(canonical_project_identity(resolved)) != root_str
+            )
+        ]
         if len(kept) == len(trusted):
             print(f"{root} was not trusted.")
             return
@@ -12352,13 +12368,32 @@ def _cmd_skills_trust(args):
         return
 
     # trust
-    if any(str(Path(t).expanduser().resolve()) == root_str for t in trusted):
-        print(f"Already trusted: {root}")
+    equivalent = [
+        t
+        for t in trusted
+        if (
+            (resolved := _resolve_project_trust_entry(t)) is not None
+            and str(canonical_project_identity(resolved)) == root_str
+        )
+    ]
+    if equivalent:
+        canonical_trusted = [t for t in trusted if t not in equivalent]
+        canonical_trusted.append(root_str)
+        if canonical_trusted != trusted:
+            skills_cfg["trusted_project_dirs"] = canonical_trusted
+            save_config(config)
+            print(f"Trusted: {root}")
+            if identity != root.resolve():
+                print(f"(stored canonical repo identity: {identity})")
+        else:
+            print(f"Already trusted: {root}")
     else:
         trusted.append(root_str)
         skills_cfg["trusted_project_dirs"] = trusted
         save_config(config)
         print(f"Trusted: {root}")
+        if identity != root.resolve():
+            print(f"(stored canonical repo identity: {identity})")
 
     # Show what this unlocks
     count = 0

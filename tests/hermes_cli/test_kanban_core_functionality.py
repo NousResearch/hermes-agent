@@ -1312,6 +1312,21 @@ def _drive_protocol_violation(conn, tid, fake_pid):
     return _drive_worker_exit(conn, tid, fake_pid, 0)
 
 
+@pytest.fixture(autouse=True)
+def _reset_goal_recovery_side_channel():
+    """Reset the module-level ``_last_spawned`` side channel between
+    tests so each test sees a clean slate. The helper stashes spawned
+    recovery card ids on the function object (mirrors how
+    ``detect_crashed_workers`` stashes ``_last_auto_blocked`` /
+    ``_last_rate_limited``), so without this reset, test order would
+    leak into other tests' assertions.
+    """
+    import hermes_cli.kanban_db as _kb
+    _kb._spawn_goal_mode_recovery_card._last_spawned = []  # type: ignore[attr-defined]
+    yield
+    _kb._spawn_goal_mode_recovery_card._last_spawned = []  # type: ignore[attr-defined]
+
+
 def _drive_nonzero_crash(conn, tid, fake_pid):
     """One plain non-zero-exit crash reaper pass for ``tid``.
 
@@ -1364,6 +1379,252 @@ def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
         assert len(gave_up) == 1
         assert (gave_up[0].payload or {}).get("protocol_violations") == \
             _kb._PROTOCOL_VIOLATION_FAILURE_LIMIT
+    finally:
+        conn.close()
+
+
+def test_goal_mode_clean_exit_spawns_recovery_card(kanban_home, monkeypatch):
+    """A goal_mode=True task that hits the clean-exit violation streak
+    must spawn a single-shot recovery card (goal_mode=False) and block
+    the original — instead of looping the original through three more
+    clean-exit cycles until the unified breaker trips (retro
+    t_16a245cc).
+
+    Covers the dispatcher-side fix for the observed pattern on
+    t_ba114e5c (GATE-1) and t_f19de2f1 (GATE-3) where the goal-judge
+    loop nudged the same model that had already failed to emit
+    kanban_complete / kanban_block, yielding 13/14 crashed runs with
+    rc=0. After this fix, the second consecutive violation spawns
+    recovery + blocks the original; the third violation (which would
+    have tripped the breaker) never lands because the task is already
+    blocked.
+    """
+    import hermes_cli.kanban_db as _kb
+    # Pin the recovery streak to 2 (the default) so the test asserts the
+    # documented behaviour, not whatever env the caller has set.
+    monkeypatch.setenv("HERMES_KANBAN_GOAL_RECOVERY_STREAK", "2")
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="GATE-1 acceptance",
+            assignee="worker",
+            goal_mode=True,
+            body="Acceptance: gate validates the JSON contract.",
+            workspace_kind="worktree",
+            workspace_path="/tmp/fake-worktree",
+            branch_name="z-devops/t_16a245cc-fixture",
+        )
+
+        # 1st violation: streak == 1, below threshold, original stays
+        # ``ready`` for retry — no recovery card yet.
+        _drive_protocol_violation(conn, tid, 992001)
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready", (
+            "first violation must still retry, not spawn recovery"
+        )
+        assert (
+            getattr(
+                _kb._spawn_goal_mode_recovery_card,
+                "_last_spawned",  # type: ignore[attr-defined]
+            )
+        ) == [], "no recovery card should be spawned yet"
+
+        # 2nd violation: streak == 2, hits recovery threshold, recovery
+        # card spawned + original blocked.
+        _drive_protocol_violation(conn, tid, 992002)
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked", (
+            f"after 2nd violation the original must be blocked, "
+            f"got {task.status!r}"
+        )
+        spawned = list(
+            getattr(_kb._spawn_goal_mode_recovery_card, "_last_spawned", [])
+        )
+        assert len(spawned) == 1, (
+            f"exactly one recovery card expected, got {len(spawned)}"
+        )
+        recovery_id = spawned[-1]["recovery"]
+        assert spawned[-1]["original"] == tid
+
+        # The recovery card has the right shape: goal_mode=False,
+        # assignee inherited, branch inherited, and the body points the
+        # worker at closing the original.
+        recovery = kb.get_task(conn, recovery_id)
+        assert recovery is not None, "recovery card must exist"
+        assert recovery.goal_mode is False, (
+            "recovery card must be single-shot (goal_mode=False) — "
+            "goal-judge is exactly what was looping the original"
+        )
+        assert recovery.assignee == "worker"
+        assert recovery.workspace_kind == "worktree"
+        assert recovery.branch_name == "z-devops/t_16a245cc-fixture"
+        assert recovery.status == "ready", (
+            "recovery card must be dispatched immediately, not queued"
+        )
+        assert "recovery" in (recovery.title or "").lower()
+        assert "auto" in (recovery.title or "").lower(), (
+            "title must include 'auto' marker so users can filter "
+            "dispatcher-spawned recovery cards in the board UI"
+        )
+        assert (
+            recovery.created_by
+            == _kb._GOAL_MODE_RECOVERY_CREATED_BY
+        ), "recovery created_by marker is the recovery-of-recovery guard"
+        assert f"`{tid}`" in (recovery.body or ""), (
+            "recovery body must reference the original task id"
+        )
+        assert "kanban complete" in (recovery.body or "").lower(), (
+            "recovery body must instruct the worker to call "
+            "kanban_complete on the original"
+        )
+
+        # Recovery event recorded on the original.
+        recovery_events = [
+            e for e in kb.list_events(conn, tid)
+            if e.kind == "goal_mode_recovery_spawned"
+        ]
+        assert len(recovery_events) == 1
+        payload = recovery_events[0].payload or {}
+        assert payload.get("recovery_id") == recovery_id
+        assert payload.get("streak") == 2
+
+        # A redundant 3rd violation must NOT spawn a second recovery
+        # card (idempotency_key) — the original is already blocked, so
+        # the helper's idempotency pre-check returns the existing
+        # recovery id without writing a second card.
+        result = _kb._spawn_goal_mode_recovery_card(conn, tid, streak=3)
+        assert result == recovery_id, (
+            "a 3rd violation must NOT spawn another recovery "
+            "(idempotency), got a different recovery id"
+        )
+        spawned2 = list(
+            getattr(_kb._spawn_goal_mode_recovery_card, "_last_spawned", [])
+        )
+        assert len(spawned2) == 1, (
+            f"a 3rd violation must NOT append to _last_spawned "
+            f"(idempotency), got {len(spawned2)}"
+        )
+        # Original has a single ``gave_up``? No — we blocked it via
+        # ``block_task`` (needs_input), not via the unified breaker. So
+        # there should be NO ``gave_up`` event on the original.
+        gave_up = [
+            e for e in kb.list_events(conn, tid) if e.kind == "gave_up"
+        ]
+        assert gave_up == [], (
+            f"recovery already blocked the original via block_task; "
+            f"the unified breaker must not have been called, but "
+            f"gave_up events landed: {gave_up}"
+        )
+    finally:
+        conn.close()
+
+
+def test_goal_mode_recovery_skips_non_goal_mode_tasks(kanban_home, monkeypatch):
+    """The recovery helper must not block / spawn for non-goal-mode
+    tasks — those follow the existing violation-streak + breaker
+    flow unchanged (the original retro's regression boundary).
+    """
+    import hermes_cli.kanban_db as _kb
+    monkeypatch.setenv("HERMES_KANBAN_GOAL_RECOVERY_STREAK", "2")
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="plain task", assignee="worker",
+            goal_mode=False,
+        )
+
+        # Three clean-exit violations: streak walks 1 → 2 → 3.
+        # At streak == 2 the helper MUST NOT spawn recovery (goal_mode
+        # off), so the 3rd violation trips the breaker as it always did.
+        _drive_protocol_violation(conn, tid, 993001)
+        _drive_protocol_violation(conn, tid, 993002)
+        # Helper invoked directly — should return None for goal_mode=False.
+        result = _kb._spawn_goal_mode_recovery_card(conn, tid, streak=2)
+        assert result is None, (
+            "non-goal-mode tasks must NOT spawn a recovery card"
+        )
+
+        _drive_protocol_violation(conn, tid, 993003)
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked", (
+            "non-goal-mode tasks must still trip the breaker on streak==3"
+        )
+        # No recovery event on the original.
+        recovery_events = [
+            e for e in kb.list_events(conn, tid)
+            if e.kind == "goal_mode_recovery_spawned"
+        ]
+        assert recovery_events == [], (
+            "non-goal-mode tasks must NOT emit goal_mode_recovery_spawned"
+        )
+    finally:
+        conn.close()
+
+
+def test_goal_mode_recovery_idempotent_on_repeat_dispatch(kanban_home, monkeypatch):
+    """Re-running detect_crashed_workers on a task whose recovery card
+    is already open must NOT spawn a second recovery card — the
+    idempotency_key on the recovery card keeps it singleton.
+    """
+    import hermes_cli.kanban_db as _kb
+    monkeypatch.setenv("HERMES_KANBAN_GOAL_RECOVERY_STREAK", "2")
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="repeat", assignee="worker", goal_mode=True,
+        )
+        _drive_protocol_violation(conn, tid, 994001)
+        _drive_protocol_violation(conn, tid, 994002)
+        spawned_first = list(
+            getattr(_kb._spawn_goal_mode_recovery_card, "_last_spawned", [])
+        )
+        assert len(spawned_first) == 1
+        recovery_id = spawned_first[-1]["recovery"]
+
+        # Force another violation pass (task is blocked, but we can
+        # still invoke the helper directly to test idempotency).
+        result = _kb._spawn_goal_mode_recovery_card(conn, tid, streak=2)
+        assert result == recovery_id, (
+            "second invocation must return the existing recovery id "
+            "(idempotency_key), not spawn a second card"
+        )
+        spawned_second = list(
+            getattr(_kb._spawn_goal_mode_recovery_card, "_last_spawned", [])
+        )
+        assert len(spawned_second) == 1, (
+            "second invocation must not append to _last_spawned"
+        )
+    finally:
+        conn.close()
+
+
+def test_goal_mode_recovery_skips_recovery_of_recovery(kanban_home, monkeypatch):
+    """A recovery card itself has goal_mode=False, but if its worker
+    ALSO exits cleanly the dispatcher must not spawn another recovery
+    (infinite-loop guard). The helper refuses via the ``created_by``
+    marker — verify the helper returns ``None`` for a recovery card.
+    """
+    import hermes_cli.kanban_db as _kb
+    monkeypatch.setenv("HERMES_KANBAN_GOAL_RECOVERY_STREAK", "2")
+    conn = kb.connect()
+    try:
+        # Direct-create a recovery card (bypassing the dispatcher) so
+        # we can drive the recovery-of-recovery case deterministically.
+        recovery_id = kb.create_task(
+            conn,
+            title="recovery (auto, goal-mode): fake original",
+            assignee="worker",
+            goal_mode=False,
+            created_by=_kb._GOAL_MODE_RECOVERY_CREATED_BY,
+            workspace_kind="scratch",
+        )
+        result = _kb._spawn_goal_mode_recovery_card(
+            conn, recovery_id, streak=2
+        )
+        assert result is None, (
+            "recovery-of-recovery must be refused (created_by marker)"
+        )
     finally:
         conn.close()
 

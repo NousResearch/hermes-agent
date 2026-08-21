@@ -8798,6 +8798,218 @@ _PROTOCOL_VIOLATION_FAILURE_LIMIT = 3
 # can only mean "way past the bound" anyway.
 _PROTOCOL_VIOLATION_SCAN_LIMIT = 50
 
+# When a ``goal_mode`` task hits a consecutive run of clean-exit protocol
+# violations, the goal-judge loop is by definition what is failing — the
+# worker keeps exiting cleanly without the model emitting
+# ``kanban_complete`` / ``kanban_block``. Empirically (retro
+# t_16a245cc, observed across GATE-1 / GATE-3 retries on the
+# rob_box_project board) the goal-judge rarely breaks the cycle on its own:
+# it nudges the same model that already failed to emit the terminal tool
+# call. Spawning a single-shot recovery card (goal_mode=False) with
+# explicit terminal-call instructions breaks the loop in one extra
+# dispatch — no manual nudge needed, no waiting for the full breaker trip
+# (which would block the original after 3 violations and strand the work).
+#
+# The threshold is intentionally one less than the breaker trip: at
+# streak=2 the dispatcher spawns recovery + blocks the original, so the
+# 3rd violation (which would have tripped the breaker) never lands — the
+# task is already ``blocked`` and the recovery card is the canonical
+# forward path. Override via env ``HERMES_KANBAN_GOAL_RECOVERY_STREAK``
+# for tests / emergency tunables.
+_GOAL_MODE_RECOVERY_STREAK_LIMIT = int(
+    os.environ.get("HERMES_KANBAN_GOAL_RECOVERY_STREAK", "2") or "2"
+)
+
+# ``created_by`` marker stamped on dispatcher-spawned recovery cards so
+# ``detect_crashed_workers`` can refuse to spawn a recovery-of-recovery
+# (which would loop forever if the recovery worker also exits cleanly).
+# Distinct from the regular ``"system"`` marker used elsewhere so future
+# tooling can filter goal-recovery specifically.
+_GOAL_MODE_RECOVERY_CREATED_BY = "system:goal-mode-recovery"
+
+
+def _spawn_goal_mode_recovery_card(
+    conn: sqlite3.Connection,
+    task_id: str,
+    streak: int,
+) -> Optional[str]:
+    """Spawn a single-shot recovery card for a goal-mode task stuck in a
+    clean-exit protocol-violation loop, and block the original.
+
+    Called from :func:`detect_crashed_workers` once the violation streak
+    crosses :data:`_GOAL_MODE_RECOVERY_STREAK_LIMIT` AND the task has
+    ``goal_mode=True`` AND was not itself spawned by this function (the
+    ``_GOAL_MODE_RECOVERY_CREATED_BY`` marker prevents recovery-of-recovery
+    loops).
+
+    The recovery card inherits the original task's workspace, branch,
+    project, assignee, priority, and ``max_runtime_seconds`` so the worker
+    lands in the same git tree and has the same operational budget. The
+    body is hand-written to break the loop by giving the worker an
+    explicit, terminal-tool-call-only job:
+
+    1. Inspect the original task's git history (``branch_name``) — the
+       worker may have committed everything it needed to.
+    2. ``hermes kanban complete <original_id>`` to close the original.
+    3. ``hermes kanban complete <recovery_id>`` to close itself.
+
+    Returns the recovery card's id, or ``None`` if creation was skipped
+    (already exists via idempotency_key, or ``goal_mode`` was already
+    off — the caller should never invoke us in that case but we guard
+    against it).
+
+    The original task is transitioned to ``blocked`` with
+    ``block_kind="needs_input"`` so the loop counter increments normally
+    and the recovery card (status ``ready``) is dispatched on the next
+    tick. The blocker ``reason`` makes the link to the spawned recovery
+    card visible in the board UI and in the original's event timeline.
+    """
+    row = conn.execute(
+        "SELECT * FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None:
+        return None  # task deleted mid-loop, nothing to recover
+    keys = set(row.keys())
+    goal_mode_flag = bool(row["goal_mode"]) if "goal_mode" in keys else False
+    if not goal_mode_flag:
+        # Caller should never invoke us for a non-goal-mode task, but
+        # defend anyway: do NOT spawn, do NOT block.
+        return None
+    if row["created_by"] == _GOAL_MODE_RECOVERY_CREATED_BY:
+        # Recovery-of-recovery guard. The recovery card itself ran
+        # goal_mode=False and still exited cleanly — let it block under
+        # the normal violation-streak rule instead of looping forever.
+        return None
+
+    assignee = row["assignee"]
+    workspace_kind = row["workspace_kind"]
+    workspace_path = row["workspace_path"]
+    branch_name = row["branch_name"]
+    project_id = row["project_id"] if "project_id" in keys else None
+    priority = int(row["priority"]) if row["priority"] is not None else 0
+    max_runtime_seconds = (
+        row["max_runtime_seconds"]
+        if "max_runtime_seconds" in keys
+        and row["max_runtime_seconds"] is not None
+        else None
+    )
+    title = row["title"] or task_id
+    original_body = row["body"] or ""
+    original_body_excerpt = (
+        (original_body[:400] + "…") if len(original_body) > 400
+        else original_body
+    )
+
+    # Idempotency: if a recovery card for this original is already open
+    # (e.g. the dispatcher crashed between spawn and block), do nothing
+    # — the existing card will continue to be the canonical forward
+    # path. Using ``idempotency_key`` (handled in ``create_task``) gives
+    # the same behaviour atomically; we also do an explicit pre-check
+    # so the body we emit reflects whether the work was already done.
+    idempotency_key = f"goal-mode-recovery:{task_id}"
+    existing = conn.execute(
+        "SELECT id FROM tasks WHERE idempotency_key = ? "
+        "AND status != 'archived' LIMIT 1",
+        (idempotency_key,),
+    ).fetchone()
+    if existing is not None:
+        return existing["id"]
+
+    branch_line = (
+        f"\n\n**Original branch:** `{branch_name}`\n"
+        "Inspect `git log <branch>` on this branch in the workspace — "
+        "the previous worker may have committed everything the task "
+        "needed. If the commits cover the body above, you can complete "
+        "the original task immediately without re-doing the work."
+        if branch_name
+        else "\n\nThe original task had no git branch — re-do the work "
+             "in the workspace and push as usual."
+    )
+    body = (
+        f"Auto-recovery for goal-mode task `{task_id}` "
+        f"(streak={streak} consecutive clean-exit protocol violations).\n\n"
+        f"**Original title:** {title}\n\n"
+        f"**Original body (excerpt):**\n"
+        f"```\n{original_body_excerpt}\n```\n"
+        f"{branch_line}\n\n"
+        "**Why this card exists:** the original worker kept exiting "
+        "cleanly (rc=0) without calling `kanban_complete` or "
+        "`kanban_block`. The dispatcher has now blocked the original; "
+        "your job is to close it.\n\n"
+        "**What to do (single-shot — `goal_mode=False`):**\n\n"
+        "1. Run `hermes kanban show " + task_id + "` to re-read the "
+        "original body, comments, and prior attempts.\n"
+        "2. Inspect `git log` on the original branch (see above). If "
+        "the work is already committed, skip to step 4.\n"
+        "3. Otherwise, finish the work in this workspace and push the "
+        "branch.\n"
+        "4. Close the ORIGINAL task: "
+        f"`hermes kanban complete {task_id} "
+        "--summary \"closed via auto-recovery <THIS_ID>\"`\n"
+        "5. Close THIS recovery card: "
+        "`hermes kanban complete <THIS_ID> --summary \"closed "
+        f"original {task_id}\"`\n\n"
+        "**Important:** step 4 is what unblocks the original; step 5 "
+        "is what closes this card. If you only do step 5, the original "
+        "stays blocked and the work is lost. If you skip both, the "
+        "dispatcher will retry this card under the normal violation-"
+        "streak rule (no infinite recovery loops — the original is "
+        "already blocked)."
+    )
+
+    recovery_id = create_task(
+        conn,
+        title=f"recovery (auto, goal-mode): {title}",
+        body=body,
+        assignee=assignee,
+        workspace_kind=workspace_kind,
+        workspace_path=workspace_path,
+        branch_name=branch_name,
+        project_id=project_id,
+        priority=priority,
+        max_runtime_seconds=max_runtime_seconds,
+        goal_mode=False,
+        created_by=_GOAL_MODE_RECOVERY_CREATED_BY,
+        idempotency_key=idempotency_key,
+    )
+
+    # Block the original so its violation streak stops accumulating
+    # against the unified breaker. ``needs_input`` is the closest fit:
+    # the original genuinely does need human-readable state ("auto-
+    # recovery spawned") and the loop counter increments normally so a
+    # pathological task that keeps spawning recoveries eventually
+    # escalates to ``triage`` instead of looping forever.
+    block_reason = (
+        f"auto-recovery spawned ({recovery_id}) after "
+        f"{streak} consecutive clean-exit protocol violations; "
+        "see recovery card to close the original"
+    )
+    block_task(
+        conn, task_id,
+        reason=block_reason,
+        kind="needs_input",
+    )
+
+    # Side-channel: dispatch_once / tests pick this up the same way they
+    # pick up ``_last_auto_blocked`` / ``_last_rate_limited``.
+    spawned = list(
+        getattr(_spawn_goal_mode_recovery_card, "_last_spawned", [])
+    )
+    spawned.append({"original": task_id, "recovery": recovery_id})
+    _spawn_goal_mode_recovery_card._last_spawned = spawned  # type: ignore[attr-defined]
+
+    _append_event(
+        conn, task_id, "goal_mode_recovery_spawned",
+        {
+            "recovery_id": recovery_id,
+            "streak": streak,
+            "limit": _GOAL_MODE_RECOVERY_STREAK_LIMIT,
+            "reason": "clean-exit protocol violation loop on goal_mode=True",
+        },
+        run_id=None,
+    )
+    return recovery_id
+
 
 def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     """Count the task's trailing run of clean-exit protocol violations.
@@ -9080,6 +9292,41 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     if task_override is not None
                     else _PROTOCOL_VIOLATION_FAILURE_LIMIT
                 )
+                # Goal-mode auto-recovery (retro t_16a245cc). When the
+                # task is goal_mode=True AND the streak has crossed the
+                # recovery threshold AND the task isn't itself a recovery
+                # card, spawn a single-shot recovery card and block the
+                # original. The spawned card closes the loop without
+                # waiting for the full breaker trip (which would block
+                # the original after 3 violations and strand the work).
+                # The recovery card has its own idempotency_key + a
+                # ``created_by`` marker so re-runs of this pass are safe
+                # — the recovery-of-recovery guard inside the helper
+                # refuses to spawn a second recovery, so we never loop.
+                # ``streak >= _GOAL_MODE_RECOVERY_STREAK_LIMIT`` may be
+                # true while the breaker would ALSO trip on this tick
+                # (``streak >= violation_limit``); we still ``continue``
+                # afterwards because the recovery helper has already
+                # blocked the task — letting the breaker also run would
+                # emit a redundant ``gave_up`` event and count the
+                # failure against the unified counter.
+                if streak >= _GOAL_MODE_RECOVERY_STREAK_LIMIT:
+                    task_row = conn.execute(
+                        "SELECT goal_mode, created_by FROM tasks WHERE id = ?",
+                        (tid,),
+                    ).fetchone()
+                    if (
+                        task_row is not None
+                        and bool(task_row["goal_mode"])
+                        and task_row["created_by"]
+                            != _GOAL_MODE_RECOVERY_CREATED_BY
+                    ):
+                        recovery_id = _spawn_goal_mode_recovery_card(
+                            conn, tid, streak,
+                        )
+                        if recovery_id is not None:
+                            auto_blocked.append(tid)
+                            continue
                 if streak < violation_limit:
                     # Below budget: the task is already back at ``ready``
                     # (respawn allowed) with ``last_failure_error`` stamped.

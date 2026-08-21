@@ -3,7 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $changeEventsAvailable, notifySessionsChanged, resetLiveSync } from '@/store/live-sync'
-import { $activeSessionId, $selectedStoredSessionId, setBusy, setMessagingSessions, setSessions } from '@/store/session'
+import {
+  $activeSessionId,
+  $selectedStoredSessionId,
+  setBusy,
+  setCronSessions,
+  setMessagingSessions,
+  setSessions
+} from '@/store/session'
 import {
   $attentionSessionIds,
   $stalledSessionIds,
@@ -128,6 +135,7 @@ afterEach(() => {
   $activeSessionId.set(null)
   $selectedStoredSessionId.set(null)
   setSessions([])
+  setCronSessions([])
   setMessagingSessions([])
   setBusy(false)
   vi.clearAllMocks()
@@ -238,6 +246,19 @@ describe('active transcript refresh', () => {
 })
 
 describe('reconcileActiveTranscript', () => {
+  it('resolves and hydrates a cron session from the cron sessions store', async () => {
+    setCronSessions([{ id: ACTIVE_STORED_ID, profile: 'cron-profile', source: 'cron' } as never])
+    const fixture = makeRefresh(resolveActiveTranscriptSession)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('cron progress') as never)
+
+    await fixture.refresh()
+
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(ACTIVE_STORED_ID, 'cron-profile')
+    expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.at(-1)?.parts[0]).toMatchObject({
+      text: 'cron progress'
+    })
+  })
+
   it('resolves and hydrates a messaging session from the messaging sessions store', async () => {
     setMessagingSessions([{ id: ACTIVE_STORED_ID, profile: 'messaging-profile', source: 'telegram' } as never])
     const fixture = makeRefresh(resolveActiveTranscriptSession)

@@ -12,6 +12,7 @@ import { refreshActiveProfile } from '@/store/profile'
 import {
   $activeSessionId,
   $busy,
+  $cronSessions,
   $currentCwd,
   $messagingSessions,
   $selectedStoredSessionId,
@@ -33,10 +34,11 @@ interface ActiveTranscriptSession {
   profile?: string | null
 }
 
-/** Resolve an active transcript from either local recents or messaging slices. */
+/** Resolve an active transcript from any independently paged sidebar slice. */
 export function resolveActiveTranscriptSession(storedSessionId: string): ActiveTranscriptSession | undefined {
   return (
     $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ??
+    $cronSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ??
     $messagingSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
   )
 }

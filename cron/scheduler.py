@@ -1072,6 +1072,68 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
     return [s[0] for s in stale]
 
 
+def _interrupted_job_output_doc(
+    job_id: str,
+    reason: str,
+    *,
+    artifact_scope: str = "durable-fire-owned",
+    durable_fire_owner: str = "registered",
+) -> str:
+    """Build the minimal cron output artifact for a shutdown-interrupted job."""
+    no_owner_note = ""
+    if artifact_scope == "best-effort-no-owner":
+        no_owner_note = (
+            "\nThis is a best-effort legacy artifact for a run whose durable fire "
+            "owner was not registered. It does not record a persisted run "
+            "status or fire claim.\n"
+        )
+    return f"""# Cron Job Interrupted
+
+**Job ID:** {job_id}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Status:** interrupted
+**Artifact Scope:** {artifact_scope}
+**Durable Fire Owner:** {durable_fire_owner}
+
+## Reason
+
+{reason}
+
+## Audit note
+
+The gateway shutdown path wrote this artifact after force-killing tool
+subprocesses for an in-flight cron job. The job's normal final response may be
+missing or truncated, so this file is the durable audit marker for the
+interrupted run.{no_owner_note}
+"""
+
+
+def _save_interrupted_job_output(
+    job_id: str,
+    reason: str,
+    *,
+    profile_home: Path,
+    artifact_scope: str,
+    durable_fire_owner: str,
+) -> None:
+    """Best-effort interrupted-output writer shared by shutdown branches."""
+    try:
+        with use_cron_store(profile_home):
+            save_job_output(
+                job_id,
+                _interrupted_job_output_doc(
+                    job_id,
+                    reason,
+                    artifact_scope=artifact_scope,
+                    durable_fire_owner=durable_fire_owner,
+                ),
+            )
+    except Exception as e:
+        logger.warning(
+            "Failed to save interrupted output for job %s: %s", job_id, e
+        )
+
+
 def mark_running_jobs_interrupted(
     reason: str,
     *,
@@ -1097,6 +1159,11 @@ def mark_running_jobs_interrupted(
     set by ``GatewayRunner._interrupt_running_agents``, which interrupts
     every entry in ``_running_agents`` on a drain timeout without
     per-agent correlation either.
+
+    Also writes a minimal cron output artifact before updating ``last_status``.
+    That preserves an auditable output file in the owning cron store even when
+    shutdown interrupts the worker before ``run_one_job`` reaches its normal
+    ``save_job_output`` step.
 
     ``only_owners``: optional set of ``(job_id, fire_owner)`` pairs. When
     given (dashboard webhook drain), ONLY those exact executions are
@@ -1131,9 +1198,16 @@ def mark_running_jobs_interrupted(
     marked = []
     for _token, job_id, fire_owner, profile_home in active_fires:
         if not fire_owner:
+            _save_interrupted_job_output(
+                job_id,
+                reason,
+                profile_home=profile_home,
+                artifact_scope="best-effort-no-owner",
+                durable_fire_owner="missing",
+            )
             logger.warning(
                 "Job '%s' interrupted before its durable fire owner was registered; "
-                "leaving persisted state untouched",
+                "leaving persisted run state untouched",
                 job_id,
             )
             # Still report the interruption to the caller: the gateway
@@ -1145,6 +1219,13 @@ def mark_running_jobs_interrupted(
             continue
         try:
             with use_cron_store(profile_home):
+                _save_interrupted_job_output(
+                    job_id,
+                    reason,
+                    profile_home=profile_home,
+                    artifact_scope="durable-fire-owned",
+                    durable_fire_owner="registered",
+                )
                 if mark_job_run(
                     job_id,
                     False,

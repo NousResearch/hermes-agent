@@ -83,10 +83,19 @@ class TestMarkRunningJobsInterrupted:
             }
         )
 
-        with patch("cron.scheduler.mark_job_run", return_value=True) as mock_mark:
+        with patch("cron.scheduler.save_job_output") as mock_save, \
+             patch("cron.scheduler.mark_job_run", return_value=True) as mock_mark:
             marked = sched.mark_running_jobs_interrupted("gateway shutdown (final-cleanup)")
 
         assert sorted(marked) == ["job-1", "job-2"]
+        assert mock_save.call_count == 2
+        saved_ids = {c.args[0] for c in mock_save.call_args_list}
+        assert saved_ids == {"job-1", "job-2"}
+        for c in mock_save.call_args_list:
+            assert "# Cron Job Interrupted" in c.args[1]
+            assert f"**Job ID:** {c.args[0]}" in c.args[1]
+            assert "**Status:** interrupted" in c.args[1]
+            assert "gateway shutdown (final-cleanup)" in c.args[1]
         assert mock_mark.call_count == 2
         called_ids = {c.args[0] for c in mock_mark.call_args_list}
         assert called_ids == {"job-1", "job-2"}
@@ -101,10 +110,45 @@ class TestMarkRunningJobsInterrupted:
 
         sched._running_job_ids.add("job-1")
 
-        with patch("cron.scheduler.mark_job_run"):
+        with patch("cron.scheduler.save_job_output"), \
+             patch("cron.scheduler.mark_job_run"):
             sched.mark_running_jobs_interrupted("shutdown")
 
         assert "job-1" in sched._interrupted_job_ids
+
+    def test_legacy_no_owner_output_is_distinguished_from_registered_runs(self):
+        import cron.scheduler as sched
+
+        sched._running_job_ids.add("legacy-job")
+
+        with patch("cron.scheduler.save_job_output") as mock_save, \
+             patch("cron.scheduler.mark_job_run") as mock_mark:
+            marked = sched.mark_running_jobs_interrupted("shutdown")
+
+        assert marked == ["legacy-job"]
+        mock_mark.assert_not_called()
+        mock_save.assert_called_once()
+        assert mock_save.call_args.args[0] == "legacy-job"
+        output_doc = mock_save.call_args.args[1]
+        assert "**Artifact Scope:** best-effort-no-owner" in output_doc
+        assert "**Durable Fire Owner:** missing" in output_doc
+        assert "does not record a persisted run status or fire claim" in output_doc
+
+    def test_output_save_failure_does_not_block_last_status_mark(self):
+        """The shutdown path should still mark the job failed even if the
+        best-effort interrupted-output audit file cannot be written."""
+        import cron.scheduler as sched
+
+        sched._running_job_ids.add("job-1")
+        profile_home = sched._get_hermes_home().resolve()
+        sched._running_fire_owners["job-1"] = {object(): ("owner-1", profile_home)}
+
+        with patch("cron.scheduler.save_job_output", side_effect=OSError("disk full")), \
+             patch("cron.scheduler.mark_job_run", return_value=True) as mock_mark:
+            marked = sched.mark_running_jobs_interrupted("shutdown")
+
+        assert marked == ["job-1"]
+        mock_mark.assert_called_once()
 
     def test_one_job_marking_failure_does_not_block_the_others(self):
         """mark_job_run raising for one job (e.g. a jobs.json write race)
@@ -126,7 +170,8 @@ class TestMarkRunningJobsInterrupted:
                 raise OSError("disk full")
             return True
 
-        with patch("cron.scheduler.mark_job_run", side_effect=_side_effect):
+        with patch("cron.scheduler.save_job_output"), \
+             patch("cron.scheduler.mark_job_run", side_effect=_side_effect):
             marked = sched.mark_running_jobs_interrupted("shutdown")
 
         assert marked == ["job-2"]

@@ -6286,6 +6286,16 @@ class BasePlatformAdapter(ABC):
             max_ms = 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
 
+    def _preserve_pending_for_gateway_restart(self) -> bool:
+        """Leave drain-time follow-ups queued for replacement recovery."""
+        runner = getattr(self, "gateway_runner", None)
+        queue_during_drain = getattr(runner, "_queue_during_drain_enabled", None)
+        return bool(
+            getattr(runner, "_draining", False)
+            and callable(queue_during_drain)
+            and queue_during_drain()
+        )
+
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         # Track delivery outcomes for the processing-complete hook
@@ -6824,8 +6834,13 @@ class BasePlatformAdapter(ABC):
             # this task hand off the follow-up.
             await self._flush_text_debounce_now(session_key)
 
-            # Check if there's a pending message that was queued during our processing
-            if session_key in self._pending_messages:
+            # Check if there's a pending message that was queued during our processing.
+            # During a queued restart drain, teardown owns this event and persists it
+            # for the replacement gateway instead of this process starting another turn.
+            if (
+                not self._preserve_pending_for_gateway_restart()
+                and session_key in self._pending_messages
+            ):
                 pending_event = self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 # Keep the _active_sessions entry live across the turn chain
@@ -6957,7 +6972,9 @@ class BasePlatformAdapter(ABC):
             # busy-handler path.  Without this block, we would delete the
             # active-session entry and the queued message would be silently
             # dropped (user never gets a reply).
-            late_pending = self._pending_messages.pop(session_key, None)
+            late_pending = None
+            if not self._preserve_pending_for_gateway_restart():
+                late_pending = self._pending_messages.pop(session_key, None)
             if late_pending is not None:
                 current_task = asyncio.current_task()
                 existing_task = self._session_tasks.get(session_key)

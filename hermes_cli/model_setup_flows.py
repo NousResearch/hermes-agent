@@ -2700,12 +2700,14 @@ def _model_flow_vertex(config, current_model=""):
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
     ]
+    if region == "global":
+        vertex_host = "aiplatform.googleapis.com"
+    elif region in {"us", "eu"}:
+        vertex_host = f"aiplatform.{region}.rep.googleapis.com"
+    else:
+        vertex_host = f"{region}-aiplatform.googleapis.com"
     base_url_preview = (
-        "https://aiplatform.googleapis.com/v1beta1/projects/<project>/"
-        f"locations/{region}/endpoints/openapi"
-        if region == "global"
-        else f"https://{region}-aiplatform.googleapis.com/v1beta1/projects/<project>/"
-        f"locations/{region}/endpoints/openapi"
+        f"https://{vertex_host}/v1beta1/projects/<project>/locations/{region}/endpoints/openapi"
     )
     selected = _prompt_model_selection(
         model_list,

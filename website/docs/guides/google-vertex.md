@@ -80,6 +80,7 @@ vertex:
    https://aiplatform.googleapis.com/v1beta1/projects/{project}/locations/{region}/endpoints/openapi
    ```
    Regional locations use a `{region}-aiplatform.googleapis.com` host instead.
+   The `us` and `eu` multi-regions use `aiplatform.{region}.rep.googleapis.com`.
 4. If a session runs longer than the token lifetime and a request returns `401`, Hermes re-mints the token and retries automatically. On a long-running gateway, if ADC's refresh token has itself expired, Hermes falls back to the service-account JSON when one is configured.
 
 ## Available Models

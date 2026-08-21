@@ -191,11 +191,17 @@ def build_vertex_base_url(project_id: str, region: str = DEFAULT_REGION) -> str:
     """Build the OpenAI-compatible base URL for Vertex AI.
 
     The `global` location uses a bare `aiplatform.googleapis.com` hostname,
-    while regional locations use `{region}-aiplatform.googleapis.com`.
+    the `us` and `eu` multi-regions use `aiplatform.{region}.rep.googleapis.com`,
+    and regional locations use `{region}-aiplatform.googleapis.com`.
     Gemini 3.x preview models are only served via the global endpoint at
     the time of writing.
     """
-    host = "aiplatform.googleapis.com" if region == "global" else f"{region}-aiplatform.googleapis.com"
+    if region == "global":
+        host = "aiplatform.googleapis.com"
+    elif region in {"us", "eu"}:
+        host = f"aiplatform.{region}.rep.googleapis.com"
+    else:
+        host = f"{region}-aiplatform.googleapis.com"
     return f"https://{host}/v1beta1/projects/{project_id}/locations/{region}/endpoints/openapi"
 
 

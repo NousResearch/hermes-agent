@@ -1242,6 +1242,145 @@ show_manual_install_hint() {
 # Installation
 # ============================================================================
 
+recover_diverged_update() {
+    local remote_ref="$1"
+    local fork_point local_commits bounded_commits merge_commits merge_commit merge_payload
+    local count_dir count_file count_status first_status second_record second_status
+
+    # remote_ref..HEAD is unsafe after a force-push because it includes old
+    # upstream commits that the remote intentionally discarded. The tracking
+    # ref's reflog identifies the old upstream tip; without it, fail closed.
+    if ! fork_point="$(git merge-base --fork-point "$remote_ref" HEAD)" || [ -z "$fork_point" ]; then
+        log_error "Could not determine the previous upstream fork point; refusing to rewrite HEAD."
+        return 1
+    fi
+    # Command substitution strips every trailing newline, so it cannot
+    # distinguish Git's single record from a valid-looking first record plus
+    # trailing empty records. Preserve the exact output in a securely created
+    # file, then unlink it as soon as a dedicated descriptor is open.
+    count_dir="${TMPDIR:-/tmp}"
+    if ! count_file="$(mktemp "$count_dir/hermes-commit-count.XXXXXXXXXX")"; then
+        log_error "Could not create temporary storage for the locally carried commit count."
+        return 1
+    fi
+    if ! exec 8>"$count_file"; then
+        rm -f "$count_file"
+        log_error "Could not write the locally carried commit count."
+        return 1
+    fi
+    if ! exec 9<"$count_file"; then
+        exec 8>&-
+        rm -f "$count_file"
+        log_error "Could not read the locally carried commit count."
+        return 1
+    fi
+    if ! rm -f "$count_file"; then
+        exec 8>&-
+        exec 9<&-
+        rm -f "$count_file"
+        log_error "Could not remove temporary commit-count storage."
+        return 1
+    fi
+
+    # Both descriptors now refer to an already-unlinked file: neither command
+    # failure nor an interrupt can leak the temporary pathname.
+    if git rev-list --count "$fork_point..HEAD" >&8; then
+        count_status=0
+    else
+        count_status=$?
+    fi
+    exec 8>&-
+    if [ "$count_status" -ne 0 ]; then
+        exec 9<&-
+        log_error "Could not determine whether HEAD contains locally carried commits."
+        return "$count_status"
+    fi
+
+    # A genuine count is exactly one nonempty record; its final newline is
+    # optional, matching Python and PowerShell (whose native line capture
+    # cannot distinguish it). At EOF, read returns nonzero but still preserves
+    # an unterminated first record, so reject only when that record is empty.
+    local_commits=""
+    if IFS= read -r local_commits <&9; then
+        first_status=0
+    else
+        first_status=$?
+    fi
+    if [ "$first_status" -ne 0 ] && { [ "$first_status" -ne 1 ] || [ -z "$local_commits" ]; }; then
+        exec 9<&-
+        log_error "Could not parse the locally carried commit count; refusing to rewrite HEAD."
+        return 1
+    fi
+    # A second read must still reach EOF with no partial data, rejecting an
+    # empty, complete, or unterminated second record.
+    second_record=""
+    if IFS= read -r second_record <&9; then
+        second_status=0
+    else
+        second_status=$?
+    fi
+    exec 9<&-
+    if [ "$second_status" -eq 0 ] || [ -n "$second_record" ]; then
+        log_error "Could not parse the locally carried commit count; refusing to rewrite HEAD."
+        return 1
+    fi
+    case "$local_commits" in
+        ''|*[!0-9]*)
+            log_error "Could not parse the locally carried commit count; refusing to rewrite HEAD."
+            return 1
+            ;;
+    esac
+
+    # Shared lexical contract: the raw record is 1..9 ASCII digits. Check raw
+    # length before arithmetic so 10+ digit zero padding is rejected everywhere;
+    # nine digits inherently represent a value no greater than 999999999.
+    if [ "${#local_commits}" -gt 9 ]; then
+        log_error "Locally carried commit count exceeds the safe limit; refusing to rewrite HEAD."
+        return 1
+    fi
+
+    # Strip leading zeroes only after the shared spelling bound is established,
+    # avoiding octal interpretation when testing the numeric value in the shell.
+    bounded_commits="$local_commits"
+    while [ "${bounded_commits#0}" != "$bounded_commits" ]; do
+        bounded_commits="${bounded_commits#0}"
+    done
+    [ -n "$bounded_commits" ] || bounded_commits=0
+    if [ "$bounded_commits" -eq 0 ]; then
+        git reset --hard "$remote_ref"
+        return $?
+    fi
+
+    # --rebase-merges preserves safe topology, but Git recreates merges and can
+    # silently omit content present in neither parent. Reject such merge-only
+    # payload before changing HEAD; the user can preserve it manually.
+    if ! merge_commits="$(git rev-list --merges "$fork_point..HEAD")"; then
+        log_error "Could not inspect carried merge commits; refusing to rewrite HEAD."
+        return 1
+    fi
+    for merge_commit in $merge_commits; do
+        if ! merge_payload="$(git diff-tree --cc --no-commit-id --name-only -r "$merge_commit")"; then
+            log_error "Could not inspect carried merge content; refusing to rewrite HEAD."
+            return 1
+        fi
+        if [ -n "$merge_payload" ]; then
+            log_error "Carried history contains merge-only content; refusing an automatic rebase that could lose it."
+            return 1
+        fi
+    done
+
+    log_info "Preserving $local_commits locally carried commit(s) and merge topology onto $remote_ref..."
+    if git rebase --rebase-merges --onto "$remote_ref" "$fork_point"; then
+        return 0
+    fi
+
+    log_error "Rebase conflicted; aborting so the original checkout is restored."
+    if ! git rebase --abort; then
+        log_error "Could not abort the conflicted rebase. Recover the checkout manually before retrying."
+    fi
+    return 1
+}
+
 clone_repo() {
     log_info "Installing to $INSTALL_DIR..."
 
@@ -1292,13 +1431,15 @@ clone_repo() {
             git remote set-branches origin "$BRANCH" 2>/dev/null || true
             git fetch origin "$BRANCH"
             git checkout "$BRANCH"
-            # Managed installs should follow origin/$BRANCH exactly. If the
-            # checkout has diverged (or has local-only commits), ff-only pull
-            # cannot succeed — mirror ``hermes update`` and reset to the
-            # fetched remote so bootstrap/install can recover.
+            # Preserve unique local commits by rebasing them onto the fetched
+            # remote. Only reset when the commit count proves HEAD has none.
             if ! git pull --ff-only origin "$BRANCH"; then
-                log_warn "Fast-forward not possible; resetting managed install to origin/$BRANCH..."
-                git reset --hard "origin/$BRANCH"
+                log_warn "Fast-forward not possible; checking for locally carried commits..."
+                if ! recover_diverged_update "origin/$BRANCH"; then
+                    log_error "Update stopped to preserve locally carried commits."
+                    log_info "Resolve/rebase the local commits, then run the installer again."
+                    return 1
+                fi
             fi
 
             if [ -n "$autostash_ref" ]; then

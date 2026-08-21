@@ -13040,14 +13040,14 @@ def main():
         "--upgrade",
         action="store_true",
         help=(
-            "Re-run the upstream installer even if cua-driver is already on "
-            "PATH. The upstream install.sh always pulls the latest release, "
+            "Re-run the upstream installer even if Hermes already resolves "
+            "cua-driver. The upstream install.sh always pulls the latest release, "
             "so this performs an in-place upgrade."
         ),
     )
     computer_use_sub.add_parser(
         "status",
-        help="Print whether cua-driver is installed and on PATH",
+        help="Print whether Hermes resolves cua-driver and which version is installed",
     )
     computer_use_doctor = computer_use_sub.add_parser(
         "doctor",

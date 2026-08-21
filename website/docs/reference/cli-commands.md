@@ -1458,8 +1458,8 @@ Subcommands:
 | Subcommand | Description |
 |------------|-------------|
 | `install` | Run the upstream cua-driver installer (macOS, Windows, and Linux). |
-| `install --upgrade` | Re-run the installer even if cua-driver is already on PATH. The upstream script always pulls the latest release, so this performs an in-place upgrade. |
-| `status` | Print whether `cua-driver` is on `$PATH` and which version is installed. |
+| `install --upgrade` | Re-run the installer even if Hermes already resolves cua-driver. The upstream script always pulls the latest release, so this performs an in-place upgrade. |
+| `status` | Print whether Hermes resolves `cua-driver` and which version is installed. |
 | `doctor [--include CHECK] [--skip CHECK] [--json]` | Run cua-driver's health report and show its platform checks. |
 | `permissions status [--json]` | Report macOS Accessibility and Screen Recording grants. |
 | `permissions grant` | Ask macOS to grant Accessibility and Screen Recording to Cua Driver. |
@@ -1490,8 +1490,8 @@ transport owns a private lifecycle session inside its runtime. Public session
 names label cursor and session state; they do not own or share the runtime.
 
 `hermes update` automatically re-runs the upstream installer at the end
-of the update if cua-driver is on PATH, so most users will not need to
-call `--upgrade` manually. Use it when upstream ships a fix you want
+of the update if Hermes resolves cua-driver, so most users will not need
+to call `--upgrade` manually. Use it when upstream ships a fix you want
 right now without waiting for the next Hermes update.
 
 ## `hermes pets`

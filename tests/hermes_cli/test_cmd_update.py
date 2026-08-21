@@ -2,6 +2,8 @@
 
 import hashlib
 import subprocess
+import sys
+from types import ModuleType
 from types import SimpleNamespace
 from unittest.mock import ANY, patch
 
@@ -726,6 +728,132 @@ class TestCmdUpdateCheckBranchFlag:
         # Compare ref is upstream/main (upstream fetch succeeded).
         rev_list_cmds = [c for c in commands if "rev-list" in c]
         assert any("upstream/main" in c for c in rev_list_cmds), rev_list_cmds
+
+
+class TestCmdUpdateCuaDriverRefresh:
+    """``hermes update`` refreshes an already-installed cua-driver only."""
+
+    @staticmethod
+    def _run_update(mock_args, monkeypatch, *, resolved_driver, update_config=None):
+        from contextlib import ExitStack
+
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd as uc
+
+        update_config = update_config or {}
+        monkeypatch.setattr(uc.sys, "platform", "linux")
+        fake_gateway = ModuleType("hermes_cli.gateway")
+        fake_gateway.is_macos = lambda: False
+        fake_gateway.supports_systemd_services = lambda: False
+        fake_gateway._ensure_user_systemd_env = lambda: None
+        fake_gateway.find_gateway_pids = lambda: []
+        fake_gateway.find_profile_gateway_processes = lambda: {}
+        fake_gateway._prepare_profile_gateway_update_restart = lambda *args, **kwargs: None
+        fake_gateway._get_service_pids = lambda *args, **kwargs: []
+        fake_gateway._graceful_restart_via_sigusr1 = lambda *args, **kwargs: False
+        fake_gateway._wait_for_gateway_exit = lambda *args, **kwargs: False
+        monkeypatch.setitem(sys.modules, "hermes_cli.gateway", fake_gateway)
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("hermes_cli.config.load_config", return_value={"updates": update_config})
+            )
+            stack.enter_context(patch("shutil.which", return_value=None))
+            mock_run = stack.enter_context(patch("subprocess.run"))
+            resolve_driver = stack.enter_context(
+                patch(
+                    "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+                    return_value=resolved_driver,
+                )
+            )
+            install_driver = stack.enter_context(
+                patch("hermes_cli.tools_config.install_cua_driver")
+            )
+
+            for name, value in {
+                "_run_pre_update_backup": None,
+                "_pause_windows_gateways_for_update": None,
+                "_stash_local_changes_if_needed": None,
+                "_clear_bytecode_cache": 0,
+                "_validate_critical_modules_import": (True, None, None),
+                "_desktop_packaged_executable": None,
+                "_desktop_dist_exists": False,
+                "_refresh_active_lazy_features": True,
+            }.items():
+                stack.enter_context(patch.object(hm, name, return_value=value))
+
+            for name in (
+                "_is_windows",
+                "_is_termux_env",
+                "_is_android_python",
+                "_install_python_dependencies_with_optional_fallback",
+                "_ensure_uv_for_termux",
+                "_clear_update_incomplete_marker",
+                "_clear_lazy_refresh_incomplete_marker",
+                "_record_bytecode_fingerprint",
+                "_refresh_bootstrap_cache_scripts",
+                "_reload_updated_runtime_modules",
+                "_upgrade_pip_before_lazy_refresh",
+                "_refresh_active_memory_provider_dependencies",
+                "_build_web_ui",
+                "_print_fts_optimize_available_notice",
+                "_print_curator_first_run_notice",
+                "_print_curator_recent_run_notice",
+                "_ensure_fhs_path_guard",
+                "_ensure_acp_launcher",
+                "_sync_with_upstream_if_needed",
+                "_print_update_completion",
+                "_warn_incomplete_gateway_fleet_restart",
+            ):
+                stack.enter_context(patch.object(hm, name))
+
+            for name in (
+                "_write_update_incomplete_marker",
+                "_write_lazy_refresh_incomplete_marker",
+                "_update_node_dependencies",
+            ):
+                stack.enter_context(patch.object(uc, name, return_value=[]))
+
+            mock_run.side_effect = _make_run_side_effect(commit_count="1")
+
+            uc._cmd_update_impl(mock_args, gateway_mode=False)
+
+        return resolve_driver, install_driver
+
+    def test_resolver_only_cua_driver_triggers_refresh(self, mock_args, monkeypatch):
+        resolver, install_driver = self._run_update(
+            mock_args,
+            monkeypatch,
+            resolved_driver="/home/user/.local/bin/cua-driver",
+        )
+
+        resolver.assert_called_once_with()
+        install_driver.assert_called_once_with(
+            upgrade=True,
+            require_confirmed_update=True,
+            show_installer_progress=False,
+        )
+
+    def test_missing_cua_driver_skips_refresh(self, mock_args, monkeypatch):
+        resolver, install_driver = self._run_update(
+            mock_args,
+            monkeypatch,
+            resolved_driver=None,
+        )
+
+        resolver.assert_called_once_with()
+        install_driver.assert_not_called()
+
+    def test_disabled_cua_driver_refresh_skips_resolver(self, mock_args, monkeypatch):
+        resolver, install_driver = self._run_update(
+            mock_args,
+            monkeypatch,
+            resolved_driver="/home/user/.local/bin/cua-driver",
+            update_config={"refresh_cua_driver": False},
+        )
+
+        resolver.assert_not_called()
+        install_driver.assert_not_called()
 
 
 class TestCmdUpdateZipBranchRefusal:

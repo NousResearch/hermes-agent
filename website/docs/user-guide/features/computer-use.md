@@ -449,8 +449,9 @@ CUA_DRIVER_RS_TELEMETRY_ENABLED`.
 
 When you're developing cua-driver itself — or want to test an
 unreleased fix — point Hermes at a binary you built from source instead
-of the published release. Hermes resolves the driver with
-`shutil.which("cua-driver")` and **does not enforce
+of the published release. Hermes resolves the driver through its
+Computer Use resolver, including `HERMES_CUA_DRIVER_CMD`, `PATH`, and
+canonical installer locations, and **does not enforce
 `HERMES_CUA_DRIVER_VERSION`**, so a local build (reported as
 `0.0.0-local-*`) is accepted as-is. Two approaches:
 

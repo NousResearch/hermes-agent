@@ -6324,10 +6324,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Refresh the cua-driver binary used by the Computer Use toolset.
         # The upstream installer is gated on supported platforms and on the
-        # binary already being on PATH, so this is a no-op for users who
-        # don't have it. Tying the refresh to ``hermes update`` gives users a
-        # predictable cadence (matches when they pull new agent code) without
-        # adding startup latency or a per-launch GitHub API call.
+        # binary already resolving through the same runtime/status resolver
+        # used by Computer Use, so this is a no-op for users who don't have it.
+        # Tying the refresh to ``hermes update`` gives users a predictable
+        # cadence (matches when they pull new agent code) without adding
+        # startup latency or a per-launch GitHub API call.
         try:
             refresh_cua_driver = True
             try:
@@ -6341,11 +6342,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
             except Exception as cfg_exc:
                 logger.debug("Could not read updates.refresh_cua_driver: %s", cfg_exc)
 
-            if (
-                refresh_cua_driver
-                and sys.platform in ("darwin", "win32", "linux")
-                and shutil.which("cua-driver")
-            ):
+            cua_driver_cmd = None
+            if refresh_cua_driver and sys.platform in ("darwin", "win32", "linux"):
+                from tools.computer_use.cua_backend import resolve_cua_driver_cmd
+
+                cua_driver_cmd = resolve_cua_driver_cmd()
+
+            if cua_driver_cmd:
                 from hermes_cli.tools_config import install_cua_driver
 
                 print()

@@ -1163,6 +1163,18 @@ _AI_GATEWAY_HEADERS = {
     "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
 }
 
+# Infersia app attribution headers. Infersia accepts either spelling of the
+# title header, so this uses `X-Title` to match what this file already sends to
+# OpenRouter and the AI gateway rather than introducing a third variant.
+# Without attribution Hermes traffic is recorded against the OpenAI SDK, so a
+# user sees "OpenAI/Python" rather than the agent that made the call.
+# Documented at https://infersia.com/docs/app-attribution
+_INFERSIA_HEADERS = {
+    "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+    "X-Title": "Hermes Agent",
+    "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+}
+
 # Nous Portal extra_body for product attribution.
 # Callers should pass this as extra_body in chat.completions.create()
 # when the auxiliary client is backed by Nous Portal.

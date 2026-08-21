@@ -6,6 +6,7 @@ import type { ChatMessage, ChatMessagePart } from './chat-messages'
 import {
   appendAssistantTextPart,
   appendReasoningPart,
+  assistantTextPart,
   chatMessageText,
   collectUnspokenTurnSpeech,
   completeOpenTimelineParts,
@@ -411,6 +412,27 @@ describe('renderMediaTags', () => {
     const text = chatMessageText({ id: 'a', role: 'assistant', parts })
 
     expect(text).toBe('ok\n[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3)')
+  })
+})
+
+describe('glued markdown block repair', () => {
+  const glued =
+    'Use this:\n```txtv=spf1 include:_spf.google.com ~all```**DMARC** next.\n---## Things that fail| Idea | Why |\n|---|---|| Plus alias | Still Gmail |'
+
+  const repaired =
+    '```txt\nv=spf1 include:_spf.google.com ~all\n```\n\n**DMARC** next.\n---\n\n## Things that fail\n\n| Idea | Why |\n|---|---|\n| Plus alias | Still Gmail |'
+
+  it('repairs stored assistant text before markdown rendering', () => {
+    const part = assistantTextPart(glued)
+
+    expect(part.type).toBe('text')
+    expect(part.type === 'text' ? part.text : '').toContain(repaired)
+  })
+
+  it('repairs the accumulated live stream, not only hydrated rows', () => {
+    const parts = appendAssistantTextPart([], glued)
+
+    expect(chatMessageText({ id: 'live', role: 'assistant', parts })).toContain(repaired)
   })
 })
 

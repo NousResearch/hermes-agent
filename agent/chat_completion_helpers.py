@@ -2111,6 +2111,44 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     )
 
 
+_FENCE_LANG = (
+    r"txt|text|bash|sh|shell|console|python|py|md|markdown|json|yaml|yml|"
+    r"ts|tsx|js|jsx|diff|html|css|sql|toml|ini|xml|go|rs|c|cpp|java|"
+    r"rb|php|swift|kt|lua|dockerfile"
+)
+
+
+def _repair_glued_markdown_block_boundaries(text: str) -> str:
+    """Restore markdown block separators lost by streamed reconstruction."""
+    if not isinstance(text, str) or not text:
+        return text
+
+    text = re.sub(
+        rf"(?<!`)```({_FENCE_LANG})(?=[^\n`])",
+        r"```\1\n",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"([^`\n])```(?=\S)", r"\1\n```\n\n", text)
+    parts = re.split(r"(```.*?```)", text, flags=re.DOTALL)
+
+    for index, part in enumerate(parts):
+        if index % 2:
+            parts[index] = re.sub(r"([^`\n])```$", r"\1\n```", part)
+            continue
+
+        part = re.sub(r"---(?=#{1,6}\s)", "---\n\n", part)
+        part = re.sub(r"([.!?`*])(?=#{1,6}\s)", r"\1\n\n", part)
+        part = re.sub(r"(?m)^(#{1,6}\s+[^\n|]+)\|(?=\s*[^\n]*\|)", r"\1\n\n|", part)
+        part = re.sub(
+            r"(?m)^(\|\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|)\|(?=\s*\S)",
+            r"\1\n|",
+            part,
+        )
+        parts[index] = part
+
+    return "".join(parts)
+
 
 def build_assistant_message(agent, assistant_message, finish_reason: str) -> dict:
     """Build a normalized assistant message dict from an API response message.
@@ -2170,6 +2208,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # compression, title generation.
     if isinstance(_san_content, str) and _san_content:
         _san_content = agent._strip_think_blocks(_san_content).strip()
+        _san_content = _repair_glued_markdown_block_boundaries(_san_content)
 
     # Defence-in-depth: redact credentials (PATs, API keys, Bearer tokens)
     # from assistant content BEFORE the message enters conversation history.

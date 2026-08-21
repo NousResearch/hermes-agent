@@ -19066,30 +19066,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter = self._adapter_for_source(source)
                     if adapter:
                         if reset_reason == "suspended":
-                            reason_text = "previous session was stopped or interrupted"
+                            reason_text = "上次会话中断"
                         elif reset_reason == "resume_pending_expired":
-                            reason_text = "gateway restart recovery timed out"
+                            reason_text = "网关恢复超时"
                         elif reset_reason == "daily":
-                            reason_text = f"daily schedule at {policy.at_hour}:00"
+                            reason_text = f"每日 {policy.at_hour}:00 重置"
                         else:
                             hours = policy.idle_minutes // 60
                             mins = policy.idle_minutes % 60
-                            duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
-                            reason_text = f"inactive for {duration}"
-                        notice = (
-                            f"◐ Session automatically reset ({reason_text}). "
-                            f"Conversation history cleared.\n"
-                            f"Use /resume to browse and restore a previous session.\n"
-                            f"Adjust reset timing in config.yaml under session_reset."
-                        )
-                        try:
-                            session_info = await asyncio.to_thread(
-                                self._reset_notice_session_info, source
-                            )
-                            if session_info:
-                                notice = f"{notice}\n\n{session_info}"
-                        except Exception:
-                            pass
+                            duration = f"{hours} 小时" if not mins else f"{hours} 小时 {mins} 分钟" if hours else f"{mins} 分钟"
+                            reason_text = f"闲置 {duration}"
+                        notice = f"◐ 已开启新会话（{reason_text}）；继续旧话题请用 /resume。"
                         await adapter.send(
                             source.chat_id, notice,
                             metadata=self._thread_metadata_for_source(source),

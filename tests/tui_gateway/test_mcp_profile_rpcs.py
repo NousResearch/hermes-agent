@@ -246,3 +246,31 @@ def test_default_profile_add_when_profile_omitted(hermes_root):
     assert "rootsvc" not in _read_yaml(root / "profiles" / "work" / "config.yaml").get(
         "mcp_servers", {}
     )
+
+
+def test_remove_also_deletes_stored_oauth_tokens(hermes_root):
+    """#90703: mcp.servers.remove must not leave the removed server's OAuth
+    tokens (incl. refresh token) on disk — a server re-added under the same
+    name would silently resume the old OAuth session."""
+    import json as _json
+
+    root = hermes_root
+    _result(
+        _call(
+            "mcp.servers.add",
+            {"profile": "work", "name": "temp", "config": {"command": "temp-bin"}},
+        )
+    )
+    # Simulate a stored token file in the PROFILE's home — the remove runs
+    # under the profile's HERMES_HOME override, so that is where the
+    # cleanup must land.
+    tokens_dir = root / "profiles" / "work" / "mcp-tokens"
+    tokens_dir.mkdir(parents=True, exist_ok=True)
+    (tokens_dir / "temp.json").write_text(
+        _json.dumps({"access_token": "a", "refresh_token": "r"})
+    )
+
+    resp = _result(_call("mcp.servers.remove", {"profile": "work", "name": "temp"}))
+    assert resp["removed"] is True
+
+    assert not (tokens_dir / "temp.json").exists()

@@ -476,3 +476,119 @@ async def test_initialize_skips_prefetch_when_no_tokens(tmp_path, monkeypatch):
     assert calls == [], (
         f"Pre-flight must not fire when no tokens are stored, but got {calls}"
     )
+
+
+class TestServerUrlBinding:
+    """#90703: tokens are bound to the server URL they were minted for."""
+
+    def _write_tokens(self, tmp_path, payload):
+        from tools.mcp_oauth import _get_token_dir
+
+        token_dir = _get_token_dir()
+        token_dir.mkdir(parents=True, exist_ok=True)
+        (token_dir / "srv.json").write_text(json.dumps(payload))
+
+    def test_mismatched_url_refuses_tokens(self, tmp_path, monkeypatch):
+        """A token minted for endpoint A must not be served for endpoint B."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.mcp_oauth import HermesTokenStorage
+
+        self._write_tokens(
+            tmp_path,
+            {
+                "access_token": "a",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "refresh_token": "r",
+                "hermes_server_url": "https://old.example.com/mcp",
+            },
+        )
+
+        storage = HermesTokenStorage("srv", server_url="https://new.example.com/mcp")
+        assert asyncio.run(storage.get_tokens()) is None
+
+    def test_matching_url_loads_tokens(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.mcp_oauth import HermesTokenStorage
+
+        self._write_tokens(
+            tmp_path,
+            {
+                "access_token": "a",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "refresh_token": "r",
+                "hermes_server_url": "https://same.example.com/mcp",
+            },
+        )
+
+        storage = HermesTokenStorage(
+            "srv", server_url="https://same.example.com/mcp/"
+        )
+        reloaded = asyncio.run(storage.get_tokens())
+        assert reloaded is not None
+        assert reloaded.access_token == "a"
+
+    def test_legacy_file_without_url_lazily_stamps_it(self, tmp_path, monkeypatch):
+        """Pre-binding files keep working (no forced re-login) and are
+        stamped with the current URL so the *next* read is protected."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.mcp_oauth import HermesTokenStorage, _get_token_dir
+
+        self._write_tokens(
+            tmp_path,
+            {
+                "access_token": "a",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "refresh_token": "r",
+            },
+        )
+
+        storage = HermesTokenStorage("srv", server_url="https://now.example.com/mcp")
+        reloaded = asyncio.run(storage.get_tokens())
+        assert reloaded is not None  # legacy passes through
+
+        on_disk = json.loads((_get_token_dir() / "srv.json").read_text())
+        assert on_disk.get("hermes_server_url") == "https://now.example.com/mcp"
+
+    def test_set_tokens_records_url(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from mcp.shared.auth import OAuthToken
+        from tools.mcp_oauth import HermesTokenStorage, _get_token_dir
+
+        storage = HermesTokenStorage("srv", server_url="https://svc.example.com/mcp")
+        asyncio.run(
+            storage.set_tokens(
+                OAuthToken(
+                    access_token="a",
+                    token_type="Bearer",
+                    expires_in=3600,
+                    refresh_token="r",
+                )
+            )
+        )
+
+        on_disk = json.loads((_get_token_dir() / "srv.json").read_text())
+        assert on_disk.get("hermes_server_url") == "https://svc.example.com/mcp"
+
+    def test_unbound_storage_ignores_url_field(self, tmp_path, monkeypatch):
+        """Storage constructed without a URL (CLI login flows) still loads
+        bound files — the binding only filters when the reader knows its
+        endpoint."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.mcp_oauth import HermesTokenStorage
+
+        self._write_tokens(
+            tmp_path,
+            {
+                "access_token": "a",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "refresh_token": "r",
+                "hermes_server_url": "https://some.example.com/mcp",
+            },
+        )
+
+        storage = HermesTokenStorage("srv")
+        assert asyncio.run(storage.get_tokens()) is not None

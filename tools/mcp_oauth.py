@@ -464,9 +464,21 @@ class HermesTokenStorage:
         HERMES_HOME/mcp-tokens/<server_name>.cimd-off      -- CIMD refused here
     """
 
-    def __init__(self, server_name: str, *, hermes_home: str | Path | None = None):
+    def __init__(
+        self,
+        server_name: str,
+        *,
+        hermes_home: str | Path | None = None,
+        server_url: str | None = None,
+    ):
         self._server_name = _safe_filename(server_name)
         self._hermes_home = Path(hermes_home) if hermes_home is not None else None
+        # Optional endpoint binding (#90703): when the caller knows the
+        # server's configured URL, tokens minted for a DIFFERENT endpoint
+        # (server renamed, url edited, or another server whose name
+        # sanitizes to the same filename) are refused instead of silently
+        # sent to the wrong authorization server.
+        self._server_url = (str(server_url).strip().rstrip("/") or None) if server_url else None
 
     def _tokens_path(self) -> Path:
         return _get_token_dir(self._hermes_home) / f"{self._server_name}.json"
@@ -488,6 +500,28 @@ class HermesTokenStorage:
             return None
         if OAuthToken is None and not _ensure_sdk_loaded():
             return None
+        # Endpoint binding (#90703): refuse tokens minted for a different
+        # server URL instead of sending them to the wrong endpoint. Legacy
+        # files predate the binding field — pass them through and lazily
+        # stamp the current URL so the next read (or a later url edit) is
+        # protected without forcing every existing user to re-login.
+        stored_url = data.pop("hermes_server_url", None)
+        if self._server_url is not None:
+            if stored_url is None:
+                try:
+                    _write_json(self._tokens_path(), {
+                        **data, "hermes_server_url": self._server_url,
+                    })
+                except Exception:
+                    pass
+            elif str(stored_url).strip().rstrip("/") != self._server_url:
+                logger.warning(
+                    "OAuth tokens at %s were minted for %s, not %s -- "
+                    "ignoring (server url changed or name collision); "
+                    "re-run the OAuth flow for this server",
+                    self._tokens_path(), stored_url, self._server_url,
+                )
+                return None
         # Hermes records an absolute wall-clock ``expires_at`` alongside the
         # SDK's serialized token (see ``set_tokens``). On read we rewrite
         # ``expires_in`` to the remaining seconds so the SDK's downstream
@@ -540,6 +574,10 @@ class HermesTokenStorage:
                 # Mock tokens or unusual shapes: skip the expires_at write
                 # rather than fail persistence.
                 pass
+        if self._server_url is not None:
+            # Endpoint binding (#90703): get_tokens refuses this file if it
+            # is later read for a different server URL.
+            payload["hermes_server_url"] = self._server_url
         _write_json(self._tokens_path(), payload)
         logger.debug("OAuth tokens saved for %s", self._server_name)
 
@@ -1910,7 +1948,7 @@ def build_oauth_auth(
     apply_oauth_provider_defaults(
         cfg, server_name=server_name, server_url=server_url
     )
-    storage = HermesTokenStorage(server_name)
+    storage = HermesTokenStorage(server_name, server_url=server_url)
 
     if not _is_interactive() and not storage.has_cached_tokens():
         raise OAuthNonInteractiveError(

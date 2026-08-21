@@ -2269,6 +2269,19 @@ def _(rid, params: dict) -> dict:
         removed = _remove_mcp_server(name)
         if not removed:
             return _err(rid, 4064, f"server '{name}' not found")
+        try:
+            # A removed server's stored OAuth tokens (incl. the refresh
+            # token) must not survive on disk — otherwise a server re-added
+            # under the same name silently resumes the old OAuth session
+            # (#90703). Best-effort: removal already succeeded.
+            from tools.mcp_oauth import remove_oauth_tokens
+
+            remove_oauth_tokens(name)
+        except Exception as cleanup_err:
+            logger.warning(
+                "Removed MCP server '%s' but its OAuth tokens could not be "
+                "cleaned up: %s", name, cleanup_err,
+            )
         return _ok(rid, {"ok": True, "removed": True})
     except Exception as e:
         return _err(rid, 5024, str(e))

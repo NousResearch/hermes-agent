@@ -152,6 +152,18 @@ async def remove_mcp_server(name: str, profile: Optional[str] = None):
     removed = await asyncio.to_thread(_run)
     if not removed:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+    try:
+        # Same rationale as the TUI mcp.servers.remove path: a removed
+        # server's OAuth tokens (incl. the refresh token) must not survive
+        # on disk (#90703). Best-effort — removal already succeeded.
+        from tools.mcp_oauth import remove_oauth_tokens
+
+        remove_oauth_tokens(name)
+    except Exception as cleanup_err:
+        _log.warning(
+            "Removed MCP server '%s' but its OAuth tokens could not be "
+            "cleaned up: %s", name, cleanup_err,
+        )
     return {"ok": True}
 
 

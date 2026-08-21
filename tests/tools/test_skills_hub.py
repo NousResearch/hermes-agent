@@ -1019,19 +1019,44 @@ class TestOptionalSkillSourceMetadata:
             repo / "optional-skills", repo
         ) == ""
 
-    def test_repo_optional_root_identity_is_commit_bound(self, monkeypatch):
+    def test_repo_optional_root_identity_is_commit_bound(
+        self, monkeypatch, tmp_path
+    ):
         import re
-        from pathlib import Path
+        import subprocess
 
         import tools.skills_hub as hub
 
+        repo = tmp_path / "repo"
+        skill = repo / "optional-skills" / "devops" / "demo"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# Official\n")
+        for command in (
+            ["git", "init", "-q"],
+            ["git", "config", "user.name", "Test"],
+            ["git", "config", "user.email", "test@example.invalid"],
+            ["git", "add", "optional-skills"],
+            ["git", "commit", "-qm", "official"],
+            [
+                "git", "remote", "add", "upstream",
+                "https://github.com/NousResearch/hermes-agent.git",
+            ],
+            ["git", "update-ref", "refs/remotes/upstream/main", "HEAD"],
+        ):
+            subprocess.run(command, cwd=repo, check=True)
+        revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
         monkeypatch.setattr(hub, "_github_commit_is_official", lambda _sha: True)
 
-        optional_root = Path(hub.__file__).resolve().parent.parent / "optional-skills"
-        assert re.fullmatch(
-            r"git:NousResearch/hermes-agent@[0-9a-f]{40}",
-            hub.optional_skills_root_identity(optional_root),
-        )
+        identity = hub.optional_skills_root_identity(repo / "optional-skills")
+
+        assert re.fullmatch(r"git:NousResearch/hermes-agent@[0-9a-f]{40}", identity)
+        assert identity.endswith(revision)
 
     def test_git_optional_identity_requires_official_fetch_remote(self, tmp_path):
         import subprocess

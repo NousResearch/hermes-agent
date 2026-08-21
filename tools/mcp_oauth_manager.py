@@ -544,6 +544,14 @@ def _make_hermes_provider_class() -> Optional[type]:
                 # 401 branch so a subsequent cold-load skips discovery.
                 self._persist_oauth_metadata_if_changed()
                 return
+            finally:
+                # The SDK auth-flow holds an AnyIO lock across yields. Bind the
+                # inner generator's lifetime to this outer bridge so httpx
+                # teardown closes it from the same asyncio task that acquired
+                # the lock. Leaving it for async-generator GC can finalize it
+                # from another task, fail AnyIO's ownership check, and wedge
+                # the cached provider permanently (#38193).
+                await inner.aclose()
 
     return HermesMCPOAuthProvider
 

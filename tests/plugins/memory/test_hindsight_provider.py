@@ -454,6 +454,15 @@ class TestToolHandlers:
         assert "bank_id" not in item
         assert "retain_async" not in item
 
+    @pytest.mark.parametrize("retain_async", [True, False])
+    def test_retain_forwards_configured_async_mode(
+        self, provider_with_config, retain_async
+    ):
+        p = provider_with_config(retain_async=retain_async)
+        p.handle_tool_call("hindsight_retain", {"content": "remember this"})
+
+        call_kwargs = p._client.aretain_batch.call_args.kwargs
+        assert call_kwargs["retain_async"] is retain_async
 
     def test_recall_success(self, provider):
         result = json.loads(provider.handle_tool_call(

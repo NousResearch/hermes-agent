@@ -567,7 +567,7 @@ class TestRunOauthSetupToken:
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
+            mock_run.return_value = MagicMock(returncode=0, stdout="")
             token = run_oauth_setup_token()
 
         assert token == "from-cred-file"
@@ -586,7 +586,7 @@ class TestRunOauthSetupToken:
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
+            mock_run.return_value = MagicMock(returncode=0, stdout="")
             token = run_oauth_setup_token()
 
         assert token is None

@@ -385,6 +385,12 @@ def cmd_send(args: argparse.Namespace) -> None:
         "target": target,
         "message": message,
     }
+    if getattr(args, "silent", False):
+        tool_args["silent"] = True
+    if getattr(args, "buttons", None):
+        tool_args["buttons"] = args.buttons
+    if getattr(args, "edit_message_id", None):
+        tool_args["edit_message_id"] = args.edit_message_id
 
     result = send_message_tool(tool_args)
     exit_code = _emit_result(
@@ -485,6 +491,32 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Suppress stdout on success (exit code only).",
+    )
+
+    parser.add_argument(
+        "--silent",
+        action="store_true",
+        default=False,
+        help="For Telegram, deliver without a push notification.",
+    )
+
+    parser.add_argument(
+        "--buttons",
+        metavar="JSON",
+        default=None,
+        help=(
+            "For Telegram, attach an inline keyboard encoded as JSON rows. "
+            "Each button needs label/text and exactly one of callback_data, "
+            "url, or copy_text."
+        ),
+    )
+
+    parser.add_argument(
+        "--edit",
+        dest="edit_message_id",
+        metavar="MESSAGE_ID",
+        default=None,
+        help="For Telegram, replace this existing text message and its buttons.",
     )
 
     parser.add_argument(

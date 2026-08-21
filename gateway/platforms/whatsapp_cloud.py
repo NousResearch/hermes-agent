@@ -200,6 +200,9 @@ def check_whatsapp_cloud_requirements() -> bool:
     return AIOHTTP_AVAILABLE and HTTPX_AVAILABLE
 
 
+GROUP_JID_SUFFIX = "@g.us"
+
+
 class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     """WhatsApp Business Cloud API adapter.
 
@@ -294,11 +297,17 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             or _get_wsecret("WHATSAPP_DM_POLICY")
             or _default_dm_policy
         ).strip().lower()
+        # Default "pairing" (admits no group chat), matching the Baileys
+        # adapter. Inbound group payloads used to be hard-dropped before any
+        # gating ran, so this value was dead for groups; now that they are
+        # routed through _should_process_message (#80054) the default decides
+        # real access, and an unconfigured WABA must not start accepting group
+        # traffic on upgrade. Operators opt in with "allowlist" or "open".
         self._group_policy: str = str(
             extra.get("group_policy")
             or _get_wsecret("WHATSAPP_CLOUD_GROUP_POLICY")
-            or _get_wsecret("WHATSAPP_GROUP_POLICY", default="open")
-            or "open"
+            or _get_wsecret("WHATSAPP_GROUP_POLICY", default="pairing")
+            or "pairing"
         ).strip().lower()
         self._group_allow_from: set[str] = self._normalize_allow_ids(
             self._coerce_allow_list(
@@ -390,13 +399,36 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         Users sharing an allowlist between both adapters (or pasting a
         JID/phone number with ``+`` or separators) should still match,
         so strip any ``@...`` suffix and non-digit characters.
+
+        Group JIDs are exempt: they are opaque identifiers, not phone
+        numbers, and inbound group traffic is matched against the full
+        ``<id>@g.us`` value. Normalizing one would strip the suffix and
+        produce an entry that can never match (#80054).
         """
         normalized: set[str] = set()
         for entry in ids:
+            if WhatsAppCloudAdapter._is_group_jid(entry):
+                normalized.add(entry.strip())
+                continue
             bare = entry.split("@", 1)[0]
             digits = re.sub(r"\D", "", bare)
             normalized.add(digits or entry)
         return normalized
+
+    @staticmethod
+    def _is_group_jid(value: str) -> bool:
+        """True for a WhatsApp group identifier (``<id>@g.us``)."""
+        return str(value or "").strip().lower().endswith(GROUP_JID_SUFFIX)
+
+    @classmethod
+    def _recipient_type(cls, chat_id: str) -> str:
+        """Graph API ``recipient_type`` for a destination.
+
+        Meta's send-messages API takes ``individual`` or ``group``; posting a
+        group JID as ``individual`` is rejected, so every outbound payload
+        derives this from the destination rather than hardcoding it (#80054).
+        """
+        return "group" if cls._is_group_jid(chat_id) else "individual"
 
     def _is_dm_allowed(self, sender_id: str) -> bool:
         """Allowlist check against the normalized bare wa_id."""
@@ -540,7 +572,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         for idx, chunk in enumerate(chunks):
             payload: Dict[str, Any] = {
                 "messaging_product": "whatsapp",
-                "recipient_type": "individual",
+                "recipient_type": self._recipient_type(chat_id),
                 "to": chat_id,
                 "type": "text",
                 "text": {"body": chunk, "preview_url": True},
@@ -698,7 +730,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         }
         payload: Dict[str, Any] = {
             "messaging_product": "whatsapp",
-            "recipient_type": "individual",
+            "recipient_type": self._recipient_type(chat_id),
             "to": chat_id,
             "type": "interactive",
             "interactive": interactive_body,
@@ -1074,7 +1106,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         payload: Dict[str, Any] = {
             "messaging_product": "whatsapp",
-            "recipient_type": "individual",
+            "recipient_type": self._recipient_type(chat_id),
             "to": chat_id,
             "type": media_kind,
             media_kind: media_block,
@@ -1955,34 +1987,99 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         sender_name = contacts_by_waid.get(sender_id, "")
 
         # Cloud API doesn't have a separate "chat" entity for DMs — chat_id
-        # equals the sender's wa_id. Group support is deferred to v2.
+        # equals the sender's wa_id. Group messages carry a ``chat`` field on
+        # the message object identifying the group JID; its absence signals a
+        # DM.
         #
-        # Defensive guard: if Meta ever delivers a group-shaped payload
-        # (group support is capability-tier gated by Meta; some WABAs
-        # have it enabled), refuse rather than silently treating it as
-        # a DM. Group messages carry a ``chat`` field on the message
-        # object identifying the group JID — its absence signals DM.
+        # Group-shaped payloads used to be hard-dropped here. Meta's Groups
+        # API is now open to Official Business Accounts, so they are instead
+        # routed through the same mixin gate the Baileys adapter uses --
+        # group_policy, group allowlist and mention gating (#80054). The
+        # default policy admits no group chat, so an unconfigured WABA behaves
+        # exactly as before; the difference is that the drop is now a policy
+        # decision the operator can see and change, rather than an
+        # unconditional refusal.
         chat_field = raw_message.get("chat")
-        if chat_field:
+        group_id = ""
+        if isinstance(chat_field, dict):
+            # Be liberal about the envelope shape: Meta has shipped both a
+            # bare JID string and an object carrying it.
+            group_id = str(chat_field.get("id") or chat_field.get("wa_id") or "").strip()
+        elif chat_field:
+            group_id = str(chat_field).strip()
+        # Only accept a group we can also address on the way out. send() and
+        # friends derive recipient_type from the destination, and the only
+        # signal available there is the JID itself -- so if Meta hands us a
+        # group id we cannot recognise, routing it inbound would accept the
+        # message and then answer it as an individual. Refuse instead, and say
+        # so, which is the pre-existing behaviour for anything unrecognised.
+        if chat_field and not self._is_group_jid(group_id):
             logger.warning(
-                "[whatsapp_cloud] received group-shaped message (chat=%s, "
-                "wamid=%s) — group support is not yet implemented; dropping. "
-                "Use the Baileys whatsapp adapter for group chats.",
-                chat_field, raw_message.get("id"),
+                "[whatsapp_cloud] group-shaped message (chat=%s, wamid=%s) is not "
+                "an addressable %s group id; dropping rather than replying to it "
+                "as an individual",
+                group_id, raw_message.get("id"), GROUP_JID_SUFFIX,
             )
             return None
+        is_group = bool(group_id)
 
-        chat_id = sender_id
+        # Replies must address the group, never the individual sender.
+        chat_id = group_id if is_group else sender_id
 
         # Build the data dict the mixin's _should_process_message expects.
         # Cloud API uses different field names from Baileys, so we adapt.
+        #
+        # The group branch of the gate also consults botIds / mentionedIds /
+        # quotedParticipant to admit an @-mention or a reply to the bot. Cloud
+        # has no structured mention array -- a mention arrives as "@<number>"
+        # in the body -- but supplying our own number lets the gate's
+        # body-substring check find it, and context.from identifies the author
+        # of a quoted message. Without these, a group message that mentions
+        # the bot is dropped whenever require_mention is on.
+        # Normalize to the bare wa_id: Meta may return the business number
+        # formatted ("+1 555 999 8888"), while a mention in message text is
+        # bare digits. Without this the substring check below never matches
+        # and the mention gate stays shut with no error -- reuse the same
+        # normalizer the allowlist path already applies.
+        _raw_our_number = str((metadata or {}).get("display_phone_number") or "").strip()
+        our_number = (
+            next(iter(self._normalize_allow_ids({_raw_our_number})), "")
+            if _raw_our_number
+            else ""
+        )
+        quoted_from = str((raw_message.get("context") or {}).get("from") or "").strip()
+        _mentions_bot = bool(our_number) and f"@{our_number}" in (body or "")
+        _addresses_bot = _mentions_bot or bool(quoted_from)
         gating_data = {
             "chatId": chat_id,
             "senderId": sender_id,
-            "isGroup": False,  # Phase 3 = DM only
+            "isGroup": is_group,
             "body": body,
+            # Only claim the bot is addressable when the message actually
+            # addresses it. The shared gate falls back to a bare substring
+            # search of the body, which on Baileys is a backstop behind
+            # structured mentionedIds -- but Cloud has no structured mention
+            # array, so that fallback would become the ONLY mention path and
+            # any group text merely containing the business number (a pasted
+            # contact, an invoice or order reference) would bypass
+            # require_mention. Cloud renders a real mention as "@<wa_id>", so
+            # gate on that form or on a quoted message.
+            "botIds": [our_number] if (our_number and _addresses_bot) else [],
+            "mentionedIds": [our_number] if (our_number and _mentions_bot) else [],
+            "quotedParticipant": quoted_from,
         }
         if not self._should_process_message(gating_data):
+            if is_group:
+                # Replaces the previous unconditional "not implemented"
+                # warning. The drop is now a policy outcome, so this is
+                # informational and actionable rather than an error -- but it
+                # must stay, or a misconfigured group_policy is invisible.
+                logger.info(
+                    "[whatsapp_cloud] group message from %s not admitted "
+                    "(group_policy=%r) -- set group_policy to 'allowlist' or "
+                    "'open' to enable group chats",
+                    chat_id, self._group_policy,
+                )
             return None
 
         # Download media if this is a non-text message type. Inbound media

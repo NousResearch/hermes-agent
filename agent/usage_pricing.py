@@ -171,6 +171,11 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         "claude-3-5-haiku-20241022": ("0.80", "4.00", "0.08", "1.00"),
         "claude-3-haiku-20240307": ("0.25", "1.25", "0.03", "0.30"),
     }),
+    # Claude Opus 5 (launched 2026-07-24): same $5/$25 tier as the 4.5-4.8
+    # line; the generation bump did not move the tier. cache_write is the
+    # 5m-TTL rate ($6.25); the 1h-TTL rate ($10.00) has no column in
+    # PricingEntry, so 1h-TTL sessions undercount cache writes.
+    ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-08", {"claude-opus-5": _OPUS}),
     # Fast mode is a separate model id at a 2x premium.
     ("anthropic", "https://openrouter.ai/anthropic/claude-opus-4.8-fast", "anthropic-pricing-2026-05", {
         "claude-opus-4-8-fast": ("10.00", "50.00", "1.00", "12.50"),
@@ -321,8 +326,66 @@ _SNAPSHOT_PROVIDER_ALIASES = {
 _GOOGLE_PROVIDER_NAMES = {"google", "gemini", "vertex", "google-gemini", "google-ai-studio", "google-vertex", "vertex-ai"}
 
 
+def _anthropic_is_subscription(api_key: Optional[str] = None) -> bool:
+    """Return True when Anthropic access is an OAuth subscription seat.
+
+    Claude Max / Claude Code / Pro seats authenticate with an OAuth token
+    (``sk-ant-oat…``, a JWT, or a ``cc-`` Claude Code token) and carry NO
+    per-token invoice: usage is included in the subscription and metered
+    against rolling quota windows instead. A Console API key
+    (``sk-ant-api…``) is the opposite: every token is billed.
+
+    Pricing them identically is wrong in both directions, so decide from
+    the credential actually in use, mirroring the ``openai-codex`` route
+    which is already ``subscription_included``.
+
+    Detection is POSITIVE-ONLY and fails closed: we return True solely when
+    an OAuth token is positively identified. An API key, an empty pool, or
+    any error keeps the metered path, because under-reporting real spend to
+    a metered user is far worse than the ``unknown``/estimated status this
+    replaces.
+    """
+    try:
+        from agent.anthropic_adapter import _is_oauth_token
+
+        if api_key:
+            # An explicit key wins: it is the credential the caller used.
+            return bool(_is_oauth_token(api_key))
+
+        # No key threaded through (the common case: the token lives in the
+        # credential pool, not the environment). Consult the pool, honouring
+        # priority order so the seat actually used decides.
+        from hermes_cli.auth import read_credential_pool
+
+        pool = read_credential_pool("anthropic")
+        entries = pool if isinstance(pool, list) else (pool or {}).get("anthropic")
+        if not isinstance(entries, list):
+            return False
+
+        def _field(entry: Any, name: str, default: Any) -> Any:
+            return entry.get(name, default) if isinstance(entry, dict) else getattr(entry, name, default)
+
+        def _priority(entry: Any) -> int:
+            try:
+                return int(_field(entry, "priority", 0))
+            except (TypeError, ValueError):
+                return 0
+
+        for entry in sorted(entries, key=_priority):
+            token = _field(entry, "access_token", "") or _field(entry, "api_key", "") or ""
+            if not token:
+                continue
+            # First credential bearing a usable token decides the route.
+            return bool(_is_oauth_token(token))
+        return False
+    except Exception:  # pragma: no cover - defensive: never break pricing
+        logger.debug("anthropic subscription detection failed", exc_info=True)
+        return False
+
+
 def resolve_billing_route(
-    model_name: str, provider: Optional[str] = None, base_url: Optional[str] = None
+    model_name: str, provider: Optional[str] = None, base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> BillingRoute:
     provider_name = (provider or "").strip().lower()
     base = (base_url or "").strip().lower()
@@ -347,6 +410,10 @@ def resolve_billing_route(
         return BillingRoute(provider="openrouter", model=model, base_url=url, billing_mode="official_models_api")
     if provider_name == "nous" or host("inference-api.nousresearch.com"):
         return BillingRoute(provider="nous", model=model, base_url=base_url or _NOUS_DEFAULT_BASE_URL, billing_mode="official_models_api")
+    if provider_name == "anthropic" and _anthropic_is_subscription(api_key):
+        # Claude Max / Claude Code OAuth seats bill nothing per token; only
+        # Console API keys are metered. Decide from the live credential.
+        return BillingRoute(provider="anthropic", model=bare, base_url=url, billing_mode="subscription_included")
     snapshot_provider = _SNAPSHOT_PROVIDER_ALIASES.get(provider_name)
     if snapshot_provider is None:
         if (
@@ -443,7 +510,7 @@ def get_pricing_entry(
     model_name: str, provider: Optional[str] = None, base_url: Optional[str] = None,
     api_key: Optional[str] = None,
 ) -> Optional[PricingEntry]:
-    route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
+    route = resolve_billing_route(model_name, provider=provider, base_url=base_url, api_key=api_key)
     if route.billing_mode == "subscription_included":
         return _INCLUDED_ENTRY
     if route.provider == "openrouter":
@@ -553,7 +620,7 @@ def estimate_usage_cost(
     model_name: str, usage: CanonicalUsage, *, provider: Optional[str] = None,
     base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> CostResult:
-    route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
+    route = resolve_billing_route(model_name, provider=provider, base_url=base_url, api_key=api_key)
     if route.billing_mode == "subscription_included":
         return CostResult(
             amount_usd=_ZERO, status="included", source="none", label="included",

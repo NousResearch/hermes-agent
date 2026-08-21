@@ -53,6 +53,19 @@ _WRAPPER_TAG_RE = re.compile(
 
 _TITLE_MAX = 60
 
+# Tool activity is the substance of most coding-agent sessions, so it is
+# imported rather than reduced to a bare marker.  It is also the bulk of the
+# bytes, so it is bounded: arguments collapse to a one-line digest, results
+# are truncated with an explicit marker, and non-text payloads (a PDF read
+# back through a view tool, an image dump) are replaced by a placeholder
+# instead of pouring megabytes of noise into the conversation.
+_TOOL_ARG_MAX = 200
+_TOOL_RESULT_MAX = 2000
+_PRINTABLE_MIN_RATIO = 0.85
+# Argument keys that carry the "what did it actually do" signal, in priority
+# order; anything else falls back to compact JSON.
+_TOOL_ARG_KEYS = ("file_path", "path", "command", "pattern", "url", "query")
+
 
 @dataclass
 class ForeignSession:
@@ -93,6 +106,100 @@ def _read_json_lines(path: Path):
         return
 
 
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}… [truncated, {len(text) - limit} more chars]"
+
+
+def _is_mostly_printable(text: str) -> bool:
+    """Cheap text/binary test over a bounded sample."""
+    sample = text[:4096]
+    if not sample:
+        return True
+    printable = sum(1 for ch in sample if ch.isprintable() or ch in "\n\r\t")
+    return printable / len(sample) >= _PRINTABLE_MIN_RATIO
+
+
+def _summarize_tool_args(raw: Any) -> str:
+    """One-line digest of a tool call's arguments.
+
+    Codex passes them as a JSON string, Claude Code as a dict; both end up
+    as the single most informative value when there is one, compact JSON
+    otherwise.
+    """
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        if not stripped:
+            return ""
+        try:
+            raw = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            return _truncate(" ".join(stripped.split()), _TOOL_ARG_MAX)
+    if isinstance(raw, dict):
+        for key in _TOOL_ARG_KEYS:
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                return _truncate(" ".join(value.split()), _TOOL_ARG_MAX)
+        if not raw:
+            return ""
+        try:
+            compact = json.dumps(
+                raw, ensure_ascii=False, separators=(",", ":"), default=str
+            )
+        except (TypeError, ValueError):
+            compact = str(raw)
+        return _truncate(compact, _TOOL_ARG_MAX)
+    if raw is None:
+        return ""
+    return _truncate(" ".join(str(raw).split()), _TOOL_ARG_MAX)
+
+
+def _render_tool_call(name: Any, raw_args: Any) -> str:
+    name = name if isinstance(name, str) and name else "tool"
+    return f"[tool: {name}] {_summarize_tool_args(raw_args)}".rstrip()
+
+
+def _tool_result_text(content: Any) -> str:
+    """Pull the human-readable payload out of a tool result of any shape."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: List[str] = []
+        for block in content:
+            if isinstance(block, str):
+                chunks.append(block)
+            elif isinstance(block, dict):
+                if block.get("type") == "image":
+                    chunks.append("[image]")
+                    continue
+                text = block.get("text")
+                if isinstance(text, str):
+                    chunks.append(text)
+        return "\n".join(c for c in chunks if c)
+    if isinstance(content, dict):
+        for key in ("text", "output", "content", "stdout"):
+            value = content.get(key)
+            if isinstance(value, str):
+                return value
+        try:
+            return json.dumps(content, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            return str(content)
+    if content is None:
+        return ""
+    return str(content)
+
+
+def _render_tool_result(content: Any) -> str:
+    text = _tool_result_text(content)
+    if not text.strip():
+        return ""
+    if not _is_mostly_printable(text):
+        return f"[tool result: {len(text)} chars of non-text output omitted]"
+    return "[tool result]\n" + _truncate(text.strip(), _TOOL_RESULT_MAX)
+
+
 def _flatten_blocks(content: Any, *, source: str) -> str:
     """Flatten a message ``content`` (string or block list) to plain text.
 
@@ -115,11 +222,13 @@ def _flatten_blocks(content: Any, *, source: str) -> str:
             if isinstance(text, str) and text:
                 parts.append(text)
         elif btype == "tool_use":  # Claude Code assistant block
-            name = block.get("name") or "tool"
-            parts.append(f"[ran tool: {name}]")
+            parts.append(_render_tool_call(block.get("name"), block.get("input")))
         elif btype == "tool_result":
-            # Tool output echoed into a user message — not typed input.
-            continue
+            # Echoed into a user message by the foreign tool; keeping it there
+            # preserves the transcript's own user/assistant alternation.
+            rendered = _render_tool_result(block.get("content"))
+            if rendered:
+                parts.append(rendered)
         elif btype in ("thinking", "redacted_thinking", "reasoning"):
             continue
         elif btype == "image":
@@ -261,10 +370,23 @@ def parse_codex_session(path: Path) -> Dict[str, Any]:
                 continue
             turns.append((role, text))
         elif ptype in ("custom_tool_call", "function_call", "local_shell_call"):
-            name = payload.get("name") or payload.get("tool") or "tool"
+            name = payload.get("name") or payload.get("tool")
+            raw_args = payload.get("arguments")
+            if raw_args is None:
+                raw_args = payload.get("input", payload.get("action"))
             # Attach as assistant activity; merged into neighbors later.
-            turns.append(("assistant", f"[ran tool: {name}]"))
-        # tool outputs / reasoning / web_search etc. are skipped
+            turns.append(("assistant", _render_tool_call(name, raw_args)))
+        elif ptype in (
+            "custom_tool_call_output",
+            "function_call_output",
+            "local_shell_call_output",
+        ):
+            # Codex has no echoed user message for tool output, so it lands on
+            # the user side to match where Claude Code puts the same content.
+            rendered = _render_tool_result(payload.get("output"))
+            if rendered:
+                turns.append(("user", rendered))
+        # reasoning / web_search etc. are skipped
     return {
         "turns": _merge_turns(turns),
         "cwd": cwd,

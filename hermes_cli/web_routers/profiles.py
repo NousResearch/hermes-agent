@@ -957,9 +957,37 @@ async def open_profile_terminal_endpoint(name: str):
                 'tell application "Terminal"\n'
                 "activate\n"
                 f'do script "{escaped}"\n'
-                "end tell"
+                "end tell\n"
+                'return "ok"\n'
             )
-            subprocess.Popen(["osascript", "-e", applescript])
+            try:
+                result = subprocess.run(
+                    ["osascript", "-e", applescript],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=15,
+                )
+            except FileNotFoundError:
+                raise HTTPException(
+                    status_code=500,
+                    detail="osascript not found — macOS Terminal integration unavailable",
+                )
+            except subprocess.TimeoutExpired:
+                raise HTTPException(
+                    status_code=504,
+                    detail="Timed out asking Terminal to open — is the Automation "
+                    "permission (System Settings → Privacy & Security → Automation) granted?",
+                )
+            if result.returncode != 0:
+                _log.warning(
+                    "osascript open-terminal failed (rc=%s): %s",
+                    result.returncode, (result.stderr or result.stdout).strip()[:300],
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail="Terminal failed to open the profile setup command. "
+                    "Check the Automation permission for Hermes in System Settings "
+                    "→ Privacy & Security → Automation.",
+                )
         else:
             terminal_commands = [
                 ("x-terminal-emulator", ["x-terminal-emulator", "-e", "sh", "-lc", command]),

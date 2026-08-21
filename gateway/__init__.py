@@ -8,6 +8,11 @@ from .session import (
     build_session_context_prompt,
 )
 from .delivery import DeliveryRouter, DeliveryTarget
+from .scoped_reasoning import install_scoped_reasoning_runtime
+
+# Gateway reasoning overrides are more specific than model/global defaults and
+# must stay fixed through same-turn provider/model route changes.
+install_scoped_reasoning_runtime()
 
 __all__ = [
     "GatewayConfig", "PlatformConfig", "HomeChannel", "load_gateway_config",

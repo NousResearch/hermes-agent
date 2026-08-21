@@ -137,21 +137,28 @@ def _headers_dict(msg: dict) -> dict[str, str]:
 
 
 def _extract_message_body(msg: dict) -> str:
-    body = ""
     payload = msg.get("payload", {})
     if payload.get("body", {}).get("data"):
-        body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
-    elif payload.get("parts"):
-        for part in payload["parts"]:
-            if part.get("mimeType") == "text/plain" and part.get("body", {}).get("data"):
+        return base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
+
+    def find_part(parts: list[dict], mime_type: str) -> str:
+        for part in parts:
+            part_type = part.get("mimeType", "")
+            if part_type == mime_type and part.get("body", {}).get("data"):
                 body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
-                break
-        if not body:
-            for part in payload["parts"]:
-                if part.get("mimeType") == "text/html" and part.get("body", {}).get("data"):
-                    body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
-                    break
-    return body
+                if body.strip():
+                    return body
+            # Descend only through MIME containers. Attached message/rfc822
+            # parts can expose their own nested text parts, but those belong to
+            # the attachment rather than the containing message body.
+            if part_type.startswith("multipart/"):
+                body = find_part(part.get("parts", []), mime_type)
+                if body:
+                    return body
+        return ""
+
+    parts = payload.get("parts", [])
+    return find_part(parts, "text/plain") or find_part(parts, "text/html")
 
 
 def _extract_doc_text(doc: dict) -> str:

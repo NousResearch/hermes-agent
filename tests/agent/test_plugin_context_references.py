@@ -12,10 +12,13 @@ from agent.context_references import (
     ContextCompletionItem,
     ContextReferenceProvider,
     _PLUGIN_REFERENCE_PATTERN,
+    _all_context_reference_providers,
     _context_reference_providers,
+    _scoped_context_reference_providers,
     get_context_reference_providers,
     parse_context_references,
     register_context_reference_provider,
+    restore_context_reference_registration,
 )
 
 
@@ -64,8 +67,10 @@ class _ErrorProvider(ContextReferenceProvider):
 def _clean_registry():
     """Clear plugin registry before and after each test."""
     _context_reference_providers.clear()
+    _scoped_context_reference_providers.clear()
     yield
     _context_reference_providers.clear()
+    _scoped_context_reference_providers.clear()
 
 
 # -- registration tests ----------------------------------------------------
@@ -195,3 +200,140 @@ def test_completion_item_custom():
     item = ContextCompletionItem(text="1", display="ENG-1", meta="Bug")
     assert item.display == "ENG-1"
     assert item.meta == "Bug"
+
+
+# -- profile-scoping tests (agent.context_references low-level API) --------
+#
+# register_context_reference_provider() previously wrote into one bare,
+# process-global dict with no scope key at all — a multiplex/Team-Gateway
+# process running one PluginManager per profile would have two profiles'
+# plugins collide on the same @prefix (ValueError, silently swallowed by
+# PluginContext.register_context_reference, just a log warning) whenever
+# they registered the same prefix, and neither profile's registration was
+# tracked in the ownership ledger, so unload/force-reload could never free
+# a prefix for re-registration either.
+
+
+class TestScopedRegistration:
+    def test_two_scopes_can_register_the_same_prefix(self):
+        provider_a = _DummyProvider()
+        provider_b = _DummyProvider()
+        register_context_reference_provider(provider_a, scope="profile-a")
+        register_context_reference_provider(provider_b, scope="profile-b")
+
+        assert _all_context_reference_providers(scope="profile-a")["test"] is provider_a
+        assert _all_context_reference_providers(scope="profile-b")["test"] is provider_b
+
+    def test_same_scope_duplicate_prefix_still_rejected(self):
+        register_context_reference_provider(_DummyProvider(), scope="profile-a")
+        with pytest.raises(ValueError, match="already registered"):
+            register_context_reference_provider(_DummyProvider(), scope="profile-a")
+
+    def test_scoped_registration_is_invisible_to_other_scopes(self):
+        register_context_reference_provider(_DummyProvider(), scope="profile-a")
+        assert "test" not in _all_context_reference_providers(scope="profile-b")
+        assert "test" not in _all_context_reference_providers(scope=None)
+
+    def test_scope_none_still_uses_the_legacy_global_dict(self):
+        """Backward compatibility: callers that don't pass scope= are
+        unaffected by the scoping change."""
+        provider = _DummyProvider()
+        register_context_reference_provider(provider)
+        assert _context_reference_providers["test"] is provider
+        assert _scoped_context_reference_providers == {}
+
+    def test_restore_removes_the_registration(self):
+        provider = _DummyProvider()
+        register_context_reference_provider(provider, scope="profile-a")
+
+        ok = restore_context_reference_registration(
+            "test", provider, None, scope="profile-a"
+        )
+
+        assert ok is True
+        assert "test" not in _all_context_reference_providers(scope="profile-a")
+        # The now-empty per-scope bucket is dropped, not left as a stale
+        # empty dict entry.
+        assert "profile-a" not in _scoped_context_reference_providers
+
+    def test_restore_is_a_noop_when_current_no_longer_installed(self):
+        """A stale dispose callback (from an earlier generation) must not
+        evict whatever is CURRENTLY registered under the prefix."""
+        stale_provider = _DummyProvider()
+        live_provider = _DummyProvider()
+        register_context_reference_provider(live_provider, scope="profile-a")
+
+        ok = restore_context_reference_registration(
+            "test", stale_provider, None, scope="profile-a"
+        )
+
+        assert ok is False
+        assert _all_context_reference_providers(scope="profile-a")["test"] is live_provider
+
+    def test_unregister_then_reregister_the_same_prefix_succeeds(self):
+        """The bug's second half: after a clean unload, the SAME prefix must
+        be re-registerable — not permanently stuck 'already registered'."""
+        first = _DummyProvider()
+        register_context_reference_provider(first, scope="profile-a")
+        assert restore_context_reference_registration(
+            "test", first, None, scope="profile-a"
+        )
+
+        second = _DummyProvider()
+        register_context_reference_provider(second, scope="profile-a")  # must not raise
+
+        assert _all_context_reference_providers(scope="profile-a")["test"] is second
+
+
+class TestPluginContextRegistrationIsScopedAndTracked:
+    """Integration level: PluginContext.register_context_reference wires
+    scope + ownership-ledger tracking, matching every sibling register_*
+    method (register_tool, register_secret_source, ...)."""
+
+    def _ctx(self, scope_key: str):
+        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+        manager = PluginManager(scope_key=scope_key)
+        return PluginContext(
+            PluginManifest(name="ctx-ref-fixture", source="user"), manager
+        )
+
+    def test_returns_a_registration_handle(self):
+        ctx = self._ctx("profile-a")
+        handle = ctx.register_context_reference(_DummyProvider())
+        assert handle is not None
+
+    def test_invalid_provider_returns_none_not_a_handle(self):
+        ctx = self._ctx("profile-a")
+        assert ctx.register_context_reference("not a provider") is None
+
+    def test_two_profiles_register_the_same_prefix_without_colliding(self):
+        ctx_a = self._ctx("profile-a")
+        ctx_b = self._ctx("profile-b")
+        provider_a = _DummyProvider()
+        provider_b = _DummyProvider()
+
+        handle_a = ctx_a.register_context_reference(provider_a)
+        handle_b = ctx_b.register_context_reference(provider_b)
+
+        assert handle_a is not None
+        assert handle_b is not None, (
+            "a second profile registering the same @prefix must not be "
+            "rejected by the first profile's registration"
+        )
+        assert _all_context_reference_providers(scope="profile-a")["test"] is provider_a
+        assert _all_context_reference_providers(scope="profile-b")["test"] is provider_b
+
+    def test_disposing_the_handle_frees_the_prefix_for_reregistration(self):
+        ctx = self._ctx("profile-a")
+        handle = ctx.register_context_reference(_DummyProvider())
+        assert handle is not None
+
+        handle.dispose()
+
+        assert "test" not in _all_context_reference_providers(scope="profile-a")
+        second_handle = ctx.register_context_reference(_DummyProvider())
+        assert second_handle is not None, (
+            "disposing the first registration must free the prefix — a "
+            "stale entry must not permanently reject re-registration"
+        )

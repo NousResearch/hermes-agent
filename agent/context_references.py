@@ -24,6 +24,13 @@ from abc import ABC, abstractmethod
 BUILTIN_PREFIXES = frozenset({"diff", "staged", "file", "folder", "git", "url"})
 
 _context_reference_providers: dict[str, "ContextReferenceProvider"] = {}
+# Per-profile plugin registrations (hermes_home_key() -> {prefix: provider}),
+# mirroring the scoped-registry pattern used by agent/tts_registry.py and
+# siblings: a multiplex/Team-Gateway process runs one PluginManager per
+# profile, and two profiles registering the same @-prefix must not collide
+# in this single-process dict, nor must one profile's unload/reload evict
+# another profile's provider.
+_scoped_context_reference_providers: dict[str, dict[str, "ContextReferenceProvider"]] = {}
 
 
 class ContextCompletionItem:
@@ -58,8 +65,18 @@ class ContextReferenceProvider(ABC):
         ...
 
 
-def register_context_reference_provider(provider: ContextReferenceProvider) -> None:
-    """Register a plugin context reference provider."""
+def register_context_reference_provider(
+    provider: ContextReferenceProvider, *, scope: str | None = None
+) -> None:
+    """Register a plugin context reference provider.
+
+    ``scope`` isolates the registration to one profile (``hermes_home_key()``
+    value) so a multiplex/Team-Gateway process running several profiles in
+    one process can't have two profiles' plugins collide on the same
+    ``@prefix``, or one profile's unload evict another's provider. ``None``
+    (the default) registers process-globally, matching the pre-scoping
+    behavior for any caller that doesn't pass one.
+    """
     if not isinstance(provider, ContextReferenceProvider):
         raise TypeError("provider must be a ContextReferenceProvider instance")
     prefix = provider.prefix.lower().strip()
@@ -67,14 +84,63 @@ def register_context_reference_provider(provider: ContextReferenceProvider) -> N
         raise ValueError("prefix must be a non-empty string")
     if prefix in BUILTIN_PREFIXES:
         raise ValueError(f"prefix '{prefix}' is reserved for built-in references")
-    if prefix in _context_reference_providers:
+    target = (
+        _context_reference_providers
+        if scope is None
+        else _scoped_context_reference_providers.setdefault(scope, {})
+    )
+    if prefix in target:
         raise ValueError(f"prefix '{prefix}' is already registered")
-    _context_reference_providers[prefix] = provider
+    target[prefix] = provider
+
+
+def restore_context_reference_registration(
+    prefix: str,
+    current: ContextReferenceProvider,
+    previous: ContextReferenceProvider | None,
+    *,
+    scope: str | None = None,
+) -> bool:
+    """Remove/restore one registration; the ownership-ledger dispose callback.
+
+    Mirrors ``agent.tts_registry.restore_registration`` and siblings: only
+    acts when *current* is still the installed provider (a later
+    re-registration under the same prefix must not be evicted by a stale
+    unload), and drops the per-scope bucket once empty.
+    """
+    key = prefix.lower().strip()
+    target = (
+        _context_reference_providers
+        if scope is None
+        else _scoped_context_reference_providers.setdefault(scope, {})
+    )
+    if target.get(key) is not current:
+        return False
+    if previous is None:
+        target.pop(key, None)
+    else:
+        target[key] = previous
+    if scope is not None and not target:
+        _scoped_context_reference_providers.pop(scope, None)
+    return True
+
+
+def _all_context_reference_providers(
+    *, scope: str | None = None
+) -> dict[str, ContextReferenceProvider]:
+    """Merge process-global + the active scope's plugin-registered providers."""
+    from hermes_constants import hermes_home_key
+
+    merged = dict(_context_reference_providers)
+    merged.update(
+        _scoped_context_reference_providers.get(scope or hermes_home_key(), {})
+    )
+    return merged
 
 
 def get_context_reference_providers() -> dict[str, ContextReferenceProvider]:
-    """Return a snapshot of all registered plugin providers."""
-    return dict(_context_reference_providers)
+    """Return a snapshot of all registered plugin providers for the active scope."""
+    return _all_context_reference_providers()
 
 
 _QUOTED_REFERENCE_VALUE = r'(?:`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\')'
@@ -186,7 +252,8 @@ def parse_context_references(message: str) -> list[ContextReference]:
         )
 
     # Second pass: resolve plugin-registered prefixes the built-in pattern missed
-    if _context_reference_providers:
+    plugin_providers = _all_context_reference_providers()
+    if plugin_providers:
         for match in _PLUGIN_REFERENCE_PATTERN.finditer(message):
             kind = match.group("kind")
             if kind in BUILTIN_PREFIXES:
@@ -194,7 +261,7 @@ def parse_context_references(message: str) -> list[ContextReference]:
             # Skip if already captured by the built-in pattern
             if any(r.kind == kind and r.start == match.start() for r in refs):
                 continue
-            if kind in _context_reference_providers:
+            if kind in plugin_providers:
                 value = _strip_trailing_punctuation(match.group("value") or "")
                 refs.append(
                     ContextReference(
@@ -353,7 +420,7 @@ async def _expand_reference(
         return f"{ref.raw}: {exc}", None
 
     # Plugin-provided context references
-    provider = _context_reference_providers.get(ref.kind)
+    provider = _all_context_reference_providers().get(ref.kind)
     if provider is not None:
         try:
             plugin_content = await provider.expand(ref.target)

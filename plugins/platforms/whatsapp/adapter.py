@@ -1000,7 +1000,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         *,
         finalize: bool = False,
     ) -> SendResult:
-        """Edit a previously sent message via the WhatsApp bridge."""
+        """Edit a previously sent message via the WhatsApp bridge.
+
+        ``content`` arrives as raw model markdown, exactly as it does in
+        ``send()``, so it is converted to WhatsApp syntax here too. Streaming
+        replies are delivered as progressive edits, so skipping the conversion
+        showed literal ``**asterisks``/backticks for the whole live stream and
+        only tidied up if a final plain ``send()`` happened to follow (#80061).
+        Discord, Slack, Telegram, Matrix, Mattermost and Feishu all format
+        inside ``edit_message`` for the same reason.
+        """
         if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
         bridge_exit = await self._check_managed_bridge_exit()
@@ -1013,7 +1022,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 json={
                     "chatId": to_whatsapp_jid(chat_id),
                     "messageId": message_id,
-                    "message": content,
+                    "message": self.format_message(content),
                 },
                 timeout=aiohttp.ClientTimeout(total=15)
             ) as resp:

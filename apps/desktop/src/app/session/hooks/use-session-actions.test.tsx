@@ -48,6 +48,7 @@ import {
   setTurnStartedAt
 } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
+import { clearTranscriptTails, saveTranscriptTail } from '@/store/transcript-tail-cache'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
 import { deferred } from '../../../test/deferred'
@@ -612,6 +613,7 @@ function ResumeHarness({
   requestGateway,
   runtimeIdByStoredSessionIdRef,
   selectedStoredSessionId = null,
+  selectedStoredSessionProfileRef,
   sessionStateByRuntimeIdRef
 }: {
   onStateUpdate?: (sessionId: string, state: ClientSessionState) => void
@@ -621,6 +623,7 @@ function ResumeHarness({
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
   selectedStoredSessionId?: string | null
+  selectedStoredSessionProfileRef?: MutableRefObject<string | null>
   sessionStateByRuntimeIdRef?: MutableRefObject<Map<string, ClientSessionState>>
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
@@ -641,6 +644,7 @@ function ResumeHarness({
     runtimeIdByStoredSessionIdRef: runtimeMapRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef: ref<string | null>(selectedStoredSessionId),
+    selectedStoredSessionProfileRef,
     sessionStateByRuntimeIdRef: stateMapRef,
     syncSessionStateToView: vi.fn(),
     updateSessionState: (sessionId, updater, storedSessionId) => {
@@ -1700,6 +1704,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     setResumeFailedSessionId(null)
     setMessages([])
     setSessions([])
+    clearTranscriptTails()
     vi.mocked(requestGatewayForProfile).mockReset()
     vi.restoreAllMocks()
   })
@@ -1752,6 +1757,74 @@ describe('resumeSession warm-cache mapping integrity', () => {
     // The corrupt mapping was purged so it can't mis-resolve again.
     expect(runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
     expect(sessionStateByRuntimeIdRef.current.has('rt-recycled')).toBe(false)
+  })
+
+  it('clears a foreign same-id selection and paints only the owner-qualified durable tail', async () => {
+    const sharedId = 'cron-shared-session'
+    const selectedProfileRef: MutableRefObject<string | null> = { current: 'default' }
+
+    const foreignMessage = {
+      id: 'default-live',
+      parts: [{ text: 'default transcript', type: 'text' }],
+      role: 'assistant'
+    } as never
+
+    const targetCachedMessage = {
+      id: 'meta-cached',
+      parts: [{ text: 'meta transcript', type: 'text' }],
+      role: 'assistant'
+    } as never
+
+    const prefetch = deferred<{ messages: never[]; session_id: string }>()
+    const resumed = deferred<SessionResumeResponse>()
+
+    setMessages([foreignMessage])
+    setSessions([
+      storedSession({ id: sharedId, message_count: 1, profile: 'default', title: 'Default duplicate' }),
+      storedSession({ id: sharedId, message_count: 1, profile: 'meta', title: 'Cron owner' })
+    ])
+    saveTranscriptTail(sharedId, [foreignMessage], 'default')
+    saveTranscriptTail(sharedId, [targetCachedMessage], 'meta')
+    vi.mocked(getLatestSessionMessages).mockReturnValue(prefetch.promise)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return resumed.promise as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(requestGatewayForProfile).mockImplementation(async (_profile, method) => requestGateway(method))
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean, ownerProfile?: string) => Promise<unknown>) | null =
+      null
+
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        requestGateway={requestGateway}
+        selectedStoredSessionId={sharedId}
+        selectedStoredSessionProfileRef={selectedProfileRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const pendingResume = resume!(sharedId, true, 'meta')
+
+    await waitFor(() => expect($messages.get().map(message => message.id)).toEqual(['meta-cached']))
+    expect(selectedProfileRef.current).toBe('meta')
+    expect($messages.get()).not.toContain(foreignMessage)
+
+    prefetch.resolve({ messages: [], session_id: sharedId })
+    resumed.resolve({
+      info: {},
+      messages: [],
+      resumed: sharedId,
+      session_id: 'rt-meta',
+      session_key: sharedId
+    } as never)
+    await pendingResume
   })
 
   it('does not activate a same-id runtime cache owned by another profile', async () => {
@@ -1807,9 +1880,8 @@ describe('resumeSession warm-cache mapping integrity', () => {
       requestGateway(method, { ...(params ?? {}), profile })
     )
 
-    let resume:
-      | ((storedSessionId: string, replaceRoute?: boolean, ownerProfile?: string) => Promise<unknown>)
-      | null = null
+    let resume: ((storedSessionId: string, replaceRoute?: boolean, ownerProfile?: string) => Promise<unknown>) | null =
+      null
 
     render(
       <ResumeHarness
@@ -1885,9 +1957,8 @@ describe('resumeSession warm-cache mapping integrity', () => {
       requestGateway(method, { ...(params ?? {}), profile })
     )
 
-    let resume:
-      | ((storedSessionId: string, replaceRoute?: boolean, ownerProfile?: string) => Promise<unknown>)
-      | null = null
+    let resume: ((storedSessionId: string, replaceRoute?: boolean, ownerProfile?: string) => Promise<unknown>) | null =
+      null
 
     render(
       <ResumeHarness
@@ -1900,10 +1971,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     await waitFor(() => expect(resume).not.toBeNull())
     await resume!(sharedId, true, 'meta')
 
-    expect(requestGateway).toHaveBeenCalledWith(
-      'session.activate',
-      expect.objectContaining({ session_id: 'rt-meta' })
-    )
+    expect(requestGateway).toHaveBeenCalledWith('session.activate', expect.objectContaining({ session_id: 'rt-meta' }))
     expect(requestGateway).not.toHaveBeenCalledWith(
       'session.activate',
       expect.objectContaining({ session_id: 'rt-default' })

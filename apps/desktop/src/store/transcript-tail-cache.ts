@@ -16,8 +16,11 @@ import type { ChatMessage } from '@/lib/chat-messages'
 //     messages evict the entry rather than truncating a message mid-parts.
 //   - LRU across MAX_ENTRIES sessions; corrupt entries self-evict.
 //   - Same trust domain as state.db on the same disk — no new exposure.
-//   - Keyed by stored session id (durable identity), never runtime id.
+//   - Keyed by owning profile + stored session id (durable identity), never
+//     runtime id. Stored ids are only unique inside a profile.
 
+// Keep the v1 namespace so its index can evict/clear legacy bare-id entries.
+// Qualified keys never read those entries, so the migration fails closed.
 const PREFIX = 'hermes.transcript-tail.v1:'
 const INDEX_KEY = 'hermes.transcript-tail.v1-index'
 const TAIL_MESSAGES = 40
@@ -56,9 +59,15 @@ function writeIndex(store: Storage, ids: string[]): void {
   }
 }
 
-function touchIndex(store: Storage, storedSessionId: string): void {
-  const ids = readIndex(store).filter(id => id !== storedSessionId)
-  ids.push(storedSessionId)
+function cacheKey(storedSessionId: string, ownerProfile?: null | string): string {
+  const profile = ownerProfile?.trim() || 'default'
+
+  return `${encodeURIComponent(profile)}:${encodeURIComponent(storedSessionId)}`
+}
+
+function touchIndex(store: Storage, key: string): void {
+  const ids = readIndex(store).filter(id => id !== key)
+  ids.push(key)
 
   while (ids.length > MAX_ENTRIES) {
     const evicted = ids.shift()
@@ -76,7 +85,11 @@ function touchIndex(store: Storage, storedSessionId: string): void {
 }
 
 /** Persist the tail of a session's transcript. No-op on empty/oversized. */
-export function saveTranscriptTail(storedSessionId: string, messages: ChatMessage[]): void {
+export function saveTranscriptTail(
+  storedSessionId: string,
+  messages: ChatMessage[],
+  ownerProfile?: null | string
+): void {
   const id = (storedSessionId ?? '').trim()
   const store = storage()
 
@@ -111,14 +124,16 @@ export function saveTranscriptTail(storedSessionId: string, messages: ChatMessag
   }
 
   try {
-    store.setItem(PREFIX + id, serialized)
-    touchIndex(store, id)
+    const key = cacheKey(id, ownerProfile)
+    store.setItem(PREFIX + key, serialized)
+    touchIndex(store, key)
   } catch {
     // Quota exceeded — evict everything and retry once (small cache >> stale cache).
     try {
       clearTranscriptTails()
-      store.setItem(PREFIX + id, serialized)
-      touchIndex(store, id)
+      const key = cacheKey(id, ownerProfile)
+      store.setItem(PREFIX + key, serialized)
+      touchIndex(store, key)
     } catch {
       // Storage genuinely unavailable; instant paint just won't happen.
     }
@@ -126,7 +141,7 @@ export function saveTranscriptTail(storedSessionId: string, messages: ChatMessag
 }
 
 /** Cached tail for a stored session, or null. Corrupt entries self-evict. */
-export function loadTranscriptTail(storedSessionId: string): ChatMessage[] | null {
+export function loadTranscriptTail(storedSessionId: string, ownerProfile?: null | string): ChatMessage[] | null {
   const id = (storedSessionId ?? '').trim()
   const store = storage()
 
@@ -134,10 +149,11 @@ export function loadTranscriptTail(storedSessionId: string): ChatMessage[] | nul
     return null
   }
 
+  const key = cacheKey(id, ownerProfile)
   let raw: null | string = null
 
   try {
-    raw = store.getItem(PREFIX + id)
+    raw = store.getItem(PREFIX + key)
   } catch {
     return null
   }
@@ -156,7 +172,7 @@ export function loadTranscriptTail(storedSessionId: string): ChatMessage[] | nul
     return parsed.messages
   } catch {
     try {
-      store.removeItem(PREFIX + id)
+      store.removeItem(PREFIX + key)
     } catch {
       // best effort
     }
@@ -166,7 +182,7 @@ export function loadTranscriptTail(storedSessionId: string): ChatMessage[] | nul
 }
 
 /** Drop one session's cached tail (session deleted / cache poisoned). */
-export function dropTranscriptTail(storedSessionId: string): void {
+export function dropTranscriptTail(storedSessionId: string, ownerProfile?: null | string): void {
   const id = (storedSessionId ?? '').trim()
   const store = storage()
 
@@ -174,11 +190,13 @@ export function dropTranscriptTail(storedSessionId: string): void {
     return
   }
 
+  const key = cacheKey(id, ownerProfile)
+
   try {
-    store.removeItem(PREFIX + id)
+    store.removeItem(PREFIX + key)
     writeIndex(
       store,
-      readIndex(store).filter(entry => entry !== id)
+      readIndex(store).filter(entry => entry !== key)
     )
   } catch {
     // best effort

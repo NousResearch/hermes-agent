@@ -1,5 +1,5 @@
 import { cleanup, render } from '@testing-library/react'
-import type { MutableRefObject } from 'react'
+import { type MutableRefObject, useRef } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $resumeExhaustedSessionId, setResumeExhaustedSessionId } from '@/store/session'
@@ -25,19 +25,32 @@ interface HarnessProps {
   resumeExhaustedSessionId?: null | string
   sessionResumeRequest?: null | { sequence: number; sessionId: string }
   routedSessionId: null | string
+  routedSessionProfile?: null | string
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: null | string
   selectedStoredSessionIdRef: MutableRefObject<null | string>
+  selectedStoredSessionProfileRef?: MutableRefObject<null | string>
   startFreshSessionDraft: (focus: boolean) => unknown
 }
 
 function RouteResumeHarness({
   resumeFailedSessionId = null,
   resumeExhaustedSessionId = null,
+  routedSessionProfile = null,
   sessionResumeRequest = null,
+  selectedStoredSessionProfileRef,
   ...props
 }: HarnessProps) {
-  useRouteResume({ ...props, resumeExhaustedSessionId, resumeFailedSessionId, sessionResumeRequest })
+  const fallbackSelectedProfileRef = useRef<null | string>(null)
+
+  useRouteResume({
+    ...props,
+    resumeExhaustedSessionId,
+    resumeFailedSessionId,
+    routedSessionProfile,
+    selectedStoredSessionProfileRef: selectedStoredSessionProfileRef ?? fallbackSelectedProfileRef,
+    sessionResumeRequest
+  })
 
   return null
 }
@@ -311,6 +324,43 @@ describe('useRouteResume', () => {
     expect(resumeSession).toHaveBeenCalledWith('session-1', true)
   })
 
+  it('treats a profile-qualified same-id route as foreign and preserves its owner across reconnect', () => {
+    const resumeSession = vi.fn(async () => undefined)
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-default' }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'shared-session' }
+    const selectedStoredSessionProfileRef: MutableRefObject<null | string> = { current: 'default' }
+
+    const props = {
+      activeSessionId: 'runtime-default',
+      activeSessionIdRef,
+      creatingSessionRef: { current: false },
+      currentView: 'chat',
+      freshDraftReady: false,
+      locationPathname: '/shared-session?profile=meta',
+      resumeSession,
+      routedSessionId: 'shared-session',
+      routedSessionProfile: 'meta',
+      runtimeIdByStoredSessionIdRef: { current: new Map([['shared-session', 'runtime-default']]) },
+      selectedStoredSessionId: 'shared-session',
+      selectedStoredSessionIdRef,
+      selectedStoredSessionProfileRef,
+      startFreshSessionDraft: vi.fn()
+    }
+
+    const { rerender } = render(<RouteResumeHarness {...props} gatewayState="open" />)
+
+    expect(resumeSession).toHaveBeenCalledTimes(1)
+    expect(resumeSession).toHaveBeenLastCalledWith('shared-session', true, 'meta')
+
+    // Model resumeSession's synchronous owner handoff, then a real reconnect.
+    selectedStoredSessionProfileRef.current = 'meta'
+    rerender(<RouteResumeHarness {...props} gatewayState="closed" />)
+    rerender(<RouteResumeHarness {...props} gatewayState="open" />)
+
+    expect(resumeSession).toHaveBeenCalledTimes(2)
+    expect(resumeSession).toHaveBeenLastCalledWith('shared-session', true, 'meta')
+  })
+
   it('re-resumes an already-active same route when a plugin explicitly requests hydration', () => {
     const resumeSession = vi.fn(async () => undefined)
     const startFreshSessionDraft = vi.fn()
@@ -392,6 +442,26 @@ describe('useRouteResume bounded auto-retry after a failed resume', () => {
     vi.advanceTimersByTime(1_000)
     expect(resumeSession).toHaveBeenCalledTimes(1)
     expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+  })
+
+  it('retries a profile-qualified route on the owning profile', () => {
+    vi.useFakeTimers()
+    const resumeSession = vi.fn(async () => undefined)
+    const props = strandedProps(resumeSession)
+
+    render(
+      <RouteResumeHarness
+        {...props}
+        locationPathname="/session-1?profile=meta"
+        resumeFailedSessionId="session-1"
+        routedSessionProfile="meta"
+        selectedStoredSessionProfileRef={{ current: 'meta' }}
+      />
+    )
+    resumeSession.mockClear()
+
+    vi.advanceTimersByTime(1_000)
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true, 'meta')
   })
 
   it('does NOT retry a failed session that is not the routed one', () => {

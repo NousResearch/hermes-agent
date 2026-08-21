@@ -31,6 +31,18 @@ describe('transcript tail cache', () => {
     expect(loadTranscriptTail('sess-other')).toBeNull()
   })
 
+  it('keeps duplicate stored ids isolated by owning profile', () => {
+    saveTranscriptTail('shared', [msg('default-message')], 'default')
+    saveTranscriptTail('shared', [msg('meta-message')], 'meta')
+
+    expect(loadTranscriptTail('shared', 'default')?.[0].id).toBe('default-message')
+    expect(loadTranscriptTail('shared', 'meta')?.[0].id).toBe('meta-message')
+
+    dropTranscriptTail('shared', 'default')
+    expect(loadTranscriptTail('shared', 'default')).toBeNull()
+    expect(loadTranscriptTail('shared', 'meta')?.[0].id).toBe('meta-message')
+  })
+
   it('persists only the bounded tail of a long transcript', () => {
     const long = Array.from({ length: 200 }, (_, index) => msg(`m${index}`))
     saveTranscriptTail('sess-long', long)
@@ -61,11 +73,23 @@ describe('transcript tail cache', () => {
     expect(loadTranscriptTail('sess-empty')).toBeNull()
   })
 
+  it('fails closed on legacy bare-id entries and clears them through the shared index', () => {
+    window.localStorage.setItem(
+      'hermes.transcript-tail.v1:shared',
+      JSON.stringify({ messages: [msg('legacy-foreign')], savedAt: 1 })
+    )
+    window.localStorage.setItem('hermes.transcript-tail.v1-index', JSON.stringify(['shared']))
+
+    expect(loadTranscriptTail('shared', 'default')).toBeNull()
+    clearTranscriptTails()
+    expect(window.localStorage.getItem('hermes.transcript-tail.v1:shared')).toBeNull()
+  })
+
   it('self-evicts a corrupt entry instead of returning garbage', () => {
-    window.localStorage.setItem('hermes.transcript-tail.v1:sess-bad', '{not json')
+    window.localStorage.setItem('hermes.transcript-tail.v1:default:sess-bad', '{not json')
 
     expect(loadTranscriptTail('sess-bad')).toBeNull()
-    expect(window.localStorage.getItem('hermes.transcript-tail.v1:sess-bad')).toBeNull()
+    expect(window.localStorage.getItem('hermes.transcript-tail.v1:default:sess-bad')).toBeNull()
   })
 
   it('drops a deleted session and wipes everything on a gateway re-home', () => {

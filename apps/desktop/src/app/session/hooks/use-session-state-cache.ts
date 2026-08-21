@@ -58,6 +58,9 @@ export function useSessionStateCache({
   const sessionTiles = useStore($sessionTiles)
   const activeSessionIdRef = useRef<string | null>(activeSessionId)
   const selectedStoredSessionIdRef = useRef<string | null>(selectedStoredSessionId)
+  // Stored ids are profile-local. Keep the owner beside the imperative
+  // selection ref so same-id profile switches cannot inherit transcript state.
+  const selectedStoredSessionProfileRef = useRef<string | null>(null)
 
   // Mirror the latest prop into its ref synchronously during render — not via
   // a passive useEffect, which only fires a frame after paint and left the
@@ -375,6 +378,7 @@ export function useSessionStateCache({
     resetViewSync,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
+    selectedStoredSessionProfileRef,
     sessionStateByRuntimeIdRef: sessionStateByRuntimeIdRef as MutableRefObject<Map<string, ClientSessionState>>,
     syncSessionStateToView,
     updateSessionState

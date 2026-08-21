@@ -81,6 +81,7 @@ describe('useDesktopIntegrations', () => {
     profileReady = false,
     resumeExhaustedSessionId = null as string | null,
     routedSessionId = null as string | null,
+    routedSessionProfile = null as string | null,
     sessions = [] as readonly SessionInfo[]
   } = {}) {
     return renderHook(
@@ -90,6 +91,7 @@ describe('useDesktopIntegrations', () => {
         profileReady,
         resumeExhaustedSessionId,
         routedSessionId,
+        routedSessionProfile,
         sessions
       }: {
         activeProfile: string
@@ -97,6 +99,7 @@ describe('useDesktopIntegrations', () => {
         profileReady: boolean
         resumeExhaustedSessionId: string | null
         routedSessionId: string | null
+        routedSessionProfile?: string | null
         sessions: readonly SessionInfo[]
       }) =>
         useDesktopIntegrations({
@@ -109,6 +112,7 @@ describe('useDesktopIntegrations', () => {
           refreshSessions: vi.fn(),
           resumeExhaustedSessionId,
           routedSessionId,
+          routedSessionProfile,
           runtimeIdByStoredSessionId: { current: new Map() },
           sessions
         }),
@@ -119,6 +123,7 @@ describe('useDesktopIntegrations', () => {
           profileReady,
           resumeExhaustedSessionId,
           routedSessionId,
+          routedSessionProfile,
           sessions
         }
       }
@@ -172,6 +177,7 @@ describe('useDesktopIntegrations', () => {
         profileReady: true,
         resumeExhaustedSessionId: null,
         routedSessionId: null,
+        routedSessionProfile: null,
         sessions: [session({ id: 'remembered-session', profile: 'default' })]
       })
 
@@ -330,6 +336,7 @@ describe('useDesktopIntegrations', () => {
         profileReady: true,
         resumeExhaustedSessionId: null,
         routedSessionId: 'ops-session',
+        routedSessionProfile: null,
         sessions
       })
 
@@ -338,6 +345,26 @@ describe('useDesktopIntegrations', () => {
 
       // Coder's remembered session should still be there.
       expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.coder')).toBe('coder-session')
+    })
+
+    it('remembers a profile-qualified same-id route under its owner, not the ambient profile', () => {
+      const sessions = [
+        session({ id: 'shared-session', profile: 'default' }),
+        session({ id: 'shared-session', profile: 'meta' })
+      ]
+
+      render({
+        activeProfile: 'default',
+        locationPathname: '/shared-session?profile=meta',
+        profileReady: true,
+        routedSessionId: 'shared-session',
+        routedSessionProfile: 'meta',
+        sessions
+      })
+
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.meta')).toBe('shared-session')
+      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.meta')).toBe('/shared-session?profile=meta')
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBeNull()
     })
 
     it('does NOT overwrite remembered state when session ownership fails validation', () => {
@@ -386,6 +413,7 @@ describe('useDesktopIntegrations', () => {
         locationPathname: '/settings',
         profileReady: true,
         routedSessionId: null,
+        routedSessionProfile: null,
         sessions: []
       })
 
@@ -396,6 +424,7 @@ describe('useDesktopIntegrations', () => {
         profileReady: true,
         resumeExhaustedSessionId: null,
         routedSessionId: null,
+        routedSessionProfile: null,
         sessions: []
       })
 

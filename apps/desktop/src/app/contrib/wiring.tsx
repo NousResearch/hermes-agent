@@ -98,6 +98,7 @@ import {
   CRON_ROUTE,
   navigateToWorkspacePage,
   routeSessionId,
+  routeSessionProfile,
   sessionRoute,
   SETTINGS_ROUTE,
   syncWorkspaceRoute
@@ -221,7 +222,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const profileScope = useStore($profileScope)
   const boot = useStore($desktopBoot)
 
-  const routedSessionId = routeSessionId(location.pathname)
+  const routeTarget = `${location.pathname}${location.search}`
+  const routedSessionId = routeSessionId(routeTarget)
+  const routedSessionProfile = routeSessionProfile(routeTarget)
   const routedSessionIdRef = useRef(routedSessionId)
 
   routedSessionIdRef.current = routedSessionId
@@ -270,6 +273,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     resetViewSync,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
+    selectedStoredSessionProfileRef,
     sessionStateByRuntimeIdRef,
     syncSessionStateToView,
     updateSessionState
@@ -288,15 +292,15 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // navigation), session-owned RPCs still have to hit the session's backend.
   const requestGateway = useCallback(
     <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
-      const owner = rememberedSessionProfile(
-        $sessions.get(),
-        selectedStoredSessionIdRef.current,
-        $activeGatewayProfile.get()
-      )
+      const selectedOwner = selectedStoredSessionIdRef.current ? selectedStoredSessionProfileRef.current : null
+
+      const owner =
+        selectedOwner ??
+        rememberedSessionProfile($sessions.get(), selectedStoredSessionIdRef.current, $activeGatewayProfile.get())
 
       return requestForSessionProfile<T>(owner, ambientRequestGateway, method, params ?? {}, timeoutMs, signal)
     },
-    [ambientRequestGateway]
+    [ambientRequestGateway, selectedStoredSessionIdRef, selectedStoredSessionProfileRef]
   )
 
   const { loadMoreMessagingForPlatform, loadMoreSessions, refreshCronJobs, refreshMessagingSessions, refreshSessions } =
@@ -491,6 +495,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef,
+    selectedStoredSessionProfileRef,
     sessionStateByRuntimeIdRef,
     syncSessionStateToView,
     updateSessionState
@@ -707,15 +712,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     currentView,
     freshDraftReady,
     gatewayState,
-    locationPathname: location.pathname,
+    locationPathname: routeTarget,
     resumeSession,
     resumeFailedSessionId,
     resumeExhaustedSessionId,
     sessionResumeRequest,
     routedSessionId,
+    routedSessionProfile,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef,
+    selectedStoredSessionProfileRef,
     startFreshSessionDraft
   })
 
@@ -824,12 +831,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     activeProfile: normalizeProfileKey(activeGatewayProfile),
     chatOpen,
     hasPreview: Boolean(previewTarget),
-    locationPathname: location.pathname,
+    locationPathname: routeTarget,
     navigate,
     profileReady: boot.phase === 'renderer.ready',
     refreshSessions,
     resumeExhaustedSessionId,
     routedSessionId,
+    routedSessionProfile,
     runtimeIdByStoredSessionId: runtimeIdByStoredSessionIdRef,
     sessions
   })
@@ -960,9 +968,14 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       // Cron run rows carry immutable owner provenance. Resolve and resume on
       // that backend before routing so a same-id row from the active/default
       // profile cannot win the generic id-only focus path.
-      void resumeSession(sessionId, false, profile).finally(() => navigate(sessionRoute(sessionId)))
+      void resumeSession(sessionId, false, profile).finally(() => navigate(sessionRoute(sessionId, profile)))
     },
-    onRetryResume: sessionId => void resumeSession(sessionId, true),
+    onRetryResume: sessionId =>
+      void resumeSession(
+        sessionId,
+        true,
+        routedSessionId === sessionId ? (routedSessionProfile ?? undefined) : undefined
+      ),
     onSteer: steerPrompt,
     onSubmit: submitText,
     onThreadMessagesChange: handleThreadMessagesChange,

@@ -11055,6 +11055,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 )
                 return
 
+        # Keep the CLI source-of-truth aligned with every successful switch.
+        # Conversation turns construct fresh agents from this value. When a
+        # live agent exists, preserve its final (including session-scoped)
+        # reasoning state; otherwise resolve the selected model from config.
+        if self.agent is not None:
+            self.reasoning_config = self.agent.reasoning_config
+        else:
+            try:
+                from hermes_constants import resolve_reasoning_config
+                from hermes_cli.config import load_config
+
+                self.reasoning_config = resolve_reasoning_config(
+                    load_config(), self.model
+                )
+            except Exception as exc:
+                logger.debug(
+                    "model switch could not re-resolve CLI reasoning config: %s",
+                    exc,
+                )
+
         from hermes_cli.model_switch import format_model_for_display
         _display_old = format_model_for_display(old_model)
         _display_new = format_model_for_display(result.new_model)

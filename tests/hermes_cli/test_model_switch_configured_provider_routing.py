@@ -86,7 +86,13 @@ def _run_switch(
 
 def test_default_model_only_declaration_routes():
     """A model declared ONLY via `default_model` (not in `models`) still routes
-    to that configured provider (#45006 — default_model is a declaring field)."""
+    to that configured provider (#45006 — default_model is a declaring field).
+
+    The configured-provider detection returns the canonical ``custom:<key>``
+    slug for keyed ``providers:`` entries, so the routed target provider is
+    ``custom:local-ollama`` (the raw config key is recovered downstream for
+    credential resolution).
+    """
     user_providers = {
         "local-ollama": {
             "name": "Local Ollama",
@@ -101,7 +107,7 @@ def test_default_model_only_declaration_routes():
         user_providers=user_providers,
     )
     assert result.success is True, result.error_message
-    assert result.target_provider == "local-ollama"
+    assert result.target_provider == "custom:local-ollama"
     assert result.new_model == "qwen3.5-4b"
 
 

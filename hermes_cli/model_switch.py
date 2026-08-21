@@ -1224,6 +1224,13 @@ def _configured_provider_matches(
         for slug, cfg in user_providers.items():
             if not isinstance(slug, str) or not isinstance(cfg, dict):
                 continue
+            # Keyed ``providers:`` entries use the canonical ``custom:<provider_key>``
+            # identity so they collide with the same entry surfaced through the
+            # merged legacy ``custom_providers`` list (which carries ``provider_key``).
+            # Without this, one config entry yields two different slugs and
+            # ``switch_model`` falsely reports "declared by multiple configured
+            # providers".
+            slug = custom_provider_slug(str(cfg.get("name") or ""), provider_key=slug)
             for key in ("models", "model", "default_model"):
                 hit = _match(cfg.get(key))
                 if hit:
@@ -1237,7 +1244,8 @@ def _configured_provider_matches(
             name = entry.get("name")
             if not isinstance(name, str) or not name.strip():
                 continue
-            slug = f"custom:{name}"
+            provider_key = str(entry.get("provider_key") or "").strip()
+            slug = custom_provider_slug(name, provider_key)
             if slug in matches:
                 continue
             for key in ("models", "model", "default_model"):
@@ -1643,8 +1651,20 @@ def switch_model(
                     # config rather than a from-scratch runtime re-resolve that
                     # doesn't know user-config slugs.  custom:* slugs resolve via
                     # resolve_runtime_provider() directly and need no hint.
-                    if isinstance(user_providers, dict) and target_provider in user_providers:
-                        explicit_provider = target_provider
+                    #
+                    # _configured_provider_matches() now returns the canonical
+                    # ``custom:<provider_key>`` slug for keyed ``providers:``
+                    # entries, so strip the ``custom:`` prefix to recover the raw
+                    # config key that resolve_user_provider()/user_providers look
+                    # up by.
+                    if isinstance(user_providers, dict):
+                        _user_key = (
+                            target_provider[len("custom:"):]
+                            if target_provider.startswith("custom:")
+                            else target_provider
+                        )
+                        if _user_key in user_providers:
+                            explicit_provider = _user_key
 
         # --- Step e: detect_provider_for_model() as last resort ---
         _base = current_base_url or ""

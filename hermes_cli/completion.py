@@ -240,7 +240,23 @@ _hermes() {{
     esac
 }}
 
-compdef _hermes hermes
+_hermes_register_completion() {{
+    if (( ! $+functions[compdef] )); then
+        return 0
+    fi
+
+    compdef _hermes hermes
+    precmd_functions=(${{precmd_functions:#_hermes_register_completion}})
+    unfunction _hermes_register_completion 2>/dev/null
+}}
+
+_hermes_register_completion
+if (( ! $+functions[compdef] )); then
+    typeset -ga precmd_functions
+    if [[ -z "${{precmd_functions[(r)_hermes_register_completion]}}" ]]; then
+        precmd_functions+=(_hermes_register_completion)
+    fi
+fi
 """
 
 

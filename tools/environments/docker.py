@@ -941,6 +941,16 @@ class DockerEnvironment(BaseEnvironment):
                     "Docker storage driver does not support per-container disk limits "
                     "(requires overlay2 on XFS with pquota). Container will run without disk quota."
                 )
+        elif disk > 0:
+            # Docker Desktop for macOS has no --storage-opt support (the driver
+            # is a VM-backed filesystem, not overlay2), so a configured disk
+            # quota silently does nothing. Surface it instead of pretending the
+            # limit was applied.
+            logger.warning(
+                "Per-container disk quotas are not supported on macOS Docker "
+                "(Docker Desktop exposes no --storage-opt size=). The configured "
+                "disk limit (%dm) will be ignored.", disk,
+            )
         if not network:
             resource_args.append("--network=none")
 

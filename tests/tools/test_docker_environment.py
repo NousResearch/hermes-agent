@@ -1488,3 +1488,60 @@ def test_extra_args_set_shm_size_helper():
     assert docker_env._extra_args_set_shm_size(None) is False
     # non-string entries must not crash (config.yaml can be malformed)
     assert docker_env._extra_args_set_shm_size([42, None, "--shm-size=1g"]) is True
+
+
+# ── disk quota handling (macOS silent-skip regression) ────────────────────
+
+
+def _disk_run_args(calls):
+    for cmd, _kwargs in calls:
+        if isinstance(cmd, list) and len(cmd) >= 2 and cmd[1] == "run":
+            return cmd
+    return []
+
+
+def test_disk_quota_warns_on_macos_and_skips_storage_opt(monkeypatch, caplog):
+    """macOS Docker must not silently ignore a configured disk quota.
+
+    Regression: ``disk > 0`` on darwin previously fell through with no log
+    line at all — the user's configured limit did nothing and nothing told
+    them. Now it logs a warning explaining the limit is unsupported, and
+    still must NOT emit ``--storage-opt`` (Docker Desktop would reject it).
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr(docker_env.sys, "platform", "darwin")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    with caplog.at_level(logging.WARNING):
+        _make_dummy_env(disk=4096)
+
+    run_args = _disk_run_args(calls)
+    assert "--storage-opt" not in run_args
+    joined = " ".join(run_args)
+    assert "--storage-opt" not in joined
+    assert any(
+        "disk quotas are not supported on macOS" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_disk_quota_linux_still_applies_storage_opt(monkeypatch, caplog):
+    """On Linux with overlay2/XFS support the quota path is unchanged."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr(docker_env.sys, "platform", "linux")
+    docker_env._storage_opt_ok = True
+    calls = _mock_subprocess_run(monkeypatch)
+
+    with caplog.at_level(logging.WARNING):
+        _make_dummy_env(disk=4096)
+
+    run_args = _disk_run_args(calls)
+    assert "--storage-opt" in run_args
+    joined = " ".join(run_args)
+    assert "--storage-opt" in joined and "size=4096m" in joined
+    assert not any(
+        "disk quotas are not supported on macOS" in record.getMessage()
+        for record in caplog.records
+    )

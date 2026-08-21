@@ -604,6 +604,7 @@ class AIAgent:
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
         )
+        self._terminal_profile_home = str(get_hermes_home())
 
     def _get_session_db_for_recall(self):
         """Return a SessionDB for recall, lazily creating it if an entrypoint forgot.
@@ -4558,19 +4559,79 @@ class AIAgent:
             pass
 
         task_id = getattr(self, "session_id", None) or ""
+        terminal_task_ids = []
+        tracked_task_ids = getattr(self, "_terminal_task_ids", set())
+        tracked_task_ids_lock = getattr(self, "_terminal_task_ids_lock", None)
+        if tracked_task_ids_lock is None:
+            tracked_snapshot = list(tracked_task_ids)
+        else:
+            with tracked_task_ids_lock:
+                tracked_snapshot = list(tracked_task_ids)
+                tracked_task_ids.clear()
+        for candidate in (
+            getattr(self, "_current_task_id", None),
+            *tracked_snapshot,
+            task_id,
+        ):
+            if candidate and candidate not in terminal_task_ids:
+                terminal_task_ids.append(candidate)
 
-        # 1. Kill background processes for this task
+        # Children can share the parent's terminal sandbox through task aliases.
+        # Release their ownership records before tearing down the parent sandbox.
+        try:
+            active_children_lock = getattr(self, "_active_children_lock")
+            active_children = getattr(self, "_active_children")
+            with active_children_lock:
+                children = list(active_children)
+                active_children.clear()
+            for child in children:
+                try:
+                    child.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 1. Kill background processes for every task identity used by this agent.
         try:
             from tools.process_registry import process_registry
-            process_registry.kill_all(task_id=task_id)
+            for terminal_task_id in terminal_task_ids:
+                process_registry.kill_all(task_id=terminal_task_id)
         except Exception:
             pass
 
-        # 2. Clean terminal sandbox environments
+        # 2. Clean terminal sandbox environments. Profile scope restoration is
+        # best effort: a scope setup failure must not skip sandbox teardown.
+        terminal_profile_home = getattr(self, "_terminal_profile_home", None)
+        scope_token = None
+        reset_profile_scope = None
         try:
-            cleanup_vm(task_id)
+            from hermes_constants import (
+                reset_hermes_home_override,
+                set_hermes_home_override,
+            )
+
+            scope_token = set_hermes_home_override(
+                terminal_profile_home,
+            )
+            reset_profile_scope = reset_hermes_home_override
         except Exception:
             pass
+
+        try:
+            for terminal_task_id in terminal_task_ids:
+                cleanup_vm(
+                    terminal_task_id,
+                    profile_home=terminal_profile_home,
+                )
+        except Exception:
+            pass
+        finally:
+            if scope_token is not None and reset_profile_scope is not None:
+                try:
+                    reset_profile_scope(scope_token)
+                except Exception:
+                    pass
 
         # 3. Clean browser daemon sessions
         try:
@@ -4590,20 +4651,7 @@ class AIAgent:
         except Exception:
             pass
 
-        # 5. Close active child agents
-        try:
-            with self._active_children_lock:
-                children = list(self._active_children)
-                self._active_children.clear()
-            for child in children:
-                try:
-                    child.close()
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # 6. Close the OpenAI/httpx client
+        # 5. Close the OpenAI/httpx client
         try:
             client = getattr(self, "client", None)
             if client is not None:

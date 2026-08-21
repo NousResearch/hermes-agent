@@ -988,8 +988,9 @@ def _is_local_backend() -> bool:
         return False
     # When terminal runs in a container, browser on host can access
     # internal networks the terminal can't → treat as non-local.
-    terminal_backend = os.getenv("TERMINAL_ENV", "local").strip().lower()
-    return terminal_backend in ("local", "")
+    from tools.terminal_tool import _terminal_backend_identity
+
+    return _terminal_backend_identity()[1] == "local"
 
 
 _auto_local_for_private_urls_resolved = False

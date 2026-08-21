@@ -1130,7 +1130,9 @@ def _agent_cache_base_for_env(env: Any) -> str | None:
     # Hermes cache roots can be translated without side effects. SSH can still
     # use a shell-visible tilde path; its first environment sync will upload
     # the cache file before the first command runs.
-    backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+    from tools.terminal_tool import _terminal_backend_identity
+
+    backend = _terminal_backend_identity()[1]
     if backend in {"docker", "singularity", "modal"}:
         return "/root/.hermes"
     if backend == "ssh":
@@ -1924,8 +1926,10 @@ def _confine_source_images(
 
     Returns ``(image_url, reference_image_urls, error_json_or_None)``.
     """
-    backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
-    if backend in ("", "local"):
+    from tools.terminal_tool import _terminal_backend_identity
+
+    backend = _terminal_backend_identity()[1]
+    if backend == "local":
         return image_url, reference_image_urls, None
 
     from model_tools import _run_async

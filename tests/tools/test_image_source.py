@@ -295,6 +295,34 @@ class TestExecReadSafety:
         # Diagnostic surfaced — the user can act on it.
         assert "No such file or directory" in str(excinfo.value)
 
+    @pytest.mark.asyncio
+    async def test_exec_read_connection_failure_evicts_cached_environment(
+        self, tmp_path, monkeypatch
+    ):
+        from tools.environments.base import EnvironmentConnectionError
+
+        home = tmp_path / "hermes"
+        isrc = _reload(monkeypatch, home)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        evicted = []
+
+        class DeadEnvironment:
+            def execute(self, *_args, **_kwargs):
+                raise EnvironmentConnectionError("vision connection lost")
+
+        monkeypatch.setattr(
+            "tools.terminal_tool._evict_environment_for_task",
+            lambda task_id: evicted.append(task_id),
+        )
+        with patch("tools.image_source._get_active_env", return_value=DeadEnvironment()):
+            with pytest.raises(isrc.SourceNotFound) as excinfo:
+                await isrc.resolve_image_source(
+                    "/workspace/image.png", isrc.ResolveContext(task_id="vision-dead")
+                )
+
+        assert "connection lost" in str(excinfo.value)
+        assert evicted == ["vision-dead"]
+
 
 class TestSvgNormalization:
     """SVG resolves end-to-end: the resolver passes it through as

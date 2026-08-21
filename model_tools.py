@@ -289,8 +289,9 @@ _LEGACY_TOOLSET_MAP = {
 # get_tool_definitions  (the main schema provider)
 # =============================================================================
 
-# Module-level memoization for get_tool_definitions(). Keyed on
-# (profile scope, enabled/disabled toolsets, registry generation).
+# Module-level memoization for get_tool_definitions(). Keyed on toolset scope,
+# profile scope, registry generation, config identity, terminal backend identity,
+# and context flags that alter the model-facing surface.
 # Hot callers (gateway runner, AIAgent.__init__) invoke this on every turn
 # with quiet_mode=True; caching avoids ~7 ms of registry walking + schema
 # filtering + check_fn probing per call. Only active when quiet_mode=True
@@ -310,6 +311,17 @@ _tool_defs_cache_lock = threading.Lock()
 # set (the handful of distinct platform/toolset combos a gateway actually
 # serves) while keeping the cap small. (#19251)
 _TOOL_DEFS_CACHE_MAX = 8
+
+
+def _terminal_backend_cache_fingerprint() -> tuple[Optional[str], str]:
+    """Return canonical and effective backends for schema cache isolation.
+
+    Use terminal_tool's runtime resolver so cache identity and execution cannot
+    disagree when multiplexed profiles share the process environment.
+    """
+    from tools.terminal_tool import _terminal_backend_identity
+
+    return _terminal_backend_identity()
 
 
 def _clear_tool_defs_cache() -> None:
@@ -361,6 +373,7 @@ def get_tool_definitions(
             cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
         except (FileNotFoundError, OSError, ImportError):
             cfg_fp = None
+        terminal_backend_fp = _terminal_backend_cache_fingerprint()
         profile_scope = check_fn_cache_scope()
         if profile_scope != CHECK_FN_CACHE_BYPASS:
             cache_key = (
@@ -369,6 +382,7 @@ def get_tool_definitions(
                 frozenset(disabled_toolsets) if disabled_toolsets else None,
                 registry._generation,
                 cfg_fp,
+                terminal_backend_fp,
                 bool(os.environ.get("HERMES_KANBAN_TASK")),
                 bool(skip_tool_search_assembly),
                 _is_delegated_child_context(),
@@ -515,18 +529,6 @@ def _compute_tool_definitions(
     # descriptions that don't actually exist, and hallucinates calls to them.
     available_tool_names = {t["function"]["name"] for t in filtered_tools}
 
-    # Rebuild execute_code schema to only list sandbox tools that are actually
-    # available.  Without this, the model sees "web_search is available in
-    # execute_code" even when the API key isn't configured or the toolset is
-    # disabled (#560-discord).
-    if "execute_code" in available_tool_names:
-        from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema, _get_execution_mode
-        sandbox_enabled = SANDBOX_ALLOWED_TOOLS & available_tool_names
-        dynamic_schema = build_execute_code_schema(sandbox_enabled, mode=_get_execution_mode())
-        for i, td in enumerate(filtered_tools):
-            if td.get("function", {}).get("name") == "execute_code":
-                filtered_tools[i] = {"type": "function", "function": dynamic_schema}
-                break
 
     # Rebuild discord / discord_admin schemas based on the bot's privileged
     # intents (detected from GET /applications/@me) and the user's action
@@ -599,9 +601,6 @@ def _compute_tool_definitions(
         else:
             print("🛠️  No tools selected (all filtered out or unavailable)")
 
-    global _last_resolved_tool_names
-    _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
-
     # Sanitize schemas for broad backend compatibility. llama.cpp's
     # json-schema-to-grammar converter (used by its OAI server to build
     # GBNF tool-call parsers) rejects some shapes that cloud providers
@@ -648,6 +647,39 @@ def _compute_tool_definitions(
             filtered_tools = assembly.tool_defs
     except Exception as e:  # pragma: no cover — never break tool loading
         logger.warning("Tool search assembly skipped: %s", e)
+
+    # Rebuild execute_code from the final model-facing tool surface. Tool
+    # Search assembly may replace deferred MCP/plugin definitions with its
+    # three bridge tools, and those bridge helpers must be listed inside
+    # execute_code only when the session can actually reach them. Doing this
+    # before assembly would advertise neither the bridge nor its callable
+    # deferred surface.
+    available_tool_names = {t["function"]["name"] for t in filtered_tools}
+    if "execute_code" in available_tool_names:
+        from tools.code_execution_tool import (
+            DEFERRED_BRIDGE_TOOLS,
+            DIRECT_SANDBOX_TOOLS,
+            _get_execution_mode,
+            build_execute_code_schema,
+        )
+
+        # ``execute_code`` has always been an umbrella capability for its
+        # direct helpers: registry callers that expose only code_execution
+        # still receive terminal/file/web helpers inside the script. Keep the
+        # schema honest about that established runtime contract. Deferred
+        # Tool Search bridges remain stricter and are advertised only when
+        # assembly put them on this session's final model-facing surface.
+        sandbox_enabled = DIRECT_SANDBOX_TOOLS | (
+            DEFERRED_BRIDGE_TOOLS & available_tool_names
+        )
+        dynamic_schema = build_execute_code_schema(sandbox_enabled, mode=_get_execution_mode())
+        for i, td in enumerate(filtered_tools):
+            if td.get("function", {}).get("name") == "execute_code":
+                filtered_tools[i] = {"type": "function", "function": dynamic_schema}
+                break
+
+    global _last_resolved_tool_names
+    _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
 
     return filtered_tools
 
@@ -1493,13 +1525,19 @@ def handle_function_call(
             if function_name == "execute_code":
                 # Prefer the caller-provided list so subagents can't overwrite
                 # the parent's tool set via the process-global.
-                sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+                explicit_sandbox_scope = enabled_tools is not None
+                sandbox_enabled = (
+                    enabled_tools if explicit_sandbox_scope else _last_resolved_tool_names
+                )
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
                     return registry.dispatch(
                         function_name, next_args,
                         task_id=task_id,
                         session_id=session_id,
                         enabled_tools=sandbox_enabled,
+                        enabled_toolsets=enabled_toolsets,
+                        disabled_toolsets=disabled_toolsets,
+                        allow_deferred_bridges=explicit_sandbox_scope,
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:

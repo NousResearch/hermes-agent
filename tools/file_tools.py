@@ -177,6 +177,7 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
     try:
         from tools.terminal_tool import (
             _active_environments,
+            _environment_lookup_key,
             _env_lock,
             _get_env_config,
             _resolve_container_task_id,
@@ -187,7 +188,8 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
         except Exception:
             container_key = task_id
         with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+            env_key = _environment_lookup_key(container_key, task_id)
+            env = _active_environments.get(env_key) if env_key is not None else None
         if env is not None:
             name = env.__class__.__name__.lower()
             if "local" in name:
@@ -1024,6 +1026,7 @@ def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | Non
     try:
         from tools.terminal_tool import (
             _active_environments,
+            _environment_lookup_key,
             _env_lock,
             _get_env_config,
             _resolve_container_task_id,
@@ -1035,7 +1038,8 @@ def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | Non
 
     try:
         with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+            env_key = _environment_lookup_key(container_key, task_id)
+            env = _active_environments.get(env_key) if env_key is not None else None
 
         if env is not None:
             if env.__class__.__name__ == "DockerEnvironment" and bool(
@@ -1414,62 +1418,59 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     from tools.terminal_tool import (
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
-        _creation_locks,
-        _creation_locks_lock,
+        _container_config_from_config,
+        _matching_environment_for_config,
         _resolve_container_task_id,
-        _resolve_task_host_cwd,
-        _is_unusable_container_cwd,
-        _CONTAINER_BACKENDS,
+        _register_active_environment,
+        _retire_stale_environment_for_config,
+        _ssh_config_from_config,
+        _task_creation_lock,
     )
     import time
 
     raw_task_id = task_id or "default"
     task_id = _resolve_container_task_id(raw_task_id)
+    config = _get_env_config()
 
     # Fast path: check cache -- but also verify the underlying environment
     # is still alive (it may have been killed by the cleanup thread).
     with _file_ops_lock:
         cached = _file_ops_cache.get(task_id)
     if cached is not None:
-        with _env_lock:
-            if task_id in _active_environments:
-                _last_activity[task_id] = time.time()
-                return cached
-            else:
-                # Environment was cleaned up -- preserve the old cwd in the
-                # session record before invalidating the stale cache entry
-                # (fixes #26211: silent file-creation failures in long-running
-                # conversations). Usually a no-op: every completed command
-                # already recorded its cwd.
-                #
-                # Fill-only: ``cached.cwd`` is a snapshot of the SHARED env's
-                # cwd at cache-build time, so it is not attributable to this
-                # session (same class as the interrupted-command bug, #85658).
-                # Rescue a session that has no record, but never overwrite a
-                # record the session wrote for itself.
-                old_cwd = getattr(cached, "cwd", None)
-                if old_cwd:
-                    try:
-                        from tools.terminal_tool import (
-                            get_session_cwd,
-                            record_session_cwd,
-                        )
-                        if get_session_cwd(raw_task_id) is None:
-                            record_session_cwd(raw_task_id, old_cwd)
-                    except Exception:
-                        pass
-                with _file_ops_lock:
-                    _file_ops_cache.pop(task_id, None)
+        _, matching_env = _matching_environment_for_config(
+            task_id, raw_task_id, config,
+        )
+        if matching_env is not None:
+            return cached
+        # Environment was cleaned up or is stale. Preserve its cwd only for
+        # the raw task that created this wrapper, and only when that session
+        # has not already recorded its own cwd. Collapsed shared keys such as
+        # ``default`` may be reused by another session whose cwd must not be
+        # overwritten by stale wrapper state.
+        cached_owner = vars(cached).get("_hermes_raw_task_id", task_id)
+        old_cwd = getattr(cached, "cwd", None)
+        if old_cwd and cached_owner == raw_task_id:
+            try:
+                from tools.terminal_tool import (
+                    get_session_cwd,
+                    record_session_cwd,
+                )
+                if get_session_cwd(raw_task_id) is None:
+                    record_session_cwd(raw_task_id, old_cwd)
+            except Exception:
+                pass
+        with _file_ops_lock:
+            _file_ops_cache.pop(task_id, None)
 
     # Need to ensure the environment exists before building file_ops.
     # Acquire per-task lock so only one thread creates the sandbox.
-    with _creation_locks_lock:
-        if task_id not in _creation_locks:
-            _creation_locks[task_id] = threading.Lock()
-        task_lock = _creation_locks[task_id]
-
-    with task_lock:
+    with _task_creation_lock(task_id):
         # Double-check: another thread may have created it while we waited
+        _retire_stale_environment_for_config(
+            task_id,
+            raw_task_id,
+            config,
+        )
         with _env_lock:
             if task_id in _active_environments:
                 _last_activity[task_id] = time.time()
@@ -1478,9 +1479,11 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 terminal_env = None
 
         if terminal_env is None:
-            from tools.terminal_tool import resolve_task_overrides
+            from tools.terminal_tool import (
+                _resolve_environment_cwd,
+                resolve_task_overrides,
+            )
 
-            config = _get_env_config()
             env_type = config["env_type"]
             overrides = resolve_task_overrides(raw_task_id)
 
@@ -1495,58 +1498,16 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             else:
                 image = ""
 
-            try:
-                from tools.terminal_tool import get_session_cwd
-                recorded_cwd = get_session_cwd(raw_task_id)
-            except Exception:
-                recorded_cwd = None
-            cwd = overrides.get("cwd") or recorded_cwd or config["cwd"]
-            # Re-apply the container cwd guard that _get_env_config() already
-            # ran on config["cwd"] (see #50636).  A per-task cwd override
-            # registered by the gateway/TUI/ACP for workspace tracking is a
-            # raw host path (e.g. a Desktop session's /Users/<me>/workspace or
-            # C:\\Users\\<me>). On a container backend that reaches
-            # ``docker run -w <host-path>`` and the container starts in a
-            # directory that doesn't exist inside the sandbox, so search_files
-            # and friends silently return empty results (#54447).  Sanitize it
-            # back to the already-validated config["cwd"] so the override can't
-            # bypass the guard.  Valid in-container override paths (RL/benchmark
-            # sandboxes that set cwd to /workspace, /root, etc.) are absolute
-            # non-host paths and pass through untouched.
-            if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
-                if cwd != config["cwd"]:
-                    logger.info(
-                        "Ignoring host/relative cwd override %r for %s backend "
-                        "(won't exist in sandbox). Using %r instead.",
-                        cwd, env_type, config["cwd"],
-                    )
-                cwd = config["cwd"]
+            cwd, host_cwd = _resolve_environment_cwd(config, raw_task_id)
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
-            container_config = None
-            if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
-                container_config = {
-                    "container_cpu": config.get("container_cpu", 1),
-                    "container_memory": config.get("container_memory", 5120),
-                    "container_disk": config.get("container_disk", 51200),
-                    "container_persistent": config.get("container_persistent", True),
-                    "vercel_runtime": config.get("vercel_runtime", ""),
-                    "docker_volumes": config.get("docker_volumes", []),
-                    "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                    "docker_forward_env": config.get("docker_forward_env", []),
-                    "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                    "docker_network": config.get("docker_network", True),
-                }
+            container_config = (
+                _container_config_from_config(config)
+                if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
+                else None
+            )
 
-            ssh_config = None
-            if env_type == "ssh":
-                ssh_config = {
-                    "host": config.get("ssh_host", ""),
-                    "user": config.get("ssh_user", ""),
-                    "port": config.get("ssh_port", 22),
-                    "key": config.get("ssh_key", ""),
-                    "persistent": config.get("ssh_persistent", False),
-                }
+            ssh_config = _ssh_config_from_config(config) if env_type == "ssh" else None
 
             local_config = None
             if env_type == "local":
@@ -1563,20 +1524,23 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 container_config=container_config,
                 local_config=local_config,
                 task_id=task_id,
-                host_cwd=_resolve_task_host_cwd(config, raw_task_id),
+                host_cwd=host_cwd,
             )
 
-            with _env_lock:
-                _active_environments[task_id] = terminal_env
-                _last_activity[task_id] = time.time()
+            _register_active_environment(
+                task_id, terminal_env, config, raw_task_id,
+            )
 
             _start_cleanup_thread()
             logger.info("%s environment ready for task %s", env_type, task_id[:8])
 
-    # Build file_ops from the (guaranteed live) environment and cache it
-    file_ops = ShellFileOperations(terminal_env)
-    with _file_ops_lock:
-        _file_ops_cache[task_id] = file_ops
+        # Publish file operations before releasing the creation lock. Otherwise
+        # a waiter can retire this environment for a new fingerprint and clear
+        # the cache before this creator publishes its now-stale file wrapper.
+        file_ops = ShellFileOperations(terminal_env)
+        setattr(file_ops, "_hermes_raw_task_id", raw_task_id)
+        with _file_ops_lock:
+            _file_ops_cache[task_id] = file_ops
     return file_ops
 
 
@@ -1619,6 +1583,21 @@ def _special_file_kind(path) -> str | None:
     if _stat.S_ISBLK(mode):
         return "a block device"
     return "a special (non-regular) file"
+
+
+def _file_connection_error_result(exc: Exception, task_id: str) -> str | None:
+    """Evict an unreachable sandbox shared by any file-tool entry point."""
+    from tools.environments.base import EnvironmentConnectionError
+
+    if not isinstance(exc, EnvironmentConnectionError):
+        return None
+    from tools.terminal_tool import _environment_connection_error_result
+
+    return _environment_connection_error_result(
+        exc,
+        task_id,
+        operation="File backend",
+    )
 
 
 def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default") -> str:
@@ -1988,6 +1967,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
 
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
+        connection_result = _file_connection_error_result(e, task_id)
+        if connection_result is not None:
+            return connection_result
         return tool_error(str(e))
 
 
@@ -2304,6 +2286,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 file_state.note_write(task_id, _resolved)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
+        connection_result = _file_connection_error_result(e, task_id)
+        if connection_result is not None:
+            return connection_result
         if _is_expected_write_exception(e):
             logger.debug("write_file expected denial: %s: %s", type(e).__name__, e)
         else:
@@ -2529,6 +2514,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 )
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
+        connection_result = _file_connection_error_result(e, task_id)
+        if connection_result is not None:
+            return connection_result
         return tool_error(str(e))
 
 
@@ -2633,6 +2621,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             result_json += f"\n\n[Hint: Results truncated. Use offset={next_offset} to see more, or narrow with a more specific pattern or file_glob.]"
         return result_json
     except Exception as e:
+        connection_result = _file_connection_error_result(e, task_id)
+        if connection_result is not None:
+            return connection_result
         return tool_error(str(e))
 
 

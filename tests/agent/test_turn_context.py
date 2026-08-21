@@ -297,6 +297,7 @@ def test_applies_agent_side_effects():
     # task/turn ids assigned on the agent.
     assert agent._current_task_id
     assert agent._current_turn_id
+    assert getattr(agent, "_current_task_id") in getattr(agent, "_terminal_task_ids")
 
 
 

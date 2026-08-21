@@ -193,3 +193,40 @@ def test_managed_modal_execute_times_out_and_cancels(monkeypatch):
         "returncode": 124,
     }
     assert any(call[0] == "POST" and call[1].endswith("/cancel") for call in calls)
+
+
+def test_managed_modal_execute_cancel_event_cancels(monkeypatch):
+    _install_fake_tools_package()
+    managed_modal = _load_tool_module(
+        "tools.environments.managed_modal",
+        "environments/managed_modal.py",
+    )
+
+    calls = []
+
+    def fake_request(method, url, headers=None, json=None, timeout=None):
+        calls.append((method, url, json, timeout))
+        if method == "POST" and url.endswith("/v1/sandboxes"):
+            return _FakeResponse(200, {"id": "sandbox-1"})
+        if method == "POST" and url.endswith("/execs"):
+            assert json is not None
+            return _FakeResponse(
+                202,
+                {"execId": json["execId"], "status": "running"},
+            )
+        if method == "POST" and url.endswith("/cancel"):
+            return _FakeResponse(202, {"status": "cancelling"})
+        raise AssertionError(f"Unexpected request: {method} {url}")
+
+    monkeypatch.setattr(managed_modal.requests, "request", fake_request)
+
+    cancel_event = threading.Event()
+    cancel_event.set()
+    env = managed_modal.ManagedModalEnvironment(image="python:3.11")
+    result = env.execute("sleep 30", cancel_event=cancel_event)
+
+    assert result == {"output": "[Command cancelled]", "returncode": 130}
+    assert any(
+        call[0] == "POST" and call[1].endswith("/cancel")
+        for call in calls
+    )

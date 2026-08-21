@@ -174,6 +174,92 @@ class TestExtractCacheBustingConfig:
 
         assert out["tools.registry_generation"] == 12345
 
+    def test_terminal_backend_change_busts_agent_signature(self, monkeypatch):
+        """Frozen execute_code schemas must rebuild when the backend changes."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        local_keys = GatewayRunner._extract_cache_busting_config(
+            {"terminal": {"backend": "local"}}
+        )
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        ssh_keys = GatewayRunner._extract_cache_busting_config(
+            {"terminal": {"backend": "ssh"}}
+        )
+
+        assert local_keys["terminal.backend"] == "local"
+        assert ssh_keys["terminal.backend"] == "ssh"
+        assert local_keys["terminal.effective_backend"] == "local"
+        assert ssh_keys["terminal.effective_backend"] == "ssh"
+        assert GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", cache_keys=local_keys
+        ) != GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", cache_keys=ssh_keys
+        )
+
+    def test_effective_terminal_env_busts_cache_without_config_key(self, monkeypatch):
+        """Legacy TERMINAL_ENV changes still invalidate a frozen tool schema."""
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        local_keys = GatewayRunner._extract_cache_busting_config({})
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        ssh_keys = GatewayRunner._extract_cache_busting_config({})
+
+        assert local_keys["terminal.backend"] is None
+        assert ssh_keys["terminal.backend"] is None
+        assert local_keys["terminal.effective_backend"] == "local"
+        assert ssh_keys["terminal.effective_backend"] == "ssh"
+
+    def test_explicit_terminal_backend_wins_stale_process_env(self, monkeypatch):
+        """Gateway cache identity must match terminal runtime precedence."""
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        keys = GatewayRunner._extract_cache_busting_config(
+            {"terminal": {"backend": "local"}}
+        )
+
+        assert keys["terminal.backend"] == "local"
+        assert keys["terminal.effective_backend"] == "local"
+
+    def test_ssh_connection_change_busts_agent_signature(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        first = GatewayRunner._extract_cache_busting_config(
+            {
+                "terminal": {
+                    "backend": "ssh",
+                    "ssh_host": "first.example",
+                    "ssh_user": "user",
+                    "cwd": "/srv/first",
+                }
+            }
+        )
+        second = GatewayRunner._extract_cache_busting_config(
+            {
+                "terminal": {
+                    "backend": "ssh",
+                    "ssh_host": "second.example",
+                    "ssh_user": "user",
+                    "cwd": "/srv/second",
+                }
+            }
+        )
+
+        assert first["terminal.effective_backend"] == "ssh"
+        assert second["terminal.effective_backend"] == "ssh"
+        assert first["terminal.backend_fingerprint"] != second[
+            "terminal.backend_fingerprint"
+        ]
+        assert GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", cache_keys=first
+        ) != GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", cache_keys=second
+        )
+
 
 class TestAgentCacheLifecycle:
     """End-to-end cache behavior with real AIAgent construction."""
@@ -669,7 +755,7 @@ class TestAgentCacheIdleResume:
         # ``run_agent`` at import time, not ``tools.terminal_tool.cleanup_vm``
         # directly — so patch the ``run_agent`` reference.
         original_vm = _ra.cleanup_vm
-        _ra.cleanup_vm = lambda tid: vm_calls.append(tid)
+        _ra.cleanup_vm = lambda tid, **_kwargs: vm_calls.append(tid)
         try:
             agent_a.release_clients()   # cache eviction
             agent_b.close()              # session expiry
@@ -683,6 +769,215 @@ class TestAgentCacheIdleResume:
         # Only agent_b's task_id should appear in cleanup calls.
         assert "hard-session" in vm_calls
         assert "soft-session" not in vm_calls
+
+    def test_close_restores_agent_profile_scope_for_terminal_cleanup(
+        self,
+        tmp_path,
+    ):
+        import run_agent as _ra
+        from hermes_constants import (
+            get_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from run_agent import AIAgent
+
+        profile_home = tmp_path / "secondary-profile"
+        profile_home.mkdir()
+        token = set_hermes_home_override(profile_home)
+        try:
+            agent = AIAgent(
+                model="anthropic/claude-sonnet-4",
+                api_key="test",
+                base_url="https://openrouter.ai/api/v1",
+                provider="openrouter",
+                max_iterations=5,
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                session_id="secondary-session",
+            )
+        finally:
+            reset_hermes_home_override(token)
+
+        cleanup_homes = []
+        original_vm = _ra.cleanup_vm
+        _ra.cleanup_vm = lambda _tid, **_kwargs: cleanup_homes.append(
+            str(get_hermes_home())
+        )
+        try:
+            agent.close()
+        finally:
+            _ra.cleanup_vm = original_vm
+
+        assert cleanup_homes == [str(profile_home)]
+
+    def test_close_still_cleans_terminal_when_profile_scope_setup_fails(
+        self,
+        monkeypatch,
+    ):
+        import hermes_constants
+        import run_agent as _ra
+        from run_agent import AIAgent
+
+        agent = AIAgent.__new__(AIAgent)
+        setattr(agent, "session_id", "cleanup-session")
+        setattr(agent, "_terminal_profile_home", "/invalid/profile")
+        setattr(agent, "_active_children_lock", threading.Lock())
+        setattr(agent, "_active_children", set())
+        setattr(agent, "client", None)
+
+        cleanup_calls = []
+
+        def fail_scope_setup(_profile_home):
+            raise RuntimeError("profile scope unavailable")
+
+        monkeypatch.setattr(hermes_constants, "set_hermes_home_override", fail_scope_setup)
+        monkeypatch.setattr(
+            _ra,
+            "cleanup_vm",
+            lambda task_id, **kwargs: cleanup_calls.append((task_id, kwargs)),
+        )
+
+        agent.close()
+
+        assert cleanup_calls == [
+            ("cleanup-session", {"profile_home": "/invalid/profile"}),
+        ]
+
+    def test_close_releases_active_children_before_parent_terminal_cleanup(self):
+        import run_agent as _ra
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            model="anthropic/claude-sonnet-4",
+            api_key="test",
+            base_url="https://openrouter.ai/api/v1",
+            provider="openrouter",
+            max_iterations=5,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            session_id="parent-session",
+        )
+        events = []
+
+        class Child:
+            def close(self):
+                events.append("child")
+
+        active_children_lock = getattr(agent, "_active_children_lock")
+        active_children = getattr(agent, "_active_children")
+        with active_children_lock:
+            active_children.append(Child())
+        original_vm = _ra.cleanup_vm
+        _ra.cleanup_vm = lambda task_id, **_kwargs: events.append(f"vm:{task_id}")
+        try:
+            agent.close()
+        finally:
+            _ra.cleanup_vm = original_vm
+
+        assert events[0] == "child"
+        assert "vm:parent-session" in events
+
+    def test_close_uses_the_current_terminal_task_identity(self):
+        import run_agent as _ra
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            model="anthropic/claude-sonnet-4",
+            api_key="test",
+            base_url="https://openrouter.ai/api/v1",
+            provider="openrouter",
+            max_iterations=5,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            session_id="child-session",
+        )
+        setattr(agent, "_current_task_id", "child-task")
+        getattr(agent, "_terminal_task_ids").update({"first-task", "child-task"})
+        vm_calls = []
+        original_vm = _ra.cleanup_vm
+        _ra.cleanup_vm = lambda task_id, **_kwargs: vm_calls.append(task_id)
+        try:
+            agent.close()
+        finally:
+            _ra.cleanup_vm = original_vm
+
+        assert {"first-task", "child-task", "child-session"}.issubset(vm_calls)
+
+    def test_close_cleans_only_the_owning_profile_environment(self, tmp_path):
+        from agent import secret_scope
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from run_agent import AIAgent
+        from tools import terminal_tool
+
+        cleaned = []
+
+        class FakeEnvironment:
+            def __init__(self, owner):
+                self.owner = owner
+
+            def cleanup(self):
+                cleaned.append(self.owner)
+
+        def fake_agent(profile_home):
+            agent = AIAgent.__new__(AIAgent)
+            setattr(agent, "session_id", "shared-session")
+            setattr(agent, "_terminal_profile_home", str(profile_home))
+            setattr(agent, "_active_children_lock", threading.Lock())
+            setattr(agent, "_active_children", set())
+            setattr(agent, "client", None)
+            return agent
+
+        homes = [tmp_path / "profile-a", tmp_path / "profile-b"]
+        keys = []
+        secret_scope.set_multiplex_active(True)
+        try:
+            for name, home in zip(("a", "b"), homes):
+                home.mkdir()
+                token = set_hermes_home_override(home)
+                try:
+                    config = terminal_tool._get_env_config(
+                        {"terminal": {"backend": "local"}}
+                    )
+                    key = terminal_tool._resolve_container_task_id(
+                        "shared-session"
+                    )
+                    terminal_tool._register_active_environment(
+                        key,
+                        FakeEnvironment(name),
+                        config,
+                        "shared-session",
+                    )
+                    keys.append(key)
+                finally:
+                    reset_hermes_home_override(token)
+
+            agent_a = fake_agent(homes[0])
+            agent_b = fake_agent(homes[1])
+            agent_a.close()
+
+            with terminal_tool._env_lock:
+                assert keys[0] not in terminal_tool._active_environments
+                assert keys[1] in terminal_tool._active_environments
+            assert cleaned == ["a"]
+
+            agent_b.close()
+            with terminal_tool._env_lock:
+                assert keys[1] not in terminal_tool._active_environments
+            assert cleaned == ["a", "b"]
+        finally:
+            secret_scope.set_multiplex_active(False)
+            with terminal_tool._env_lock:
+                terminal_tool._active_environments.clear()
+                terminal_tool._last_activity.clear()
+                terminal_tool._environment_metadata.clear()
+                terminal_tool._task_environment_keys.clear()
 
 
 _FAKE_NOW = 10_000.0  # Fixed epoch for deterministic time assertions

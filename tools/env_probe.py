@@ -29,6 +29,7 @@ Toggle via ``agent.environment_probe`` in config.yaml (default True).
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import shutil
@@ -76,6 +77,16 @@ _REMOTE_BACKENDS = frozenset({
     "docker", "singularity", "modal", "daytona", "ssh", "managed_modal",
     "vercel_sandbox",
 })
+
+
+def _terminal_backend_is_remote() -> bool:
+    """Resolve the caller's active profile before consulting process cache."""
+    try:
+        from tools.terminal_tool import _terminal_backend_identity
+
+        return _terminal_backend_identity()[1] in _REMOTE_BACKENDS
+    except Exception:
+        return False
 
 
 def _run(cmd: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
@@ -194,8 +205,7 @@ def _build_probe_line() -> str:
     """
     # Bail out if a remote terminal backend is configured; the host's
     # Python state isn't where the agent's tools run.
-    backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
-    if backend in _REMOTE_BACKENDS:
+    if _terminal_backend_is_remote():
         return ""
 
     py3_ver = _python_version_of("python3")
@@ -285,6 +295,9 @@ def get_environment_probe_line(*, force_refresh: bool = False) -> str:
     ``force_refresh`` is for tests; real callers should never need it.
     """
     global _CACHED_LINE, _PROBE_THREAD, _PROBE_GEN, _WAIT_ALREADY_TIMED_OUT
+    if _terminal_backend_is_remote():
+        return ""
+
     if force_refresh:
         with _CACHE_LOCK:
             _CACHED_LINE = None
@@ -336,9 +349,10 @@ def _ensure_probe_started() -> None:
             return
         if _PROBE_THREAD is not None and _PROBE_THREAD.is_alive():
             return
+        probe_context = contextvars.copy_context()
         _PROBE_THREAD = threading.Thread(
-            target=_probe_worker,
-            args=(_PROBE_GEN,),
+            target=probe_context.run,
+            args=(_probe_worker, _PROBE_GEN),
             name="env-probe",
             daemon=True,
         )
@@ -356,7 +370,8 @@ def warm_environment_probe_async() -> None:
     completion event instead of recomputing.  Called from agent init
     (all platforms); safe to call from anywhere.
     """
-    _ensure_probe_started()
+    if not _terminal_backend_is_remote():
+        _ensure_probe_started()
 
 
 def _reset_cache_for_tests() -> None:

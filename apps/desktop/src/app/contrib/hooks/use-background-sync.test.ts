@@ -6,16 +6,20 @@ import { $changeEventsAvailable, notifySessionsChanged, resetLiveSync } from '@/
 import { $activeSessionId, $selectedStoredSessionId, setBusy, setMessagingSessions, setSessions } from '@/store/session'
 import {
   $attentionSessionIds,
+  $sessionStates,
   $stalledSessionIds,
   $workingSessionIds,
   clearAllSessionStates,
-  SESSION_WATCHDOG_TIMEOUT_MS
+  publishSessionState,
+  SESSION_WATCHDOG_TIMEOUT_MS,
+  setSessionStalled
 } from '@/store/session-states'
 
 import {
   type ActiveTranscriptRefreshDeps,
   reconcileActiveTranscript,
   rehydrateLiveSessionStatuses,
+  resetLiveRuntimeTracking,
   resolveActiveTranscriptSession,
   useBackgroundSync,
   windowIsActivelyViewed
@@ -166,6 +170,7 @@ afterEach(() => {
   vi.clearAllMocks()
   vi.restoreAllMocks()
   clearAllSessionStates()
+  resetLiveRuntimeTracking()
 })
 
 describe('active transcript refresh', () => {
@@ -441,6 +446,7 @@ describe('rehydrateLiveSessionStatuses', () => {
     expect($workingSessionIds.get()).toEqual(['overnight-exam-learning', 'temporary-file-cleanup'])
     expect($stalledSessionIds.get()).toEqual(['overnight-exam-learning'])
     expect($attentionSessionIds.get()).toEqual([])
+    expect($sessionStates.get()['runtime-overnight']?.profile).toBe('default')
   })
 
   it('restores a waiting turn as working and needing attention', () => {
@@ -465,5 +471,139 @@ describe('rehydrateLiveSessionStatuses', () => {
     expect($workingSessionIds.get()).toEqual([])
     expect($attentionSessionIds.get()).toEqual([])
     expect($stalledSessionIds.get()).toEqual([])
+  })
+
+  it('does not rewrite a same-id state owned by another profile', () => {
+    const foreign = {
+      ...createClientSessionState('shared-stored'),
+      awaitingResponse: true,
+      busy: true,
+      messages: [
+        { id: 'meta-message', parts: [{ text: 'meta transcript', type: 'text' as const }], role: 'assistant' as const }
+      ],
+      profile: 'meta'
+    }
+
+    const sibling = {
+      ...createClientSessionState('shared-stored'),
+      busy: true,
+      profile: 'default'
+    }
+
+    publishSessionState('shared-runtime', foreign)
+    publishSessionState('sibling-runtime', sibling)
+    setSessionStalled('shared-stored', true)
+
+    rehydrateLiveSessionStatuses(
+      {
+        sessions: [
+          {
+            id: 'shared-runtime',
+            last_active: 1_800_000_000,
+            session_key: 'shared-stored',
+            status: 'waiting'
+          }
+        ]
+      },
+      1_800_000_000_000,
+      'default'
+    )
+
+    expect($sessionStates.get()['shared-runtime']).toBe(foreign)
+    expect($sessionStates.get()['sibling-runtime']).toBe(sibling)
+    expect($stalledSessionIds.get()).toContain('shared-stored')
+  })
+
+  it('does not rewrite either side of runtime or stored-id sibling collisions', () => {
+    const runtimeOwner = {
+      ...createClientSessionState('stored-owner'),
+      busy: true,
+      profile: 'default'
+    }
+
+    const storedIdSibling = {
+      ...createClientSessionState('incoming-stored'),
+      busy: true,
+      profile: 'default'
+    }
+
+    publishSessionState('incoming-runtime', runtimeOwner)
+    publishSessionState('sibling-runtime', storedIdSibling)
+
+    rehydrateLiveSessionStatuses(
+      {
+        sessions: [{ id: 'incoming-runtime', session_key: 'incoming-stored', status: 'waiting' }]
+      },
+      1_800_000_000_000,
+      'default'
+    )
+
+    expect($sessionStates.get()['incoming-runtime']).toBe(runtimeOwner)
+    expect($sessionStates.get()['sibling-runtime']).toBe(storedIdSibling)
+  })
+
+  it('does not ABA-reap a same runtime and stored id reclaimed by another profile', () => {
+    rehydrateLiveSessionStatuses(
+      {
+        sessions: [{ id: 'shared-runtime', session_key: 'shared-stored', status: 'working' }]
+      },
+      1_800_000_000_000,
+      'default'
+    )
+
+    const foreign = {
+      ...createClientSessionState('shared-stored'),
+      awaitingResponse: true,
+      busy: true,
+      messages: [
+        { id: 'meta-message', parts: [{ text: 'meta transcript', type: 'text' as const }], role: 'assistant' as const }
+      ],
+      profile: 'meta'
+    }
+
+    const sibling = {
+      ...createClientSessionState('shared-stored'),
+      busy: true,
+      profile: 'default'
+    }
+
+    publishSessionState('shared-runtime', foreign)
+    publishSessionState('sibling-runtime', sibling)
+
+    rehydrateLiveSessionStatuses({ sessions: [] }, 1_800_000_001_000, 'default')
+
+    expect($sessionStates.get()['shared-runtime']).toBe(foreign)
+    expect($sessionStates.get()['sibling-runtime']).toBe(sibling)
+  })
+
+  it('does not ABA-reap a runtime reclaimed by a sibling stored session', () => {
+    rehydrateLiveSessionStatuses(
+      {
+        sessions: [{ id: 'shared-runtime', session_key: 'original-stored', status: 'working' }]
+      },
+      1_800_000_000_000,
+      'default'
+    )
+
+    const replacement = {
+      ...createClientSessionState('replacement-stored'),
+      awaitingResponse: true,
+      busy: true,
+      profile: 'default'
+    }
+
+    const sibling = {
+      ...createClientSessionState('original-stored'),
+      busy: true,
+      profile: 'default'
+    }
+
+    publishSessionState('shared-runtime', replacement)
+    publishSessionState('sibling-runtime', sibling)
+
+    rehydrateLiveSessionStatuses({ sessions: [] }, 1_800_000_001_000, 'default')
+
+    expect($sessionStates.get()['shared-runtime']).toBe(replacement)
+    expect($sessionStates.get()['sibling-runtime']).toBe(sibling)
   })
 })

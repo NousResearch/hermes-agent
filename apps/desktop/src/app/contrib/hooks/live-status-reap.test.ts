@@ -10,7 +10,7 @@ import {
   publishSessionState
 } from '@/store/session-states'
 
-import { rehydrateLiveSessionStatuses } from './use-background-sync'
+import { rehydrateLiveSessionStatuses, resetLiveRuntimeTracking } from './use-background-sync'
 
 /**
  * `session.active_list` is the authoritative snapshot of what is RUNNING in the
@@ -25,12 +25,14 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     vi.useFakeTimers()
     $selectedStoredSessionId.set(null)
     $unreadFinishedSessionIds.set([])
+    resetLiveRuntimeTracking()
   })
 
   afterEach(() => {
     vi.clearAllTimers()
     vi.useRealTimers()
     clearAllSessionStates()
+    resetLiveRuntimeTracking()
     $unreadFinishedSessionIds.set([])
     $activeSessionId.set(null)
   })
@@ -98,7 +100,8 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
       ...createClientSessionState('stored-tools'),
       busy: true,
       awaitingResponse: true,
-      messages: [{ id: 'a1', role: 'assistant', parts: [openTool], pending: false } as never]
+      messages: [{ id: 'a1', role: 'assistant', parts: [openTool], pending: false } as never],
+      profile: 'default'
     })
 
     // Keep the runtime referenced so the settled state stays in the store
@@ -121,7 +124,8 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     publishSessionState('runtime-await', {
       ...createClientSessionState('stored-await'),
       awaitingResponse: true,
-      busy: false
+      busy: false,
+      profile: 'default'
     })
 
     $activeSessionId.set('runtime-await')

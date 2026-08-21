@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class Mem0Backend(ABC):
@@ -22,6 +25,7 @@ class Mem0Backend(ABC):
         agent_id: str,
         infer: bool = False,
         metadata: dict | None = None,
+        run_id: str | None = None,
     ) -> dict:
         ...
 
@@ -65,10 +69,20 @@ class PlatformBackend(Mem0Backend):
         agent_id: str,
         infer: bool = False,
         metadata: dict | None = None,
+        run_id: str | None = None,
     ) -> dict:
         kwargs: dict[str, Any] = {"user_id": user_id, "agent_id": agent_id, "infer": infer}
         if metadata:
             kwargs["metadata"] = metadata
+        if run_id is not None:
+            try:
+                return self._client.add(messages, run_id=run_id, **kwargs)
+            except TypeError as exc:
+                if "run_id" not in str(exc):
+                    raise
+                # Older mem0ai versions don't support run_id — fold it into metadata.
+                merged = {**(kwargs.get("metadata") or {}), "run_id": run_id}
+                kwargs["metadata"] = merged
         return self._client.add(messages, **kwargs)
 
     def update(self, memory_id: str, text: str) -> dict:
@@ -127,6 +141,7 @@ class SelfHostedBackend(Mem0Backend):
         agent_id: str,
         infer: bool = False,
         metadata: dict | None = None,
+        run_id: str | None = None,
     ) -> dict:
         body: dict[str, Any] = {
             "messages": messages,
@@ -136,6 +151,8 @@ class SelfHostedBackend(Mem0Backend):
         }
         if metadata:
             body["metadata"] = metadata
+        if run_id is not None:
+            body["run_id"] = run_id
         return self._json("POST", "/memories", json=body)
 
     def update(self, memory_id: str, text: str) -> dict:
@@ -281,14 +298,26 @@ class OSSBackend(Mem0Backend):
         agent_id: str,
         infer: bool = False,
         metadata: dict | None = None,
+        run_id: str | None = None,
     ) -> dict:
         kwargs: dict[str, Any] = {"user_id": user_id, "agent_id": agent_id, "infer": infer}
         if metadata:
             kwargs["metadata"] = metadata
+        if run_id is not None:
+            try:
+                return self._memory.add(messages, run_id=run_id, **kwargs)
+            except TypeError:
+                # Older mem0ai versions don't support run_id — fold it into metadata.
+                merged = {**(kwargs.get("metadata") or {}), "run_id": run_id}
+                kwargs["metadata"] = merged
         return self._memory.add(messages, **kwargs)
 
     def update(self, memory_id: str, text: str) -> dict:
-        self._memory.update(memory_id, data=text)
+        try:
+            self._memory.update(memory_id, data=text)
+        except Exception as exc:
+            logger.exception("OSSBackend.update failed for memory_id=%s: %s", memory_id, exc)
+            raise
         return {"result": "Memory updated.", "memory_id": memory_id}
 
     def delete(self, memory_id: str) -> dict:

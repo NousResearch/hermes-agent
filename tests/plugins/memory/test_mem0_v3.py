@@ -1,7 +1,6 @@
 """Tests for Mem0 v3 API — new tool names, paginated responses, update/delete tools."""
 
 import json
-import threading
 import time
 import pytest
 
@@ -25,11 +24,11 @@ class FakeBackend:
         self.captured.append(("get_all", {"filters": filters, "page": page, "page_size": page_size}))
         return self._all_results
 
-    def add(self, messages, *, user_id, agent_id, infer=False, metadata=None):
+    def add(self, messages, *, user_id, agent_id, infer=False, metadata=None, run_id=None, **kwargs):
         self.captured.append((
             "add",
             messages,
-            {"user_id": user_id, "agent_id": agent_id, "infer": infer, "metadata": metadata},
+            {"user_id": user_id, "agent_id": agent_id, "infer": infer, "metadata": metadata, "run_id": run_id},
         ))
         return {"status": "PENDING", "event_id": "evt-test-123"}
 
@@ -59,6 +58,33 @@ class TestMem0V3Tools:
         result = json.loads(provider.handle_tool_call("mem0_search", {"query": "test"}))
         assert result["results"][0]["id"] == "mem-1"
 
+    def test_search_uses_filters(self, monkeypatch):
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        provider.handle_tool_call("mem0_search", {"query": "hello", "top_k": 3})
+        assert backend.captured[0][2]["filters"] == {"user_id": "u123"}
+        assert backend.captured[0][2]["top_k"] == 3
+
+    def test_search_rerank_default_false(self, monkeypatch):
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        provider.handle_tool_call("mem0_search", {"query": "test"})
+        assert backend.captured[0][2]["rerank"] is False
+
+    def test_search_rerank_override_false(self, monkeypatch):
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        provider.handle_tool_call("mem0_search", {"query": "test", "rerank": False})
+        assert backend.captured[0][2]["rerank"] is False
+
+    def test_search_rerank_config_default_used_when_arg_absent(self, monkeypatch):
+        """The persisted mem0.json ``rerank`` preference is the tool default;
+        a per-call arg still wins (see the explicit-False override above)."""
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        provider._rerank_default = True  # as initialize() sets from config
+        provider.handle_tool_call("mem0_search", {"query": "test"})
+        assert backend.captured[0][2]["rerank"] is True
 
     def test_add_uses_content_param(self, monkeypatch):
         backend = FakeBackend()
@@ -71,6 +97,17 @@ class TestMem0V3Tools:
         assert call[2]["agent_id"] == "hermes"
         assert "event_id" in result
 
+    def test_add_returns_event_id(self, monkeypatch):
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        result = json.loads(provider.handle_tool_call("mem0_add", {"content": "test"}))
+        assert result["event_id"] == "evt-test-123"
+
+    def test_add_missing_content(self, monkeypatch):
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        result = json.loads(provider.handle_tool_call("mem0_add", {}))
+        assert "error" in result
 
     def test_old_tool_names_return_unknown(self, monkeypatch):
         backend = FakeBackend()
@@ -102,6 +139,17 @@ class TestMem0UpdateDelete:
         assert result["result"] == "Memory updated."
         assert result["memory_id"] == "mem-1"
 
+    def test_update_missing_memory_id(self, monkeypatch):
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        result = json.loads(provider.handle_tool_call("mem0_update", {"text": "no id"}))
+        assert "error" in result
+
+    def test_update_missing_text(self, monkeypatch):
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        result = json.loads(provider.handle_tool_call("mem0_update", {"memory_id": "mem-1"}))
+        assert "error" in result
 
     def test_delete_calls_sdk(self, monkeypatch):
         backend = FakeBackend()
@@ -111,6 +159,12 @@ class TestMem0UpdateDelete:
         ))
         assert backend.captured[0][1] == "mem-1"
         assert result["result"] == "Memory deleted."
+
+    def test_delete_missing_memory_id(self, monkeypatch):
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        result = json.loads(provider.handle_tool_call("mem0_delete", {}))
+        assert "error" in result
 
 
 class TestMem0ErrorHandling:
@@ -122,6 +176,62 @@ class TestMem0ErrorHandling:
         provider._agent_id = "hermes"
         provider._backend = backend
         return provider
+
+    def test_update_404_no_circuit_breaker(self, monkeypatch):
+        backend = FakeBackend()
+        backend.update = lambda mid, text: (_ for _ in ()).throw(Exception("404 Not Found"))
+        provider = self._make_provider(monkeypatch, backend)
+        result = json.loads(provider.handle_tool_call(
+            "mem0_update", {"memory_id": "bad-id", "text": "x"}
+        ))
+        assert "error" in result
+        assert provider._consecutive_failures == 0
+
+    def test_delete_404_no_circuit_breaker(self, monkeypatch):
+        backend = FakeBackend()
+        backend.delete = lambda mid: (_ for _ in ()).throw(Exception("404 not found"))
+        provider = self._make_provider(monkeypatch, backend)
+        result = json.loads(provider.handle_tool_call(
+            "mem0_delete", {"memory_id": "bad-id"}
+        ))
+        assert "error" in result
+        assert provider._consecutive_failures == 0
+
+    def test_update_validation_error_no_circuit_breaker(self, monkeypatch):
+        """ValidationError (bad UUID format) should not trip circuit breaker."""
+        class ValidationError(Exception):
+            pass
+        backend = FakeBackend()
+        backend.update = lambda mid, text: (_ for _ in ()).throw(
+            ValidationError('{"error":"memory_id should be a valid UUID"}')
+        )
+        provider = self._make_provider(monkeypatch, backend)
+        result = json.loads(provider.handle_tool_call(
+            "mem0_update", {"memory_id": "not-a-uuid", "text": "x"}
+        ))
+        assert "error" in result
+        assert provider._consecutive_failures == 0
+
+    def test_delete_validation_error_no_circuit_breaker(self, monkeypatch):
+        class ValidationError(Exception):
+            pass
+        backend = FakeBackend()
+        backend.delete = lambda mid: (_ for _ in ()).throw(
+            ValidationError('{"error":"memory_id should be a valid UUID"}')
+        )
+        provider = self._make_provider(monkeypatch, backend)
+        result = json.loads(provider.handle_tool_call(
+            "mem0_delete", {"memory_id": "not-a-uuid"}
+        ))
+        assert "error" in result
+        assert provider._consecutive_failures == 0
+
+    def test_update_5xx_trips_circuit_breaker(self, monkeypatch):
+        backend = FakeBackend()
+        backend.update = lambda mid, text: (_ for _ in ()).throw(Exception("500 Internal Server Error"))
+        provider = self._make_provider(monkeypatch, backend)
+        provider.handle_tool_call("mem0_update", {"memory_id": "mem-1", "text": "x"})
+        assert provider._consecutive_failures == 1
 
 
 class TestMem0V3Internal:
@@ -145,6 +255,16 @@ class TestMem0V3Internal:
         assert call[2]["agent_id"] == "hermes"
         assert call[2]["infer"] is True
 
+    def test_old_tool_names_return_unknown(self, monkeypatch):
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        result = json.loads(provider.handle_tool_call("mem0_profile", {}))
+        assert "error" in result
+        result = json.loads(provider.handle_tool_call("mem0_conclude", {}))
+        assert "error" in result
+        result = json.loads(provider.handle_tool_call("mem0_list", {}))
+        assert "error" in result
+
 
 class TestMem0Prefetch:
     """prefetch() must recall on the CURRENT question, synchronously.
@@ -160,6 +280,7 @@ class TestMem0Prefetch:
         provider.initialize("test-session")
         provider._user_id = "u123"
         provider._agent_id = "hermes"
+        provider._prefetch_top_k = 10  # reset from default 15 so test assertions are stable
         provider._backend = backend
         return provider
 
@@ -176,6 +297,12 @@ class TestMem0Prefetch:
         assert "## Mem0 Memory" in result
         assert "user prefers dark mode" in result
 
+    def test_prefetch_returns_memories_on_first_call(self):
+        # No prior queue_prefetch / warm — the very first call must still recall.
+        backend = FakeBackend(search_results=[{"id": "m1", "memory": "lives in Berlin"}])
+        provider = self._make_provider(backend)
+        result = provider.prefetch("where do I live?")
+        assert "lives in Berlin" in result
 
     def test_on_turn_start_queues_current_query(self):
         backend = FakeBackend(search_results=[{"id": "m1", "memory": "lives in Berlin"}])
@@ -187,49 +314,33 @@ class TestMem0Prefetch:
         assert len([c for c in backend.captured if c[0] == "search"]) == 1
 
     def test_slow_prefetch_returns_quickly(self, monkeypatch):
-        entered = threading.Event()
-        release = threading.Event()
-        search_returned = threading.Event()
-
         class SlowBackend(FakeBackend):
             def search(self, query, *, filters, top_k=10, rerank=True):
-                entered.set()
-                try:
-                    release.wait(30)
-                    return super().search(
-                        query, filters=filters, top_k=top_k, rerank=rerank
-                    )
-                finally:
-                    search_returned.set()
+                time.sleep(0.2)
+                return super().search(query, filters=filters, top_k=top_k, rerank=rerank)
 
         monkeypatch.setattr(mem0_plugin, "_PREFETCH_WAIT_SECS", 0.01)
         provider = self._make_provider(
             SlowBackend(search_results=[{"id": "m1", "memory": "lives in Berlin"}])
         )
-        # DETERMINISTIC non-blocking witness — replaces `assert elapsed < 0.1`.
-        #
-        # The old form slept 0.2s in the backend and asserted prefetch returned
-        # in under 0.1s. That makes the OS scheduler part of the assertion: on
-        # a loaded box thread startup alone can eat the 100ms budget, so the
-        # inequality flips with nothing wrong in the code under test. Observed
-        # failing in a full-directory run of tests/plugins/memory.
-        #
-        # The real contract is that prefetch gives up on the slow backend
-        # instead of waiting for it. Assert it directly: the backend search is
-        # STILL PARKED (release unset, so `search_returned` cannot be set). If
-        # prefetch ever waited for the backend, the search would have returned
-        # first and this fails. No wall-clock constant.
+        started = time.monotonic()
         assert provider.prefetch("where do I live?") == ""
-        assert entered.wait(30), "prefetch never reached the backend"
-        assert not search_returned.is_set(), (
-            "prefetch blocked on the slow backend: the backend search had "
-            "already returned by the time prefetch did"
-        )
-
-        release.set()
-        provider._prefetch_thread.join(timeout=30)
+        assert time.monotonic() - started < 0.1
+        provider._prefetch_thread.join(timeout=1)
         assert "lives in Berlin" in provider.prefetch("where do I live?")
 
+    def test_prefetch_empty_results_returns_empty(self):
+        backend = FakeBackend(search_results=[])
+        provider = self._make_provider(backend)
+        assert provider.prefetch("anything") == ""
+
+    def test_prefetch_skips_when_breaker_open(self):
+        backend = FakeBackend(search_results=[{"id": "m1", "memory": "x"}])
+        provider = self._make_provider(backend)
+        provider._consecutive_failures = 5
+        provider._breaker_open_until = float("inf")
+        assert provider.prefetch("q") == ""
+        assert backend.captured == []
 
     def test_queue_prefetch_fires_no_search(self):
         # prefetch is synchronous now, so the post-turn warm is redundant and
@@ -260,6 +371,30 @@ class TestMem0V3Config:
         assert "mem0_profile" not in block
         assert "mem0_conclude" not in block
 
+    def test_system_prompt_shows_platform_mode(self):
+        provider = Mem0MemoryProvider()
+        provider._user_id = "test"
+        provider._mode = "platform"
+        block = provider.system_prompt_block()
+        assert "platform" in block
+        assert "Rerank" in block
+
+    def test_system_prompt_shows_oss_mode(self):
+        provider = Mem0MemoryProvider()
+        provider._user_id = "test"
+        provider._mode = "oss"
+        block = provider.system_prompt_block()
+        assert "OSS" in block
+        assert "Rerank" not in block
+
+    def test_search_schema_has_rerank(self):
+        """rerank property available in SEARCH_SCHEMA for platform mode."""
+        provider = Mem0MemoryProvider()
+        schemas = provider.get_tool_schemas()
+        search = next(s for s in schemas if s["name"] == "mem0_search")
+        assert "rerank" in search["parameters"]["properties"]
+        assert search["parameters"]["properties"]["rerank"]["type"] == "boolean"
+
 
 class TestMem0ModeSwitch:
 
@@ -286,6 +421,34 @@ class TestMem0ModeSwitch:
         monkeypatch.delenv("MEM0_API_KEY", raising=False)
         provider = Mem0MemoryProvider()
         assert provider.is_available() is False
+
+    def test_is_available_oss_needs_vector(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_path = tmp_path / "mem0.json"
+        config_path.write_text('{"mode": "oss", "oss": {"vector_store": {"provider": "qdrant"}}}')
+        provider = Mem0MemoryProvider()
+        assert provider.is_available() is True
+
+    def test_is_available_oss_no_vector(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_path = tmp_path / "mem0.json"
+        config_path.write_text('{"mode": "oss", "oss": {}}')
+        provider = Mem0MemoryProvider()
+        assert provider.is_available() is False
+
+    def test_tool_schemas_unchanged(self):
+        provider = Mem0MemoryProvider()
+        schemas = provider.get_tool_schemas()
+        names = [s["name"] for s in schemas]
+        assert names == ["mem0_search", "mem0_add", "mem0_update", "mem0_delete"]
+
+    def test_system_prompt_includes_mode(self):
+        provider = Mem0MemoryProvider()
+        provider._user_id = "test"
+        provider._mode = "oss"
+        block = provider.system_prompt_block()
+        assert "mem0_search" in block
+        assert "OSS" in block
 
 
 class TestMem0UserIdResolution:
@@ -323,6 +486,11 @@ class TestMem0UserIdResolution:
         provider.initialize("test", user_id="123456789", platform="telegram")
         assert provider._user_id == "123456789"
 
+    def test_unset_and_no_kwargs_falls_back_to_default(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("MEM0_USER_ID", raising=False)
+        provider = self._provider(monkeypatch, tmp_path)
+        provider.initialize("test")
+        assert provider._user_id == "hermes-user"
 
     def test_legacy_placeholder_in_config_does_not_override_kwargs(self, monkeypatch, tmp_path):
         # Setup wizard historically wrote {"user_id": "hermes-user"} as the
@@ -347,6 +515,22 @@ class TestMem0WriteMetadata:
         provider._channel = channel
         provider._backend = FakeBackend()
         return provider
+
+    def test_add_tool_passes_channel_metadata(self):
+        provider = self._make_provider("telegram")
+        provider.handle_tool_call("mem0_add", {"content": "user likes dark mode"})
+        call = provider._backend.captured[-1]
+        assert call[2]["metadata"] == {"channel": "telegram"}
+
+    def test_sync_turn_passes_channel_metadata(self):
+        provider = self._make_provider("discord")
+        provider.sync_turn("hi", "hello", session_id="s")
+        # sync_turn fires a daemon thread; wait for it.
+        if provider._sync_thread:
+            provider._sync_thread.join(timeout=5.0)
+        adds = [c for c in provider._backend.captured if c[0] == "add"]
+        assert adds, "expected an add call from sync_turn"
+        assert adds[-1][2]["metadata"] == {"channel": "discord"}
 
 
 class _SentinelBackend:
@@ -380,6 +564,23 @@ class TestCreateBackendRouting:
         assert isinstance(backend, SH)
         assert captured["args"] == ("adminkey", "http://sh:8888")
 
+    def test_routes_to_platform_when_no_host(self, monkeypatch):
+        class PB(_SentinelBackend):
+            def __init__(self, api_key):
+                pass
+
+        monkeypatch.setattr("plugins.memory.mem0._backend.PlatformBackend", PB)
+        provider = self._provider(monkeypatch, host="")
+        assert isinstance(provider._create_backend(), PB)
+
+    def test_routes_to_oss_when_mode_oss(self, monkeypatch):
+        class OB(_SentinelBackend):
+            def __init__(self, cfg):
+                pass
+
+        monkeypatch.setattr("plugins.memory.mem0._backend.OSSBackend", OB)
+        provider = self._provider(monkeypatch, mode="oss")
+        assert isinstance(provider._create_backend(), OB)
 
     def test_oss_mode_takes_precedence_over_host(self, monkeypatch):
         class OB(_SentinelBackend):
@@ -408,4 +609,197 @@ class TestSelfHostedConfig:
         monkeypatch.setenv("MEM0_HOST", "http://localhost:8888")
         assert mem0_plugin._load_config()["host"] == "http://localhost:8888"
 
+    def test_is_available_true_with_host_only(self, monkeypatch):
+        monkeypatch.delenv("MEM0_API_KEY", raising=False)
+        monkeypatch.setenv("MEM0_MODE", "platform")
+        monkeypatch.setenv("MEM0_HOST", "http://localhost:8888")
+        assert Mem0MemoryProvider().is_available() is True
 
+    def test_is_available_false_without_key_or_host(self, monkeypatch):
+        monkeypatch.delenv("MEM0_API_KEY", raising=False)
+        monkeypatch.delenv("MEM0_HOST", raising=False)
+        monkeypatch.setenv("MEM0_MODE", "platform")
+        assert Mem0MemoryProvider().is_available() is False
+
+
+# ---------------------------------------------------------------------------
+# on_pre_compress tests
+# ---------------------------------------------------------------------------
+
+class TestOnPreCompress:
+    """Tests for Mem0MemoryProvider.on_pre_compress.
+
+    Three contracts are verified:
+      1. Truncation fires on oversized tool content and mutates in-place.
+      2. A background extraction thread is launched when tool content > 500 chars.
+      3. Backend-is-None short-circuits without launching any thread.
+    """
+
+    _THRESHOLD = 8_000   # matches _TOOL_TRUNCATE_THRESHOLD in on_pre_compress
+    _MIN_EXTRACT = 501   # one char above the 500-char extraction trigger
+
+    def _make_provider(self, monkeypatch, backend=None):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u1"
+        provider._agent_id = "hermes"
+        provider._backend = backend
+        return provider
+
+    # ------------------------------------------------------------------
+    # 1. Truncation fires and modifies content in-place
+    # ------------------------------------------------------------------
+
+    def test_truncation_fires_on_oversized_tool_content(self, monkeypatch):
+        """Tool message content > _THRESHOLD is truncated in-place."""
+        provider = self._make_provider(monkeypatch, backend=None)
+        big_content = "x" * (self._THRESHOLD + 1)
+        msg = {"role": "tool", "content": big_content}
+        provider.on_pre_compress([msg])
+        assert len(msg["content"]) < len(big_content), (
+            "Content should have been truncated in-place"
+        )
+        assert "[truncated" in msg["content"], (
+            "Truncated sentinel should appear in the modified content"
+        )
+
+    def test_truncation_preserves_head_and_tail(self, monkeypatch):
+        """Truncated content begins with the first 500 chars and ends with the last 200 chars."""
+        _HEAD = 500
+        _TAIL = 200
+        provider = self._make_provider(monkeypatch, backend=None)
+        head = "H" * _HEAD
+        body = "M" * (self._THRESHOLD - _HEAD - _TAIL + 1)
+        tail = "T" * _TAIL
+        big_content = head + body + tail
+        msg = {"role": "tool", "content": big_content}
+        provider.on_pre_compress([msg])
+        assert msg["content"].startswith(head), "Head chars must be preserved"
+        assert msg["content"].endswith(tail), "Tail chars must be preserved"
+
+    def test_truncation_does_not_touch_non_tool_messages(self, monkeypatch):
+        """User/assistant messages are never truncated, even if very large."""
+        provider = self._make_provider(monkeypatch, backend=None)
+        big_content = "y" * (self._THRESHOLD + 1)
+        user_msg = {"role": "user", "content": big_content}
+        assistant_msg = {"role": "assistant", "content": big_content}
+        provider.on_pre_compress([user_msg, assistant_msg])
+        assert user_msg["content"] == big_content, "User message must not be modified"
+        assert assistant_msg["content"] == big_content, "Assistant message must not be modified"
+
+    def test_short_tool_content_not_truncated(self, monkeypatch):
+        """Tool messages below the threshold are left intact."""
+        provider = self._make_provider(monkeypatch, backend=None)
+        short_content = "short tool output"
+        msg = {"role": "tool", "content": short_content}
+        provider.on_pre_compress([msg])
+        assert msg["content"] == short_content
+
+    # ------------------------------------------------------------------
+    # 2. Extraction thread is launched when tool content > 500 chars
+    # ------------------------------------------------------------------
+
+    def test_extraction_thread_launched_for_large_tool_content(self, monkeypatch):
+        """When backend is set and a tool message exceeds 500 chars,
+        a background thread named 'mem0-pre-compress' is started."""
+        import threading
+
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend=backend)
+
+        large_content = "Z" * self._MIN_EXTRACT
+        messages = [{"role": "tool", "content": large_content}]
+
+        launched: list[threading.Thread] = []
+        original_start = threading.Thread.start
+
+        def capturing_start(self_thread):
+            launched.append(self_thread)
+            original_start(self_thread)
+
+        monkeypatch.setattr(threading.Thread, "start", capturing_start)
+
+        provider.on_pre_compress(messages)
+
+        # Wait briefly for any spawned daemon threads to register
+        pre_compress_threads = [t for t in launched if t.name == "mem0-pre-compress"]
+        assert pre_compress_threads, (
+            "Expected a 'mem0-pre-compress' thread to be launched"
+        )
+
+    def test_extraction_thread_calls_backend_add(self, monkeypatch):
+        """The extraction thread eventually calls backend.add with infer=True."""
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend=backend)
+
+        large_content = "FACT " * 200  # well over 500 chars
+        messages = [{"role": "tool", "content": large_content}]
+        provider.on_pre_compress(messages)
+
+        # Give the daemon thread time to run
+        import time
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            calls = [c for c in backend.captured if c[0] == "add"]
+            if calls:
+                break
+            time.sleep(0.05)
+
+        add_calls = [c for c in backend.captured if c[0] == "add"]
+        assert add_calls, "backend.add should have been called by the extraction thread"
+        assert add_calls[0][2]["infer"] is True, "Extraction must use infer=True"
+
+    def test_no_thread_launched_when_tool_content_below_500(self, monkeypatch):
+        """Tool content <= 500 chars does not trigger a background extraction thread."""
+        import threading
+
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend=backend)
+
+        small_content = "tiny"  # well below 500
+        messages = [{"role": "tool", "content": small_content}]
+
+        launched: list[threading.Thread] = []
+        original_start = threading.Thread.start
+
+        def capturing_start(self_thread):
+            launched.append(self_thread)
+            original_start(self_thread)
+
+        monkeypatch.setattr(threading.Thread, "start", capturing_start)
+        provider.on_pre_compress(messages)
+
+        pre_compress_threads = [t for t in launched if t.name == "mem0-pre-compress"]
+        assert not pre_compress_threads, (
+            "No extraction thread should launch when content is below the 500-char threshold"
+        )
+
+    # ------------------------------------------------------------------
+    # 3. Backend-is-None short-circuits without launching any thread
+    # ------------------------------------------------------------------
+
+    def test_backend_none_no_thread_launched(self, monkeypatch):
+        """When _backend is None, on_pre_compress returns early and no
+        extraction thread is spawned."""
+        import threading
+
+        provider = self._make_provider(monkeypatch, backend=None)
+
+        large_content = "A" * self._MIN_EXTRACT
+        messages = [{"role": "tool", "content": large_content}]
+
+        launched: list[threading.Thread] = []
+        original_start = threading.Thread.start
+
+        def capturing_start(self_thread):
+            launched.append(self_thread)
+            original_start(self_thread)
+
+        monkeypatch.setattr(threading.Thread, "start", capturing_start)
+        result = provider.on_pre_compress(messages)
+
+        assert result == "", "on_pre_compress should return empty string"
+        pre_compress_threads = [t for t in launched if t.name == "mem0-pre-compress"]
+        assert not pre_compress_threads, (
+            "No thread should be launched when backend is None"
+        )

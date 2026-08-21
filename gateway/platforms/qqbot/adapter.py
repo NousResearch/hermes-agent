@@ -2526,6 +2526,13 @@ class QQAdapter(BasePlatformAdapter):
                     )
             except Exception as exc:
                 last_exc = exc
+                if reply_to and self._is_expired_reply_error(exc):
+                    logger.warning(
+                        "[%s] Reply anchor expired; retrying as standalone message",
+                        self._log_tag,
+                    )
+                    reply_to = None
+                    continue
                 err = str(exc).lower()
                 # Permanent errors — don't retry
                 if any(
@@ -2551,6 +2558,19 @@ class QQAdapter(BasePlatformAdapter):
             k in error_msg.lower() for k in ("invalid", "forbidden", "not found")
         )
         return SendResult(success=False, error=error_msg, retryable=retryable)
+
+    @staticmethod
+    def _is_expired_reply_error(error: Exception) -> bool:
+        """Return whether QQ rejected a reply anchor because it expired.
+
+        QQ currently reports this as ``msg_id已过期``. Keep the English
+        variants too because API gateways and test doubles may translate the
+        response.
+        """
+        text = str(error).lower()
+        return "msg_id" in text and any(
+            marker in text for marker in ("expired", "expire", "过期")
+        )
 
     async def _send_c2c_text(
             self,
@@ -2658,6 +2678,27 @@ class QQAdapter(BasePlatformAdapter):
                 retryable=False,
             )
         except Exception as exc:
+            if reply_to and self._is_expired_reply_error(exc):
+                logger.warning(
+                    "[%s] Reply anchor expired; retrying keyboard message as standalone",
+                    self._log_tag,
+                )
+                try:
+                    if chat_type == "c2c":
+                        return await self._send_c2c_text(
+                            chat_id, truncated, None, keyboard=keyboard,
+                        )
+                    if chat_type == "group":
+                        return await self._send_group_text(
+                            chat_id, truncated, None, keyboard=keyboard,
+                        )
+                except Exception as fallback_exc:
+                    logger.error(
+                        "[%s] Standalone keyboard fallback failed: %s",
+                        self._log_tag,
+                        fallback_exc,
+                    )
+                    return SendResult(success=False, error=str(fallback_exc))
             logger.error(
                 "[%s] send_with_keyboard failed: %s", self._log_tag, exc
             )

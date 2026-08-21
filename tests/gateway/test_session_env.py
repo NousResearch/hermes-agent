@@ -238,6 +238,71 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
     }
 
 
+def test_set_session_env_pins_cwd_to_profile_home_when_multiplexed(tmp_path, monkeypatch):
+    """Multiplex turns must use the serving profile home, not process TERMINAL_CWD."""
+    from types import SimpleNamespace
+
+    from agent.runtime_cwd import resolve_context_cwd
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = SimpleNamespace(multiplex_profiles=True)
+    runner.adapters = {}
+
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="2144471399",
+        chat_type="dm",
+        user_id="123456",
+        user_name="alice",
+        thread_id=None,
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+
+    token = set_hermes_home_override(str(tmp_path))
+    try:
+        tokens = runner._set_session_env(context)
+        try:
+            assert resolve_context_cwd() == tmp_path
+        finally:
+            runner._clear_session_env(tokens)
+        assert resolve_context_cwd() is None
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_set_session_env_leaves_cwd_unset_without_multiplex(tmp_path, monkeypatch):
+    """Single-profile gateways keep falling through to TERMINAL_CWD / launch cwd."""
+    from types import SimpleNamespace
+
+    from agent.runtime_cwd import resolve_context_cwd
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = SimpleNamespace(multiplex_profiles=False)
+    runner.adapters = {}
+
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="2144471399",
+        chat_type="dm",
+        user_id="123456",
+        user_name="alice",
+        thread_id=None,
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+
+    token = set_hermes_home_override(str(tmp_path))
+    try:
+        tokens = runner._set_session_env(context)
+        try:
+            assert resolve_context_cwd() is None
+        finally:
+            runner._clear_session_env(tokens)
+    finally:
+        reset_hermes_home_override(token)
 
 
 def test_cron_session_contextvar_preserves_legacy_env_fallback(monkeypatch):

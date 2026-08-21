@@ -16,8 +16,9 @@ crashes due to a bad timezone string.
 import logging
 import os
 from datetime import datetime
-from hermes_constants import get_config_path
 from typing import Optional
+
+from hermes_constants import get_config_path
 
 logger = logging.getLogger(__name__)
 

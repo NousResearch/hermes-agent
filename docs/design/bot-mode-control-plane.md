@@ -63,7 +63,7 @@ One immutable snapshot records the exact profile/runtime generation:
 
 ```text
 grant_id
-profile_id / profile_config_revision
+BotAddress / profile_config_revision
 runtime_snapshot_id / revocation_epoch
 configured / requested / effective provider
 effective model / API mode / reasoning / service tier
@@ -95,8 +95,8 @@ content may request an operation; it cannot manufacture a grant.
 
 A content-free result records the decision ID, operation, verdict, reason,
 required capability, and bounded constraints. The evaluator fails closed on
-profile, profile-revision, grant, revocation-epoch, runtime-snapshot, or
-capability mismatch.
+exact BotAddress, profile-revision, grant, revocation-epoch,
+runtime-snapshot, or capability mismatch.
 
 ### `ShadowPolicyComparison`
 

@@ -1037,6 +1037,15 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     if command_dir:
         resolved_env = _prepend_path(resolved_env, command_dir)
 
+    # Hermes checkouts ship a `.npmrc` with `min-release-age=14` (supply-chain
+    # gate for the monorepo build). Docker images bake that file at
+    # /opt/hermes/.npmrc, so stdio MCP servers launched via `npx`/`npm` inherit
+    # the age gate and fail ETARGET on freshly published user packages (#82410).
+    # Neutralise the gate for MCP installs only — same pattern as
+    # hermes_cli/npm_engine._upgrade_env().
+    if os.path.basename(resolved_command).lower() in {"npx", "npm"}:
+        resolved_env.setdefault("npm_config_min_release_age", "0")
+
     return resolved_command, resolved_env
 
 

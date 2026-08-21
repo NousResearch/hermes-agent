@@ -33,6 +33,29 @@ def test_resolve_stdio_command_falls_back_to_hermes_node_bin(tmp_path):
     assert env["PATH"].split(os.pathsep)[0] == str(node_bin)
 
 
+def test_resolve_stdio_command_neutralises_min_release_age_for_npx():
+    """Docker/runtime MCP installs via npx must not inherit the checkout's
+    min-release-age gate (#82410)."""
+    command, env = _resolve_stdio_command("npx", {"PATH": "/usr/bin"})
+    assert command.endswith("npx") or command == "npx"
+    assert env["npm_config_min_release_age"] == "0"
+
+    command, env = _resolve_stdio_command(
+        os.path.join(os.sep, "usr", "local", "bin", "npm"),
+        {"PATH": "/usr/bin"},
+    )
+    assert command.endswith("npm")
+    assert env["npm_config_min_release_age"] == "0"
+
+
+def test_resolve_stdio_command_respects_user_min_release_age_override():
+    command, env = _resolve_stdio_command(
+        "npx",
+        {"PATH": "/usr/bin", "npm_config_min_release_age": "14"},
+    )
+    assert env["npm_config_min_release_age"] == "14"
+
+
 def test_resolve_stdio_command_falls_back_to_usr_local_bin():
     """When ``npx`` isn't on the filtered PATH and isn't under ``$HERMES_HOME/node/bin``
     or ``~/.local/bin``, the resolver should still locate it at ``/usr/local/bin/npx``.

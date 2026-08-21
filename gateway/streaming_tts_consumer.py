@@ -52,6 +52,72 @@ _ABORT = object()
 _DONE = object()
 
 
+class _PcmResampler:
+    """Stateful linear-interpolation int16 resampler for streaming PCM.
+
+    An OpenAI-compatible TTS endpoint may return audio at a sample rate
+    different from the adapter-declared ``AudioFormat`` (issue #76466). The
+    adapter contract requires every delivered chunk to conform to the
+    declared format, so the consumer resamples on the fly. State is carried
+    across chunk boundaries so interpolation stays click-free, and the
+    source tail is buffered until enough input accumulates.
+    """
+
+    def __init__(self, src_rate: int, dst_rate: int):
+        self._ratio = src_rate / dst_rate  # source samples per output sample
+        self._pos = 0.0  # source index of the next output sample
+        self._buf = None  # lazily-imported numpy arrays; pending source samples
+        self._pending = None  # stray odd byte waiting for its pair
+
+    def _numpy(self):
+        import numpy as np
+
+        return np
+
+    def process(self, chunk: bytes) -> bytes:
+        """Resample one PCM chunk; may return fewer bytes than input."""
+        np = self._numpy()
+        if self._pending is not None:
+            chunk = self._pending + chunk
+            self._pending = None
+        if len(chunk) % 2:  # int16 samples must stay aligned
+            self._pending = chunk[-1:]
+            chunk = chunk[:-1]
+        src = np.frombuffer(chunk, dtype=np.int16).astype(np.float64)
+        if self._buf is None:
+            buf = src
+        else:
+            buf = np.concatenate([self._buf, src])
+        n_out = int((len(buf) - self._pos) // self._ratio)
+        if n_out <= 0:
+            self._buf = buf
+            return b""
+        idx = self._pos + np.arange(n_out) * self._ratio
+        i0 = idx.astype(np.int64)
+        i1 = np.minimum(i0 + 1, len(buf) - 1)
+        frac = idx - i0
+        out = buf[i0] * (1.0 - frac) + buf[i1] * frac
+        consumed = int(self._pos + n_out * self._ratio)
+        self._buf = buf[consumed:]
+        self._pos = (self._pos + n_out * self._ratio) - consumed
+        return out.astype(np.int16).tobytes()
+
+    def flush(self) -> bytes:
+        """Emit the final partial output sample (duration-preserving)."""
+        if self._buf is None or not len(self._buf):
+            return b""
+        np = self._numpy()
+        i0 = int(self._pos)
+        if i0 >= len(self._buf):
+            self._buf = None
+            return b""
+        i1 = min(i0 + 1, len(self._buf) - 1)
+        frac = self._pos - i0
+        out = self._buf[i0] * (1.0 - frac) + self._buf[i1] * frac
+        self._buf = None
+        return np.array([out], dtype=np.int16).tobytes()
+
+
 class StreamingTTSConsumer:
     """Consumes LLM text deltas and produces streaming PCM audio for an adapter."""
 
@@ -338,15 +404,41 @@ class StreamingTTSConsumer:
                 self._suppress_whole_file = True
 
     async def _iter_stream_chunks(self, text: str):
-        """Yield provider PCM chunks one at a time without blocking the loop."""
+        """Yield provider PCM chunks one at a time without blocking the loop.
+
+        When the streamer's endpoint returns a sample rate different from the
+        adapter-declared ``AudioFormat`` (issue #76466), chunks are resampled
+        on the fly so the adapter contract — every chunk conforms to the
+        declared format — still holds.
+        """
         if self._streamer is None:
             return
         iterator = iter(self._streamer.stream(text))
+        resampler = None
         while True:
             has_chunk, chunk = await asyncio.to_thread(self._next_stream_chunk, iterator)
             if not has_chunk:
                 break
-            yield chunk
+            if chunk:
+                if resampler is None and self._streamer.sample_rate != self._audio_format.sample_rate:
+                    resampler = _PcmResampler(
+                        int(self._streamer.sample_rate),
+                        int(self._audio_format.sample_rate),
+                    )
+                    logger.info(
+                        "TTS endpoint sample rate %d Hz differs from adapter "
+                        "format %d Hz; resampling stream",
+                        self._streamer.sample_rate,
+                        self._audio_format.sample_rate,
+                    )
+                if resampler is not None:
+                    chunk = resampler.process(chunk)
+            if chunk:
+                yield chunk
+        if resampler is not None:
+            tail = resampler.flush()
+            if tail:
+                yield tail
 
     @staticmethod
     def _next_stream_chunk(iterator: Any) -> tuple[bool, Optional[bytes]]:

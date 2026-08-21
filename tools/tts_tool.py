@@ -4057,10 +4057,7 @@ def stream_tts_to_speaker(
 
     try:
         output_stream = None
-        streamer = None  # type: ignore[assignment]
-        _worker_thread = None
-        _audio_queue = None  # type: ignore[assignment]
-        _prefetch_threads = []
+        _output_sd = None
         tts_config = _load_tts_config()
 
         # Prefer a chunked streamer for low time-to-first-audio; fall back to
@@ -4087,22 +4084,51 @@ def stream_tts_to_speaker(
             # output_stream=None routes each sentence through the tempfile
             # -> play_audio_file -> afplay path. See PR #62601 / #13291.
             if platform.system() == "Darwin":
-                output_stream = None
+                _output_sd = None
             else:
                 try:
-                    sd = _import_sounddevice()
-                    output_stream = sd.OutputStream(
-                        samplerate=streamer.sample_rate,
+                    _output_sd = _import_sounddevice()
+                except (ImportError, OSError) as exc:
+                    logger.debug("sounddevice not available, streamer→tempfile: %s", exc)
+                    _output_sd = None
+                except Exception as exc:
+                    logger.warning("sounddevice import failed: %s", exc)
+                    _output_sd = None
+
+            def _ensure_output_stream():
+                """(Re)open the OutputStream at the streamer's *current* rate.
+
+                An OpenAI-compatible endpoint may return PCM at a rate other
+                than the 24 kHz default (advertised via the
+                ``X-Audio-Sample-Rate`` response header); that rate is only
+                known after the first chunk has been pulled, so the device is
+                opened lazily and recreated when the rate changes between
+                sentences (#76466).
+                """
+                nonlocal output_stream
+                if _output_sd is None:
+                    return None
+                rate = int(streamer.sample_rate)
+                if output_stream is not None and getattr(output_stream, "samplerate", None) == rate:
+                    return output_stream
+                if output_stream is not None:
+                    try:
+                        output_stream.stop()
+                        output_stream.close()
+                    except Exception:
+                        pass
+                    output_stream = None
+                try:
+                    output_stream = _output_sd.OutputStream(
+                        samplerate=rate,
                         channels=streamer.channels,
                         dtype="int16",
                     )
                     output_stream.start()
-                except (ImportError, OSError) as exc:
-                    logger.debug("sounddevice not available, streamer→tempfile: %s", exc)
-                    output_stream = None
                 except Exception as exc:
                     logger.warning("sounddevice OutputStream failed: %s", exc)
                     output_stream = None
+                return output_stream
 
         chunker = SentenceChunker()
         long_flush_len = 100
@@ -4336,27 +4362,87 @@ def stream_tts_to_speaker(
             # Truncate very long sentences to the provider's per-request cap.
             if stream_max_len and len(cleaned) > stream_max_len:
                 cleaned = cleaned[:stream_max_len]
-            # Every sentence gets its own prefetch thread — the HTTP request
-            # fires the moment the sentence boundary is detected, so audio for
-            # sentence N+1 is already buffering while sentence N plays.
-            _enqueue_audio(cleaned)
+            try:
+                audio_iter = streamer.stream(cleaned)
+                if _output_sd is not None:
+                    import numpy as _np
+                    from itertools import chain as _chain
 
-        def _align_int16_chunks(chunks, stop_evt):
-            """Yield int16-aligned byte chunks from an iterable."""
-            leftover = b""
-            for chunk in chunks:
-                if stop_evt.is_set():
-                    break
-                buf = leftover + chunk
-                aligned_len = len(buf) - (len(buf) % 2)
-                if aligned_len >= 2:
-                    yield buf[:aligned_len]
-                leftover = buf[aligned_len:] if aligned_len < len(buf) else b""
-            if leftover:
-                yield b"\x00"
+                    # Flag real speaker output for the duration of this
+                    # sentence so ambient cues (thinking sound) stay quiet.
+                    # Fail-open: stubbed/partial voice_mode modules (tests)
+                    # must never break sentence playback.
+                    try:
+                        from tools.voice_mode import mark_audio_output_active
+                    except Exception:
+                        def mark_audio_output_active(_active):
+                            return None
+                    # Pull the first chunk before opening the output device:
+                    # the first next() is what actually opens the HTTP request
+                    # and lets the streamer learn the endpoint's real sample
+                    # rate (X-Audio-Sample-Rate), which the device must be
+                    # opened at (#76466).
+                    try:
+                        first_chunk = next(audio_iter)
+                    except StopIteration:
+                        first_chunk = None
+                    if first_chunk is None:
+                        pass
+                    else:
+                        out = _ensure_output_stream()
+                        if out is None:
+                            # Device init failed at the discovered rate:
+                            # fall back to the tempfile player for the
+                            # remaining chunks of this sentence.
+                            _play_via_tempfile(_chain([first_chunk], audio_iter), stop_event, streamer)
+                        else:
+                            mark_audio_output_active(True)
+                            try:
+                                if not stop_event.is_set():
+                                    out.write(_np.frombuffer(first_chunk, dtype=_np.int16).reshape(-1, 1))
+                                for chunk in audio_iter:
+                                    if stop_event.is_set():
+                                        break
+                                    out.write(_np.frombuffer(chunk, dtype=_np.int16).reshape(-1, 1))
+                            finally:
+                                mark_audio_output_active(False)
+                else:
+                    # No audio device: buffer chunks to a temp WAV and play it.
+                    _play_via_tempfile(audio_iter, stop_event, streamer)
+            except Exception as exc:
+                logger.warning("Streaming TTS sentence failed: %s", exc)
 
-        def _play_via_tempfile(audio_iter, stop_evt, sample_rate=24000):
-            """Write PCM chunks to a temp WAV file and play it."""
+        def _speak_via_sync(cleaned: str):
+            """Synthesize one sentence via the proven sync tool, then block on
+            playback. No chunked API, but per-*sentence* granularity keeps the
+            flow conversational for edge and every other non-streaming provider.
+            """
+            tmp_path = None
+            try:
+                fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+                os.close(fd)
+                text_to_speech_tool(text=cleaned, output_path=tmp_path)
+                if (not stop_event.is_set() and os.path.isfile(tmp_path)
+                        and os.path.getsize(tmp_path) > 0):
+                    from tools.voice_mode import play_audio_file
+                    play_audio_file(tmp_path)
+            except Exception as exc:
+                logger.warning("Sync per-sentence TTS failed: %s", exc)
+            finally:
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+
+        def _play_via_tempfile(audio_iter, stop_evt, streamer):
+            """Write PCM chunks to a temp WAV file and play it.
+
+            The WAV header is written *after* the first chunk is pulled, so
+            the frame rate reflects the endpoint-returned sample rate
+            (X-Audio-Sample-Rate) instead of the pre-request 24 kHz default
+            (#76466).
+            """
             tmp = None
             tmp_path = None
             try:
@@ -4366,9 +4452,21 @@ def stream_tts_to_speaker(
                 with wave.open(tmp, "wb") as wf:
                     wf.setnchannels(1)
                     wf.setsampwidth(2)  # 16-bit
-                    wf.setframerate(sample_rate)
-                    for aligned in _align_int16_chunks(audio_iter, stop_evt):
-                        wf.writeframes(aligned)
+                    # First next() opens the HTTP request and lets the streamer
+                    # learn the endpoint's real sample rate; only then is the
+                    # WAV header written.
+                    it = iter(audio_iter)
+                    try:
+                        first = next(it)
+                    except StopIteration:
+                        first = None
+                    wf.setframerate(int(streamer.sample_rate))
+                    if first is not None:
+                        wf.writeframes(first)
+                        for chunk in it:
+                            if stop_evt.is_set():
+                                break
+                            wf.writeframes(chunk)
                 # wave.open() given a file object flushes but does NOT close it
                 # (it only closes files it opened itself, by name), so the OS
                 # handle to tmp stays open.  On Windows an open write handle

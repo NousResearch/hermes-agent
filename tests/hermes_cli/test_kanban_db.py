@@ -1614,3 +1614,88 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+def test_initial_status_blocked_is_sticky_across_recompute(kanban_home):
+    """A task created with ``initial_status='blocked'`` must survive
+    ``recompute_ready`` — the flag's documented purpose is parking a card for
+    human ops, so the dispatcher must not auto-promote it.
+
+    Regression: ``create_task`` set ``status='blocked'`` but emitted no
+    ``blocked`` event, so ``_has_sticky_block`` returned False and
+    ``recompute_ready`` promoted the (parentless) card to ready on the next
+    dispatcher tick, spawning a worker for a card that explicitly asked not to
+    be dispatched.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="parked", initial_status="blocked")
+        assert kb.get_task(conn, t).status == "blocked"
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        assert kb.get_task(conn, t).status == "blocked"
+        # The card must be sticky by the same predicate an operator block uses.
+        assert kb._has_sticky_block(conn, t) is True
+        row = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? "
+            "AND kind IN ('blocked', 'unblocked') ORDER BY id DESC LIMIT 1",
+            (t,),
+        ).fetchone()
+        assert row is not None and row["kind"] == "blocked"
+
+
+def test_initial_status_blocked_survives_a_real_dispatcher_pass(
+    kanban_home, all_assignees_spawnable
+):
+    """E2E: the dispatcher must not spawn a worker on a created-blocked card.
+
+    ``recompute_ready`` runs inside ``dispatch_once``, so the promotion above
+    is not academic: it hands the card to the claim + spawn path on the very
+    next tick.
+    """
+    spawned = []
+
+    def fake_spawn(task, workspace):
+        spawned.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn, title="do not dispatch me", assignee="alice",
+            initial_status="blocked",
+        )
+        kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        assert spawned == [], (
+            "a card created with initial_status=blocked must never be spawned"
+        )
+        assert kb.get_task(conn, t).status == "blocked"
+
+
+def test_initial_status_blocked_unblock_releases(kanban_home):
+    """``unblock_task`` is the legitimate exit from a created-blocked card —
+    after an explicit unblock, normal flow may promote it."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="parked", initial_status="blocked")
+        assert kb.unblock_task(conn, t)
+        assert kb.get_task(conn, t).status in ("ready", "todo")
+        # And it stays promotable: recompute must not re-block it.
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, t).status in ("ready", "todo")
+        assert kb._has_sticky_block(conn, t) is False
+
+
+def test_initial_status_blocked_with_done_parents_stays_blocked(kanban_home):
+    """Sticky beats the parents-are-done promotion rule.
+
+    ``recompute_ready`` promotes a blocked task whose parents are all done.
+    An explicitly parked card must not be promoted by that rule either --
+    otherwise completing an unrelated parent silently releases the gate.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        kb.claim_task(conn, parent)
+        kb.complete_task(conn, parent)
+        child = kb.create_task(
+            conn, title="parked child", parents=[parent],
+            initial_status="blocked",
+        )
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, child).status == "blocked"

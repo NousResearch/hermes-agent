@@ -399,17 +399,23 @@ class GeminiStreamer(StreamingTTSProvider):
 
 @register("xai")
 class XAIStreamer(StreamingTTSProvider):
-    """xAI WebSocket TTS → binary PCM frames (24 kHz mono int16).
+    """xAI WebSocket TTS → base64 PCM ``audio.delta`` frames (24 kHz mono int16).
 
-    Salvaged from PR #47588 (@Cdddo): xAI's chunked TTS API is
-    WebSocket-only (``wss://api.x.ai/v1/tts``). Credentials route through
-    ``resolve_xai_http_credentials`` (OAuth or XAI_API_KEY), same as the
-    sync ``_generate_xai_tts`` path. The async WS loop is bridged to the
-    sync iterator contract via ``_collect_async`` — the seam unit tests
-    monkeypatch.
+    Salvaged from PR #47588 (@Cdddo) and rewritten against the real wire
+    protocol: voice/language/codec/sample_rate ride in the URL query string
+    (the server 400s the bare path at handshake), the client sends
+    ``text.delta`` + ``text.done``, and the server streams JSON
+    ``audio.delta`` envelopes (base64 PCM in ``delta``) until ``audio.done``.
+    Credentials route through ``resolve_xai_http_credentials`` (OAuth or
+    XAI_API_KEY), same as the sync ``_generate_xai_tts`` path. The async WS
+    loop runs on a background thread feeding a queue, so ``stream()`` yields
+    chunks as they arrive and works from sync CLI code and from gateway
+    adapters that already run an event loop.
     """
 
     sample_rate = 24000
+
+    _RECV_TIMEOUT_S = 60  # a sentence of TTS should never gap this long
 
     @staticmethod
     def available() -> bool:
@@ -422,27 +428,65 @@ class XAIStreamer(StreamingTTSProvider):
             return False
 
     def stream(self, text: str) -> Iterator[bytes]:
-        yield from _capped(iter(self._collect_async(text)), "xAI streaming TTS")
+        yield from _capped(self._queued_frames(text), "xAI streaming TTS")
 
-    # -- async→sync bridge (test seam) ------------------------------------
+    # -- async→sync bridge -------------------------------------------------
 
-    def _collect_async(self, text: str) -> List[bytes]:
+    def _queued_frames(self, text: str) -> Iterator[bytes]:
+        """Yield PCM chunks as the WS delivers them, on a pump thread.
+
+        The thread owns a fresh event loop, so ``asyncio.run`` never fights
+        a loop the caller is already running (gateway adapters are async).
+        Exceptions from the pump are re-raised on the consumer side so the
+        caller's "raise on failure" contract holds.
+
+        ``_capped()`` runs on the consumer side of the queue, after
+        ``q.get()`` — so the byte budget is ALSO enforced in the pump before
+        each enqueue (see ``_pump``), and a consumer that stops early flips
+        ``stop`` so the pump closes the socket instead of piling decoded PCM
+        into a queue nobody drains.
+        """
         import asyncio
+        import queue
+        import threading
 
-        return asyncio.run(self._drain_async(text))
+        q: "queue.Queue[object]" = queue.Queue()
+        done = object()
+        stop = threading.Event()
 
-    async def _drain_async(self, text: str) -> List[bytes]:
-        frames: List[bytes] = []
-        async for frame in self._async_frames(text):
-            frames.append(frame)
-        return frames
+        def _pump_thread() -> None:
+            try:
+                asyncio.run(self._pump(text, q, stop))
+            except BaseException as exc:  # hand failures to the consumer
+                q.put(exc)
+            finally:
+                q.put(done)
 
-    async def _async_frames(self, text: str):
+        threading.Thread(
+            target=_pump_thread, name="xai-tts-pump", daemon=True
+        ).start()
+        try:
+            while True:
+                item = q.get()
+                if item is done:
+                    return
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+        finally:
+            # Generator closed early (cap, playback failure, caller dropped
+            # it): stop the pump at its next frame.
+            stop.set()
+
+    async def _pump(self, text: str, q, stop) -> None:
+        import asyncio
+        import base64
         import json as _json
+        from urllib.parse import urlencode
 
         import websockets
 
-        from tools.tts_tool import DEFAULT_XAI_VOICE_ID
+        from tools.tts_tool import DEFAULT_XAI_LANGUAGE, DEFAULT_XAI_VOICE_ID
         from tools.xai_http import resolve_xai_http_credentials
 
         creds = resolve_xai_http_credentials()
@@ -450,39 +494,71 @@ class XAIStreamer(StreamingTTSProvider):
         if not api_key:
             raise RuntimeError("No xAI credentials for streaming TTS")
         voice = str(self.section.get("voice_id", DEFAULT_XAI_VOICE_ID)).strip() or DEFAULT_XAI_VOICE_ID
-        ws_url = str(
+        language = str(self.section.get("language", DEFAULT_XAI_LANGUAGE)).strip() or DEFAULT_XAI_LANGUAGE
+        base = str(
             self.section.get("streaming_url") or "wss://api.x.ai/v1/tts"
         ).strip()
+        params = urlencode({
+            "voice": voice,
+            "language": language,
+            "codec": "pcm",
+            "sample_rate": self.sample_rate,
+        })
+        sep = "&" if "?" in base else "?"
+        ws_url = f"{base}{sep}{params}"
 
         async with websockets.connect(
-            ws_url, extra_headers={"Authorization": f"Bearer {api_key}"}
+            ws_url, additional_headers={"Authorization": f"Bearer {api_key}"}
         ) as ws:
-            await ws.send(_json.dumps({
-                "text": text,
-                "voice_id": voice,
-                "response_format": "pcm",
-            }))
-            try:
-                while True:
-                    message = await ws.recv()
-                    if isinstance(message, (bytes, bytearray, memoryview)):
-                        yield bytes(message)
-                        continue
-                    try:
-                        envelope = _json.loads(message)
-                    except (ValueError, TypeError):
-                        if message == "done":
+            await ws.send(_json.dumps({"type": "text.delta", "delta": text}))
+            await ws.send(_json.dumps({"type": "text.done"}))
+            enqueued = 0
+            while True:
+                try:
+                    message = await asyncio.wait_for(
+                        ws.recv(), timeout=self._RECV_TIMEOUT_S
+                    )
+                except asyncio.TimeoutError:
+                    raise RuntimeError("xAI streaming TTS: no audio for 60s")
+                except websockets.exceptions.ConnectionClosedOK:
+                    return  # clean close, with or without audio.done
+                except websockets.exceptions.ConnectionClosedError as exc:
+                    raise RuntimeError(f"xAI WS closed mid-stream: {exc}") from exc
+                if isinstance(message, (bytes, bytearray, memoryview)):
+                    continue  # the server speaks JSON; binary is not expected
+                try:
+                    envelope = _json.loads(message)
+                except (ValueError, TypeError):
+                    continue
+                msg_type = envelope.get("type")
+                if msg_type == "audio.delta":
+                    b64 = envelope.get("delta") or ""
+                    if b64:
+                        pcm = base64.b64decode(b64)
+                        enqueued += len(pcm)
+                        if enqueued > _STREAM_SENTENCE_BYTE_CAP:
+                            # Enforce the per-sentence byte budget BEFORE
+                            # enqueueing: the consumer-side _capped() only
+                            # runs after q.get(), so without this a runaway
+                            # upstream piles decoded PCM into the queue.
+                            # Returning exits the context manager, which
+                            # closes the socket — we stop reading upstream.
+                            logger.warning(
+                                "xAI streaming TTS exceeded %d bytes for one "
+                                "sentence; closing upstream",
+                                _STREAM_SENTENCE_BYTE_CAP,
+                            )
                             return
-                        continue
-                    etype = envelope.get("type")
-                    if etype == "done":
-                        return
-                    if etype == "error":
-                        logger.warning("xAI WS error envelope: %s",
-                                       envelope.get("error") or envelope.get("message") or envelope)
-                        return
-            except Exception as exc:
-                if exc.__class__.__name__ == "ConnectionClosed":
+                        if stop.is_set():
+                            # Consumer went away (cap, playback failure):
+                            # close and stop reading rather than filling a
+                            # queue nobody drains.
+                            return
+                        q.put(pcm)
+                elif msg_type == "audio.done":
                     return
-                logger.warning("xAI WS receive failed: %s", exc)
-                return
+                elif msg_type == "error":
+                    detail = (
+                        envelope.get("message") or envelope.get("error") or envelope
+                    )
+                    raise RuntimeError(f"xAI streaming TTS error: {detail}")

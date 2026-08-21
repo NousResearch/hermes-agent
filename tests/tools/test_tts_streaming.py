@@ -1,9 +1,11 @@
 """Tests for the provider-agnostic streaming TTS backend (tools.tts_streaming)
 and its dispatch through tools.tts_tool.stream_tts_to_speaker.
 
-No live audio or network: the ElevenLabs/OpenAI SDKs, sounddevice, and the sync
-synth path are all mocked. Covers the registry/resolver, provider availability,
-the chunked-streamer playback path, and the universal per-sentence sync fallback.
+No live audio or external network: the ElevenLabs/OpenAI SDKs, sounddevice, and
+the sync synth path are all mocked, and the xAI wire protocol runs against a
+loopback fake WebSocket server. Covers the registry/resolver, provider
+availability, the chunked-streamer playback path, and the universal per-sentence
+sync fallback.
 """
 
 import os
@@ -210,6 +212,216 @@ def test_xai_available_uses_oauth_credential_resolver(monkeypatch):
 
 
 # ── xAI WebSocket bridge ─────────────────────────────────────────────────
+
+
+def _fake_xai_server(handler):
+    """Serve ``handler`` on a loopback WS server; return (url, server)."""
+    from websockets.sync.server import serve
+
+    server = serve(handler, "127.0.0.1", 0)
+    port = server.socket.getsockname()[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return f"ws://127.0.0.1:{port}/tts", server
+
+
+def _patch_xai_creds(monkeypatch):
+    import tools.xai_http
+
+    monkeypatch.setattr(
+        tools.xai_http,
+        "resolve_xai_http_credentials",
+        lambda *a, **k: {"api_key": "test-xai-key"},
+    )
+
+
+def test_xai_streamer_speaks_the_real_wire_protocol(monkeypatch):
+    """Pin the exact wire format verified against the live xAI API: audio
+    params in the URL query string, bearer auth header, text.delta +
+    text.done out, base64 audio.delta in, audio.done terminates."""
+    import base64
+    import json
+
+    pcm1, pcm2 = b"\x01\x00" * 30, b"\x02\x00" * 30
+    seen = {}
+
+    def handler(ws):
+        seen["path"] = ws.request.path
+        seen["auth"] = ws.request.headers.get("Authorization")
+        seen["messages"] = []
+        for raw in ws:
+            msg = json.loads(raw)
+            seen["messages"].append(msg)
+            if msg.get("type") == "text.done":
+                break
+        for chunk in (pcm1, pcm2):
+            ws.send(json.dumps({
+                "type": "audio.delta",
+                "delta": base64.b64encode(chunk).decode(),
+            }))
+        ws.send(json.dumps({"type": "audio.done"}))
+
+    url, server = _fake_xai_server(handler)
+    try:
+        _patch_xai_creds(monkeypatch)
+        streamer = ts.XAIStreamer({}, {"streaming_url": url})
+        assert list(streamer.stream("A sentence.")) == [pcm1, pcm2]
+    finally:
+        server.shutdown()
+
+    assert "voice=eve" in seen["path"]
+    assert "language=en" in seen["path"]
+    assert "codec=pcm" in seen["path"]
+    assert "sample_rate=24000" in seen["path"]
+    assert seen["auth"] == "Bearer test-xai-key"
+    assert [m["type"] for m in seen["messages"]] == ["text.delta", "text.done"]
+    assert seen["messages"][0]["delta"] == "A sentence."
+
+
+def test_xai_streamer_passes_auth_via_additional_headers(monkeypatch):
+    """websockets 15 removed the ``extra_headers`` kwarg: the connect call
+    must carry the bearer token in ``additional_headers`` or every stream()
+    raises TypeError before any network traffic (#73985). Pin the kwarg by
+    name so a future edit cannot reintroduce the old spelling."""
+    import base64
+    import json
+
+    import websockets
+
+    captured = {}
+    real_connect = websockets.connect
+
+    def spy_connect(url, **kwargs):
+        captured.update(kwargs)
+        return real_connect(url, **kwargs)
+
+    # tools/tts_streaming imports websockets locally inside the coroutine,
+    # so it resolves the patched package attribute at call time.
+    monkeypatch.setattr(websockets, "connect", spy_connect)
+
+    def handler(ws):
+        for raw in ws:
+            if json.loads(raw).get("type") == "text.done":
+                break
+        ws.send(json.dumps({
+            "type": "audio.delta",
+            "delta": base64.b64encode(b"\x01\x00").decode(),
+        }))
+        ws.send(json.dumps({"type": "audio.done"}))
+
+    url, server = _fake_xai_server(handler)
+    try:
+        _patch_xai_creds(monkeypatch)
+        streamer = ts.XAIStreamer({}, {"streaming_url": url})
+        assert list(streamer.stream("A sentence.")) == [b"\x01\x00"]
+    finally:
+        server.shutdown()
+
+    assert "extra_headers" not in captured
+    assert captured["additional_headers"] == {"Authorization": "Bearer test-xai-key"}
+
+
+def test_xai_streamer_yields_before_the_sentence_finishes(monkeypatch):
+    """The first chunk must reach the caller while the server still holds
+    the rest. The old shape drained the whole WS response into a list
+    before yielding anything; against that shape this test never sees the
+    second chunk."""
+    import base64
+    import json
+
+    pcm1, pcm2 = b"\x01\x00" * 30, b"\x02\x00" * 30
+    first_delivered = threading.Event()
+
+    def handler(ws):
+        for raw in ws:
+            if json.loads(raw).get("type") == "text.done":
+                break
+        ws.send(json.dumps({
+            "type": "audio.delta",
+            "delta": base64.b64encode(pcm1).decode(),
+        }))
+        if not first_delivered.wait(timeout=10):
+            return  # consumer never saw chunk one before the stream ended
+        ws.send(json.dumps({
+            "type": "audio.delta",
+            "delta": base64.b64encode(pcm2).decode(),
+        }))
+        ws.send(json.dumps({"type": "audio.done"}))
+
+    url, server = _fake_xai_server(handler)
+    try:
+        _patch_xai_creds(monkeypatch)
+        streamer = ts.XAIStreamer({}, {"streaming_url": url})
+        gen = streamer.stream("A sentence.")
+        assert next(gen) == pcm1
+        first_delivered.set()
+        assert list(gen) == [pcm2]
+    finally:
+        server.shutdown()
+
+
+def test_xai_streamer_raises_on_error_envelope(monkeypatch):
+    """Mid-stream failures raise (the ABC contract: raise, caller logs),
+    instead of playing a truncated sentence as if it were complete."""
+    import json
+
+    def handler(ws):
+        for raw in ws:
+            if json.loads(raw).get("type") == "text.done":
+                break
+        ws.send(json.dumps({"type": "error", "message": "boom"}))
+
+    url, server = _fake_xai_server(handler)
+    try:
+        _patch_xai_creds(monkeypatch)
+        streamer = ts.XAIStreamer({}, {"streaming_url": url})
+        with pytest.raises(RuntimeError, match="boom"):
+            list(streamer.stream("A sentence."))
+    finally:
+        server.shutdown()
+
+
+def test_xai_streamer_stops_consuming_past_the_byte_cap(monkeypatch):
+    """The byte budget is enforced in the pump BEFORE enqueueing: the
+    consumer-side _capped() runs only after q.get(), so without a pump-side
+    check a runaway upstream would pile decoded PCM into the queue. The
+    producer must close the socket and stop reading once over budget."""
+    import base64
+    import json
+
+    monkeypatch.setattr(ts, "_STREAM_SENTENCE_BYTE_CAP", 100)
+    frame = b"\x00" * 64
+    sent = 0
+    client_gone = threading.Event()
+
+    def handler(ws):
+        nonlocal sent
+        for raw in ws:
+            if json.loads(raw).get("type") == "text.done":
+                break
+        try:
+            while True:
+                ws.send(json.dumps({
+                    "type": "audio.delta",
+                    "delta": base64.b64encode(frame).decode(),
+                }))
+                sent += 1
+        except Exception:
+            # ConnectionClosed: the client closed mid-stream once over budget.
+            client_gone.set()
+
+    url, server = _fake_xai_server(handler)
+    try:
+        _patch_xai_creds(monkeypatch)
+        streamer = ts.XAIStreamer({}, {"streaming_url": url})
+        chunks = list(streamer.stream("A sentence."))
+        # 64 fits, 128 > 100: the consumer sees one frame, never the tail.
+        assert sum(len(c) for c in chunks) <= 100
+        # The pump closed the socket: the server's send loop broke instead of
+        # streaming frames forever.
+        assert client_gone.wait(timeout=10)
+        assert sent < 1000
+    finally:
+        server.shutdown()
 
 
 # ── 16 MiB per-sentence stream cap ───────────────────────────────────────

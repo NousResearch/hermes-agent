@@ -40,6 +40,17 @@ def _responses_timeout_text(response: Any) -> tuple[bool, str | None]:
     """
     output = _obj_get(response, "output")
     if isinstance(output, (list, tuple)):
+        has_message_or_tool_item = any(
+            _obj_get(item, "type") in {"message", "function_call", None}
+            for item in output
+        )
+        if not has_message_or_tool_item:
+            # Some Responses-compatible adapters always expose ``output`` but
+            # leave it empty (or reasoning-only) while carrying the only answer
+            # text at the top level. Without a raw message/tool carrier, classify
+            # that compatibility text exactly as if ``output`` were absent.
+            output_text = _obj_get(response, "output_text")
+            return True, output_text if isinstance(output_text, str) else None
         if len(output) != 1:
             return True, None
         item = output[0]

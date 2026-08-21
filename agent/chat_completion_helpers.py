@@ -3921,44 +3921,63 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # can be classified. Ordinary text is released as soon as it diverges
         # from the sentinel, preserving normal token streaming behavior.
         pending_timeout_prefix: list[str] = []
+        pending_timeout_notifications: list[tuple[str, str | None]] = []
         timeout_candidate_accepted = False
 
+        def _deliver_timeout_notification(kind: str, payload: str | None) -> None:
+            """Deliver one callback event after this attempt is accepted."""
+            if kind == "first":
+                _fire_first_delta()
+            elif kind == "reasoning" and payload is not None:
+                agent._fire_reasoning_delta(payload)
+            elif kind == "content" and payload is not None:
+                agent._fire_stream_delta(payload)
+                deltas_were_sent["yes"] = True
+
         def _accept_timeout_candidate() -> None:
-            """Release held bytes once raw stream evidence rules out the shim."""
+            """Release held callbacks once raw evidence rules out the shim."""
             nonlocal timeout_candidate_accepted
             if timeout_candidate_accepted:
                 return
             timeout_candidate_accepted = True
-            if pending_timeout_prefix:
-                agent._fire_stream_delta("".join(pending_timeout_prefix))
-                deltas_were_sent["yes"] = True
-                pending_timeout_prefix.clear()
+            for kind, payload in pending_timeout_notifications:
+                _deliver_timeout_notification(kind, payload)
+            pending_timeout_notifications.clear()
+            pending_timeout_prefix.clear()
+
+        def _notify_first_delta() -> None:
+            if timeout_candidate_accepted:
+                _fire_first_delta()
+                return
+            if not any(kind == "first" for kind, _payload in pending_timeout_notifications):
+                pending_timeout_notifications.append(("first", None))
+
+        def _emit_reasoning_text(piece: str) -> None:
+            if timeout_candidate_accepted:
+                agent._fire_reasoning_delta(piece)
+                return
+            pending_timeout_notifications.append(("reasoning", piece))
 
         def _emit_stream_text(piece: str) -> None:
             if timeout_candidate_accepted:
-                agent._fire_stream_delta(piece)
-                deltas_were_sent["yes"] = True
+                _deliver_timeout_notification("content", piece)
                 return
             candidate = "".join(pending_timeout_prefix) + piece
-            unpadded = candidate.lstrip()
-            sentinel_and_trailing_space = (
-                unpadded.startswith(ROUTER_TIMEOUT_SHIM)
-                and not unpadded[len(ROUTER_TIMEOUT_SHIM):].strip()
-            )
-            if (
-                not unpadded
-                or ROUTER_TIMEOUT_SHIM.startswith(unpadded)
-                or sentinel_and_trailing_space
-            ):
-                pending_timeout_prefix.append(piece)
-                return
             pending_timeout_prefix.append(piece)
-            _accept_timeout_candidate()
+            pending_timeout_notifications.append(("content", piece))
+            if not ROUTER_TIMEOUT_SHIM.startswith(candidate):
+                # Classification is byte-exact: even one leading/trailing
+                # whitespace byte proves this is genuine model output.
+                _accept_timeout_candidate()
 
         def _flush_valid_timeout_prefix(response: Any) -> None:
-            if pending_timeout_prefix and is_valid_chat_completion_response(response):
+            if is_valid_chat_completion_response(response):
                 _accept_timeout_candidate()
-            pending_timeout_prefix.clear()
+            else:
+                # True timeout shim: discard every attempt-local notification,
+                # including reasoning and TTFB/on-first-delta signals.
+                pending_timeout_notifications.clear()
+                pending_timeout_prefix.clear()
 
         def _accumulate_additional_choice(choice: Any, position: int) -> None:
             raw_index = getattr(choice, "index", None)
@@ -4185,7 +4204,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             pending_text_parts.clear()
             if not tool_calls_acc:
                 for text in pending_parts:
-                    _fire_first_delta()
+                    _notify_first_delta()
                     _emit_stream_text(text)
                 return
             if agent.stream_delta_callback:
@@ -4331,8 +4350,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     reasoning_text,
                 )
                 reasoning_parts.append(reasoning_text)
-                _fire_first_delta()
-                agent._fire_reasoning_delta(reasoning_text)
+                _notify_first_delta()
+                _emit_reasoning_text(reasoning_text)
 
             # Accumulate text content — fire callback only when no tool calls
             delta_content = getattr(delta, "content", None)
@@ -4346,7 +4365,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             continue
                         _flush_pending_stream_text()
                         continue
-                    _fire_first_delta()
+                    _notify_first_delta()
                     _emit_stream_text(delta_content)
                 # Tool calls suppress regular content streaming (avoids
                 # displaying chatty "I'll use the tool..." text alongside

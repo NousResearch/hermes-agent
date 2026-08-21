@@ -391,6 +391,131 @@ class TestStreamingCallbacks:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_router_timeout_shim_discards_reasoning_and_first_delta_notifications(
+        self, mock_close, mock_create
+    ):
+        """A rejected shim attempt must not leak any user-visible callback."""
+        from run_agent import AIAgent
+
+        deltas = []
+        reasoning = []
+        first_deltas = []
+
+        def chunks():
+            yield _make_stream_chunk(reasoning_content="provider reasoning")
+            assert deltas == []
+            assert reasoning == []
+            assert first_deltas == []
+            yield _make_stream_chunk(
+                content="Connect timeout, please try again later.",
+                finish_reason="stop",
+            )
+            assert deltas == []
+            assert reasoning == []
+            assert first_deltas == []
+            yield _make_empty_chunk(
+                usage=SimpleNamespace(completion_tokens=0)
+            )
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = chunks()
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=deltas.append,
+            reasoning_callback=reasoning.append,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call(
+            {}, on_first_delta=lambda: first_deltas.append("first")
+        )
+
+        assert agent._get_transport().validate_response(response) is False
+        assert deltas == []
+        assert reasoning == []
+        assert first_deltas == []
+
+    @pytest.mark.parametrize(
+        ("content_chunks", "divergence_index"),
+        [
+            ([" \n", "Connect timeout, please try again later."], 0),
+            (["Connect timeout, please try again later.", "\t"], 1),
+        ],
+        ids=["leading-whitespace", "trailing-whitespace"],
+    )
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_whitespace_divergence_flushes_buffered_callbacks_mid_generator(
+        self, mock_close, mock_create, content_chunks, divergence_index
+    ):
+        """Any byte-exact divergence releases reasoning and content immediately."""
+        from run_agent import AIAgent
+
+        deltas = []
+        reasoning = []
+        first_deltas = []
+
+        def chunks():
+            yield _make_stream_chunk(reasoning_content="provider reasoning")
+            assert deltas == []
+            assert reasoning == []
+            assert first_deltas == []
+            for position, part in enumerate(content_chunks):
+                yield _make_stream_chunk(
+                    content=part,
+                    finish_reason="stop" if position == len(content_chunks) - 1 else None,
+                )
+                if position < divergence_index:
+                    assert deltas == []
+                    assert reasoning == []
+                    assert first_deltas == []
+                else:
+                    assert "".join(deltas) == "".join(content_chunks[:position + 1])
+                    assert reasoning == ["provider reasoning"]
+                    assert first_deltas == ["first"]
+            assert "".join(deltas) == "".join(content_chunks)
+            assert reasoning == ["provider reasoning"]
+            assert first_deltas == ["first"]
+            yield _make_empty_chunk(
+                usage=SimpleNamespace(completion_tokens=0)
+            )
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = chunks()
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=deltas.append,
+            reasoning_callback=reasoning.append,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call(
+            {}, on_first_delta=lambda: first_deltas.append("first")
+        )
+
+        expected = "".join(content_chunks)
+        assert response.choices[0].message.content == expected
+        assert agent._get_transport().validate_response(response) is True
+        assert "".join(deltas) == expected
+        assert reasoning == ["provider reasoning"]
+        assert first_deltas == ["first"]
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_whitespace_padded_timeout_text_is_emitted_from_raw_stream(
         self, mock_close, mock_create
     ):

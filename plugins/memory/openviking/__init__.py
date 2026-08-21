@@ -601,6 +601,23 @@ REMEMBER_SCHEMA = {
     },
 }
 
+REMEMBER_SHARED_SCHEMA = {
+    "name": "viking_remember_shared",
+    "description": (
+        "Store a fact in the OpenViking SHARED layer (user/default/memories), visible to ALL "
+        "peers of this OpenViking user. Use ONLY for facts all agents should share; agent-private "
+        "operational notes belong in viking_remember. Routed through a self-only session "
+        "(self=true, peer=false, message without peer_id) so the extraction lands at user root."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "content": {"type": "string", "description": "The shared fact to remember."},
+        },
+        "required": ["content"],
+    },
+}
+
 FORGET_SCHEMA = {
     "name": "viking_forget",
     "description": (
@@ -2264,6 +2281,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._committed_session_ids: Set[str] = set()
         self._committed_session_lock = threading.Lock()
         self._pending_marked_sids: Set[str] = set()
+        # Sessions confirmed (or created) with the peer-only memory policy
+        # {self=false, peer=true, working_memory=true}. sync_turn writers skip
+        # any sid not in this set so a default-policy session can never be
+        # auto-created by a bare messages POST (which would route extracted
+        # memories into the shared user root). See peer-routing-policy-test.md.
+        self._ensured_peer_sessions: Set[str] = set()
         # Connection settings and _client are one published state. Serialize
         # refreshes so callers never observe a new config with the old client.
         self._client_refresh_lock = threading.Lock()
@@ -2712,6 +2735,98 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     warning_callback=warning_callback,
                 )
 
+    # -- Peer-only session enforcement (strict-isolation architecture) ---------
+    #
+    # Production architecture (2026-07-29 decision, see peer-routing-policy-test.md):
+    #   - Hermes auto-captured sessions MUST use memory_policy self=false/peer=true,
+    #     so extracted memories land in user/default/peers/hermes only.
+    #   - user/default/memories (user root) is reserved for explicit shared memory
+    #     (viking_remember_shared, self-only sessions).
+    #   - A bare messages POST auto-creates a session with the server default
+    #     (self=true, peer=true) which would leak user-fact memories into the
+    #     shared root — so every session must be explicitly ensured BEFORE the
+    #     first message write.
+    _PEER_ONLY_POLICY: Dict[str, Any] = {
+        "self": {"enabled": False},
+        "peer": {"enabled": True},
+        "working_memory": {"enabled": True},
+    }
+    _SELF_ONLY_SHARED_POLICY: Dict[str, Any] = {
+        "self": {"enabled": True},
+        "peer": {"enabled": False},
+        "working_memory": {"enabled": False},
+    }
+    def _peer_session_rotation_prefix(self) -> str:
+        agent = getattr(self, "_agent", None) or "hermes"
+        return f"{agent}-p2-"
+
+    @staticmethod
+    def _session_policy_is_peer_only(session: Dict[str, Any]) -> bool:
+        mp = session.get("memory_policy") or {}
+        self_enabled = (mp.get("self") or {}).get("enabled", True)
+        peer_enabled = (mp.get("peer") or {}).get("enabled", True)
+        return self_enabled is False and peer_enabled is True
+
+    def _ensure_peer_session(self, sid: str) -> Optional[str]:
+        """Ensure *sid* exists with the peer-only memory policy.
+
+        Returns the effective session id to write under, or None when the
+        server cannot confirm/create it (callers must then SKIP the write —
+        fail-closed so nothing lands in a default-policy session).
+
+        - sid missing            -> create it with _PEER_ONLY_POLICY
+        - sid exists, peer-only  -> reuse
+        - sid exists, wrong policy -> rotate to <agent>-p2-<sid> (old session
+          stays read-only) and ensure that instead
+        """
+        sid = str(sid or "").strip()
+        if not sid:
+            return None
+        with self._session_state_lock:
+            if sid in self._ensured_peer_sessions:
+                return sid
+        client = self._ensure_client()
+        if not client:
+            return None
+        effective = sid
+        for _attempt in range(2):  # original id + one rotation
+            session: Optional[Dict[str, Any]] = None
+            try:
+                resp = client.get(f"/api/v1/sessions/{effective}")
+                unwrapped = self._unwrap_result(resp)
+                if isinstance(unwrapped, dict) and unwrapped.get("session_id"):
+                    session = unwrapped
+            except Exception:
+                session = None  # 404 or transport error -> try create path
+            if session is not None:
+                if self._session_policy_is_peer_only(session):
+                    break
+                logger.warning(
+                    "OpenViking session %s exists with non-peer-only memory_policy=%s; "
+                    "rotating to %s (old session left read-only)",
+                    effective,
+                    json.dumps(session.get("memory_policy")),
+                    f"{self._peer_session_rotation_prefix()}{effective}",
+                )
+                effective = f"{self._peer_session_rotation_prefix()}{effective}"
+                continue
+            try:
+                client.post(
+                    "/api/v1/sessions",
+                    {"session_id": effective, "memory_policy": self._PEER_ONLY_POLICY},
+                )
+                break
+            except Exception as e:
+                logger.warning(
+                    "OpenViking peer-only session create failed for %s: %s", effective, e
+                )
+                return None
+        else:
+            return None
+        with self._session_state_lock:
+            self._ensured_peer_sessions.add(effective)
+        return effective
+
     def initialize(self, session_id: str, **kwargs) -> None:
         warning_callback = (
             kwargs.get("warning_callback")
@@ -2799,6 +2914,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
             self._conn_snapshot = (
                 self._endpoint, self._api_key, self._account, self._user, self._agent,
             )
+            ensured_sid = self._ensure_peer_session(self._session_id)
+            if ensured_sid:
+                self._session_id = ensured_sid
             self._recover_pending_sessions()
 
         # Register as the last active provider for atexit safety net
@@ -3146,11 +3264,19 @@ class OpenVikingMemoryProvider(MemoryProvider):
             "role": "assistant",
             "parts": [self._text_part(assistant_content)],
         }
+        user_message: Dict[str, Any] = {
+            "role": "user",
+            "parts": [self._text_part(user_content)],
+        }
         if self._agent:
+            # peer_id on BOTH roles: the server's peer-routing fallback
+            # resolves the unique peer from peer-owner (role=user) messages,
+            # and peer-only sessions need every message scoped to our peer.
             assistant_message["peer_id"] = self._agent
+            user_message["peer_id"] = self._agent
         return {
             "messages": [
-                {"role": "user", "parts": [self._text_part(user_content)]},
+                user_message,
                 assistant_message,
             ]
         }
@@ -3475,6 +3601,18 @@ class OpenVikingMemoryProvider(MemoryProvider):
             thread.start()
 
     def _session_needs_commit(self, sid: str, turn_count: int) -> bool:
+        # Fail-closed: only sessions confirmed peer-only may be committed.
+        # Committing an unverified sid via a bare POST could auto-create it
+        # with the server-default memory policy.
+        with self._session_state_lock:
+            ensured = sid in self._ensured_peer_sessions
+        if not ensured:
+            if turn_count > 0:
+                logger.warning(
+                    "OpenViking refusing to commit session %s: not peer-only ensured",
+                    sid,
+                )
+            return False
         # Already-committed sessions never need a second commit, regardless of
         # the turn counter — a racing sync_turn can re-increment _turn_count
         # after a commit+reset, so the committed-guard must win over turn_count.
@@ -4421,7 +4559,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         def payload_message(role: str, parts: List[Dict[str, Any]]) -> Dict[str, Any]:
             payload: Dict[str, Any] = {"role": role, "parts": parts}
-            if role == "assistant" and assistant_peer_id:
+            # Tag user AND assistant messages with our peer: with the peer-only
+            # session policy the extractor's fallback resolves the unique peer
+            # from peer-owner (role=user) messages, so user messages must carry
+            # the peer too (assistant-only tagging is not sufficient).
+            if role in {"user", "assistant"} and assistant_peer_id:
                 payload["peer_id"] = assistant_peer_id
             return payload
 
@@ -4556,16 +4698,38 @@ class OpenVikingMemoryProvider(MemoryProvider):
             sid = str(session_id or self._session_id).strip()
             if not sid:
                 return
+
+        # Fail-closed BEFORE any accounting: a session that cannot be
+        # confirmed peer-only must not accumulate turn count or pending
+        # markers — otherwise on_session_end would still /commit the
+        # unverified session, and a bare commit POST can auto-create it with
+        # the server-default policy (leaking extraction into the shared root).
+        ensured_sid = self._ensure_peer_session(sid)
+        if not ensured_sid:
+            logger.warning(
+                "OpenViking sync_turn skipped: session %s is not peer-only ensured "
+                "(refusing to write into a default-policy session)",
+                sid,
+            )
+            return
+        if ensured_sid != sid:
+            # Rotated: attribute the turn (and the eventual commit) to the
+            # effective peer-only session, mirroring on_session_switch.
+            with self._session_state_lock:
+                if self._session_id == sid:
+                    self._session_id = ensured_sid
+
+        with self._session_state_lock:
             self._turn_count += 1
 
-        self._mark_session_pending(sid)
+        self._mark_session_pending(ensured_sid)
 
         def _sync():
             next_batch_index = 0
 
             def _post_unsent_messages_individually(client: _VikingClient) -> None:
                 nonlocal next_batch_index
-                path = f"/api/v1/sessions/{sid}/messages"
+                path = f"/api/v1/sessions/{ensured_sid}/messages"
                 while next_batch_index < len(batch_messages):
                     if _sync_trace_enabled():
                         logger.info(
@@ -4590,13 +4754,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
                             logger.info(
                                 "OpenViking sync_turn trace: POST "
                                 "/api/v1/sessions/%s/messages/batch range=%d:%d payload=%s",
-                                sid,
+                                ensured_sid,
                                 next_batch_index,
                                 batch_end,
                                 json.dumps(payload, ensure_ascii=False),
                             )
                         try:
-                            client.post(f"/api/v1/sessions/{sid}/messages/batch", payload)
+                            client.post(f"/api/v1/sessions/{ensured_sid}/messages/batch", payload)
                         except Exception as batch_error:
                             if next_batch_index:
                                 raise
@@ -4612,7 +4776,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
                 self._post_session_turn(
                     client,
-                    sid,
+                    ensured_sid,
                     user_content[:4000],
                     self._message_text(assistant_content)[:4000],
                 )
@@ -4650,7 +4814,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                             return
                     logger.warning("OpenViking sync_turn failed: %s", retry_error)
 
-        self._spawn_writer(sid, _sync, name="openviking-sync")
+        self._spawn_writer(ensured_sid, _sync, name="openviking-sync")
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Commit the session to trigger memory extraction.
@@ -4735,6 +4899,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 # session's turn accounting again at zero so an immediate
                 # session end cannot duplicate the just-finished extraction.
                 self._turn_count = 0
+
+        # Ensure the NEW session exists with the peer-only memory policy before
+        # any turn is written to it. If the server can't confirm/create it the
+        # sid stays unensured and sync_turn writers will skip (fail-closed).
+        if rotate:
+            ensured_new = self._ensure_peer_session(new_id)
+            if ensured_new and ensured_new != new_id:
+                with self._session_state_lock:
+                    if self._session_id == new_id:
+                        self._session_id = ensured_new
 
         if compression:
             # Discard both old and new session IDs so the profile is re-injected
@@ -4826,6 +5000,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             READ_SCHEMA,
             BROWSE_SCHEMA,
             REMEMBER_SCHEMA,
+            REMEMBER_SHARED_SCHEMA,
             FORGET_SCHEMA,
             ADD_RESOURCE_SCHEMA,
         ]
@@ -4843,6 +5018,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 return self._tool_browse(args)
             elif tool_name == "viking_remember":
                 return self._tool_remember(args)
+            elif tool_name == "viking_remember_shared":
+                return self._tool_remember_shared(args)
             elif tool_name == "viking_forget":
                 return self._tool_forget(args)
             elif tool_name == "viking_add_resource":
@@ -5168,6 +5345,40 @@ class OpenVikingMemoryProvider(MemoryProvider):
         except Exception as e:
             logger.error("OpenViking content/write failed: %s", e)
             return tool_error(f"Failed to store memory: {e}")
+
+    def _tool_remember_shared(self, args: dict) -> str:
+        """Explicit SHARED-layer remember: routed through a self-only session so
+        the extracted memory lands in user/default/memories (visible to every
+        peer). Never invoked by auto-capture — agent call only."""
+        content = str(args.get("content") or "").strip()
+        if not content:
+            return tool_error("content is required")
+
+        sid = f"shared-{uuid.uuid4().hex[:10]}"
+        try:
+            self._client.post(
+                "/api/v1/sessions",
+                {"session_id": sid, "memory_policy": self._SELF_ONLY_SHARED_POLICY},
+            )
+            self._client.post(
+                f"/api/v1/sessions/{sid}/messages",
+                {
+                    "role": "user",
+                    # No peer_id — shared facts describe the user, not a peer.
+                    "parts": [self._text_part(content[:4000])],
+                },
+            )
+            self._client.post(f"/api/v1/sessions/{sid}/commit", {"keep_recent_count": 0})
+            return json.dumps({
+                "status": "queued",
+                "message": (
+                    f"Shared memory queued via self-only session {sid}; extraction "
+                    "lands in user/default/memories (visible to all peers)."
+                ),
+            })
+        except Exception as e:
+            logger.error("OpenViking remember_shared failed: %s", e)
+            return tool_error(f"Failed to store shared memory: {e}")
 
     def _tool_forget(self, args: dict) -> str:
         uri, error = _validate_forget_memory_uri(args.get("uri"))

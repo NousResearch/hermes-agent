@@ -3389,6 +3389,23 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     if not tool_name:
         return None
 
+    # Explicit alias map for framework-generic tool names that small local
+    # models (qwen3.8, laguna, etc.) emit for the terminal tool. 'shell' and
+    # friends never reach the fuzzy-match cutoff (0.7) against 'terminal',
+    # so without this map the model loops on "Unknown tool 'shell'".
+    _TOOL_NAME_ALIASES = {
+        "shell": "terminal",
+        "bash": "terminal",
+        "execute_command": "terminal",
+        "exec_command": "terminal",
+        "run_command": "terminal",
+        "execute_shell": "terminal",
+        "run_shell": "terminal",
+    }
+    alias = _TOOL_NAME_ALIASES.get(tool_name.lower())
+    if alias and alias in agent.valid_tool_names:
+        return alias
+
     # VolcEngine api/plan workaround (issue #33007): the endpoint's
     # protocol-translation layer occasionally leaks raw XML attribute
     # fragments into tool_use.name, e.g.

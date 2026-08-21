@@ -6857,6 +6857,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         event["command"] = _redact_approval_command(event.get("command"))
                     event.update({
                         "event": "approval.request",
+                        "session_id": session_id,
                         "run_id": run_id,
                         "timestamp": time.time(),
                         "choices": _approval_event_choices(

@@ -30,6 +30,7 @@ import logging
 import math
 import mimetypes
 import os
+import signal
 import queue
 import re
 import secrets
@@ -3791,6 +3792,7 @@ async def get_status(profile: Optional[str] = None):
             "config_version": current_ver,
             "latest_config_version": latest_ver,
             "can_update_hermes": not _dashboard_local_update_managed_externally(),
+            "can_restart_dashboard": bool(_dashboard_service_name()),
             "gateway_running": gateway_running,
             "gateway_state": gateway_state,
             "gateway_platforms": gateway_platforms,
@@ -4360,6 +4362,8 @@ _ACTION_LOG_FILES: Dict[str, str] = {
     "gateway-restart": "gateway-restart.log",
     "gateway-start": "gateway-start.log",
     "gateway-stop": "gateway-stop.log",
+    "dashboard-restart": "dashboard-restart.log",
+    "hermes-restart": "hermes-restart.log",
     "hermes-update": "hermes-update.log",
     "doctor": "action-doctor.log",
     "security-audit": "action-security-audit.log",
@@ -4869,6 +4873,220 @@ async def update_hermes():
         "pid": proc.pid,
         "name": "hermes-update",
         "action_id": action_id,
+    }
+
+
+def _dashboard_service_name() -> str:
+    """Name of the systemd unit that runs this dashboard, when managed by systemd."""
+    if sys.platform != "linux":
+        return ""
+    # ``hermes dashboard install`` on Linux creates a systemd service named
+    # ``hermes-dashboard``. Check for it explicitly so the restart button only
+    # appears where the command we would run actually exists.
+    try:
+        out = subprocess.run(
+            ["systemctl", "list-unit-files", "hermes-dashboard.service"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return ""
+    if "hermes-dashboard.service" not in out.stdout:
+        return ""
+    return "hermes-dashboard"
+
+
+def _dashboard_restart_command(service: str) -> str:
+    """Best command to restart the dashboard service (shown to the user)."""
+    return f"systemctl restart {service}"
+
+
+@app.post("/api/system/restart")
+async def restart_dashboard():
+    """Restart the Hermes dashboard process via systemd.
+
+    Mirrors ``hermes gateway restart`` semantics but targets the dashboard
+    service itself (``hermes-dashboard``), so the dashboard comes back up
+    without touching the gateway. Non-systemd installs (Windows service, bare
+    ``hermes dashboard`` in a terminal, containers) can't be restarted from
+    inside their own process, so return structured guidance instead — same
+    envelope shape the update endpoint uses for unsupported installs.
+    """
+    service = _dashboard_service_name()
+    if not service:
+        message = (
+            "This dashboard is not running as a systemd service "
+            "(hermes-dashboard), so it can't restart itself from the browser. "
+            "Restart it from your terminal or service manager instead."
+        )
+        _record_completed_action("dashboard-restart", message, exit_code=1)
+        return {
+            "ok": False,
+            "pid": None,
+            "name": "dashboard-restart",
+            "error": "dashboard_restart_unsupported",
+            "message": message,
+            "restart_command": None,
+        }
+    command = _dashboard_restart_command(service)
+
+    def _do_restart() -> None:
+        # Give the HTTP response a moment to flush before the server dies.
+        time.sleep(1)
+        # systemd service units run as root; use sudo non-interactively (the
+        # dashboard user has NOPASSWD for this on a standard `hermes dashboard
+        # install`). start_new_session detaches the child from our process
+        # group so it survives long enough for systemd to act even though the
+        # restart kills this very process.
+        restart_cmd = (
+            ["sudo", "-n", "systemctl", "restart", service]
+            if sys.platform == "linux"
+            else ["systemctl", "restart", service]
+        )
+        subprocess.Popen(
+            restart_cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+    try:
+        threading.Thread(target=_do_restart, daemon=True).start()
+    except Exception as exc:
+        _log.exception("Failed to spawn dashboard restart")
+        raise HTTPException(status_code=500, detail=f"Failed to restart dashboard: {exc}")
+    return {
+        "ok": True,
+        "pid": None,
+        "name": "dashboard-restart",
+        "message": f"Restarting dashboard via `{command}`…",
+        "restart_command": command,
+    }
+
+
+def _signal_gateway_self_restart() -> Optional[int]:
+    """Ask the running gateway to restart itself via SIGUSR1 (fire-and-forget).
+
+    The gateway runs as its own user-scope systemd service (``Restart=always``
+    in the unit), so signalling it to drain-and-exit makes systemd bring it
+    back up on its own.  This is the drain-aware path the ``hermes gateway
+    restart`` command itself uses (``_graceful_restart_via_sigusr1`` in
+    ``hermes_cli/gateway.py``).
+
+    Why not just spawn ``hermes gateway restart`` like the Restart Gateway
+    button does?  ``restart-hermes`` restarts BOTH services, and the
+    dashboard's own ``systemctl restart`` (fired ~1s later) kills every
+    process in the dashboard's systemd cgroup — including a just-spawned
+    ``hermes gateway restart`` child (``start_new_session`` only escapes the
+    process group, not the cgroup).  Signalling the gateway directly avoids
+    the doomed subprocess entirely: the gateway lives in its own user-scope
+    service cgroup, survives the dashboard restart, and systemd revives it.
+
+    Returns the gateway PID signalled, or ``None`` if no running gateway
+    could be found (caller falls back to the spawn path).
+    """
+    if not hasattr(signal, "SIGUSR1"):
+        return None
+    try:
+        pid = get_running_pid()
+    except Exception:
+        pid = None
+    if not pid:
+        try:
+            pid = get_runtime_status_running_pid()
+        except Exception:
+            pid = None
+    if not pid:
+        return None
+    try:
+        os.kill(pid, signal.SIGUSR1)  # POSIX-only, guarded above
+    except (ProcessLookupError, PermissionError, OSError):
+        return None
+    return pid
+
+
+@app.post("/api/system/restart-hermes")
+async def restart_hermes(profile: Optional[str] = None):
+    """Restart the whole Hermes stack: gateway + dashboard.
+
+    Composes the two individual restarts the sidebar already offers into a
+    single action: the gateway goes through the regular ``hermes gateway
+    restart`` path (spawned detached, logged, pollable) and the dashboard
+    restarts itself via systemd from a detached thread. The gateway restart
+    is kicked off first so its subprocess survives the dashboard's own
+    systemd restart (both use ``start_new_session``, so neither is killed
+    when the other dies).
+
+    Non-systemd dashboard installs can't restart themselves; return the same
+    structured envelope as the update/dashboard-restart endpoints so the
+    frontend can surface guidance instead of a fake success.
+    """
+    # 1) Gateway: prefer direct SIGUSR1 self-restart so the gateway (its own
+    # user-scope systemd service) survives this dashboard's systemd restart.
+    # Fall back to the spawn path when no running gateway PID is found.
+    gateway_pid = _signal_gateway_self_restart()
+    gateway_via = "sigusr1"
+    if gateway_pid is None:
+        try:
+            gateway_proc, _reused = _spawn_gateway_restart(profile)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            _log.exception("Failed to spawn gateway restart (hermes-restart)")
+            raise HTTPException(status_code=500, detail=f"Failed to restart gateway: {exc}")
+        gateway_pid = gateway_proc.pid
+        gateway_via = "spawn"
+
+    # 2) Dashboard: only when systemd-managed.
+    service = _dashboard_service_name()
+    if not service:
+        message = (
+            "Gateway restart started, but this dashboard is not running as a "
+            "systemd service (hermes-dashboard), so it can't restart itself "
+            "from the browser. Restart it from your terminal or service "
+            "manager instead."
+        )
+        _record_completed_action("hermes-restart", message, exit_code=1)
+        return {
+            "ok": False,
+            "pid": gateway_pid,
+            "name": "hermes-restart",
+            "error": "dashboard_restart_unsupported",
+            "message": message,
+            "restart_command": None,
+        }
+    command = _dashboard_restart_command(service)
+
+    def _do_restart() -> None:
+        # Give the HTTP response a moment to flush before the server dies.
+        time.sleep(1)
+        restart_cmd = (
+            ["sudo", "-n", "systemctl", "restart", service]
+            if sys.platform == "linux"
+            else ["systemctl", "restart", service]
+        )
+        subprocess.Popen(
+            restart_cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+    try:
+        threading.Thread(target=_do_restart, daemon=True).start()
+    except Exception as exc:
+        _log.exception("Failed to spawn dashboard restart (hermes-restart)")
+        raise HTTPException(status_code=500, detail=f"Failed to restart dashboard: {exc}")
+    return {
+        "ok": True,
+        "pid": gateway_pid,
+        "name": "hermes-restart",
+        "message": (
+            f"Restarting gateway (pid {gateway_pid}, via {gateway_via}) and "
+            f"dashboard via `{command}`…"
+        ),
+        "restart_command": command,
     }
 
 

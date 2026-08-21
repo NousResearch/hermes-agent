@@ -134,7 +134,17 @@ export const en: Translations = {
     restartGatewayConfirmMessage:
       "This restarts the Hermes gateway process. Connected channels and active sessions will reconnect afterward.",
     restartGatewayConfirmTitle: "Restart gateway?",
+    restartDashboard: "Restart Dashboard",
+    restartDashboardConfirmMessage:
+      "This restarts the Hermes dashboard service. The page will reconnect when it comes back up.",
+    restartDashboardConfirmTitle: "Restart dashboard?",
+    restartHermes: "Restart Hermes",
+    restartHermesConfirmMessage:
+      "This restarts the Hermes gateway and dashboard services. The page will reconnect when everything comes back up.",
+    restartHermesConfirmTitle: "Restart Hermes?",
+    restartingDashboard: "Restarting dashboard…",
     restartingGateway: "Restarting gateway…",
+    restartingHermes: "Restarting Hermes…",
     running: "Running",
     runningRemote: "Running (remote)",
     startFailed: "Start failed",

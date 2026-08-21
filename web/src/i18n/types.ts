@@ -150,7 +150,15 @@ export interface Translations {
     restartGateway: string;
     restartGatewayConfirmMessage?: string;
     restartGatewayConfirmTitle?: string;
+    restartDashboard?: string;
+    restartDashboardConfirmMessage?: string;
+    restartDashboardConfirmTitle?: string;
+    restartHermes?: string;
+    restartHermesConfirmMessage?: string;
+    restartHermesConfirmTitle?: string;
+    restartingDashboard?: string;
     restartingGateway: string;
+    restartingHermes?: string;
     running: string;
     runningRemote: string;
     startFailed: string;

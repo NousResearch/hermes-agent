@@ -41,8 +41,10 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plug,
+  Power,
   Puzzle,
   Radio,
+  RefreshCw,
   RotateCw,
   Settings,
   Shield,
@@ -941,7 +943,12 @@ function SidebarSystemActions({
   const { activeAction, isBusy, isRunning, pendingAction, runAction } =
     useSystemActions();
   const canUpdateHermes = status?.can_update_hermes === true;
+  const canRestartDashboard = status?.can_restart_dashboard === true;
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
+  const [dashboardRestartConfirmOpen, setDashboardRestartConfirmOpen] =
+    useState(false);
+  const [hermesRestartConfirmOpen, setHermesRestartConfirmOpen] =
+    useState(false);
   const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false);
   const [updateConfirmInfo, setUpdateConfirmInfo] =
     useState<UpdateCheckResponse | null>(null);
@@ -992,6 +999,24 @@ function SidebarSystemActions({
       spin: true,
     },
   ];
+  if (canRestartDashboard) {
+    items.push({
+      action: "dashboard",
+      icon: RefreshCw,
+      label: t.status.restartDashboard ?? "Restart Dashboard",
+      runningLabel: t.status.restartingDashboard ?? "Restarting dashboard…",
+      spin: true,
+    });
+  }
+  if (canRestartDashboard) {
+    items.push({
+      action: "hermes",
+      icon: Power,
+      label: t.status.restartHermes ?? "Restart Hermes",
+      runningLabel: t.status.restartingHermes ?? "Restarting Hermes…",
+      spin: true,
+    });
+  }
   if (canUpdateHermes) {
     items.push({
       action: "update",
@@ -1008,6 +1033,14 @@ function SidebarSystemActions({
       setRestartConfirmOpen(true);
       return;
     }
+    if (action === "dashboard") {
+      setDashboardRestartConfirmOpen(true);
+      return;
+    }
+    if (action === "hermes") {
+      setHermesRestartConfirmOpen(true);
+      return;
+    }
     if (action === "update") {
       setUpdateConfirmOpen(true);
       return;
@@ -1020,6 +1053,20 @@ function SidebarSystemActions({
   const confirmRestart = () => {
     setRestartConfirmOpen(false);
     void runAction("restart");
+    navigate("/sessions");
+    onNavigate();
+  };
+
+  const confirmDashboardRestart = () => {
+    setDashboardRestartConfirmOpen(false);
+    void runAction("dashboard");
+    navigate("/sessions");
+    onNavigate();
+  };
+
+  const confirmHermesRestart = () => {
+    setHermesRestartConfirmOpen(false);
+    void runAction("hermes");
     navigate("/sessions");
     onNavigate();
   };
@@ -1085,6 +1132,40 @@ function SidebarSystemActions({
       open={restartConfirmOpen}
       title={
         t.status.restartGatewayConfirmTitle ?? `${t.status.restartGateway}?`
+      }
+    />
+
+    <ConfirmDialog
+      cancelLabel={t.common.cancel}
+      confirmLabel={t.status.restartDashboard ?? "Restart Dashboard"}
+      description={
+        t.status.restartDashboardConfirmMessage ??
+        "This restarts the Hermes dashboard service. The page will reconnect when it comes back up."
+      }
+      loading={pendingAction === "dashboard"}
+      onCancel={() => setDashboardRestartConfirmOpen(false)}
+      onConfirm={confirmDashboardRestart}
+      open={dashboardRestartConfirmOpen}
+      title={
+        t.status.restartDashboardConfirmTitle ??
+        `${t.status.restartDashboard ?? "Restart Dashboard"}?`
+      }
+    />
+
+    <ConfirmDialog
+      cancelLabel={t.common.cancel}
+      confirmLabel={t.status.restartHermes ?? "Restart Hermes"}
+      description={
+        t.status.restartHermesConfirmMessage ??
+        "This restarts the Hermes gateway and dashboard services. The page will reconnect when everything comes back up."
+      }
+      loading={pendingAction === "hermes"}
+      onCancel={() => setHermesRestartConfirmOpen(false)}
+      onConfirm={confirmHermesRestart}
+      open={hermesRestartConfirmOpen}
+      title={
+        t.status.restartHermesConfirmTitle ??
+        `${t.status.restartHermes ?? "Restart Hermes"}?`
       }
     />
 

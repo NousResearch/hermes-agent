@@ -952,6 +952,12 @@ export const api = {
   // Gateway / update actions
   restartGateway: () =>
     fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
+  restartDashboard: () =>
+    fetchJSON<ActionResponse>("/api/system/restart", { method: "POST" }),
+  restartHermes: () =>
+    fetchJSON<ActionResponse>("/api/system/restart-hermes", {
+      method: "POST",
+    }),
   updateHermes: () =>
     fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
   checkHermesUpdate: (force = false) =>
@@ -1879,6 +1885,9 @@ export interface StatusResponse {
   /** False when the dashboard is running in a hosted/managed layout where
    * updates are handled by the outer launcher instead of ``hermes update``. */
   can_update_hermes?: boolean;
+  /** True when the dashboard runs as a systemd service and can restart
+   * itself via ``POST /api/system/restart``. */
+  can_restart_dashboard?: boolean;
   config_path: string;
   config_version: number;
   env_path: string;

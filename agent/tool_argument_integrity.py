@@ -114,67 +114,6 @@ def _neutralize_anthropic_sidecar(blocks: Any, removed_ids: set[Any]) -> Any:
     return sanitized
 
 
-def _combine_assistant_content(first: Any, second: Any) -> Any:
-    """Combine adjacent assistant content without discarding visible text."""
-    if isinstance(first, list) or isinstance(second, list):
-        def _parts(value: Any) -> list[Any]:
-            if isinstance(value, list):
-                return deepcopy(value)
-            if isinstance(value, str) and value:
-                return [{"type": "text", "text": value}]
-            return []
-
-        return _parts(first) + _parts(second)
-    texts = [
-        value.strip()
-        for value in (first, second)
-        if isinstance(value, str) and value.strip()
-    ]
-    return "\n".join(texts)
-
-
-def _merge_adjacent_assistant_messages(
-    messages: list[tuple[dict[str, Any], bool]],
-) -> list[dict[str, Any]]:
-    """Merge only assistant adjacency created by removing complete call pairs."""
-    collapsed: list[tuple[dict[str, Any], bool]] = []
-    list_sidecars = (
-        "anthropic_content_blocks",
-        "codex_message_items",
-        "codex_reasoning_items",
-        "reasoning_details",
-    )
-    for message, neutralized_all_calls in messages:
-        if (
-            collapsed
-            and message.get("role") == "assistant"
-            and collapsed[-1][0].get("role") == "assistant"
-            and (neutralized_all_calls or collapsed[-1][1])
-        ):
-            previous, previous_neutralized = collapsed[-1]
-            merged = deepcopy(previous)
-            for key, value in message.items():
-                if key not in {"content", *list_sidecars}:
-                    merged[key] = deepcopy(value)
-            merged["content"] = _combine_assistant_content(
-                previous.get("content"), message.get("content")
-            )
-            for key in list_sidecars:
-                before = previous.get(key)
-                after = message.get(key)
-                if isinstance(before, list) or isinstance(after, list):
-                    merged[key] = (
-                        deepcopy(before) if isinstance(before, list) else []
-                    ) + (deepcopy(after) if isinstance(after, list) else [])
-            collapsed[-1] = (
-                merged,
-                previous_neutralized or neutralized_all_calls,
-            )
-            continue
-        collapsed.append((message, neutralized_all_calls))
-    return [message for message, _ in collapsed]
-
-
 def neutralize_completed_incomplete_tool_calls(
     messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -199,21 +138,40 @@ def neutralize_completed_incomplete_tool_calls(
     if not neutralized_calls:
         return messages
     neutralized_results = {pairs[position] for position in neutralized_calls}
+    note_boundaries: set[int] = set()
+    for assistant_index in {position[0] for position in neutralized_calls}:
+        tool_calls = messages[assistant_index].get("tool_calls")
+        if not isinstance(tool_calls, list) or not tool_calls:
+            continue
+        positions = [(assistant_index, index) for index in range(len(tool_calls))]
+        if not all(position in neutralized_calls for position in positions):
+            continue
+        result_indices = [pairs[position] for position in positions]
+        boundary = max(result_indices)
+        next_index = boundary + 1
+        while next_index < len(messages) and next_index in neutralized_results:
+            next_index += 1
+        if next_index < len(messages):
+            following = messages[next_index]
+            if isinstance(following, dict) and following.get("role") == "assistant":
+                note_boundaries.add(boundary)
 
-    sanitized: list[tuple[dict[str, Any], bool]] = []
+    sanitized: list[dict[str, Any]] = []
     for message_index, message in enumerate(messages):
         if not isinstance(message, dict):
-            sanitized.append((message, False))
+            sanitized.append(message)
             continue
         if message_index in neutralized_results:
+            if message_index in note_boundaries:
+                sanitized.append({"role": "user", "content": _WIRE_HISTORY_NOTE})
             continue
         if message.get("role") != "assistant":
-            sanitized.append((message, False))
+            sanitized.append(message)
             continue
 
         tool_calls = message.get("tool_calls")
         if not isinstance(tool_calls, list):
-            sanitized.append((message, False))
+            sanitized.append(message)
             continue
         kept_calls = [
             call
@@ -221,7 +179,7 @@ def neutralize_completed_incomplete_tool_calls(
             if (message_index, call_index) not in neutralized_calls
         ]
         if len(kept_calls) == len(tool_calls):
-            sanitized.append((message, False))
+            sanitized.append(message)
             continue
 
         copied = deepcopy(message)
@@ -246,8 +204,8 @@ def neutralize_completed_incomplete_tool_calls(
             copied["content"] = f"{content.rstrip()}\n{_WIRE_HISTORY_NOTE}"
         else:
             copied["content"] = _WIRE_HISTORY_NOTE
-        sanitized.append((copied, not kept_calls))
-    return _merge_adjacent_assistant_messages(sanitized)
+        sanitized.append(copied)
+    return sanitized
 
 
 def incomplete_tool_arguments_block_message(value: Any) -> Optional[str]:

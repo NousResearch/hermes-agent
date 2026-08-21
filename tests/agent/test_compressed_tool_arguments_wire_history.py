@@ -8,6 +8,7 @@ import json
 from agent.codex_responses_adapter import _chat_messages_to_responses_input
 from agent.transports.chat_completions import ChatCompletionsTransport
 from agent.transports.anthropic import AnthropicTransport
+from agent.tool_argument_integrity import neutralize_completed_incomplete_tool_calls
 
 
 MARKER = json.dumps(
@@ -137,6 +138,14 @@ def _all_compressed_history(content="I will inspect it.", call_count=1):
             "role": "assistant",
             "content": content,
             "tool_calls": calls,
+            "anthropic_content_blocks": [{"type": "text", "text": content}],
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": content}],
+                }
+            ],
         },
         *results,
         {"role": "assistant", "content": "Inspection finished."},
@@ -199,3 +208,9 @@ def test_all_compressed_multi_call_history_is_provider_valid():
         left.get("role") != right.get("role")
         for left, right in zip(anthropic_bedrock, anthropic_bedrock[1:])
     )
+
+
+def test_malformed_non_dict_history_does_not_crash_sanitizer():
+    history = _all_compressed_history()[:3] + [None]
+    converted = neutralize_completed_incomplete_tool_calls(history)
+    assert converted[-1] is None

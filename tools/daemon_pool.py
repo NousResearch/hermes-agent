@@ -49,14 +49,24 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
         num_threads = len(self._threads)
         if num_threads < self._max_workers:
             thread_name = "%s_%d" % (self._thread_name_prefix or self, num_threads)
+            # Patch (2026-08-20): Python 3.14 stdlib `_worker` signature is
+            # `(executor_reference, ctx, work_queue)` — initializer/initargs
+            # live on `ctx` (returned by self._create_worker_context()), not
+            # as direct args. Mirror stdlib 3.14's `_adjust_thread_count`
+            # call shape instead of the 3.8-3.13 one this class was written
+            # for. Without this, `_worker(*4 args)` raises "takes 3
+            # positional arguments but 4 were given" on every first submit
+            # to a fresh pool, which produced the
+            # `DaemonThreadPoolExecutor._initializer` 502s users hit when a
+            # tool chain exercised the retry code path. See
+            # hermes-upgrade skill §"daemon_pool fix" for full root cause.
             t = threading.Thread(
                 name=thread_name,
                 target=_worker,
                 args=(
                     weakref.ref(self, weakref_cb),
+                    self._create_worker_context(),
                     self._work_queue,
-                    self._initializer,
-                    self._initargs,
                 ),
                 daemon=True,
             )

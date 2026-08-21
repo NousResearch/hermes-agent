@@ -90,6 +90,20 @@ describe('desktop git facade', () => {
     })
   })
 
+  it('keeps remote git mutations on the active registry connection', async () => {
+    $connection.set({ connectionId: 'rankast-linux', mode: 'remote', profile: 'coder' } as never)
+
+    await desktopGit()?.branchSwitch('/srv/work', 'main')
+
+    expect(api).toHaveBeenCalledWith({
+      body: { branch: 'main', path: '/srv/work' },
+      connectionId: 'rankast-linux',
+      method: 'POST',
+      path: '/api/git/branch/switch',
+      profile: 'coder'
+    })
+  })
+
   it('sends mutations as POST bodies on a remote gateway', async () => {
     $connection.set({ mode: 'remote' } as never)
 

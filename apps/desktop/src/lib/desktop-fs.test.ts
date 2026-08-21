@@ -144,6 +144,18 @@ describe('desktop filesystem facade', () => {
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd', profile: 'remote-docker' })
   })
 
+  it('keeps remote filesystem requests on the active registry connection', async () => {
+    $connection.set({ connectionId: 'rankast-linux', mode: 'remote', profile: 'coder' } as never)
+
+    await readDesktopDir('/srv/project')
+
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'rankast-linux',
+      path: '/api/fs/list?path=%2Fsrv%2Fproject',
+      profile: 'coder'
+    })
+  })
+
   it('keys SSH filesystem caches by stable host identity instead of the forwarded port', () => {
     $connection.set({
       mode: 'remote',

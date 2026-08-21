@@ -37,10 +37,16 @@ export function isDesktopFsRemoteMode() {
   return $connection.get()?.mode === 'remote'
 }
 
-// Active profile for FS/git REST calls. Without it the Electron api bridge
-// hits the primary (local) backend even when the user switched to a remote profile.
-export function desktopFsProfile(): string | undefined {
-  return $connection.get()?.profile || undefined
+// Active scope for FS/git REST calls. Without the registry connection id the
+// Electron API bridge falls back to the local profile pool, even when the
+// selected profile belongs to a registered remote gateway.
+export function desktopFsApiScope(): { connectionId?: string; profile?: string } {
+  const connection = $connection.get()
+
+  return {
+    ...(connection?.connectionId ? { connectionId: connection.connectionId } : {}),
+    ...(connection?.profile ? { profile: connection.profile } : {})
+  }
 }
 
 function fsPath(endpoint: string, filePath: string) {
@@ -59,7 +65,7 @@ function bridge() {
 
 function remoteFsApi<T>(path: string, body?: Record<string, unknown>): Promise<T> {
   return bridge().api<T>(
-    body ? { body, method: 'POST', path, profile: desktopFsProfile() } : { path, profile: desktopFsProfile() }
+    body ? { body, method: 'POST', path, ...desktopFsApiScope() } : { path, ...desktopFsApiScope() }
   )
 }
 

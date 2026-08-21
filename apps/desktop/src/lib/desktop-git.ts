@@ -8,7 +8,7 @@ import type {
   HermesReviewShipInfo
 } from '@/global'
 
-import { desktopFsProfile, isDesktopFsRemoteMode } from './desktop-fs'
+import { desktopFsApiScope, isDesktopFsRemoteMode } from './desktop-fs'
 
 // Remote-aware git facade. Locally the desktop runs git through Electron
 // (window.hermesDesktop.git); on a remote gateway that's the wrong filesystem,
@@ -26,7 +26,7 @@ function desktopApi<T>(path: string, body?: Record<string, unknown>): Promise<T>
   }
 
   return desktop.api<T>(
-    body ? { body, method: 'POST', path, profile: desktopFsProfile() } : { path, profile: desktopFsProfile() }
+    body ? { body, method: 'POST', path, ...desktopFsApiScope() } : { path, ...desktopFsApiScope() }
   )
 }
 

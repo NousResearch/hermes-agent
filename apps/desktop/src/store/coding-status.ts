@@ -41,7 +41,7 @@ const EMPTY_WORKTREES: HermesGitWorktree[] = []
 // map stays bounded by the worktrees touched this run) so re-opening a tile
 // paints its last-known status instantly while the fresh probe runs.
 export const $repoStatusByCwd = atom<Record<string, HermesRepoStatus | null>>({})
-export const $repoWorktreesByCwd = atom<Record<string, HermesGitWorktree[]>>({})
+const $repoWorktreesByCwd = atom<Record<string, HermesGitWorktree[]>>({})
 
 // The PRIMARY (main pane) view — the active session's slice of the per-cwd
 // truth. Existing consumers (keybind gate, base-branch picker, file tree) keep
@@ -98,7 +98,7 @@ export function repoStatusForCwd(cwd?: null | string): ReadableAtom<HermesRepoSt
  * backend-routed (`desktopGit()` returns the REST mirror), so a VPS path is
  * judged by the VPS's git — not by this machine's filesystem (#81724).
  */
-export async function isGitRepoPath(cwd: string): Promise<boolean> {
+async function isGitRepoPath(cwd: string): Promise<boolean> {
   const key = normalizeCwd(cwd)
 
   if (!key) {
@@ -142,7 +142,7 @@ export type RepoChangeKind = 'added' | 'conflicted' | 'modified'
 // Reuses the same bounded $repoStatus probe (capped file list); git reports
 // repo-root-relative paths, so we join them onto the active cwd. Deletions never
 // appear — the file is gone from disk, so there's no tree row to tint.
-export const $repoChangeByPath = computed([$repoStatus, $currentCwd], (status, cwd) => {
+const $repoChangeByPath = computed([$repoStatus, $currentCwd], (status, cwd) => {
   const map = new Map<string, RepoChangeKind>()
   const root = (cwd || '').replace(/[/\\]+$/, '')
 
@@ -497,7 +497,7 @@ export function _resetCodingStatusForTests(): void {
 // and ⌘⇧B now works from a detached session inside a project. '' means that no
 // repo is in reach. That is a no-op and not an error, because a worktree only
 // exists inside a repo.
-export async function resolveWorktreeRepoPath(): Promise<string> {
+async function resolveWorktreeRepoPath(): Promise<string> {
   const runtimeId = $focusedRuntimeId.get()
   const scope = $projectScope.get()
 

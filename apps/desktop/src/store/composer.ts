@@ -30,7 +30,7 @@ export type ComposerAttachmentPatch = Partial<Omit<ComposerAttachment, 'id' | 'o
 
 export const $composerDraft = atom('')
 export const $composerAttachments = atom<ComposerAttachment[]>([])
-export const $composerTerminalSelections = atom<Record<string, string>>({})
+const $composerTerminalSelections = atom<Record<string, string>>({})
 
 // Latched because opening a fresh session may remount the main composer before
 // it can start voice. Session-tile composers deliberately never consume this.
@@ -440,36 +440,6 @@ export function setComposerDraft(value: string) {
   $composerDraft.set(value)
 }
 
-export function appendComposerDraft(value: string) {
-  const text = value.trim()
-
-  if (!text) {
-    return
-  }
-
-  const current = $composerDraft.get()
-  const separator = current && !current.endsWith('\n') ? '\n\n' : ''
-
-  $composerDraft.set(`${current}${separator}${text}`)
-}
-
-export function appendComposerInline(value: string) {
-  const text = value.trim()
-
-  if (!text) {
-    return
-  }
-
-  const current = $composerDraft.get().trimEnd()
-  const separator = current ? ' ' : ''
-
-  $composerDraft.set(`${current}${separator}${text}`)
-}
-
-export function clearComposerDraft() {
-  $composerDraft.set('')
-}
-
 // Main-scope conveniences — the names the app has always used.
 export const addComposerAttachment = (attachment: ComposerAttachment) => mainComposerScope.add(attachment)
 export const removeComposerAttachment = (id: string) => mainComposerScope.remove(id)
@@ -479,8 +449,6 @@ export const removeComposerAttachment = (id: string) => mainComposerScope.remove
  * flight, so a late success must NOT resurrect it. Use this instead of
  * addComposerAttachment for async results that may land after a removal. */
 export const updateComposerAttachment = (attachment: ComposerAttachment) => mainComposerScope.update(attachment)
-
-export const clearComposerAttachments = () => mainComposerScope.clear()
 
 /** Update only the upload state of an existing attachment (no-op if it's gone,
  * e.g. the user removed it mid-upload). Pass `undefined` to clear it. */
@@ -535,27 +503,6 @@ export function setComposerTerminalSelection(label: string, text: string) {
   })
 }
 
-export function reconcileComposerTerminalSelections(draft: string) {
-  const current = $composerTerminalSelections.get()
-  const labels = new Set(terminalLabelsFromDraft(draft))
-  let changed = false
-  const next: Record<string, string> = {}
-
-  for (const [label, text] of Object.entries(current)) {
-    if (!labels.has(label)) {
-      changed = true
-
-      continue
-    }
-
-    next[label] = text
-  }
-
-  if (changed) {
-    $composerTerminalSelections.set(next)
-  }
-}
-
 export function terminalContextBlocksFromDraft(draft: string) {
   const labels = terminalLabelsFromDraft(draft)
 
@@ -574,14 +521,6 @@ export function terminalContextBlocksFromDraft(draft: string) {
 
     return `\`\`\`terminal\n${text}\n\`\`\``
   })
-}
-
-export function clearComposerTerminalSelections() {
-  if (Object.keys($composerTerminalSelections.get()).length === 0) {
-    return
-  }
-
-  $composerTerminalSelections.set({})
 }
 
 function upsertAttachment(attachments: ComposerAttachment[], attachment: ComposerAttachment) {

@@ -87,11 +87,6 @@ export function onPluginRegistered(fn: RegistryListener): () => void {
   return () => _listeners.delete(fn);
 }
 
-/** Get current count of registered plugins. */
-export function getRegisteredCount(): number {
-  return _registered.size;
-}
-
 // ---------------------------------------------------------------------------
 // Expose SDK + registry on window
 // ---------------------------------------------------------------------------
@@ -103,7 +98,7 @@ export function getRegisteredCount(): number {
  * Exposed at runtime as ``window.__HERMES_PLUGIN_SDK__.sdkVersion`` so a
  * plugin (or a future host-side compatibility gate) can read it.
  */
-export const SDK_CONTRACT_VERSION = "1.1.0";
+const SDK_CONTRACT_VERSION = "1.1.0";
 
 // Window globals for the plugin SDK are declared in ``plugins/sdk.d.ts`` —
 // the single source of truth for the public contract. Don't redeclare them

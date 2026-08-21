@@ -1,12 +1,6 @@
 import { atom, map } from 'nanostores'
 
-import {
-  getActionStatus,
-  installSkillFromHub,
-  type ProfileScope,
-  uninstallSkillFromHub,
-  updateSkillsFromHub
-} from '@/hermes'
+import { getActionStatus, installSkillFromHub, type ProfileScope, updateSkillsFromHub } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { upsertDesktopActionTask } from '@/store/activity'
@@ -16,14 +10,14 @@ const POLL_MS = 1200
 
 // Shared with hub.tsx's sources useQuery so a finished action refreshes the
 // installed map.
-export const HUB_SOURCES_KEY = ['skill-hub-sources'] as const
+const HUB_SOURCES_KEY = ['skill-hub-sources'] as const
 // The Capabilities Skills-list query key (see app/skills/index.tsx) — kept in
 // sync here so a hub (un)install updates the Skills tab, not just the hub.
 const SKILLS_LIST_KEY = ['skills-list'] as const
 // Non-identifier key for the fleet-wide "Update installed" action.
 export const UPDATE_ALL_KEY = '__update_all__'
 
-export type HubActionKind = 'install' | 'uninstall' | 'update'
+type HubActionKind = 'install' | 'uninstall' | 'update'
 
 export interface HubAction {
   kind: HubActionKind
@@ -41,7 +35,7 @@ export const $hubActions = map<Record<string, HubAction | undefined>>({})
 export const $hubInstalledOverride = map<Record<string, boolean | undefined>>({})
 
 // The key whose log the bottom pane currently tails (the latest-started action).
-export const $hubActiveLog = atom<null | string>(null)
+const $hubActiveLog = atom<null | string>(null)
 
 // Hub action state is per-profile: a profile switch must drop every in-flight
 // entry, optimistic override, and active log so profile A's install/uninstall
@@ -158,14 +152,6 @@ export function installHubSkill(identifier: string, profile?: ProfileScope): Pro
   return runHubAction(identifier, 'install', () => installSkillFromHub(identifier, profile), profile)
 }
 
-export function uninstallHubSkill(identifier: string, name: string, profile?: ProfileScope): Promise<void> {
-  return runHubAction(identifier, 'uninstall', () => uninstallSkillFromHub(name, profile), profile)
-}
-
 export function updateHubSkills(profile?: ProfileScope): Promise<void> {
   return runHubAction(UPDATE_ALL_KEY, 'update', () => updateSkillsFromHub(profile), profile)
-}
-
-export function closeHubLog(): void {
-  $hubActiveLog.set(null)
 }

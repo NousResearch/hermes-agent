@@ -14,7 +14,7 @@ export const OVERLAY_FALLBACK_WIDTH = 144
  *
  * @param {{ isMac?: boolean }} opts
  */
-export function nativeOverlayWidth({ isWindows = false, isWsl = false, isMac = false } = {}) {
+export function nativeOverlayWidth({ isMac = false }: { isMac?: boolean; isWindows?: boolean; isWsl?: boolean } = {}) {
   if (isMac) {
     return 0
   }

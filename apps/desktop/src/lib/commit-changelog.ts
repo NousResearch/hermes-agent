@@ -12,7 +12,7 @@
 
 import { capitalize } from '@/lib/text'
 
-export type CommitGroupId = 'new' | 'fixed' | 'faster' | 'improved' | 'other'
+type CommitGroupId = 'new' | 'fixed' | 'faster' | 'improved' | 'other'
 
 export interface CommitGroup {
   id: CommitGroupId

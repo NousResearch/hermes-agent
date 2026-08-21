@@ -323,7 +323,7 @@ export function PaneEmptyState({ label }: { label: string }) {
 }
 
 // Richer empty/error state (title + body) for the file tree's read failures.
-export function EmptyState({ body, title }: { body: string; title?: string }) {
+function EmptyState({ body, title }: { body: string; title?: string }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 px-4 text-center">
       {title && (

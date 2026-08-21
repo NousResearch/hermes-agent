@@ -9,17 +9,10 @@ import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
-import { DEFAULT_REASONING_EFFORT } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'
 import { $modelPresets, applyModelPreset, modelPresetKey, setModelPreset } from '@/store/model-presets'
-import { $visibleModels } from '@/store/model-visibility'
 import { notifyError } from '@/store/notifications'
-import {
-  $defaultReasoningEffort,
-  markComposerSelectionManual,
-  setCurrentFastMode,
-  setCurrentReasoningEffort
-} from '@/store/session'
+import { markComposerSelectionManual, setCurrentFastMode, setCurrentReasoningEffort } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
@@ -62,8 +55,6 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   const currentProvider = useStore(view.$provider)
   const currentReasoningEffort = useStore(view.$reasoningEffort)
   const modelPresets = useStore($modelPresets)
-  const defaultEffort = useStore($defaultReasoningEffort) || DEFAULT_REASONING_EFFORT
-  const visibleModels = useStore($visibleModels)
   const touchesPrimary = view.kind === 'primary'
 
   // Subscribe to the SAME query the menu runs (identical key ⇒ React Query

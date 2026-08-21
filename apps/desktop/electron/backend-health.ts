@@ -1,5 +1,5 @@
-export const DEFAULT_BACKEND_READY_TIMEOUT_MS = 45_000
-export const DEFAULT_BACKEND_READY_POLL_MS = 500
+const DEFAULT_BACKEND_READY_TIMEOUT_MS = 45_000
+const DEFAULT_BACKEND_READY_POLL_MS = 500
 // A cold backend can stall its event loop for tens of seconds while Windows
 // scans and byte-compiles the gateway import tree. At the default 15s socket
 // timeout only three probes fit in the budget; a short one keeps retrying
@@ -35,7 +35,7 @@ export interface HermesReadyOptions {
   probeIsCredentialed?: boolean
 }
 
-export const REMOTE_SESSION_EXPIRED_MESSAGE =
+const REMOTE_SESSION_EXPIRED_MESSAGE =
   'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.'
 
 export function isMissingHealthEndpointError(error: unknown): boolean {
@@ -70,7 +70,7 @@ export function isGatedMissingHealthError(error: unknown): boolean {
 }
 
 /** Tag a terminal reauth failure the main process latches and the overlay keys on. */
-export function makeReauthRequiredError(detail?: string): Error {
+function makeReauthRequiredError(detail?: string): Error {
   const error = new Error(REMOTE_SESSION_EXPIRED_MESSAGE) as any
   error.needsOauthLogin = true
   error.isReauthRequired = true

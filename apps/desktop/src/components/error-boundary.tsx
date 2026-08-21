@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
 import { useI18n } from '@/i18n'
 
-export interface ErrorBoundaryFallbackProps {
+interface ErrorBoundaryFallbackProps {
   error: Error
   reset: () => void
 }

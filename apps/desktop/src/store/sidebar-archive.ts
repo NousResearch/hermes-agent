@@ -9,7 +9,7 @@ import { $sessions } from './session'
 const ARCHIVED_FETCH_LIMIT = 200
 
 export const $archivedSessions = atom<SessionInfo[]>([])
-export const $archivedSessionsLoading = atom(false)
+const $archivedSessionsLoading = atom(false)
 
 export async function loadArchivedSessions(): Promise<void> {
   if ($archivedSessionsLoading.get()) {

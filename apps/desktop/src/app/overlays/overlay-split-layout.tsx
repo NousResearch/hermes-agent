@@ -57,7 +57,7 @@ export function OverlaySplitLayout({ children, className }: OverlaySplitLayoutPr
   )
 }
 
-export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
+function OverlaySidebar({ children, className }: OverlaySidebarProps) {
   return (
     <aside
       className={cn(
@@ -100,7 +100,7 @@ export function OverlayMain({ children, className }: OverlayMainProps) {
   )
 }
 
-export const OverlayNavItem = memo(function OverlayNavItem({
+const OverlayNavItem = memo(function OverlayNavItem({
   active,
   icon: Icon,
   id,
@@ -140,7 +140,7 @@ export const OverlayNavItem = memo(function OverlayNavItem({
   )
 })
 
-export interface OverlayNavLink {
+interface OverlayNavLink {
   active: boolean
   icon: IconComponent
   id: string

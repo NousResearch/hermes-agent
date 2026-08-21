@@ -129,14 +129,14 @@ export const withActive = (models: readonly string[], active: string): readonly 
 // A slot is complete when both halves are chosen. Changing a slot's provider
 // intentionally clears its model (see updateMoaSlot), so every provider change
 // passes through an incomplete state while the user picks the new model.
-export const moaSlotComplete = (slot: MoaModelSlot): boolean => !!(slot.provider.trim() && slot.model.trim())
+const moaSlotComplete = (slot: MoaModelSlot): boolean => !!(slot.provider.trim() && slot.model.trim())
 
 // True when every slot in every preset is fully specified — the only state
 // that is safe to persist. The backend rejects configs with half-filled slots
 // (HTTP 422) instead of silently swapping the preset for hardcoded defaults
 // (#64156), so the autosave must simply wait for the edit to finish rather
 // than trying to "repair" the payload.
-export const moaConfigComplete = (config: MoaConfigResponse): boolean =>
+const moaConfigComplete = (config: MoaConfigResponse): boolean =>
   Object.values(config.presets).every(
     preset =>
       preset.reference_models.length > 0 &&

@@ -875,13 +875,7 @@ export const host = {
 // Every contribution surface, plugin-reachable: register keybinds, palette
 // commands, routes, themes, panes, composer extensions, and bar items with
 // the same area ids + payload types core uses.
-export {
-  COMPOSER_AREAS,
-  type ComposerAtCompletionItem,
-  type ComposerAtCompletionSource,
-  type ComposerAttachmentProvider,
-  type ComposerMiddleware
-} from '@/app/chat/composer/contrib'
+export { COMPOSER_AREAS } from '@/app/chat/composer/contrib'
 
 // -- ui: the design language --------------------------------------------------
 
@@ -898,14 +892,7 @@ export { ToolsetConfigPanel } from '@/app/settings/toolset-config-panel'
  *  menu renders and navigates, your controller decides what a selection MEANS
  *  (write to a session, hold a per-task override, …). Never fork it — a copy
  *  drifts from the composer the first time either side changes. */
-export {
-  ModelCatalogMenu,
-  type ModelChoice,
-  ModelMenuCloseContext,
-  type ModelMenuController
-} from '@/app/shell/model-catalog-menu'
-export type { StatusbarItem } from '@/app/shell/statusbar-controls'
-export type { TitlebarTool } from '@/app/shell/titlebar-controls'
+export { ModelCatalogMenu, ModelMenuCloseContext, type ModelMenuController } from '@/app/shell/model-catalog-menu'
 
 /** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
  *  lists, full-skill detail pane, embedded hub picker with one-click
@@ -927,8 +914,6 @@ export { McpTab } from '@/app/skills/mcp-tab'
  *  it — it takes no width from any zone, has no tab, and can't be docked.
  *  Pair it with `anchor` (spawn corner, default `'top-right'`) plus
  *  `width`/`height`. */
-export type { FloatingAnchor } from '@/components/pane-shell/tree/renderer/floating-rect'
-export { StatusDot, type StatusTone } from '@/components/status-dot'
 export { Badge } from '@/components/ui/badge'
 export { Button } from '@/components/ui/button'
 export { Checkbox } from '@/components/ui/checkbox'
@@ -942,15 +927,13 @@ export {
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
 export { CopyButton } from '@/components/ui/copy-button'
-export { DecodeText } from '@/components/ui/decode-text'
 export {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle,
-  DialogTrigger
+  DialogTitle
 } from '@/components/ui/dialog'
 export {
   DropdownMenu,
@@ -964,72 +947,46 @@ export { ErrorState } from '@/components/ui/error-state'
 export { FadeScroll } from '@/components/ui/fade-scroll'
 export { GlyphSpinner } from '@/components/ui/glyph-spinner'
 export { Input } from '@/components/ui/input'
-export { Kbd, KbdGroup } from '@/components/ui/kbd'
 /** The app's canonical loader (animated curves; `lemniscate-bloom` for long
  *  page loads) — the same one every core page uses. */
-export { Loader, type LoaderType } from '@/components/ui/loader'
+export { Loader } from '@/components/ui/loader'
 export { LogView } from '@/components/ui/log-view'
 export { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 export { ScrollArea } from '@/components/ui/scroll-area'
 export { SearchField } from '@/components/ui/search-field'
-export { SegmentedControl } from '@/components/ui/segmented-control'
 export { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-export { Separator } from '@/components/ui/separator'
-export { Skeleton } from '@/components/ui/skeleton'
 export { Switch } from '@/components/ui/switch'
-export { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 export { Textarea } from '@/components/ui/textarea'
-export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-export type { GatewayEventListener } from '@/contrib/events'
-export type {
-  HermesPlugin,
-  PluginContext,
-  PluginContribution,
-  PluginNativeNotificationInput,
-  PluginNotificationAction,
-  PluginOs,
-  PluginRestOptions,
-  PluginStorage
-} from '@/contrib/plugin'
+export { Tip } from '@/components/ui/tooltip'
+export type { HermesPlugin, PluginOs, PluginRestOptions, PluginStorage } from '@/contrib/plugin'
 /** Mount-scoped contribution: while the rendering component is mounted, its
  *  children render in the target area's slot; unmount disposes it. Use for
  *  page-owned chrome (a page's titlebar control leaves with the page) —
  *  `ctx.register` stays the door for permanent contributions. Namespace the
  *  id with your plugin slug (`kanban:board-switcher`). */
-export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
+export { Contribute } from '@/contrib/react/contribute'
 
 // -- contracts ----------------------------------------------------------------
 
-export type { Contribution } from '@/contrib/types'
 /** The live gateway instance type — for typing the `gateway` prop `McpTab`
  *  takes; obtain the instance from `host.getGateway()`. */
 export type { HermesGateway } from '@/hermes'
 /** Grab-to-pan for overflow containers (boards, timelines, wide tables) —
  *  the shared scrub primitive; don't hand-roll drag-to-scroll. */
-export { type GrabScroll, useGrabScroll } from '@/hooks/use-grab-scroll'
+export { useGrabScroll } from '@/hooks/use-grab-scroll'
 /** Localized copy. `useI18n` reuses the app's strings; `usePluginI18n(id)` +
  *  `ctx.i18n.register` let a plugin ship its OWN locale bundles, scoped like
  *  `ctx.storage` and resolved against the app's active locale — no core edit. */
-export {
-  type Locale,
-  type PluginI18n,
-  type PluginLocaleBundles,
-  type PluginMessages,
-  type PluginMessageValue,
-  type PluginTranslate,
-  useI18n,
-  usePluginI18n
-} from '@/i18n'
+export { type PluginLocaleBundles, type PluginTranslate, usePluginI18n } from '@/i18n'
 /** THE way to run a decorative rAF animation (avatars, shimmer, sprites):
  *  fps budget + hidden/minimized/unfocused pause + idle dormancy + teardown.
  *  Plugins must route animation clocks through this instead of raw rAF loops
  *  so a disabled plugin or an empty roster costs zero frames. */
-export { type BudgetedLoop, type BudgetedLoopOptions, createBudgetedLoop } from '@/lib/budgeted-loop'
+export { createBudgetedLoop } from '@/lib/budgeted-loop'
 /** THE compact-number formatter — every user-facing count/token figure goes
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@/lib/format'
 export { triggerHaptic as haptic } from '@/lib/haptics'
-export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 /** The app's lucide icon set (RefreshCw, LayoutDashboard, Activity, …). */
 export * as icons from '@/lib/icons'
 export { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
@@ -1044,30 +1001,15 @@ export { profileColor, profileColorSoft } from '@/lib/profile-color'
 export { queryClient } from '@/lib/query-client'
 /** Hermes' reasoning levels + their compact labels, so a plugin surfacing a
  *  thinking depth uses the same scale and spelling as the rest of the app. */
-export {
-  DEFAULT_REASONING_EFFORT,
-  REASONING_EFFORT_VALUES,
-  REASONING_EFFORTS,
-  type ReasoningEffort,
-  reasoningEffortLabel
-} from '@/lib/reasoning-effort'
-
-export const PANES_AREA = 'panes'
+export { reasoningEffortLabel } from '@/lib/reasoning-effort'
 /** The app's own gateway-readiness evaluation (setup.status +
  *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
  *  readiness from raw RPC shapes. */
-export { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
 export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
-
-export { coarseElapsed, fmtDateTime, fmtDayTime, relativeTime } from '@/lib/time'
+export { coarseElapsed, relativeTime } from '@/lib/time'
 /** The transcript as a contribution area: register a named `::directive{...}`
  *  and the model can render your component inline in assistant messages. */
-export {
-  TRANSCRIPT_DIRECTIVE_AREA,
-  type TranscriptDirectiveContribution,
-  type TranscriptDirectiveProps
-} from '@/lib/transcript-directives'
 export { cn } from '@/lib/utils'
 /** Live accent override — set a hex and the ACTIVE theme repaints with its
  *  accent family re-seeded from it (see `retintTheme`); `null` restores the
@@ -1077,30 +1019,10 @@ export { $accentOverride, setAccentOverride } from '@/themes/accent-override'
 /** OKLCH colour maths, for anything deriving a palette rather than hardcoding
  *  one: perceptual conversion, the sRGB gamut boundary, WCAG contrast, and
  *  hue-stable blending. */
-export {
-  contrastRatio,
-  hexToOklch,
-  hueDelta,
-  maxChroma,
-  mixOklab,
-  normalizeHex,
-  type Oklch,
-  oklchToHex,
-  oklchToSrgb255,
-  readableOn
-} from '@/themes/color'
+export { contrastRatio, hexToOklch, maxChroma, type Oklch, oklchToHex, oklchToSrgb255 } from '@/themes/color'
 /** The painted theme, its name, and the appearance it resolved to — plus
  *  `setTheme` / `setMode` to change it from a component. */
 export { useTheme } from '@/themes/context'
-/** Switch the theme from outside React (a gateway event, a connection coming
- *  up, any callback with no component around it). Returns false and leaves the
- *  appearance alone when the name doesn't resolve, so it doubles as the "is
- *  this theme installed?" check. */
-export { requestTheme } from '@/themes/request'
-export { retintTheme, themeHue } from '@/themes/retint'
-export type { DesktopTheme, DesktopThemeColors } from '@/themes/types'
-export { THEMES_AREA } from '@/themes/user-themes'
-export type { RpcEvent, StatusResponse } from '@/types/hermes'
 /** Subscribe a component to a `host.state` atom. */
 export { useStore as useValue } from '@nanostores/react'
 /** The app's data-fetching layer. Plugins share the ONE QueryClient mounted at
@@ -1110,10 +1032,9 @@ export { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 /** Deterministic soft-body avatars from any string (name → face). String
  *  renderer for rasterization; React component for live rendering. */
 export { blobatar as blobatarSvg } from 'blobatar/blob'
-export { Blobatar } from 'blobatar/react'
 /** Plugin-local reactive state (share between a trigger and its panel, poll
  *  loops, cross-component signals) — the same primitive `host.state` uses. */
-export { atom, computed } from 'nanostores'
+export { atom } from 'nanostores'
 /** Markdown renderer (same pipeline core chat surfaces use) so plugins render
  *  message text as a preview instead of raw Markdown source. */
 export { Streamdown } from 'streamdown'

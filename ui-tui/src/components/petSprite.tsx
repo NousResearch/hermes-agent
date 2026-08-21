@@ -3,7 +3,7 @@ import { memo } from 'react'
 
 // A cell is [tr,tg,tb,ta, br,bg,bb,ba] — the top + bottom pixel of one
 // half-block, as produced by the `pet.cells` gateway RPC.
-export type PetCell = number[]
+type PetCell = number[]
 export type PetGrid = PetCell[][]
 
 const UPPER_HALF = '▀'

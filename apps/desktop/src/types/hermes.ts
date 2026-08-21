@@ -40,7 +40,7 @@ export interface ElevenLabsVoicesResponse {
   voices: ElevenLabsVoice[]
 }
 
-export interface OAuthProviderStatus {
+interface OAuthProviderStatus {
   error?: string
   expires_at?: null | string
   has_refresh_token?: boolean
@@ -126,9 +126,9 @@ export interface EnvVarInfo {
   url: null | string
 }
 
-export type MemoryProviderFieldKind = 'bool' | 'json' | 'number' | 'secret' | 'select' | 'text'
+type MemoryProviderFieldKind = 'bool' | 'json' | 'number' | 'secret' | 'select' | 'text'
 
-export interface MemoryProviderFieldOption {
+interface MemoryProviderFieldOption {
   description: string
   label: string
   value: string
@@ -426,7 +426,7 @@ export interface ModelOptionProvider {
   capabilities?: Record<string, ModelCapabilities>
 }
 
-export interface ModelCapabilities {
+interface ModelCapabilities {
   /** False when the route rejects a reasoning disable ("mandatory" in the
    *  provider catalog), so the Thinking toggle must not be offered. Absent
    *  when the catalog doesn't say. */
@@ -545,7 +545,7 @@ export interface SessionInfo {
   connection_id?: string
 }
 
-export type TimelineDisplayMetadata =
+type TimelineDisplayMetadata =
   | { model: string; provider?: string }
   | {
       delegation_id: string
@@ -733,7 +733,7 @@ export interface StarmapEdge {
   target: string
 }
 
-export interface StarmapCluster {
+interface StarmapCluster {
   category: string
   count: number
 }
@@ -804,7 +804,7 @@ export interface AnalyticsResponse {
   totals: AnalyticsTotals
 }
 
-export interface AnalyticsToolEntry {
+interface AnalyticsToolEntry {
   count: number
   percentage: number
   tool: string
@@ -1062,7 +1062,7 @@ export interface ToolProvider {
 
 /** A web toolset capability — the runtime dispatches web_search and
  *  web_extract to independently configurable backends. */
-export type WebCapability = 'search' | 'extract'
+type WebCapability = 'search' | 'extract'
 
 export interface ToolsetConfig {
   name: string
@@ -1081,7 +1081,7 @@ export interface ToolsetConfig {
  *
  *  `ready` — usable now; `needs_setup` — selectable but missing a dependency
  *  or credential (detail says which); `unavailable` — the probe itself failed. */
-export type TerminalBackendStatus = 'ready' | 'needs_setup' | 'unavailable'
+type TerminalBackendStatus = 'ready' | 'needs_setup' | 'unavailable'
 
 /** One row from `GET /api/tools/terminal/backends`. */
 export interface TerminalBackendInfo {
@@ -1188,7 +1188,7 @@ export interface LogsResponse {
   lines: string[]
 }
 
-export interface PlatformStatus {
+interface PlatformStatus {
   error_code?: string
   error_message?: string
   state: string
@@ -1229,7 +1229,7 @@ export interface ActionStatusResponse {
   running: boolean
 }
 
-export interface BackendUpdateCommit {
+interface BackendUpdateCommit {
   sha: string
   summary: string
   author: string
@@ -1250,7 +1250,7 @@ export interface BackendUpdateCheckResponse {
   commits?: BackendUpdateCommit[]
 }
 
-export interface AuxiliaryTaskAssignment {
+interface AuxiliaryTaskAssignment {
   base_url: string
   model: string
   provider: string
@@ -1394,7 +1394,7 @@ export interface SkillHubPreview {
   files: string[]
 }
 
-export interface SkillHubScanFinding {
+interface SkillHubScanFinding {
   severity: string
   category: string
   file: string

@@ -32,7 +32,7 @@ function InlineLoader({ label, t }: { label: string; t: Theme }) {
   )
 }
 
-export function ArtLines({ lines }: { lines: [string, string][] }) {
+function ArtLines({ lines }: { lines: [string, string][] }) {
   // No `opaque`: the banner is top-level content with nothing behind it, so
   // it never needs the opaque space-fill (that's for absolute overlays). On a
   // transparent terminal (terminal.background #00000000) the fill's "default

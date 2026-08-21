@@ -51,7 +51,7 @@ export interface BatteryInfo {
 
 export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
 
-export type NoticeLevel = 'error' | 'info' | 'success' | 'warn'
+type NoticeLevel = 'error' | 'info' | 'success' | 'warn'
 
 // Credits/usage notice surfaced in the status bar. Shape is snake_case to
 // match the gateway WS wire (`notification.show` payload) and the existing
@@ -116,7 +116,7 @@ export interface GatewayProviderProps {
 // the SAME RPCs as the old slash flows (billing.charge / charge_status /
 // auto_reload / step_up).  Backend is unchanged & shared with the CLI.
 
-export type BillingScreen = 'autoreload' | 'buy' | 'confirm' | 'limit' | 'overview' | 'stepup'
+type BillingScreen = 'autoreload' | 'buy' | 'confirm' | 'limit' | 'overview' | 'stepup'
 
 /** Outcome of a charge attempt — lets the overlay route without tearing down. */
 export type BillingChargeOutcome =
@@ -162,7 +162,7 @@ export interface BillingOverlayCtx {
 }
 
 /** Pending confirm built when leaving the buy/autoreload screen. */
-export interface BillingPendingCharge {
+interface BillingPendingCharge {
   amount: string
   /**
    * Stable idempotency key for THIS purchase, minted when the amount is chosen.
@@ -200,7 +200,7 @@ export type SubscriptionScreen = 'confirm' | 'overview' | 'picker' | 'result' | 
 export type SubscriptionStepUpRetry = { kind: 'apply' } | { kind: 'preview'; tierId: string } | { kind: 'resume' }
 
 /** Outcome of a remote-spending step-up: granted, plus the typed denial (for copy). */
-export interface StepUpResult {
+interface StepUpResult {
   granted: boolean
   error?: string
   message?: string
@@ -303,7 +303,7 @@ export interface OverlayState {
   sudo: null | SudoReq
 }
 
-export interface PagerState {
+interface PagerState {
   lines: string[]
   offset: number
   title?: string
@@ -351,7 +351,7 @@ export interface UiState {
   usage: Usage
 }
 
-export interface VirtualHistoryState {
+interface VirtualHistoryState {
   bottomSpacer: number
   end: number
   measureRef: (key: string) => (el: unknown) => void
@@ -549,7 +549,7 @@ export interface SlashHandlerContext {
   }
 }
 
-export interface AppLayoutActions {
+interface AppLayoutActions {
   answerApproval: (choice: string) => void
   answerClarify: (answer: string) => void
   answerClarifyQuestion: (qid: string, answer: string) => void
@@ -565,7 +565,7 @@ export interface AppLayoutActions {
   setStickyPrompt: (value: string) => void
 }
 
-export interface AppLayoutComposerProps {
+interface AppLayoutComposerProps {
   cols: number
   compIdx: number
   completions: CompletionItem[]
@@ -585,7 +585,7 @@ export interface AppLayoutProgressProps {
   showProgressArea: boolean
 }
 
-export interface AppLayoutStatusProps {
+interface AppLayoutStatusProps {
   cwdLabel: string
   goodVibesTick: number
   lastTurnEndedAt: null | number
@@ -598,7 +598,7 @@ export interface AppLayoutStatusProps {
   voiceLabel: string
 }
 
-export interface AppLayoutTranscriptProps {
+interface AppLayoutTranscriptProps {
   historyItems: Msg[]
   scrollRef: RefObject<null | ScrollBoxHandle>
   virtualHistory: VirtualHistoryState

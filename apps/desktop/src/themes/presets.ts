@@ -276,7 +276,7 @@ export const nousTheme: DesktopTheme = {
 }
 
 /** Catppuccin — Latte in light, Mocha in dark (Catppuccin.catppuccin-vsc). */
-export const catppuccinTheme: DesktopTheme = {
+const catppuccinTheme: DesktopTheme = {
   name: 'catppuccin',
   label: 'Catppuccin',
   description: 'Soothing pastels — Latte and Mocha',
@@ -484,7 +484,7 @@ export const everforestTheme: DesktopTheme = {
 }
 
 /** Solarized — Ethan Schoonover's fixed-contrast pair (ryanolsonx.solarized). */
-export const solarizedTheme: DesktopTheme = {
+const solarizedTheme: DesktopTheme = {
   name: 'solarized',
   label: 'Solarized',
   description: 'Fixed-contrast light and dark',
@@ -627,7 +627,7 @@ export const midnightTheme: DesktopTheme = {
   }
 }
 
-export const emberTheme: DesktopTheme = {
+const emberTheme: DesktopTheme = {
   name: 'ember',
   label: 'Ember',
   description: 'Warm crimson and bronze — forge vibes',
@@ -664,7 +664,7 @@ export const emberTheme: DesktopTheme = {
 }
 
 /** Clean grayscale. Matches the CLI mono skin and dashboard mono theme. */
-export const monoTheme: DesktopTheme = {
+const monoTheme: DesktopTheme = {
   name: 'mono',
   label: 'Mono',
   description: 'Clean grayscale — minimal and focused',
@@ -697,7 +697,7 @@ export const monoTheme: DesktopTheme = {
 }
 
 /** Neon green on black. Matches the CLI cyberpunk skin and dashboard theme. */
-export const cyberpunkTheme: DesktopTheme = {
+const cyberpunkTheme: DesktopTheme = {
   name: 'cyberpunk',
   label: 'Cyberpunk',
   description: 'Neon green on black — matrix terminal',
@@ -734,7 +734,7 @@ export const cyberpunkTheme: DesktopTheme = {
 }
 
 /** Cool slate blue for developers. Matches the CLI slate skin. */
-export const slateTheme: DesktopTheme = {
+const slateTheme: DesktopTheme = {
   name: 'slate',
   label: 'Slate',
   description: 'Cool slate blue — focused developer theme',

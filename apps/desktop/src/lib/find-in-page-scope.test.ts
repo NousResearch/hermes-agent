@@ -39,7 +39,7 @@ afterEach(() => {
 describe('resolveCurrentFindScope', () => {
   it('returns the foreground chat surface and skips hidden ones', () => {
     plantSurface('background', 'hidden chat', true)
-    const foreground = plantSurface('foreground', 'visible chat')
+    plantSurface('foreground', 'visible chat')
 
     expect(resolveCurrentFindScope()?.id).toBe('foreground')
     // Marking it lets currentFindScope find it without re-resolving.

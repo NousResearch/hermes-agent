@@ -20,11 +20,11 @@ import { getRuntimeI18nLocale, translateFrom } from './runtime'
 import type { Locale } from './types'
 
 /** A leaf message: a literal or an interpolator (`n => `${n} left``). */
-export type PluginMessageValue = string | ((...args: never[]) => string)
+type PluginMessageValue = string | ((...args: never[]) => string)
 
 /** A plugin's messages for one locale — nested trees allowed, addressed by
  *  dot-path (`panel.title`). */
-export interface PluginMessages {
+interface PluginMessages {
   [key: string]: PluginMessages | PluginMessageValue
 }
 

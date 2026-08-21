@@ -4,7 +4,6 @@ import { PawPrint } from '@/lib/icons'
 
 // petdex frames are a fixed 192×208 grid; the box matches that aspect.
 const THUMB_W = 40
-const THUMB_H = Math.round((THUMB_W * 208) / 192)
 
 export type PetThumbLoader = (slug: string, url?: string) => Promise<string | null>
 

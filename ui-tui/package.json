@@ -36,6 +36,7 @@
   "devDependencies": {
     "@types/node": "22.20.1",
     "@types/react": "19.2.17",
+    "chalk": "5.6.2",
     "esbuild": "0.28.1",
     "prettier": "3.9.5",
     "tsx": "4.23.1",

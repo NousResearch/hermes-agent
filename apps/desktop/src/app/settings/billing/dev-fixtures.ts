@@ -254,7 +254,7 @@ const catalogWithCurrent = (currentTierId: null | string): SubscriptionTierOptio
 
 // Logged-in personal org, no subscription: exercises the "View plans" plan card
 // and the full plans grid where every tier is an upgrade.
-export const freePersonalBillingState = {
+const freePersonalBillingState = {
   ...postTrainBillingState,
   balance_display: '$12.00',
   balance_usd: '12.00',
@@ -272,7 +272,7 @@ export const freePersonalBillingState = {
   }
 } satisfies BillingStateResponse
 
-export const freePersonalSubscriptionState = {
+const freePersonalSubscriptionState = {
   ...todaySubscriptionState,
   can_change_plan: true,
   context: 'personal',
@@ -285,7 +285,7 @@ export const freePersonalSubscriptionState = {
 
 // Personal subscriber on Plus: exercises the "Change plan" plan card, the current
 // marker, upgrades (Super/Ultra), and the disabled downgrade (Free).
-export const subscriberPersonalBillingState = {
+const subscriberPersonalBillingState = {
   ...postTrainBillingState,
   org_name: 'Personal',
   usage: {
@@ -294,7 +294,7 @@ export const subscriberPersonalBillingState = {
   }
 } satisfies BillingStateResponse
 
-export const subscriberPersonalSubscriptionState = {
+const subscriberPersonalSubscriptionState = {
   ...todaySubscriptionState,
   can_change_plan: true,
   context: 'personal',
@@ -314,7 +314,7 @@ export const subscriberPersonalSubscriptionState = {
 // Personal subscriber on Plus with a downgrade to Free already scheduled at period
 // end: exercises the plan-card pending state + undo, and the grid's "Scheduled"
 // marker on Free while Super/Ultra stay choosable.
-export const pendingDowngradeSubscriptionState = {
+const pendingDowngradeSubscriptionState = {
   ...subscriberPersonalSubscriptionState,
   current: current({
     credits_remaining: '12',
@@ -331,7 +331,7 @@ export const pendingDowngradeSubscriptionState = {
 // Personal subscriber on Plus with a cancellation (not a downgrade) scheduled at
 // period end: exercises the plan-card "Cancels on …" copy + undo, with NO Scheduled
 // grid marker (a cancellation has no target tier).
-export const pendingCancellationSubscriptionState = {
+const pendingCancellationSubscriptionState = {
   ...subscriberPersonalSubscriptionState,
   current: current({
     cancel_at_period_end: true,

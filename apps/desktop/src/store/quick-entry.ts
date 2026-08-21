@@ -26,7 +26,7 @@ export interface QuickEntryState {
   shortcut: string
 }
 
-export type QuickEntryRegistrationError = 'invalid' | 'taken'
+type QuickEntryRegistrationError = 'invalid' | 'taken'
 
 export interface QuickEntryStatus {
   enabled: boolean

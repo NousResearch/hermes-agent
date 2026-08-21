@@ -52,7 +52,7 @@ export interface ComposerMiddleware {
 }
 
 /** One row a `composer.atCompletions` source offers for the current query. */
-export interface ComposerAtCompletionItem {
+interface ComposerAtCompletionItem {
   /** Text inserted into the draft when picked (e.g. `@researcher`). */
   insert: string
   /** Row label; defaults to `insert`. */
@@ -72,7 +72,7 @@ export interface ComposerAtCompletionSource {
   provide: (query: string) => ComposerAtCompletionItem[]
 }
 
-export interface ComposerAttachmentContext {
+interface ComposerAttachmentContext {
   insertText: (text: string) => void
 }
 

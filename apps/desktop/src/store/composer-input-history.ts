@@ -14,7 +14,7 @@ import { atom } from 'nanostores'
  *   - `draftSnapshot` — the composer text at the moment the user started
  *     browsing, so ArrowDown back to the "present" restores it.
  */
-export interface SessionBrowseState {
+interface SessionBrowseState {
   cursor: number
   draftSnapshot: string
 }

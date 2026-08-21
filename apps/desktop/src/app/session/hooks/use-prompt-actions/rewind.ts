@@ -97,7 +97,7 @@ export function rebindSurvivorRowIds(messages: ChatMessage[], survivorRowIds: Su
  * chat-messages/hydration.ts, plus older `user-…` / `assistant-…` shapes). Gateway
  * history never carries them — only durable `row_id` / platform message_id.
  */
-export function isSyntheticRendererId(messageId: string | undefined): boolean {
+function isSyntheticRendererId(messageId: string | undefined): boolean {
   return (
     typeof messageId === 'string' &&
     (messageId.startsWith('user-') ||

@@ -163,7 +163,7 @@ function PromptSnippetsDialog({ onInsertText, onOpenChange, open }: PromptSnippe
   )
 }
 
-export function ContextMenuItem({ children, disabled, icon: Icon, onSelect }: ContextMenuItemProps) {
+function ContextMenuItem({ children, disabled, icon: Icon, onSelect }: ContextMenuItemProps) {
   return (
     // Override font size + highlight to match the / · @ completion rows exactly.
     <DropdownMenuItem

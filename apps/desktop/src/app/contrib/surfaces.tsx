@@ -38,7 +38,7 @@ const ArtifactsView = lazy(async () => ({ default: (await import('../artifacts')
 const MessagingView = lazy(async () => ({ default: (await import('../messaging')).MessagingView }))
 const SkillsView = lazy(async () => ({ default: (await import('../skills')).SkillsView }))
 
-export function LegacySessionRedirect() {
+function LegacySessionRedirect() {
   const { sessionId } = useParams()
 
   return <Navigate replace to={sessionId ? sessionRoute(sessionId) : NEW_CHAT_ROUTE} />

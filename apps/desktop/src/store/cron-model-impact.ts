@@ -65,7 +65,7 @@ function validJob(value: unknown): value is CronModelImpactJob {
   return true
 }
 
-export function parseCronModelImpact(value: unknown): CronModelImpact | null {
+function parseCronModelImpact(value: unknown): CronModelImpact | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null
   }
@@ -116,7 +116,7 @@ function detailFor(impact: CronModelImpact): string {
   return remaining > 0 ? translateNow('cron.modelImpact.detailMore', visible.join(', '), remaining) : visible.join(', ')
 }
 
-function publishImpact(impact: CronModelImpact, profile: string, connection: string, generation: number): void {
+function publishImpact(impact: CronModelImpact, profile: string, connection: string, _generation: number): void {
   if (!impact.available) {
     return
   }

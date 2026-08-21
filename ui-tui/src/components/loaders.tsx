@@ -64,7 +64,7 @@ const TICK_MS = 90
 /** Animation budget per mount. A lazy watch session can stay lazy
  *  indefinitely — after the budget the skeleton freezes in place (still
  *  reads as "loading") instead of repainting forever. */
-export const SHIMMER_ANIMATE_MS = 30_000
+const SHIMMER_ANIMATE_MS = 30_000
 
 const clockListeners = new Set<(phase: number) => void>()
 let clockId: NodeJS.Timeout | null = null

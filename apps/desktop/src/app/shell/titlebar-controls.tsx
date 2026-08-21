@@ -53,9 +53,6 @@ export interface TitlebarTool {
   to?: string
 }
 
-export type TitlebarToolSide = 'left' | 'right'
-export type SetTitlebarToolGroup = (id: string, tools: readonly TitlebarTool[], side?: TitlebarToolSide) => void
-
 interface TitlebarControlsProps extends ComponentProps<'div'> {
   leftTools?: readonly TitlebarTool[]
   tools?: readonly TitlebarTool[]

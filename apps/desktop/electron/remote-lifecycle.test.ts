@@ -292,7 +292,6 @@ test('metadata and process proof transport failures remain indeterminate', async
 })
 
 test('pidIsOurDashboard requires the exact serve ownership nonce', async () => {
-  const ours = `/x/hermes serve --isolated --ssh-owner-nonce ${SPAWN_NONCE}`
   assert.equal(await pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, 'OWNED\n']]), 5, SPAWN_NONCE, '/x/hermes'), true)
   assert.equal(
     await pidIsOurDashboard(
@@ -1113,7 +1112,7 @@ test('spawnRemoteDashboard upload uses exclusive-create and O_NOFOLLOW', async (
 
   const ssh = {
     calls,
-    async exec(cmd, opts?) {
+    async exec(cmd, _opts?) {
       calls.push(cmd)
 
       if (/grep -q ssh-session-token-file/.test(cmd)) {
@@ -1219,8 +1218,6 @@ test('cleanupStale never deletes a lock-supplied unexpected log path', async () 
 })
 
 test('pidIsOurDashboard requires an exact nonce option value', async () => {
-  const prefix = `/x/hermes serve --isolated --ssh-owner-nonce ${SPAWN_NONCE}ff`
-  const suffix = `/x/hermes serve --isolated --ssh-owner-nonce xx${SPAWN_NONCE}`
   assert.equal(await pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, 'FOREIGN\n']]), 5, SPAWN_NONCE, '/x/hermes'), false)
   assert.equal(await pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, 'FOREIGN\n']]), 5, SPAWN_NONCE, '/x/hermes'), false)
 })

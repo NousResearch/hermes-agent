@@ -4,7 +4,7 @@
  * async entry points with a resolved git binary.
  */
 
-import { execFile, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
@@ -434,13 +434,4 @@ export async function installDesktopPluginFromGit(
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
-}
-
-/** Resolve git binary via execFile which path on unix; caller passes Windows-resolved path. */
-export function runGitVersion(gitBin: string): Promise<boolean> {
-  return new Promise(resolve => {
-    execFile(gitBin, ['--version'], { windowsHide: true, timeout: 5_000 }, err => {
-      resolve(!err)
-    })
-  })
 }

@@ -96,7 +96,7 @@ export async function prepareTerminalFontFamily(
   return null
 }
 
-export interface TerminalFontTarget {
+interface TerminalFontTarget {
   options: { fontFamily?: string }
   rows: number
   refresh: (start: number, end: number) => void

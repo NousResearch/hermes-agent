@@ -14,7 +14,7 @@ import type { SlashCommand } from '../types.js'
 /** The registry IS the catalog: every registered widget app becomes a slash
  *  command carrying the app's own help/usage — nothing hardcoded per app.
  *  The app owns parsing (init), keybindings (reduce), placement (render). */
-export const widgetAppCommands: SlashCommand[] = listWidgetApps().map(app => ({
+const widgetAppCommands: SlashCommand[] = listWidgetApps().map(app => ({
   help: app.help,
   name: app.id,
   run: (arg, ctx) => {

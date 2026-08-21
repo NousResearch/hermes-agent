@@ -21,7 +21,7 @@ import { closeArtifactPreviewTabs, openPreview, type PreviewTarget } from './pre
  * instead of parking megabytes of generated HTML in localStorage.
  */
 
-export interface ArtifactVersion {
+interface ArtifactVersion {
   content: string
   createdAt: number
   hash: string

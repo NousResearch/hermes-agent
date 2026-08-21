@@ -15,7 +15,6 @@ import js from '@eslint/js'
 import tseslint from 'typescript-eslint';
 import perfectionist from 'eslint-plugin-perfectionist'
 import hooksPlugin from 'eslint-plugin-react-hooks'
-import unusedImports from 'eslint-plugin-unused-imports'
 import globals from 'globals'
 
 export default [
@@ -39,12 +38,26 @@ export default [
     plugins: {
       '@typescript-eslint': tseslint.plugin,
       perfectionist,
-      'react-hooks': hooksPlugin,
-      'unused-imports': unusedImports
+      'react-hooks': hooksPlugin
     },
     rules: {
       '@typescript-eslint/consistent-type-imports': ['error', { prefer: 'type-imports' }],
-      '@typescript-eslint/no-unused-vars': 'off',
+      // Covers unused imports as well as unused locals; `enableAutofixRemoval`
+      // (typescript-eslint >= 8.42) strips the dead imports under `--fix`, which
+      // is the one thing eslint-plugin-unused-imports used to add on top.
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          args: 'after-used',
+          argsIgnorePattern: '^_',
+          caughtErrors: 'all',
+          caughtErrorsIgnorePattern: '^_',
+          destructuredArrayIgnorePattern: '^_',
+          enableAutofixRemoval: { imports: true },
+          ignoreRestSiblings: true,
+          varsIgnorePattern: '^_'
+        }
+      ],
       curly: ['error', 'all'],
       'no-fallthrough': ['error', { allowEmptyCase: true }],
       'no-undef': 'off',
@@ -90,8 +103,7 @@ export default [
       'perfectionist/sort-named-exports': ['error', { order: 'asc', type: 'natural' }],
       'perfectionist/sort-named-imports': ['error', { order: 'asc', type: 'natural' }],
       'react-hooks/exhaustive-deps': 'warn',
-      'react-hooks/rules-of-hooks': 'error',
-      'unused-imports/no-unused-imports': 'error'
+      'react-hooks/rules-of-hooks': 'error'
     }
   },
   {

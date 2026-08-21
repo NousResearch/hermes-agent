@@ -19,14 +19,12 @@
 // Constants (ZonesOverlay.cpp / Layout.cpp / FancyZones defaults)
 // ---------------------------------------------------------------------------
 
-export const FADE_IN_DURATION_MILLIS = 200
-export const FLASH_ZONES_DURATION_MILLIS = 700
 /** LayoutDefaultSettings::DefaultSensitivityRadius. */
-export const DEFAULT_SENSITIVITY_RADIUS = 20
+const DEFAULT_SENSITIVITY_RADIUS = 20
 /** ZoneSelectionAlgorithms::OVERLAPPING_CENTERS_SENSITIVITY. */
 const OVERLAPPING_CENTERS_SENSITIVITY = 75
 
-export type OverlappingZonesAlgorithm = 'Smallest' | 'Largest' | 'Positional' | 'ClosestCenter'
+type OverlappingZonesAlgorithm = 'Smallest' | 'Largest' | 'Positional' | 'ClosestCenter'
 
 export interface ZoneRect {
   left: number
@@ -46,58 +44,6 @@ interface Point {
 }
 
 const zoneArea = (z: EngineZone) => Math.max(0, z.rect.right - z.rect.left) * Math.max(0, z.rect.bottom - z.rect.top)
-
-// ---------------------------------------------------------------------------
-// ZonesOverlay::GetAnimationAlpha (verbatim ramp)
-// ---------------------------------------------------------------------------
-
-export function getAnimationAlpha(startedAtMs: number, nowMs: number, autoHide: boolean): number {
-  const millis = nowMs - startedAtMs
-
-  if (autoHide && millis > FLASH_ZONES_DURATION_MILLIS) {
-    return 0
-  }
-
-  // Return a positive value to avoid hiding.
-  return Math.min(Math.max(millis / FADE_IN_DURATION_MILLIS, 0.001), 1)
-}
-
-// ---------------------------------------------------------------------------
-// Colors (Colors.cpp + FancyZones settings defaults)
-// ---------------------------------------------------------------------------
-
-export interface ZoneColors {
-  primaryColor: string
-  borderColor: string
-  highlightColor: string
-  numberColor: string
-  /** 0..100, applied as fill alpha to BOTH primary and highlight fills. */
-  highlightOpacity: number
-}
-
-/** FancyZonesSettings defaults (custom-color mode). */
-export const FANCYZONES_DEFAULT_COLORS: ZoneColors = {
-  primaryColor: '#F5FCFF',
-  borderColor: '#FFFFFF',
-  highlightColor: '#008CFF',
-  numberColor: '#000000',
-  highlightOpacity: 50
-}
-
-/**
- * Colors::GetZoneColors systemTheme branch, mapped to our design tokens:
- * accent -> border + highlight, surface -> primary, number auto-contrast
- * (CSS light-dark handles what the C++ does with the black-background check).
- */
-export function systemThemeZoneColors(): ZoneColors {
-  return {
-    primaryColor: 'var(--ui-bg-editor)',
-    borderColor: 'var(--ui-accent)',
-    highlightColor: 'var(--ui-accent)',
-    numberColor: 'var(--ui-text-primary)',
-    highlightOpacity: 50
-  }
-}
 
 // ---------------------------------------------------------------------------
 // ZoneSelectionAlgorithms (Layout.cpp, verbatim)
@@ -187,7 +133,7 @@ function zoneSelectClosestCenter(zones: Map<string, EngineZone>, capturedZones: 
 // Layout::ZonesFromPoint (verbatim)
 // ---------------------------------------------------------------------------
 
-export function zonesFromPoint(
+function zonesFromPoint(
   zoneList: EngineZone[],
   pt: Point,
   sensitivityRadius = DEFAULT_SENSITIVITY_RADIUS,
@@ -278,7 +224,7 @@ export function primaryZone(zoneList: EngineZone[], highlighted: string[], pt: P
 // Layout::GetCombinedZoneRange (verbatim)
 // ---------------------------------------------------------------------------
 
-export function getCombinedZoneRange(zoneList: EngineZone[], initialZones: string[], finalZones: string[]): string[] {
+function getCombinedZoneRange(zoneList: EngineZone[], initialZones: string[], finalZones: string[]): string[] {
   const zones = new Map(zoneList.map(z => [z.id, z]))
   const combinedZones = [...new Set([...initialZones, ...finalZones])]
 

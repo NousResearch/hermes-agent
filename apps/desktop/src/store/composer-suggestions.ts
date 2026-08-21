@@ -54,7 +54,7 @@ export interface ComposerSuggestion {
   doneTip: string
 }
 
-export const MAX_SUGGESTIONS = 2
+const MAX_SUGGESTIONS = 2
 
 /** Bus-wide key: provider-namespaced so two providers can't collide. */
 export const suggestionKey = (suggestion: Pick<ComposerSuggestion, 'id' | 'provider'>): string =>
@@ -118,7 +118,7 @@ function write(sessionId: string | null | undefined, suggestions: ComposerSugges
 // Providers
 // ---------------------------------------------------------------------------
 
-export interface DraftProviderContext {
+interface DraftProviderContext {
   sessionId: string | null
   /** The draft text at sample time. */
   text: string

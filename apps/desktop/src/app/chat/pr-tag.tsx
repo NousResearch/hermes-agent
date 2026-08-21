@@ -14,7 +14,7 @@ const PR_STYLE: Record<string, { className: string; icon: string }> = {
   open: { className: 'text-(--ui-green)', icon: 'git-pull-request' }
 }
 
-export function openPullRequest(pr: HermesBranchPullRequest): void {
+function openPullRequest(pr: HermesBranchPullRequest): void {
   if (pr.url) {
     void window.hermesDesktop?.openExternal?.(pr.url)
   }

@@ -172,8 +172,8 @@ export function liftForContrast(color: string, bg: string, ratio: number): strin
 }
 
 /** Recede toward the background pole (opposite of `readableOn`). */
-export const lighten = (color: string, t: number) => mix(color, '#ffffff', t)
-export const darken = (color: string, t: number) => mix(color, '#000000', t)
+const lighten = (color: string, t: number) => mix(color, '#ffffff', t)
+const darken = (color: string, t: number) => mix(color, '#000000', t)
 
 /** The luminance-weighted gray of a color (its perceptual brightness). */
 export function grayOf(color: string): string {
@@ -190,98 +190,6 @@ export function grayOf(color: string): string {
 
 /** Pull a color toward its own gray by `s` in [0,1] (1 = fully gray). */
 export const desaturate = (color: string, s: number) => mix(color, grayOf(color), s)
-
-/** RGB → HSL, channels in [0,1]. */
-export function toHsl(rgb: Rgb): [number, number, number] {
-  const r = rgb[0] / 255
-  const g = rgb[1] / 255
-  const b = rgb[2] / 255
-  const max = Math.max(r, g, b)
-  const min = Math.min(r, g, b)
-  const l = (max + min) / 2
-
-  if (max === min) {
-    return [0, 0, l]
-  }
-
-  const d = max - min
-  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
-  const h = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4
-
-  return [h / 6, s, l]
-}
-
-const hueChannel = (p: number, q: number, t: number): number => {
-  const tt = t < 0 ? t + 1 : t > 1 ? t - 1 : t
-
-  if (tt < 1 / 6) {
-    return p + (q - p) * 6 * tt
-  }
-
-  if (tt < 1 / 2) {
-    return q
-  }
-
-  if (tt < 2 / 3) {
-    return p + (q - p) * (2 / 3 - tt) * 6
-  }
-
-  return p
-}
-
-/** HSL → RGB, inputs in [0,1]. */
-export function fromHsl(h: number, s: number, l: number): Rgb {
-  if (s === 0) {
-    const v = Math.round(l * 255)
-
-    return [v, v, v]
-  }
-
-  const q = l < 0.5 ? l * (1 + s) : l + s - l * s
-  const p = 2 * l - q
-
-  return [
-    Math.round(hueChannel(p, q, h + 1 / 3) * 255),
-    Math.round(hueChannel(p, q, h) * 255),
-    Math.round(hueChannel(p, q, h - 1 / 3) * 255)
-  ]
-}
-
-/**
- * Re-tone a color while PRESERVING its hue: clamp saturation into
- * [minSaturation, 1] and pin lightness. This is how a light-terminal variant
- * of a pastel dark-terminal accent stays vivid — darkening by mixing toward
- * black muddies pastels (kills saturation with lightness); re-toning keeps
- * the color identity and moves only where it sits.
- */
-export function retone(color: string, lightness: number, minSaturation = 0): string {
-  const rgb = parseColor(color)
-
-  if (!rgb) {
-    return color
-  }
-
-  const [h, s] = toHsl(rgb)
-
-  return toHex(fromHsl(h, Math.max(s, minSaturation), lightness))
-}
-
-/** Multiply HSL saturation by `factor` (clamped to 1), hue/lightness fixed. */
-export function boostSaturation(color: string, factor: number): string {
-  const rgb = parseColor(color)
-
-  if (!rgb) {
-    return color
-  }
-
-  const [h, s, l] = toHsl(rgb)
-
-  if (s === 0) {
-    return color
-  }
-
-  return toHex(fromHsl(h, Math.min(1, s * factor), l))
-}
 
 /**
  * Chainable form for multi-step derivations, e.g.

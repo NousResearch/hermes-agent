@@ -2,7 +2,7 @@ import type { ThemeColors } from './theme.js'
 
 const RICH_RE = /\[(?:bold\s+)?(?:dim\s+)?(#(?:[0-9a-fA-F]{3,8}))\]([\s\S]*?)(\[\/\])/g
 
-export function parseRichMarkup(markup: string): Line[] {
+function parseRichMarkup(markup: string): Line[] {
   const lines: Line[] = []
 
   for (const raw of markup.split('\n')) {

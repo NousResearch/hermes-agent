@@ -12,7 +12,7 @@ import {
   widgetGridSpanWidth
 } from '../lib/widgetGrid.js'
 
-export interface WidgetGridRenderContext {
+interface WidgetGridRenderContext {
   cell: WidgetGridCell
   width: number
 }

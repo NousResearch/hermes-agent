@@ -41,7 +41,7 @@ import { isWebUrl, resolveDomTarget } from './target'
 /** Marks a surface that owns PLAIN right-clicks itself (the user-message
  *  reaction bubble). Owned targets inside it — links, images, editables,
  *  selections — still get the app menu. */
-export const CONTEXT_MENU_SKIP_ATTR = 'data-context-menu-skip'
+const CONTEXT_MENU_SKIP_ATTR = 'data-context-menu-skip'
 
 const LOOPBACK_HOST_RE = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)$/i
 

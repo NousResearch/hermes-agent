@@ -40,7 +40,6 @@ import {
 export {
   FeaturedProviderRow,
   FireworksProviderRow,
-  KeyProviderRow,
   OpenRouterProviderRow,
   ProviderRow,
   providerTitle,
@@ -533,7 +532,7 @@ function ChooseLaterLink() {
 // provider catalog + a setEnvVar-backed save (plus `isSet`/`onClear` so it can
 // double as a manage surface). Keep it free of store/ctx coupling so both
 // surfaces render the identical form.
-export function ApiKeyForm({
+function ApiKeyForm({
   canGoBack,
   initialEnvKey,
   isSet,

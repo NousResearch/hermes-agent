@@ -32,7 +32,7 @@ function mergeFreshByPosition(currentIds: string[], keptIds: string[]): string[]
 }
 
 /** Ids still present in the persisted order, with new ids folded in by position. */
-export function reconcileFreshFirst(currentIds: string[], orderIds: string[]): string[] {
+function reconcileFreshFirst(currentIds: string[], orderIds: string[]): string[] {
   const current = new Set(currentIds)
 
   // Dedupe both inputs: a corrupted persisted order (same id twice) must not

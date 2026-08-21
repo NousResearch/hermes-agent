@@ -1,6 +1,6 @@
 export type PaneLifecycle = 'visible' | 'hot-hidden' | 'parked'
 
-export const DEFAULT_HOT_HIDDEN_PANE_CAP = 2
+const DEFAULT_HOT_HIDDEN_PANE_CAP = 2
 
 interface PaneLifecycleEntry {
   lifecycle: PaneLifecycle

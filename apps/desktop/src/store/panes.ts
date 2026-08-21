@@ -157,7 +157,6 @@ export function setPaneHeightOverride(id: string, height: number | undefined) {
 }
 
 export const clearPaneWidthOverride = (id: string) => setPaneWidthOverride(id, undefined)
-export const clearPaneHeightOverride = (id: string) => setPaneHeightOverride(id, undefined)
 
 /** Drop every pane's drag-resize override (open state untouched). Layout
  *  reset / preset application: zones return to their declared sizes. */

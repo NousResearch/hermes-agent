@@ -275,7 +275,6 @@ test('addWorktree: base origin/main does not set up upstream tracking', async ()
   // remote-tracking ref — the condition that triggers auto-tracking.
   const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-remote-'))
   const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-clone-'))
-  const git = (...args) => execFileSync('git', args, { cwd: cloneDir }).toString().trim()
 
   try {
     // Seed the remote with a commit on main. Inline identity so it works

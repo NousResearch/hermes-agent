@@ -39,10 +39,6 @@ export const $hudMode = atom(isHudWindow())
  *  toggle tell "switch the HUD to this tab" apart from "dismiss the HUD". */
 export const $hudSession = atom<null | string>(null)
 
-/** True when the shell exposes HUD mode (desktop only). */
-export const canUseHud = (): boolean =>
-  typeof window !== 'undefined' && typeof window.hermesDesktop?.hud?.open === 'function'
-
 export function openHud(sessionId?: null | string): void {
   const api = window.hermesDesktop?.hud
 

@@ -180,7 +180,7 @@ const applySkin = (s: GatewaySkin) => {
 
 /** Re-derive the theme from current detection signals (env overrides, cached
  *  OSC-11 answer) — used by /theme, config sync, and the OSC listener. */
-export function reapplyTheme(): void {
+function reapplyTheme(): void {
   const theme = lastSkin ? themeForSkin(lastSkin) : defaultThemeForCurrentBackground()
 
   commitTheme(theme)
@@ -276,7 +276,7 @@ export function polarityBackgroundFromForeground(hex: string): string | undefine
   return undefined
 }
 
-export function syncThemeToTerminalBackground(): void {
+function syncThemeToTerminalBackground(): void {
   if (themeBackgroundSyncStarted) {
     return
   }

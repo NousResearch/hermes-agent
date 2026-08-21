@@ -55,7 +55,7 @@ export function buildSubagentTree(items: readonly SubagentProgress[]): SubagentN
  * "how much work is happening in this branch".  Used to colour tree rails
  * in the overlay / inline view so the eye spots the expensive branch.
  */
-export function aggregate(item: SubagentProgress, children: readonly SubagentNode[]): SubagentAggregate {
+function aggregate(item: SubagentProgress, children: readonly SubagentNode[]): SubagentAggregate {
   let totalTools = item.toolCount ?? 0
   let totalDuration = item.durationSeconds ?? 0
   let descendantCount = 0
@@ -197,7 +197,7 @@ export function descendantIds(node: SubagentNode): string[] {
   return ids
 }
 
-export function isRunning(item: Pick<SubagentProgress, 'status'>): boolean {
+function isRunning(item: Pick<SubagentProgress, 'status'>): boolean {
   return item.status === 'running' || item.status === 'queued'
 }
 

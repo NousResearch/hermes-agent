@@ -13,7 +13,7 @@ export interface BackendOwnershipEntry extends BackendIdentity {
   parentStartMarker?: string
 }
 
-export interface BackendOwnershipStore {
+interface BackendOwnershipStore {
   read: () => string | null
   write: (contents: string) => void
   /** Move an unreadable ownership file aside (e.g. rename to `.corrupt`) so
@@ -74,7 +74,7 @@ export function parseBackendOwnership(contents: unknown): BackendOwnershipEntry[
  *  file with its survivors, so treating garbage as `[]` permanently erased the
  *  records of still-running backends — the exact shape of the #89298 report
  *  (ownership file gone, 28 leaked serve processes nothing will ever reap). */
-export function parseBackendOwnershipDetailed(contents: unknown): {
+function parseBackendOwnershipDetailed(contents: unknown): {
   corrupt: boolean
   entries: BackendOwnershipEntry[]
 } {
@@ -134,7 +134,7 @@ export function parseBackendOwnershipDetailed(contents: unknown): {
   return { corrupt: false, entries }
 }
 
-export function serializeBackendOwnership(entries: BackendOwnershipEntry[]): string {
+function serializeBackendOwnership(entries: BackendOwnershipEntry[]): string {
   return `${JSON.stringify({ backends: entries }, null, 2)}\n`
 }
 

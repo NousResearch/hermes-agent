@@ -19,7 +19,7 @@
 import { didFiberRender, type Fiber, getDisplayName, instrument, isCompositeFiber, traverseRenderedFibers } from 'bippy'
 
 /** Why a component re-rendered, attributed per commit. */
-export interface RenderRecord {
+interface RenderRecord {
   /** Commits in which this component actually re-rendered (mount excluded). */
   renders: number
   /** ...of those, how many had at least one changed prop reference. */

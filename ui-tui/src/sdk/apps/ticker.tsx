@@ -18,7 +18,7 @@ const POINTS = 26
 const TICK_MS = 250
 const PIP = 0.0001
 
-export interface TickerState {
+interface TickerState {
   symbol: string
 }
 
@@ -65,7 +65,7 @@ function Chart({ symbol, t }: { symbol: string; t: Theme }) {
   )
 }
 
-export const tickerApp = defineWidgetApp<TickerState>({
+defineWidgetApp<TickerState>({
   id: 'ticker',
   help: 'fake 1-pip chart with a live sparkline',
   mode: 'ambient',

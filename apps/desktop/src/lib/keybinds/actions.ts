@@ -171,8 +171,6 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'keybinds.openPanel', category: 'view', defaults: ['mod+/'] }
 ]
 
-export const KEYBIND_ACTION_IDS: readonly string[] = KEYBIND_ACTIONS.map(action => action.id)
-
 const ACTION_BY_ID = new Map(KEYBIND_ACTIONS.map(action => [action.id, action]))
 
 // ── Contributed actions — the `keybinds` registry area ──────────────────────
@@ -194,7 +192,7 @@ export interface KeybindContribution {
   run: () => void
 }
 
-export function contributedKeybinds(): KeybindContribution[] {
+function contributedKeybinds(): KeybindContribution[] {
   return registry
     .getArea(KEYBINDS_AREA)
     .map(c => c.data as KeybindContribution)

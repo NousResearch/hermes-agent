@@ -211,5 +211,3 @@ export async function runNativeLogin(
     })
   })
 }
-
-export { DEFAULT_LOGIN_TIMEOUT_MS }

@@ -47,4 +47,4 @@ async function gitRootForIpc(startPath, options: { fs?: typeof fs } = {}) {
   }
 }
 
-export { findGitRoot, gitRootForIpc }
+export { gitRootForIpc }

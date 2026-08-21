@@ -19,7 +19,7 @@ import type { ReactNode } from 'react'
 export const TRANSCRIPT_DIRECTIVE_AREA = 'transcript.directives'
 
 /** Props handed to a directive contribution's `render`. */
-export interface TranscriptDirectiveProps {
+interface TranscriptDirectiveProps {
   /** Parsed, untrusted attributes (e.g. `{ file: 'demo.html' }`). */
   attrs: Readonly<Record<string, string>>
   /** Original directive source text (diagnostics / fallback rendering). */

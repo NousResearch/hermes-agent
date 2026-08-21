@@ -18,9 +18,9 @@ const execFileAsync = promisify(execFile)
 // Types
 // ---------------------------------------------------------------------------
 
-export type VenvBlockerKind = 'local-preview' | 'other'
+type VenvBlockerKind = 'local-preview' | 'other'
 
-export interface VenvBlockerProcess {
+interface VenvBlockerProcess {
   pid: number
   name: string
   cmdline: string

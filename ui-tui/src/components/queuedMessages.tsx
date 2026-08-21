@@ -3,9 +3,9 @@ import { Box, Text } from '@hermes/ink'
 import { compactPreview } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 
-export const QUEUE_WINDOW = 3
+const QUEUE_WINDOW = 3
 
-export function getQueueWindow(queueLen: number, queueEditIdx: number | null) {
+function getQueueWindow(queueLen: number, queueEditIdx: number | null) {
   const start =
     queueEditIdx === null ? 0 : Math.max(0, Math.min(queueEditIdx - 1, Math.max(0, queueLen - QUEUE_WINDOW)))
 

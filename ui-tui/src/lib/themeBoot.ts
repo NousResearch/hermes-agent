@@ -68,7 +68,7 @@ export interface BootTheme {
 }
 
 /** Read the cached boot theme. Null on first launch / damage / test runs. */
-export function readBootTheme(): BootTheme | null {
+function readBootTheme(): BootTheme | null {
   if (isTestRun()) {
     return null
   }

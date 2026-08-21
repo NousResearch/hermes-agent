@@ -13,7 +13,7 @@ export interface ActiveWork {
   count: number
 }
 
-export const NO_ACTIVE_WORK: ActiveWork = { count: 0, titles: [] }
+const NO_ACTIVE_WORK: ActiveWork = { count: 0, titles: [] }
 
 /** Coerce an IPC payload from an untrusted renderer into an ActiveWork. */
 export function normalizeActiveWork(payload: unknown): ActiveWork {

@@ -71,8 +71,8 @@ export const $petGalleryError = atom<string | null>(null)
 
 // Which action is in flight, so rows/buttons can show a spinner. A slug for a
 // per-pet mutation; the `TOGGLE_*` sentinels for the on/off switch.
-export const TOGGLE_ON = '\u0000on'
-export const TOGGLE_OFF = '\u0000off'
+const TOGGLE_ON = '\u0000on'
+const TOGGLE_OFF = '\u0000off'
 export const $petBusy = atom<string | null>(null)
 
 // Process-global caches (survive component unmount → instant reopen).
@@ -371,7 +371,7 @@ export function setPetEnabled(
 export const PET_SCALE_MIN = 0.1
 export const PET_SCALE_MAX = 3.0
 export const PET_SCALE_DEFAULT = 0.33
-export const clampPetScale = (n: number) => Math.max(PET_SCALE_MIN, Math.min(PET_SCALE_MAX, n))
+const clampPetScale = (n: number) => Math.max(PET_SCALE_MIN, Math.min(PET_SCALE_MAX, n))
 
 // Wheel → scale. Multiplicative so one notch feels the same at any size. Tuned
 // for a discrete mouse-wheel notch (deltaY ≈ ±100); trackpad two-finger scroll

@@ -13,7 +13,7 @@ type WindowRevealOptions = {
   clearTimer?: (timer: TimerHandle) => void
 }
 
-export const WINDOW_REVEAL_FALLBACK_MS = 4_000
+const WINDOW_REVEAL_FALLBACK_MS = 4_000
 
 export function createWindowRevealController(
   window: WindowRevealTarget,

@@ -110,8 +110,7 @@ const ACCELERATOR_PUNCTUATION = new Set([
 ])
 
 /** Why a shortcut string was rejected. The renderer maps these to copy. */
-export type QuickEntryShortcutError =
-  'empty' | 'invalid-key' | 'invalid-modifier' | 'no-key' | 'no-modifier' | 'reserved'
+type QuickEntryShortcutError = 'empty' | 'invalid-key' | 'invalid-modifier' | 'no-key' | 'no-modifier' | 'reserved'
 
 export type QuickEntryShortcutParse = { ok: false; reason: QuickEntryShortcutError } | { accelerator: string; ok: true }
 
@@ -302,13 +301,13 @@ export interface GlobalShortcutLike {
  * `error` distinguishes "you turned it off" from "another app owns that chord",
  * which is the failure this feature must never swallow.
  */
-export interface QuickEntryRegistration {
+interface QuickEntryRegistration {
   error: null | QuickEntryRegistrationError
   registered: boolean
   shortcut: string
 }
 
-export type QuickEntryRegistrationError = 'invalid' | 'taken'
+type QuickEntryRegistrationError = 'invalid' | 'taken'
 
 export interface QuickEntryShortcutController {
   /** Registration state as of the last apply. */
@@ -418,4 +417,4 @@ export function quickEntryWindowBounds(workArea?: { height: number; width: numbe
   return { height, width, x, y }
 }
 
-export { DEFAULT_QUICK_ENTRY_SHORTCUT, QUICK_ENTRY_TOP_FRACTION, QUICK_ENTRY_WINDOW_HEIGHT, QUICK_ENTRY_WINDOW_WIDTH }
+export { DEFAULT_QUICK_ENTRY_SHORTCUT }

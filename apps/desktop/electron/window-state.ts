@@ -160,9 +160,7 @@ export {
   debounce,
   DEFAULT_HEIGHT,
   DEFAULT_WIDTH,
-  GEOMETRY_EVENTS,
   MIN_HEIGHT,
-  MIN_VISIBLE,
   MIN_WIDTH,
   onScreen,
   sanitizeWindowState

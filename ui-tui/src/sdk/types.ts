@@ -9,7 +9,7 @@ export interface WidgetInput {
   key: Key
 }
 
-export interface WidgetRenderCtx<S> {
+interface WidgetRenderCtx<S> {
   /** Terminal columns available to the app. */
   cols: number
   /** Terminal rows available to the app. */

@@ -33,7 +33,7 @@ import { isCtrl } from './types.js'
 
 /** Everything a user widget may touch, passed INTO its register() — user
  *  files have no resolvable import path to the bundle. */
-export const widgetSdk = {
+const widgetSdk = {
   Accordion,
   Box,
   Dialog,
@@ -56,7 +56,7 @@ export const widgetSdk = {
   useShimmerPhase
 } as const
 
-export type WidgetSdk = typeof widgetSdk
+type WidgetSdk = typeof widgetSdk
 
 const widgetsDir = () => join(process.env.HERMES_HOME?.trim() || join(homedir(), '.hermes'), 'tui-widgets')
 

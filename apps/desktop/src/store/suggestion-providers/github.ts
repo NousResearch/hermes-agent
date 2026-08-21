@@ -32,12 +32,6 @@ const SKILL_NAME = 'github-auth'
 let needsSetup: boolean | null = null
 let checkedAt = 0
 
-/** Drop the cached gh-auth probe (e.g. after the setup flow completes). */
-export function invalidateGithubSuggestionIndex(): void {
-  needsSetup = null
-  checkedAt = 0
-}
-
 // Whole-word "github" mention or a pasted github.com link. Same completed-
 // word discipline as the MCP provider: a keyword still under the caret is a
 // word in progress, not intent — but a pasted host counts immediately.

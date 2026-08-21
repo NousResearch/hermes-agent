@@ -3,7 +3,7 @@ import { atom } from 'nanostores'
 import { capitalize } from '@/lib/text'
 
 export type SubagentStatus = 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
-export type SubagentStreamKind = 'progress' | 'summary' | 'thinking' | 'tool'
+type SubagentStreamKind = 'progress' | 'summary' | 'thinking' | 'tool'
 
 export interface SubagentStreamEntry {
   at: number

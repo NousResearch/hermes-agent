@@ -10,7 +10,7 @@
  *  or one fenced in backticks/quotes so a value with spaces survives. The
  *  lookbehinds keep `foo@session:` and URL paths from matching, and skip a ref
  *  a model already wrapped in a markdown link — rewriting that would nest. */
-export const SESSION_REF_RE = /(?<![\w/])(?<!]\()@session:(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g
+const SESSION_REF_RE = /(?<![\w/])(?<!]\()@session:(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g
 
 const TRAILING_PUNCTUATION_RE = /[,.;:!?)\]}]+$/
 

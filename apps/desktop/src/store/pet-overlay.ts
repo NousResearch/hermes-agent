@@ -75,12 +75,12 @@ $petOverlayActive.subscribe(active => persistBoolean(OVERLAY_ACTIVE_KEY, active)
  * `kind` selects the renderer (today only `vibe` → hearts). Generic on purpose
  * so future reactions (emoji, etc.) ride the same channel.
  */
-export interface PetReaction {
+interface PetReaction {
   id: number
   kind: string
 }
 
-export const $petReaction = atom<PetReaction | null>(null)
+const $petReaction = atom<PetReaction | null>(null)
 
 export const forwardPetReaction = (kind: string) => $petReaction.set({ id: ($petReaction.get()?.id ?? 0) + 1, kind })
 
@@ -239,7 +239,7 @@ export function restorePetOverlay(): void {
 }
 
 /** Pop the pet back into the window (closes the overlay window). */
-export function popInPet(): void {
+function popInPet(): void {
   for (const off of stateUnsubs) {
     off()
   }

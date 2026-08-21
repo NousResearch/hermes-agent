@@ -2,7 +2,7 @@ import { type ToolTitleKey, translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
 import { summarizeShellCommand } from '@/lib/summarize-command'
 import { capitalize, firstStringField, normalize } from '@/lib/text'
-import { isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-class'
+import { isCardTool, isFileEditTool } from '@/lib/tool-render-class'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
 
 import {
@@ -35,7 +35,7 @@ export * from './types'
 // The transcript's render budget prices a turn by the same classification, so
 // it lives in `@/lib/tool-render-class` where both sides can reach it without
 // pulling this module's formatting/i18n weight into the cost path.
-export { isCardTool, isFileEditTool, isSilentTool }
+export { isCardTool, isFileEditTool }
 
 export interface DiffLineStats {
   added: number

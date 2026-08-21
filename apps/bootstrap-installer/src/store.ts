@@ -18,7 +18,7 @@ import { atom, computed } from 'nanostores'
 // Types — mirror src-tauri/src/events.rs
 // ---------------------------------------------------------------------------
 
-export interface StageInfo {
+interface StageInfo {
   name: string
   title: string
   category: string
@@ -27,7 +27,7 @@ export interface StageInfo {
 
 export type StageState = 'running' | 'succeeded' | 'skipped' | 'failed'
 
-export interface StageRecord {
+interface StageRecord {
   info: StageInfo
   state: StageState | null
   durationMs?: number
@@ -75,7 +75,7 @@ export const $route = atom<Route>('welcome')
 export const $mode = atom<AppMode>('install')
 export const $bootstrap = atom<BootstrapStateModel>(INITIAL)
 export const $logPath = atom<string | null>(null)
-export const $hermesHome = atom<string | null>(null)
+const $hermesHome = atom<string | null>(null)
 
 export const $progress = computed($bootstrap, (b) => {
   const total = b.stageOrder.length

@@ -151,7 +151,7 @@ export function useTitlebarToolContributions(side: 'left' | 'right'): TitlebarTo
  * as DATA contributions in `<prefix>.<side>`, so page-owned items flow through
  * the same pipe plugins use. Setting an empty list clears the group.
  */
-export function registryGroupSetter<T>(prefix: string): GroupSetter<T> {
+function registryGroupSetter<T>(prefix: string): GroupSetter<T> {
   const disposers = new Map<string, () => void>()
 
   return (id, items, side = 'right') => {
@@ -176,4 +176,3 @@ export function registryGroupSetter<T>(prefix: string): GroupSetter<T> {
 /** The app's page-facing setters — the same `GroupSetter` shape pages already
  *  take as props, backed by the registry instead of component state. */
 export const setStatusbarItemGroup = registryGroupSetter<StatusbarItem>('statusBar')
-export const setTitlebarToolGroup = registryGroupSetter<TitlebarTool>('titleBar.tools')

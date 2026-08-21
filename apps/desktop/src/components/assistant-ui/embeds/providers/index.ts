@@ -8,7 +8,7 @@ import type { EmbedDescriptor, EmbedMatcher } from './types'
 import { vimeo } from './vimeo'
 import { youtube } from './youtube'
 
-export type { EmbedDescriptor, EmbedProvider, EmbedRenderer, FrameEmbed, TweetEmbed } from './types'
+export type { EmbedDescriptor } from './types'
 
 // All provider hosts are disjoint, so order is irrelevant — first match wins.
 const MATCHERS: EmbedMatcher[] = [youtube, vimeo, instagram, pinterest, tiktok, twitter, spotify, maps]

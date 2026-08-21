@@ -56,7 +56,7 @@ export const ModelMenuCloseContext = createContext<() => void>(() => {})
 
 /** One model choice, everything a caller needs to act on a selection.
  *  `effort` is '' for "inherit the default" and 'none' for thinking off. */
-export interface ModelChoice {
+interface ModelChoice {
   effort: string
   fast: boolean
   model: string
@@ -530,7 +530,6 @@ export function ModelCatalogMenu({
 }
 
 /** Re-exported so callers building a footer row match the catalog's rows. */
-export { dropdownMenuRow }
 
 // Collapsed we show the user's chosen models (or the curated default); typing
 // spans every available model so anything is reachable past the cut. A search

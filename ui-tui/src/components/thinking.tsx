@@ -150,7 +150,7 @@ function TreeNode({
   )
 }
 
-export function Spinner({ color, variant = 'think' }: { color: string; variant?: 'think' | 'tool' }) {
+function Spinner({ color, variant = 'think' }: { color: string; variant?: 'think' | 'tool' }) {
   const spin = useMemo(() => {
     const raw = spinners[pick(variant === 'tool' ? TOOL : THINK)]
 
@@ -605,7 +605,7 @@ function SubagentAccordion({
 
 // ── Thinking ─────────────────────────────────────────────────────────
 
-export const Thinking = memo(function Thinking({
+const Thinking = memo(function Thinking({
   active = false,
   branch = 'last',
   mode = 'truncated',

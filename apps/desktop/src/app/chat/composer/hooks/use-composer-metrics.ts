@@ -27,7 +27,7 @@ interface UseComposerMetricsArgs {
 }
 
 /** Every width-driven collapse stage, resolved from the composer's own width. */
-export interface ComposerFit {
+interface ComposerFit {
   compactPill: boolean
   foldVoice: boolean
   minimal: boolean

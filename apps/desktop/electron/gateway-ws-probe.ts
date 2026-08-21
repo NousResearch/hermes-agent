@@ -38,7 +38,7 @@ const DEFAULT_READY_GRACE_MS = 750
  * @param {string} wsUrl - Fully-formed ws(s):// URL including the credential.
  * @returns {Promise<{ ok: boolean, reason?: string }>}
  */
-function probeGatewayWebSocket<T>(
+function probeGatewayWebSocket(
   wsUrl: string,
   options: {
     WebSocketImpl?: any
@@ -234,4 +234,4 @@ function closeReason(event, fallback) {
   return fallback
 }
 
-export { DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_READY_GRACE_MS, probeGatewayWebSocket }
+export { probeGatewayWebSocket }

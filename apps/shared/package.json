@@ -16,9 +16,11 @@
     "lint:fix": "eslint src/ --fix",
     "fix": "npm run lint:fix",
     "typecheck": "tsc -p . --noEmit",
-    "check": "npm run typecheck && npm run lint"
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run test && npm run lint"
   },
   "devDependencies": {
-    "typescript": "6.0.3"
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
   }
 }

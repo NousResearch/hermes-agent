@@ -167,9 +167,9 @@ export function closePetGenerate(): void {
   $petGenerateOpen.set(false)
 }
 
-export const $petGenToken = atom<string | null>(null)
+const $petGenToken = atom<string | null>(null)
 /** Prompt that produced the current draft token; hatch uses this for consistency. */
-export const $petGenPrompt = atom<string>('')
+const $petGenPrompt = atom<string>('')
 export const $petGenDrafts = atom<PetDraft[]>([])
 export const $petGenSelected = atom<number | null>(null)
 /** The hatched-but-unadopted pet: its renderer payload, played in the preview. */
@@ -183,7 +183,7 @@ export const $petGenRefImage = atom<string | null>(null)
 export const $petGenRefName = atom('')
 
 /** Clear all generation state (before a fresh run). */
-export function resetPetGen(): void {
+function resetPetGen(): void {
   $petGenStatus.set('idle')
   $petGenStage.set(null)
   $petGenError.set(null)

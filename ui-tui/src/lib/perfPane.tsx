@@ -102,6 +102,3 @@ export const logFrameEvent = ENABLED
       })
     }
   : undefined
-
-export const PERF_ENABLED = ENABLED
-export const PERF_LOG_PATH = LOG_PATH

@@ -20,7 +20,7 @@
 import { type NativeTokenSet, parseStoredTokenSet } from './native-oauth'
 
 /** One encrypted blob as written per gateway base URL. */
-export interface StoredTokenSecret {
+interface StoredTokenSecret {
   encoding?: string
   value?: string
 }

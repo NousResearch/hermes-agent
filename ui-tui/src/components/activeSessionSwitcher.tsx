@@ -90,7 +90,7 @@ export const resumableHistory = (history: readonly SessionListItem[], live: read
   return history.filter(h => !liveIds.has(h.id))
 }
 
-export const resumeRowContextHintSegments: OrchestratorHintSegment[] = [
+const resumeRowContextHintSegments: OrchestratorHintSegment[] = [
   { role: 'label', text: 'Resumable:' },
   { role: 'text', text: ' ' },
   { role: 'hotkey', text: 'Enter' },
@@ -212,7 +212,7 @@ export const draftModelArgFromPickerValue = (value: string) => {
   return sessionScopedModelArg(value)
 }
 
-export const draftModelNameFromArg = (value: string) => {
+const draftModelNameFromArg = (value: string) => {
   const parts = draftModelArgFromPickerValue(value).split(/\s+/).filter(Boolean)
   const modelParts: string[] = []
 

@@ -39,7 +39,7 @@ export const usePaneLifecycle = (): PaneLifecycle => useContext(PaneLifecycleCon
 /** Fallback group key for a surface rendered outside the layout tree (secondary
  *  windows, plain routes) — one bucket, since there are no sibling zones there
  *  to tell apart. */
-export const NO_PANE_GROUP = 'window'
+const NO_PANE_GROUP = 'window'
 
 /** The layout-tree GROUP (zone) a pane is rendered in — the identity of "this
  *  set of tabs". Panes stacked as tabs share one group; each split zone is its

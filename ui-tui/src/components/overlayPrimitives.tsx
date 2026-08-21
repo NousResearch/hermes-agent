@@ -140,10 +140,10 @@ export function ActionRow({ active, label, color, t }: { active: boolean; label:
   )
 }
 
-export const BAR_CELLS = 10
+const BAR_CELLS = 10
 
 /** ratio in [0,1] -> { bar: '█…░…', pct: 0-100 } using `cells` cells. */
-export function barCells(ratio: number, cells: number = BAR_CELLS): { bar: string; pct: number } {
+function barCells(ratio: number, cells: number = BAR_CELLS): { bar: string; pct: number } {
   const r = Math.max(0, Math.min(1, ratio))
 
   const filled = Math.round(r * cells)

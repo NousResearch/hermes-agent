@@ -17,14 +17,12 @@ import {
   JsonRpcGatewayClient,
   buildHermesWebSocketUrl,
   type ConnectionState,
-  type GatewayEvent,
-  type GatewayEventName,
 } from "@hermes/shared";
 
 import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
 
-export type { ConnectionState, GatewayEvent, GatewayEventName };
+export type { ConnectionState };
 
 export class GatewayClient extends JsonRpcGatewayClient {
   constructor() {

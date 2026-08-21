@@ -144,7 +144,7 @@ export function wrapHandoffForDetachedConsole(
  * the user's sandbox opt-out and the signal that makes a relaunch safe when
  * chrome-sandbox isn't setuid.
  */
-export const INTERNAL_ARG_PREFIXES = [
+const INTERNAL_ARG_PREFIXES = [
   '--type=',
   '--user-data-dir=',
   '--enable-features=',

@@ -16,7 +16,7 @@ export function clampAmount(raw: string, billing: Pick<BillingStateResponse, 'ma
   return formatAmountForRequest(clamped)
 }
 
-export function parseAmount(value?: null | number | string): null | number {
+function parseAmount(value?: null | number | string): null | number {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : null
   }
@@ -30,7 +30,7 @@ export function parseAmount(value?: null | number | string): null | number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null
 }
 
-export function formatAmountForRequest(value: number): string {
+function formatAmountForRequest(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')
 }
 
@@ -75,7 +75,7 @@ export function validateAutoReloadInputs(
   }
 }
 
-export function validateBillingAmount(
+function validateBillingAmount(
   label: string,
   raw: string,
   bounds: Pick<BillingStateResponse, 'max_usd' | 'min_usd'>

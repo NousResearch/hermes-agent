@@ -64,11 +64,6 @@ const listAllProfileSessions = vi.fn()
 const getCronJobs = vi.fn()
 const gatewayScope = vi.hoisted(() => ({ epoch: 0 }))
 
-interface Deferred<T> {
-  promise: Promise<T>
-  resolve: (value: T) => void
-}
-
 /** Create a promise whose completion order the stale-response tests control. */
 
 vi.mock('@/hermes', async importOriginal => ({

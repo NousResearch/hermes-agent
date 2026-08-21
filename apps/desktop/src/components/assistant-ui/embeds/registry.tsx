@@ -13,8 +13,6 @@ const LAZY_FENCE: Record<string, LazyExoticComponent<ComponentType<RichFenceProp
   svg: lazy(() => import('./svg-embed'))
 }
 
-export const RICH_FENCE_LANGUAGES: ReadonlySet<string> = new Set(Object.keys(LAZY_FENCE))
-
 interface RichCodeBlockProps extends RichFenceProps {
   /** Rendered for unhandled languages, while the chunk loads, and on failure
    *  (typically the normal syntax-highlighted code block). */

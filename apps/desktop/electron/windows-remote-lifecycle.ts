@@ -447,7 +447,6 @@ export {
   helper,
   helperCommand,
   powerShellCommand,
-  probeWindowsRemote,
   psLiteral,
   reusableWindowsLock,
   validLock

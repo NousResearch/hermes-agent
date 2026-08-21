@@ -55,7 +55,6 @@ describe('useDesktopIntegrations', () => {
     // reach real Electron IPC. The established desktop-test pattern assigns a
     // plain object to window.hermesDesktop rather than using vi.spyOn.
     desktopWindow.hermesDesktop = {
-      setPreviewShortcutActive: vi.fn(),
       onOpenUpdatesRequested: vi.fn(),
       onFocusSession: vi.fn(),
       onNotificationAction: vi.fn(),

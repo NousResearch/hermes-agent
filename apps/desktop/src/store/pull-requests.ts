@@ -47,7 +47,7 @@ const TRUNK_BRANCHES = new Set(['dev', 'develop', 'main', 'master', 'trunk'])
 export const branchPrKey = (repoRoot: string, branch: string): string => `${repoRoot}\n${branch}`
 /** A PR known only by number (recovered from a transcript), keyed so it can
  *  share the one map. GitHub answers by number just as happily as by branch. */
-export const numberPrKey = (repoRoot: string, number: number): string => `${repoRoot}\n#${number}`
+const numberPrKey = (repoRoot: string, number: number): string => `${repoRoot}\n#${number}`
 
 export function sessionPrKey(session: SessionInfo): null | string {
   const stamped = $prBranchBySession.get()[session.id]

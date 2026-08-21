@@ -26,7 +26,7 @@ import { WorkspaceAddButton } from './workspace-header'
 
 // A bare color dot (no icon) or an icon glyph — tinted by `color` when set, else
 // the lead's default tertiary. The glyph wrapper centers + caps size either way.
-export function projectIcon({ color, icon, isNoProject }: SidebarProjectTree) {
+function projectIcon({ color, icon, isNoProject }: SidebarProjectTree) {
   if (color && !icon) {
     return (
       <SidebarRowLeadGlyph>

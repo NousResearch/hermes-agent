@@ -494,7 +494,7 @@ export function closeManualOnboarding() {
   patch({ manual: false, requested: false, localEndpoint: false, flow: { status: 'idle' } })
 }
 
-export function completeDesktopOnboarding() {
+function completeDesktopOnboarding() {
   clearPoll()
   writeCachedConfigured(true)
   // A real provider is now connected, so any earlier "choose later" skip is

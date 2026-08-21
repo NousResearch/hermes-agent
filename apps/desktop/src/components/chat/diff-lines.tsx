@@ -110,7 +110,7 @@ function isArrowHeaderLine(line: string): boolean {
 }
 
 /** Exported for tests. */
-export function stripDiffFileHeaders(diff: string): string {
+function stripDiffFileHeaders(diff: string): string {
   const lines = diff.split('\n')
   let start = 0
 
@@ -477,20 +477,6 @@ function SyntaxDiff({ language, lines }: { language: string; lines: DiffLine[] }
 }
 
 const LazySyntaxDiff = React.lazy(() => import('./syntax-diff'))
-
-interface DiffLinesProps extends Omit<React.ComponentProps<'pre'>, 'children'> {
-  text: string
-}
-
-export function DiffLines({ className, text, ...props }: DiffLinesProps) {
-  const lines = React.useMemo(() => parseDiff(text), [text])
-
-  return (
-    <pre className={cn(DIFF_BOX_CLASS, className)} data-slot="diff-lines" {...props}>
-      <DiffBody lines={lines} />
-    </pre>
-  )
-}
 
 // Coalesce consecutive same-kind changed rows into runs, each placed by line
 // fraction (no DOM measurement). Context rows produce no tick.

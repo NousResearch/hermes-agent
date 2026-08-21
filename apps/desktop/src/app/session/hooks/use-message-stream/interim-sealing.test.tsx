@@ -11,8 +11,6 @@ import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 const SID = 'session-1'
 
 let stream: MessageStreamHarness
-let mockCompleteSound: ReturnType<typeof vi.fn>
-let mockHaptic: ReturnType<typeof vi.fn>
 
 function mountStream() {
   stream = renderMessageStream(SID)
@@ -36,13 +34,6 @@ const completePreviewed = (text: string) =>
 
 function getState(): ClientSessionState {
   return stream.state()
-}
-
-function assistantText(): string {
-  const state = getState()
-  const last = [...state.messages].reverse().find(m => m.role === 'assistant' && !m.hidden)
-
-  return last ? chatMessageText(last) : ''
 }
 
 function assistantMessages(): string[] {

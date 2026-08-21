@@ -21,12 +21,10 @@ import { registry } from './registry'
 import type { Contribution } from './types'
 
 export type { PluginRestOptions } from '@/hermes'
-export type { HermesOpenTarget } from '@/lib/hermes-open-target'
-export type { PluginNativeNotificationInput, PluginNotificationAction } from '@/store/native-notifications'
 
 /** A contribution as a plugin author writes it — provenance + id scoping are
  *  the host's job, so those fields are off-limits here. */
-export type PluginContribution = Omit<Contribution, 'source' | 'id'> & { id: string }
+type PluginContribution = Omit<Contribution, 'source' | 'id'> & { id: string }
 
 /** Namespaced JSON persistence (the VS Code `globalState` analog). Keys live
  *  under `hermes.plugin.<id>.` — plugins can't read or clobber each other. */

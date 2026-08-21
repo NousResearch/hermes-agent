@@ -144,7 +144,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [pendingRevoke, setPendingRevoke] = useState<null | PairingUser>(null)
   const [edits, setEdits] = useState<EditMap>({})
   const [query, setQuery] = useState('')
-  const [refreshing, setRefreshing] = useState(false)
+  const [, setRefreshing] = useState(false)
   const [saving, setSaving] = useState<string | null>(null)
   const platformIds = useMemo(() => platforms?.map(p => p.id) ?? [], [platforms])
   const [selectedId, setSelectedId] = useRouteEnumParam('platform', platformIds, platformIds[0] ?? '')

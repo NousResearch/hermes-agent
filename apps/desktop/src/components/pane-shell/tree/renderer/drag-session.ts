@@ -60,7 +60,7 @@ export function snapshotZones(): EngineZone[] {
  *  action (stack/link); outside, the dominant axis picks the edge (VS Code
  *  dock-preview geometry). `centerRadius` sizes the ellipse — larger = more
  *  center, slimmer curved edge bands. */
-export function radialPosition(
+function radialPosition(
   rect: { left: number; top: number; right: number; bottom: number },
   x: number,
   y: number,

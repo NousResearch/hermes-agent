@@ -319,7 +319,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [activeSessionIdRef, updateSessionState]
   )
 
-  const { refreshProjectBranch } = useCwdActions({
+  useCwdActions({
     activeSessionIdRef,
     onSessionRuntimeInfo: updateActiveSessionRuntimeInfo,
     requestGateway

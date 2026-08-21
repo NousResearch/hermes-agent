@@ -50,7 +50,7 @@ function isBoundary(target: string, index: number): boolean {
  * Score a single query token against a target. Returns null when the token is
  * not a subsequence of the target. An empty query scores 0 with no positions.
  */
-export function fuzzyScore(target: string, query: string): FuzzyMatch | null {
+function fuzzyScore(target: string, query: string): FuzzyMatch | null {
   if (!query) {
     return { score: 0, positions: [] };
   }

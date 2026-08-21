@@ -1,7 +1,7 @@
 import { mediaExternalUrl, resolveMediaDisplaySrc } from '@/lib/media'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
-export type ArtifactKind = 'image' | 'file' | 'link'
+type ArtifactKind = 'image' | 'file' | 'link'
 export type ArtifactFilter = 'all' | ArtifactKind
 export const ARTIFACT_FILTERS: readonly ArtifactFilter[] = ['all', 'image', 'file', 'link']
 
@@ -16,7 +16,7 @@ export interface ArtifactRecord {
   timestamp: number
 }
 
-export interface ArtifactLoadFailure {
+interface ArtifactLoadFailure {
   error: unknown
   session: SessionInfo
 }

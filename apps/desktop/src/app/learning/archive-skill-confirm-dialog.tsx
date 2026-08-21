@@ -3,13 +3,13 @@ import { deleteLearningNode, type ProfileScope } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { notify } from '@/store/notifications'
 
-export const ARCHIVE_SKILL_DESCRIPTION = 'The skill is archived and can be restored with `hermes curator restore`.'
+const ARCHIVE_SKILL_DESCRIPTION = 'The skill is archived and can be restored with `hermes curator restore`.'
 
-export function notifySkillArchived(t: Translations): void {
+function notifySkillArchived(t: Translations): void {
   notify({ kind: 'success', message: t.skills.skillArchivedMessage, title: t.skills.skillArchivedTitle })
 }
 
-export async function archiveLearningSkill(id: string, profile?: ProfileScope): Promise<void> {
+async function archiveLearningSkill(id: string, profile?: ProfileScope): Promise<void> {
   const res = await deleteLearningNode(id, profile)
 
   if (!res.ok) {

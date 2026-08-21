@@ -18,7 +18,7 @@
 export const MULTIPLIER = 10000
 
 /** Minimum zone extent in model units (editor ergonomics; C# uses 1). */
-export const MIN_ZONE_SIZE = 500
+const MIN_ZONE_SIZE = 500
 
 export interface GridLayout {
   rows: number
@@ -50,7 +50,7 @@ export interface GridResizer {
 // ---------------------------------------------------------------------------
 
 /** result[k] is the sum of the first k elements of the given list. */
-export function prefixSum(list: number[]): number[] {
+function prefixSum(list: number[]): number[] {
   const result: number[] = [0]
   let sum = 0
 
@@ -255,7 +255,7 @@ export function modelToResizers(model: GridLayout): GridResizer[] {
 // Zones -> model (GridData.ZonesToModel)
 // ---------------------------------------------------------------------------
 
-export function zonesToModel(zones: GridZone[]): GridLayout {
+function zonesToModel(zones: GridZone[]): GridLayout {
   const xCoords = [...new Set(zones.flatMap(z => [z.left, z.right]))].sort((a, b) => a - b)
   const yCoords = [...new Set(zones.flatMap(z => [z.top, z.bottom]))].sort((a, b) => a - b)
 
@@ -426,7 +426,7 @@ export function splitZone(
 // Resizer drag (GridData.CanDrag / Drag)
 // ---------------------------------------------------------------------------
 
-export function canDrag(model: GridLayout, resizerIndex: number, delta: number): boolean {
+function canDrag(model: GridLayout, resizerIndex: number, delta: number): boolean {
   const zones = modelToZones(model)
   const resizers = modelToResizers(model)
   const resizer = resizers[resizerIndex]
@@ -580,45 +580,4 @@ export function initPriorityGrid(zoneCount: number): GridLayout {
   }
 
   return initGrid(zoneCount)
-}
-
-/** GridLayoutModel.IsModelValid, extended with the rectangular-span check. */
-export function isGridValid(model: unknown): model is GridLayout {
-  if (!model || typeof model !== 'object') {
-    return false
-  }
-
-  const m = model as GridLayout
-
-  if (typeof m.rows !== 'number' || typeof m.columns !== 'number' || m.rows <= 0 || m.columns <= 0) {
-    return false
-  }
-
-  if (
-    !Array.isArray(m.rowPercents) ||
-    !Array.isArray(m.columnPercents) ||
-    m.rowPercents.length !== m.rows ||
-    m.columnPercents.length !== m.columns ||
-    m.rowPercents.some(x => typeof x !== 'number' || x < 1) ||
-    m.columnPercents.some(x => typeof x !== 'number' || x < 1)
-  ) {
-    return false
-  }
-
-  if (
-    !Array.isArray(m.cellChildMap) ||
-    m.cellChildMap.length !== m.rows ||
-    m.cellChildMap.some(r => !Array.isArray(r) || r.length !== m.columns || r.some(c => typeof c !== 'number'))
-  ) {
-    return false
-  }
-
-  const rowPrefix = prefixSum(m.rowPercents)
-  const colPrefix = prefixSum(m.columnPercents)
-
-  if (rowPrefix[m.rows] !== MULTIPLIER || colPrefix[m.columns] !== MULTIPLIER) {
-    return false
-  }
-
-  return modelToZones(m) !== null
 }

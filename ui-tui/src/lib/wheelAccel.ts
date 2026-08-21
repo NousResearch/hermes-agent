@@ -66,7 +66,7 @@ export function initWheelAccel(xtermJs = false, base = 1): WheelAccelState {
 
 /** HERMES_TUI_SCROLL_SPEED (or CLAUDE_CODE_SCROLL_SPEED for portability).
  *  Default 1, clamped (0, 20]. */
-export function readScrollSpeedBase(): number {
+function readScrollSpeedBase(): number {
   const n = parseFloat(process.env.HERMES_TUI_SCROLL_SPEED ?? process.env.CLAUDE_CODE_SCROLL_SPEED ?? '')
 
   return Number.isFinite(n) && n > 0 ? Math.min(n, 20) : 1

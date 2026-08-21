@@ -18,7 +18,7 @@ export interface TriggerState {
 
 /** Directive kinds the `@` popover can scope a browse to. Mirrors the starter
  *  rows in use-at-completions and the gateway's `complete.path` prefixes. */
-export const DIRECTIVE_SCOPES = ['file', 'folder', 'url', 'image', 'tool', 'git'] as const
+const DIRECTIVE_SCOPES = ['file', 'folder', 'url', 'image', 'tool', 'git'] as const
 
 export type DirectiveScope = (typeof DIRECTIVE_SCOPES)[number]
 

@@ -34,7 +34,7 @@ export function currentPickerSelection(
 }
 
 /** Strip provider prefix and normalize for display. */
-export function modelBaseId(model: string): string {
+function modelBaseId(model: string): string {
   const trimmed = model.trim()
   const slash = trimmed.lastIndexOf('/')
 

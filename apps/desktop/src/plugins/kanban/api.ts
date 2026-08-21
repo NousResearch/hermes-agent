@@ -257,7 +257,7 @@ export const estimateNew = (title: string, body: string) =>
 export const updateBoard = (slug: string, patch: Record<string, unknown>) =>
   call<{ board: BoardMeta }>(`/boards/${encodeURIComponent(slug)}`, { method: 'PATCH', body: patch })
 
-export const nudgeDispatcher = () => call<{ spawned?: unknown[] }>(withBoard('/dispatch'), { method: 'POST', body: {} })
+const nudgeDispatcher = () => call<{ spawned?: unknown[] }>(withBoard('/dispatch'), { method: 'POST', body: {} })
 
 export const saveOrchestration = (patch: Record<string, unknown>) =>
   call<OrchestrationSettings>('/orchestration', { method: 'PUT', body: patch })

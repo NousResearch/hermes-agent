@@ -80,7 +80,7 @@ const INTENT_THROTTLE_MS = 1000
  *  the widget speaks WITH the user's voice, visibly, never silently. Also
  *  wires `data-hermes-send` so declarative HTML works with zero script:
  *  `<button data-hermes-send="get-price eth">ETH</button>`. */
-export function intentScript(token: string): string {
+function intentScript(token: string): string {
   return (
     '<script>(function(){var t=' +
     JSON.stringify(token) +
@@ -128,7 +128,7 @@ const THEME_BRIDGE_TOKENS: Record<string, string> = {
 }
 
 /** Resolve the bridge tokens + app font against the current document. */
-export function collectThemeBridge(): { vars: Record<string, string>; font: string } {
+function collectThemeBridge(): { vars: Record<string, string>; font: string } {
   const vars: Record<string, string> = {}
 
   if (typeof document !== 'undefined') {
@@ -174,7 +174,7 @@ export function themePrelude(vars: Record<string, string>, font: string): string
  *  scrollHeight; width is the union of the body children's boxes (intrinsic
  *  content width — the document itself always fills the viewport, so
  *  scrollWidth would just echo the frame back). */
-export function measurementScript(token: string): string {
+function measurementScript(token: string): string {
   return (
     '<script>(function(){var t=' +
     JSON.stringify(token) +

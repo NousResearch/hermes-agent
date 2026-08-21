@@ -6,12 +6,7 @@ import { fileURLToPath } from 'node:url'
 // Relative, not `@hermes/shared`: the electron bundle is built by esbuild with
 // no tsconfig path resolution (see scripts/bundle-electron-main.mjs), so a bare
 // specifier would typecheck and then fail to bundle.
-import {
-  clampDataUrlReadMaxMb,
-  DATA_URL_READ_DEFAULT_MAX_MB,
-  DATA_URL_READ_MAX_MAX_MB,
-  DATA_URL_READ_MIN_MAX_MB
-} from '../../shared/src/data-url-read-max'
+import { clampDataUrlReadMaxMb, DATA_URL_READ_DEFAULT_MAX_MB } from '../../shared/src/data-url-read-max'
 
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000
 // Remote file.attach sends one base64 JSON-RPC frame. Cap the dedicated attach
@@ -532,14 +527,11 @@ export {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
   clampDataUrlReadMaxMb,
   DATA_URL_READ_DEFAULT_MAX_MB,
-  DATA_URL_READ_MAX_MAX_MB,
-  DATA_URL_READ_MIN_MAX_MB,
   dataUrlReadMaxBytesFromMb,
   DEFAULT_FETCH_TIMEOUT_MS,
   enableBasicPasswordStoreEncryption,
   encryptDesktopSecret,
   readFileDataUrlForIpc,
-  rejectUnsafePathSyntax,
   resolveDirectoryForIpc,
   resolvePersistedRemoteToken,
   resolveReadableFileForIpc,

@@ -1,9 +1,5 @@
 import { refusalPolicy } from '@hermes/shared/billing-policy'
-import {
-  driveChargeSettlement,
-  SETTLEMENT_POLL_CAP_MS,
-  SETTLEMENT_POLL_INTERVAL_MS
-} from '@hermes/shared/charge-settlement'
+import { driveChargeSettlement, SETTLEMENT_POLL_CAP_MS } from '@hermes/shared/charge-settlement'
 import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useRef, useState } from 'react'
 
@@ -12,7 +8,6 @@ import { useBillingApi } from './api'
 import { resolveRefusal } from './errors'
 import type { BillingChargeStatusResponse } from './types'
 
-export const CHARGE_POLL_INTERVAL_MS = SETTLEMENT_POLL_INTERVAL_MS
 export const CHARGE_POLL_CAP_MS = SETTLEMENT_POLL_CAP_MS
 
 export type ChargeFlowPhase = 'charging' | 'done' | 'idle' | 'polling'
@@ -37,7 +32,7 @@ export type ChargeFlowOutcome =
       title: string
     }
 
-export interface ChargePollClock {
+interface ChargePollClock {
   now?: () => number
   sleep?: (ms: number) => Promise<void>
 }

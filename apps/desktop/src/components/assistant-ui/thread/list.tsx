@@ -266,7 +266,7 @@ export const LIVE_TAIL_MIN_GROUPS = 2
 // long transcript of tiny turns a weight-only budget would walk back further
 // than the old turn-count tail did and virtualize LESS — this keeps the new
 // policy a strict improvement on every shape.
-export const LIVE_TAIL_MAX_GROUPS = 6
+const LIVE_TAIL_MAX_GROUPS = 6
 
 /**
  * Index of the newest group that still virtualizes — everything at or after it

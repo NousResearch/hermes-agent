@@ -1,7 +1,6 @@
 'use client'
 
 import type { Unstable_DirectiveFormatter, Unstable_DirectiveSegment, Unstable_TriggerItem } from '@assistant-ui/core'
-import type { TextMessagePartComponent, TextMessagePartProps } from '@assistant-ui/react'
 import type { FC } from 'react'
 import { Fragment, useEffect, useMemo, useState } from 'react'
 
@@ -15,17 +14,11 @@ import { useSessionLinkTitle } from '@/lib/session-link-title'
 import { parseSessionRefValue, sessionRefFallbackLabel } from '@/lib/session-refs'
 import { cn } from '@/lib/utils'
 
-import { referenceKind, referenceRe, referenceStyle, WIRE_REFERENCE_KINDS } from './reference-kinds'
-
-const HERMES_REF_TYPES = WIRE_REFERENCE_KINDS
-type HermesRefType = (typeof HERMES_REF_TYPES)[number]
+import { referenceKind, referenceRe, referenceStyle } from './reference-kinds'
 
 /** Icon glyphs come from the shared reference vocabulary, so the popover row
  *  and the chip can never drift apart. */
 const iconPathsFor = (type: string) => referenceStyle(type).paths
-
-const SVG_ATTRS =
-  'xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'
 
 /**
  * The class + attributes that make any element an inline reference. Pair with
@@ -45,15 +38,6 @@ export function refAttrs(kind?: string, extra?: string): { className: string; 'd
 /** The same thing as a raw attribute string, for HTML built by hand. */
 export function refAttrsHtml(kind?: string): string {
   return kind ? `class="ref" data-ref="${referenceKind(kind)}"` : 'class="ref"'
-}
-
-/** SVG markup string for embedding directly in HTML (composer contenteditable). */
-export function directiveIconSvg(type: string) {
-  const inner = iconPathsFor(type)
-    .map(d => `<path d="${d}"/>`)
-    .join('')
-
-  return `<svg ${SVG_ATTRS}>${inner}</svg>`
 }
 
 function iconElementFromPaths(paths: string[]) {
@@ -391,11 +375,6 @@ export function DirectiveContent({ text }: { text: string }) {
   )
 }
 
-/** assistant-ui adapter: same renderer, exposed as a TextMessagePartComponent. */
-export const DirectiveText: TextMessagePartComponent = ({ text }: TextMessagePartProps) => (
-  <DirectiveContent text={text ?? ''} />
-)
-
 /** Image refs render as a thumbnail rather than a chip — matches how persisted
  * messages render after the backend embeds the data URL, so the UX is stable
  * across initial send and refresh. */
@@ -453,7 +432,7 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
  *  it's already a tile/main, otherwise open a stacked tab (never steals main
  *  from under the chat you're reading). Lazy-imports so the composer's rich
  *  editor can pull this module in without booting the profile/REST stack. */
-export function openSessionRef(value: string) {
+function openSessionRef(value: string) {
   const { sessionId } = parseSessionRefValue(value)
 
   if (!sessionId) {
@@ -495,7 +474,7 @@ export const DIRECTIVE_ACTIONS: Record<string, DirectiveAction> = {
 /** A `@session:<profile>/<id>` reference in the user transcript (directive
  *  segments), rendered as a chip like the other composer refs. Clicking it
  *  opens the session as a tab. */
-export const SessionRefChip: FC<{
+const SessionRefChip: FC<{
   label?: string
   value: string
 }> = ({ label, value }) => {

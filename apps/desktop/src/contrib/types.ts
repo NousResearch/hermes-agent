@@ -7,7 +7,7 @@ import type { ReactNode } from 'react'
  * (WoW-style taint: plugin-sourced contributions can be blocked from privileged
  * actions unless granted).
  */
-export type ContributionSource = 'core' | (string & {})
+type ContributionSource = 'core' | (string & {})
 
 /**
  * The single, uniform primitive every surface consumes. A bar renders these as

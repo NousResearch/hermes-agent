@@ -272,8 +272,6 @@ export function SkillsView({
     enabled: !fixedProfile
   })
 
-  const profiles = profilesData?.profiles ?? []
-
   // v2 multi-connection registry: cheap local IPC to learn whether more than
   // one gateway is registered. Only then is the (heavier) union agent roster
   // fetched to feed the selector — single-connection setups keep the exact

@@ -20,12 +20,7 @@ export function isSmartZoomWheel(e: WheelLike): boolean {
   return e.ctrlKey && e.deltaX === 0 && e.deltaY === 0
 }
 
-/** Pinch-to-zoom (or ctrl + mouse wheel): a ctrl-wheel carrying a delta. */
-export function isPinchZoomWheel(e: WheelLike): boolean {
-  return e.ctrlKey && (e.deltaX !== 0 || e.deltaY !== 0)
-}
-
-export const DOUBLE_TAP_MS = 300
+const DOUBLE_TAP_MS = 300
 
 /**
  * Stateful double-tap detector for surfaces where a real `dblclick` may never

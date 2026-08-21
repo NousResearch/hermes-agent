@@ -495,7 +495,7 @@ function profileRemoteOverride(config, profile) {
   }
 }
 
-export interface ProfileRouteOptions {
+interface ProfileRouteOptions {
   /** Profile name on a separately-scoped backend when it differs from the
    * desktop's local routing label (managed SSH `remoteProfile`). */
   backendProfile?: null | string
@@ -510,7 +510,7 @@ export interface ProfileRouteOptions {
   requestPath?: null | string
 }
 
-export interface ProfileBackendRoute {
+interface ProfileBackendRoute {
   /** Which backend serves this profile: the window backend, or a pooled one. */
   backend: 'pool' | 'primary'
   /**
@@ -780,7 +780,7 @@ function apiRequestRegistryConnectionId(request): null | string {
   return id
 }
 
-export interface ProfileApiRequestRoute {
+interface ProfileApiRequestRoute {
   /** Profile passed to ensureBackend; null selects the primary backend. */
   backendProfile: null | string
   requestPath: string
@@ -938,8 +938,6 @@ export {
   normAuthMode,
   pathWithGlobalRemoteProfile,
   pathWithProfileScope,
-  PRIVY_ACCESS_COOKIE_VARIANTS,
-  PRIVY_SESSION_COOKIE_VARIANTS,
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,

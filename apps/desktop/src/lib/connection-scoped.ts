@@ -36,7 +36,7 @@ export interface ConnectionScopeDescriptor {
 
 /** The storage-key suffix for a connection. Local (and unknown) connections
  *  map to the bare key; remote connections get their own namespace. */
-export function connectionScopeSuffix(connection: ConnectionScopeDescriptor | null | undefined): string {
+function connectionScopeSuffix(connection: ConnectionScopeDescriptor | null | undefined): string {
   if (connection?.mode !== 'remote') {
     return ''
   }

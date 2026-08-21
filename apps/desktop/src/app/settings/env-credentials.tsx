@@ -7,27 +7,9 @@ import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import type { EnvVarInfo } from '@/types/hermes'
 
-import { asText, includesQuery, redactedValue, withoutKey } from './helpers'
+import { redactedValue, withoutKey } from './helpers'
 import { Pill } from './primitives'
 import type { EnvRowProps } from './types'
-
-// Shared filter used by every credential surface (Providers + Keys pages):
-// category gate first, then a free-text match across key name + description.
-export function filterEnv(info: EnvVarInfo, key: string, q: string, cat: string, extra?: string): boolean {
-  if (asText(info.category) !== cat) {
-    return false
-  }
-
-  if (!q) {
-    return true
-  }
-
-  return (
-    key.toLowerCase().includes(q) ||
-    includesQuery(info.description, q) ||
-    Boolean(extra && extra.toLowerCase().includes(q))
-  )
-}
 
 export function SettingsCategoryHeading({ count, icon: Icon, title }: CategoryHeadingProps) {
   return (

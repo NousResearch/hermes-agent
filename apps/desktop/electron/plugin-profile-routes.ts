@@ -11,7 +11,7 @@ export interface ProfileRouteConfig {
   sshUser: string
 }
 
-export interface EffectiveSshRoute {
+interface EffectiveSshRoute {
   hostname: string
   port: null | number
   user: string

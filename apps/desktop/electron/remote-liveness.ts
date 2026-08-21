@@ -117,7 +117,7 @@ export class RemoteLivenessTracker {
   }
 }
 
-export interface PooledRemoteEntry {
+interface PooledRemoteEntry {
   process?: unknown
   remoteBaseUrl?: null | string
 }

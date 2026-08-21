@@ -76,7 +76,7 @@ function isLiveTailRow(message: ChatMessage): boolean {
  * Empty previous answer never accepts a dump as an extension — that is how the
  * mid-turn inflight flat dump used to sandwich structured rows (#76444).
  */
-export function isStrictAnswerTextExtension(next: string, previous: string): boolean {
+function isStrictAnswerTextExtension(next: string, previous: string): boolean {
   const n = next.trim()
   const p = previous.trim()
 
@@ -137,48 +137,38 @@ function preserveStructuralParts(message: ChatMessage, previous: ChatMessage): C
 // If your new field affects what the user sees in the transcript, add it to
 // COMPARED. If it's metadata that shouldn't trigger a re-render, add it to
 // IGNORED.
-const _chatMessageFieldsExhaustive: {
-  [K in Exclude<keyof ChatMessage, (typeof COMPARED_FIELDS)[number] | (typeof IGNORED_FIELDS)[number]>]: never
-} = {}
-
-const COMPARED_FIELDS = [
-  'id',
-  'role',
-  'pending',
-  'error',
-  'hidden',
-  'branchGroupId',
-  'interim',
-  'reactions',
-  'timestamp',
-  'completedAt',
+type ComparedField =
+  | 'id'
+  | 'role'
+  | 'pending'
+  | 'error'
+  | 'hidden'
+  | 'branchGroupId'
+  | 'interim'
+  | 'reactions'
+  | 'timestamp'
+  | 'completedAt'
   // Turn wall-clock duration — stamps the visible "⏱ 38s" badge, so a change
   // must re-render (set once at completion; stable afterwards).
-  'durationS'
-] as const
+  | 'durationS'
 
-const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'rowId'] as const
+type IgnoredField = 'attachmentRefs' | 'parts' | 'rowId'
+
+const _chatMessageFieldsExhaustive: {
+  [K in Exclude<keyof ChatMessage, ComparedField | IgnoredField>]: never
+} = {}
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.
 //   text, reasoning      → compared by .text
 //   tool-call             → compared by toolCallId/toolName + result presence
 //   source, image, file, data, generative-ui, audio, data-* → shallow primitive compare
-const _chatMessagePartTypesExhaustive: {
-  [T in Exclude<ChatMessage['parts'][number]['type'], (typeof HANDLED_PART_TYPES)[number]>]: never
-} = {}
+type HandledPartType =
+  'text' | 'reasoning' | 'tool-call' | 'source' | 'image' | 'file' | 'data' | 'generative-ui' | 'audio'
 
-const HANDLED_PART_TYPES = [
-  'text',
-  'reasoning',
-  'tool-call',
-  'source',
-  'image',
-  'file',
-  'data',
-  'generative-ui',
-  'audio'
-] as const
+const _chatMessagePartTypesExhaustive: {
+  [T in Exclude<ChatMessage['parts'][number]['type'], HandledPartType>]: never
+} = {}
 
 // Structural compare WITHOUT JSON.stringify — the only consumer asks "did
 // the transcript change, should I call setMessages?", so a slightly
@@ -234,7 +224,7 @@ export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: 
   return aKeys.every(k => aPrimitive[k] === bPrimitive[k])
 }
 
-export function chatReactionsEquivalent(a: ChatMessage['reactions'], b: ChatMessage['reactions']): boolean {
+function chatReactionsEquivalent(a: ChatMessage['reactions'], b: ChatMessage['reactions']): boolean {
   const aList = a ?? []
   const bList = b ?? []
 

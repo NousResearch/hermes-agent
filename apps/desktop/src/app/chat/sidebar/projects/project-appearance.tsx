@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 // Curated codicons for a project glyph (tinted by the chosen color). Shared by
 // the kebab's Appearance popover and the right-click menu's Appearance submenu
 // so both offer the same picker.
-export const PROJECT_ICONS = [
+const PROJECT_ICONS = [
   'folder-library',
   'repo',
   'rocket',

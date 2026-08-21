@@ -92,7 +92,7 @@ const finalTail = (finalText: string, segments: Msg[]) => {
   return tail
 }
 
-export interface InterruptDeps {
+interface InterruptDeps {
   appendMessage: (msg: Msg) => void
   gw: { request: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T> }
   sid: string
@@ -1097,5 +1097,3 @@ class TurnController {
 }
 
 export const turnController = new TurnController()
-
-export type { TurnController }

@@ -13,7 +13,7 @@ import type {
   SubscriptionStateResponse
 } from './types'
 
-export type BillingErrorKind = BillingRefusalCode
+type BillingErrorKind = BillingRefusalCode
 
 export interface BillingRefusal {
   actor?: string
@@ -29,9 +29,9 @@ export interface BillingRefusal {
 
 export type BillingResult<T> = { data: T; ok: true } | { ok: false; refusal: BillingRefusal }
 
-export type BillingChargeResult = BillingResult<BillingChargeResponse> & { idempotencyKey: string }
+type BillingChargeResult = BillingResult<BillingChargeResponse> & { idempotencyKey: string }
 
-export interface UpdateAutoReloadInput {
+interface UpdateAutoReloadInput {
   enabled: boolean
   reload_to_usd?: string
   threshold_usd?: string

@@ -7,7 +7,7 @@ import type { SessionInfo, SlashCategory, SubagentStatus, Usage } from './types.
  *  Includes the paired light_colors/dark_colors overlays from #20379. */
 export type GatewaySkin = HermesSkin
 
-export interface GatewayCompletionItem {
+interface GatewayCompletionItem {
   display: string
   /** Completion class, set by the gateway. `skill` covers skill commands and
    *  skill bundles — the only kind offered for an inline `/skill` reference. */
@@ -16,7 +16,7 @@ export interface GatewayCompletionItem {
   text: string
 }
 
-export interface GatewayTranscriptMessage {
+interface GatewayTranscriptMessage {
   context?: string
   display_kind?: string
   display_metadata?: Record<string, unknown>
@@ -50,20 +50,16 @@ export interface SlashExecResponse {
 
 // Wire shapes now live in @hermes/shared for reuse by TypeScript clients.
 export type {
-  BillingAutoReload,
-  BillingBlock,
   BillingCardInfo,
   BillingChargeResponse,
   BillingChargeStatusResponse,
   BillingErrorPayload,
-  BillingMonthlyCap,
   BillingMutationResponse,
   BillingStateResponse,
   SubscriptionPreviewResponse,
   SubscriptionStateResponse,
   SubscriptionTierOption,
   SubscriptionUpgradeResponse,
-  UsageBarData,
   UsageModelData
 } from '@hermes/shared/billing'
 
@@ -76,7 +72,7 @@ export type CommandDispatchResponse =
 
 // ── Config ───────────────────────────────────────────────────────────
 
-export interface ConfigDisplayConfig {
+interface ConfigDisplayConfig {
   battery?: boolean
   bell_on_complete?: boolean
   busy_input_mode?: string
@@ -115,14 +111,14 @@ export interface ConfigDisplayConfig {
   tui_theme?: string
 }
 
-export interface ConfigVoiceConfig {
+interface ConfigVoiceConfig {
   // Raw `yaml.safe_load()` values from config may be non-string if hand-edited.
   // Callers must normalize/validate at runtime.
   record_key?: unknown
   submit_mode?: unknown
 }
 
-export interface ConfigApprovalsConfig {
+interface ConfigApprovalsConfig {
   // Raw config value: only the explicit boolean false disables the safety gate.
   destructive_slash_confirm?: unknown
 }
@@ -193,7 +189,7 @@ export interface SessionResumeResponse {
   status?: LiveSessionStatus
 }
 
-export type LiveSessionStatus = 'idle' | 'starting' | 'waiting' | 'working'
+type LiveSessionStatus = 'idle' | 'starting' | 'waiting' | 'working'
 
 export interface SessionActiveItem {
   current?: boolean
@@ -505,7 +501,7 @@ export interface BrowserManageResponse {
   url?: string
 }
 
-export interface RollbackCheckpoint {
+interface RollbackCheckpoint {
   hash: string
   message?: string
   timestamp?: string
@@ -589,7 +585,7 @@ export interface SubagentInterruptResponse {
 
 // ── Spawn-tree snapshots ─────────────────────────────────────────────
 
-export interface SpawnTreeListEntry {
+interface SpawnTreeListEntry {
   count: number
   finished_at?: number
   label?: string

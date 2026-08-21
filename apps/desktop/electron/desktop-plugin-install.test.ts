@@ -1,7 +1,6 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -13,8 +12,6 @@ import {
   resolvePluginGitUrl,
   resolveSubdirWithin
 } from './desktop-plugin-install'
-
-const here = path.dirname(fileURLToPath(import.meta.url))
 
 function mkdtemp(prefix: string) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix))

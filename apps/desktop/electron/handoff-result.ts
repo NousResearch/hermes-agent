@@ -22,7 +22,7 @@
 import fs from 'fs'
 import path from 'path'
 
-export const HANDOFF_RESULT_MAX_AGE_MS = 30 * 60 * 1000
+const HANDOFF_RESULT_MAX_AGE_MS = 30 * 60 * 1000
 
 export interface HandoffResult {
   ok: boolean

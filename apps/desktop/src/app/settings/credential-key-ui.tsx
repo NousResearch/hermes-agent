@@ -12,7 +12,7 @@ import { prettyName, withoutKey } from './helpers'
 import { ListRow } from './primitives'
 import type { EnvRowProps } from './types'
 
-export type KeyRowProps = Omit<EnvRowProps, 'info' | 'varKey'>
+type KeyRowProps = Omit<EnvRowProps, 'info' | 'varKey'>
 
 /** Matches Advanced / config field controls (ListRow + Input). */
 export const CREDENTIAL_CONTROL_CLASS = cn('h-8', CONTROL_TEXT)
@@ -26,7 +26,7 @@ const CRED_BARE = 'border-0! bg-transparent! shadow-none! h-auto! p-0! @2xl:h-8!
 
 export const isKeyVar = (key: string, info: EnvVarInfo) => info.is_password || /(?:_API_KEY|_TOKEN|_KEY)$/.test(key)
 
-export const friendlyFieldLabel = (key: string, info: EnvVarInfo) =>
+const friendlyFieldLabel = (key: string, info: EnvVarInfo) =>
   info.description?.trim() ||
   key
     .replace(/_/g, ' ')
@@ -43,7 +43,7 @@ export const credentialPlaceholder = (key: string, info: EnvVarInfo, label: stri
 // A single credential field: a set key shows as a filled read-only input
 // (redacted value) that edits in place on click. Save appears once typed; a set
 // key also offers Remove, and Esc cancels without closing the overlay.
-export function KeyField({
+function KeyField({
   expanded = false,
   info,
   placeholder,
@@ -396,7 +396,7 @@ interface ProviderKeyRowsProps {
   rowProps: KeyRowProps
 }
 
-export interface ProviderKeyRowGroup {
+interface ProviderKeyRowGroup {
   advanced: [string, EnvVarInfo][]
   description?: string
   docsUrl?: string

@@ -53,7 +53,7 @@ function useDevicePixelRatio(): number {
 }
 
 // Mirrors agent.pet.constants.CODEX_STATE_ROWS (Petdex current taxonomy).
-export const DEFAULT_STATE_ROWS = [
+const DEFAULT_STATE_ROWS = [
   'idle',
   'running-right',
   'running-left',

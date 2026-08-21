@@ -40,8 +40,6 @@ import path from 'node:path'
 
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
-const IS_WINDOWS = process.platform === 'win32'
-
 const STAMP_COMMIT_RE = /^[0-9a-f]{7,40}$/i
 const FALLBACK_COMMIT_RE = /^0{7,40}$/
 const FALLBACK_BRANCH = 'main'
@@ -1028,10 +1026,7 @@ export {
   installRefForStamp,
   isPinnedCommit,
   // Exposed for testability
-  parseStageResult,
-  resolveCheckoutHead,
   resolveInstallScript,
-  resolveLocalInstallScript,
   resolveMarkerPinnedCommit,
   runBootstrap
 }

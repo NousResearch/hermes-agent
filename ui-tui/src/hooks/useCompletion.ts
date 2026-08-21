@@ -13,7 +13,7 @@ import { listWidgetApps } from '../sdk/registry.js'
  *  app surfaces automatically, no hardcoded lists on either side. Matching is
  *  description-aware (ported from grok-cli's slash menu): `/timer` surfaces a
  *  widget whose help text mentions timers, not just id-prefix hits. */
-export function mergeWidgetAppItems(input: string, items: CompletionItem[]): CompletionItem[] {
+function mergeWidgetAppItems(input: string, items: CompletionItem[]): CompletionItem[] {
   // Only complete the command NAME position (no args typed yet).
   if (input.includes(' ')) {
     return items

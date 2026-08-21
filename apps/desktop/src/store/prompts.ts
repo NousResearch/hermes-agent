@@ -93,11 +93,11 @@ interface PendingApprovalPayload {
   smart_denied?: boolean
 }
 
-export interface SudoRequest extends KeyedPrompt {
+interface SudoRequest extends KeyedPrompt {
   requestId: string
 }
 
-export interface SecretRequest extends KeyedPrompt {
+interface SecretRequest extends KeyedPrompt {
   envVar: string
   prompt: string
   requestId: string

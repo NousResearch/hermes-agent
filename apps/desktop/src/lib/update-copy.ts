@@ -10,7 +10,7 @@
 
 export type UpdateTarget = 'client' | 'backend'
 
-export interface UpdateCopyStrings {
+interface UpdateCopyStrings {
   availableTitle: string
   availableBody: string
   availableTitleBackend: string

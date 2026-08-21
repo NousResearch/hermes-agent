@@ -6,10 +6,10 @@ broadcasts when it *moves*, and the one-shot connect pull can race a still-
 warming backend (`pet.info` fail-opens to `enabled:false`).
 */
 
-export const PET_POLL_MS = 3_000
-export const PET_ACTIVE_REFRESH_MS = 15_000
+const PET_POLL_MS = 3_000
+const PET_ACTIVE_REFRESH_MS = 15_000
 /** Slow safety net when `pet.changed` is available. */
-export const PET_BACKSTOP_MS = 15_000
+const PET_BACKSTOP_MS = 15_000
 /** Cold-start retries after the first connect pull (fail-open recovery). */
 export const PET_STARTUP_RETRY_MS = [1_000, 3_000, 8_000] as const
 

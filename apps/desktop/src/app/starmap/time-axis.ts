@@ -5,7 +5,7 @@ import { clamp } from './geometry'
 // Empty lead-in: push the oldest node off 0 so the timeline opens on a beat of
 // emptiness (you watch the first node grow in). Radial position is otherwise a
 // truthful linear map of time, so rings line up with the nodes they date.
-export const LEAD_IN = 0.06
+const LEAD_IN = 0.06
 export const recForRatio = (ratio: number): number => LEAD_IN + (1 - LEAD_IN) * clamp(ratio, 0, 1)
 
 export interface Recency {
@@ -53,7 +53,7 @@ export function computeRecency(nodes: StarmapNode[]): Recency {
   return { maxTs, minTs, rec, timed }
 }
 
-export interface TimeBucket {
+interface TimeBucket {
   memory: number
   skill: number
   total: number

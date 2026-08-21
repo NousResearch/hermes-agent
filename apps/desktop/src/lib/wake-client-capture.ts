@@ -10,7 +10,7 @@
 const TARGET_RATE = 16_000
 const DEFAULT_FRAME = 1280 // 80 ms @ 16 kHz — matches tools/wake_word.py
 
-export type WakeFeedRequester = (method: string, params?: Record<string, unknown>) => Promise<unknown>
+type WakeFeedRequester = (method: string, params?: Record<string, unknown>) => Promise<unknown>
 
 export interface ClientWakeCaptureOptions {
   /** Samples per frame at 16 kHz (from wake.start response). */

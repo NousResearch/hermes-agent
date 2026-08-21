@@ -9,7 +9,7 @@ export interface ProjectIdeaTemplate {
   idea: string
 }
 
-export const PROJECT_IDEA_TEMPLATES: ProjectIdeaTemplate[] = [
+const PROJECT_IDEA_TEMPLATES: ProjectIdeaTemplate[] = [
   {
     emoji: '🎮',
     label: 'Game jam',

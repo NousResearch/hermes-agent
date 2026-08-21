@@ -10,7 +10,7 @@
 
 import type { UpdateTarget } from '@/lib/update-copy'
 
-export interface VersionStatusCopy {
+interface VersionStatusCopy {
   backendLabel: (version: string) => string
   backendVersion: (version: string) => string
   branch: (branch: string) => string

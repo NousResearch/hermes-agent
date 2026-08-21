@@ -34,7 +34,7 @@ import {
 } from './profile'
 
 /** Filename of the overlay inside the archive (profile root). */
-export const DESKTOP_OVERLAY_FILENAME = 'desktop.json'
+const DESKTOP_OVERLAY_FILENAME = 'desktop.json'
 
 const OVERLAY_VERSION = 1
 
@@ -135,7 +135,7 @@ export function applyDesktopOverlay(profile: string, overlay: null | ProfileDesk
 }
 
 /** Import an archive, apply its desktop overlay, return the new profile name. */
-export async function importProfileBundle(archive: string, name?: string): Promise<string> {
+async function importProfileBundle(archive: string, name?: string): Promise<string> {
   const result = await importProfileArchive(archive, name)
   applyDesktopOverlay(result.name, result.desktop)
 
@@ -143,7 +143,7 @@ export async function importProfileBundle(archive: string, name?: string): Promi
 }
 
 /** The profile the export pickers should default to — the active one. */
-export function activeProfileKey(): string {
+function activeProfileKey(): string {
   return normalizeProfileKey($activeGatewayProfile.get())
 }
 

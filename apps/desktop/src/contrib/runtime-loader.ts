@@ -99,7 +99,7 @@ async function verifyIntegrity(source: string, integrity: string): Promise<boole
   return actual === expected
 }
 
-export function unloadRuntimePlugin(id: string): void {
+function unloadRuntimePlugin(id: string): void {
   loaded.get(id)?.forEach(dispose => dispose())
   loaded.delete(id)
 }

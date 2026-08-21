@@ -15,86 +15,6 @@
 
 import React, { Fragment, useEffect, useState } from "react";
 
-/** Slot locations the built-in shell renders. Plugins declaring any of
- *  these in their manifest's `slots` field get wired in automatically.
- *
- *  Shell-wide slots:
- *  - `backdrop`         — optional full-viewport background decoration;
- *                         mounted behind shell chrome at z-0
- *  - `header-left`      — injected before the Hermes brand in the top bar
- *  - `header-right`     — injected before the theme/language switchers
- *  - `header-banner`    — injected below the top nav bar, full-width
- *  - `sidebar`          — the cockpit sidebar rail (only rendered when
- *                         `layoutVariant === "cockpit"`)
- *  - `pre-main`         — rendered above the route outlet (inside `<main>`)
- *  - `post-main`        — rendered below the route outlet (inside `<main>`)
- *  - `footer-left`      — replaces the left footer cell content
- *  - `footer-right`     — replaces the right footer cell content
- *  - `overlay`          — fixed-position layer above everything else;
- *                         useful for chrome (scanlines, vignettes) the
- *                         theme's customCSS can't achieve alone
- *
- *  Page-scoped slots (rendered inside a specific built-in page — use these
- *  to inject widgets, cards, or toolbars into existing pages without
- *  overriding the whole route):
- *  - `sessions:top`     — top of /sessions page (above session list)
- *  - `sessions:bottom`  — bottom of /sessions page
- *  - `analytics:top`    — top of /analytics page
- *  - `analytics:bottom` — bottom of /analytics page
- *  - `logs:top`         — top of /logs page (above filter toolbar)
- *  - `logs:bottom`      — bottom of /logs page (below log viewer)
- *  - `cron:top`         — top of /cron page
- *  - `cron:bottom`      — bottom of /cron page
- *  - `skills:top`       — top of /skills page
- *  - `skills:bottom`    — bottom of /skills page
- *  - `plugins:top`       — top of /plugins page
- *  - `plugins:bottom`    — bottom of /plugins page
- *  - `config:top`       — top of /config page
- *  - `config:bottom`    — bottom of /config page
- *  - `env:top`          — top of /env (Keys) page
- *  - `env:bottom`       — bottom of /env (Keys) page
- *  - `docs:top`         — top of /docs page (above the docs iframe)
- *  - `docs:bottom`      — bottom of /docs page
- *  - `chat:top`         — top of /chat page (above the composer, when embedded chat is on)
- *  - `chat:bottom`      — bottom of /chat page
- */
-export const KNOWN_SLOT_NAMES = [
-  // Shell-wide
-  "backdrop",
-  "header-left",
-  "header-right",
-  "header-banner",
-  "sidebar",
-  "pre-main",
-  "post-main",
-  "footer-left",
-  "footer-right",
-  "overlay",
-  // Page-scoped
-  "sessions:top",
-  "sessions:bottom",
-  "analytics:top",
-  "analytics:bottom",
-  "logs:top",
-  "logs:bottom",
-  "cron:top",
-  "cron:bottom",
-  "skills:top",
-  "skills:bottom",
-  "plugins:top",
-  "plugins:bottom",
-  "config:top",
-  "config:bottom",
-  "env:top",
-  "env:bottom",
-  "docs:top",
-  "docs:bottom",
-  "chat:top",
-  "chat:bottom",
-] as const;
-
-export type KnownSlotName = (typeof KNOWN_SLOT_NAMES)[number];
-
 type SlotListener = () => void;
 
 interface SlotEntry {
@@ -136,31 +56,16 @@ export function registerSlot(
 
 /** Read current entries for a slot. Returns a copy so callers can't mutate
  *  registry state. */
-export function getSlotEntries(slot: string): SlotEntry[] {
+function getSlotEntries(slot: string): SlotEntry[] {
   return (_slotRegistry.get(slot) ?? []).slice();
 }
 
 /** Subscribe to registry changes. Returns an unsubscribe function. */
-export function onSlotRegistered(fn: SlotListener): () => void {
+function onSlotRegistered(fn: SlotListener): () => void {
   _slotListeners.add(fn);
   return () => {
     _slotListeners.delete(fn);
   };
-}
-
-/** Clear a specific plugin's slot registrations. Useful for HMR /
- *  plugin reload flows — not wired in by default. */
-export function unregisterPluginSlots(plugin: string): void {
-  let changed = false;
-  for (const [slot, entries] of _slotRegistry.entries()) {
-    const kept = entries.filter((e) => e.plugin !== plugin);
-    if (kept.length !== entries.length) {
-      changed = true;
-      if (kept.length === 0) _slotRegistry.delete(slot);
-      else _slotRegistry.set(slot, kept);
-    }
-  }
-  if (changed) _notifySlots();
 }
 
 interface PluginSlotProps {

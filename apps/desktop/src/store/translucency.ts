@@ -23,7 +23,6 @@ import {
   type Appearance,
   clampIntensity,
   defaultTranslucencyValues,
-  GLASS_MATERIALS,
   GLASS_SCOPES,
   type GlassMaterial,
   glassMaterialForPicker,
@@ -50,7 +49,6 @@ import { readJson, writeJson } from '@/lib/storage'
 
 export {
   defaultTranslucencyValues,
-  GLASS_MATERIALS,
   GLASS_SCOPES,
   glassMaterialForPicker,
   glassMaterialsFor,
@@ -106,7 +104,7 @@ export const $translucencyBook = atom<TranslucencyBook>(
  * RENDERED mode (background luminance), not the light/dark preference — a
  * skin that keeps a bright surface in "dark" wants light's tint.
  */
-export const $appearance = atom<Appearance>('dark')
+const $appearance = atom<Appearance>('dark')
 
 export function setAppearance(appearance: Appearance): void {
   if ($appearance.get() !== appearance) {

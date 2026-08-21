@@ -42,7 +42,7 @@ const agentPluginRowKey = (row: AgentPluginRow) =>
   row.key ?? [row.name, row.source, row.version, row.description].join('\0')
 
 /** Deep-link anchor for a plugin row (`?tab=plugins&plugin=<id>`). */
-export const pluginElementId = (target: string) => `plugin-${target}`
+const pluginElementId = (target: string) => `plugin-${target}`
 
 function reveal(file: string) {
   void window.hermesDesktop?.revealPath?.(file)?.catch(() => undefined)

@@ -1007,12 +1007,8 @@ export {
   buildInteractiveSshArgs,
   buildMasterArgs,
   classifySshError,
-  CONTROL_PERSIST_SECONDS,
   controlSocketPath,
   createSshProbeConnection,
-  DEFAULT_CONNECT_TIMEOUT_MS,
-  DEFAULT_EXEC_TIMEOUT_MS,
-  DEFAULT_FORWARD_TIMEOUT_MS,
   forwardSpec,
   hostArgs,
   pickLocalPort,
@@ -1023,6 +1019,5 @@ export {
   sshErrorMessage,
   stopTunnelChild,
   target,
-  validateKeyPath,
   validateSshTarget
 }

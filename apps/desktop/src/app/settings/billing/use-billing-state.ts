@@ -8,8 +8,8 @@ import { resolveRefusal } from './errors'
 import type { BillingStateResponse, SubscriptionStateResponse, SubscriptionTierOption, UsageModelData } from './types'
 
 export const EMPTY_BILLING_VALUE = '—'
-export const FALLBACK_PORTAL_BILLING_URL = 'https://portal.nousresearch.com/billing'
-export const FALLBACK_PORTAL_URL = 'https://portal.nousresearch.com'
+const FALLBACK_PORTAL_BILLING_URL = 'https://portal.nousresearch.com/billing'
+const FALLBACK_PORTAL_URL = 'https://portal.nousresearch.com'
 
 // The billing endpoint is the authoritative source of truth for balance / cap /
 // plan — the inference `x-nous-credits-*` headers are best-effort and can drift
@@ -29,7 +29,7 @@ const BILLING_QUERY_OPTIONS = {
   staleTime: 0
 } as const
 
-export interface BillingSummaryItemView {
+interface BillingSummaryItemView {
   label: 'Auto-refill' | 'Balance' | 'Plan'
   tone?: 'muted' | 'primary'
   value: string
@@ -46,13 +46,13 @@ export interface BillingNoticeView {
   tone?: 'info' | 'warn'
 }
 
-export interface BillingRowActionView {
+interface BillingRowActionView {
   disabled?: boolean
   label: string
   url?: string
 }
 
-export interface BillingChipView {
+interface BillingChipView {
   disabled: boolean
   label: string
   /** When set, clicking the chip opens this URL externally. */
@@ -81,7 +81,7 @@ export interface BillingAccountRowView {
  * names its target tier (and marks it in the grid); a cancellation has no target
  * (the whole plan lapses), so the grid shows no marker for it.
  */
-export type PendingPlanTransition =
+type PendingPlanTransition =
   { kind: 'cancellation'; when: string } | { kind: 'downgrade'; tierName: string; when: string }
 
 /**

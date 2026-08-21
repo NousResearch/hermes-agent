@@ -13,7 +13,7 @@ import type { MessageReaction } from '@/types/hermes'
 const EMPTY_REACTIONS: MessageReaction[] = []
 
 /** The tapback a double-click lands: Apple's first Tapback, and ours. */
-export const DOUBLE_CLICK_REACTION = QUICK_REACTIONS[0]
+const DOUBLE_CLICK_REACTION = QUICK_REACTIONS[0]
 
 // Double-click means something else on these: links and controls act, inputs
 // and code blocks select. The gesture only claims plain message body.

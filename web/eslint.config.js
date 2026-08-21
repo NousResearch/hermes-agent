@@ -20,6 +20,11 @@ export default defineConfig([
       globals: globals.browser,
     },
     rules: {
+      // Strip dead imports under `--fix`; unused locals are still report-only.
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { enableAutofixRemoval: { imports: true } },
+      ],
       // Context providers and hook files commonly export both a component
       // (the Provider) and a hook (useContext). Allow constant exports so
       // these don't need to be split into separate files.

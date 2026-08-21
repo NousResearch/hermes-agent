@@ -2,7 +2,7 @@ import { getHeapStatistics } from 'node:v8'
 
 import { type HeapDumpResult, performHeapDump } from './memory.js'
 
-export type MemoryLevel = 'critical' | 'high' | 'normal'
+type MemoryLevel = 'critical' | 'high' | 'normal'
 
 export interface MemorySnapshot {
   heapUsed: number

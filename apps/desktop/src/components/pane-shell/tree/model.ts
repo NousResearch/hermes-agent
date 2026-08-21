@@ -46,10 +46,8 @@ export type LayoutNode = SplitNode | GroupNode
 /** Where a dragged pane lands relative to a target group. */
 export type DropPosition = 'center' | 'left' | 'right' | 'top' | 'bottom'
 
-export type RootEdge = 'left' | 'right' | 'top' | 'bottom'
-
 let seq = 0
-export const nodeId = (kind: string) => `${kind}-${Date.now().toString(36)}-${(seq++).toString(36)}`
+const nodeId = (kind: string) => `${kind}-${Date.now().toString(36)}-${(seq++).toString(36)}`
 
 export const group = (panes: string[], options?: Partial<Omit<GroupNode, 'type' | 'panes'>>): GroupNode => ({
   type: 'group',
@@ -532,14 +530,6 @@ export function setGroupMinimized(root: LayoutNode, groupId: string, minimized: 
 
 export function setGroupHeaderHidden(root: LayoutNode, groupId: string, headerHidden: boolean): LayoutNode {
   return mapGroups(root, g => (g.id === groupId ? { ...g, headerHidden } : g))
-}
-
-function replaceNode(node: LayoutNode, id: string, make: (g: GroupNode) => LayoutNode): LayoutNode {
-  if (node.type === 'group') {
-    return node.id === id ? make(node) : node
-  }
-
-  return { ...node, children: node.children.map(c => replaceNode(c, id, make)) }
 }
 
 /** Mirror the layout HORIZONTALLY (the titlebar flip toggle / ⌘\): reverse

@@ -24,7 +24,7 @@ interface MediaProtocolTarget {
   profile?: string
 }
 
-export interface MediaRemoteConnection {
+interface MediaRemoteConnection {
   authMode?: 'oauth' | 'token'
   baseUrl: string
   mode?: 'local' | 'remote'

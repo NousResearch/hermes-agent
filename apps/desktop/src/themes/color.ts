@@ -17,7 +17,7 @@ export function hexToRgb(hex: string): [number, number, number] | null {
   return [0, 2, 4].map(i => parseInt(clean.slice(i, i + 2), 16)) as [number, number, number]
 }
 
-export const rgbToHex = ([r, g, b]: [number, number, number]): string =>
+const rgbToHex = ([r, g, b]: [number, number, number]): string =>
   `#${[r, g, b]
     .map(n =>
       Math.round(Math.min(255, Math.max(0, n)))
@@ -39,7 +39,7 @@ const linearize = (channel: number): number =>
   channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
 
 /** WCAG relative luminance (gamma-corrected), 0..1. */
-export function relativeLuminance(hex: string): number {
+function relativeLuminance(hex: string): number {
   const rgb = hexToRgb(hex)
 
   if (!rgb) {

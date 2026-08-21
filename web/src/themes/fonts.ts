@@ -27,7 +27,7 @@ const SYSTEM_MONO =
 const SYSTEM_SERIF =
   'Georgia, Cambria, "Times New Roman", Times, serif';
 
-export type FontCategory = "sans" | "serif" | "mono";
+type FontCategory = "sans" | "serif" | "mono";
 
 export interface FontChoice {
   /** Stable id persisted in config / localStorage. */
@@ -152,9 +152,4 @@ const FONT_BY_ID: Record<string, FontChoice> = Object.fromEntries(
 export function getFontChoice(id: string | null | undefined): FontChoice | undefined {
   if (!id || id === THEME_DEFAULT_FONT_ID) return undefined;
   return FONT_BY_ID[id];
-}
-
-/** Whether an id refers to a real catalog font (vs. theme-default/unknown). */
-export function isOverrideFont(id: string | null | undefined): boolean {
-  return getFontChoice(id) !== undefined;
 }

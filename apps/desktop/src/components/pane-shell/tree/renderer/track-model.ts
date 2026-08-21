@@ -173,7 +173,7 @@ export const cssMax = (values: (string | null | undefined)[]): string | undefine
  */
 /** A minimized zone IS its strip: the vertical rail (row) / header (column)
  *  are both 28px thick. */
-export const MINIMIZED_TRACK = '1.75rem'
+const MINIMIZED_TRACK = '1.75rem'
 
 /**
  * In an all-fixed split, the last uncapped track may absorb leftover space

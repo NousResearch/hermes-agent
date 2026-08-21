@@ -55,9 +55,3 @@ export function previewName(target: string): string {
     return target.split(/[\\/]/).filter(Boolean).pop() || target
   }
 }
-
-export function previewDisplayLabel(target: string): string {
-  const escaped = previewName(target).replace(/[[\]\\]/g, '\\$&')
-
-  return `Preview: ${escaped}`
-}

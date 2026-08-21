@@ -242,11 +242,11 @@ describe('scanVenvBlockers', () => {
   })
 
   function execReturn(json: string): any {
-    return (async (...args: any[]) => ({ stdout: json, stderr: '' })) as any
+    return (async () => ({ stdout: json, stderr: '' })) as any
   }
 
   function execThrow(status: number, stderr: string): any {
-    return (async (...args: any[]) => {
+    return (async () => {
       const e: any = new Error()
       e.status = status
       e.stderr = Buffer.from(stderr)

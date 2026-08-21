@@ -105,4 +105,3 @@ function describeDevCdpDecision(decision: DevCdpDecision): string | null {
 }
 
 export { DEFAULT_PORT, describeDevCdpDecision, resolveDevCdpPort }
-export type { DevCdpDecision }

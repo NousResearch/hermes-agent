@@ -9,7 +9,7 @@
  * describing symptoms instead of showing a stack.
  */
 
-export interface CrashForensicsTarget {
+interface CrashForensicsTarget {
   on: (event: 'uncaughtException' | 'unhandledRejection', listener: (value: unknown) => void) => unknown
 }
 

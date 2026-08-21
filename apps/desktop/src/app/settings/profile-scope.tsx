@@ -10,7 +10,7 @@ import { $settingsScopeOverride, setSettingsScope } from '@/store/settings-scope
 // connection overrides (gateway-settings ScopeChip). That one stays local to
 // gateway-settings — its `null` chip means "all profiles", while here every
 // chip is a concrete profile whose config the page edits.
-export function ScopeChip({ active, label, onSelect }: { active: boolean; label: string; onSelect: () => void }) {
+function ScopeChip({ active, label, onSelect }: { active: boolean; label: string; onSelect: () => void }) {
   return (
     <button
       className={cn(

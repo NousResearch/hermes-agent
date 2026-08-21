@@ -55,6 +55,7 @@ interface CodingStatusRowProps {
 export const CodingStatusRow = memo(function CodingStatusRow({
   onBranchOff,
   onConvertBranch,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   onListBranches,
   onOpen,
   onOpenWorktree,

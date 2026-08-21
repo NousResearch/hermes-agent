@@ -30,7 +30,7 @@ export interface McpSetupOutcome {
 
 const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
 
-export const $mcpSetupRequests = atom<Record<string, McpSetupRequest>>({})
+const $mcpSetupRequests = atom<Record<string, McpSetupRequest>>({})
 
 /** The setup request for one specific session — the transcript card reads
  *  this fixed-key view, same shape as `sessionClarifyRequest`. */

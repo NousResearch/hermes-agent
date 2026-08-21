@@ -28,12 +28,12 @@ export interface FloatingViewport {
 const MIN_VISIBLE = 48
 
 /** Gap between a spawned pane and the viewport edge it anchors to. */
-export const FLOATING_MARGIN = 12
+const FLOATING_MARGIN = 12
 
 /** The one non-tiling placement — see renderer/floating-panes.tsx. */
 export const FLOATING_PLACEMENT = 'floating'
 
-export const clamp = (n: number, lo: number, hi: number): number => Math.min(Math.max(n, lo), hi)
+const clamp = (n: number, lo: number, hi: number): number => Math.min(Math.max(n, lo), hi)
 
 /**
  * Clamp a rect into the viewport. Horizontal keeps `MIN_VISIBLE` px on screen

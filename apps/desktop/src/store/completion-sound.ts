@@ -4,7 +4,7 @@ import { persistString, storedString } from '@/lib/storage'
 
 const STORAGE_KEY = 'hermes.desktop.completionSoundVariantId'
 
-export const DEFAULT_COMPLETION_SOUND_VARIANT_ID = 1
+const DEFAULT_COMPLETION_SOUND_VARIANT_ID = 1
 
 // Range mirrors COMPLETION_SOUND_VARIANTS in lib/completion-sound.ts. Validating
 // by range (not membership) keeps this store free of a dependency on the lib,

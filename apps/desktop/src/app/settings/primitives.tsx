@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react'
 
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { triggerHaptic } from '@/lib/haptics'
@@ -72,36 +71,6 @@ export function SettingsSection({
       <SectionHeading aside={aside} icon={icon} meta={meta} title={title} />
       {children}
     </section>
-  )
-}
-
-export function NavLink({
-  icon: Icon,
-  label,
-  active,
-  onClick
-}: {
-  icon: IconComponent
-  label: string
-  active: boolean
-  onClick: () => void
-}) {
-  return (
-    <Button
-      className={cn(
-        'flex min-h-7 w-full justify-start gap-2 rounded-md px-2 text-left text-[length:var(--conversation-text-font-size)] transition',
-        active
-          ? 'bg-(--ui-bg-tertiary) text-foreground'
-          : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
-      )}
-      onClick={onClick}
-      size="sm"
-      type="button"
-      variant="ghost"
-    >
-      <Icon className="size-4 shrink-0" />
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-    </Button>
   )
 }
 

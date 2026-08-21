@@ -71,14 +71,3 @@ export function recordTranscriptBackfillPage(storedSessionId: string, page: Tail
 export function transcriptTailState(storedSessionId: null | string | undefined): TranscriptTailState | undefined {
   return storedSessionId ? $transcriptTailBySessionId.get()[storedSessionId] : undefined
 }
-
-export function clearTranscriptTail(storedSessionId: string): void {
-  const current = $transcriptTailBySessionId.get()
-
-  if (!(storedSessionId in current)) {
-    return
-  }
-
-  const { [storedSessionId]: _dropped, ...rest } = current
-  $transcriptTailBySessionId.set(rest)
-}

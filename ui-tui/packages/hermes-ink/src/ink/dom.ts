@@ -474,10 +474,6 @@ export const setTextNodeValue = (node: TextNode, text: string): void => {
   markDirty(node)
 }
 
-function isDOMElement(node: DOMElement | TextNode): node is DOMElement {
-  return node.nodeName !== '#text'
-}
-
 // Clear yogaNode references recursively before freeing.
 // freeRecursive() frees the node and ALL its children, so we must clear
 // all yogaNode references to prevent dangling pointers.

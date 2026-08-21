@@ -1,8 +1,8 @@
-export interface SetupStatusSnapshot {
+interface SetupStatusSnapshot {
   provider_configured?: boolean
 }
 
-export interface RuntimeCheckSnapshot {
+interface RuntimeCheckSnapshot {
   error?: string
   ok?: boolean
 }

@@ -78,13 +78,6 @@ export interface SessionCompressResponse {
   usage?: Partial<UsageStats>
 }
 
-export interface SessionSteerResponse {
-  // 'queued' == accepted into the live turn's steer slot (injected at the next
-  // tool-result boundary); 'rejected' == no live tool window, caller queues.
-  status?: 'queued' | 'rejected'
-  text?: string
-}
-
 export interface SessionRedirectResponse {
   status?: 'redirected' | 'queued' | 'rejected'
   text?: string
@@ -118,17 +111,17 @@ export interface HandoffFailResponse {
   state?: string
 }
 
-export interface ExecCommandDispatchResponse {
+interface ExecCommandDispatchResponse {
   type: 'exec' | 'plugin'
   output?: string
 }
 
-export interface AliasCommandDispatchResponse {
+interface AliasCommandDispatchResponse {
   type: 'alias'
   target: string
 }
 
-export interface SkillCommandDispatchResponse {
+interface SkillCommandDispatchResponse {
   type: 'skill'
   name: string
   message?: string
@@ -137,7 +130,7 @@ export interface SkillCommandDispatchResponse {
   display?: string
 }
 
-export interface SendCommandDispatchResponse {
+interface SendCommandDispatchResponse {
   type: 'send'
   message: string
   notice?: string
@@ -145,7 +138,7 @@ export interface SendCommandDispatchResponse {
   display?: string
 }
 
-export interface PrefillCommandDispatchResponse {
+interface PrefillCommandDispatchResponse {
   type: 'prefill'
   message: string
   notice?: string
@@ -158,7 +151,7 @@ export type CommandDispatchResponse =
   | SendCommandDispatchResponse
   | PrefillCommandDispatchResponse
 
-export type SidebarNavId = 'artifacts' | 'command-center' | 'cron' | 'messaging' | 'new-session' | 'settings' | 'skills'
+type SidebarNavId = 'artifacts' | 'command-center' | 'cron' | 'messaging' | 'new-session' | 'settings' | 'skills'
 
 export interface SidebarNavItem {
   /** Built-in view id, or a contributed row's namespaced contribution id. */

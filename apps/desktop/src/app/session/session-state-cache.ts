@@ -1,7 +1,7 @@
 import type { ClientSessionState } from '../types'
 
-export const DEFAULT_WARM_SESSION_TRANSCRIPT_COUNT = 24
-export const DEFAULT_WARM_SESSION_TRANSCRIPT_BYTES = 32 * 1024 * 1024
+const DEFAULT_WARM_SESSION_TRANSCRIPT_COUNT = 24
+const DEFAULT_WARM_SESSION_TRANSCRIPT_BYTES = 32 * 1024 * 1024
 
 interface SessionStateCacheLimits {
   maxBytes?: number

@@ -1,8 +1,8 @@
-export const WAKE_INDICATOR_WINDOW_WIDTH = 176
-export const WAKE_INDICATOR_WINDOW_HEIGHT = 52
+const WAKE_INDICATOR_WINDOW_WIDTH = 176
+const WAKE_INDICATOR_WINDOW_HEIGHT = 52
 export const WAKE_INDICATOR_FADE_MS = 500
 
-export const WAKE_INDICATOR_STATES = ['hidden', 'detected', 'capturing'] as const
+const WAKE_INDICATOR_STATES = ['hidden', 'detected', 'capturing'] as const
 
 export type WakeIndicatorState = (typeof WAKE_INDICATOR_STATES)[number]
 

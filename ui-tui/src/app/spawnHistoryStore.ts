@@ -45,8 +45,6 @@ export const $spawnHistory = atom<SpawnSnapshot[]>([])
 export const $spawnDiff = atom<null | SpawnDiffPair>(null)
 
 export const getSpawnHistory = () => $spawnHistory.get()
-export const getSpawnDiff = () => $spawnDiff.get()
-
 export const clearSpawnHistory = () => $spawnHistory.set([])
 export const clearDiffPair = () => $spawnDiff.set(null)
 export const setDiffPair = (pair: SpawnDiffPair) => $spawnDiff.set(pair)

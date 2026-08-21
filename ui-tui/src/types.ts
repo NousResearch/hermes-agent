@@ -48,7 +48,7 @@ export interface SubagentProgress {
   toolsets?: string[]
 }
 
-export interface SubagentOutputEntry {
+interface SubagentOutputEntry {
   isError: boolean
   preview: string
   tool: string
@@ -73,22 +73,6 @@ export interface SubagentAggregate {
   totalTools: number
 }
 
-export interface DelegationStatus {
-  active: {
-    depth?: number
-    goal?: string
-    model?: null | string
-    parent_id?: null | string
-    started_at?: number
-    status?: string
-    subagent_id?: string
-    tool_count?: number
-  }[]
-  max_concurrent_children?: number
-  max_spawn_depth?: number
-  paused: boolean
-}
-
 export interface ApprovalReq {
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
@@ -107,7 +91,7 @@ export interface ConfirmReq {
   title: string
 }
 
-export interface ClarifyBatchQuestion {
+interface ClarifyBatchQuestion {
   choices: string[] | null
   multiSelect?: boolean
   qid: string
@@ -175,7 +159,7 @@ export interface McpServerStatus {
   transport: string
 }
 
-export interface ProjectInfo {
+interface ProjectInfo {
   id: string
   name: string
   primary_path?: null | string
@@ -229,7 +213,7 @@ export interface SecretReq {
   requestId: string
 }
 
-export interface PanelData {
+interface PanelData {
   sections: PanelSection[]
   title: string
 }

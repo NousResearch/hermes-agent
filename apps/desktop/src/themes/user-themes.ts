@@ -152,7 +152,7 @@ export const $marketplaceInstalls = computed($userThemes, themes => {
 
 export const THEMES_AREA = 'themes'
 
-export function contributedThemes(): DesktopTheme[] {
+function contributedThemes(): DesktopTheme[] {
   const seen = new Set<string>()
   const out: DesktopTheme[] = []
 

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 
 type BrowserAudioContext = typeof AudioContext
 
-export interface MicRecorderOptions {
+interface MicRecorderOptions {
   onLevel?: (level: number) => void
   onError?: (error: Error) => void
   onSilence?: () => void

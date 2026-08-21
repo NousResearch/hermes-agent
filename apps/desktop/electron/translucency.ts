@@ -45,8 +45,7 @@ export {
   vibrancyFor,
   windowOpacityFor,
   WINDOWS_BACKGROUND_MATERIALS,
-  WINDOWS_GLASS_MIN_BUILD,
-  type WindowsBackgroundMaterial
+  WINDOWS_GLASS_MIN_BUILD
 } from '../../shared/src/translucency'
 
 /**

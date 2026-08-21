@@ -113,7 +113,7 @@ export function kanbanWorktreeDir(path: string): null | string {
 }
 
 /** Label for a main-checkout lane whose session recorded no branch. */
-export const DEFAULT_BRANCH_LABEL = 'main'
+const DEFAULT_BRANCH_LABEL = 'main'
 
 /** Id of the Home bucket (must match the backend tree's `NO_PROJECT_ID`). */
 export const NO_PROJECT_ID = '__no_project__'
@@ -124,12 +124,11 @@ export const NO_PROJECT_ID = '__no_project__'
  * hand it — a row WITH a cwd that the backend still couldn't place (junk root,
  * deleted workspace) needs the backend's probes, so it waits for the snapshot.
  */
-export const isDetachedSession = (session: SessionInfo): boolean =>
+const isDetachedSession = (session: SessionInfo): boolean =>
   !(session.cwd || '').trim() && !(session.git_repo_root || '').trim()
 
 /** The one definition of a main-checkout lane id (must match the backend tree). */
-export const branchLaneId = (repoRoot: string, branch?: string): string =>
-  `${repoRoot}::branch::${(branch ?? '').trim()}`
+const branchLaneId = (repoRoot: string, branch?: string): string => `${repoRoot}::branch::${(branch ?? '').trim()}`
 
 /** A session's recency stamp (last activity, falling back to creation). */
 export const sessionRecency = (session: SessionInfo): number => session.last_active || session.started_at || 0

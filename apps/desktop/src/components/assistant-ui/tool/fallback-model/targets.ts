@@ -17,7 +17,7 @@ export function isPreviewableTarget(target: string): boolean {
   )
 }
 
-export function stableHash(value: string): string {
+function stableHash(value: string): string {
   let hash = 0
 
   for (let index = 0; index < value.length; index += 1) {
@@ -35,11 +35,7 @@ export function toolPartDisclosureId(part: ToolPart): string {
   return `tool:${part.toolName}:${stableHash(JSON.stringify(part.args ?? ''))}`
 }
 
-export function toolGroupDisclosureId(parts: ToolPart[]): string {
-  return `tool-group:${parts.map(toolPartDisclosureId).join('|')}`
-}
-
-export const URL_PATTERN = /https?:\/\/[^\s'"<>)\]]+/i
+const URL_PATTERN = /https?:\/\/[^\s'"<>)\]]+/i
 
 export function findFirstUrl(...sources: unknown[]): string {
   for (const src of sources) {

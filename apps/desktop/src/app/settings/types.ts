@@ -16,20 +16,11 @@ export type SettingsView =
   | 'providers'
   | 'sessions'
   | `config:${string}`
-export type EnvPatch = Partial<Pick<EnvVarInfo, 'is_set' | 'redacted_value'>>
-
 export interface SettingsPageProps {
   gateway?: HermesGateway | null
   onClose: () => void
   onConfigSaved?: () => void
   onMainModelChanged?: (provider: string, model: string) => void
-}
-
-export interface ProviderGroup {
-  name: string
-  priority: number
-  entries: [string, EnvVarInfo][]
-  hasAnySet: boolean
 }
 
 export interface DesktopConfigSection {

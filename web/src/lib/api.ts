@@ -59,7 +59,7 @@ export function setManagementProfile(name: string): void {
   _managementProfile = (name || "").trim();
 }
 
-export function getManagementProfile(): string {
+function getManagementProfile(): string {
   return _managementProfile;
 }
 
@@ -199,7 +199,7 @@ function pluginPath(name: string): string {
  * Tickets are single-use and TTL=30s — every WS connect attempt must
  * fetch a fresh ticket.
  */
-export async function getWsTicket(): Promise<{ ticket: string; ttl_seconds: number }> {
+async function getWsTicket(): Promise<{ ticket: string; ttl_seconds: number }> {
   const res = await fetch(`${BASE}/api/auth/ws-ticket`, {
     method: "POST",
     credentials: "include",
@@ -1445,7 +1445,7 @@ export interface SkillHubPreview {
   files: string[];
 }
 
-export interface SkillHubScanFinding {
+interface SkillHubScanFinding {
   severity: string;
   category: string;
   file: string;
@@ -1650,7 +1650,7 @@ export interface WebhookCreate {
   deliver_chat_id?: string;
 }
 
-export interface CredentialPoolEntry {
+interface CredentialPoolEntry {
   index: number;
   id: string | null;
   label: string | null;
@@ -1683,7 +1683,7 @@ export interface MemoryStatus {
   builtin_files: { memory: number; user: number };
 }
 
-export interface MemoryProviderExternalDependency {
+interface MemoryProviderExternalDependency {
   name: string;
   install: string;
   check: string;
@@ -1713,7 +1713,7 @@ export interface MemoryProviderSetupResponse {
   status?: MemoryProviderInfo | null;
 }
 
-export interface MemoryProviderFieldOption {
+interface MemoryProviderFieldOption {
   value: string;
   label: string;
   description?: string;
@@ -1808,7 +1808,7 @@ export interface CuratorStatus {
   archive_after_days: number | null;
 }
 
-export interface PortalFeature {
+interface PortalFeature {
   label: string;
   state: string;
 }
@@ -1822,7 +1822,7 @@ export interface PortalStatus {
   features: PortalFeature[];
 }
 
-export interface CheckpointSession {
+interface CheckpointSession {
   session: string;
   files: number;
   bytes: number;
@@ -2131,7 +2131,7 @@ export interface AnalyticsSkillEntry {
   last_used_at: number | null;
 }
 
-export interface AnalyticsSkillsSummary {
+interface AnalyticsSkillsSummary {
   total_skill_loads: number;
   total_skill_edits: number;
   total_skill_actions: number;
@@ -2227,7 +2227,7 @@ export interface ModelsAnalyticsResponse {
   period_days: number;
 }
 
-export interface CronJobRepeat {
+interface CronJobRepeat {
   times: number | null;
   completed?: number;
 }
@@ -2340,7 +2340,7 @@ export interface ToolsetInfo {
   tools: string[];
 }
 
-export interface ToolsetProviderEnvVar {
+interface ToolsetProviderEnvVar {
   key: string;
   prompt: string;
   url: string | null;
@@ -2405,7 +2405,7 @@ export interface ModelInfoResponse {
 
 // ── Model options / assignment types ──────────────────────────────────
 
-export interface ModelOptionProvider {
+interface ModelOptionProvider {
   name: string;
   slug: string;
   models?: string[];
@@ -2483,7 +2483,7 @@ export interface ModelAssignmentRequest {
 
 /** An auxiliary task still pinned to a provider that differs from the
  *  newly-selected main provider after a main-model switch. */
-export interface StaleAuxAssignment {
+interface StaleAuxAssignment {
   task: string;
   provider: string;
   model: string;
@@ -2506,7 +2506,7 @@ export interface ModelAssignmentResponse {
 
 // ── OAuth provider types ────────────────────────────────────────────────
 
-export interface OAuthProviderStatus {
+interface OAuthProviderStatus {
   logged_in: boolean;
   source?: string | null;
   source_label?: string | null;
@@ -2564,7 +2564,7 @@ export interface OAuthPollResponse {
 
 // ── Dashboard theme types ──────────────────────────────────────────────
 
-export interface DashboardThemeSummary {
+interface DashboardThemeSummary {
   description: string;
   label: string;
   name: string;
@@ -2620,7 +2620,7 @@ export interface HubAgentPluginRow {
   user_hidden: boolean;
 }
 
-export interface PluginsHubProviders {
+interface PluginsHubProviders {
   memory_provider: string;
   memory_options: MemoryProviderInfo[];
   context_engine: string;

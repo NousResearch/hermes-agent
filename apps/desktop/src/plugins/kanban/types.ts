@@ -25,7 +25,7 @@ export interface KanbanTask {
   last_heartbeat_at?: null | number
 }
 
-export interface KanbanColumn {
+interface KanbanColumn {
   name: string
   tasks: KanbanTask[]
 }
@@ -58,7 +58,7 @@ export interface Diagnostic {
   data: Record<string, unknown>
 }
 
-export interface KanbanRun {
+interface KanbanRun {
   id: number | string
   profile?: null | string
   status: string
@@ -71,7 +71,7 @@ export interface KanbanRun {
   ended_at?: null | number
 }
 
-export interface KanbanComment {
+interface KanbanComment {
   id: number | string
   author: string
   body: string
@@ -94,7 +94,7 @@ export interface KanbanAttachment {
 /** Fields present only on the detail endpoint (beyond the card's KanbanTask).
  *  `started_at`/`worker_pid`/`last_heartbeat_at` are inherited — they live on
  *  KanbanTask now that the board's liveness arc reads them. */
-export interface KanbanTaskFull extends KanbanTask {
+interface KanbanTaskFull extends KanbanTask {
   result?: null | string
   created_by?: null | string
   /** Per-task worker overrides. Null/absent = the assigned profile's own
@@ -192,7 +192,7 @@ export interface KanbanProfile {
  *  (plugin bundles); see `columnLabel`/`columnHelp` in i18n.ts. Order follows
  *  the backend's BOARD_COLUMNS; anything the backend adds renders via the
  *  fallback. */
-export const COLUMN_META: Record<string, { codicon: string; tone: string }> = {
+const COLUMN_META: Record<string, { codicon: string; tone: string }> = {
   triage: { codicon: 'inbox', tone: 'var(--ui-text-tertiary)' },
   todo: { codicon: 'circle-outline', tone: 'var(--ui-text-secondary)' },
   scheduled: { codicon: 'watch', tone: '#a78bfa' },

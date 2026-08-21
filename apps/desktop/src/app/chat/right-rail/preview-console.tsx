@@ -50,7 +50,7 @@ export function formatLogLine(log: ConsoleEntry): string {
   return `${head} ${log.message}${tail}`.trim()
 }
 
-export function formatConsoleEntries(entries: ConsoleEntry[]): string {
+function formatConsoleEntries(entries: ConsoleEntry[]): string {
   return entries.map(formatLogLine).join('\n')
 }
 

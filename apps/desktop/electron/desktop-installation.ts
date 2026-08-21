@@ -134,4 +134,4 @@ function sshOwnershipId(installationId, scope) {
     .slice(0, 32)
 }
 
-export { INSTALLATION_ID_RE, loadOrCreateInstallationId, parseInstallationId, readInstallationId, sshOwnershipId }
+export { loadOrCreateInstallationId, parseInstallationId, sshOwnershipId }

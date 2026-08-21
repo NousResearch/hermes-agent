@@ -52,7 +52,7 @@ export const parseTodos = (value: unknown): null | TodoItem[] => parse(value, 0)
 
 /** Latest parseable todo list from one message's aui content parts (tool-call
  *  parts named `todo`; live parts carry `todos`, hydrated ones args/result). */
-export function todosFromMessageContent(content: unknown): null | TodoItem[] {
+function todosFromMessageContent(content: unknown): null | TodoItem[] {
   if (!Array.isArray(content)) {
     return null
   }

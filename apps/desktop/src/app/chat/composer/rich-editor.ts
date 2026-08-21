@@ -8,9 +8,7 @@
  */
 import {
   directiveIconElement,
-  directiveIconSvg,
   formatRefValue,
-  refAttrsHtml,
   refChipLabel,
   type SlashChipKind,
   slashIconElement
@@ -63,7 +61,7 @@ function meaningfulNextSibling(node: ChildNode | null): ChildNode | null {
  *  Zero-length text nodes don't count as contents. Chromium leaves them behind
  *  whenever an edit lands next to a `contenteditable=false` chip, and counting
  *  them left an editor the user had emptied looking occupied. */
-export function markEditorEmptiness(editor: HTMLElement) {
+function markEditorEmptiness(editor: HTMLElement) {
   if (Array.from(editor.childNodes).every(isEmptyTextNode)) {
     editor.dataset.empty = ''
   } else {
@@ -86,13 +84,7 @@ export function beginComposerComposition(editor: HTMLElement) {
  *  with. Module-level `/g` regexes carry `lastIndex`, so call sites reset it. */
 export const REF_RE = referenceRe()
 
-const ESC: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }
-
-export function escapeHtml(value: string) {
-  return value.replace(/[&<>"']/g, ch => ESC[ch] || ch)
-}
-
-export function unquoteRef(raw: string) {
+function unquoteRef(raw: string) {
   const head = raw[0]
   const tail = raw[raw.length - 1]
   const quoted = (head === '`' && tail === '`') || (head === '"' && tail === '"') || (head === "'" && tail === "'")
@@ -115,15 +107,6 @@ export function quoteRefValue(value: string) {
   }
 
   return formatRefValue(value)
-}
-
-export function refChipHtml(kind: string, rawValue: string, displayLabel?: string) {
-  const id = unquoteRef(rawValue)
-  const text = `@${kind}:${quoteRefValue(id)}`
-
-  const label = displayLabel || refChipLabel(kind, id)
-
-  return `<span contenteditable="false" title="${escapeHtml(id)}" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" ${refAttrsHtml(kind)}>${directiveIconSvg(kind)}${escapeHtml(label)}</span>`
 }
 
 export function refChipElement(kind: string, rawValue: string, displayLabel?: string) {
@@ -358,7 +341,7 @@ export function insertComposerContentsAtCaret(editor: HTMLElement, text: string,
  *  around contenteditable=false chips on every edit, so any commit path that
  *  demands the whole token inside ONE text node (the old check) degrades to a
  *  full re-render as soon as a chip exists anywhere in the line. */
-export function rangeBeforeCaret(editor: HTMLElement, length: number): Range | null {
+function rangeBeforeCaret(editor: HTMLElement, length: number): Range | null {
   const hit = composerSelectionRange(editor)
 
   if (!hit?.range.collapsed || length <= 0) {
@@ -523,23 +506,6 @@ export function deleteSelectionInEditor(editor: HTMLElement) {
   hit.selection.addRange(hit.range)
 
   return true
-}
-
-/** Serialize a draft string into chip-HTML for the contenteditable surface. */
-export function composerHtml(text: string) {
-  let cursor = 0
-  let html = ''
-
-  REF_RE.lastIndex = 0
-
-  for (const match of text.matchAll(REF_RE)) {
-    const index = match.index ?? 0
-    html += escapeHtml(text.slice(cursor, index)).replace(/\n/g, '<br>')
-    html += refChipHtml(match[1] || 'file', match[2] || '')
-    cursor = index + match[0].length
-  }
-
-  return html + escapeHtml(text.slice(cursor)).replace(/\n/g, '<br>')
 }
 
 /** Walk a DOM subtree back to the plain `@kind:value` text it represents. */

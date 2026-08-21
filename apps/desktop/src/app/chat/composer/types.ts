@@ -5,7 +5,7 @@ import type { HermesGateway } from '@/hermes'
 
 import type { DroppedFile } from '../hooks/use-composer-actions'
 
-export interface ContextSuggestion {
+interface ContextSuggestion {
   text: string
   display: string
   meta?: string

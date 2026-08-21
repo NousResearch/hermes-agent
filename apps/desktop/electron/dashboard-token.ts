@@ -104,7 +104,6 @@ async function adoptServedDashboardToken(baseUrl, spawnToken, { childAlive, labe
 export {
   adoptServedDashboardToken,
   dashboardIndexUrl,
-  DEFAULT_TOKEN_FETCH_TIMEOUT_MS,
   extractInjectedDashboardToken,
   fetchPublicText,
   isForeignBackendToken,

@@ -263,10 +263,6 @@ function saveHiddenStripTabs(next: ReadonlySet<string>) {
   writeJson(HIDDEN_STRIP_TAB_KEY, next.size === 0 ? null : [...next])
 }
 
-export function isStripTabHidden(paneId: string): boolean {
-  return $hiddenStripTabs.get().has(paneId)
-}
-
 /** Would hiding `paneId` leave its zone with no visible tab? Hiding the last
  *  one strands an empty zone (or collapses the whole sidebar with no strip
  *  left to right-click), so the setter refuses and says why. */
@@ -905,7 +901,7 @@ export const $collapsedTreeSides = atom<ReadonlySet<TreeSide>>(new Set())
 // side through its setter, because there the toggles SHOULD move.
 const sideOpeners: Partial<Record<TreeSide, (open: boolean) => void>> = {}
 
-export function setTreeSideCollapsed(side: TreeSide, collapsed: boolean) {
+function setTreeSideCollapsed(side: TreeSide, collapsed: boolean) {
   const next = toggledSet($collapsedTreeSides.get(), side, collapsed)
 
   if (next) {
@@ -988,7 +984,7 @@ export function bindTreeSideVisibility(
  *  the renderer's `rootChildSide`: ⌘B ⇔ the sessions column (left-placement
  *  panes) wherever it sits, ⌘J ⇔ the other side columns. Null for the main
  *  column (never side-collapsed). */
-export function treeSideOfPane(paneId: string): TreeSide | null {
+function treeSideOfPane(paneId: string): TreeSide | null {
   const row = rootRow()
 
   if (!row) {
@@ -1418,7 +1414,7 @@ function commit(next: LayoutNode | null) {
 
 const USER_PLACED_KEY = 'hermes.desktop.userPlacedPanes.v1'
 
-export const $userPlacedPanes = atom<ReadonlySet<string>>(new Set(readJson<string[]>(USER_PLACED_KEY) ?? []))
+const $userPlacedPanes = atom<ReadonlySet<string>>(new Set(readJson<string[]>(USER_PLACED_KEY) ?? []))
 
 function saveUserPlaced(next: ReadonlySet<string>) {
   $userPlacedPanes.set(next)
@@ -1430,62 +1426,6 @@ function markPaneUserPlaced(paneId: string) {
 
   if (next) {
     saveUserPlaced(next)
-  }
-}
-
-/**
- * Dock `paneId` directly beside `anchorPaneId` — the "preview opens NEXT TO
- * the file tree" contract, position-aware: wherever the anchor lives (default
- * rail, flipped via ⌘\, dragged into a stack, tabbed into main), the pane
- * lands adjacent to it. Side rule: an anchor sitting right of the main zone
- * gets the pane on its LEFT (the rail slides open toward the chat — main
- * parity); an anchor left of main, stacked with it, or anywhere else gets it
- * on the RIGHT. Skipped when the USER has placed the pane themselves, or the
- * anchor isn't visible. Idempotent — a pane already beside its anchor is a
- * shape no-op.
- */
-export function dockPaneBeside(paneId: string, anchorPaneId: string) {
-  const tree = $layoutTree.get()
-
-  if (!tree || $userPlacedPanes.get().has(paneId)) {
-    return
-  }
-
-  const panes = registry.getArea('panes')
-  const anchor = findGroupOfPane(tree, anchorPaneId)
-
-  // Anchor must be a live, shown pane — never dock beside a hidden file tree.
-  if (!anchor || $hiddenTreePanes.get().has(anchorPaneId) || !panes.some(c => c.id === anchorPaneId)) {
-    return
-  }
-
-  // The uncloseable main workspace (session tiles are placement:'main' too,
-  // but closeable, so the uncloseable flag disambiguates).
-  const mainId = panes.find(c => {
-    const data = c.data as { placement?: string; uncloseable?: boolean } | undefined
-
-    return data?.placement === 'main' && data.uncloseable
-  })?.id
-
-  const order = allPaneIds(tree)
-
-  const anchorRightOfMain =
-    !!mainId && !anchor.panes.includes(mainId) && order.indexOf(anchorPaneId) > order.indexOf(mainId)
-
-  const pos: DropPosition = anchorRightOfMain ? 'left' : 'right'
-
-  // A dismissed pane re-enters HERE (beside the anchor), not via adoption's
-  // placement fallback — clear the record so the two never disagree.
-  if ($dismissedPanes.get().has(paneId)) {
-    setDismissed(paneId, false)
-  }
-
-  const next = findGroupOfPane(tree, paneId)
-    ? movePaneOp(tree, paneId, { groupId: anchor.id, pos })
-    : insertAtGroup(tree, anchor.id, paneId, pos, undefined, true, recalledEdgeWeights(paneId))
-
-  if (next && next !== tree) {
-    commit(next)
   }
 }
 

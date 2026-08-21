@@ -22,7 +22,7 @@ export interface ReadableLike {
   destroy?: (err?: Error) => void
 }
 
-export interface WriteStreamLike {
+interface WriteStreamLike {
   write(chunk: Buffer): boolean
   end(cb: () => void): void
   destroy(err?: Error): void

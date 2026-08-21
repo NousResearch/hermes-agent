@@ -18,7 +18,7 @@ import { $sessionStates } from './session-states'
  */
 export const $todosBySession = atom<Record<string, TodoItem[]>>({})
 
-export const todoListActive = (todos: readonly TodoItem[]) =>
+const todoListActive = (todos: readonly TodoItem[]) =>
   todos.some(t => t.status === 'pending' || t.status === 'in_progress')
 
 let todoProgress: Readonly<Record<string, string>> = {}

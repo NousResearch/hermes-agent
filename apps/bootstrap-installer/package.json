@@ -19,14 +19,11 @@
     "fix": "npm run lint:fix"
   },
   "dependencies": {
+    "@nanostores/react": "1.1.0",
     "@nous-research/ui": "0.18.2",
     "@tailwindcss/typography": "0.5.20",
     "@tailwindcss/vite": "4.3.3",
     "@tauri-apps/api": "2.11.1",
-    "@tauri-apps/plugin-dialog": "2.7.1",
-    "@tauri-apps/plugin-opener": "2.5.4",
-    "@tauri-apps/plugin-process": "2.3.1",
-    "@tauri-apps/plugin-shell": "2.3.5",
     "@vscode/codicons": "0.0.45",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",

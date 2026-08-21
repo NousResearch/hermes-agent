@@ -21,8 +21,6 @@ import type { Msg, Usage } from '../types.js'
 import { scrollbarColors } from './overlayPrimitives.js'
 
 const FACE_TICK_MS = 2500
-const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
-
 // Keep verb segment width stable so status-bar content to the right doesn't
 // jitter when the ticker rotates between short/long verbs.
 export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
@@ -100,7 +98,7 @@ const indicatorFrameWidth = (style: IndicatorStyle): number => {
 // the reservation/budget stays consistent with what actually renders (it emits
 // a space between units, e.g. `59m 59s` / `99h 59m`). Durations beyond this
 // (100h+) are left to clip rather than reserving unbounded width.
-export const MAX_DURATION_WIDTH = Math.max(
+const MAX_DURATION_WIDTH = Math.max(
   stringWidth(fmtDuration(59 * 60_000 + 59_000)), // "59m 59s"
   stringWidth(fmtDuration(99 * 3_600_000 + 59 * 60_000)) // "99h 59m"
 )

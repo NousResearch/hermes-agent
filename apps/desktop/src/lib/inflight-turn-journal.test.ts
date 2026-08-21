@@ -397,7 +397,7 @@ describe('persistInFlightTurnState', () => {
     }).not.toThrow()
     setItem.mockRestore()
 
-    const removeItem = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
+    vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
       throw new Error('remove denied')
     })
 

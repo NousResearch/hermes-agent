@@ -6,7 +6,7 @@ import { registry } from '@/contrib/registry'
 
 type NavigateLike = (to: string, options?: { replace?: boolean }) => void
 
-export const SESSION_ROUTE_PREFIX = '/'
+const SESSION_ROUTE_PREFIX = '/'
 export const NEW_CHAT_ROUTE = '/'
 export const SETTINGS_ROUTE = '/settings'
 export const COMMAND_CENTER_ROUTE = '/command-center'
@@ -37,7 +37,7 @@ export type AppView =
   | 'starmap'
   | 'webhooks'
 
-export type AppRouteId =
+type AppRouteId =
   | 'agents'
   | 'artifacts'
   | 'command-center'
@@ -50,13 +50,13 @@ export type AppRouteId =
   | 'starmap'
   | 'webhooks'
 
-export interface AppRoute {
+interface AppRoute {
   id: AppRouteId
   path: string
   view: AppView
 }
 
-export const APP_ROUTES = [
+const APP_ROUTES = [
   { id: 'new', path: NEW_CHAT_ROUTE, view: 'chat' },
   { id: 'settings', path: SETTINGS_ROUTE, view: 'settings' },
   { id: 'command-center', path: COMMAND_CENTER_ROUTE, view: 'command-center' },
@@ -122,7 +122,7 @@ export interface SidebarNavContribution {
 // Views that render as a full-screen modal card (OverlayView) over the shell.
 // While one is open the app's titlebar control clusters must hide so they don't
 // bleed over the overlay (they sit at a higher z-index than the overlay card).
-export const OVERLAY_VIEWS: ReadonlySet<AppView> = new Set([
+const OVERLAY_VIEWS: ReadonlySet<AppView> = new Set([
   'agents',
   'command-center',
   'cron',

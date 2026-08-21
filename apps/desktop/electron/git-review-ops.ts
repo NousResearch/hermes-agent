@@ -881,7 +881,6 @@ async function repoStatus(repoPath, gitBin) {
 }
 
 export {
-  branchBase,
   fileDiffVsHead,
   gitFor,
   repoStatus,

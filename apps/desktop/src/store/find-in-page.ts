@@ -212,15 +212,3 @@ export function initOpenFindBarListener(): () => void {
     }
   }
 }
-
-/** Test seam: number of live "open find bar" subscriptions. */
-export function openFindBarListenerCount(): number {
-  return openFindBarRefs
-}
-
-/** Test seam: detach the open-find-bar bridge listener and zero the refcount. */
-export function resetOpenFindBarListenerForTest(): void {
-  detachOpenFindBar?.()
-  detachOpenFindBar = undefined
-  openFindBarRefs = 0
-}

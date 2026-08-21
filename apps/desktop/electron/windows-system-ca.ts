@@ -50,4 +50,4 @@ function installWindowsSystemCaTrust(tlsApi: NodeTlsCaApi, platform = process.pl
 }
 
 export { installWindowsSystemCaTrust }
-export type { NodeTlsCaApi, WindowsSystemCaResult }
+export type { NodeTlsCaApi }

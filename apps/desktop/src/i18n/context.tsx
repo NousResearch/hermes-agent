@@ -35,11 +35,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-export function getConfigDisplayLanguage(config: HermesConfigRecord): unknown {
+function getConfigDisplayLanguage(config: HermesConfigRecord): unknown {
   return isRecord(config.display) ? config.display.language : undefined
 }
 
-export function withConfigDisplayLanguage(config: HermesConfigRecord, locale: Locale): HermesConfigRecord {
+function withConfigDisplayLanguage(config: HermesConfigRecord, locale: Locale): HermesConfigRecord {
   const display = isRecord(config.display) ? config.display : {}
 
   return {

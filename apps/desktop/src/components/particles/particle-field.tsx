@@ -38,7 +38,7 @@ export interface ParticleFieldConfig {
   maxAlive: number
 }
 
-export const DEFAULT_PARTICLE_CONFIG: ParticleFieldConfig = {
+const DEFAULT_PARTICLE_CONFIG: ParticleFieldConfig = {
   count: 12,
   spawnWindowMs: 550,
   size: [6, 13],

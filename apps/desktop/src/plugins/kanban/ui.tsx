@@ -48,7 +48,7 @@ export function useDefaultAssignee(): string {
 // claimed by the dispatcher; `scheduled` needs a wake-up time only an agent or
 // the CLI can attach (a bare status drag is refused with a 409). The reason
 // copy lives in the plugin i18n bundle (`locked.*`); see `lockedReason`.
-export const LOCKED_COLUMNS = ['review', 'running', 'scheduled'] as const
+const LOCKED_COLUMNS = ['review', 'running', 'scheduled'] as const
 
 export const isLockedTarget = (name: string): boolean => (LOCKED_COLUMNS as readonly string[]).includes(name)
 

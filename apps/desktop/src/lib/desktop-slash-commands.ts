@@ -1,4 +1,4 @@
-export interface CommandsCatalogSection {
+interface CommandsCatalogSection {
   name: string
   pairs: [string, string][]
 }
@@ -16,7 +16,7 @@ export interface CommandsCatalogLike {
  * Absent on older backends — every helper below degrades to "no ranking,
  * hide nothing".
  */
-export interface SkillCatalogEntry {
+interface SkillCatalogEntry {
   /** Where the skill came from; matches `/api/skills` provenance ('agent' = 'local'). */
   origin?: 'bundled' | 'hub' | 'local'
   /** Observed activity (use + view + patch) — the same number Capabilities shows. */
@@ -63,7 +63,7 @@ export type DesktopActionId =
 export type DesktopPickerId = 'model' | 'session'
 
 /** Why a known Hermes command has no desktop UI surface. */
-export type DesktopUnavailableReason = 'advanced' | 'messaging' | 'settings' | 'terminal'
+type DesktopUnavailableReason = 'advanced' | 'messaging' | 'settings' | 'terminal'
 
 /**
  * How the desktop fulfils a command. This is the single discriminator the
@@ -100,7 +100,7 @@ export type DesktopCommandSurface =
  * the typed arg, and the canonical command name so handlers can construct
  * the exact JSON the gateway method expects.
  */
-export interface SlashCommandBuildCtx {
+interface SlashCommandBuildCtx {
   arg: string
   command: string
   name: string
@@ -406,7 +406,7 @@ function normalizeCommand(command: string): string {
   return base
 }
 
-export function canonicalDesktopSlashCommand(command: string): string {
+function canonicalDesktopSlashCommand(command: string): string {
   const normalized = normalizeCommand(command)
 
   return ALIAS_TO_CANONICAL.get(normalized) || normalized

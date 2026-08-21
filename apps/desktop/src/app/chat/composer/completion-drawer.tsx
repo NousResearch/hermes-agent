@@ -1,5 +1,3 @@
-import type { Unstable_TriggerAdapter } from '@assistant-ui/core'
-import { ComposerPrimitive } from '@assistant-ui/react'
 import type { ReactNode } from 'react'
 
 import { composerPanelCard } from '@/components/chat/composer-dock'
@@ -16,30 +14,6 @@ const DRAWER_SHELL = cn(
 export const COMPLETION_DRAWER_CLASS = cn(DRAWER_SHELL, 'bottom-full mb-1')
 
 export const COMPLETION_DRAWER_BELOW_CLASS = cn(DRAWER_SHELL, 'top-full mt-1')
-
-export function ComposerCompletionDrawer({
-  adapter,
-  ariaLabel,
-  char,
-  children
-}: {
-  adapter: Unstable_TriggerAdapter
-  ariaLabel: string
-  char: string
-  children: ReactNode
-}) {
-  return (
-    <ComposerPrimitive.Unstable_TriggerPopover
-      adapter={adapter}
-      aria-label={ariaLabel}
-      char={char}
-      className={COMPLETION_DRAWER_CLASS}
-      data-slot="composer-completion-drawer"
-    >
-      {children}
-    </ComposerPrimitive.Unstable_TriggerPopover>
-  )
-}
 
 export function CompletionDrawerEmpty({ children, title }: { children?: ReactNode; title: string }) {
   return (

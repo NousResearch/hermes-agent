@@ -93,7 +93,7 @@ describe('$sessionColorOverrides', () => {
   it('keys on the durable lineage id so a color survives compression', () => {
     // The live id rotates on auto-compression; the override is stored against the
     // lineage root, so the continuation tip still resolves to the same color.
-    const root = makeCwdSession('/x', { id: 'root' })
+    makeCwdSession('/x', { id: 'root' })
     const tip = makeCwdSession('/x', { id: 'tip', _lineage_root_id: 'root' })
 
     setSessionColorOverride('root', '#abcdef')

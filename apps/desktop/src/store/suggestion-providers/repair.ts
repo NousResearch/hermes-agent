@@ -137,7 +137,7 @@ export function reportMcpToolResult(
 }
 
 /** Withdraw a server's repair offer (reconnected, or server removed). */
-export function clearMcpFailure(sessionId: string | null | undefined, server: string): void {
+function clearMcpFailure(sessionId: string | null | undefined, server: string): void {
   if (failed.get(keyFor(sessionId))?.delete(server)) {
     publish(sessionId)
   }

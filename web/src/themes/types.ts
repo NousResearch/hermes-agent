@@ -201,8 +201,3 @@ export interface ThemeListEntry {
    *  client already has those in `BUILTIN_THEMES`). */
   definition?: DashboardTheme;
 }
-
-export interface ThemeListResponse {
-  active: string;
-  themes: ThemeListEntry[];
-}

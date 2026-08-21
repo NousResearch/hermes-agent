@@ -207,7 +207,7 @@ export function openExternalLink(href: string): void {
  * the modifier every app uses for "open this somewhere else". Middle-click
  * counts too: it is the other half of the same convention.
  */
-export function wantsNativeBrowser(event: Pick<MouseEvent, 'button' | 'ctrlKey' | 'metaKey'>): boolean {
+function wantsNativeBrowser(event: Pick<MouseEvent, 'button' | 'ctrlKey' | 'metaKey'>): boolean {
   return event.button === 1 || (IS_MAC ? event.metaKey : event.ctrlKey)
 }
 
@@ -265,7 +265,7 @@ export function ExternalLinkIcon({ className }: { className?: string }) {
 // `title=""` is load-bearing: Simple Icons always renders a <title> defaulting
 // to the brand name, which lands in the anchor's textContent and accessible
 // name — a PR link would read "GitHub#123".
-export function LinkBrandIcon({ className, href }: { className?: string; href: string }) {
+function LinkBrandIcon({ className, href }: { className?: string; href: string }) {
   const Icon = resolveBrandIcon(shortHostLabel(href))
 
   return Icon ? (

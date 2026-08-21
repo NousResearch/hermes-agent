@@ -47,7 +47,6 @@
     "signal-exit": "4.1.0",
     "stack-utils": "2.0.6",
     "strip-ansi": "7.2.0",
-    "supports-hyperlinks": "3.2.0",
     "type-fest": "4.41.0",
     "usehooks-ts": "3.1.1",
     "wrap-ansi": "9.0.2"

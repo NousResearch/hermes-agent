@@ -109,10 +109,7 @@ async function defaultResolveProfile(storedSessionId: string): Promise<string | 
  * in-memory runtime id (sleep/wake, remote backend restart, long idle).
  * Returns the fresh live id, or null when the resume yields none.
  */
-export async function resumeStoredRuntimeSession(
-  storedSessionId: string,
-  deps: SessionRecoveryDeps
-): Promise<null | string> {
+async function resumeStoredRuntimeSession(storedSessionId: string, deps: SessionRecoveryDeps): Promise<null | string> {
   const resolveProfile = deps.resolveProfile ?? defaultResolveProfile
   const profile = await resolveProfile(storedSessionId)
 
@@ -223,7 +220,7 @@ export function isTargetSessionBusy(
 // session on the client side — recovery must treat it like one (#55578):
 // resume the SELECTED stored session and retry, instead of surfacing an error
 // that leads to a null activeSessionId and a silently minted new session.
-export function isGatewayTimeoutError(error: unknown): boolean {
+function isGatewayTimeoutError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
 
   return /request timed out/i.test(message)
@@ -234,8 +231,8 @@ export function isGatewayTimeoutError(error: unknown): boolean {
 // submit racing the settle edge (or a rewind interrupting mid-turn) just waits
 // a beat for the turn to wind down, then lands. Bounded so a genuinely stuck
 // turn still surfaces eventually.
-export const SESSION_BUSY_RETRY_TIMEOUT_MS = 6_000
-export const SESSION_BUSY_RETRY_INTERVAL_MS = 150
+const SESSION_BUSY_RETRY_TIMEOUT_MS = 6_000
+const SESSION_BUSY_RETRY_INTERVAL_MS = 150
 
 export function isSessionBusyError(error: unknown): boolean {
   return /session busy/i.test(error instanceof Error ? error.message : String(error))
@@ -603,7 +600,7 @@ export function appendText(message: AppendMessage): string {
 /** The one visible-user filter every user-ordinal computation must share —
  *  truncate ordinals, ordinal→index resolution, and survivor-rowId rebinding
  *  all rely on counting exactly the same turns. */
-export function isVisibleUserMessage(message: ChatMessage): boolean {
+function isVisibleUserMessage(message: ChatMessage): boolean {
   return message.role === 'user' && !message.hidden
 }
 

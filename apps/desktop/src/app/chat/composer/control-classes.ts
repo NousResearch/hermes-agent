@@ -4,7 +4,7 @@ import { cn } from '@/lib/utils'
 // so both the row (`controls.tsx`) and the menus it renders can wear them
 // without importing each other in a cycle.
 
-export const ICON_BTN = 'size-(--composer-control-size) shrink-0 rounded-md'
+const ICON_BTN = 'size-(--composer-control-size) shrink-0 rounded-md'
 
 export const GHOST_ICON_BTN = cn(
   ICON_BTN,

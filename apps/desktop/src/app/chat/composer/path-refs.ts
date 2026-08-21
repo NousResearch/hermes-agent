@@ -24,7 +24,7 @@ const TYPED_BARE_PATH_RE = new RegExp(`${BARE_PATH_RE.source}$`)
 
 /** Trailing `/` means a directory — that's how the gateway's completion emits
  *  folders, and what Tab-descending leaves behind. */
-export function barePathRef(path: string) {
+function barePathRef(path: string) {
   const trimmed = path.replace(/\/+$/, '')
 
   return trimmed ? `@${path.endsWith('/') ? 'folder' : 'file'}:${quoteRefValue(trimmed)}` : null

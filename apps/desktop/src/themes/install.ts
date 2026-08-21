@@ -14,15 +14,7 @@ import { installUserTheme } from './user-themes'
 import { convertVscodeColorTheme, parseVscodeTheme, vscodeThemeSlug } from './vscode'
 
 /** A `publisher.extension` id, e.g. `dracula-theme.theme-dracula`. */
-export const MARKETPLACE_ID_RE = /^[\w-]+\.[\w-]+$/
-
-/** Parse + convert + persist a pasted VS Code theme JSON. */
-export function installVscodeThemeFromText(text: string, opts?: { label?: string; source?: string }): DesktopTheme {
-  const raw = parseVscodeTheme(text)
-  const { theme } = convertVscodeColorTheme(raw, opts)
-
-  return installUserTheme(theme)
-}
+const MARKETPLACE_ID_RE = /^[\w-]+\.[\w-]+$/
 
 /**
  * Fold every color theme an extension contributes into ONE desktop theme family.

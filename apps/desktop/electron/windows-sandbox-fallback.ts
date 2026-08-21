@@ -38,7 +38,7 @@ export const WINDOWS_SANDBOX_BREAKPOINT_EXIT = -2147483645
 /** Consecutive mid-boot aborts required before enabling --no-sandbox. */
 export const BOOT_ABORTS_BEFORE_FALLBACK = 2
 
-export type SandboxMarkerState = 'booting' | 'fallback' | 'ok'
+type SandboxMarkerState = 'booting' | 'fallback' | 'ok'
 
 export type SandboxFallbackReason = 'gpu-breakpoint' | 'renderer-crash-loop' | 'boot-loop'
 

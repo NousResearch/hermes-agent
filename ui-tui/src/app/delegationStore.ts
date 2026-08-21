@@ -23,10 +23,8 @@ export const $delegationState = atom<DelegationState>(buildState())
 
 export const getDelegationState = () => $delegationState.get()
 
-export const patchDelegationState = (next: Partial<DelegationState>) =>
+const patchDelegationState = (next: Partial<DelegationState>) =>
   $delegationState.set({ ...$delegationState.get(), ...next })
-
-export const resetDelegationState = () => $delegationState.set(buildState())
 
 // ── Overlay accordion open-state ──────────────────────────────────────
 //
@@ -45,12 +43,6 @@ export const toggleOverlaySection = (title: string, defaultOpen: boolean) => {
   const current = title in state ? state[title]! : defaultOpen
 
   $overlaySectionsOpen.set({ ...state, [title]: !current })
-}
-
-export const getOverlaySectionOpen = (title: string, defaultOpen: boolean): boolean => {
-  const state = $overlaySectionsOpen.get()
-
-  return title in state ? state[title]! : defaultOpen
 }
 
 /** Merge a raw RPC response into the store.  Tolerant of partial/omitted fields. */

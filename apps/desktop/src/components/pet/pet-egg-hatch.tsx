@@ -9,33 +9,11 @@
 
 import { PixelEggSprite } from '@/components/pet/pixel-egg-sprite'
 import { Button } from '@/components/ui/button'
-import { Progress } from '@/components/ui/progress'
 
 interface PetEggHatchProps {
   subtitle?: string
   onCancel?: () => void
   cancelLabel?: string
-}
-
-/**
- * Thin progress bar. Determinate when given done/total (hatch rows stream one by
- * one, so a real percentage is meaningful); indeterminate otherwise (drafts
- * return together, so a count would just snap 0→100).
- */
-export function PetProgress({ done, total }: { done?: number; total?: number }) {
-  const determinate = typeof done === 'number' && typeof total === 'number' && total > 0
-
-  return (
-    <Progress
-      animated
-      aria-label="Hatching progress"
-      className="bg-[color-mix(in_srgb,var(--ui-accent)_15%,transparent)]"
-      fillClassName="bg-(--ui-accent)"
-      indeterminate={!determinate}
-      size="sm"
-      value={determinate ? done / total : 0}
-    />
-  )
 }
 
 export function PetEggHatch({ subtitle, onCancel, cancelLabel }: PetEggHatchProps) {

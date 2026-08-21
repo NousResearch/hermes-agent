@@ -2,11 +2,11 @@
 // it is safe to run during render and trivial to unit-test. Rendering lives in
 // the lazy renderers (see ../registry.tsx) keyed off `renderer`.
 
-export type EmbedProvider =
+type EmbedProvider =
   'googlemaps' | 'instagram' | 'openstreetmap' | 'pinterest' | 'spotify' | 'tiktok' | 'twitter' | 'vimeo' | 'youtube'
 
 /** Which lazy renderer materialises the descriptor. */
-export type EmbedRenderer = 'frame' | 'tweet'
+type EmbedRenderer = 'frame' | 'tweet'
 
 interface EmbedLayout {
   /** Frame aspect ratio (width / height). For video/maps. */

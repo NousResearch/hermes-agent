@@ -5,7 +5,7 @@ import {
   ContextMenuSubContent,
   ContextMenuSubTrigger
 } from '@/components/ui/context-menu'
-import {
+import type {
   DropdownMenuItem,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -21,13 +21,6 @@ export interface SplitMenuKit {
   Sub: typeof DropdownMenuSub | typeof ContextMenuSub
   SubContent: typeof DropdownMenuSubContent | typeof ContextMenuSubContent
   SubTrigger: typeof DropdownMenuSubTrigger | typeof ContextMenuSubTrigger
-}
-
-export const DROPDOWN_SPLIT_KIT: SplitMenuKit = {
-  Item: DropdownMenuItem,
-  Sub: DropdownMenuSub,
-  SubContent: DropdownMenuSubContent,
-  SubTrigger: DropdownMenuSubTrigger
 }
 
 export const CONTEXT_SPLIT_KIT: SplitMenuKit = {

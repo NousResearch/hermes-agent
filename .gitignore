@@ -40,7 +40,10 @@ test_durations.json
 .pytest-cache/
 tmp/
 temp_vision_images/
-hermes-*/*
+# Leading slash: git already anchors a mid-pattern slash to the repo root, but
+# tools that read .gitignore with a plain glob matcher (knip) treat the bare
+# form as "any depth" and silently skip ui-tui/packages/hermes-ink/.
+/hermes-*/*
 examples/
 tests/quick_test_dataset.jsonl
 tests/sample_dataset.jsonl

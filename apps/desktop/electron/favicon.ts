@@ -291,7 +291,7 @@ export function imageMime(declared: string, bytes: Uint8Array): string {
   return sniffed || (declared.toLowerCase().includes('svg') ? 'image/svg+xml' : '')
 }
 
-export const toDataUrl = (mime: string, bytes: Uint8Array): string =>
+const toDataUrl = (mime: string, bytes: Uint8Array): string =>
   `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`
 
 /**

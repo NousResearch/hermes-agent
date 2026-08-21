@@ -47,7 +47,7 @@ export function profileNameFromDeleteRequest(request) {
   return profileNameFromPath(request.path)
 }
 
-export type ProfileDeleteAction = 'noop' | 'teardown-primary' | 'teardown-pool'
+type ProfileDeleteAction = 'noop' | 'teardown-primary' | 'teardown-pool'
 
 export interface ProfileDeleteDecision {
   action: ProfileDeleteAction

@@ -69,7 +69,7 @@ export function isActivateOnEnterTarget(target: EventTarget | null): boolean {
  * The choice count rides in the attribute's value, so this stays a DOM read
  * with no store coupling.
  */
-export function clarifyCardOwnsKey(event: KeyboardEvent): boolean {
+function clarifyCardOwnsKey(event: KeyboardEvent): boolean {
   const card = queryVisible(BLOCKING_IN_SURFACE)
 
   if (!card) {

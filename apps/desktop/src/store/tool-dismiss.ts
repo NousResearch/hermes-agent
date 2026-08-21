@@ -13,7 +13,7 @@ type DismissedToolRows = Record<string, true>
 // and the row would pop back. Storing it here survives those remounts for the
 // life of the app session, while a reload restores every row in place rather
 // than permanently rewriting history from a stray click.
-export const $dismissedToolRows = atom<DismissedToolRows>({})
+const $dismissedToolRows = atom<DismissedToolRows>({})
 
 const dismissedCache = new Map<string, ReadableAtom<boolean>>()
 

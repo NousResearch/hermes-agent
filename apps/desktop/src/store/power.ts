@@ -16,7 +16,7 @@ import { atom } from 'nanostores'
 export const $onBattery = atom<boolean>(false)
 
 /** Multiply a backstop poll interval by this on battery. */
-export const BATTERY_POLL_MULTIPLIER = 4
+const BATTERY_POLL_MULTIPLIER = 4
 
 export function batteryPollInterval(intervalMs: number, onBattery: boolean): number {
   return onBattery ? intervalMs * BATTERY_POLL_MULTIPLIER : intervalMs

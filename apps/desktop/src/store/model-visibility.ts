@@ -16,7 +16,7 @@ export const modelVisibilityKey = (provider: string, model: string): string => `
 /** Sentinel key suffix stored when the user explicitly hides ALL models for a
  *  provider.  Distinguishes "user hid everything" from "never customized" so
  *  `effectiveVisibleKeys` does not re-add defaults for that provider. */
-export const EMPTY_PROVIDER_SENTINEL = ''
+const EMPTY_PROVIDER_SENTINEL = ''
 
 /** Build the sentinel key for a provider whose last model was toggled off. */
 export const emptyProviderSentinelKey = (provider: string): string =>

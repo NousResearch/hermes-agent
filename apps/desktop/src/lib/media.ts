@@ -51,10 +51,6 @@ export function isMarkdownDocumentPath(path: string): boolean {
   return ext ? MARKDOWN_EXTENSIONS.has(ext) : false
 }
 
-export function mediaMime(path: string): string {
-  return mediaInfo(path)?.mime ?? 'application/octet-stream'
-}
-
 export function mediaName(path: string): string {
   try {
     const url = new URL(path)
@@ -150,7 +146,7 @@ export function mediaGatewayStreamUrl(path: string): string {
 // Custom Electron scheme (registered in electron/main.ts) that streams a local
 // file with Range support. Used for audio/video so playback bypasses the data
 // URL size cap and supports seeking. `path` may be a plain path or `file://…`.
-export function mediaStreamUrl(path: string): string {
+function mediaStreamUrl(path: string): string {
   return `hermes-media://stream/${encodeURIComponent(filePathFromMediaPath(path))}`
 }
 

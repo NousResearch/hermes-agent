@@ -1200,19 +1200,6 @@ export function TextInput({
     flushParentChange()
   }
 
-  const scheduleKeyBurstCommit = (next: string, nextCur: number) => {
-    commit(next, nextCur, true, false, false)
-
-    if (keyBurstTimer.current) {
-      return
-    }
-
-    keyBurstTimer.current = setTimeout(() => {
-      keyBurstTimer.current = null
-      flushParentChange()
-    }, FRAME_BATCH_MS)
-  }
-
   const clearSel = () => {
     if (!selRef.current) {
       return

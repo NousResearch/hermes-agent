@@ -8,7 +8,7 @@ import { connectionScopedAtom } from '@/lib/connection-scoped'
 import { type Codec, Codecs, persistentAtom } from '@/lib/persisted'
 import { arraysEqual, insertUniqueId, readKey } from '@/lib/storage'
 
-import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride, togglePane } from './panes'
+import { $paneStates, ensurePaneRegistered, setPaneOpen, togglePane } from './panes'
 import { $showAllProfiles, setShowAllProfiles } from './profile'
 import type { PullRequestBucket } from './pull-requests'
 import type { SessionStatusBucket } from './session-dot-state'
@@ -55,11 +55,11 @@ const SIDEBAR_DISMISSED_WORKTREES_STORAGE_KEY = 'hermes.desktop.dismissedWorktre
 const PANES_FLIPPED_STORAGE_KEY = 'hermes.desktop.panesFlipped'
 const RIGHT_RAIL_ACTIVE_TAB_STORAGE_KEY = 'hermes.desktop.rightRailActiveTab'
 
-export const CHAT_SIDEBAR_PANE_ID = 'chat-sidebar'
-export const FILE_BROWSER_PANE_ID = 'file-browser'
+const CHAT_SIDEBAR_PANE_ID = 'chat-sidebar'
+const FILE_BROWSER_PANE_ID = 'file-browser'
 /** The file tree's id in the LAYOUT TREE — distinct from the pane-state id
  *  above, which keys its open/width record. Toggles need both. */
-export const FILES_PANE_ID = 'files'
+const FILES_PANE_ID = 'files'
 
 /** Every rail tab is a preview of something, namespaced by what backs it: a
  *  path on disk, a live URL, or an id into the in-memory artifact registry. */
@@ -83,12 +83,6 @@ export const $fileBrowserOpen: ReadableAtom<boolean> = computed(
 export const $rightRailActiveTabId = persistentAtom<RightRailTabId | null>(RIGHT_RAIL_ACTIVE_TAB_STORAGE_KEY, null, {
   decode: raw => (raw ? (raw as RightRailTabId) : null),
   encode: tabId => tabId ?? ''
-})
-
-export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states => {
-  const override = states[CHAT_SIDEBAR_PANE_ID]?.widthOverride
-
-  return typeof override === 'number' ? override : SIDEBAR_DEFAULT_WIDTH
 })
 
 // Pins and the manual session order are CONNECTION-scoped, not global: they
@@ -242,7 +236,7 @@ export type SidebarGrouping = 'date' | 'profile' | 'project' | 'status'
 /** What ranks rows within whatever grouping is active. */
 export type SidebarOrdering = 'cost' | 'created' | 'manual' | 'status' | 'tokens' | 'updated'
 /** The sort keys the menu offers; `manual` is entered by dragging, not picked. */
-export type SidebarSortKey = Exclude<SidebarOrdering, 'manual'>
+type SidebarSortKey = Exclude<SidebarOrdering, 'manual'>
 /** Optional per-row metadata the user can switch on. `preview` is card-only:
  *  the one-line row has nowhere to put a second line. */
 export type SidebarRowMeta = 'cost' | 'pr' | 'preview' | 'profile' | 'tokens' | 'updated'
@@ -264,7 +258,7 @@ function listOf<T extends string>(values: readonly T[]): Codec<T[]> {
 const ROW_META: readonly SidebarRowMeta[] = ['cost', 'pr', 'preview', 'profile', 'tokens', 'updated']
 const STATUS_FILTERS: readonly SessionStatusBucket[] = ['needs-input', 'working', 'unread', 'draft', 'idle']
 const PR_FILTERS: readonly PullRequestBucket[] = ['open', 'draft', 'merged', 'closed', 'none']
-export const SIDEBAR_SORT_KEYS: readonly SidebarSortKey[] = ['updated', 'created', 'status', 'tokens', 'cost']
+const SIDEBAR_SORT_KEYS: readonly SidebarSortKey[] = ['updated', 'created', 'status', 'tokens', 'cost']
 
 // `project` deliberately does NOT live here. Entering a project from ⌘K, the
 // projects store, or a repo scan flips $sidebarAgentsGrouped directly, so that
@@ -390,11 +384,10 @@ export const $sidebarViewCustomized: ReadableAtom<boolean> = computed(
 // When true, the sessions sidebar moves to the right and the file browser +
 // preview rail move to the left — a mirror of the default layout.
 export const $panesFlipped = persistentAtom(PANES_FLIPPED_STORAGE_KEY, false, Codecs.bool)
-export const $isSidebarResizing = atom(false)
 export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
 
 // Resolve a node's open state against its default (absent = follow default).
-export function workspaceNodeOpen(id: string, defaultOpen = true): boolean {
+function workspaceNodeOpen(id: string, defaultOpen = true): boolean {
   return $sidebarWorkspaceNodeOpen.get()[id] ?? defaultOpen
 }
 
@@ -466,11 +459,6 @@ export function restoreWorktree(id: string): void {
   if (current.includes(id)) {
     $dismissedWorktreeIds.set(current.filter(worktreeId => worktreeId !== id))
   }
-}
-
-export function setSidebarWidth(width: number) {
-  const bounded = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_DEFAULT_WIDTH, width))
-  setPaneWidthOverride(CHAT_SIDEBAR_PANE_ID, bounded)
 }
 
 // Below the collapse breakpoint a collapsible rail leaves the grid and lives as
@@ -712,10 +700,6 @@ export function setSidebarWorkspaceParentOrderIds(ids: string[]) {
 
 export function setSidebarProjectOrderIds(ids: string[]) {
   setOrderIds($sidebarProjectOrderIds, ids)
-}
-
-export function setSidebarResizing(resizing: boolean) {
-  $isSidebarResizing.set(resizing)
 }
 
 export function pinSession(sessionId: string, index?: number) {

@@ -966,7 +966,7 @@ export async function renameProject(id: string, name: string): Promise<void> {
 // Patch top-level project fields (name / appearance). Optimistic: the cached
 // tree + list update instantly so a color/icon/name change has no round-trip
 // lag; only a failed write reconciles from the server.
-export async function updateProject(
+async function updateProject(
   id: string,
   patch: { name?: string; color?: null | string; icon?: null | string }
 ): Promise<void> {

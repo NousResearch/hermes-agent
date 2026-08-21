@@ -45,7 +45,7 @@ export interface McpBrand {
   monochrome?: boolean
 }
 
-export const MCP_BRAND_ICONS: Record<string, McpBrand> = {
+const MCP_BRAND_ICONS: Record<string, McpBrand> = {
   airtable: { Icon: SiAirtable, color: '#18BFFF' },
   asana: { Icon: SiAsana, color: '#F06A6A' },
   atlassian: { Icon: SiAtlassian, color: '#0052CC' },

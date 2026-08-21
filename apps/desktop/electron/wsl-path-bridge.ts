@@ -71,7 +71,7 @@ export function parseDefaultDistro(raw: string): null | string {
 }
 
 /** Default WSL distro name (cached). Falls back to `Ubuntu`. */
-export function resolveDefaultWslDistro(): string {
+function resolveDefaultWslDistro(): string {
   if (cachedDistro) {
     return cachedDistro
   }

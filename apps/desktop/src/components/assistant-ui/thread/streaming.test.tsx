@@ -54,12 +54,6 @@ vi.stubGlobal('ResizeObserver', TestResizeObserver)
 
 stubThreadViewportSize()
 
-async function wait(ms: number) {
-  await act(async () => {
-    await new Promise(resolve => window.setTimeout(resolve, ms))
-  })
-}
-
 function userMessage(): ThreadMessage {
   return {
     id: 'user-1',

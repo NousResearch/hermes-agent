@@ -11,7 +11,7 @@
 import { atom } from 'nanostores'
 
 export type PluginKind = 'bundled' | 'disk' | 'runtime'
-export type PluginStatus = 'disabled' | 'error' | 'loaded'
+type PluginStatus = 'disabled' | 'error' | 'loaded'
 
 export interface PluginRecord {
   id: string
@@ -53,7 +53,7 @@ function loadDecisions(): Record<string, boolean> {
   return {}
 }
 
-export const $pluginDecisions = atom<Record<string, boolean>>(loadDecisions())
+const $pluginDecisions = atom<Record<string, boolean>>(loadDecisions())
 
 /** Whether a plugin should register: the user's explicit choice if any, else
  *  the plugin's own default (true for ordinary plugins, false for opt-in). */
@@ -93,7 +93,7 @@ export function publishPlugin(record: PluginRecord, handle?: PluginHandle): void
   }
 }
 
-export function patchPlugin(id: string, patch: Partial<PluginRecord>): void {
+function patchPlugin(id: string, patch: Partial<PluginRecord>): void {
   const current = $pluginRecords.get()[id]
 
   if (current) {

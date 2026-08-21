@@ -221,5 +221,3 @@ export function AutomationBlueprints({ profile, onCreated }: AutomationBlueprint
     </>
   );
 }
-
-export default AutomationBlueprints;

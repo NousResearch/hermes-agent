@@ -446,8 +446,6 @@ async function driveScroll(
   input: PreviewInputHandle,
   action: PreviewActAction
 ): Promise<PreviewActResult> {
-  const far = action.amount ?? 0
-
   const trip = await runJson(run, buildScrollAnchorScript())
 
   if (trip.kind === 'failed') {

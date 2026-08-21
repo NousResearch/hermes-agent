@@ -40,18 +40,10 @@ import type {
 import { visibilityKit } from './visibility'
 import type { VisibilityKit } from './visibility'
 
-export type {
-  PreviewActAction,
-  PreviewActBinding,
-  PreviewActDelta,
-  PreviewActHolder,
-  PreviewActResult,
-  PreviewElement,
-  PreviewElementChange
-} from './types'
+export type { PreviewActAction, PreviewActHolder, PreviewActResult } from './types'
 
 /** Everything the core needs that it cannot define for itself. */
-export interface ActKit {
+interface ActKit {
   identity: IdentityKit
   naming: NamingKit
   visibility: VisibilityKit
@@ -59,7 +51,7 @@ export interface ActKit {
 
 /** Assemble the kits for one document. Used in-process; the guest page gets
  *  the same three factories through `actEngineSource`. */
-export function buildActKit(doc: Document): ActKit {
+function buildActKit(doc: Document): ActKit {
   const naming = namingKit(doc)
 
   return { identity: identityKit(naming), naming, visibility: visibilityKit(doc, doc.defaultView) }
@@ -72,7 +64,7 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
 
 /** The injectable core. Everything it touches is a parameter — see the
  *  self-containment note above. */
-export function actInPageCore(
+function actInPageCore(
   doc: Document,
   holder: PreviewActHolder,
   action: PreviewActAction,

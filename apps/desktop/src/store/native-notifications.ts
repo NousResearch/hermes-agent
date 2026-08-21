@@ -8,8 +8,6 @@ import { withinNativeNotifyBaseline } from './notify-baseline'
 import { clearApprovalRequest } from './prompts'
 import { $activeSessionId } from './session'
 
-export type { HermesOpenTarget }
-
 // Native OS notifications (Electron `Notification`), separate from the in-app
 // toast feed in `notifications.ts`. Each kind toggles independently.
 export type NativeNotificationKind =
@@ -147,7 +145,7 @@ function shouldFire(kind: NativeNotificationKind, sessionId?: null | string, glo
   return isBackgrounded() && Boolean(sessionId) && sessionId === $activeSessionId.get()
 }
 
-export interface NativeNotificationAction {
+interface NativeNotificationAction {
   id: string
   text: string
   /** Serializable activate target echoed back on button press (plugin path). */
@@ -224,7 +222,7 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
 
 // -- the plugin door (`ctx.os.notify`) ----------------------------------------
 
-export interface PluginNotificationAction {
+interface PluginNotificationAction {
   id: string
   label: string
   /** Navigate here on button press (path or `hermes://index-network/intent/1`). */

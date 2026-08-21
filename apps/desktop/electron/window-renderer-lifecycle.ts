@@ -29,7 +29,7 @@
 // (OAuth/portal windows, which install this helper for process events) from
 // spilling their console output — potentially tokens/PII — into desktop.log.
 
-export interface RendererLifecycleDetails {
+interface RendererLifecycleDetails {
   reason?: string
   exitCode?: number | string | undefined
   isDestroyed?: boolean

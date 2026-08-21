@@ -11,14 +11,14 @@ export type MacTerminalHint = {
   tone: 'info' | 'warn'
 }
 
-export type MacTerminalContext = {
+type MacTerminalContext = {
   isAppleTerminal: boolean
   isRemote: boolean
   isTmux: boolean
   vscodeLike: null | 'cursor' | 'vscode' | 'windsurf'
 }
 
-export function detectMacTerminalContext(env: NodeJS.ProcessEnv = process.env): MacTerminalContext {
+function detectMacTerminalContext(env: NodeJS.ProcessEnv = process.env): MacTerminalContext {
   const termProgram = env['TERM_PROGRAM'] ?? ''
 
   return {

@@ -25,7 +25,7 @@ interface PetActivity {
  * (a clarify/approval blocking on the user) outranks the in-flight signals
  * because the turn is paused on you, not working.
  */
-export function derivePetState({ busy, toolRunning, reasoning, awaitingInput }: PetActivity): PetState {
+function derivePetState({ busy, toolRunning, reasoning, awaitingInput }: PetActivity): PetState {
   if (awaitingInput) {
     return 'waiting'
   }

@@ -28,7 +28,7 @@ export interface Rect {
 }
 
 /** AABB intersection. Returns null when the rects don't overlap. */
-export function intersect(a: Rect, b: Rect): Rect | null {
+function intersect(a: Rect, b: Rect): Rect | null {
   const x = Math.max(a.x, b.x)
   const y = Math.max(a.y, b.y)
   const right = Math.min(a.x + a.width, b.x + b.width)
@@ -62,7 +62,7 @@ interface ConnectionLike {
  * is nothing to dodge (fullscreen, plain browser, secondary windows with
  * hidden controls).
  */
-export function windowControlsRect(connection: ConnectionLike | null, viewportWidth: number): Rect | null {
+function windowControlsRect(connection: ConnectionLike | null, viewportWidth: number): Rect | null {
   const inElectron = typeof window !== 'undefined' && 'hermesDesktop' in window
 
   if (!inElectron) {
@@ -134,7 +134,7 @@ function subscribeControlsRect(cb: () => void) {
 }
 
 /** Reactive native window-controls rect (connection + viewport aware). */
-export function useWindowControlsRect(): Rect | null {
+function useWindowControlsRect(): Rect | null {
   return useSyncExternalStore(subscribeControlsRect, readControlsRect, () => null)
 }
 

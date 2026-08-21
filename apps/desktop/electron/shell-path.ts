@@ -178,7 +178,6 @@ function resetLoginShellPathForTests() {
 
 export {
   applyLoginShellPath,
-  captureLoginShellPath,
   ensureLoginShellPath,
   extractSentinelPath,
   loginShellExecutable,

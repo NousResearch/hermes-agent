@@ -2,7 +2,7 @@ import type { ScrollBoxHandle } from '@hermes/ink'
 
 import type { SelectionApi } from './interfaces.js'
 
-export interface SelectionSnap {
+interface SelectionSnap {
   anchor?: { row: number } | null
   focus?: { row: number } | null
   isDragging?: boolean

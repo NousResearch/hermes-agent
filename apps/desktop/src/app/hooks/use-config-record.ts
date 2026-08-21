@@ -11,7 +11,7 @@ import type { HermesConfigRecord } from '@/types/hermes'
 //
 // Distinct from session/hooks/use-hermes-config.ts, which is side-effecting —
 // it pushes personality/cwd/voice/… into the session stores for live chat.
-export const HERMES_CONFIG_KEY = ['hermes-config-record'] as const
+const HERMES_CONFIG_KEY = ['hermes-config-record'] as const
 
 // Per-scope cache key. The base key (no suffix) is the app-wide active
 // profile, unchanged for every caller that passes nothing. An explicit scope —
@@ -21,7 +21,7 @@ export const HERMES_CONFIG_KEY = ['hermes-config-record'] as const
 // AGENTS.md scope-in-key rule). profileScopeKey folds a remote pin's
 // connection id into the suffix, so two gateways' same-named profiles never
 // share a cache row.
-export const hermesConfigKey = (profile?: ProfileScope) =>
+const hermesConfigKey = (profile?: ProfileScope) =>
   profile == null ? HERMES_CONFIG_KEY : ([...HERMES_CONFIG_KEY, profileScopeKey(profile)] as const)
 
 // staleTime 0 → serve cache instantly, background-revalidate on every mount.

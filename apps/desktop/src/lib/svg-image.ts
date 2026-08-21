@@ -73,7 +73,7 @@ export function svgSize(svg: string): { height: number; width: number } {
   return viewBoxSize(el) ?? { height: 600, width: 800 }
 }
 
-export function svgToPngBlob(svg: string, scale = 2): Promise<Blob> {
+function svgToPngBlob(svg: string, scale = 2): Promise<Blob> {
   const { height, width } = svgSize(svg)
 
   return new Promise((resolve, reject) => {

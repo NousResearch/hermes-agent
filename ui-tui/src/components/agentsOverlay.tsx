@@ -8,7 +8,6 @@ import {
   applyDelegationStatus,
   toggleOverlaySection
 } from '../app/delegationStore.js'
-import { patchOverlayState } from '../app/overlayStore.js'
 import { $spawnDiff, $spawnHistory, clearDiffPair, type SpawnSnapshot } from '../app/spawnHistoryStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
@@ -971,6 +970,3 @@ interface AgentsOverlayProps {
   onClose: () => void
   t: Theme
 }
-
-export const closeAgentsOverlay = () => patchOverlayState({ agents: false })
-export const openAgentsOverlay = () => patchOverlayState({ agents: true })

@@ -82,13 +82,6 @@ export function useDesktopIntegrations({
     }
   }, [])
 
-  // The renderer OWNS ⌘W: on macOS the native menu accelerator would else
-  // close the window, so claim it unconditionally — the menu then routes ⌘W
-  // to us (close-preview-requested IPC) and we decide tab-vs-window.
-  useEffect(() => {
-    window.hermesDesktop?.setPreviewShortcutActive?.(true)
-  }, [])
-
   const restoredRef = useRef(false)
 
   // Wait until boot has adopted the primary profile, then restore that profile's

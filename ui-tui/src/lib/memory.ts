@@ -7,7 +7,7 @@ import { getHeapSnapshot, getHeapSpaceStatistics, getHeapStatistics } from 'node
 
 export type MemoryTrigger = 'auto-critical' | 'auto-high' | 'manual'
 
-export interface MemoryDiagnostics {
+interface MemoryDiagnostics {
   activeHandles: number
   activeRequests: number
   analysis: {
@@ -57,7 +57,7 @@ export interface HeapDumpResult {
   success: boolean
 }
 
-export async function captureMemoryDiagnostics(trigger: MemoryTrigger): Promise<MemoryDiagnostics> {
+async function captureMemoryDiagnostics(trigger: MemoryTrigger): Promise<MemoryDiagnostics> {
   const usage = process.memoryUsage()
   const heapStats = getHeapStatistics()
   const resourceUsage = process.resourceUsage()

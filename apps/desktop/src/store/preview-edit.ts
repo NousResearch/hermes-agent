@@ -4,7 +4,7 @@ import { atom } from 'nanostores'
 // `target.url` so the rail can render a VS Code-style "modified" dot on the tab
 // without threading editor state up through the pane. The editor in
 // `preview-file.tsx` is the sole writer; the rail tabs are the readers.
-export const $dirtyPreviewUrls = atom<Record<string, true>>({})
+const $dirtyPreviewUrls = atom<Record<string, true>>({})
 
 export function setPreviewDirty(url: string, dirty: boolean): void {
   if (!url) {

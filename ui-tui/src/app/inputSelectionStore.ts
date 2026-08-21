@@ -10,7 +10,7 @@ export interface InputSelection {
   value: string
 }
 
-export const $inputSelection = atom<InputSelection | null>(null)
+const $inputSelection = atom<InputSelection | null>(null)
 
 export const setInputSelection = (next: InputSelection | null) => $inputSelection.set(next)
 

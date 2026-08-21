@@ -25,7 +25,6 @@
     "@xterm/addon-web-links": "0.12.0",
     "@xterm/addon-webgl": "0.19.0",
     "@xterm/xterm": "6.0.0",
-    "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "gsap": "3.15.0",
     "leva": "0.10.1",

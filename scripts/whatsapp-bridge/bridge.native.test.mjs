@@ -116,6 +116,7 @@ import {
 
   assert.equal(event.quotedMessageId, 'outbound-1');
   assert.equal(event.quotedParticipant, '15559998888@s.whatsapp.net');
+  assert.equal(event.quotedFromMe, true);
   assert.equal(event.quotedRemoteJid, '15551234567@s.whatsapp.net');
   assert.equal(event.quotedText, 'approve deploy?');
   assert.deepEqual(event.readReceiptKey, {
@@ -127,6 +128,39 @@ import {
   assert.equal(event.hasQuotedMessage, true);
   assert.equal(event.body, 'approved');
   console.log('  ✓ inbound quoted metadata includes quoted text');
+}
+
+{
+  const event = await extractBridgeEvent({
+    msg: {
+      key: {
+        id: 'incoming-human-reply',
+        remoteJid: '120363001234567890@g.us',
+        participant: '15550001111@s.whatsapp.net',
+        fromMe: false,
+      },
+      pushName: 'Tester',
+      messageTimestamp: 124,
+      message: {
+        extendedTextMessage: {
+          text: 'replying to another manager',
+          contextInfo: {
+            stanzaId: 'human-message-1',
+            participant: '15557776666@lid',
+            quotedMessage: { conversation: 'human text' },
+          },
+        },
+      },
+    },
+    chatId: '120363001234567890@g.us',
+    senderId: '15550001111@s.whatsapp.net',
+    senderNumber: '15550001111',
+    botIds: ['15559998888@s.whatsapp.net', '274870055219357@lid'],
+  });
+
+  assert.equal(event.hasQuotedMessage, true);
+  assert.equal(event.quotedFromMe, false);
+  console.log('  ✓ replies to other group members are not marked fromMe');
 }
 
 {

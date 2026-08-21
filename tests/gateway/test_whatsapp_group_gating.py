@@ -45,6 +45,7 @@ def _group_message(body="hello", **overrides):
         "mentionedIds": [],
         "botIds": ["15551230000@s.whatsapp.net", "15551230000@lid"],
         "quotedParticipant": "",
+        "quotedFromMe": False,
     }
     data.update(overrides)
     return data
@@ -83,6 +84,38 @@ def test_group_messages_can_require_direct_trigger_via_config():
         )
     ) is True
     assert adapter._should_process_message(_group_message("/status")) is True
+
+
+def test_group_reply_from_me_wakes_without_matching_participant_id():
+    """A native reply to the bot must wake even when WhatsApp uses a LID.
+
+    Some transports cannot map the quoted participant's LID back to the bot's
+    phone JID, but the quoted message key still provides an authoritative
+    ``fromMe`` bit.
+    """
+    adapter = _make_adapter(require_mention=True, group_policy="open")
+
+    assert adapter._should_process_message(
+        _group_message(
+            "replying without an @mention",
+            quotedParticipant="unmapped-lid@lid",
+            quotedFromMe=True,
+            hasQuotedMessage=True,
+        )
+    ) is True
+
+
+def test_group_reply_not_from_me_remains_gated():
+    adapter = _make_adapter(require_mention=True, group_policy="open")
+
+    assert adapter._should_process_message(
+        _group_message(
+            "replying to another manager",
+            quotedParticipant="someone-else@lid",
+            quotedFromMe=False,
+            hasQuotedMessage=True,
+        )
+    ) is False
 
 
 def test_regex_mention_patterns_allow_custom_wake_words():

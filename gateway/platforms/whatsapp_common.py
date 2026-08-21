@@ -343,6 +343,11 @@ class WhatsAppBehaviorMixin:
         return bot_ids
 
     def _message_is_reply_to_bot(self, data: Dict[str, Any]) -> bool:
+        # Bridges should set this when the quoted message key says fromMe.
+        # It is more reliable than comparing participant IDs across WhatsApp's
+        # phone-JID and LID identity forms.
+        if data.get("quotedFromMe") is True:
+            return True
         quoted_participant = self._normalize_whatsapp_id(data.get("quotedParticipant"))
         if not quoted_participant:
             return False

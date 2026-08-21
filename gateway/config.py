@@ -2241,6 +2241,23 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         api_server_model_name = getenv("API_SERVER_MODEL_NAME", "")
         if api_server_model_name:
             config.platforms[Platform.API_SERVER].extra["model_name"] = api_server_model_name
+    else:
+        # Warn when the user expressed intent (key set or ENABLED=true) but
+        # the key is not usable — without this, Gate 1 silently drops the
+        # platform and Gate 2's actionable error is unreachable.
+        _api_server_enabled_env = getenv("API_SERVER_ENABLED", "")
+        if api_server_key:
+            logger.warning(
+                "API_SERVER_KEY is set but too short (%d chars, minimum 16). "
+                "The API server will NOT start. Generate a strong key with: "
+                "openssl rand -hex 32",
+                len(str(api_server_key).strip()),
+            )
+        elif is_truthy_value(_api_server_enabled_env):
+            logger.warning(
+                "API_SERVER_ENABLED is set but no API_SERVER_KEY found. "
+                "The API server requires a key (minimum 16 characters) to start."
+            )
 
     # Webhook platform
     webhook_enabled = is_truthy_value(getenv("WEBHOOK_ENABLED", ""))

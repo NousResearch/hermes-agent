@@ -768,7 +768,15 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
-        self._media_batch_delay_seconds = env_float("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", 0.8)
+        # Prefer config.yaml extra (WhatsApp-style); env remains a fallback.
+        if self._extra_has("media_batch_delay_seconds"):
+            self._media_batch_delay_seconds = self._coerce_float_extra(
+                "media_batch_delay_seconds", 0.8, min_value=0.0, max_value=30.0,
+            )
+        else:
+            self._media_batch_delay_seconds = env_float(
+                "HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", 0.8,
+            )
         self._pending_photo_batches: Dict[str, MessageEvent] = {}
         self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
         self._media_group_events: Dict[str, MessageEvent] = {}
@@ -777,21 +785,41 @@ class TelegramAdapter(BasePlatformAdapter):
         # messages are aggregated into a single MessageEvent.  Lower defaults
         # (0.3s / 1.0s instead of 0.6s / 2.0s) let short replies stream
         # without a noticeable wait — combined with the adaptive fast-path
-        # in ``_calc_text_batch_delay`` below, ≤320-codepoint replies settle
+        # in ``_text_batch_quiet_seconds`` below, ≤320-codepoint replies settle
         # in ~180ms.  All bounds are conservative for Telegram's
         # ~1 edit/s flood envelope.
-        self._text_batch_delay_seconds = self._env_float_clamped(
-            "HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS",
-            0.3,
-            min_value=0.08,
-            max_value=2.0,
-        )
-        self._text_batch_split_delay_seconds = self._env_float_clamped(
-            "HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS",
-            1.0,
-            min_value=self._text_batch_delay_seconds,
-            max_value=4.0,
-        )
+        #
+        # ``platforms.telegram.extra.text_batch_delay_seconds`` is the
+        # operator quiet period (same key as WhatsApp). When that extra is
+        # set, adaptive 0.18s/0.24s caps are skipped so a 3s setting actually
+        # waits 3s on short bubbles. Unset extra keeps the latency-tuned
+        # default (PR #10388).
+        self._text_batch_delay_from_config = self._extra_has("text_batch_delay_seconds")
+        if self._text_batch_delay_from_config:
+            self._text_batch_delay_seconds = self._coerce_float_extra(
+                "text_batch_delay_seconds", 0.3, min_value=0.0, max_value=30.0,
+            )
+        else:
+            self._text_batch_delay_seconds = self._env_float_clamped(
+                "HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS",
+                0.3,
+                min_value=0.08,
+                max_value=2.0,
+            )
+        if self._extra_has("text_batch_split_delay_seconds"):
+            self._text_batch_split_delay_seconds = self._coerce_float_extra(
+                "text_batch_split_delay_seconds",
+                max(self._text_batch_delay_seconds, 1.0),
+                min_value=self._text_batch_delay_seconds,
+                max_value=30.0,
+            )
+        else:
+            self._text_batch_split_delay_seconds = self._env_float_clamped(
+                "HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS",
+                1.0,
+                min_value=self._text_batch_delay_seconds,
+                max_value=4.0,
+            )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._drop_delayed_deliveries = False
@@ -1899,6 +1927,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 return False
             return default
         return bool(value)
+
+    def _extra_has(self, key: str) -> bool:
+        extra = getattr(getattr(self, "config", None), "extra", None)
+        return isinstance(extra, dict) and key in extra
 
     def _coerce_float_extra(
         self,
@@ -9684,6 +9716,25 @@ class TelegramAdapter(BasePlatformAdapter):
             self._flush_text_batch(key)
         )
 
+    def _text_batch_quiet_seconds(self, *, total_len: int, last_chunk_len: int) -> float:
+        """Quiet period before flushing a pending text batch.
+
+        Default (no ``text_batch_delay_seconds`` extra): adaptive tiers from
+        PR #10388 so short bubbles stay near-instant. Explicit
+        ``platforms.telegram.extra.text_batch_delay_seconds`` is the quiet
+        period for every non-split batch — operators can wait 2–5s for
+        multi-bubble input (file caption / follow-up text).
+        """
+        if last_chunk_len >= self._SPLIT_THRESHOLD:
+            return self._text_batch_split_delay_seconds
+        if getattr(self, "_text_batch_delay_from_config", False):
+            return self._text_batch_delay_seconds
+        if total_len <= self._TEXT_BATCH_FAST_LEN:
+            return min(self._text_batch_delay_seconds, self._TEXT_BATCH_FAST_DELAY_S)
+        if total_len <= self._TEXT_BATCH_SHORT_LEN:
+            return min(self._text_batch_delay_seconds, self._TEXT_BATCH_SHORT_DELAY_S)
+        return self._text_batch_delay_seconds
+
     async def _flush_text_batch(self, key: str) -> None:
         """Wait for the quiet period then dispatch the aggregated text.
 
@@ -9693,29 +9744,12 @@ class TelegramAdapter(BasePlatformAdapter):
         current_task = asyncio.current_task()
         event = None
         try:
-            # Adaptive delay tiers:
-            #  - last chunk ≥ _SPLIT_THRESHOLD: a continuation is almost
-            #    certain → wait the longer split delay.
-            #  - total accumulated text ≤ _TEXT_BATCH_FAST_LEN (~320 cp):
-            #    short message → cap delay at _TEXT_BATCH_FAST_DELAY_S
-            #    so the agent sees the text near-instantly.
-            #  - total ≤ _TEXT_BATCH_SHORT_LEN (~1024 cp):
-            #    medium → cap at _TEXT_BATCH_SHORT_DELAY_S.
-            #  - otherwise: use the configured cap.
-            # Tiers compose with operator overrides via the env-var-driven
-            # ``_text_batch_delay_seconds`` (e.g. an operator who sets the
-            # cap below 0.18s gets that lower number on every tier).
             pending = self._pending_text_batches.get(key)
             last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
             total_len = len(getattr(pending, "text", "") or "") if pending else 0
-            if last_len >= self._SPLIT_THRESHOLD:
-                delay = self._text_batch_split_delay_seconds
-            elif total_len <= self._TEXT_BATCH_FAST_LEN:
-                delay = min(self._text_batch_delay_seconds, self._TEXT_BATCH_FAST_DELAY_S)
-            elif total_len <= self._TEXT_BATCH_SHORT_LEN:
-                delay = min(self._text_batch_delay_seconds, self._TEXT_BATCH_SHORT_DELAY_S)
-            else:
-                delay = self._text_batch_delay_seconds
+            delay = self._text_batch_quiet_seconds(
+                total_len=total_len, last_chunk_len=last_len,
+            )
             await asyncio.sleep(delay)
             event = self._pending_text_batches.pop(key, None)
             if not event:

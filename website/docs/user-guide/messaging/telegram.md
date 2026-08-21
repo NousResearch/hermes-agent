@@ -104,6 +104,25 @@ platforms:
 
 Telegram allows up to 100 BotCommands, but large command payloads can fail. Hermes defaults to 60 for reliability and clamps configured values to `1..100`; use `/commands` for the full command list.
 
+### Message batching (debounce)
+
+Telegram already coalesces rapid text (client-side splits) and albums. The **default** quiet period for short bubbles is ~180ms so a single reply still feels instant.
+
+If users send context as several bubbles (file, then instruction, then a follow-up), that window is too short and the agent starts on the first fragment. Raise it in `config.yaml` — same keys as WhatsApp. **Setting the extra skips the 180ms/240ms caps** so the value you type is the value you get:
+
+```yaml
+# ~/.hermes/config.yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        text_batch_delay_seconds: 3.0         # quiet period (0 = flush immediately)
+        text_batch_split_delay_seconds: 6.0   # longer wait near Telegram's 4096 split
+        media_batch_delay_seconds: 1.5        # photo/album quiet period
+```
+
+Leave the keys unset to keep the stock low-latency defaults. Env vars (`HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS`, …) still work as a fallback and do **not** lift the short-message caps — use `config.yaml` extra when you want a longer wait.
+
 ## Step 3: Privacy Mode (Critical for Groups)
 
 Telegram bots have a **privacy mode** that is **enabled by default**. This is the single most common source of confusion when using bots in groups.

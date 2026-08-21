@@ -291,6 +291,38 @@ class TestMaybeAutoTitle:
                 runtime_validator=None,
             )
 
+    def test_background_thread_preserves_profile_secret_scope(self):
+        """The title LLM must resolve credentials from the originating profile."""
+        import threading
+
+        from agent.secret_scope import (
+            current_secret_scope,
+            reset_secret_scope,
+            set_secret_scope,
+        )
+
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        called = threading.Event()
+        seen = []
+
+        def capture_scope(*_args, **_kwargs):
+            seen.append(current_secret_scope())
+            called.set()
+
+        token = set_secret_scope({"FREEMODEL_API_KEY": "profile-key"})
+        try:
+            with patch(
+                "agent.title_generator.auto_title_session",
+                side_effect=capture_scope,
+            ):
+                maybe_auto_title(db, "sess-1", "hello", [])
+                assert called.wait(timeout=10), "auto-title thread never ran"
+        finally:
+            reset_secret_scope(token)
+
+        assert seen == [{"FREEMODEL_API_KEY": "profile-key"}]
+
     def test_writes_instant_title_before_the_model_runs(self, tmp_path):
         """The derived title lands synchronously — no LLM, no waiting."""
         db = SessionDB(tmp_path / "state.db")

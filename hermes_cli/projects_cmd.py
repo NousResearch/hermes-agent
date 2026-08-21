@@ -189,6 +189,11 @@ def _print_project(proj) -> None:
 
 
 def _cmd_create(args: argparse.Namespace) -> int:
+    board_slug = args.board
+    if board_slug:
+        board_slug = _resolve_board_slug(board_slug)
+        if board_slug is None:
+            return 1
     try:
         with pdb.connect_closing() as conn:
             pid = pdb.create_project(
@@ -200,7 +205,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
                 description=args.description,
                 icon=args.icon,
                 color=args.color,
-                board_slug=args.board,
+                board_slug=board_slug,
             )
             if args.use:
                 pdb.set_active(conn, pid)
@@ -305,13 +310,44 @@ def _cmd_restore(args, conn, proj) -> int:
 
 @_with_project
 def _cmd_bind_board(args, conn, proj) -> int:
-    pdb.update_project(conn, proj.id, board_slug=args.board)
-    if args.board.strip():
-        print(f"Bound {proj.slug} -> board {args.board}")
-        _sync_board_default_workdir(proj, args.board)
-    else:
+    if not args.board.strip():
+        pdb.update_project(conn, proj.id, board_slug="")
         print(f"Unbound board from {proj.slug}")
+        return 0
+    slug = _resolve_board_slug(args.board)
+    if slug is None:
+        return 1
+    pdb.update_project(conn, proj.id, board_slug=slug)
+    print(f"Bound {proj.slug} -> board {slug}")
+    _sync_board_default_workdir(proj, slug)
     return 0
+
+
+def _resolve_board_slug(board: str) -> str | None:
+    """Normalize a board slug and verify it names an existing board.
+
+    Prints an error (with the list of valid slugs) to stderr and returns
+    ``None`` when the slug is malformed or no such board exists, so callers
+    can reject the binding instead of persisting a dangling reference.
+    """
+    from hermes_cli import kanban_db as kb
+
+    try:
+        slug = kb._normalize_board_slug(board)
+    except ValueError as exc:
+        print(f"project: {exc}", file=sys.stderr)
+        return None
+    if not slug:
+        return None
+    if not kb.board_exists(slug):
+        valid = ", ".join(b["slug"] for b in kb.list_boards())
+        print(
+            f"project: board {slug!r} does not exist"
+            + (f"; valid boards: {valid}" if valid else ""),
+            file=sys.stderr,
+        )
+        return None
+    return slug
 
 
 def _sync_board_default_workdir(proj, board_slug: str) -> None:

@@ -57,5 +57,59 @@ def test_rename_and_archive(tmp_path):
         assert len(pdb.list_projects(conn)) == 1
 
 
+def test_bind_board_rejects_unknown_slug(capsys, tmp_path):
+    """bind-board must reject a board slug that doesn't exist (rc != 0)."""
+    assert _run(["create", "My App", str(tmp_path)]) == 0
+
+    rc = _run(["bind-board", "my-app", "definitely-not-a-real-board"])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "does not exist" in err
+    assert "default" in err  # lists valid slugs
+
+    # The bogus binding must NOT be persisted.
+    with pdb.connect_closing() as conn:
+        assert pdb.get_project(conn, "my-app").board_slug is None
+
+
+def test_bind_board_accepts_existing_slug(capsys, tmp_path):
+    """bind-board with the default board succeeds and persists the slug."""
+    assert _run(["create", "My App", str(tmp_path)]) == 0
+
+    assert _run(["bind-board", "my-app", "default"]) == 0
+    out = capsys.readouterr().out
+    assert "Bound my-app -> board default" in out
+    with pdb.connect_closing() as conn:
+        assert pdb.get_project(conn, "my-app").board_slug == "default"
+
+
+def test_bind_board_unbind(capsys, tmp_path):
+    """An empty board slug unbinds without validating."""
+    assert _run(["create", "My App", str(tmp_path)]) == 0
+    assert _run(["bind-board", "my-app", "default"]) == 0
+    capsys.readouterr()
+
+    assert _run(["bind-board", "my-app"]) == 0
+    assert "Unbound board from my-app" in capsys.readouterr().out
+    with pdb.connect_closing() as conn:
+        assert pdb.get_project(conn, "my-app").board_slug is None
+
+
+def test_create_rejects_unknown_board(capsys, tmp_path):
+    """create --board shares the validation path and must reject bad slugs."""
+    rc = _run(["create", "My App", str(tmp_path), "--board", "no-such-board"])
+    assert rc != 0
+    assert "does not exist" in capsys.readouterr().err
+    with pdb.connect_closing() as conn:
+        assert pdb.list_projects(conn) == []
+
+
+def test_create_accepts_default_board(capsys, tmp_path):
+    """create --board default succeeds."""
+    assert _run(["create", "My App", str(tmp_path), "--board", "default"]) == 0
+    with pdb.connect_closing() as conn:
+        assert pdb.get_project(conn, "my-app").board_slug == "default"
+
+
 
 

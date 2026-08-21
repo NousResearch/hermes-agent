@@ -86,15 +86,26 @@ def _default_registry_path() -> Path:
 
 
 def _pid_alive(pid: int) -> bool:
+    """Liveness probe for a compute-host pid.
+
+    ``os.kill(pid, 0)`` is not a no-op on Windows: ``signal.CTRL_C_EVENT``
+    is 0, so that call reaches ``GenerateConsoleCtrlEvent`` and delivers a
+    console Ctrl-C.  The second argument there is a process *group*, and a
+    child started without ``CREATE_NEW_PROCESS_GROUP`` shares its parent's
+    group, so the signal lands on everything attached to the same console
+    -- including this process.  ``KeyboardInterrupt`` is a ``BaseException``
+    and would sail straight through the ``except Exception`` arms below.
+
+    ``gateway.status._pid_exists`` is the repository's cross-platform
+    answer (psutil, with a ctypes ``OpenProcess`` fallback) and reports
+    zombies as dead, which the ``_terminate_pid`` wait loop wants.
+    """
     if pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+        from gateway.status import _pid_exists
+
+        return bool(_pid_exists(pid))
     except Exception:
         return False
 
@@ -543,12 +554,16 @@ class HostSupervisor:
             if not _pid_alive(pid):
                 return
             time.sleep(0.05)
+        # signal.SIGKILL does not exist on Windows; referencing it raises
+        # AttributeError, which the blanket except swallows at debug level
+        # and leaves the process running.
+        hard_kill = getattr(signal, "SIGKILL", signal.SIGTERM)
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, hard_kill)
         except ProcessLookupError:
             return
         except Exception:
-            logger.debug("failed to SIGKILL compute host pid=%s", pid, exc_info=True)
+            logger.debug("failed to hard-kill compute host pid=%s", pid, exc_info=True)
 
     def _terminate_process(self, proc: subprocess.Popen[str]) -> None:
         if proc.poll() is not None:

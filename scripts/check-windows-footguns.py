@@ -759,8 +759,13 @@ def main(argv: list[str]) -> int:
             REPO_ROOT / "plugins",
             REPO_ROOT / "scripts",
             REPO_ROOT / "acp_adapter",
+            REPO_ROOT / "tui_gateway",
         ]
         roots = [r for r in roots if r.exists()]
+        # Top-level modules (cli.py, hermes_state.py, hermes_bootstrap.py, ...)
+        # sit at the repository root and are inside no package directory above,
+        # so a directory-only root list never reaches them.
+        roots += sorted(REPO_ROOT.glob("*.py"))
     elif args.diff:
         roots = get_diff_files(args.diff)
     elif args.paths:

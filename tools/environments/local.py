@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from hermes_constants import get_process_hermes_home
-from tools.environments.base import BaseEnvironment, _pipe_stdin
+from tools.environments.base import BaseEnvironment, _pipe_stdin, _windows_output_encoding
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -1776,6 +1776,10 @@ class LocalEnvironment(BaseEnvironment):
     def _quote_shell_path(self, path: str) -> str:
         """Rewrite native/mixed Windows paths before quoting for Git Bash."""
         return _quote_bash_path(path)
+
+    def _output_fallback_encoding(self) -> "str | None":
+        """Return the local Windows ANSI codec used by native child programs."""
+        return _windows_output_encoding()
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,

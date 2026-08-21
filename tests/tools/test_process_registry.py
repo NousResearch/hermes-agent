@@ -373,14 +373,32 @@ def test_reader_loop_reassembles_four_byte_char_split_three_ways(registry, monke
 
 def test_reader_loop_flushes_truncated_multibyte_tail_at_eof(registry, monkeypatch):
     """A sequence truncated by process exit flushes as a single U+FFFD."""
+    from tools.environments import base
+
+    monkeypatch.setattr(base, "_windows_output_encoding", lambda: None)
     session = _run_reader(registry, monkeypatch, [b"ok \xe2\x82"])
     assert session.output_buffer == "ok \ufffd"
 
 
 def test_reader_loop_still_replaces_genuinely_invalid_bytes(registry, monkeypatch):
-    """Truly invalid bytes keep the errors="replace" behavior."""
+    """Truly invalid bytes keep the errors="replace" behavior without a fallback."""
+    from tools.environments import base
+
+    monkeypatch.setattr(base, "_windows_output_encoding", lambda: None)
     session = _run_reader(registry, monkeypatch, [b"ok\xffdone\n"])
     assert session.output_buffer == "ok\ufffddone\n"
+
+
+def test_reader_loop_decodes_native_windows_bytes_across_chunks(registry, monkeypatch):
+    from tools.environments import base
+
+    monkeypatch.setattr(base, "_windows_output_encoding", lambda: "cp936")
+    raw = "找不到进程\n".encode("cp936")
+
+    session = _run_reader(registry, monkeypatch, [raw[:3], raw[3:7], raw[7:]])
+
+    assert session.output_buffer == "找不到进程\n"
+    assert "\ufffd" not in session.output_buffer
 
 
 def test_pty_reader_loop_reassembles_multibyte_char_split_across_chunks(registry, monkeypatch):
@@ -411,6 +429,37 @@ def test_pty_reader_loop_reassembles_multibyte_char_split_across_chunks(registry
     registry._pty_reader_loop(session)
 
     assert session.output_buffer == "café\n"
+    assert "\ufffd" not in session.output_buffer
+
+
+def test_pty_reader_loop_decodes_native_windows_bytes(registry, monkeypatch):
+    from tools.environments import base
+
+    class _FakePty:
+        def __init__(self, chunks):
+            self._chunks = list(chunks)
+            self.exitstatus = 0
+
+        def isalive(self):
+            return bool(self._chunks)
+
+        def read(self, _n):
+            return self._chunks.pop(0)
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(base, "_windows_output_encoding", lambda: "cp936")
+    raw = "本地程序\n".encode("cp936")
+    session = _make_session(sid="proc_pty_native")
+    session._pty = _FakePty([raw[:1], raw[1:4], raw[4:]])
+    monkeypatch.setattr(registry, "_check_watch_patterns", lambda _s, _c: None)
+    monkeypatch.setattr(registry, "_emit_output", lambda _s, _c: None)
+    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: None)
+
+    registry._pty_reader_loop(session)
+
+    assert session.output_buffer == "本地程序\n"
     assert "\ufffd" not in session.output_buffer
 
 

@@ -4,9 +4,15 @@ Tests _wrap_command(), _extract_cwd_from_output(), _embed_stdin_heredoc(),
 init_session() failure handling, and the CWD marker contract.
 """
 
+import subprocess
+import sys
 from unittest.mock import MagicMock
 
-from tools.environments.base import BaseEnvironment, _BoundedOutputCollector
+from tools.environments.base import (
+    BaseEnvironment,
+    _BoundedOutputCollector,
+    _IncrementalOutputDecoder,
+)
 
 
 class _TestableEnv(BaseEnvironment):
@@ -49,6 +55,109 @@ class TestBoundedOutputCollector:
         assert len(rendered) <= 120
         assert rendered.endswith("[Command timed out after 1s]")
         assert "[OUTPUT TRUNCATED" in rendered
+
+
+class TestIncrementalOutputDecoder:
+    def test_preserves_utf8_split_across_chunks_with_windows_fallback(self):
+        decoder = _IncrementalOutputDecoder(fallback_encoding="cp936")
+        raw = "MSYS 输出正常\n".encode("utf-8")
+
+        output = decoder.decode(raw[:7]) + decoder.decode(raw[7:10])
+        output += decoder.decode(raw[10:], final=True)
+
+        assert output == "MSYS 输出正常\n"
+
+    def test_decodes_windows_native_codepage_split_across_chunks(self):
+        decoder = _IncrementalOutputDecoder(fallback_encoding="cp936")
+        raw = "找不到名为 no-such-process 的进程。\n".encode("cp936")
+
+        output = "".join(decoder.decode(raw[i : i + 3]) for i in range(0, len(raw), 3))
+        output += decoder.decode(b"", final=True)
+
+        assert output == "找不到名为 no-such-process 的进程。\n"
+        assert "\ufffd" not in output
+
+    def test_selects_encoding_independently_for_mixed_output_lines(self):
+        decoder = _IncrementalOutputDecoder(fallback_encoding="cp936")
+        raw = "UTF-8 工具\n".encode("utf-8") + "本地程序\n".encode("cp936")
+
+        output = decoder.decode(raw, final=True)
+
+        assert output == "UTF-8 工具\n本地程序\n"
+
+    def test_emits_ascii_without_waiting_for_a_newline(self):
+        decoder = _IncrementalOutputDecoder(fallback_encoding="cp936")
+
+        assert decoder.decode(b"ready> ") == "ready> "
+
+    def test_emits_localized_output_at_a_carriage_return(self):
+        decoder = _IncrementalOutputDecoder(fallback_encoding="cp936")
+
+        assert decoder.decode("处理中\r".encode("cp936")) == "处理中\r"
+
+    def test_nul_record_keeps_utf8_replacement_behavior(self):
+        decoder = _IncrementalOutputDecoder(fallback_encoding="cp1252")
+
+        assert decoder.decode(b"\x00\xff\n") == "\x00\ufffd\n"
+
+    def test_nul_guard_survives_split_chunks(self):
+        decoder = _IncrementalOutputDecoder(fallback_encoding="cp1252")
+
+        output = decoder.decode(b"\x00") + decoder.decode(b"\xff\n", final=True)
+
+        assert output == "\x00\ufffd\n"
+
+    def test_nul_guard_survives_a_bounded_buffer_flush(self):
+        decoder = _IncrementalOutputDecoder(fallback_encoding="cp1252")
+        first = b"\xff\x00" + b"a" * decoder._PROBE_LIMIT
+
+        output = decoder.decode(first) + decoder.decode(b"\xff\n", final=True)
+
+        assert output.count("\ufffd") == 2
+        assert "\u00ff" not in output
+
+    def test_bounded_flush_keeps_one_encoding_for_the_record(self):
+        decoder = _IncrementalOutputDecoder(fallback_encoding="cp1252")
+        first = b"\xff" + b"a" * (decoder._PROBE_LIMIT - 1)
+
+        output = decoder.decode(first) + decoder.decode(b"\xc3\xa9\n", final=True)
+
+        assert output == first.decode("cp1252") + "\u00c3\u00a9\n"
+
+    def test_explicit_none_disables_host_fallback(self, monkeypatch):
+        from tools.environments import base
+
+        monkeypatch.setattr(base, "_windows_output_encoding", lambda: "cp936")
+        decoder = _IncrementalOutputDecoder(fallback_encoding=None)
+
+        assert "\ufffd" in decoder.decode("本地程序\n".encode("cp936"))
+
+    def test_base_environment_does_not_guess_remote_output_encoding(self):
+        assert _TestableEnv()._output_fallback_encoding() is None
+
+    def test_wait_for_process_preserves_native_windows_bytes(self, monkeypatch):
+        from tools.environments import base
+
+        expected = "找不到进程\n"
+        raw_hex = expected.encode("cp936").hex()
+        monkeypatch.setattr(base, "_windows_output_encoding", lambda: "cp936")
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                f"import os; os.write(1, bytes.fromhex('{raw_hex}'))",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+        env = _TestableEnv()
+        env._output_fallback_encoding = lambda: "cp936"
+        result = env._wait_for_process(proc, timeout=10)
+
+        assert result["returncode"] == 0
+        assert result["output"] == expected
+        assert "\ufffd" not in result["output"]
 
 
 class TestWrapCommand:

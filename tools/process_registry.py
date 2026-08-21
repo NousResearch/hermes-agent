@@ -29,7 +29,6 @@ Usage:
     process_registry.kill(session.id)
 """
 
-import codecs
 import json
 import logging
 import os
@@ -43,6 +42,7 @@ import uuid
 from pathlib import Path
 
 _IS_WINDOWS = platform.system() == "Windows"
+from tools.environments.base import _IncrementalOutputDecoder
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
@@ -1335,14 +1335,9 @@ class ProcessRegistry:
         lazy reconcile in poll()/wait() remains the safety net.
         """
         first_chunk = True
-        # Incremental decoder: raw pipe reads can split a multibyte UTF-8
-        # character across two read1() chunks. A stateless per-chunk
-        # ``bytes.decode(errors="replace")`` turns both halves into U+FFFD
-        # mojibake. The incremental decoder holds the partial sequence until
-        # the continuation bytes arrive — same treatment the foreground path
-        # already has in ``tools/environments/base.py::_wait_for_process``.
-        # (Ported from openclaw/openclaw#112325.)
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        # Share the foreground decoder: preserve split UTF-8 sequences and
+        # native Windows ANSI output passed through by Git Bash.
+        decoder = _IncrementalOutputDecoder()
 
         def _append_chunk(chunk: str):
             nonlocal first_chunk
@@ -1504,10 +1499,9 @@ class ProcessRegistry:
     def _pty_reader_loop(self, session: ProcessSession):
         """Background thread: read output from a PTY process."""
         pty = session._pty
-        # PTY reads can split a multibyte UTF-8 character across chunks just
-        # like pipe reads — hold partial sequences until the rest arrives.
-        # (Ported from openclaw/openclaw#112325.)
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        # Byte-returning PTYs need the same mixed UTF-8/native-Windows policy
+        # as pipe readers. pywinpty may return str, which is already decoded.
+        decoder = _IncrementalOutputDecoder()
 
         def _append_text(text: str):
             with session._lock:

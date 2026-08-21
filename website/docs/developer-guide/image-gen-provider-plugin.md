@@ -309,6 +309,16 @@ my-backend-imggen = "my_backend_imggen_package"
 
 `my_backend_imggen_package` must expose a top-level `register` function. See [Distribute via pip](/developer-guide/plugins#distribute-via-pip) in the general plugin guide for the full setup.
 
+## Third-party image-gen plugins
+
+These ship as standalone pip packages / repos, not under this tree. They're listed here for discoverability — install via `pip install <name>` (or clone into `~/.hermes/plugins/image_gen/<name>/`) and select them in `image_gen.provider` like any other backend. See [Build a Hermes Plugin](/developer-guide/plugins#distribute-via-pip) for the entry-point convention.
+
+| Plugin | Source | Notes |
+|---|---|---|
+| [hermes-agent-poe-image-gen](https://github.com/dzoey/hermes-agent-poe-image-gen) | [PyPI](https://pypi.org/project/hermes-agent-poe-image-gen/) / pip | Poe.com backend via `fastapi_poe` SDK. Model catalog loaded from a `models.json` sidecar (see plugin README for current list). Requires `POE_API_KEY`. |
+
+Want to add yours? Open a PR against this page with a one-line entry following the same format.
+
 ## Related pages
 
 - [Image Generation](/user-guide/features/image-generation) — user-facing feature documentation

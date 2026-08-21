@@ -386,6 +386,17 @@ async def _lifespan(app: "FastAPI"):
     # Desktop's 10-second WebSocket ready-probe to time out (GH-73083).
     _warm_gateway_module()
 
+    # Snapshot the checkout revision at boot so risky lazy-import paths (the
+    # model picker) can detect when `hermes update` replaced the code
+    # underneath this long-lived process and refuse with a clear "restart
+    # required" message instead of a stale-module ImportError (#86207).  This
+    # mirrors the gateway's record_boot_fingerprint in gateway/run.py; the
+    # dashboard is a separate process/unit that the update flow does not
+    # reliably restart, so it must detect the drift itself.
+    from gateway.code_skew import record_boot_fingerprint
+
+    record_boot_fingerprint()
+
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
     # since the app has no gateway running the scheduler. Server `hermes
     # dashboard` is unaffected — it relies on its own gateway.
@@ -6995,6 +7006,37 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
 )
 
 
+def _dashboard_code_skew_guard() -> Optional[str]:
+    """Return a clear \"restart required\" message when the dashboard runs stale code.
+
+    The dashboard is a long-lived process; its ``sys.modules`` is frozen at
+    boot.  When ``hermes update`` (or a manual ``git pull``) replaces the
+    checkout underneath it, a first-time lazy import on a new code path can
+    resolve a freshly-pulled consumer module against a stale cached dependency
+    -> ImportError — e.g. ``/api/model/options`` 500 after the update added
+    ``agent.model_metadata.is_grok_46_family`` while the running process kept
+    serving the pre-update module (#86207).  Mirror the gateway's
+    ``_model_switch_skew_guard``: refuse the risky call with an actionable
+    message instead of crashing with a cryptic import error.
+
+    Returns None when no drift is detectable (fresh process, or a non-git
+    install where the boot fingerprint could not be read — never a false
+    positive).
+    """
+    from gateway.code_skew import detect_code_skew
+
+    skew = detect_code_skew()
+    if not skew:
+        return None
+    boot_rev, disk_rev = skew
+    return (
+        f"This dashboard is running code from {boot_rev} but the checkout on "
+        f"disk is now {disk_rev}. The model picker would risk a stale-module "
+        f"crash — restart the dashboard to load the new code "
+        f"(systemctl --user restart hermes-dashboard, or hermes dashboard --port <port>)"
+    )
+
+
 @app.get("/api/model/options")
 async def get_model_options(
     profile: Optional[str] = None,
@@ -7018,6 +7060,13 @@ async def get_model_options(
     Models" control. Normal opens leave it false to stay on the 1h cache.
     """
     try:
+        skew_msg = _dashboard_code_skew_guard()
+        if skew_msg:
+            _log.warning("GET /api/model/options refused: %s", skew_msg)
+            raise HTTPException(
+                status_code=503, detail=f"Restart required: {skew_msg}"
+            )
+
         from hermes_cli.inventory import build_model_options_payload, load_picker_context
 
         def _build_payload_scoped() -> dict:

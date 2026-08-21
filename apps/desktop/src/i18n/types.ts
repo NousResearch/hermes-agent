@@ -2663,6 +2663,9 @@ export interface Translations {
       goForward: string
       sendEdited: string
       attachingFile: string
+      speechCodeBlockOmitted: string
+      speechLink: string
+      speechTableOmitted: string
     }
     approval: {
       gatewayDisconnected: string

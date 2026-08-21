@@ -2743,7 +2743,10 @@ export const ja = defineLocale({
       restoreNext: '次のチェックポイントに戻す',
       goForward: '進む',
       sendEdited: '編集済みメッセージを送信',
-      attachingFile: '添付中…'
+      attachingFile: '添付中…',
+      speechCodeBlockOmitted: ' コードブロックを省略しました ',
+      speechLink: ' リンク ',
+      speechTableOmitted: ' 表を省略しました '
     },
     approval: {
       gatewayDisconnected: 'Hermes ゲートウェイが接続されていません',

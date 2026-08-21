@@ -3256,7 +3256,10 @@ export const zh: Translations = {
       restoreNext: '恢复下一个检查点',
       goForward: '前进',
       sendEdited: '发送编辑后的消息',
-      attachingFile: '正在附加…'
+      attachingFile: '正在附加…',
+      speechCodeBlockOmitted: ' 代码块已省略 ',
+      speechLink: ' 链接 ',
+      speechTableOmitted: ' 表格已省略 '
     },
     approval: {
       gatewayDisconnected: 'Hermes 网关未连接',

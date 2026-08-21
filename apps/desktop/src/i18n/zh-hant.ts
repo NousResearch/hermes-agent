@@ -2653,7 +2653,10 @@ export const zhHant = defineLocale({
       restoreNext: '還原至下一個檢查點',
       goForward: '前進',
       sendEdited: '傳送編輯後的訊息',
-      attachingFile: '正在附加…'
+      attachingFile: '正在附加…',
+      speechCodeBlockOmitted: ' 程式碼區塊已省略 ',
+      speechLink: ' 連結 ',
+      speechTableOmitted: ' 表格已省略 '
     },
     approval: {
       gatewayDisconnected: 'Hermes 閘道未連線',

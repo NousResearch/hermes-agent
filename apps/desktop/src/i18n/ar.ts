@@ -2452,7 +2452,10 @@ export const ar = defineLocale({
       restoreNext: 'استعادة التالي',
       goForward: 'تقدم',
       sendEdited: 'إرسال التعديل',
-      attachingFile: 'جار إرفاق الملف'
+      attachingFile: 'جار إرفاق الملف',
+      speechCodeBlockOmitted: ' تم حذف كتلة الكود ',
+      speechLink: ' رابط ',
+      speechTableOmitted: ' تم حذف الجدول '
     },
     approval: {
       gatewayDisconnected: 'البوابة غير متصلة',

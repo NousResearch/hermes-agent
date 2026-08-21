@@ -1,14 +1,14 @@
 ---
 sidebar_position: 13
 title: "Delegation & Parallel Work"
-description: "When and how to use subagent delegation — patterns for parallel research, code review, and multi-file work"
+description: "When to use isolated Hermes subagents versus persistent Pi delegate sessions"
 ---
 
 # Delegation & Parallel Work
 
-Hermes can spawn isolated child agents to work on tasks in parallel. Each subagent gets its own conversation, terminal session, and toolset. Only the final summary comes back — intermediate tool calls never enter your context window.
+Hermes supports both isolated child-agent tasks and persistent external coding sessions. Use `delegate_task` for fresh-context Hermes subagents and parallel work; use `delegate_session` when coding work should stay in one native Pi conversation across follow-ups.
 
-For the full feature reference, see [Subagent Delegation](/user-guide/features/delegation).
+For the full feature reference, see [Delegation](/user-guide/features/delegation).
 
 ---
 

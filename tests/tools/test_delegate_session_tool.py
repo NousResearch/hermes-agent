@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 
@@ -178,13 +179,20 @@ def test_auto_answer_uses_supervising_context_and_main_runtime(monkeypatch):
 
 def test_auto_answer_normalizes_confirm_and_select(monkeypatch):
     parent = Parent()
-    answers = iter(["Proceed, yes.", "use grpc"])
+    answers = iter(["Proceed, yes.", "use grpc", "2", "not one of the options", "maybe"])
     monkeypatch.setattr("agent.oneshot.run_oneshot", lambda **_kwargs: next(answers))
 
     assert ds._auto_answer_pi_question(parent, "confirm", "Continue?", []) == "yes"
     assert ds._auto_answer_pi_question(
         parent, "select", "Transport?", ["Use REST", "Use gRPC"]
     ) == "Use gRPC"
+    assert ds._auto_answer_pi_question(
+        parent, "select", "Transport?", ["Use REST", "Use gRPC"]
+    ) == "Use gRPC"
+    assert ds._auto_answer_pi_question(
+        parent, "select", "Transport?", ["Use REST", "Use gRPC"]
+    ) is None
+    assert ds._auto_answer_pi_question(parent, "confirm", "Continue?", []) is None
 
 
 def test_send_reuses_same_client_and_preserves_followup_history():
@@ -275,6 +283,7 @@ def test_stop_then_resume_reopens_in_same_gateway_process():
     assert resumed["status"] == "idle"
     assert FakePiClient.instances[-1] is not first_client
     assert FakePiClient.instances[-1].is_closed is False
+    assert callable(FakePiClient.instances[-1].question_answerer)
 
 
 def test_resume_after_registry_loss_uses_durable_original_workspace(monkeypatch, tmp_path):
@@ -311,6 +320,28 @@ def test_list_includes_offline_durable_sessions_after_registry_loss():
     row = next(row for row in listed["sessions"] if row["session_id"] == sid)
     assert row["status"] == "offline"
     assert row["cwd"] == started["cwd"]
+
+
+def test_durable_metadata_cache_prunes_oldest_files(monkeypatch, tmp_path):
+    root = ds._session_store_root()
+    root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(ds, "_MAX_DURABLE_SESSIONS", 3)
+    created = []
+    for index in range(5):
+        path = root / f"session-{index}.json"
+        path.write_text(json.dumps({"session_id": str(index)}))
+        os.utime(path, (100 + index, 100 + index))
+        created.append(path)
+
+    ds._prune_durable_metadata(root)
+
+    assert [path.name for path in ds._metadata_files_newest(root)] == [
+        "session-4.json",
+        "session-3.json",
+        "session-2.json",
+    ]
+    assert not created[0].exists()
+    assert not created[1].exists()
 
 
 def test_durable_resume_metadata_enforces_conversation_owner():

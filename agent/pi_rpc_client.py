@@ -100,9 +100,23 @@ class PendingQuestion:
         return payload
 
     def auto_answer(self) -> dict[str, Any]:
-        """Default answer for fallback policy."""
+        """Legacy fallback used by non-session Pi compatibility callers."""
         if self.method == "confirm":
             return {"confirmed": True}
+        if self.method == "select":
+            return {"value": self.options[0]} if self.options else {"cancelled": True}
+        return {"cancelled": True}
+
+    def supervised_fallback(self) -> dict[str, Any]:
+        """Conservative unattended fallback for persistent delegate sessions.
+
+        A failed Hermes auto-answer must never silently approve a confirmation.
+        Select questions choose the first offered option only because Pi's select
+        contract requires a concrete option to continue; free-text/editor
+        questions cancel rather than inventing user intent.
+        """
+        if self.method == "confirm":
+            return {"confirmed": False}
         if self.method == "select":
             return {"value": self.options[0]} if self.options else {"cancelled": True}
         return {"cancelled": True}
@@ -519,7 +533,8 @@ class PiRPCClient:
         method = str(msg.get("method") or "input")
         request_id = msg.get("id")
         title = str(msg.get("title") or "")
-        options = msg.get("options") or []
+        raw_options = msg.get("options")
+        options = [str(item) for item in raw_options] if isinstance(raw_options, (list, tuple)) else []
         if method not in ("input", "select", "confirm", "editor"):
             # setStatus / notify / setWidget and similar are fire-and-forget
             # UI notifications from extensions, not questions. Acknowledge
@@ -555,11 +570,11 @@ class PiRPCClient:
                     f"[pi-question:auto] Hermes answered {method} -> {payload}\n"
                 )
             else:
-                payload = question.auto_answer()
+                payload = question.supervised_fallback()
                 question.answer = payload
                 question.answered.set()
                 self._reasoning_parts.append(
-                    f"[pi-question:auto] Hermes had no answer; safe fallback -> {payload}\n"
+                    f"[pi-question:auto] Hermes had no answer; conservative fallback -> {payload}\n"
                 )
             try:
                 self._send_pi(

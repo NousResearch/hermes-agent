@@ -1,14 +1,44 @@
 ---
 sidebar_position: 7
-title: "Subagent Delegation"
-description: "Spawn isolated child agents for parallel workstreams with delegate_task"
+title: "Delegation"
+description: "Use isolated Hermes subagents with delegate_task or persistent Pi coding sessions with delegate_session"
 ---
 
-# Subagent Delegation
+# Delegation
 
-The `delegate_task` tool spawns child AIAgent instances with isolated context, inherited tool access, and their own terminal sessions. Each child gets a fresh conversation and works independently — only its final summary enters the parent's context.
+Hermes has two distinct delegation primitives:
 
-Top-level model calls run in the background automatically. Hermes returns a handle immediately so the conversation can continue, then posts the result back as a new message. An orchestrator subagent waits for its own workers so it can synthesize their results before returning.
+| Tool | Worker | Lifecycle | Best for |
+| --- | --- | --- | --- |
+| `delegate_task` | Hermes child `AIAgent` | Fresh isolated task; final summary returns to the parent | Parallel reasoning, research, reviews, bounded subtasks |
+| `delegate_session` | Pi over native `--mode rpc` | Persistent native session; follow-ups reuse the same Pi conversation | Interactive coding work that benefits from continuity |
+
+`delegate_task` spawns child AIAgent instances with isolated context, inherited tool access, and their own terminal sessions. Each child gets a fresh conversation and works independently — only its final summary enters the parent's context. Top-level model calls run in the background automatically. Hermes returns a handle immediately so the conversation can continue, then posts the result back as a new message. An orchestrator subagent waits for its own workers so it can synthesize their results before returning.
+
+`delegate_session` does **not** wrap Pi in a child AIAgent. Hermes launches a native persistent Pi RPC session and keeps the same Pi conversation across follow-up turns. Pi questions are answered automatically by the supervising Hermes model from recent conversation/project context; they are not forwarded to the human. If that internal answer fails, persistent sessions use conservative fail-closed behavior for confirmations rather than silently approving them.
+
+## Persistent Pi Session
+
+```python
+delegate_session(
+    action="start",
+    goal="Implement the API change and validate it",
+    context="Project root: /home/user/project. Preserve backward compatibility."
+)
+```
+
+The returned `session_id` is used for later control calls:
+
+```python
+delegate_session(action="status", session_id="...")
+delegate_session(action="send", session_id="...", message="Now add regression tests")
+delegate_session(action="steer", session_id="...", message="Focus on the parser, not the transport")
+delegate_session(action="messages", session_id="...")
+delegate_session(action="stop", session_id="...")
+delegate_session(action="resume", session_id="...")
+```
+
+`resume` reopens the same native Pi session, including after Hermes loses its process-local registry, and restores the session's recorded workspace. Session metadata contains IDs/timestamps/workspace only; prompt text remains in Pi's native session history.
 
 ## Single Task
 

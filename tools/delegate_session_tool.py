@@ -61,6 +61,31 @@ def _metadata_snapshot(record: Dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _metadata_files_newest(root: Path) -> list[Path]:
+    """Return readable metadata files newest-first, tolerating concurrent churn."""
+    ranked: list[tuple[float, Path]] = []
+    try:
+        candidates = list(root.glob("*.json"))
+    except OSError:
+        return []
+    for candidate in candidates:
+        try:
+            ranked.append((candidate.stat().st_mtime, candidate))
+        except OSError:
+            continue
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return [path for _mtime, path in ranked]
+
+
+def _prune_durable_metadata(root: Path) -> None:
+    """Bound Hermes' delegate-session metadata cache without touching Pi history."""
+    for stale in _metadata_files_newest(root)[_MAX_DURABLE_SESSIONS:]:
+        try:
+            stale.unlink()
+        except OSError:
+            logger.debug("Could not prune stale delegate-session metadata %s", stale, exc_info=True)
+
+
 def _persist_metadata(record: Dict[str, Any]) -> None:
     """Persist enough metadata to reopen the native Pi session after restart."""
     session_id = str(record.get("session_id") or "").strip()
@@ -80,6 +105,7 @@ def _persist_metadata(record: Dict[str, Any]) -> None:
         except OSError:
             pass
         tmp.replace(path)
+        _prune_durable_metadata(path.parent)
     except OSError:
         logger.debug("Could not persist delegate-session metadata for %s", session_id, exc_info=True)
 
@@ -99,11 +125,7 @@ def _durable_rows_for_owner(owner: str) -> list[dict[str, Any]]:
     if not root.is_dir():
         return []
     rows: list[dict[str, Any]] = []
-    try:
-        paths = sorted(root.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-    except OSError:
-        return []
-    for path in paths[:_MAX_DURABLE_SESSIONS]:
+    for path in _metadata_files_newest(root)[:_MAX_DURABLE_SESSIONS]:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -235,16 +257,25 @@ def _auto_answer_pi_question(
     if not answer:
         return None
     if method == "select" and options:
-        low = answer.casefold()
+        low = answer.casefold().strip(" \"'`.,!\t\n")
         for option in options:
-            if option.casefold() == low:
+            if option.casefold().strip(" \"'`.,!\t\n") == low:
                 return option
+        if low.isdigit():
+            index = int(low)
+            if 1 <= index <= len(options):
+                return options[index - 1]
+        # A select response must be one of Pi's offered values. Returning None
+        # deliberately activates the conservative supervised fallback instead
+        # of sending an invalid free-form selection over the RPC protocol.
+        return None
     if method == "confirm":
         low = answer.casefold().strip(" .!\t\n")
         if low.startswith(("yes", "true", "approve", "confirm", "proceed")):
             return "yes"
         if low.startswith(("no", "false", "deny", "reject", "stop")):
             return "no"
+        return None
     return _bounded(answer, 2000)
 
 

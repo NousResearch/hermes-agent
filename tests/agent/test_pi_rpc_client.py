@@ -135,6 +135,83 @@ def test_auto_answer_policy():
     assert PendingQuestion("input", "t", None).auto_answer() == {"cancelled": True}
 
 
+def test_supervised_fallback_never_silently_approves():
+    assert PendingQuestion("confirm", "t", None).supervised_fallback() == {"confirmed": False}
+    assert PendingQuestion("select", "t", ["a", "b"]).supervised_fallback() == {"value": "a"}
+    assert PendingQuestion("select", "t", []).supervised_fallback() == {"cancelled": True}
+    assert PendingQuestion("input", "t", None).supervised_fallback() == {"cancelled": True}
+    assert PendingQuestion("editor", "t", None).supervised_fallback() == {"cancelled": True}
+
+
+@pytest.mark.parametrize(
+    "method,options,answer,expected",
+    [
+        ("input", [], "5432", {"value": "5432"}),
+        ("editor", [], "line1\nline2", {"value": "line1\nline2"}),
+        ("select", ["Use REST", "Use gRPC"], "Use gRPC", {"value": "Use gRPC"}),
+        ("confirm", [], "yes", {"confirmed": True}),
+    ],
+)
+def test_persistent_auto_answer_handles_every_dialog_type(fake_pi, clean_registry, method, options, answer, expected):
+    sent = []
+    client = make_client(
+        fake_pi,
+        persistent_session=True,
+        question_answerer=lambda _method, _title, _options: answer,
+    )
+    client._send_pi = lambda payload: sent.append(payload)
+
+    client._handle_ui_request({"type": "extension_ui_request", "id": 77, "method": method, "title": "Question", "options": options})
+
+    assert sent == [{"type": "extension_ui_response", "id": 77, **expected}]
+    assert pending_questions == {}
+    client.close()
+
+
+@pytest.mark.parametrize(
+    "method,options,expected",
+    [
+        ("confirm", [], {"confirmed": False}),
+        ("select", ["safe", "risky"], {"value": "safe"}),
+        ("input", [], {"cancelled": True}),
+        ("editor", [], {"cancelled": True}),
+    ],
+)
+def test_persistent_answerer_failure_uses_conservative_fallback(fake_pi, clean_registry, method, options, expected):
+    sent = []
+
+    def failing_answerer(_method, _title, _options):
+        raise RuntimeError("answer model unavailable")
+
+    client = make_client(fake_pi, persistent_session=True, question_answerer=failing_answerer)
+    client._send_pi = lambda payload: sent.append(payload)
+
+    client._handle_ui_request({"type": "extension_ui_request", "id": 88, "method": method, "title": "Question", "options": options})
+
+    assert sent == [{"type": "extension_ui_response", "id": 88, **expected}]
+    assert pending_questions == {}
+    assert "conservative fallback" in "".join(client._reasoning_parts)
+    client.close()
+
+
+def test_concurrent_persistent_sessions_do_not_cross_answer(fake_pi, clean_registry):
+    sent_a = []
+    sent_b = []
+    client_a = make_client(fake_pi, persistent_session=True, question_answerer=lambda *_args: "alpha")
+    client_b = make_client(fake_pi, persistent_session=True, question_answerer=lambda *_args: "beta")
+    client_a._send_pi = lambda payload: sent_a.append(payload)
+    client_b._send_pi = lambda payload: sent_b.append(payload)
+
+    ta = threading.Thread(target=client_a._handle_ui_request, args=({"type": "extension_ui_request", "id": 101, "method": "input", "title": "A"},))
+    tb = threading.Thread(target=client_b._handle_ui_request, args=({"type": "extension_ui_request", "id": 202, "method": "input", "title": "B"},))
+    ta.start(); tb.start(); ta.join(timeout=2); tb.join(timeout=2)
+
+    assert sent_a == [{"type": "extension_ui_response", "id": 101, "value": "alpha"}]
+    assert sent_b == [{"type": "extension_ui_response", "id": 202, "value": "beta"}]
+    assert pending_questions == {}
+    client_a.close(); client_b.close()
+
+
 # ---------------------------------------------------------------- registry
 
 def test_answer_oldest_routes_to_oldest(clean_registry):

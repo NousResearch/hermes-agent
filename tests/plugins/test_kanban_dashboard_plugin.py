@@ -20,6 +20,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import projects_db as pdb
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +117,167 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_explicit_workspace_supersession_is_returned_as_api_warning(
+    client, tmp_path
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pdb.connect_closing() as conn:
+        project_id = pdb.create_project(conn, name="API Project", folders=[str(repo)])
+
+    kb.write_board_metadata("default", project_id=project_id)
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Explicit scratch", "workspace_kind": "scratch"},
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["warning"] == (
+        "requested workspace 'scratch' was superseded by project-linked "
+        f"workspace 'worktree:{data['task']['workspace_path']}'"
+    )
+    with kb.connect_closing() as conn:
+        created = next(
+            event
+            for event in kb.list_events(conn, data["task"]["id"])
+            if event.kind == "created"
+        )
+    assert created.payload is not None
+    assert created.payload["requested_workspace"] == "scratch"
+    assert created.payload["workspace_kind"] == "worktree"
+    assert created.payload["workspace_path"] == data["task"]["workspace_path"]
+
+
+def test_explicit_scratch_ignores_hidden_dashboard_default_path(client, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pdb.connect_closing() as conn:
+        project_id = pdb.create_project(conn, name="API Project", folders=[str(repo)])
+
+    kb.write_board_metadata("default", project_id=project_id)
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "Explicit scratch",
+            "workspace_kind": "scratch",
+            "workspace_path": str(repo),
+            "workspace_explicit": True,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["warning"] == (
+        "requested workspace 'scratch' was superseded by project-linked "
+        f"workspace 'worktree:{data['task']['workspace_path']}'"
+    )
+    assert data["task"]["workspace_path"] != str(repo)
+    with kb.connect_closing() as conn:
+        created = next(
+            event
+            for event in kb.list_events(conn, data["task"]["id"])
+            if event.kind == "created"
+        )
+    assert created.payload is not None
+    assert created.payload["requested_workspace"] == "scratch"
+
+
+def test_omitted_workspace_inherits_project_without_api_warning(client, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pdb.connect_closing() as conn:
+        project_id = pdb.create_project(conn, name="API Project", folders=[str(repo)])
+
+    kb.write_board_metadata("default", project_id=project_id)
+    response = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "Implicit workspace"}
+    )
+
+    data = response.json()
+    assert "warning" not in data
+    with kb.connect_closing() as conn:
+        created = next(
+            event
+            for event in kb.list_events(conn, data["task"]["id"])
+            if event.kind == "created"
+        )
+    assert created.payload is not None
+    assert created.payload["requested_workspace"] is None
+
+
+def test_untouched_dashboard_default_is_normalized_without_api_warning(
+    client, tmp_path
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pdb.connect_closing() as conn:
+        project_id = pdb.create_project(conn, name="API Project", folders=[str(repo)])
+
+    kb.write_board_metadata("default", project_id=project_id)
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "Untouched dashboard default",
+            "workspace_kind": "scratch",
+            "workspace_explicit": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert "warning" not in data
+    assert data["task"]["workspace_kind"] == "worktree"
+    with kb.connect_closing() as conn:
+        created = next(
+            event
+            for event in kb.list_events(conn, data["task"]["id"])
+            if event.kind == "created"
+        )
+    assert created.payload is not None
+    assert created.payload["requested_workspace"] is None
+    assert created.payload["workspace_kind"] == "worktree"
+    assert created.payload["workspace_path"] == data["task"]["workspace_path"]
+
+
+def test_api_idempotent_retry_warning_uses_original_created_request(client, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pdb.connect_closing() as conn:
+        project_id = pdb.create_project(conn, name="API Project", folders=[str(repo)])
+    kb.write_board_metadata("default", project_id=project_id)
+
+    implicit = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Implicit", "idempotency_key": "implicit-key"},
+    ).json()
+    explicit_retry = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "Retry",
+            "idempotency_key": "implicit-key",
+            "workspace_kind": "scratch",
+        },
+    ).json()
+    assert explicit_retry["task"]["id"] == implicit["task"]["id"]
+    assert "warning" not in explicit_retry
+
+    explicit = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "Explicit",
+            "idempotency_key": "explicit-key",
+            "workspace_kind": "scratch",
+        },
+    ).json()
+    omitted_retry = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Retry", "idempotency_key": "explicit-key"},
+    ).json()
+    assert omitted_retry["task"]["id"] == explicit["task"]["id"]
+    assert omitted_retry["warning"] == explicit["warning"]
+
+
 def test_patch_board_sets_project_directory(client, tmp_path):
     """Board-level default_workdir must be editable after creation."""
     kb.create_board("late-config")
@@ -188,6 +350,22 @@ def test_dashboard_markdown_html_is_sanitized_before_render():
     assert "MARKDOWN_ALLOWED_TAGS" in js
     assert "sanitizeMarkdownHtml(renderMarkdown(props.source || \"\"))" in js
     assert "dangerouslySetInnerHTML: { __html: renderMarkdown(props.source || \"\") }" not in js
+
+
+def test_dashboard_submits_explicit_scratch_workspace_kind():
+    """The UI distinguishes a changed workspace from its visible default."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text(encoding="utf-8")
+
+    assert 'if (workspaceKind) {' in js
+    assert 'body.workspace_kind = workspaceKind;' in js
+    assert 'body.workspace_explicit = workspaceTouched;' in js
+    assert 'workspaceKind === "scratch" ? "" : workspacePath.trim()' in js
+    assert 'setWorkspaceTouched(true);' in js
+    assert 'setWorkspaceTouched(false);' in js
+    assert 'if (workspaceKind && workspaceKind !== "scratch") {' not in js
 
 
 # ---------------------------------------------------------------------------

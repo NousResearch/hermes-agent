@@ -826,13 +826,17 @@ hermes kanban runs t_abcd
 
 | 类型 | 有效载荷 | 时机 |
 |---|---|---|
-| `created` | `{assignee, status, parents, tenant}` | 任务插入。`run_id` 为 `NULL`。 |
+| `created` | `{assignee, status, parents, tenant, requested_workspace, workspace_kind, workspace_path, branch_name, project_id, …}` | 任务插入。`requested_workspace` 是调用方在归一化之前提供的工作区字符串（省略时为 `null`）；`workspace_kind` 和 `workspace_path` 是创建时归一化后的状态。该事件不可变，`run_id` 为 `NULL`。 |
 | `promoted` | — | 因所有父任务达到 `done` 而 `todo → ready`。`run_id` 为 `NULL`。 |
 | `claimed` | `{lock, expires, run_id}` | 调度器原子性认领 `ready` 任务以启动。 |
+| `workspace_resolved` | `{previous_path, resolved_path, previous_branch_name, resolved_branch_name, branch_name}` | 认领时的工作区解析改变了持久化路径或分支。任务行更新与事件写入是原子的；重复解析到相同路径和分支不会产生重复事件。`branch_name` 作为 `resolved_branch_name` 的向后兼容别名保留。 |
 | `completed` | `{result_len, summary?}` | Worker 写入 `--result` / `--summary` 且任务达到 `done`。`summary` 是第一行交接（400 字符上限）；完整版本存在于运行行上。如果在从未认领的任务上调用 `complete_task` 并带有交接字段，则合成零持续时间运行，以便 `run_id` 仍然指向某处。 |
 | `blocked` | `{reason}` | Worker 或人类将任务翻转为 `blocked`。在带有 `--reason` 的从未认领任务上调用时合成零持续时间运行。 |
 | `unblocked` | — | `blocked → ready`，手动或通过 `/unblock`。`run_id` 为 `NULL`。 |
 | `archived` | — | 从默认看板中隐藏。如果任务仍在运行，携带作为副作用被回收的运行的 `run_id`。 |
+
+工作区来源信息采用增量、向后兼容的格式。读取方必须接受不含
+`requested_workspace` 的旧 `created` 事件；此时无法得知归一化前的显式请求，而原有工作区字段仍表示创建时状态。缺少后续 `workspace_resolved` 事件仅表示没有记录到创建后的路径或分支变更。内核不会回填或重写旧事件。当项目绑定取代显式请求的 `scratch` 工作区时，创建仍会成功，CLI/API 会返回同时列出请求值和所选项目工作树的警告；省略工作区或使用默认项目继承时保持静默。
 
 **编辑**（不是转换的人类驱动变更）：
 

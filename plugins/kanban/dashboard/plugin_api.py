@@ -601,8 +601,14 @@ class CreateTaskBody(BaseModel):
     assignee: Optional[str] = None
     tenant: Optional[str] = None
     priority: int = 0
-    workspace_kind: str = "scratch"
+    workspace_kind: Optional[str] = None
     workspace_path: Optional[str] = None
+    # The dashboard always submits its visible board-derived workspace values
+    # so creation keeps the selected normalization inputs.  Track whether the
+    # user actually changed those controls separately: an untouched default is
+    # inherited, not an explicit request that should warn when a project link
+    # normalizes it.
+    workspace_explicit: Optional[bool] = None
     parents: list[str] = Field(default_factory=list)
     triage: bool = False
     idempotency_key: Optional[str] = None
@@ -625,14 +631,34 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
+        from hermes_cli.kanban_workspace import workspace_spec
+
+        workspace_explicit = (
+            payload.workspace_kind is not None
+            if payload.workspace_explicit is None
+            else payload.workspace_explicit
+        )
+        # Scratch is pathless. In particular, the dashboard may still hold a
+        # hidden board-default path after the user switches the kind to
+        # scratch; never let that stale value alter provenance or project
+        # normalization.
+        workspace_path = (
+            None if payload.workspace_kind == "scratch" else payload.workspace_path
+        )
+        requested_workspace = (
+            workspace_spec(payload.workspace_kind, workspace_path)
+            if workspace_explicit and payload.workspace_kind is not None
+            else None
+        )
         task_id = kanban_db.create_task(
             conn,
             title=payload.title,
             body=payload.body,
             assignee=payload.assignee,
             created_by="dashboard",
-            workspace_kind=payload.workspace_kind,
-            workspace_path=payload.workspace_path,
+            workspace_kind=payload.workspace_kind or "scratch",
+            workspace_path=workspace_path,
+            requested_workspace=requested_workspace,
             tenant=payload.tenant,
             priority=payload.priority,
             parents=payload.parents,
@@ -649,7 +675,18 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             board=board,
         )
         task = kanban_db.get_task(conn, task_id)
+        created_requested_workspace = kanban_db.get_created_requested_workspace(
+            conn, task_id
+        )
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
+        from hermes_cli.kanban_workspace import supersession_warning
+
+        workspace_warning = supersession_warning(
+            created_requested_workspace,
+            task,
+        ) if task else None
+        if workspace_warning:
+            body["warning"] = workspace_warning
         # Surface a dispatcher-presence warning so the UI can show a
         # banner when a `ready` task would otherwise sit idle because no
         # gateway is running (or dispatch_in_gateway=false). Only emit
@@ -667,7 +704,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
                 running, message = _check_dispatcher_presence(
                     hermes_home=get_hermes_home()
                 )
-                if not running and message:
+                if not running and message and "warning" not in body:
                     body["warning"] = message
             except Exception:
                 # Probe failure must never block the create itself.

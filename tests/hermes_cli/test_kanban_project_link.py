@@ -9,6 +9,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import projects_db as pdb
+from hermes_cli.kanban_workspace import supersession_warning
 
 
 @pytest.fixture
@@ -38,6 +39,69 @@ def test_project_linked_task_gets_deterministic_worktree_and_branch(kanban_conn)
     # Deterministic branch: <slug>/<task-id>-<title-slug>. NOT a random wt/...
     assert task.branch_name == f"{proj.slug}/{tid}-add-login"
     assert not task.branch_name.startswith("wt/")
+
+
+def test_explicit_scratch_supersession_reports_requested_and_selected_workspace(
+    kanban_conn,
+):
+    proj = _make_project()
+    tid = kb.create_task(
+        kanban_conn,
+        title="Add login",
+        project_id=proj.slug,
+        workspace_kind="scratch",
+    )
+
+    task = kb.get_task(kanban_conn, tid)
+    assert supersession_warning("scratch", task) == (
+        "requested workspace 'scratch' was superseded by project-linked "
+        f"workspace 'worktree:{task.workspace_path}'"
+    )
+
+
+def test_omitted_workspace_inherits_project_worktree_without_warning(kanban_conn):
+    proj = _make_project()
+    tid = kb.create_task(
+        kanban_conn,
+        title="Add login",
+        project_id=proj.slug,
+    )
+
+    task = kb.get_task(kanban_conn, tid)
+    assert supersession_warning(None, task) is None
+
+
+def test_explicit_directory_preserved_without_warning(kanban_conn, tmp_path):
+    proj = _make_project()
+    assert proj is not None
+    requested_path = tmp_path / "explicit-workspace"
+    tid = kb.create_task(
+        kanban_conn,
+        title="Use existing directory",
+        project_id=proj.slug,
+        workspace_kind="dir",
+        workspace_path=str(requested_path),
+    )
+
+    task = kb.get_task(kanban_conn, tid)
+    assert task is not None
+    assert task.workspace_kind == "dir"
+    assert task.workspace_path == str(requested_path)
+    assert supersession_warning(f"dir:{requested_path}", task) is None
+
+
+def test_explicit_scratch_on_unlinked_task_does_not_warn(kanban_conn):
+    tid = kb.create_task(
+        kanban_conn,
+        title="Unlinked scratch",
+        workspace_kind="scratch",
+    )
+
+    task = kb.get_task(kanban_conn, tid)
+    assert task is not None
+    assert task.project_id is None
+    assert task.workspace_kind == "scratch"
+    assert supersession_warning("scratch", task) is None
 
 
 def test_explicit_branch_overrides_project_default(kanban_conn):

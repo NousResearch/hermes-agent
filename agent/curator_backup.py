@@ -11,6 +11,7 @@ is undoable, then extracts the chosen snapshot into place.
 The snapshot does NOT include:
   - ``.curator_backups/`` (would recurse)
   - ``.hub/`` (hub-installed skills — managed by the hub, not us)
+  - ``.git/`` (repository metadata — managed by git, not the curator)
 
 It DOES include:
   - all SKILL.md files + their directories (``scripts/``, ``references/``,
@@ -60,7 +61,8 @@ DEFAULT_KEEP = 5
 # Entries under skills/ that should NEVER be rolled up into a snapshot.
 # .hub/ is managed by the skills hub; rolling it back would break lockfile
 # invariants. .curator_backups is the backup dir itself — recursion bomb.
-_EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub"}
+# .git is repository metadata — rolling it back would break git tracking.
+_EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub", ".git"}
 
 # Snapshot id regex: UTC ISO with colons replaced by dashes so the filename
 # is portable (Windows-safe). An optional ``-NN`` suffix handles two
@@ -260,6 +262,12 @@ def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] =
         return None
 
     archive = dest / "skills.tar.gz"
+    def _tar_filter(tarinfo: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
+        parts = Path(tarinfo.name).parts
+        if any(p in _EXCLUDE_TOP_LEVEL for p in parts):
+            return None
+        return tarinfo
+
     try:
         # Stream into the tarball — no tempdir copy needed.
         with tarfile.open(archive, "w:gz", compresslevel=6) as tf:
@@ -268,7 +276,7 @@ def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] =
                     continue
                 # arcname: store paths relative to skills/ so extraction
                 # drops cleanly back into the skills dir.
-                tf.add(str(entry), arcname=entry.name, recursive=True)
+                tf.add(str(entry), arcname=entry.name, recursive=True, filter=_tar_filter)
         # Capture cron/jobs.json alongside the tarball. Never fails the
         # snapshot — the skills side is the core guarantee; cron is
         # additive. We still record in the manifest whether it was

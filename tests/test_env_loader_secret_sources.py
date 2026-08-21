@@ -49,18 +49,30 @@ def test_get_secret_source_values_returns_home_snapshot_copy(tmp_path):
     home_b.mkdir()
 
     env_loader._SECRET_SOURCE_VALUES_BY_HOME[str(home_a.resolve())] = {
-        "ANTHROPIC_API_KEY": "sk-profile-a"
+        "ANTHROPIC_API_KEY": "sk-profile-a",
+        "EMPTY": "",
+    }
+    env_loader._SECRET_SOURCE_VALUES_BY_HOME[str(home_b.resolve())] = {
+        "OPENAI_API_KEY": "sk-profile-b",
     }
 
     snapshot = env_loader.get_secret_source_values(home_a)
     assert snapshot == {
-        "ANTHROPIC_API_KEY": "sk-profile-a"
+        "ANTHROPIC_API_KEY": "sk-profile-a",
+        "EMPTY": "",
     }
-    assert env_loader.get_secret_source_values(home_b) == {}
+    assert env_loader.get_secret_source_values(home_b) == {
+        "OPENAI_API_KEY": "sk-profile-b",
+    }
     snapshot["ANTHROPIC_API_KEY"] = "mutated"
     assert env_loader.get_secret_source_values(home_a) == {
-        "ANTHROPIC_API_KEY": "sk-profile-a"
+        "ANTHROPIC_API_KEY": "sk-profile-a",
+        "EMPTY": "",
     }
+    assert env_loader.get_all_secret_source_values() == frozenset({
+        "sk-profile-a",
+        "sk-profile-b",
+    })
 
 
 def test_format_secret_source_suffix_empty_for_untracked():

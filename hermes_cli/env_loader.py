@@ -166,6 +166,16 @@ def get_secret_source_values(
     return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(home_key, {}))
 
 
+def get_all_secret_source_values() -> frozenset[str]:
+    """Return the set of all non-empty external-secret values across all homes."""
+    values: set[str] = set()
+    for snapshot in _SECRET_SOURCE_VALUES_BY_HOME.values():
+        for val in snapshot.values():
+            if val:
+                values.add(val)
+    return frozenset(values)
+
+
 def hydrate_profile_secret_sources(
     hermes_home: str | os.PathLike,
 ) -> dict[str, str]:

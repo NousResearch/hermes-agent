@@ -274,6 +274,38 @@ def decompose_task(
     author: Optional[str] = None,
     timeout: Optional[int] = None,
 ) -> DecomposeOutcome:
+    """Reserve and enforce durable policy before any decomposer LLM call."""
+    with kb.connect_closing() as conn:
+        reservation = kb.reserve_decomposition(conn, task_id)
+    if not reservation.ok:
+        return DecomposeOutcome(task_id, False, reservation.reason)
+    assert reservation.token is not None
+    try:
+        return _decompose_reserved_task(
+            task_id,
+            author=author,
+            timeout=timeout,
+            reservation_token=reservation.token,
+            reservation_cursor=reservation.event_cursor,
+        )
+    finally:
+        try:
+            with kb.connect_closing() as conn:
+                kb.release_decomposition_reservation(
+                    conn, task_id, reservation.token
+                )
+        except Exception:
+            logger.exception("decompose: failed to release reservation for %s", task_id)
+
+
+def _decompose_reserved_task(
+    task_id: str,
+    *,
+    author: Optional[str] = None,
+    timeout: Optional[int] = None,
+    reservation_token: str,
+    reservation_cursor: Optional[int],
+) -> DecomposeOutcome:
     """Decompose a triage task into a graph of child tasks.
 
     Returns an outcome describing what happened. Never raises for
@@ -361,15 +393,20 @@ def decompose_task(
             return DecomposeOutcome(
                 task_id, False, "decomposer returned fanout=false with no title/body",
             )
-        with kb.connect_closing() as conn:
-            ok = kb.specify_triage_task(
-                conn,
-                task_id,
-                title=title_val,
-                body=body_val,
-                assignee=assignee_val,
-                author=audit_author,
-            )
+        try:
+            with kb.connect_closing() as conn:
+                ok = kb.specify_triage_task(
+                    conn,
+                    task_id,
+                    title=title_val,
+                    body=body_val,
+                    assignee=assignee_val,
+                    author=audit_author,
+                    decomposition_token=reservation_token,
+                    decomposition_event_cursor=reservation_cursor,
+                )
+        except RuntimeError as exc:
+            return DecomposeOutcome(task_id, False, f"DB rejected respecification: {exc}")
         if not ok:
             return DecomposeOutcome(
                 task_id, False, "task moved out of triage before promotion",
@@ -438,6 +475,8 @@ def decompose_task(
                 children=children,
                 author=audit_author,
                 auto_promote=auto_promote,
+                decomposition_token=reservation_token,
+                decomposition_event_cursor=reservation_cursor,
             )
     except ValueError as exc:
         return DecomposeOutcome(task_id, False, f"DB rejected graph: {exc}")

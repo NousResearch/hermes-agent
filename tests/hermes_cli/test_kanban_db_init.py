@@ -123,6 +123,23 @@ def test_migration_is_idempotent(tmp_path, monkeypatch):
         assert len(conn.execute("SELECT * FROM task_events").fetchall()) == 2
 
 
+def test_legacy_board_migration_adds_decomposition_reservations_table(
+    tmp_path, monkeypatch
+):
+    db_path = _setup_home(tmp_path, monkeypatch)
+    _make_legacy_db(db_path)
+
+    with kb.connect(db_path) as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(task_decomposition_reservations)"
+            )
+        }
+
+    assert columns == {"task_id", "token", "event_cursor", "reserved_at"}
+
+
 def test_unseen_events_for_sub_survives_migrated_db(tmp_path, monkeypatch):
     """The crash that motivated #35096 — ``int(None)`` on a NULL cursor — is
     gone after migration; the notifier query returns an integer cursor."""

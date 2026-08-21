@@ -25,6 +25,7 @@ import {
   DialogHeader,
   DialogTitle,
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
@@ -77,6 +78,7 @@ import {
   patchTask,
   PROFILES_KEY
 } from './api'
+import { filterKanbanBoard, pruneTaskSelection } from './board-filter'
 import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
@@ -872,7 +874,10 @@ function FilterMenu({
   board,
   onArchived,
   onAssignee,
+  onShowCompletedChildren,
   onTenant,
+  completedChildren,
+  showCompletedChildren,
   tenant
 }: {
   archived: boolean
@@ -880,11 +885,14 @@ function FilterMenu({
   board: KanbanBoard
   onArchived: (v: boolean) => void
   onAssignee: (v: string) => void
+  onShowCompletedChildren: (v: boolean) => void
   onTenant: (v: string) => void
+  completedChildren: number
+  showCompletedChildren: boolean
   tenant: string
 }) {
   const k = useKanban()
-  const active = Boolean(assignee || tenant || archived)
+  const active = Boolean(assignee || tenant || archived || showCompletedChildren)
   const lanesByProfile = useValue($lanesByProfile)
 
   const check = (on: boolean) => (on ? <Codicon className="ml-auto" name="check" size="0.8rem" /> : null)
@@ -933,6 +941,9 @@ function FilterMenu({
           {k.showArchived}
           {check(archived)}
         </DropdownMenuItem>
+        <DropdownMenuCheckboxItem checked={showCompletedChildren} onCheckedChange={onShowCompletedChildren}>
+          {k.completedChildren(completedChildren)}
+        </DropdownMenuCheckboxItem>
         <DropdownMenuItem onSelect={() => $lanesByProfile.set(!lanesByProfile)}>
           {k.groupRunning}
           {check(lanesByProfile)}
@@ -1099,6 +1110,7 @@ export function KanbanBoardPage() {
   const [search, setSearch] = useState('')
   const [tenant, setTenant] = useState('')
   const [assignee, setAssignee] = useState('')
+  const [showCompletedChildren, setShowCompletedChildren] = useState(false)
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
 
   // A new-task request raised from outside the page (⌘⌥N, the palette row).
@@ -1168,20 +1180,27 @@ export function KanbanBoardPage() {
   )
 
   // Client-side filters, mirroring the dashboard (search over title/body/id).
-  const filtered = useMemo(() => {
+  // Completed child cards collapse by default while root/standalone results
+  // remain visible; the parent drawer and menu toggle preserve full history.
+  const filteredResult = useMemo(() => {
     if (!board) {
       return null
     }
 
-    const q = search.trim().toLowerCase()
+    return filterKanbanBoard(board, { assignee, search, showCompletedChildren, tenant })
+  }, [board, search, tenant, assignee, showCompletedChildren])
 
-    const keep = (task: KanbanTask) =>
-      (!q || `${task.title} ${task.body ?? ''} ${task.id}`.toLowerCase().includes(q)) &&
-      (!tenant || task.tenant === tenant) &&
-      (!assignee || task.assignee === assignee)
+  const filtered = filteredResult?.board ?? null
+  const completedChildren = filteredResult?.completedChildren ?? 0
 
-    return { ...board, columns: board.columns.map(col => ({ ...col, tasks: col.tasks.filter(keep) })) }
-  }, [board, search, tenant, assignee])
+  // Hidden cards must not remain bulk-actionable through stale selection.
+  useEffect(() => {
+    if (!filtered) {
+      return
+    }
+
+    setSelected(prev => pruneTaskSelection(prev, filtered))
+  }, [filtered])
 
   const total = filtered?.columns.reduce((sum, col) => sum + col.tasks.length, 0) ?? 0
 
@@ -1337,9 +1356,12 @@ export function KanbanBoardPage() {
             archived={archived}
             assignee={assignee}
             board={board}
+            completedChildren={completedChildren}
             onArchived={setArchived}
             onAssignee={setAssignee}
+            onShowCompletedChildren={setShowCompletedChildren}
             onTenant={setTenant}
+            showCompletedChildren={showCompletedChildren}
             tenant={tenant}
           />
         )}

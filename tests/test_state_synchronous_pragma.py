@@ -226,3 +226,22 @@ def test_example_config_documents_the_key():
     text = Path(__file__).resolve().parents[1] / "cli-config.yaml.example"
     body = text.read_text(encoding="utf-8")
     assert "synchronous: FULL" in body
+
+
+def test_example_config_calls_the_darwin_rule_a_floor_not_a_pin():
+    """The macOS wording has to match _apply_synchronous_pragma's actual rule.
+
+    Saying macOS is "always held at FULL" reads as "your setting is ignored
+    here", which would talk an operator out of choosing EXTRA -- the one level
+    that IS honored on Darwin. Only sub-FULL values are refused. The wording
+    is the whole interface for a key nobody can otherwise observe, so pin the
+    distinction rather than just the key's presence.
+    """
+    from pathlib import Path
+
+    body = (
+        Path(__file__).resolve().parents[1] / "cli-config.yaml.example"
+    ).read_text(encoding="utf-8")
+    assert "floor, not a pin" in body
+    assert "EXTRA is honored" in body
+    assert "always held" not in body

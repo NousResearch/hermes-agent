@@ -22,8 +22,9 @@ database:
   # (or 0-3). Unset leaves SQLite's default, which is baked in at compile time
   # (SQLITE_DEFAULT_WAL_SYNCHRONOUS) and therefore differs between the bundled
   # interpreter, a distro python3 and a Homebrew one. Set it if you need to
-  # know which one you are running rather than infer it. macOS is always held
-  # at FULL regardless: Darwin's fsync() does not guarantee write ordering.
+  # know which one you are running rather than infer it. On macOS this is a
+  # floor, not a pin: values below FULL are refused because Darwin's fsync()
+  # does not guarantee write ordering, while EXTRA is honored normally.
   # synchronous: FULL
 
 # =============================================================================

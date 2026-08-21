@@ -7972,6 +7972,10 @@ DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
 # and rotates on spawn if the file is larger than this at spawn time.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
 DEFAULT_LOG_BACKUP_COUNT = 1
+# Crash events keep a bounded diagnostic excerpt. The run marker written by
+# the dispatcher is the ownership boundary: bytes before it belong to an
+# earlier attempt and must never be attached to the current run.
+WORKER_CRASH_LOG_TAIL_BYTES = 8 * 1024
 
 # Keep a little wall-clock budget for the worker to observe a terminal timeout
 # and call kanban_block/kanban_complete before max_runtime_seconds kills it.
@@ -8849,7 +8853,9 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+def detect_crashed_workers(
+    conn: sqlite3.Connection, *, board: Optional[str] = None,
+) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Appends a ``crashed`` event and restores the task's source phase.
@@ -8892,7 +8898,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     exited_hook_payloads: list[dict] = []
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at, assignee "
+            "SELECT id, worker_pid, claim_lock, started_at, assignee, "
+            "current_run_id "
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
@@ -8976,6 +8983,14 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 if code is not None and kind != "unknown":
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
+
+                # A task log is cumulative across retries. Read only bytes
+                # after this run's dispatcher-written marker; if the worker
+                # died before emitting output, preserve that fact as null
+                # instead of falling back to the previous attempt's tail.
+                event_payload["worker_log_tail"] = _read_worker_run_log_tail(
+                    row["id"], row["current_run_id"], board=board,
+                )
 
             retry_status = _retry_status_for_run(conn, row["id"])
             event_payload["retry_status"] = retry_status
@@ -9951,7 +9966,7 @@ def _dispatch_once_locked(
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )
-    result.crashed = detect_crashed_workers(conn)
+    result.crashed = detect_crashed_workers(conn, board=board)
     # detect_crashed_workers stashes protocol-violation auto-blocks on
     # itself so the public list-return stays stable. Pull them into the
     # DispatchResult here so telemetry / tests see the trip.
@@ -10896,6 +10911,9 @@ def _default_spawn(
 
     # Use 'a' so a re-run on unblock appends rather than overwrites.
     log_f = open(log_path, "ab")
+    if task.current_run_id is not None:
+        log_f.write(_worker_run_log_marker(task.current_run_id))
+        log_f.flush()
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
             cmd,
@@ -11918,6 +11936,63 @@ def worker_log_path(task_id: str, *, board: Optional[str] = None) -> Path:
     board explicitly to avoid any resolution ambiguity when multiple
     boards exist."""
     return worker_logs_dir(board=board) / f"{task_id}.log"
+
+
+def _worker_run_log_marker(run_id: int) -> bytes:
+    """Return the dispatcher-owned boundary written before a worker starts."""
+    return f"\n--- hermes kanban run {int(run_id)} ---\n".encode("ascii")
+
+
+def _read_worker_run_log_tail(
+    task_id: str,
+    run_id: Optional[int],
+    *,
+    tail_bytes: int = WORKER_CRASH_LOG_TAIL_BYTES,
+    board: Optional[str] = None,
+) -> Optional[str]:
+    """Read a tail belonging strictly to ``run_id`` from a cumulative log.
+
+    Missing markers are treated as unknown ownership, never as permission to
+    return the task-level tail. This keeps legacy/custom-spawn logs from being
+    misattributed to a run that did not write them.
+    """
+    if run_id is None or tail_bytes <= 0:
+        return None
+    path = worker_log_path(task_id, board=board)
+    marker = _worker_run_log_marker(run_id)
+    marker_overlap = b""
+    try:
+        with path.open("rb") as log_f:
+            while chunk := log_f.read(64 * 1024):
+                scan = marker_overlap + chunk
+                marker_at = scan.find(marker)
+                if marker_at >= 0:
+                    marker_end = (
+                        log_f.tell() - len(chunk) - len(marker_overlap)
+                        + marker_at + len(marker)
+                    )
+                    break
+                marker_overlap = scan[-(len(marker) - 1):]
+            else:
+                return None
+
+            log_f.seek(0, os.SEEK_END)
+            log_end = log_f.tell()
+            output_size = log_end - marker_end
+            if output_size <= 0:
+                return None
+            log_f.seek(max(marker_end, log_end - tail_bytes))
+            run_output = log_f.read(min(output_size, tail_bytes))
+    except OSError:
+        return None
+
+    if output_size > tail_bytes:
+        newline = run_output.find(b"\n")
+        if newline >= 0:
+            run_output = run_output[newline + 1:]
+    if not run_output:
+        return None
+    return run_output.decode("utf-8", errors="replace")
 
 
 def read_worker_log(

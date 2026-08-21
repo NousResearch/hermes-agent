@@ -3600,6 +3600,7 @@ def delegate_task(
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
+    persona: Optional[str] = None,
     background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None,
     action: Optional[str] = None,
@@ -3625,6 +3626,12 @@ def delegate_task(
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    The 'persona' parameter names an operator-defined entry under
+    delegation.personas in config.yaml whose model/provider overrides
+    apply to every child spawned by this call (see
+    _apply_persona_overlay).  Unknown names degrade to the default
+    delegation config with a logged warning.
 
     Returns JSON with results array, one entry per task.
     """
@@ -3700,7 +3707,9 @@ def delegate_task(
     # used by CLI/gateway startup.  When unconfigured, returns None values so
     # children inherit from the parent.
     try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
+        creds = _resolve_delegation_credentials(
+            _apply_persona_overlay(cfg, persona), parent_agent
+        )
     except ValueError as exc:
         return tool_error(str(exc))
 
@@ -4414,6 +4423,64 @@ def _resolve_child_credential_pool(
     return None
 
 
+# Keys a persona may override — deliberately restricted to the
+# credential-bearing subset of the delegation config so a persona can
+# re-route model/provider without touching orchestration limits
+# (max_iterations, spawn depth, and concurrency stay global).
+_PERSONA_OVERRIDE_KEYS = ("model", "provider", "base_url", "api_key", "api_mode")
+
+
+def _apply_persona_overlay(cfg: dict, persona: Optional[str]) -> dict:
+    """Overlay ``delegation.personas.<persona>`` onto the delegation config.
+
+    Personas are operator-defined model/provider bundles in config.yaml:
+
+        delegation:
+          personas:
+            planner:
+              model: "claude-fable-5"
+              provider: "anthropic"
+            coder:
+              model: "anthropic/claude-sonnet-5"
+
+    The agent selects a persona *name* per delegate_task call; what that
+    name resolves to stays under operator control in config.yaml. This is
+    the middle ground between no per-call routing at all and letting the
+    model emit arbitrary model strings (#52077, #78522): cost and provider
+    policy remain with the config owner while skills/prompts can still
+    steer which persona handles which kind of work.
+
+    Unknown or malformed persona names degrade to the base config with a
+    warning (same silent-degrade pattern as ``_normalize_role``) — a
+    failed lookup must never break the delegation itself.
+    """
+    if not persona:
+        return cfg
+    personas = cfg.get("personas")
+    if not isinstance(personas, dict):
+        logger.warning(
+            "delegate_task: persona=%r requested but delegation.personas is "
+            "not configured; using default delegation config",
+            persona,
+        )
+        return cfg
+    entry = personas.get(str(persona).strip())
+    if not isinstance(entry, dict):
+        known = sorted(k for k in personas if isinstance(personas.get(k), dict))
+        logger.warning(
+            "delegate_task: unknown persona=%r (configured: %s); using "
+            "default delegation config",
+            persona,
+            known or "none",
+        )
+        return cfg
+    merged = dict(cfg)
+    for key in _PERSONA_OVERRIDE_KEYS:
+        if key in entry and entry[key] is not None:
+            merged[key] = entry[key]
+    return merged
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -4802,6 +4869,18 @@ DELEGATE_TASK_SCHEMA = {
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
             },
+            "persona": {
+                "type": "string",
+                "description": (
+                    "Optional operator-defined persona for this call's "
+                    "children. Maps to delegation.personas.<name> in "
+                    "config.yaml, which may override the child model/"
+                    "provider (e.g. a 'planner' persona pinned to a "
+                    "frontier model, a 'coder' persona on a fast one). "
+                    "Applies to every child spawned by this call. Unknown "
+                    "names fall back to the default delegation config."
+                ),
+            },
             "output_schema": {
                 "type": "object",
                 "description": (
@@ -4913,6 +4992,7 @@ registry.register(
         tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
+        persona=args.get("persona"),
         background=_model_background_value(args, kw.get("parent_agent")),
         output_schema=args.get("output_schema"),
         action=args.get("action"),

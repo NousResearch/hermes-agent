@@ -1486,6 +1486,14 @@ delegation:
   # inherit_mcp_toolsets: true                # When explicit child toolsets are narrowed, also keep the parent's MCP toolsets (default: true). Set false for strict intersection.
   # model: "google/gemini-3-flash-preview"    # Override model for subagents (empty = inherit parent)
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
+  # personas:                                 # Named model/provider bundles the agent can select per
+  #   planner:                                # delegate_task call via the optional `persona` parameter.
+  #     model: "claude-fable-5"               # A persona may override: model, provider, base_url,
+  #     provider: "anthropic"                 # api_key, api_mode. Orchestration limits (max_iterations,
+  #   coder:                                  # spawn depth, concurrency) stay global. The agent only
+  #     model: "anthropic/claude-sonnet-5"    # ever names a persona — which model that maps to remains
+  #                                           # operator-controlled here. Unknown names degrade to the
+  #                                           # default delegation config with a logged warning.
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
   #                                           # Cost tip: keep the parent on a frontier model and pin

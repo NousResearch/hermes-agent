@@ -30,6 +30,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _apply_persona_overlay,
 )
 from hermes_state import SessionDB
 
@@ -771,6 +772,88 @@ class TestBlockedTools(unittest.TestCase):
         can batch mechanical work instead of burning reasoning iterations
         (Teknium, Jul 2026)."""
         self.assertNotIn("execute_code", DELEGATE_BLOCKED_TOOLS)
+
+class TestPersonaOverlay(unittest.TestCase):
+    """Tests for operator-defined persona overlays (delegation.personas)."""
+
+    BASE_CFG = {
+        "model": "anthropic/claude-sonnet-5",
+        "provider": "anthropic",
+        "max_iterations": 50,
+        "personas": {
+            "planner": {"model": "claude-fable-5", "provider": "anthropic"},
+            "coder": {"model": "anthropic/claude-haiku-4-5"},
+            "broken": "not-a-dict",
+        },
+    }
+
+    def test_no_persona_returns_cfg_unchanged(self):
+        cfg = dict(self.BASE_CFG)
+        self.assertIs(_apply_persona_overlay(cfg, None), cfg)
+        self.assertIs(_apply_persona_overlay(cfg, ""), cfg)
+
+    def test_persona_overrides_model_and_provider(self):
+        merged = _apply_persona_overlay(self.BASE_CFG, "planner")
+        self.assertEqual(merged["model"], "claude-fable-5")
+        self.assertEqual(merged["provider"], "anthropic")
+        # Base config is not mutated.
+        self.assertEqual(self.BASE_CFG["model"], "anthropic/claude-sonnet-5")
+
+    def test_persona_partial_override_keeps_base_keys(self):
+        merged = _apply_persona_overlay(self.BASE_CFG, "coder")
+        self.assertEqual(merged["model"], "anthropic/claude-haiku-4-5")
+        # Provider not set on the persona — inherited from base config.
+        self.assertEqual(merged["provider"], "anthropic")
+
+    def test_persona_cannot_override_orchestration_limits(self):
+        cfg = dict(self.BASE_CFG)
+        cfg["personas"] = {"greedy": {"model": "x", "max_iterations": 9999}}
+        merged = _apply_persona_overlay(cfg, "greedy")
+        self.assertEqual(merged["max_iterations"], 50)
+
+    def test_unknown_persona_degrades_to_base_cfg(self):
+        with self.assertLogs("tools.delegate_tool", level="WARNING") as logs:
+            merged = _apply_persona_overlay(self.BASE_CFG, "nonexistent")
+        self.assertEqual(merged["model"], "anthropic/claude-sonnet-5")
+        self.assertTrue(any("unknown persona" in m for m in logs.output))
+
+    def test_malformed_persona_entry_degrades_to_base_cfg(self):
+        with self.assertLogs("tools.delegate_tool", level="WARNING"):
+            merged = _apply_persona_overlay(self.BASE_CFG, "broken")
+        self.assertEqual(merged["model"], "anthropic/claude-sonnet-5")
+
+    def test_persona_without_personas_section_degrades(self):
+        cfg = {"model": "m", "provider": "p"}
+        with self.assertLogs("tools.delegate_tool", level="WARNING"):
+            merged = _apply_persona_overlay(cfg, "planner")
+        self.assertEqual(merged, cfg)
+
+    def test_persona_flows_into_credential_resolution(self):
+        """A persona with a direct base_url routes children to that endpoint."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "",
+            "provider": "",
+            "personas": {
+                "local": {
+                    "model": "qwen2.5-coder",
+                    "base_url": "http://localhost:1234/v1",
+                    "api_key": "local-key",
+                }
+            },
+        }
+        creds = _resolve_delegation_credentials(
+            _apply_persona_overlay(cfg, "local"), parent
+        )
+        self.assertEqual(creds["model"], "qwen2.5-coder")
+        self.assertEqual(creds["base_url"], "http://localhost:1234/v1")
+        self.assertEqual(creds["api_key"], "local-key")
+
+    def test_schema_exposes_persona_param(self):
+        self.assertIn(
+            "persona", DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        )
+
 
 class TestDelegationCredentialResolution(unittest.TestCase):
     """Tests for provider:model credential resolution in delegation config."""

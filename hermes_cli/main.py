@@ -2886,6 +2886,79 @@ def _sync_bundled_skills_quietly() -> None:
         pass
 
 
+def _migrate_profile_config(profile) -> None:
+    """Run non-interactive config migration for a single profile.
+
+    Called from ``cmd_update`` to catch up named profiles whose config.yaml
+    is still at an older version after the active profile was migrated.
+    Only version-bump-only migrations are applied silently; if new required
+    settings are needed, a warning is printed telling the user to run
+    ``hermes config migrate`` with that profile active.
+    """
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+    token = set_hermes_home_override(profile.path)
+    try:
+        from hermes_cli.config import (
+            get_missing_env_vars,
+            get_missing_config_fields,
+            check_config_version,
+            migrate_config,
+        )
+        current_ver, latest_ver = check_config_version()
+        if current_ver < latest_ver:
+            missing_env = get_missing_env_vars(required_only=True)
+            missing_config = get_missing_config_fields()
+            if not (missing_env or missing_config):
+                migrate_config(interactive=False, quiet=True)
+            else:
+                print(
+                    f"⚠️  Profile '{profile.name}' config v{current_ver} is "
+                    f"outdated (current: v{latest_ver}). Run "
+                    f"`hermes --profile {profile.name} config migrate` to update.",
+                    file=sys.stderr,
+                )
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _migrate_active_profile_on_startup() -> None:
+    """Auto-migrate the active profile's config before serve/dashboard startup.
+
+    ``hermes update`` only migrates the active profile's config; when the
+    desktop app spawns ``hermes serve --profile <name>``, that profile's
+    config may still be at an older version, causing agent init failures.
+    Apply the same non-interactive migration for version-bump-only bumps;
+    if new required settings are needed, warn on stderr.
+
+    Never raises — startup must not be blocked by a migration hiccup.
+    """
+    try:
+        from hermes_cli.config import (
+            get_missing_env_vars,
+            get_missing_config_fields,
+            check_config_version,
+            migrate_config,
+        )
+        current_ver, latest_ver = check_config_version()
+        if current_ver < latest_ver:
+            missing_env = get_missing_env_vars(required_only=True)
+            missing_config = get_missing_config_fields()
+            has_new_options = bool(missing_env or missing_config)
+            if not has_new_options:
+                migrate_config(interactive=False, quiet=True)
+            else:
+                print(
+                    f"⚠️  Config v{current_ver} is outdated (current: v{latest_ver}). "
+                    f"Run `hermes config migrate` to update.",
+                    file=sys.stderr,
+                )
+    except Exception:
+        pass  # non-fatal — let start_server surface real config errors
+
+
 def _resolve_use_tui(args) -> bool:
     """Decide whether to launch the TUI for a chat/bare invocation.
 
@@ -11442,6 +11515,9 @@ def cmd_dashboard(args):
     except Exception:
         logger.debug("terminal config → env bridge failed for dashboard/serve",
                      exc_info=True)
+
+    # Auto-migrate config if the version is stale.
+    _migrate_active_profile_on_startup()
 
     if _headless_backend:
         # Don't build the SPA, and tell mount_spa() (read at web_server import

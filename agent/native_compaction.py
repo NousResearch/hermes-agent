@@ -86,19 +86,31 @@ def resolve_compact_threshold(
     configured_threshold: Any,
     local_trigger_tokens: Any = None,
 ) -> int:
-    """Clamp the configured native threshold below the local compressor trigger.
+    """Resolve the native compaction threshold, clamped below the local trigger.
 
     Without the clamp a native threshold above the local trigger would let the
     local summarizer fire first every time, making native compaction dead
     config. ``local_trigger_tokens`` is ``ContextCompressor.threshold_tokens``
     when a compressor is attached, else None.
+
+    ``configured_threshold=None`` means the user never set
+    ``compression.codex_responses_compact_threshold``: the threshold then
+    FOLLOWS the local compressor trigger (trigger − margin) instead of the
+    fixed 200K default. A fixed default that predates the Codex OAuth 900K
+    window made server-side compaction always fire first at ~200K, silently
+    cutting sessions ~565K tokens below the window the model actually serves
+    (#88695). An explicit configuration still wins exactly as before
+    (clamped below the local trigger).
     """
-    try:
-        configured = int(configured_threshold)
-    except (TypeError, ValueError):
-        configured = DEFAULT_COMPACT_THRESHOLD
-    if isinstance(configured_threshold, bool) or configured <= 0:
-        configured = DEFAULT_COMPACT_THRESHOLD
+    follows_local = configured_threshold is None
+    configured = DEFAULT_COMPACT_THRESHOLD
+    if not follows_local:
+        try:
+            configured = int(configured_threshold)
+        except (TypeError, ValueError):
+            configured = DEFAULT_COMPACT_THRESHOLD
+        if isinstance(configured_threshold, bool) or configured <= 0:
+            configured = DEFAULT_COMPACT_THRESHOLD
 
     local = None
     try:
@@ -113,6 +125,8 @@ def resolve_compact_threshold(
         upper = local - LOCAL_TRIGGER_SAFETY_MARGIN
     else:
         upper = max(1_024, int(local * 0.8))
+    if follows_local:
+        return upper
     return max(1_024, min(configured, upper))
 
 
@@ -148,7 +162,7 @@ def native_compaction_context_management(
 
     compressor = getattr(agent, "context_compressor", None)
     threshold = resolve_compact_threshold(
-        getattr(agent, "codex_responses_compact_threshold", DEFAULT_COMPACT_THRESHOLD),
+        getattr(agent, "codex_responses_compact_threshold", None),
         getattr(compressor, "threshold_tokens", None) if compressor is not None else None,
     )
     return [{"type": "compaction", "compact_threshold": threshold}]

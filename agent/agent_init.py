@@ -2301,20 +2301,26 @@ def init_agent(
         _compression_cfg.get("codex_responses_native", False)
     )
     _native_threshold_raw = _compression_cfg.get(
-        "codex_responses_compact_threshold", 200_000
+        "codex_responses_compact_threshold"
     )
-    try:
-        if isinstance(_native_threshold_raw, bool):
-            raise ValueError
-        codex_responses_compact_threshold = int(_native_threshold_raw)
-        if codex_responses_compact_threshold <= 0:
-            raise ValueError
-    except (TypeError, ValueError):
-        _ra().logger.warning(
-            "Invalid compression.codex_responses_compact_threshold=%r; using 200000.",
-            _native_threshold_raw,
-        )
-        codex_responses_compact_threshold = 200_000
+    codex_responses_compact_threshold = None  # unset → follow the local trigger
+    if _native_threshold_raw is not None:
+        try:
+            if isinstance(_native_threshold_raw, bool):
+                raise ValueError
+            codex_responses_compact_threshold = int(_native_threshold_raw)
+            if codex_responses_compact_threshold <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            _ra().logger.warning(
+                "Invalid compression.codex_responses_compact_threshold=%r; using 200000.",
+                _native_threshold_raw,
+            )
+            codex_responses_compact_threshold = 200_000
+    # A fixed 200K default predates the Codex OAuth 900K window and made
+    # server-side compaction fire ~565K below the window the model serves;
+    # None keeps the threshold tracking the local compressor trigger
+    # (#88695). An explicit value still wins.
     # Opt-in idle compaction: compact a session up front when it resumes after
     # this many seconds of inactivity (0 = disabled). Time-based, so it
     # complements the size-based threshold above. Consumed by build_turn_context().

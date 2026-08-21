@@ -162,6 +162,55 @@ class TestThresholdClamp:
         assert resolve_compact_threshold(200_000, 4_000) >= 1_024
 
 
+class TestUnsetThresholdFollowsLocalTrigger:
+    """#88695 — unset config must track the local compressor trigger.
+
+    The fixed 200K default predates the Codex OAuth 900K window
+    (bab7be3ca7 raised the local trigger to ~765K): min(200K, local−margin)
+    always fired server-side first at ~200K, silently cutting sessions
+    ~565K tokens below the window the model serves. None (unset) now
+    follows local − margin; an explicit value still wins exactly as
+    before."""
+
+    def test_unset_follows_local_trigger_on_wide_window(self):
+        local = 765_000  # 85% of the 900K window
+        assert (
+            resolve_compact_threshold(None, local)
+            == local - 8_192
+        )
+
+    def test_unset_without_local_uses_default(self):
+        assert resolve_compact_threshold(None, None) == DEFAULT_COMPACT_THRESHOLD
+
+    def test_unset_tiny_local_stays_positive(self):
+        assert resolve_compact_threshold(None, 4_000) >= 1_024
+
+    def test_explicit_value_still_clamped_below_local(self):
+        # An explicit 300K on a 900K window is honored (below the 757K
+        # upper clamp) — the follow-local change must not override user
+        # configuration.
+        assert resolve_compact_threshold(300_000, 765_000) == 300_000
+        # ... and still clamped down when it would exceed the trigger.
+        assert (
+            resolve_compact_threshold(800_000, 765_000)
+            == 765_000 - 8_192
+        )
+
+    def test_agent_without_threshold_attribute_follows_trigger(self):
+        compressor = SimpleNamespace(threshold_tokens=765_000)
+        agent = SimpleNamespace(
+            model="gpt-5.6",
+            base_url="https://api.openai.com/v1",
+            codex_responses_native_compaction=True,
+            compression_enabled=True,
+            context_compressor=compressor,
+        )  # no codex_responses_compact_threshold attribute at all
+        payload = native_compaction_context_management(
+            agent, is_codex_backend=False
+        )
+        assert payload[0]["compact_threshold"] == 765_000 - 8_192
+
+
 class TestRejectionMatcher:
     def test_structured_param_rejection_matches(self):
         assert is_native_compaction_rejection(

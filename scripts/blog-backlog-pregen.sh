@@ -81,7 +81,9 @@ rc=0
 # and will be picked up after the window refreshes. Alerting on it every 12h
 # is noise, not signal.
 if [[ "$rc" -ne 0 ]]; then
-  reset_ts=$(grep -oE 'limit resets at [0-9TZ:.\-]+' "$LOG" 2>/dev/null | head -1 | sed 's/limit resets at //')
+  # Guarded: under set -euo pipefail an unmatched grep exits 1 and would kill
+  # the script BEFORE the fallback grep below could match "usage limit".
+  reset_ts=$(grep -oE 'limit resets at [0-9TZ:.\-]+' "$LOG" 2>/dev/null | head -1 | sed 's/limit resets at //' || true)
   if [[ -n "$reset_ts" ]] || grep -qE 'usage limit|usage cap|Codex usage cap|weekly usage' "$LOG" 2>/dev/null; then
     if [[ -z "$reset_ts" ]]; then
       # No explicit reset timestamp: default to 12h (next scheduled tick).

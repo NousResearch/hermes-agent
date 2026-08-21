@@ -41,8 +41,10 @@ def test_result_none_for_healthy_result():
 
 
 def test_result_auth_reasons_map_to_auth_layer():
+    # Both auth reasons are non-retryable, matching classify_api_error's own
+    # verdict (a bare retry replays the same rejected credential).
     surface = build_error_surface_from_result(_failed_result("auth"))
-    assert surface == {"layer": LAYER_AUTH, "code": "auth", "retryable": True}
+    assert surface == {"layer": LAYER_AUTH, "code": "auth", "retryable": False}
 
     surface = build_error_surface_from_result(_failed_result("auth_permanent"))
     assert surface["layer"] == LAYER_AUTH
@@ -77,12 +79,40 @@ def test_result_provider_default_for_classified_reasons():
 
 def test_result_non_retryable_reasons():
     for reason in (
+        "auth",
+        "format_error",
         "content_policy_blocked",
         "model_not_found",
         "ssl_cert_verification",
     ):
         surface = build_error_surface_from_result(_failed_result(reason))
         assert surface["retryable"] is False, reason
+
+
+def test_result_prefers_classifier_retry_verdict():
+    """conversation_loop stamps ``failure_retryable`` from the real
+    ClassifiedError — it must win over the fallback reason set."""
+    surface = build_error_surface_from_result(
+        _failed_result("unknown", failure_retryable=False)
+    )
+    assert surface["retryable"] is False
+
+    surface = build_error_surface_from_result(
+        _failed_result("format_error", failure_retryable=True)
+    )
+    assert surface["retryable"] is True
+
+
+def test_result_stamps_failing_session_identity():
+    surface = build_error_surface_from_result(
+        _failed_result("rate_limit"), provider="openrouter", model="test/m1"
+    )
+    assert surface["provider"] == "openrouter"
+    assert surface["model"] == "test/m1"
+
+    # Absent identity omits the keys instead of stamping empty strings.
+    surface = build_error_surface_from_result(_failed_result("rate_limit"))
+    assert "provider" not in surface and "model" not in surface
 
 
 def test_result_timeout_on_custom_endpoint_is_endpoint_layer():

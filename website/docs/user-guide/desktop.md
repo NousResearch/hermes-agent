@@ -420,7 +420,10 @@ generic error toast. The card offers recovery actions matched to the failure:
   deterministically reproduce the failure, e.g. a content-policy rejection).
 - **Switch provider** — jumps to Settings → Models for provider, endpoint,
   auth, and billing failures.
-- **Open logs** — opens `HERMES_HOME/logs` in your file manager.
+- **Open logs** — opens `HERMES_HOME/logs` in your file manager. On a remote
+  or Cloud connection the button reads **Open Desktop logs**: it opens the
+  local Desktop-side logs (transport evidence), since the failed turn's
+  gateway/agent logs live on the remote machine.
 - **Copy error details** — copies a compact plain-text summary (layer, code,
   provider/model, error message) you can paste into a bug report or Discord.
 

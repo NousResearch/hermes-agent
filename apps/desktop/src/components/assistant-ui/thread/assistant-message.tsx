@@ -39,7 +39,7 @@ import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
-import { $currentModel } from '@/store/session'
+import { $connection, $currentModel } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
 
 // Stable empty identity for the settled-parts selector — a fresh [] per render
@@ -490,6 +490,14 @@ const ErrorRecoveryActions: FC = () => {
   // child mounts only when one is (see SwitchProviderAction).
   const inRouter = useInRouterContext()
   const model = useStore($currentModel)
+  const connection = useStore($connection)
+
+  // Open Logs reveals the LOCAL Electron profile's HERMES_HOME/logs. On a
+  // remote/cloud connection the failed turn's gateway+agent logs live on the
+  // remote box — the local folder only holds Desktop-side transport logs, so
+  // the label says "Open Desktop logs" there instead of implying it opens the
+  // runtime's logs.
+  const remoteConnection = connection?.mode === 'remote'
 
   // Retry = assistant-ui reload (same wiring as the footer's refresh action):
   // re-runs the failed turn's prompt in place. Suppressed when the classifier
@@ -543,7 +551,7 @@ const ErrorRecoveryActions: FC = () => {
       {showSwitchProvider && inRouter && <SwitchProviderAction label={copy.errorSwitchProvider} />}
       {window.hermesDesktop?.logsRoot && (
         <button className="aui-error-action" onClick={() => void openLogs()} type="button">
-          {copy.errorOpenLogs}
+          {remoteConnection ? copy.errorOpenDesktopLogs : copy.errorOpenLogs}
         </button>
       )}
       <CopyButton appearance="inline" className="aui-error-action" label={copy.errorCopyDiagnostics} text={diagnosticsText} />

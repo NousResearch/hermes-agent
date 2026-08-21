@@ -62,13 +62,19 @@ _TRANSPORT_REASONS = {
 }
 
 # Reasons that are deterministic for the request — a bare "Retry" repeats the
-# same failure, so clients shouldn't lead with it.
+# same failure, so clients shouldn't lead with it. Fallback only: results
+# from current backends carry the classifier's own verdict in
+# ``failure_retryable`` and never consult this set. Kept in sync with
+# ``classify_api_error``'s retryable=False verdicts.
 _NON_RETRYABLE_REASONS = {
+    "auth",
     "auth_permanent",
     "billing",
+    "billing_unverified",
     "content_policy_blocked",
     "provider_policy_blocked",
     "model_not_found",
+    "format_error",
     "ssl_cert_verification",
 }
 
@@ -99,11 +105,20 @@ _STREAM_DROP_FRAGMENTS = (
 
 # Exception modules that indicate the failure came from an API/transport call
 # (vs. a bug in our own dispatcher code, which is a gateway-layer failure).
+# Covers every SDK family our provider adapters raise from: OpenAI-compatible
+# (openai/httpx/httpcore), Anthropic, Bedrock (botocore/boto3), Google
+# (google.*/grpc), plus raw transports (requests/aiohttp/ssl/socket/urllib).
 _API_EXC_MODULE_PREFIXES = (
     "openai",
     "httpx",
     "httpcore",
     "anthropic",
+    "botocore",
+    "boto3",
+    "google",
+    "grpc",
+    "requests",
+    "aiohttp",
     "ssl",
     "socket",
     "urllib",
@@ -120,8 +135,22 @@ def _looks_like_stream_drop(message: str) -> bool:
     return any(fragment in msg for fragment in _STREAM_DROP_FRAGMENTS)
 
 
-def _surface(layer: str, code: str, retryable: bool) -> dict:
-    return {"layer": layer, "code": code, "retryable": bool(retryable)}
+def _surface(
+    layer: str,
+    code: str,
+    retryable: bool,
+    provider: str = "",
+    model: str = "",
+) -> dict:
+    out = {"layer": layer, "code": code, "retryable": bool(retryable)}
+    # The failing session's identity, captured at classification time so
+    # clients report the model/provider that actually failed — not whatever
+    # the foreground composer points at when a button is clicked later.
+    if provider:
+        out["provider"] = provider
+    if model:
+        out["model"] = model
+    return out
 
 
 def build_error_surface_from_result(
@@ -147,18 +176,18 @@ def build_error_surface_from_result(
             from hermes_state import is_disk_full_error
 
             if error_text and is_disk_full_error(error_text):
-                return _surface(LAYER_DISK, "disk_full", False)
+                return _surface(LAYER_DISK, "disk_full", False, provider, model)
         except Exception:  # pragma: no cover - defensive import guard
             pass
 
         if result.get("billing_block") or reason in ("billing", "billing_unverified"):
-            return _surface(LAYER_BILLING, reason or "billing", False)
+            return _surface(LAYER_BILLING, reason or "billing", False, provider, model)
 
         if not reason:
             # Failed result without a classified reason (legacy paths).
             if _looks_like_stream_drop(error_text):
-                return _surface(LAYER_STREAMING, "stream_drop", True)
-            return _surface(LAYER_PROVIDER, "unknown", True)
+                return _surface(LAYER_STREAMING, "stream_drop", True, provider, model)
+            return _surface(LAYER_PROVIDER, "unknown", True, provider, model)
 
         layer = _REASON_TO_LAYER.get(reason)
         if layer is None:
@@ -168,7 +197,13 @@ def build_error_surface_from_result(
                 layer = LAYER_STREAMING
             else:
                 layer = LAYER_PROVIDER
-        return _surface(layer, reason, reason not in _NON_RETRYABLE_REASONS)
+        # Prefer the classifier's own retry verdict when the result carries it
+        # (conversation_loop stamps ``failure_retryable`` next to
+        # ``failure_reason``); the reason-set fallback covers older results.
+        retryable = result.get("failure_retryable")
+        if not isinstance(retryable, bool):
+            retryable = reason not in _NON_RETRYABLE_REASONS
+        return _surface(layer, reason, retryable, provider, model)
     except Exception:  # pragma: no cover — never break the error path
         logger.debug("error_surface: result classification failed", exc_info=True)
         return None
@@ -191,7 +226,7 @@ def build_error_surface_from_exception(
             from hermes_state import is_disk_full_error
 
             if is_disk_full_error(exc):
-                return _surface(LAYER_DISK, "disk_full", False)
+                return _surface(LAYER_DISK, "disk_full", False, provider, model)
         except Exception:  # pragma: no cover - defensive import guard
             pass
 
@@ -201,7 +236,7 @@ def build_error_surface_from_exception(
         )
 
         if not api_like or not isinstance(exc, Exception):
-            return _surface(LAYER_GATEWAY, type(exc).__name__, True)
+            return _surface(LAYER_GATEWAY, type(exc).__name__, True, provider, model)
 
         from agent.error_classifier import classify_api_error
 

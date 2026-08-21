@@ -32,6 +32,21 @@ describe('parseErrorSurface', () => {
   it('honors retryable=false', () => {
     expect(parseErrorSurface({ layer: 'auth', code: 'auth_permanent', retryable: false })?.retryable).toBe(false)
   })
+
+  it('carries the failing session identity when present', () => {
+    const surface = parseErrorSurface({
+      layer: 'provider',
+      code: 'rate_limit',
+      retryable: true,
+      provider: 'openrouter',
+      model: 'test/m1'
+    })
+
+    expect(surface?.provider).toBe('openrouter')
+    expect(surface?.model).toBe('test/m1')
+    // Absent identity yields no keys, not empty strings.
+    expect(parseErrorSurface({ layer: 'provider', code: 'x', retryable: true })?.provider).toBeUndefined()
+  })
 })
 
 describe('formatErrorDiagnostics', () => {
@@ -46,6 +61,19 @@ describe('formatErrorDiagnostics', () => {
     expect(text).toContain('code: rate_limit')
     expect(text).toContain('model: anthropic/claude-opus-4.6')
     expect(text).toContain('error: boom')
+  })
+
+  it('prefers the descriptor identity over the caller fallback', () => {
+    const text = formatErrorDiagnostics({
+      errorText: 'boom',
+      // Foreground composer atom — potentially stale by click time.
+      model: 'some/other-model',
+      surface: { layer: 'provider', code: 'rate_limit', retryable: true, provider: 'openrouter', model: 'failed/model' }
+    })
+
+    expect(text).toContain('provider: openrouter')
+    expect(text).toContain('model: failed/model')
+    expect(text).not.toContain('some/other-model')
   })
 
   it('omits absent fields without leaving blank lines', () => {

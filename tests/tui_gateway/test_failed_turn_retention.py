@@ -197,6 +197,10 @@ def test_returned_error_result_carries_error_surface(emits, turn_env):
         "layer": "provider",
         "code": "rate_limit",
         "retryable": True,
+        # The failing session's identity rides the descriptor so clients
+        # report the model that actually failed, not the composer's current.
+        "provider": "openrouter",
+        "model": "test/model",
     }
 
     snapshot = server._inflight_snapshot(session)

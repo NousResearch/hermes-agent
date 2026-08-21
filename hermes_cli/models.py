@@ -5206,16 +5206,22 @@ def _should_use_copilot_responses_api(model_id: str) -> bool:
 
     Replicates opencode's ``shouldUseCopilotResponsesApi`` logic:
     GPT-5+ models use Responses API, except ``gpt-5-mini`` which uses
-    Chat Completions.  All non-GPT models (Claude, Gemini, etc.) use
-    Chat Completions.
+    Chat Completions.  Non-GPT models (Claude, Gemini) use Chat
+    Completions, EXCEPT grok models, which the Copilot catalog serves
+    exclusively on ``/responses`` (``grok-4.5 -> ['/responses']``).
     """
     import re
 
     match = re.match(r"^gpt-(\d+)", model_id)
-    if not match:
-        return False
-    major = int(match.group(1))
-    return major >= 5 and not model_id.startswith("gpt-5-mini")
+    if match:
+        major = int(match.group(1))
+        return major >= 5 and not model_id.startswith("gpt-5-mini")
+
+    # grok models are only accessible via the Responses API on Copilot.
+    if model_id.lower().startswith("grok") or model_id.lower().startswith("x-ai/grok"):
+        return True
+
+    return False
 
 
 def copilot_model_api_mode(
@@ -5242,6 +5248,24 @@ def copilot_model_api_mode(
     # Primary: model ID pattern (matches opencode's shouldUseCopilotResponsesApi)
     if _should_use_copilot_responses_api(normalized):
         return "codex_responses"
+
+    # Authoritative fallback: consult the live catalog's supported_endpoints.
+    # Some non-GPT models (e.g. grok-4.5 -> ['/responses']) are served ONLY on
+    # the Responses API, and the ID-pattern check above doesn't cover every
+    # future family. If the catalog says /responses is the only HTTP endpoint,
+    # route there so we don't hit "model ... not accessible via /chat/completions".
+    if isinstance(catalog, list):
+        for item in catalog:
+            if str(item.get("id", "")).strip() != normalized:
+                continue
+            endpoints = {
+                str(e).strip()
+                for e in (item.get("supported_endpoints") or [])
+                if str(e).strip()
+            }
+            if "/responses" in endpoints and "/chat/completions" not in endpoints:
+                return "codex_responses"
+            break
 
     # Copilot's Claude models are exposed through its OpenAI-compatible chat
     # endpoint, not through Hermes' native Anthropic adapter. The live catalog may

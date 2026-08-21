@@ -594,11 +594,21 @@ def _resolve_max_message_length(config) -> int:
 MAX_MESSAGE_LENGTH = DEFAULT_MAX_MESSAGE_LENGTH
 
 # Store directory for E2EE keys and sync state.
-# Uses get_hermes_home() so each profile gets its own Matrix store.
+# Resolved per-instance (not at module scope) so each profile in a
+# multiplexed gateway gets its own Matrix store instead of all sharing
+# the default profile's crypto.db. The multiplexer imports this module
+# once; a module-level constant would resolve to the root HERMES_HOME for
+# every profile, so every bot's Olm identity collides in one store and
+# inbound E2EE fails ("no session found"). Mirror the pairing-store fix
+# (a6397c379) which moved the same module-level constant to per-profile
+# resolution.
 from hermes_constants import get_hermes_dir as _get_hermes_dir
 
-_STORE_DIR = _get_hermes_dir("platforms/matrix/store", "matrix/store")
-_CRYPTO_DB_PATH = _STORE_DIR / "crypto.db"
+# Back-compat alias for callers/tests that imported the legacy constant.
+# The value is resolved lazily via MatrixAdapter._get_store_path(); keeping
+# the name as None at module scope preserves the old import surface without
+# pinning a single shared path for all profiles.
+_CRYPTO_DB_PATH = None
 
 # Grace period: ignore messages older than this many seconds before startup.
 _STARTUP_GRACE_SECONDS = 5
@@ -1187,6 +1197,27 @@ class MatrixAdapter(BasePlatformAdapter):
     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
     _split_threshold = DEFAULT_MAX_MESSAGE_LENGTH - 100
 
+    def _get_store_path(self) -> Path:
+        """Resolve this instance's crypto-store directory (per-profile).
+
+        Unlike the legacy module-level ``_STORE_DIR``/``_CRYPTO_DB_PATH``
+        (which the multiplex gateway resolved once to the root HERMES_HOME
+        for every profile), this resolves through the active profile's
+        HERMES_HOME at connect time. Under ``gateway.multiplex_profiles``
+        each profile's adapter is created and connected inside
+        ``_profile_runtime_scope``, so ``get_hermes_dir`` — which honors the
+        context-local HERMES_HOME override — returns that profile's store
+        dir. Two profiles therefore never share a crypto.db; without this,
+        all multiplexed bots write their Olm identity to one shared store
+        and inbound E2EE fails with "no session found".
+        """
+        store_dir = _get_hermes_dir("platforms/matrix/store", "matrix/store")
+        return store_dir / "crypto.db"
+
+    def _get_store_dir(self) -> Path:
+        """Resolve this instance's crypto-store directory (for mkdir/pickle)."""
+        return _get_hermes_dir("platforms/matrix/store", "matrix/store")
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATRIX)
 
@@ -1672,7 +1703,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Matrix: server has different identity keys for device %s — "
                     "local crypto state is stale. Delete %s and restart.",
                     client.device_id,
-                    _CRYPTO_DB_PATH,
+                    str(self._get_store_path()),
                 )
                 return False
 
@@ -1729,7 +1760,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
 
         # Ensure store dir exists for E2EE key persistence.
-        _STORE_DIR.mkdir(parents=True, exist_ok=True)
+        self._get_store_dir().mkdir(parents=True, exist_ok=True)
 
         # Create the HTTP API layer.
         client_session = _create_matrix_session(self._proxy_url)
@@ -1886,7 +1917,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     from mautrix.crypto.store.asyncpg import PgCryptoStore
                     from mautrix.util.async_db import Database
 
-                    _STORE_DIR.mkdir(parents=True, exist_ok=True)
+                    self._get_store_dir().mkdir(parents=True, exist_ok=True)
                 except Exception as exc:
                     if self._e2ee_mode == "optional":
                         logger.warning(
@@ -1907,7 +1938,7 @@ class MatrixAdapter(BasePlatformAdapter):
             if self._encryption:
                 try:
                     # Remove legacy pickle file from pre-SQLite era.
-                    legacy_pickle = _STORE_DIR / "crypto_store.pickle"
+                    legacy_pickle = self._get_store_dir() / "crypto_store.pickle"
                     if legacy_pickle.exists():
                         logger.info(
                             "Matrix: removing legacy crypto_store.pickle (migrated to SQLite)"
@@ -1915,7 +1946,7 @@ class MatrixAdapter(BasePlatformAdapter):
                         legacy_pickle.unlink()
 
                     crypto_db = Database.create(
-                        f"sqlite:///{_CRYPTO_DB_PATH}",
+                        f"sqlite:///{self._get_store_path()}",
                         upgrade_table=PgCryptoStore.upgrade_table,
                     )
                     await crypto_db.start()
@@ -2043,7 +2074,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     client.crypto = olm
                     logger.info(
                         "Matrix: E2EE enabled (store: %s%s)",
-                        str(_CRYPTO_DB_PATH),
+                        str(self._get_store_path()),
                         f", device_id={client.device_id}" if client.device_id else "",
                     )
                 except Exception as exc:
@@ -2285,7 +2316,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 "mode": self._e2ee_mode,
                 "enabled": bool(self._encryption),
                 "deps_available": _check_e2ee_deps(),
-                "crypto_store_path": str(_CRYPTO_DB_PATH),
+                "crypto_store_path": str(self._get_store_path()),
                 "recovery_key_configured": bool(
                     _scoped_recovery_key().strip()
                 ),

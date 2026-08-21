@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 
 import {
   expandWhatsAppIdentifiers,
+  matchesAllowedSender,
   matchesAllowedUser,
   normalizeWhatsAppIdentifier,
   parseAllowedUsers,
@@ -41,6 +42,27 @@ test('matchesAllowedUser accepts mapped lid sender when allowlist only contains 
     const allowedUsers = parseAllowedUsers('+19175395595');
     assert.equal(matchesAllowedUser('267383306489914@lid', allowedUsers, sessionDir), true);
     assert.equal(matchesAllowedUser('188012763865257@lid', allowedUsers, sessionDir), false);
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('matchesAllowedSender accepts Baileys senderPn when a first-contact LID has no mapping yet', () => {
+  const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-allowlist-'));
+
+  try {
+    const allowedUsers = parseAllowedUsers('+19175395595');
+    // On a first message from a WhatsApp Multi-Device contact, Baileys can
+    // emit a LID as senderId before it has written LID mapping files, while
+    // senderPn carries WhatsApp's authenticated phone JID.
+    assert.equal(
+      matchesAllowedSender('267383306489914@lid', '19175395595@s.whatsapp.net', allowedUsers, sessionDir),
+      true,
+    );
+    assert.equal(
+      matchesAllowedSender('267383306489914@lid', '18881234567@s.whatsapp.net', allowedUsers, sessionDir),
+      false,
+    );
   } finally {
     rmSync(sessionDir, { recursive: true, force: true });
   }

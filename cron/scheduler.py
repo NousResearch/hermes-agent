@@ -3038,18 +3038,21 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             pconfig = config.platforms.get(platform)
             runtime_adapter = None
 
-        if transport is not None and transport.is_relay:
-            # A relay transport carries the RELAY adapter's config, and
-            # resolve_delivery_transport already applied relay's enablement
-            # rule (config block absent OR enabled). The logical platform is
-            # deliberately NOT natively enabled in a relay-fronted deployment
-            # (its credential lives in the connector), so the native
-            # configured/enabled gate below must not apply — it used to
-            # reject exactly the targets the relay was resolved to serve.
-            if pconfig is None:
-                from gateway.config import PlatformConfig
-                pconfig = PlatformConfig(enabled=True)
-        elif not pconfig or not pconfig.enabled:
+        if transport is not None and pconfig is None:
+            # A resolved LIVE transport with no config block means "live
+            # adapter, no per-profile platforms: section", not "disabled".
+            # Relay transports land here in relay-fronted deployments (the
+            # logical platform's credential lives in the connector, and
+            # resolve_delivery_transport already applied the relay's
+            # enablement rule). Native plugin platforms land here under
+            # multiplex (HERMES_HOME remapped to profiles/<slug>/) when the
+            # profile config carries no platforms block — the live adapter's
+            # presence is itself the enablement signal; rejecting it made
+            # every deliver=origin job to a native platform silently fail
+            # (#89302). An explicit enabled=False block still rejects below.
+            from gateway.config import PlatformConfig
+            pconfig = PlatformConfig(enabled=True)
+        if not pconfig or not pconfig.enabled:
             msg = f"platform '{platform_name}' not configured/enabled"
             logger.warning("Job '%s': %s", job["id"], msg)
             delivery_errors.append(msg)

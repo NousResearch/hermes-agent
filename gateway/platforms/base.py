@@ -489,7 +489,7 @@ def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
             logger.warning(
                 "aiohttp_socks not installed — SOCKS proxy %s ignored. "
                 "Run: pip install aiohttp-socks",
-                proxy_url,
+                safe_url_for_log(proxy_url),
             )
             return {}
     return {"proxy": proxy_url}
@@ -527,7 +527,7 @@ def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
             logger.warning(
                 "aiohttp_socks not installed — SOCKS proxy %s ignored. "
                 "Run: pip install aiohttp-socks",
-                proxy_url,
+                safe_url_for_log(proxy_url),
             )
             return {}, {}
         return {}, {"proxy": proxy_url}
@@ -659,6 +659,30 @@ GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
 )
 
 
+# Matches an optional scheme followed by a userinfo component, for strings
+# urlsplit() could not parse into a scheme+netloc. Anchored at the start so it
+# cannot match an '@' that belongs to a path or query.
+_USERINFO_FALLBACK_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*://)?[^/\s@]+@")
+
+
+def _strip_userinfo_fallback(raw: str) -> str:
+    """Best-effort userinfo strip for a string urlsplit() could not parse.
+
+    urlsplit() rejects some malformed URLs (a bad bracketed host raises
+    ``ValueError: Invalid IPv6 URL``) and yields no scheme/netloc for others
+    (``user:pass@host`` with no scheme). Both cases previously fell through to
+    the raw string, so a credentialed proxy URL reached the log verbatim.
+
+    Strip the userinfo and keep scheme+host, which is the part that has
+    diagnostic value. If any userinfo marker survives the strip, fail closed
+    rather than emit something that might still carry a credential.
+    """
+    stripped = _USERINFO_FALLBACK_RE.sub(lambda m: m.group(1) or "", raw, count=1)
+    if "@" in stripped.split("/", 1)[0]:
+        return "<invalid-url>"
+    return stripped
+
+
 def safe_url_for_log(url: str, max_len: int = 80) -> str:
     """Return a URL string safe for logs (no query/fragment/userinfo)."""
     if max_len <= 0:
@@ -674,20 +698,22 @@ def safe_url_for_log(url: str, max_len: int = 80) -> str:
     try:
         parsed = urlsplit(raw)
     except Exception:
-        return raw[:max_len]
+        safe = _strip_userinfo_fallback(raw)
+        parsed = None
 
-    if parsed.scheme and parsed.netloc:
-        # Strip potential embedded credentials (user:pass@host).
-        netloc = parsed.netloc.rsplit("@", 1)[-1]
-        base = f"{parsed.scheme}://{netloc}"
-        path = parsed.path or ""
-        if path and path != "/":
-            basename = path.rsplit("/", 1)[-1]
-            safe = f"{base}/.../{basename}" if basename else f"{base}/..."
+    if parsed is not None:
+        if parsed.scheme and parsed.netloc:
+            # Strip potential embedded credentials (user:pass@host).
+            netloc = parsed.netloc.rsplit("@", 1)[-1]
+            base = f"{parsed.scheme}://{netloc}"
+            path = parsed.path or ""
+            if path and path != "/":
+                basename = path.rsplit("/", 1)[-1]
+                safe = f"{base}/.../{basename}" if basename else f"{base}/..."
+            else:
+                safe = base
         else:
-            safe = base
-    else:
-        safe = raw
+            safe = _strip_userinfo_fallback(raw)
 
     if len(safe) <= max_len:
         return safe

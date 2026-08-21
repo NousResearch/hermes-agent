@@ -318,6 +318,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="[toggle|list|scale <n>|<slug>]", subcommands=("toggle", "list", "scale", "off")),
     CommandDef("hatch", "Generate a new petdex pet from a description",
                "Tools & Skills", cli_only=True, aliases=("generate-pet",), args_hint="[description]"),
+    CommandDef("find-skill", "Discover and install agent skills for your need", "Tools & Skills",
+               args_hint="<query>", busy_policy="dispatch", busy_handler="find-skill"),
     CommandDef("learn", "Learn a reusable skill from anything you describe (dirs, URLs, this chat, notes)",
                "Tools & Skills", args_hint="<what to learn from>"),
     CommandDef("init", "Generate or update AGENTS.md project instructions from a repo scan",

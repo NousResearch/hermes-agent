@@ -2092,6 +2092,32 @@ class CLICommandsMixin:
         from hermes_cli.skills_hub import handle_skills_slash
         handle_skills_slash(cmd, ChatConsole())
 
+    def _handle_find_skill_command(self, cmd: str):
+        """Handle /find-skill — discover and install agent skills.
+
+        The argument is the user's need expressed as a short query, e.g.
+        "/find-skill react performance". We build the find-skills prompt and
+        inject it onto the agent's input queue; the live agent searches the
+        open skills ecosystem and can install a matching skill.
+        """
+        from agent.learn_prompt import build_learn_prompt
+
+        parts = cmd.strip().split(None, 1)
+        user_request = parts[1].strip() if len(parts) > 1 else ""
+
+        prompt = (
+            "Use the find-skills workflow for this request: "
+            + user_request
+            if user_request
+            else "Use the find-skills workflow: help the user discover or install a skill for their need."
+        )
+        msg = build_learn_prompt(prompt)
+        print("\n🔎 Finding a skill for what you described...")
+        if hasattr(self, "_pending_input"):
+            self._pending_input.put(msg)
+        else:  # pragma: no cover - defensive (no live input loop)
+            print("  /find-skill needs an active chat session to run.")
+
     def _handle_learn_command(self, cmd: str):
         """Handle /learn — distill a reusable skill from anything the user describes.
 

@@ -1286,7 +1286,10 @@ def judge_goal(
         )
     except Exception as exc:
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
-        return "continue", f"judge error: {type(exc).__name__}", False, None, True
+        # Surface the provider's actual error body (truncated), not just the
+        # SDK exception class name — a bare "PermissionDeniedError" hides the
+        # real cause (e.g. OpenRouter 403 "model not available in your region").
+        return "continue", f"judge error: {type(exc).__name__}: {_truncate(str(exc), 200)}", False, None, True
 
     try:
         raw = resp.choices[0].message.content or ""

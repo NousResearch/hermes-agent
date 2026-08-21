@@ -9005,6 +9005,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     "id", "ended_at", "end_reason", "message_count",
                     "tool_call_count", "title", "last_active", "preview",
                     "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
+                    # Usage/cost rollups are per-session-row counters. Without
+                    # these keys the projected row kept the ROOT's totals
+                    # under the tip's title/id — the sidebar showed the
+                    # oldest segment's spend for the newest segment (#89519).
+                    "input_tokens", "output_tokens", "cache_read_tokens",
+                    "cache_write_tokens", "reasoning_tokens",
+                    "estimated_cost_usd", "actual_cost_usd",
                 ):
                     if key in tip_row:
                         merged[key] = tip_row[key]

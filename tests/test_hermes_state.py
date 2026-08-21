@@ -2129,6 +2129,35 @@ class TestListSessionsRich:
         assert [session["id"] for session in sessions] == ["lane_tip"]
         assert sessions[0]["_lineage_root_id"] == "lane_root"
 
+    def test_projection_carries_tip_usage_and_cost_totals(self, db):
+        """A projected row must carry the TIP's usage/cost rollups, not the
+        root's (#89519): the sidebar renders the tip's title/id, and showing
+        the oldest segment's spend for the newest segment misattributes
+        cost. The root's started_at (sort order) is still preserved."""
+        db.create_session("root", "cli")
+        db.set_session_title("root", "Old conversation")
+        db.end_session("root", "compression")
+        db.create_session("tip", "cli", parent_session_id="root")
+        db.set_session_title("tip", "Newest segment")
+        # Distinct per-segment usage: root spent big early, tip spent less.
+        db._conn.execute(
+            "UPDATE sessions SET input_tokens=339123, output_tokens=1000,"
+            " estimated_cost_usd=0.1652 WHERE id='root'"
+        )
+        db._conn.execute(
+            "UPDATE sessions SET input_tokens=514280, output_tokens=9000,"
+            " estimated_cost_usd=0.3025 WHERE id='tip'"
+        )
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich()
+
+        assert sessions[0]["id"] == "tip"
+        assert sessions[0]["_lineage_root_id"] == "root"
+        assert sessions[0]["input_tokens"] == 514280
+        assert sessions[0]["output_tokens"] == 9000
+        assert sessions[0]["estimated_cost_usd"] == pytest.approx(0.3025)
+
     @pytest.mark.parametrize(
         "end_reason",
         [

@@ -208,6 +208,37 @@ def test_force_reload_unregisters_profile_owned_platform(plugin_platform, monkey
     assert name not in manager._plugin_platform_names
 
 
+def test_cron_delivery_skips_handler_when_args_empty(plugin_platform):
+    """Cron delivery calls _send_to_platform directly with args=None — handler should not intercept."""
+    name, entry, seen = plugin_platform
+    platform, pconfig, config = _config_for(name)
+
+    # Simulate cron calling _send_to_platform directly (no args passed)
+    from tools.send_message_tool import _send_to_platform
+    from gateway.config import Platform
+
+    with patch("gateway.config.load_gateway_config", return_value=config), \
+         patch("tools.interrupt.is_interrupted", return_value=False), \
+         patch("gateway.mirror.mirror_to_session", return_value=True), \
+         patch("tools.send_message_tool._send_via_adapter", new_callable=AsyncMock) as mock_send_via_adapter:
+        
+        mock_send_via_adapter.return_value = {"success": True, "platform": name, "chat_id": "@alice@example.com"}
+        
+        # Call _send_to_platform directly without args (like cron does)
+        result = asyncio.run(_send_to_platform(
+            platform, pconfig, "@alice@example.com", "hello from cron",
+            thread_id=None, media_files=None
+        ))
+
+    # Handler should NOT have been called
+    assert seen == [], "Handler should not be called when args is empty (cron delivery)"
+    
+    # Normal delivery path should have been used
+    assert result["success"] is True
+    assert result["platform"] == name
+    mock_send_via_adapter.assert_called_once()
+
+
 def test_fresh_process_real_plugin_fixture_covers_host_send_and_cron(tmp_path):
     """A standalone directory plugin is visible to host-driven send paths."""
     home = tmp_path / "home"

@@ -1289,11 +1289,15 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
             entry = platform_registry.get(platform_name)
             handler = entry.send_message_handler if entry is not None else None
-            if handler is not None:
+            # Only invoke the custom handler when we have meaningful args (e.g. from
+            # the model-facing send_message tool). Cron and other standalone paths
+            # call _send_to_platform directly with args=None/empty — in those cases
+            # we should skip the handler and use the normal adapter/standalone path.
+            if handler is not None and args:
                 try:
                     import inspect
 
-                    result = handler(args or {}, chat_id, platform_name, pconfig)
+                    result = handler(args, chat_id, platform_name, pconfig)
                     if inspect.isawaitable(result):
                         result = await result
                     return result

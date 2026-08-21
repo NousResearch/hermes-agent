@@ -2821,6 +2821,28 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             pconfig = config.platforms.get(platform)
             runtime_adapter = None
 
+        # Relay-fronted logical platforms (credential in the connector) are
+        # deliberately not natively enabled. Detect that from the same env
+        # stamp the live adapter uses so out-of-process cron (no live relay
+        # adapter in *this* process) can still skip the native gate and
+        # deliver via gateway loopback instead of dying with
+        # "not configured/enabled".
+        relay_fronted = False
+        try:
+            from gateway.relay import relay_fronted_platforms
+
+            relay_fronted = platform_name.lower() in relay_fronted_platforms()
+        except Exception:
+            logger.debug(
+                "relay_fronted_platforms lookup failed for %r",
+                platform_name, exc_info=True,
+            )
+        # Gate on the resolved runtime adapter, not `not adapters`. A non-empty
+        # adapters map that lacks Platform.RELAY (or any handle for this
+        # logical platform) must still take the loopback path — `not adapters`
+        # is too coarse and would re-hit the native credential gate.
+        no_live_relay_adapter = runtime_adapter is None
+
         if transport is not None and transport.is_relay:
             # A relay transport carries the RELAY adapter's config, and
             # resolve_delivery_transport already applied relay's enablement
@@ -2830,6 +2852,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             # configured/enabled gate below must not apply — it used to
             # reject exactly the targets the relay was resolved to serve.
             if pconfig is None:
+                from gateway.config import PlatformConfig
+                pconfig = PlatformConfig(enabled=True)
+        elif relay_fronted and no_live_relay_adapter:
+            # No live relay handle for this logical platform in *this*
+            # process, but the deploy stamp says the connector fronts it.
+            # Synthesize an enabled config so we reach the loopback send
+            # below rather than the native credential gate.
+            if pconfig is None or not pconfig.enabled:
                 from gateway.config import PlatformConfig
                 pconfig = PlatformConfig(enabled=True)
         elif not pconfig or not pconfig.enabled:
@@ -3329,6 +3359,45 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     )
 
         if not delivered:
+            if relay_fronted and no_live_relay_adapter:
+                # Relay-fronted with no live relay handle here: the only
+                # working transport is the live gateway's relay socket. POST
+                # to api_server on loopback — never open a second connector
+                # handshake, and never fall through to the native Discord/
+                # Slack standalone HTTP path (no bot token on this host).
+                from gateway.loopback_delivery import deliver_via_gateway_loopback
+
+                loopback_err = deliver_via_gateway_loopback(
+                    platform_name,
+                    chat_id,
+                    cleaned_delivery_content,
+                    thread_id=thread_id,
+                )
+                if loopback_err is None:
+                    logger.info(
+                        "Job '%s': delivered to %s:%s via gateway loopback",
+                        job["id"], platform_name, chat_id,
+                    )
+                    delivered = True
+                    if media_files:
+                        # Loopback currently ships text only; attachments need
+                        # the live-adapter media path. Surface the drop so it
+                        # is not silent (#86249).
+                        msg = (
+                            f"{len(media_files)} media attachment(s) not delivered "
+                            f"to {platform_name}:{chat_id} via gateway loopback"
+                        )
+                        logger.warning("Job '%s': %s", job["id"], msg)
+                        delivery_errors.append(msg)
+                    _maybe_mirror_cron_delivery(
+                        job, platform_name, chat_id, mirror_text,
+                        thread_id=thread_id, user_id=origin_user_id,
+                        enabled=mirror_this_target,
+                    )
+                else:
+                    target_errors.append(loopback_err)
+                    delivery_errors.extend(target_errors)
+                continue
             if transport is not None and transport.is_relay:
                 # Relay owns the logical destination and its connector owns the
                 # platform credential. A native retry could duplicate delivery

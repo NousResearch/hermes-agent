@@ -2099,6 +2099,11 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/pause", self._handle_pause_job),
             ("POST", "/api/jobs/{job_id}/resume", self._handle_resume_job),
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job),
+            # Out-of-process cron delivery for relay-fronted platforms (#86249).
+            # Authenticated by API_SERVER_KEY — loopback clients (standalone
+            # cron / hermes cron run) hold the same key as every other
+            # api_server caller.
+            ("POST", "/api/delivery/send", self._handle_delivery_send),
             ("POST", "/v1/runs", self._handle_runs),
             ("GET", "/v1/runs/{run_id}", self._handle_get_run),
             ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
@@ -5927,6 +5932,126 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"job": job})
         except Exception as e:
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
+
+    async def _handle_delivery_send(self, request: "web.Request") -> "web.Response":
+        """POST /api/delivery/send — deliver via live adapters (loopback cron).
+
+        Used by out-of-process cron delivery when the logical platform is
+        relay-fronted and has no native standalone credentials (#86249). The
+        live gateway owns the relay websocket; this route reuses it so a
+        second connector handshake is never opened from the scheduler process.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        draining = self._draining_response()
+        if draining is not None:
+            return draining
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+
+        platform_name = str(body.get("platform") or "").strip().lower()
+        chat_id = str(body.get("chat_id") or "").strip()
+        content = body.get("content", "")
+        if not isinstance(content, str):
+            content = str(content or "")
+        thread_id = body.get("thread_id")
+        if thread_id is not None:
+            thread_id = str(thread_id).strip() or None
+
+        if not platform_name or not chat_id:
+            return web.json_response(
+                {"error": "platform and chat_id are required"},
+                status=400,
+            )
+
+        from gateway.config import Platform, load_gateway_config
+        from gateway.delivery import resolve_delivery_transport
+
+        try:
+            platform = Platform(platform_name)
+        except (ValueError, KeyError):
+            return web.json_response(
+                {"error": f"unknown platform '{platform_name}'"},
+                status=400,
+            )
+
+        runner = self.gateway_runner or request.app.get("gateway_runner")
+        if runner is None:
+            try:
+                from gateway.run import _gateway_runner_ref
+
+                runner = _gateway_runner_ref()
+            except Exception:
+                runner = None
+        adapters = getattr(runner, "adapters", None) or None
+        if not adapters:
+            return web.json_response(
+                {
+                    "error": (
+                        "no live gateway adapters available for delivery; "
+                        "is the gateway connected?"
+                    )
+                },
+                status=503,
+            )
+
+        try:
+            config = load_gateway_config()
+        except Exception as exc:
+            return web.json_response(
+                {"error": f"failed to load gateway config: {_redact_api_error_text(exc)}"},
+                status=500,
+            )
+
+        transport = resolve_delivery_transport(platform, config, adapters)
+        if transport is None:
+            return web.json_response(
+                {
+                    "error": (
+                        f"no live transport for platform '{platform_name}' "
+                        "(native adapter missing and relay does not front it)"
+                    )
+                },
+                status=503,
+            )
+
+        metadata = {"thread_id": thread_id} if thread_id else None
+        try:
+            result = await transport.send(
+                platform, chat_id, content, metadata=metadata,
+            )
+        except Exception as exc:
+            logger.exception(
+                "delivery send failed for %s:%s", platform_name, chat_id,
+            )
+            return web.json_response(
+                {"error": _redact_api_error_text(exc)},
+                status=502,
+            )
+
+        if isinstance(result, dict):
+            ok = bool(result.get("success"))
+            message_id = result.get("message_id")
+            err = result.get("error")
+        else:
+            ok = bool(getattr(result, "success", False))
+            message_id = getattr(result, "message_id", None)
+            err = getattr(result, "error", None)
+
+        if ok:
+            return web.json_response(
+                {"success": True, "message_id": message_id},
+            )
+        return web.json_response(
+            {"error": err or "adapter send failed"},
+            status=502,
+        )
 
     async def _handle_cron_fire(self, request: "web.Request") -> "web.Response":
         """POST /api/cron/fire — Chronos managed-cron fire webhook (NAS → agent).

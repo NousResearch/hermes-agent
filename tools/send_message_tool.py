@@ -912,6 +912,29 @@ async def _send_via_adapter(
             )
         }
 
+    # Relay-fronted logical platform with no native standalone usable from
+    # this process (e.g. Discord on a connector-only host): try gateway
+    # loopback before giving up (#86249).
+    try:
+        from gateway.relay import relay_fronted_platforms
+
+        if platform_name.lower() in relay_fronted_platforms():
+            from gateway.loopback_delivery import deliver_via_gateway_loopback
+
+            err = deliver_via_gateway_loopback(
+                platform_name,
+                chat_id,
+                chunk,
+                thread_id=thread_id,
+            )
+            if err is None:
+                return {"success": True}
+            return {"error": err}
+    except Exception:
+        logger.debug(
+            "relay-fronted loopback probe failed for %s", platform_name, exc_info=True,
+        )
+
     return {
         "error": (
             f"No live adapter for platform '{platform_name}'. Is the gateway "

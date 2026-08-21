@@ -954,6 +954,39 @@ def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bo
             )
         return RelayAdapter(config, placeholder, transport=transport)
 
+    async def _standalone_send(
+        pconfig,
+        chat_id,
+        message,
+        *,
+        thread_id=None,
+        media_files=None,
+        force_document=False,
+        **kwargs,
+    ):
+        """Out-of-process send via gateway loopback (no second relay socket).
+
+        Cron / ``send_message`` running outside the gateway process cannot
+        hold the live relay websocket. Option 2 from #86249: POST to the
+        local api_server and let the live gateway deliver on its existing
+        connector socket. A second handshake would risk the connector's
+        buffered-flip drain against the already-connected gateway.
+        """
+        from gateway.loopback_delivery import deliver_via_gateway_loopback
+
+        # Logical platform for deliver=relay:<chat_id> is "relay" itself;
+        # callers that need a fronted logical platform (discord/…) go through
+        # cron._deliver_result's loopback path with that platform name.
+        err = deliver_via_gateway_loopback(
+            "relay",
+            chat_id,
+            message if isinstance(message, str) else str(message or ""),
+            thread_id=thread_id,
+        )
+        if err is None:
+            return {"success": True}
+        return {"error": err}
+
     platform_registry.register(
         PlatformEntry(
             name="relay",
@@ -962,6 +995,7 @@ def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bo
             check_fn=lambda: True,
             source="builtin",
             emoji="\U0001f50c",
+            standalone_sender_fn=_standalone_send,
         )
     )
     return True

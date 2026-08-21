@@ -106,6 +106,19 @@ DEFAULT_CONFIG = {
         # past ~50s has no effect unless TimeoutStopSec is raised too.
         # 0 = opt out (cron drains on restart_drain_timeout, legacy).
         "cron_drain_timeout": 30,
+        # When true, a static Anthropic OAuth/setup token (ANTHROPIC_TOKEN or
+        # CLAUDE_CODE_OAUTH_TOKEN) always wins over a refreshable Claude Code
+        # credential (~/.claude/.credentials.json or macOS Keychain), instead
+        # of the default behavior where the refreshable credential preempts
+        # it. Opt in on a machine where a separate interactive `claude`
+        # login shares the same credential slot Hermes reads by default
+        # (macOS Keychain isn't scoped by CLAUDE_CONFIG_DIR, so a daily-driver
+        # `claude` login and a dedicated Hermes setup-token collide in one
+        # slot there) and you want Hermes pinned to its own long-lived token
+        # regardless of what the interactive login does. Default false
+        # preserves auto-refresh: leave this off unless you've deliberately
+        # set up a dedicated setup-token for Hermes.
+        "pin_anthropic_token": False,
         # In-band restart wait for active turns to finish before stop()
         # (seconds). /restart and SIGUSR1 refuse new work, then wait up to
         # this cap for in-flight agents/cron/api runs to complete naturally

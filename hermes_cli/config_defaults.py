@@ -1618,6 +1618,17 @@ DEFAULT_CONFIG = {
         # falls through to request reconstruction rather than breaking
         # the login flow.
         "public_url": "",
+        # WebSocket keepalive ping tuning (seconds). ``ws_ping_interval`` /
+        # ``ws_ping_timeout`` control uvicorn's protocol-level ping for the
+        # desktop/dashboard WS connection. The default ``"auto"`` preserves
+        # the historical behavior: ping disabled on loopback (None) so an
+        # event-loop stall can never false-disconnect, 20s/20s on public
+        # binds (Cloudflare Tunnel half-open detection). Set both keys to a
+        # number (e.g. 60 for a direct Tailscale/WireGuard mesh, which has
+        # no proxy idle window) to override; set to ``None`` explicitly to
+        # disable the keepalive ping entirely (#79635).
+        "ws_ping_interval": "auto",
+        "ws_ping_timeout": "auto",
     },
 
     # Privacy settings

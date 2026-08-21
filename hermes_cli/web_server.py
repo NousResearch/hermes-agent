@@ -19027,6 +19027,39 @@ def start_server(
     # ping at 20/20 to detect it promptly and stay under the tunnel's idle
     # window.
     _is_loopback = host in ("127.0.0.1", "localhost", "::1")
+    # ws keepalive tuning (#79635): defaults preserve today's behavior
+    # (disabled on loopback, 20s/20s elsewhere for Cloudflare Tunnel paths),
+    # but a direct remote mesh (Tailscale, WireGuard) has no proxy idle
+    # window and benefits from a longer ping timeout. Configurable via
+    # dashboard.ws_ping_interval / dashboard.ws_ping_timeout (seconds, None
+    # disables the keepalive ping entirely).
+    try:
+        from hermes_cli.config import load_config as _load_cfg
+        _dash_cfg = (_load_cfg().get("dashboard") or {}) or {}
+        _ping_interval = _dash_cfg.get("ws_ping_interval", "auto")
+        _ping_timeout = _dash_cfg.get("ws_ping_timeout", "auto")
+    except Exception:
+        _ping_interval = _ping_timeout = "auto"
+
+    def _coerce_ping(value):
+        # Defensive coercion: hand-edited YAML may quote the number
+        # ("60"), which uvicorn would pass to loop.call_later as a str
+        # and crash the ping loop. Accept int/float/numeric-str; any
+        # other value (incl. explicit None) falls through untouched so
+        # "None disables ping" keeps working (#79635).
+        if isinstance(value, str) and value.strip():
+            try:
+                return float(value)
+            except ValueError:
+                return value
+        return value
+
+    if _ping_interval == "auto":
+        _ping_interval = None if _is_loopback else 20.0
+    if _ping_timeout == "auto":
+        _ping_timeout = None if _is_loopback else 20.0
+    _ping_interval = _coerce_ping(_ping_interval)
+    _ping_timeout = _coerce_ping(_ping_timeout)
     config = uvicorn.Config(
         app, host=host, port=port, log_level="warning",
         # proxy_headers defaults to False so _ws_client_is_allowed sees
@@ -19041,8 +19074,8 @@ def start_server(
         # disables the protocol ping (None) so an event-loop stall can never
         # trigger a false disconnect; a genuinely dead local client is still
         # reaped via the WebSocketDisconnect → disconnect/reap path.
-        ws_ping_interval=None if _is_loopback else 20.0,
-        ws_ping_timeout=None if _is_loopback else 20.0,
+        ws_ping_interval=_ping_interval,
+        ws_ping_timeout=_ping_timeout,
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     )
     server = uvicorn.Server(config)

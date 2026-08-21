@@ -458,21 +458,43 @@ class TestRuntimeProviderResolution:
         assert result["base_url"] == "https://api.minimax.io/anthropic"
         assert result["api_mode"] == "anthropic_messages"
 
-    def test_runtime_minimax_remaps_persisted_v1_catalog_url(self, monkeypatch):
-        """hermes setup writes model.base_url=/v1; that path 404s (#84838)."""
-        monkeypatch.setenv("MINIMAX_API_KEY", "mm-key")
+    @pytest.mark.parametrize(
+        ("provider", "env_var", "persisted_v1", "expected_anthropic"),
+        [
+            (
+                "minimax",
+                "MINIMAX_API_KEY",
+                "https://api.minimax.io/v1",
+                "https://api.minimax.io/anthropic",
+            ),
+            (
+                "minimax-cn",
+                "MINIMAX_CN_API_KEY",
+                "https://api.minimaxi.com/v1",
+                "https://api.minimaxi.com/anthropic",
+            ),
+        ],
+    )
+    def test_runtime_minimax_remaps_persisted_v1_catalog_url(
+        self, monkeypatch, provider, env_var, persisted_v1, expected_anthropic
+    ):
+        """hermes setup writes model.base_url=/v1; that path 404s (#84838).
+
+        Locks the /v1 -> /anthropic remap through resolve_runtime_provider
+        for BOTH the global and the China host."""
+        monkeypatch.setenv(env_var, "mm-key")
         monkeypatch.setattr(
             "hermes_cli.runtime_provider._get_model_config",
             lambda: {
-                "provider": "minimax",
+                "provider": provider,
                 "default": "MiniMax-M3",
-                "base_url": "https://api.minimax.io/v1",
+                "base_url": persisted_v1,
             },
         )
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
-        result = resolve_runtime_provider(requested="minimax")
-        assert result["base_url"] == "https://api.minimax.io/anthropic"
+        result = resolve_runtime_provider(requested=provider)
+        assert result["base_url"] == expected_anthropic
         assert result["api_mode"] == "anthropic_messages"
 
     def test_runtime_minimax_keeps_explicit_custom_host(self, monkeypatch):

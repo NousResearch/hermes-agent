@@ -147,6 +147,21 @@ def route_browser_tool(
         transport_family=transport_family,
     )
     if scope is None:
+        # A stamped identity alone does not make the extension lane
+        # authoritative — authentication happens at transport auth, but the
+        # lane only BINDS when a controller actually registers for it. If no
+        # controller ever registered, generic callers keep the legacy
+        # backend. Once a lane registered (even if the controller is
+        # currently offline/ambiguous), fail closed: a "control this tab"
+        # session must never silently jump to an unrelated browser.
+        lane_bound = getattr(broker, "lane_registered", None)
+        if callable(lane_bound) and not lane_bound(
+            session_id=session_id,
+            task_id=task_id,
+            principal_id=principal_id,
+            transport_family=transport_family,
+        ):
+            return fallback()
         from gateway.browser_control_broker import ControllerUnavailable
 
         raise ControllerUnavailable(

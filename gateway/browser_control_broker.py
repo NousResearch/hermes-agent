@@ -912,6 +912,35 @@ class BrowserControlBroker:
             ]
         return matches[0] if len(matches) == 1 else None
 
+    def lane_registered(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        principal_id: Optional[str] = None,
+        transport_family: Optional[str] = None,
+    ) -> bool:
+        """Return whether ANY controller (even offline) registered for this lane.
+
+        Distinguishes "a controller bound this session lane and is currently
+        unavailable" (fail closed — the extension lane stays authoritative)
+        from "no controller ever registered here" (the caller keeps the
+        legacy browser backend). Ambiguous lanes report True so the caller
+        still fails closed rather than silently switching browsers.
+        """
+        target = str(session_id or task_id or "").strip()
+        principal = str(principal_id or "").strip()
+        family = str(transport_family or "").strip()
+        if not target or not principal or not family:
+            return False
+        with self._lock:
+            return any(
+                scope.session_id == target
+                and scope.principal_id == principal
+                and scope.transport_family == family
+                for scope in self._controllers
+            )
+
     def disconnect_owner(self, owner: Any) -> int:
         """Mark every controller owned by one lost transport offline."""
         with self._lock:

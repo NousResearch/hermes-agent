@@ -4,16 +4,22 @@ from tools.browser_extension_router import route_browser_tool, routed_browser_ha
 
 
 class FakeBroker:
-    def __init__(self, *, scope=None, selected=None, result=None, error=None):
+    def __init__(self, *, scope=None, selected=None, result=None, error=None,
+                 registered=True):
         self.scope = scope
         self.selected = selected
         self.result = result
         self.error = error
+        self.registered = registered
         self.calls = []
 
     def scope_for_session(self, **identity):
         self.calls.append(("scope", identity))
         return self.scope
+
+    def lane_registered(self, **identity):
+        self.calls.append(("lane_registered", identity))
+        return self.registered
 
     def select(self, scope, action):
         self.calls.append(("select", scope, action))
@@ -73,6 +79,90 @@ def test_bound_request_without_exact_capable_controller_fails_closed(scope, sele
 
     assert fallbacks == []
     assert not any(call[0] == "dispatch" for call in broker.calls)
+
+
+def test_stamped_identity_without_registered_lane_keeps_legacy_backend():
+    """Transport auth alone must not make the extension lane authoritative.
+
+    A dashboard/API session carries a server-stamped principal for every
+    authenticated request, but until a controller actually REGISTERS for the
+    lane, browser tools keep the legacy backend (regression: flag ON +
+    authenticated session + no extension bricked every browser_* call).
+    """
+    broker = FakeBroker(scope=None, registered=False)
+    fallbacks = []
+
+    result = route_browser_tool(
+        "browser_navigate",
+        {"url": "https://example.test"},
+        fallback=lambda: fallbacks.append(True) or "legacy-result",
+        broker=broker,
+        enabled=True,
+        session_id="session-fixture",
+        principal_id="principal-fixture",
+        transport_family="cloud-ticket-ws",
+        tool_call_id="tool-call-fixture",
+    )
+
+    assert result == "legacy-result"
+    assert fallbacks == [True]
+    assert not any(call[0] == "dispatch" for call in broker.calls)
+
+
+def test_registered_lane_with_offline_controller_still_fails_closed():
+    """Once a controller registered, its absence is fail-closed, not fallback."""
+    from gateway.browser_control_broker import ControllerUnavailable
+
+    broker = FakeBroker(scope=None, registered=True)
+    fallbacks = []
+
+    with pytest.raises(ControllerUnavailable, match="browser_navigate"):
+        route_browser_tool(
+            "browser_navigate",
+            {"url": "https://example.test"},
+            fallback=lambda: fallbacks.append(True) or "unsafe-legacy-result",
+            broker=broker,
+            enabled=True,
+            session_id="session-fixture",
+            principal_id="principal-fixture",
+            transport_family="cloud-ticket-ws",
+            tool_call_id="tool-call-fixture",
+        )
+
+    assert fallbacks == []
+
+
+def test_real_broker_lane_registered_tracks_registration_lifecycle():
+    """lane_registered: False before attach, True after, True while offline."""
+    from gateway.browser_control_broker import BrowserControlBroker, ControllerScope
+
+    broker = BrowserControlBroker(command_timeout=0.1)
+    identity = dict(
+        session_id="sess-1",
+        principal_id="principal-1",
+        transport_family="cloud-ticket-ws",
+    )
+    assert broker.lane_registered(**identity) is False
+
+    scope = ControllerScope(
+        principal_id="principal-1",
+        profile_id="default",
+        session_id="sess-1",
+        controller_id="ctrl-1",
+        browser_profile_id="bp-1",
+        transport_family="cloud-ticket-ws",
+        capabilities=frozenset({"browser_navigate"}),
+    )
+    owner = object()
+    broker.attach(scope, lambda frame: None, owner=owner)
+    assert broker.lane_registered(**identity) is True
+
+    broker.disconnect(scope, owner=owner)
+    # Offline controller: lane stays bound (fail closed), never legacy.
+    assert broker.lane_registered(**identity) is True
+    bound_scope = broker.scope_for_session(**identity)
+    assert bound_scope is not None
+    assert broker.select(bound_scope, "browser_navigate") is None
 
 
 def test_selected_controller_receives_immutable_arguments_and_context():

@@ -845,6 +845,55 @@ Symlinks, 0o600 permissions, SIGALRM, os.setsid/fork are all unix-only.
 
 ---
 
+## Contributing Translations
+
+Hermes has separate localization surfaces. Treat each as its own contribution:
+
+| Surface | Source of truth | Target catalogs |
+|---------|-----------------|-----------------|
+| Core CLI and gateway messages | `locales/en.yaml` | `locales/<lang>.yaml` |
+| Desktop app | `apps/desktop/src/i18n/en.ts` | `apps/desktop/src/i18n/<lang>.ts` |
+| Web dashboard | `web/src/i18n/en.ts` | `web/src/i18n/<lang>.ts` |
+| Documentation site | `website/docs/` | `website/i18n/<locale>/...` |
+
+Before editing, search open, closed, and merged issues and PRs for the language,
+surface, exact namespace, and affected strings. Keep each PR to one coherent
+surface or message family so it can be reviewed and merged independently.
+
+When translating catalogs:
+
+- Keep commands, flags, config keys, paths, URLs, model IDs, and provider names
+  unchanged unless the UI deliberately localizes their display label.
+- Preserve Markdown and every interpolation placeholder exactly, including
+  spelling and multiplicity (`{count}`, `{error}`, `{name}`, and similar).
+- Keep the source and target key sets in sync. English is the catalog contract,
+  not a target for drive-by wording changes in a translation PR.
+- In YAML double-quoted strings, use an explicit `\n` escape for a runtime line
+  break. A physical line break is folded to a space by the YAML parser.
+- Describe partial coverage honestly. A fallback to English is safe behavior,
+  not proof that a surface is fully translated.
+
+Run the checks for the surface you changed:
+
+```bash
+# Core locale key and placeholder parity
+scripts/run_tests.sh tests/agent/test_i18n.py
+
+# Desktop and web typed catalogs
+npm --prefix apps/desktop run typecheck
+npm --prefix apps/desktop run test:ui
+npm --prefix web run check
+
+# Documentation locale
+npm --prefix website run build
+```
+
+For core messages, also resolve representative keys through `agent.i18n.t()` or
+exercise the affected command. Reading the YAML directly does not prove the
+runtime language selection, formatting, or fallback path works.
+
+---
+
 ## Security Considerations
 
 Hermes has terminal access. Security matters.

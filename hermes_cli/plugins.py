@@ -172,6 +172,11 @@ VALID_HOOKS: Set[str] = {
     # Streaming LLM output observer hooks. Fired asynchronously off the token
     # path by agent.plugin_stream_hooks; callbacks observe immutable normalized
     # text/lifecycle payloads and cannot transform the stream.
+    # on_stream_end additionally carries ``usage``: the turn's token counters in
+    # turn_finalizer's field vocabulary (prompt/completion/total/reasoning_tokens,
+    # api_calls) plus ``last_prompt_tokens`` (the final call's prompt size — the
+    # model's current context occupancy) and ``context_length`` — enough for an
+    # observer plugin to render a context meter without touching core.
     "on_stream_start",
     "on_stream_delta",
     "on_stream_end",

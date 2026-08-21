@@ -6908,6 +6908,25 @@ class AIAgent:
         except Exception:
             logger.debug("on_stream_start plugin hook enqueue failed", exc_info=True)
 
+    def _stream_hook_usage_payload(self) -> Dict[str, Any]:
+        """Token usage for stream observer hooks, in turn_finalizer's field vocabulary.
+
+        ``last_prompt_tokens`` is the final API call's prompt size — the model's *current*
+        context occupancy — unlike the cumulative session_* counters; paired with
+        ``context_length`` it lets an observer render a context meter without touching core.
+        All reads are defensive: a partially initialized agent yields zeros, never a raise.
+        """
+        compressor = getattr(self, "context_compressor", None)
+        return {
+            "prompt_tokens": int(getattr(self, "session_prompt_tokens", 0) or 0),
+            "completion_tokens": int(getattr(self, "session_completion_tokens", 0) or 0),
+            "total_tokens": int(getattr(self, "session_total_tokens", 0) or 0),
+            "reasoning_tokens": int(getattr(self, "session_reasoning_tokens", 0) or 0),
+            "api_calls": int(getattr(self, "session_api_calls", 0) or 0),
+            "last_prompt_tokens": int(getattr(compressor, "last_prompt_tokens", 0) or 0),
+            "context_length": int(getattr(compressor, "context_length", 0) or 0),
+        }
+
     def _emit_stream_end(self, *, final_text: str, finished: bool, error: str | None) -> None:
         try:
             from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
@@ -6918,6 +6937,7 @@ class AIAgent:
                 final_text=final_text,
                 finished=finished,
                 error=error,
+                usage=self._stream_hook_usage_payload(),
             )
         except Exception:
             logger.debug("on_stream_end plugin hook enqueue failed", exc_info=True)

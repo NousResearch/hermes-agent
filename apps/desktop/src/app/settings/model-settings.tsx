@@ -548,6 +548,86 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
     [config, m.defaultsFailed, scopeProfile, setConfig]
   )
 
+  // Same round-trip for the cron-fleet defaults (cron.model / cron.model_provider)
+  // and the drift guard (#89513). Values may be strings or booleans.
+  const writeCronConfig = useCallback(
+    async (key: string, value: string | boolean) => {
+      if (!config) {
+        return
+      }
+
+      const prev = config
+      const next = setNested(config, key, value)
+      setConfig(next)
+
+      try {
+        await saveHermesConfig(next, scopeProfile ?? undefined)
+      } catch (err) {
+        setConfig(prev)
+        notifyError(err, m.defaultsFailed)
+      }
+    },
+    [config, m.defaultsFailed, scopeProfile, setConfig]
+  )
+
+  // Drafts for the cron-fleet model/provider text fields — committed by the
+  // Save button so we don't PUT the whole config on every keystroke. Resync
+  // whenever the config record changes (initial load, save, profile switch).
+  const [fleetModelDraft, setFleetModelDraft] = useState('')
+  const [fleetProviderDraft, setFleetProviderDraft] = useState('')
+  const [fleetDraftDirty, setFleetDraftDirty] = useState(false)
+
+  useEffect(() => {
+    setFleetModelDraft(String(getNested(config ?? {}, 'cron.model') ?? ''))
+    setFleetProviderDraft(String(getNested(config ?? {}, 'cron.model_provider') ?? ''))
+    setFleetDraftDirty(false)
+  }, [config])
+
+  const fleetDriftGuardOn = getNested(config ?? {}, 'cron.model_drift_guard') !== false
+
+  // Save both fleet fields in ONE config round-trip (PUT replaces the record),
+  // so the provider write can't clobber the model write with a stale snapshot.
+  const saveCronFleet = useCallback(async () => {
+    if (!fleetDraftDirty || !config) {
+      return
+    }
+
+    const prev = config
+    let next = setNested(config, 'cron.model', fleetModelDraft.trim())
+    next = setNested(next, 'cron.model_provider', fleetProviderDraft.trim())
+    setConfig(next)
+    setFleetDraftDirty(false)
+
+    try {
+      await saveHermesConfig(next, scopeProfile ?? undefined)
+    } catch (err) {
+      setConfig(prev)
+      notifyError(err, m.defaultsFailed)
+    }
+  }, [config, fleetDraftDirty, fleetModelDraft, fleetProviderDraft, m.defaultsFailed, scopeProfile, setConfig])
+
+  // Clear the fleet default: write empty values so unpinned jobs fall back to
+  // the global model. Off by default; always button-visible (not dirty-gated)
+  // because a set-but-unchanged fleet is the state you'd want to clear.
+  const clearCronFleet = useCallback(async () => {
+    if (!config) {
+      return
+    }
+
+    const prev = config
+    let next = setNested(config, 'cron.model', '')
+    next = setNested(next, 'cron.model_provider', '')
+    setConfig(next)
+    setFleetDraftDirty(false)
+
+    try {
+      await saveHermesConfig(next, scopeProfile ?? undefined)
+    } catch (err) {
+      setConfig(prev)
+      notifyError(err, m.defaultsFailed)
+    }
+  }, [config, m.defaultsFailed, scopeProfile, setConfig])
+
   // Paste an API key for the selected `api_key` provider, persist it, then
   // refresh so the now-authenticated provider's models populate. Auto-selects
   // the recommended default model so the user can Apply in one more click.
@@ -890,6 +970,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
               <label className="flex items-center gap-2 text-xs">
                 {t.shell.modelOptions.fast}
                 <Switch
+                  aria-label={String(t.shell.modelOptions.fast)}
                   checked={fastOn}
                   onCheckedChange={checked => void writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')}
                   size="xs"
@@ -1027,6 +1108,91 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
               </div>
             )
           })}
+        </div>
+      </section>
+      <section>
+        <SectionHeading icon={Cpu} title="Cron jobs" />
+        <p className="mb-2 text-xs text-muted-foreground">
+          Model routing for scheduled jobs, resolved in this order: a job's own pinned model, then this fleet default
+          (<code>cron.model</code>), then the global model. Unpinned jobs follow the fleet default before the global
+          model.
+        </p>
+        <ListRow
+          action={
+            <Switch
+              aria-label="Cron drift guard"
+              checked={fleetDriftGuardOn}
+              disabled={!config || applying}
+              onCheckedChange={checked => void writeCronConfig('cron.model_drift_guard', checked)}
+              size="xs"
+            />
+          }
+          description="When drift guard is on and a cron is set to the global model and the global model changes, the cron will not execute to prevent unintended spending. Disable only if you want cron jobs to always track the current global default."
+          title="Drift guard"
+        />
+        <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+            Fleet provider
+            <Select
+              onValueChange={value => {
+                setFleetProviderDraft(value)
+                setFleetModelDraft('')
+                setFleetDraftDirty(true)
+              }}
+              value={fleetProviderDraft}
+            >
+              <SelectTrigger aria-label="Cron fleet provider" className={cn('h-8', CONTROL_TEXT)}>
+                <SelectValue placeholder="Select provider" />
+              </SelectTrigger>
+              <SelectContent>
+                {providerOptions.map(provider => (
+                  <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
+                    {provider.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+            Fleet model
+            <Select
+              disabled={!fleetProviderDraft}
+              onValueChange={value => {
+                setFleetModelDraft(value)
+                setFleetDraftDirty(true)
+              }}
+              value={fleetModelDraft}
+            >
+              <SelectTrigger aria-label="Cron fleet model" className={cn('h-8', CONTROL_TEXT)}>
+                <SelectValue placeholder={fleetProviderDraft ? 'Select model' : 'Select provider first'} />
+              </SelectTrigger>
+              <SelectContent>
+                {withActive(modelsForProvider(fleetProviderDraft), fleetModelDraft).map(model => (
+                  <SelectItem key={model} value={model}>
+                    {model}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </label>
+        </div>
+        <div className="mt-2 flex items-center gap-2">
+          <Button
+            disabled={!fleetDraftDirty || !config || applying}
+            onClick={() => void saveCronFleet()}
+            size="sm"
+            variant="outline"
+          >
+            {applying ? m.applying : t.common.save}
+          </Button>
+          <Button
+            disabled={!config || applying}
+            onClick={() => void clearCronFleet()}
+            size="sm"
+            variant="ghost"
+          >
+            Clear
+          </Button>
         </div>
       </section>
       {moa && currentMoaPreset && (

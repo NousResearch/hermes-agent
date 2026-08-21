@@ -13429,11 +13429,17 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
             transaction = _mcp_oauth_transaction(flow)
             with transaction, force_interactive_oauth(), dashboard_oauth_flow(flow):
                 manager = get_manager()
-                storage = HermesTokenStorage(flow.server_name)
+                manager.unblock(
+                    flow.server_name,
+                    hermes_home=flow.hermes_home,
+                )
+                storage = HermesTokenStorage(
+                    flow.server_name,
+                    hermes_home=flow.hermes_home,
+                )
                 backup = storage.snapshot()
-                previous_entry = None
                 try:
-                    previous_entry = manager.remove(
+                    manager.remove(
                         flow.server_name,
                         hermes_home=flow.hermes_home,
                     )
@@ -13455,12 +13461,11 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
 
                         reconnect_mcp_server(flow.server_name)
                 except Exception:
-                    storage.restore(backup, only_if_absent=True)
-                    manager.restore_entry(
+                    manager.evict(
                         flow.server_name,
-                        previous_entry,
                         hermes_home=flow.hermes_home,
                     )
+                    storage.restore(backup, only_if_absent=True)
                     raise
         finally:
             reset_secret_scope(secret_token)

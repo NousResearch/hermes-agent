@@ -7,6 +7,8 @@ cache. See `tools/mcp_oauth_manager.py` for design rationale.
 import json
 import os
 import time
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -47,20 +49,285 @@ def test_manager_isolates_same_named_servers_by_profile_home(tmp_path, monkeypat
     assert providers[1].context.current_tokens.access_token == "TOKEN_B"
 
 
-def test_manager_restore_entry_preserves_newer_concurrent_entry(tmp_path, monkeypatch):
+def test_remove_shared_pool_evicts_every_participating_profile(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.mcp_oauth_manager import MCPOAuthManager
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _set_interactive_stdin(monkeypatch)
+    root = tmp_path / "hermes"
+    profiles = [root / "profiles" / name for name in ("worker-a", "worker-b")]
+    server = {
+        "url": "https://mcp.example/mcp",
+        "auth": "oauth",
+    }
+    root.mkdir(parents=True)
+    (root / "config.yaml").write_text(json.dumps({
+        "mcp_servers": {
+            "shared": {
+                **server,
+                "oauth": {"share_with_profiles": True},
+            },
+        },
+    }))
+    for profile in profiles:
+        profile.mkdir(parents=True)
+        (profile / "config.yaml").write_text(json.dumps({
+            "mcp_servers": {"shared": server},
+        }))
+    token_dir = root / "mcp-tokens"
+    token_dir.mkdir()
+    token_file = token_dir / "shared.json"
+    token_file.write_text(json.dumps({
+        "access_token": "SHARED",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+    }))
+
     manager = MCPOAuthManager()
-    old_provider = manager.get_or_build_provider("shared", "https://old.example", {})
-    old_entry = manager.remove("shared")
-    new_provider = manager.get_or_build_provider("shared", "https://new.example", {})
+    providers = []
+    for profile in profiles:
+        token = set_hermes_home_override(profile)
+        try:
+            provider = manager.get_or_build_provider("shared", server["url"], {})
+            assert provider is not None
+            asyncio.run(provider._initialize())
+            providers.append(provider)
+        finally:
+            reset_hermes_home_override(token)
 
-    manager.restore_entry("shared", old_entry)
+    removed = manager.remove("shared", hermes_home=profiles[0])
 
-    assert manager.get_or_build_provider("shared", "https://new.example", {}) is new_provider
+    assert removed is not None
+    assert not token_file.exists()
+    assert manager._key("shared", profiles[0]) not in manager._entries
+    assert manager._key("shared", profiles[1]) not in manager._entries
+    assert all(provider.context.current_tokens is None for provider in providers)
+
+
+def test_server_names_with_unsafe_characters_use_distinct_storage(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    token = MagicMock()
+    token.model_dump.return_value = {
+        "access_token": "TOKEN",
+        "token_type": "Bearer",
+    }
+    slash_storage = HermesTokenStorage("a/b")
+    underscore_storage = HermesTokenStorage("a_b")
+    assert slash_storage._tokens_path() != underscore_storage._tokens_path()
+    crafted_storage = HermesTokenStorage(slash_storage._tokens_path().stem)
+    assert slash_storage._tokens_path() != crafted_storage._tokens_path()
+    asyncio.run(slash_storage.set_tokens(token))
+    asyncio.run(underscore_storage.set_tokens(token))
+    manager = MCPOAuthManager()
+    for name in ("a/b", "a_b"):
+        assert manager.get_or_build_provider(
+            name, "https://example.com/mcp", {}
+        ) is not None
+
+    manager.remove("a/b")
+
+    assert manager._key("a/b") not in manager._entries
+    assert manager._key("a_b") in manager._entries
+    assert underscore_storage._tokens_path().exists()
+
+
+def test_permanent_remove_blocks_rebuild_until_server_is_readded(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth import HermesTokenStorage, OAuthStorageRevokedError
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    token = MagicMock()
+    token.model_dump.return_value = {
+        "access_token": "TOKEN",
+        "token_type": "Bearer",
+    }
+    stale_storage = HermesTokenStorage("shared")
+    asyncio.run(stale_storage.set_tokens(token))
+    manager = MCPOAuthManager()
+    assert manager.get_or_build_provider(
+        "shared", "https://example.com/mcp", {}
+    ) is not None
+
+    manager.remove("shared", block_rebuild=True)
+
+    with pytest.raises(OAuthStorageRevokedError):
+        asyncio.run(stale_storage.get_tokens())
+    assert manager.get_or_build_provider(
+        "shared", "https://example.com/mcp", {}
+    ) is None
+    # A fresh manager simulates a second local Hermes process: the on-disk
+    # tombstone must block it too.
+    fresh_manager = MCPOAuthManager()
+    assert fresh_manager.get_or_build_provider(
+        "shared", "https://example.com/mcp", {}
+    ) is None
+    fresh_manager.unblock("shared")
+    asyncio.run(HermesTokenStorage("shared").set_tokens(token))
+    assert fresh_manager.get_or_build_provider(
+        "shared", "https://example.com/mcp", {}
+    ) is not None
+
+
+def test_manager_rebuilds_provider_when_oauth_config_changes(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    manager = MCPOAuthManager()
+    monkeypatch.setattr(
+        manager,
+        "_build_provider",
+        lambda server_name, entry, *, hermes_home: SimpleNamespace(),
+    )
+
+    old_provider = manager.get_or_build_provider(
+        "shared",
+        "https://example.com/mcp",
+        {"client_id": "old-client"},
+    )
+    new_provider = manager.get_or_build_provider(
+        "shared",
+        "https://example.com/mcp",
+        {"client_id": "new-client"},
+    )
+
     assert new_provider is not old_provider
+    assert manager._entries[manager._key("shared")].oauth_config == {
+        "client_id": "new-client"
+    }
+
+
+def test_manager_discards_persisted_tokens_when_endpoint_changes(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    token = MagicMock()
+    token.model_dump.return_value = {
+        "access_token": "OLD",
+        "token_type": "Bearer",
+    }
+    storage = HermesTokenStorage("shared")
+    asyncio.run(storage.set_tokens(token))
+    manager = MCPOAuthManager()
+
+    def fake_build(server_name, entry, *, hermes_home):
+        pinned = HermesTokenStorage(server_name, hermes_home=hermes_home)
+        return SimpleNamespace(
+            context=SimpleNamespace(storage=pinned, current_tokens=None),
+            _initialized=True,
+        )
+
+    monkeypatch.setattr(manager, "_build_provider", fake_build)
+    manager.get_or_build_provider("shared", "https://old.example/mcp", {})
+
+    manager.get_or_build_provider("shared", "https://new.example/mcp", {})
+
+    assert not storage._tokens_path().exists()
+
+
+def test_remove_uses_provider_pinned_pool_after_profile_config_changes(tmp_path, monkeypatch):
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    shared = {"url": "https://old.example/mcp", "auth": "oauth"}
+    (root / "config.yaml").write_text(json.dumps({
+        "mcp_servers": {
+            "shared": {
+                **shared,
+                "oauth": {"share_with_profiles": True},
+            },
+        },
+    }))
+    (profile / "config.yaml").write_text(json.dumps({
+        "mcp_servers": {"shared": shared},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    token = MagicMock()
+    token.model_dump.return_value = {
+        "access_token": "SHARED",
+        "token_type": "Bearer",
+    }
+    storage = HermesTokenStorage("shared")
+    asyncio.run(storage.set_tokens(token))
+    manager = MCPOAuthManager()
+
+    def fake_build(server_name, entry, *, hermes_home):
+        pinned = HermesTokenStorage(server_name, hermes_home=hermes_home)
+        return SimpleNamespace(
+            context=SimpleNamespace(storage=pinned, current_tokens=None),
+            _initialized=True,
+        )
+
+    monkeypatch.setattr(manager, "_build_provider", fake_build)
+    manager.get_or_build_provider("shared", shared["url"], {})
+    (profile / "config.yaml").write_text(json.dumps({
+        "mcp_servers": {
+            "shared": {"url": "https://new.example/mcp", "auth": "oauth"},
+        },
+    }))
+
+    manager.remove("shared", hermes_home=profile)
+
+    assert not storage._tokens_path().exists()
+
+
+def test_profile_detach_preserves_root_shared_grant(tmp_path, monkeypatch):
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    shared = {"url": "https://old.example/mcp", "auth": "oauth"}
+    (root / "config.yaml").write_text(json.dumps({
+        "mcp_servers": {
+            "shared": {
+                **shared,
+                "oauth": {"share_with_profiles": True},
+            },
+        },
+    }))
+    (profile / "config.yaml").write_text(json.dumps({
+        "mcp_servers": {"shared": shared},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    token = MagicMock()
+    token.model_dump.return_value = {
+        "access_token": "ROOT-SHARED",
+        "token_type": "Bearer",
+    }
+    root_storage = HermesTokenStorage("shared")
+    asyncio.run(root_storage.set_tokens(token))
+    manager = MCPOAuthManager()
+
+    def fake_build(server_name, entry, *, hermes_home):
+        pinned = HermesTokenStorage(
+            server_name,
+            hermes_home=hermes_home,
+            token_dir=Path(entry.pool_path).parent,
+        )
+        return SimpleNamespace(
+            context=SimpleNamespace(storage=pinned, current_tokens=None),
+            _initialized=True,
+        )
+
+    monkeypatch.setattr(manager, "_build_provider", fake_build)
+    manager.get_or_build_provider("shared", shared["url"], {})
+    (profile / "config.yaml").write_text(json.dumps({
+        "mcp_servers": {
+            "shared": {"url": "https://new.example/mcp", "auth": "oauth"},
+        },
+    }))
+
+    manager.get_or_build_provider("shared", "https://new.example/mcp", {})
+
+    assert root_storage._tokens_path().exists()
+
 
 pytest.importorskip(
     "mcp.client.auth.oauth2",
@@ -124,6 +391,62 @@ async def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
     assert changed3 is True
     # _initialized flipped — next async_auth_flow will re-read from disk
     assert provider._initialized is False
+
+
+@pytest.mark.asyncio
+async def test_disk_watch_tracks_root_exported_profile_tokens(tmp_path, monkeypatch):
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    (root / "config.yaml").write_text(json.dumps({
+        "mcp_servers": {
+            "srv": {
+                "url": "https://example.com/mcp",
+                "auth": "oauth",
+                "oauth": {"share_with_profiles": True},
+            },
+        },
+    }))
+    (profile / "config.yaml").write_text(json.dumps({
+        "mcp_servers": {
+            "srv": {
+                "url": "https://example.com/mcp",
+                "auth": "oauth",
+            },
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
+
+    reset_manager_for_tests()
+    token_dir = root / "mcp-tokens"
+    token_dir.mkdir()
+    tokens_file = token_dir / "srv.json"
+    tokens_file.write_text(json.dumps({
+        "access_token": "SHARED",
+        "token_type": "Bearer",
+    }))
+
+    manager = MCPOAuthManager()
+    provider = manager.get_or_build_provider("srv", "https://example.com/mcp", None)
+    assert provider is not None
+    await provider._initialize()
+    assert provider.context.current_tokens.access_token == "SHARED"
+    assert await manager.invalidate_if_disk_changed("srv") is True
+
+    # A live provider keeps watching the root pool it resolved at build time,
+    # even if its profile config disappears before the next request.
+    (profile / "config.yaml").unlink()
+    future_mtime = time.time() + 10
+    os.utime(tokens_file, (future_mtime, future_mtime))
+
+    assert await manager.invalidate_if_disk_changed("srv") is True
+    assert provider._initialized is False
+
+    tokens_file.unlink()
+
+    assert await manager.invalidate_if_disk_changed("srv") is True
+    assert provider.context.current_tokens is None
 
 
 @pytest.mark.asyncio

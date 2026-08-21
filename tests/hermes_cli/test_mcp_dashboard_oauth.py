@@ -55,6 +55,33 @@ def test_hosted_auth_start_returns_public_authorization_url(monkeypatch):
     assert flow.redirect_uri == "https://agent.example/api/mcp/oauth/callback/reports"
 
 
+def test_web_delete_revokes_oauth_state(tmp_path, monkeypatch):
+    import asyncio
+    from unittest.mock import MagicMock
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    client = _client()
+    response = client.post(
+        "/api/mcp/servers",
+        json={"name": "reports", "url": "https://mcp.example/mcp", "auth": "oauth"},
+    )
+    assert response.status_code == 200
+    from tools.mcp_oauth import HermesTokenStorage
+
+    storage = HermesTokenStorage("reports")
+    token = MagicMock()
+    token.model_dump.return_value = {
+        "access_token": "TOKEN",
+        "token_type": "Bearer",
+    }
+    asyncio.run(storage.set_tokens(token))
+
+    response = client.delete("/api/mcp/servers/reports")
+
+    assert response.status_code == 200
+    assert not storage._tokens_path().exists()
+
+
 def test_hosted_callback_bypasses_gated_cookie_auth(monkeypatch):
     import asyncio
 

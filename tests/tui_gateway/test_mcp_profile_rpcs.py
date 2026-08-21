@@ -199,7 +199,47 @@ def test_remove_scoped_to_profile(hermes_root):
     assert "temp" in _read_yaml(root / "profiles" / "other" / "config.yaml").get("mcp_servers", {})
 
 
+def test_remove_cleans_root_exported_oauth_pool(hermes_root):
+    import yaml
+
+    root = hermes_root
+    server = {
+        "url": "https://mcp.example.com/shared",
+        "auth": "oauth",
+    }
+    (root / "config.yaml").write_text(yaml.safe_dump({
+        "mcp_servers": {
+            "shared": {
+                **server,
+                "oauth": {"share_with_profiles": True},
+            },
+        },
+    }))
+    _result(
+        _call(
+            "mcp.servers.add",
+            {"profile": "work", "name": "shared", "config": server},
+        )
+    )
+    token_dir = root / "mcp-tokens"
+    token_dir.mkdir(exist_ok=True)
+    token_file = token_dir / "shared.json"
+    token_file.write_text("{}")
+
+    resp = _result(_call("mcp.servers.remove", {"profile": "work", "name": "shared"}))
+
+    assert resp["removed"] is True
+    assert not token_file.exists()
+    assert "shared" not in _read_yaml(root / "profiles" / "work" / "config.yaml").get(
+        "mcp_servers", {}
+    )
+
+
 def test_add_duplicate_and_missing_errors(hermes_root):
+    stale_dir = hermes_root / "profiles" / "work" / "mcp-tokens"
+    stale_dir.mkdir()
+    stale_token = stale_dir / "nope.json"
+    stale_token.write_text("{}")
     _result(
         _call(
             "mcp.servers.add",
@@ -216,6 +256,7 @@ def test_add_duplicate_and_missing_errors(hermes_root):
     missing = _call("mcp.servers.remove", {"profile": "work", "name": "nope"})
     assert "error" in missing
     assert missing["error"]["code"] == 4064
+    assert stale_token.exists()
 
     bad_profile = _call(
         "mcp.servers.add",

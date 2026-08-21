@@ -142,12 +142,12 @@ async def replace_mcp_servers(body: MCPServersReplace, profile: Optional[str] = 
 
 @router.delete("/api/mcp/servers/{name}")
 async def remove_mcp_server(name: str, profile: Optional[str] = None):
-    from hermes_cli.mcp_config import _remove_mcp_server
+    from hermes_cli.mcp_config import _remove_mcp_server_with_oauth
 
     def _run():
         with _profile_scope(profile):
             with _CONFIG_MUTATION_LOCK:
-                return _remove_mcp_server(name)
+                return _remove_mcp_server_with_oauth(name)
 
     removed = await asyncio.to_thread(_run)
     if not removed:

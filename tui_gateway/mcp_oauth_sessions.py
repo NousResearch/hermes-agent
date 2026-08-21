@@ -159,11 +159,14 @@ def _worker(session_id: str, hermes_home: str, server_name: str, cfg: dict, reco
                 from tools.mcp_oauth import HermesTokenStorage
 
                 manager = get_manager()
-                storage = HermesTokenStorage(server_name)
+                manager.unblock(server_name, hermes_home=hermes_home)
+                storage = HermesTokenStorage(
+                    server_name,
+                    hermes_home=hermes_home,
+                )
                 backup = storage.snapshot()
-                previous_entry = None
                 try:
-                    previous_entry = manager.remove(server_name, hermes_home=hermes_home)
+                    manager.remove(server_name, hermes_home=hermes_home)
                     tools = _probe_single_server(
                         server_name,
                         cfg,
@@ -183,8 +186,8 @@ def _worker(session_id: str, hermes_home: str, server_name: str, cfg: dict, reco
 
                         reconnect_mcp_server(server_name)
                 except Exception:
+                    manager.evict(server_name, hermes_home=hermes_home)
                     storage.restore(backup, only_if_absent=True)
-                    manager.restore_entry(server_name, previous_entry, hermes_home=hermes_home)
                     raise
         finally:
             reset_secret_scope(secret_token)

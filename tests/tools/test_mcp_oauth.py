@@ -13,6 +13,7 @@ import asyncio
 from tools.mcp_oauth import (
     HermesTokenStorage,
     OAuthNonInteractiveError,
+    OAuthStorageRevokedError,
     build_oauth_auth,
     remove_oauth_tokens,
     _find_free_port,
@@ -56,6 +57,282 @@ def _hit_callback_when_ready(url: str, timeout: float = 15.0) -> None:
 # ---------------------------------------------------------------------------
 
 class TestHermesTokenStorage:
+    @staticmethod
+    def _configure_profile_server(root, profile, *, shared, profile_url="https://mcp.example.com/mcp"):
+        root.mkdir(parents=True, exist_ok=True)
+        profile.mkdir(parents=True, exist_ok=True)
+        (root / "config.yaml").write_text(json.dumps({
+            "mcp_servers": {
+                "team": {
+                    "url": "https://mcp.example.com/mcp",
+                    "auth": "oauth",
+                    "oauth": {"share_with_profiles": shared},
+                },
+            },
+        }))
+        (profile / "config.yaml").write_text(json.dumps({
+            "mcp_servers": {
+                "team": {
+                    "url": profile_url,
+                    "auth": "oauth",
+                },
+            },
+        }))
+
+    def test_profile_uses_root_token_pool_when_root_exports_matching_server(self, tmp_path, monkeypatch):
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "worker"
+        self._configure_profile_server(root, profile, shared=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        storage = HermesTokenStorage("team")
+        mock_token = MagicMock()
+        mock_token.model_dump.return_value = {
+            "access_token": "shared-token",
+            "token_type": "Bearer",
+            "refresh_token": "shared-refresh",
+        }
+
+        asyncio.run(storage.set_tokens(mock_token))
+
+        assert (root / "mcp-tokens" / "team.json").exists()
+        assert not (profile / "mcp-tokens" / "team.json").exists()
+        loaded = asyncio.run(storage.get_tokens())
+        assert loaded is not None
+        assert loaded.access_token == "shared-token"
+
+        (profile / "config.yaml").unlink()
+        assert storage._tokens_path() == root / "mcp-tokens" / "team.json"
+
+        storage.remove()
+
+        assert not (root / "mcp-tokens" / "team.json").exists()
+
+    def test_profile_keeps_local_token_pool_without_root_export(self, tmp_path, monkeypatch):
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "worker"
+        self._configure_profile_server(root, profile, shared=False)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        storage = HermesTokenStorage("team")
+        mock_token = MagicMock()
+        mock_token.model_dump.return_value = {
+            "access_token": "profile-token",
+            "token_type": "Bearer",
+        }
+
+        asyncio.run(storage.set_tokens(mock_token))
+
+        assert (profile / "mcp-tokens" / "team.json").exists()
+        assert not (root / "mcp-tokens" / "team.json").exists()
+
+    def test_profile_rejects_shared_pool_when_server_endpoint_differs(self, tmp_path, monkeypatch):
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "worker"
+        self._configure_profile_server(
+            root,
+            profile,
+            shared=True,
+            profile_url="https://other.example.com/mcp",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        storage = HermesTokenStorage("team")
+        mock_token = MagicMock()
+        mock_token.model_dump.return_value = {
+            "access_token": "profile-token",
+            "token_type": "Bearer",
+        }
+
+        asyncio.run(storage.set_tokens(mock_token))
+
+        assert (profile / "mcp-tokens" / "team.json").exists()
+        assert not (root / "mcp-tokens" / "team.json").exists()
+
+    def test_profile_rejects_shared_pool_for_templated_endpoint(self, tmp_path, monkeypatch):
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "worker"
+        root.mkdir(parents=True)
+        profile.mkdir(parents=True)
+        server = {
+            "url": "${MCP_URL}",
+            "auth": "oauth",
+        }
+        (root / "config.yaml").write_text(json.dumps({
+            "mcp_servers": {
+                "team": {
+                    **server,
+                    "oauth": {"share_with_profiles": True},
+                },
+            },
+        }))
+        (profile / "config.yaml").write_text(json.dumps({
+            "mcp_servers": {"team": server},
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        monkeypatch.setenv("MCP_URL", "https://profile.example.com/mcp")
+        storage = HermesTokenStorage("team")
+        mock_token = MagicMock()
+        mock_token.model_dump.return_value = {
+            "access_token": "profile-token",
+            "token_type": "Bearer",
+        }
+
+        asyncio.run(storage.set_tokens(mock_token))
+
+        assert (profile / "mcp-tokens" / "team.json").exists()
+        assert not (root / "mcp-tokens" / "team.json").exists()
+
+    def test_profile_rejects_shared_pool_for_templated_transport(self, tmp_path, monkeypatch):
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "worker"
+        root.mkdir(parents=True)
+        profile.mkdir(parents=True)
+        server = {
+            "url": "https://example.com/mcp",
+            "auth": "oauth",
+            "transport": "${MCP_TRANSPORT}",
+        }
+        (root / "config.yaml").write_text(json.dumps({
+            "mcp_servers": {
+                "team": {
+                    **server,
+                    "oauth": {"share_with_profiles": True},
+                },
+            },
+        }))
+        (profile / "config.yaml").write_text(json.dumps({
+            "mcp_servers": {"team": server},
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        storage = HermesTokenStorage("team")
+        mock_token = MagicMock()
+        mock_token.model_dump.return_value = {
+            "access_token": "profile-token",
+            "token_type": "Bearer",
+        }
+
+        asyncio.run(storage.set_tokens(mock_token))
+
+        assert (profile / "mcp-tokens" / "team.json").exists()
+        assert not (root / "mcp-tokens" / "team.json").exists()
+
+    def test_profile_rejects_shared_pool_when_oauth_client_settings_differ(self, tmp_path, monkeypatch):
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "worker"
+        self._configure_profile_server(root, profile, shared=True)
+        profile_config = json.loads((profile / "config.yaml").read_text())
+        profile_config["mcp_servers"]["team"]["oauth"] = {
+            "client_id": "profile-client",
+        }
+        (profile / "config.yaml").write_text(json.dumps(profile_config))
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        storage = HermesTokenStorage("team")
+        mock_token = MagicMock()
+        mock_token.model_dump.return_value = {
+            "access_token": "profile-token",
+            "token_type": "Bearer",
+        }
+
+        asyncio.run(storage.set_tokens(mock_token))
+
+        assert (profile / "mcp-tokens" / "team.json").exists()
+        assert not (root / "mcp-tokens" / "team.json").exists()
+
+    def test_snapshot_restores_cimd_rejection_marker(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("team")
+        storage._tokens_path().parent.mkdir(parents=True)
+        storage._tokens_path().write_text("token")
+        storage._client_info_path().write_text("client")
+        storage._meta_path().write_text("meta")
+        storage.mark_cimd_rejected()
+
+        snapshot = storage.snapshot()
+        storage.remove()
+        storage.restore(snapshot)
+
+        assert storage._tokens_path().read_text() == "token"
+        assert storage._client_info_path().read_text() == "client"
+        assert storage._meta_path().read_text() == "meta"
+        assert storage.cimd_rejected() is True
+
+    def test_removed_storage_cannot_resurrect_oauth_state(self, tmp_path, monkeypatch):
+        from tools.mcp_oauth import OAuthStorageRevokedError
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        old_storage = HermesTokenStorage("team")
+        remover = HermesTokenStorage("team")
+        old_token = MagicMock()
+        old_token.model_dump.return_value = {
+            "access_token": "old-token",
+            "token_type": "Bearer",
+        }
+        asyncio.run(old_storage.set_tokens(old_token))
+
+        remover.remove()
+
+        with pytest.raises(OAuthStorageRevokedError):
+            asyncio.run(old_storage.set_tokens(old_token))
+        assert not old_storage._tokens_path().exists()
+
+    def test_rollback_does_not_overwrite_concurrent_success(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        original = HermesTokenStorage("team")
+        old_token = MagicMock()
+        old_token.model_dump.return_value = {
+            "access_token": "old-token",
+            "token_type": "Bearer",
+        }
+        asyncio.run(original.set_tokens(old_token))
+        snapshot = original.snapshot()
+        original.remove()
+
+        successful = HermesTokenStorage("team")
+        new_token = MagicMock()
+        new_token.model_dump.return_value = {
+            "access_token": "new-token",
+            "token_type": "Bearer",
+        }
+        asyncio.run(successful.set_tokens(new_token))
+
+        original.restore(snapshot, only_if_absent=True)
+
+        assert json.loads(successful._tokens_path().read_text())["access_token"] == "new-token"
+
+    def test_rollback_replaces_failed_attempt_auxiliary_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        original = HermesTokenStorage("team")
+        original._tokens_path().parent.mkdir(parents=True, exist_ok=True)
+        original._tokens_path().write_bytes(b"OLD-TOKEN")
+        original._client_info_path().write_bytes(b"OLD-CLIENT")
+        snapshot = original.snapshot()
+        original.remove()
+
+        failed_attempt = HermesTokenStorage("team")
+        failed_attempt._client_info_path().write_bytes(b"FAILED-CLIENT")
+        failed_attempt._meta_path().write_bytes(b"FAILED-METADATA")
+
+        original.restore(snapshot, only_if_absent=True)
+
+        assert original._tokens_path().read_bytes() == b"OLD-TOKEN"
+        assert original._client_info_path().read_bytes() == b"OLD-CLIENT"
+        assert not original._meta_path().exists()
+
+    def test_permanent_removal_tombstone_blocks_stale_restore(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("team")
+        token = MagicMock()
+        token.model_dump.return_value = {
+            "access_token": "OLD",
+            "token_type": "Bearer",
+        }
+        asyncio.run(storage.set_tokens(token))
+        snapshot = storage.snapshot()
+        storage.remove(permanent=True)
+
+        with pytest.raises(OAuthStorageRevokedError):
+            storage.restore(snapshot)
+
+        assert not storage._tokens_path().exists()
+
     def test_roundtrip_tokens(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         storage = HermesTokenStorage("test-server")
@@ -1057,8 +1334,14 @@ class TestPoisonClientRegistration:
         assert not (d / "srv.meta.json").exists()
         # Backup of the client file kept for recovery.
         assert (d / "srv.client.json.bak").read_text() == '{"client_id": "dead"}'
+        if not sys.platform.startswith("win"):
+            assert stat.S_IMODE((d / "srv.client.json.bak").stat().st_mode) == 0o600
         # Tokens are intentionally preserved.
         assert (d / "srv.json").read_text() == '{"access_token": "keep-me"}'
+
+        storage.remove()
+
+        assert not (d / "srv.client.json.bak").exists()
 
 
 def test_wait_for_callback_port_in_use_reports_clear_error(monkeypatch):

@@ -85,6 +85,18 @@ def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
     return servers
 
 
+def _oauth_storage_identity(entry: dict) -> tuple:
+    oauth = entry.get("oauth")
+    oauth_identity = dict(oauth) if isinstance(oauth, dict) else {}
+    oauth_identity.pop("share_with_profiles", None)
+    return (
+        entry.get("url"),
+        entry.get("auth"),
+        entry.get("transport"),
+        oauth_identity,
+    )
+
+
 def _save_mcp_server(name: str, server_config: dict) -> bool:
     """Add or update a server entry in config.yaml.
 
@@ -99,8 +111,25 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
         _warning(f"Server '{name}' was NOT saved due to suspicious configuration.")
         return False
     config = load_config()
+    previous = _get_mcp_servers(config).get(name)
+    if (
+        isinstance(previous, dict)
+        and previous.get("auth") == "oauth"
+        and _oauth_storage_identity(previous) != _oauth_storage_identity(server_config)
+    ):
+        from tools.mcp_oauth_manager import get_manager
+
+        # Revoke under the OLD config so a prior shared pool is resolved
+        # correctly even when no provider is currently cached.
+        get_manager().remove(name)
     config.setdefault("mcp_servers", {})[name] = server_config
     save_config(config)
+    try:
+        from tools.mcp_oauth_manager import get_manager
+
+        get_manager().unblock(name)
+    except Exception:
+        pass
     return True
 
 
@@ -115,6 +144,17 @@ def _remove_mcp_server(name: str) -> bool:
         config.pop("mcp_servers", None)
     save_config(config)
     return True
+
+
+def _remove_mcp_server_with_oauth(name: str) -> bool:
+    """Remove config and its pinned OAuth pool as one governed lifecycle."""
+    if name not in _get_mcp_servers():
+        return False
+    from tools.mcp_oauth_manager import get_manager
+
+    # Resolve/revoke while config still identifies a shared root pool.
+    get_manager().remove(name, block_rebuild=True)
+    return _remove_mcp_server(name)
 
 
 def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
@@ -142,11 +182,47 @@ def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
         return False, issues
 
     config = load_config()
+    existing = _get_mcp_servers(config)
+    removed_oauth = [
+        name
+        for name, entry in existing.items()
+        if name not in servers
+        and isinstance(entry, dict)
+        and entry.get("auth") == "oauth"
+    ]
+    if removed_oauth:
+        from tools.mcp_oauth_manager import get_manager
+
+        manager = get_manager()
+        for name in removed_oauth:
+            manager.remove(name, block_rebuild=True)
+    changed_oauth = [
+        name
+        for name, entry in existing.items()
+        if name in servers
+        and isinstance(entry, dict)
+        and entry.get("auth") == "oauth"
+        and _oauth_storage_identity(entry) != _oauth_storage_identity(servers[name])
+    ]
+    if changed_oauth:
+        from tools.mcp_oauth_manager import get_manager
+
+        manager = get_manager()
+        for name in changed_oauth:
+            manager.remove(name)
     if servers:
         config["mcp_servers"] = dict(servers)
     else:
         config.pop("mcp_servers", None)
     save_config(config)
+    try:
+        from tools.mcp_oauth_manager import get_manager
+
+        manager = get_manager()
+        for name in servers:
+            manager.unblock(name)
+    except Exception:
+        pass
     return True, []
 
 
@@ -413,8 +489,9 @@ def _oauth_tokens_present(name: str) -> bool:
         return HermesTokenStorage(name).has_cached_tokens()
     except Exception as exc:  # pragma: no cover — defensive
         logger.debug("Could not check OAuth tokens for '%s': %s", name, exc)
-        # Be permissive on unexpected errors: don't block a real success.
-        return True
+        # Authentication proof is fail-closed: an unreadable/revoked pool is
+        # not evidence that a usable token exists.
+        return False
 
 
 def _unwrap_exception_group(exc: BaseException) -> Exception:
@@ -658,18 +735,16 @@ def cmd_mcp_remove(args):
         _info("Cancelled.")
         return
 
-    _remove_mcp_server(name)
-    _success(f"Removed '{name}' from config")
-
-    # Clean up OAuth tokens if they exist — route through MCPOAuthManager so
-    # any provider instance cached in the current process (e.g. from an
-    # earlier `hermes mcp test` in the same session) is evicted too.
     try:
-        from tools.mcp_oauth_manager import get_manager
-        get_manager().remove(name)
-        _success("Cleaned up OAuth tokens")
-    except Exception:
-        pass
+        removed = _remove_mcp_server_with_oauth(name)
+    except Exception as exc:
+        _error(f"Could not clean up OAuth state for '{name}': {exc}")
+        return
+    if not removed:
+        _error(f"Server '{name}' was removed concurrently; no changes made")
+        return
+    _success(f"Removed '{name}' from config")
+    _success("Cleaned up OAuth tokens")
 
 
 # ─── hermes mcp list ──────────────────────────────────────────────────────────
@@ -824,11 +899,24 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
         _info("Use `hermes mcp remove` + `hermes mcp add` to reconfigure auth.")
         return False
 
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import get_manager
+
+    manager = get_manager()
+    manager.unblock(name)
+    storage = HermesTokenStorage(name)
+    prior_state = storage.snapshot()
+
+    def _restore_prior_state() -> None:
+        # Drop the failed attempt's provider and restore only if no concurrent
+        # authorization has already written newer state.
+        manager.evict(name)
+        storage.restore(prior_state, only_if_absent=True)
+
     # Wipe both disk and in-memory cache so the next probe forces a fresh
     # OAuth flow.
     try:
-        from tools.mcp_oauth_manager import get_manager
-        get_manager().remove(name)
+        manager.remove(name)
     except Exception as exc:
         _warning(f"Could not clear existing OAuth state: {exc}")
 
@@ -888,6 +976,7 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
             print(color("          client_secret: \"<your-oauth-client-secret>\"", Colors.DIM))
             print()
             _info("Then re-run `hermes mcp login " + name + "`.")
+            _restore_prior_state()
             return False
         if tools:
             _success(f"Authenticated — {len(tools)} tool(s) available")
@@ -904,6 +993,7 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
         except Exception:
             humanized = None
         _error(f"Authentication failed: {humanized or exc}")
+        _restore_prior_state()
         return False
 
 

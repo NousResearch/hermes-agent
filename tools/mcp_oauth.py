@@ -44,6 +44,7 @@ Configuration in config.yaml::
 
 import asyncio
 import contextvars
+import hashlib
 import json
 import logging
 import os
@@ -189,21 +190,129 @@ _USER_SKIPPED_SENTINEL = "__hermes_user_skipped__"
 # ---------------------------------------------------------------------------
 
 
-def _get_token_dir(hermes_home: str | Path | None = None) -> Path:
+def _load_mcp_server_config(home: Path, server_name: str) -> dict[str, Any] | None:
+    """Read one raw MCP server entry without inheriting profile config."""
+    try:
+        import yaml
+    except ImportError:
+        return None
+
+    try:
+        data = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, yaml.YAMLError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    servers = data.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return None
+    entry = servers.get(server_name)
+    return entry if isinstance(entry, dict) else None
+
+
+def _contains_config_reference(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(re.search(r"\${[^}]+}", value))
+    if isinstance(value, dict):
+        return any(_contains_config_reference(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_config_reference(item) for item in value)
+    return False
+
+
+def _shared_server_identity(entry: dict[str, Any]) -> tuple[Any, ...] | None:
+    """Return a fail-closed identity for one shareable OAuth server entry."""
+    url = entry.get("url")
+    auth = entry.get("auth")
+    if not isinstance(url, str) or auth != "oauth" or _contains_config_reference(url):
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+
+    oauth = entry.get("oauth")
+    if oauth is None:
+        oauth_identity: dict[str, Any] = {}
+    elif isinstance(oauth, dict):
+        oauth_identity = {
+            key: value
+            for key, value in oauth.items()
+            if key != "share_with_profiles"
+        }
+    else:
+        return None
+    if _contains_config_reference(oauth_identity):
+        return None
+
+    transport = entry.get("transport")
+    if _contains_config_reference(transport):
+        return None
+
+    return (url, auth, transport, oauth_identity)
+
+
+def _shared_token_home(active_home: Path, server_name: str) -> Path:
+    """Resolve an explicitly exported root OAuth pool for a named profile."""
+    if active_home.parent.name != "profiles":
+        return active_home
+
+    root_home = active_home.parent.parent
+    root_entry = _load_mcp_server_config(root_home, server_name)
+    profile_entry = _load_mcp_server_config(active_home, server_name)
+    if root_entry is None or profile_entry is None:
+        return active_home
+
+    oauth = root_entry.get("oauth")
+    if not isinstance(oauth, dict) or oauth.get("share_with_profiles") is not True:
+        return active_home
+
+    root_identity = _shared_server_identity(root_entry)
+    profile_identity = _shared_server_identity(profile_entry)
+    if root_identity is None or root_identity != profile_identity:
+        logger.warning(
+            "MCP OAuth '%s': root token pool export ignored because profile OAuth identity "
+            "differs or contains a dynamic config reference",
+            server_name,
+        )
+        return active_home
+
+    return root_home
+
+
+def _get_token_dir(
+    hermes_home: str | Path | None = None,
+    *,
+    server_name: str | None = None,
+) -> Path:
     """Return the directory for MCP OAuth token files.
 
-    Uses HERMES_HOME so each profile gets its own OAuth tokens.
+    Profiles use isolated storage by default. A root profile may explicitly
+    export one matching MCP server's token pool with
+    ``oauth.share_with_profiles: true``; no other config is inherited.
     Layout: ``HERMES_HOME/mcp-tokens/``
     """
     from hermes_constants import get_hermes_home
 
     base = Path(hermes_home) if hermes_home is not None else Path(get_hermes_home())
+    if server_name is not None:
+        base = _shared_token_home(base, server_name)
     return base / "mcp-tokens"
 
 
 def _safe_filename(name: str) -> str:
-    """Sanitize a server name for use as a filename (no path separators)."""
-    return re.sub(r"[^\w\-]", "_", name).strip("_")[:128] or "default"
+    """Return a collision-resistant filename component for a server name.
+
+    Existing simple names retain their historical paths. Names requiring
+    sanitization receive a digest of the original value so e.g. ``a/b`` and
+    ``a_b`` can never share OAuth credentials.
+    """
+    if re.fullmatch(r"[\w-]{1,128}", name) and name.strip("_"):
+        return name
+    stem = re.sub(r"[^\w-]", "_", name).strip("_") or "default"
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
+    # ``~`` is deliberately outside the accepted safe-name alphabet, so no
+    # already-safe server name can impersonate this encoded namespace.
+    return f"~u~{stem[:111]}-{digest}"
 
 
 def _find_free_port() -> int:
@@ -283,8 +392,8 @@ def _cached_redirect_port(storage: "HermesTokenStorage | None") -> int | None:
         return None
 
     try:
-        data = _read_json(storage._client_info_path())
-    except (AttributeError, TypeError, ValueError):
+        data = storage.read_client_info_data()
+    except (AttributeError, RuntimeError, TypeError, ValueError):
         return None
     if not data:
         return None
@@ -309,8 +418,8 @@ def _cached_redirect_uri(storage: "HermesTokenStorage | None") -> str | None:
     if storage is None:
         return None
     try:
-        data = _read_json(storage._client_info_path())
-    except (AttributeError, TypeError, ValueError):
+        data = storage.read_client_info_data()
+    except (AttributeError, RuntimeError, TypeError, ValueError):
         return None
     for uri in (data or {}).get("redirect_uris") or []:
         try:
@@ -448,6 +557,77 @@ def _write_json(path: Path, data: dict) -> None:
         raise
 
 
+def _write_bytes(path: Path, data: bytes) -> None:
+    """Atomically write sensitive bytes with owner-only permissions."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    secure_parent_dir(path)
+    tmp = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
+    try:
+        fd = os.open(
+            str(tmp),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            stat.S_IRUSR | stat.S_IWUSR,
+        )
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+_oauth_state_locks: dict[str, threading.RLock] = {}
+_oauth_state_locks_guard = threading.Lock()
+
+
+@contextmanager
+def _exclusive_oauth_state_lock(path: Path):
+    """Serialize one OAuth pool across threads and local processes."""
+    key = str(path.expanduser().resolve(strict=False))
+    with _oauth_state_locks_guard:
+        thread_lock = _oauth_state_locks.setdefault(key, threading.RLock())
+    with thread_lock:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        secure_parent_dir(path)
+        fd = os.open(
+            str(path),
+            os.O_RDWR | os.O_CREAT,
+            stat.S_IRUSR | stat.S_IWUSR,
+        )
+        with os.fdopen(fd, "r+b", buffering=0) as handle:
+            if os.fstat(handle.fileno()).st_size == 0:
+                handle.write(b"\0")
+                handle.flush()
+                os.fsync(handle.fileno())
+            handle.seek(0)
+            if sys.platform == "win32":  # pragma: no cover - Windows CI
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                if sys.platform == "win32":  # pragma: no cover - Windows CI
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+class OAuthStorageRevokedError(RuntimeError):
+    """Raised when a superseded provider attempts to rewrite OAuth state."""
+
+
 # ---------------------------------------------------------------------------
 # HermesTokenStorage -- persistent token/client-info on disk
 # ---------------------------------------------------------------------------
@@ -464,26 +644,110 @@ class HermesTokenStorage:
         HERMES_HOME/mcp-tokens/<server_name>.cimd-off      -- CIMD refused here
     """
 
-    def __init__(self, server_name: str, *, hermes_home: str | Path | None = None):
+    def __init__(
+        self,
+        server_name: str,
+        *,
+        hermes_home: str | Path | None = None,
+        token_dir: str | Path | None = None,
+    ):
+        from hermes_constants import get_hermes_home
+
+        self._config_server_name = server_name
         self._server_name = _safe_filename(server_name)
-        self._hermes_home = Path(hermes_home) if hermes_home is not None else None
+        self._hermes_home = (
+            Path(hermes_home) if hermes_home is not None else Path(get_hermes_home())
+        )
+        # Resolve once. A live provider must not switch credential stores
+        # midway through a request because its profile config changed.
+        self._token_dir = (
+            Path(token_dir)
+            if token_dir is not None
+            else _get_token_dir(
+                self._hermes_home,
+                server_name=self._config_server_name,
+            )
+        )
+        self._state_lock_path = self._token_dir / f".{self._server_name}.lock"
+        self._generation_path = self._token_dir / f".{self._server_name}.generation.json"
+        self._blocked_path = self._token_dir / f".{self._server_name}.blocked.json"
+        self._generation: str | None = None
+        self._revoked = False
+
+    def revoke_instance(self) -> None:
+        """Prevent this provider instance from touching its pool again."""
+        self._revoked = True
+
+    def _assert_current_generation_locked(self) -> None:
+        if self._revoked:
+            raise OAuthStorageRevokedError(
+                f"OAuth storage for '{self._config_server_name}' was detached"
+            )
+        if self._blocked_path.exists():
+            raise OAuthStorageRevokedError(
+                f"OAuth storage for '{self._config_server_name}' was removed"
+            )
+        generation = _read_json(self._generation_path)
+        generation_id = generation.get("id") if isinstance(generation, dict) else None
+        if self._generation is None:
+            if not isinstance(generation_id, str) or not generation_id:
+                generation_id = secrets.token_hex(16)
+                _write_json(self._generation_path, {"id": generation_id})
+            self._generation = generation_id
+            return
+        if generation_id != self._generation:
+            raise OAuthStorageRevokedError(
+                f"OAuth storage for '{self._config_server_name}' was superseded"
+            )
+
+    def _rotate_generation_locked(self) -> None:
+        self._generation = secrets.token_hex(16)
+        _write_json(self._generation_path, {"id": self._generation})
+
+    def _client_backup_path(self) -> Path:
+        client_path = self._client_info_path()
+        return client_path.with_name(client_path.name + ".bak")
+
+    def _state_paths(self) -> tuple[Path, ...]:
+        return (
+            self._tokens_path(),
+            self._client_info_path(),
+            self._meta_path(),
+            self._cimd_rejected_path(),
+            self._client_backup_path(),
+        )
+
+    def _remove_files_locked(self) -> None:
+        for path in self._state_paths():
+            path.unlink(missing_ok=True)
+
+    def unblock_rebuild(self) -> None:
+        """Clear the tombstone after an explicit re-add or reauthorization."""
+        with _exclusive_oauth_state_lock(self._state_lock_path):
+            self._blocked_path.unlink(missing_ok=True)
+
+    def rebuild_blocked(self) -> bool:
+        with _exclusive_oauth_state_lock(self._state_lock_path):
+            return self._blocked_path.exists()
 
     def _tokens_path(self) -> Path:
-        return _get_token_dir(self._hermes_home) / f"{self._server_name}.json"
+        return self._token_dir / f"{self._server_name}.json"
 
     def _client_info_path(self) -> Path:
-        return _get_token_dir(self._hermes_home) / f"{self._server_name}.client.json"
+        return self._token_dir / f"{self._server_name}.client.json"
 
     def _meta_path(self) -> Path:
-        return _get_token_dir(self._hermes_home) / f"{self._server_name}.meta.json"
+        return self._token_dir / f"{self._server_name}.meta.json"
 
     def _cimd_rejected_path(self) -> Path:
-        return _get_token_dir(self._hermes_home) / f"{self._server_name}.cimd-off"
+        return self._token_dir / f"{self._server_name}.cimd-off"
 
     # -- tokens ------------------------------------------------------------
 
     async def get_tokens(self) -> "OAuthToken | None":
-        data = _read_json(self._tokens_path())
+        with _exclusive_oauth_state_lock(self._state_lock_path):
+            self._assert_current_generation_locked()
+            data = _read_json(self._tokens_path())
         if data is None:
             return None
         if OAuthToken is None and not _ensure_sdk_loaded():
@@ -540,13 +804,72 @@ class HermesTokenStorage:
                 # Mock tokens or unusual shapes: skip the expires_at write
                 # rather than fail persistence.
                 pass
-        _write_json(self._tokens_path(), payload)
+        with _exclusive_oauth_state_lock(self._state_lock_path):
+            self._assert_current_generation_locked()
+            _write_json(self._tokens_path(), payload)
         logger.debug("OAuth tokens saved for %s", self._server_name)
 
     # -- client info -------------------------------------------------------
 
+    def read_client_info_data(self) -> dict | None:
+        """Read raw client registration under the pool generation lock."""
+        with _exclusive_oauth_state_lock(self._state_lock_path):
+            self._assert_current_generation_locked()
+            return _read_json(self._client_info_path())
+
+    def has_cached_client_info(self) -> bool:
+        return self.read_client_info_data() is not None
+
+    @staticmethod
+    def _client_identity(data: dict | None) -> tuple[Any, Any]:
+        if not isinstance(data, dict):
+            return (None, None)
+        return (data.get("client_id"), data.get("client_secret") or None)
+
+    def invalidate_tokens_for_client_change(
+        self,
+        new_client_id: str,
+        new_client_secret: str | None,
+    ) -> bool:
+        """Atomically revoke token/metadata when OAuth client identity changes."""
+        with _exclusive_oauth_state_lock(self._state_lock_path):
+            self._assert_current_generation_locked()
+            existing = _read_json(self._client_info_path())
+            old_identity = self._client_identity(existing)
+            if old_identity[0] is None or old_identity == (
+                new_client_id,
+                new_client_secret or None,
+            ):
+                return False
+            removed = False
+            for path in (self._tokens_path(), self._meta_path()):
+                if path.exists():
+                    path.unlink()
+                    removed = True
+            return removed
+
+    def save_preregistered_client_info(
+        self,
+        client_info: Any,
+    ) -> bool:
+        """Atomically revoke stale tokens and install configured client info."""
+        data = client_info.model_dump(mode="json", exclude_none=True)
+        new_identity = self._client_identity(data)
+        with _exclusive_oauth_state_lock(self._state_lock_path):
+            self._assert_current_generation_locked()
+            existing = _read_json(self._client_info_path())
+            old_identity = self._client_identity(existing)
+            removed = False
+            if old_identity[0] is not None and old_identity != new_identity:
+                for path in (self._tokens_path(), self._meta_path()):
+                    if path.exists():
+                        path.unlink()
+                        removed = True
+            _write_json(self._client_info_path(), data)
+            return removed
+
     async def get_client_info(self) -> "OAuthClientInformationFull | None":
-        data = _read_json(self._client_info_path())
+        data = self.read_client_info_data()
         if data is None:
             return None
         if OAuthClientInformationFull is None and not _ensure_sdk_loaded():
@@ -562,7 +885,12 @@ class HermesTokenStorage:
             if getattr(info, "client_secret", None) and data.get("token_endpoint_auth_method") in (None, "none", ""):
                 data["token_endpoint_auth_method"] = "client_secret_post"
                 info = OAuthClientInformationFull.model_validate(data)
-                _write_json(self._client_info_path(), info.model_dump(mode="json", exclude_none=True))
+                with _exclusive_oauth_state_lock(self._state_lock_path):
+                    self._assert_current_generation_locked()
+                    _write_json(
+                        self._client_info_path(),
+                        info.model_dump(mode="json", exclude_none=True),
+                    )
             return info
         except (ValueError, TypeError, KeyError) as exc:
             logger.warning("Corrupt client info at %s -- ignoring: %s", self._client_info_path(), exc)
@@ -577,7 +905,9 @@ class HermesTokenStorage:
         # so this flow and subsequent retries use client_secret_post.
         if data.get("client_secret") and data.get("token_endpoint_auth_method") in (None, "none", ""):
             data["token_endpoint_auth_method"] = "client_secret_post"
-        _write_json(self._client_info_path(), data)
+        with _exclusive_oauth_state_lock(self._state_lock_path):
+            self._assert_current_generation_locked()
+            _write_json(self._client_info_path(), data)
         logger.debug("OAuth client info saved for %s", self._server_name)
 
     # -- oauth server metadata --------------------------------------------
@@ -589,11 +919,18 @@ class HermesTokenStorage:
     # forces a full browser re-authorization.
 
     def save_oauth_metadata(self, metadata: "OAuthMetadata") -> None:
-        _write_json(self._meta_path(), metadata.model_dump(exclude_none=True, mode="json"))
+        with _exclusive_oauth_state_lock(self._state_lock_path):
+            self._assert_current_generation_locked()
+            _write_json(
+                self._meta_path(),
+                metadata.model_dump(exclude_none=True, mode="json"),
+            )
         logger.debug("OAuth metadata saved for %s", self._server_name)
 
     def load_oauth_metadata(self) -> "OAuthMetadata | None":
-        data = _read_json(self._meta_path())
+        with _exclusive_oauth_state_lock(self._state_lock_path):
+            self._assert_current_generation_locked()
+            data = _read_json(self._meta_path())
         if data is None:
             return None
         if OAuthMetadata is None and not _ensure_sdk_loaded():
@@ -617,70 +954,77 @@ class HermesTokenStorage:
         """
         path = self._cimd_rejected_path()
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.touch()
+            with _exclusive_oauth_state_lock(self._state_lock_path):
+                self._assert_current_generation_locked()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch()
         except OSError as exc:  # non-fatal — worst case we retry CIMD later
             logger.debug("Could not record CIMD rejection at %s: %s", path, exc)
 
     def cimd_rejected(self) -> bool:
         """True when this server has refused our metadata document before."""
-        return self._cimd_rejected_path().exists()
+        with _exclusive_oauth_state_lock(self._state_lock_path):
+            self._assert_current_generation_locked()
+            return self._cimd_rejected_path().exists()
 
     # -- cleanup -----------------------------------------------------------
 
-    def remove(self) -> None:
-        """Delete all stored OAuth state for this server."""
-        for p in (
-            self._tokens_path(),
-            self._client_info_path(),
-            self._meta_path(),
-            self._cimd_rejected_path(),
-        ):
-            p.unlink(missing_ok=True)
+    def remove(self, *, permanent: bool = False) -> None:
+        """Delete OAuth state; optionally tombstone the pool atomically."""
+        with _exclusive_oauth_state_lock(self._state_lock_path):
+            self._rotate_generation_locked()
+            self._remove_files_locked()
+            if permanent:
+                _write_json(self._blocked_path, {"blocked": True})
 
     def snapshot(self) -> dict[str, bytes]:
         """Capture on-disk OAuth state so a failed re-auth can restore it.
 
-        Maps filename -> bytes for whichever of the three state files exist.
+        Maps filename -> bytes for whichever OAuth state files exist.
         Feed back to ``restore()`` to undo an intervening ``remove()`` when a
         re-authentication attempt fails, so a still-valid token isn't destroyed.
         """
         snap: dict[str, bytes] = {}
-        for p in (self._tokens_path(), self._client_info_path(), self._meta_path()):
-            try:
-                snap[p.name] = p.read_bytes()
-            except OSError:
-                pass
+        with _exclusive_oauth_state_lock(self._state_lock_path):
+            self._assert_current_generation_locked()
+            for path in self._state_paths():
+                try:
+                    snap[path.name] = path.read_bytes()
+                except OSError:
+                    pass
         return snap
 
     def restore(self, snapshot: dict[str, bytes], *, only_if_absent: bool = False) -> None:
         """Revert to a snapshot without overwriting a concurrent successful write."""
-        if only_if_absent and any(
-            path.exists()
-            for path in (self._tokens_path(), self._client_info_path(), self._meta_path())
-        ):
-            logger.info(
-                "Skipping OAuth rollback for %s because newer state exists",
-                self._server_name,
-            )
-            return
-        self.remove()
-        if not snapshot:
-            return
-        token_dir = _get_token_dir(self._hermes_home)
-        token_dir.mkdir(parents=True, exist_ok=True)
-        for fname, data in snapshot.items():
-            path = token_dir / fname
-            try:
-                fd = os.open(
-                    str(path),
-                    os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-                    stat.S_IRUSR | stat.S_IWUSR,
+        with _exclusive_oauth_state_lock(self._state_lock_path):
+            # A reauth rollback is allowed to cross the generation rotation
+            # caused by its own reset. It must never cross a permanent-removal
+            # tombstone or revive a provider instance explicitly detached from
+            # a shared pool.
+            if self._revoked or self._blocked_path.exists():
+                raise OAuthStorageRevokedError(
+                    f"OAuth storage for '{self._config_server_name}' cannot be restored"
                 )
-                with os.fdopen(fd, "wb") as fh:
-                    fh.write(data)
-            except OSError as exc:
-                logger.warning("Failed to restore OAuth state %s: %s", fname, exc)
+            # Only a token commit proves a newer authorization succeeded.
+            # Failed attempts commonly leave client/meta files behind; those
+            # must not suppress restoration of the previous valid token.
+            if only_if_absent and self._tokens_path().exists():
+                logger.info(
+                    "Skipping OAuth rollback for %s because a newer token exists",
+                    self._server_name,
+                )
+                return
+            self._rotate_generation_locked()
+            self._remove_files_locked()
+            if not snapshot:
+                return
+            self._token_dir.mkdir(parents=True, exist_ok=True)
+            for fname, data in snapshot.items():
+                path = self._token_dir / fname
+                try:
+                    _write_bytes(path, data)
+                except OSError as exc:
+                    logger.warning("Failed to restore OAuth state %s: %s", fname, exc)
 
     def poison_client_registration(self) -> bool:
         """Discard a dead dynamically-registered client so it gets re-created.
@@ -700,16 +1044,18 @@ class HermesTokenStorage:
         A single ``.bak`` copy of the client file is kept for recovery.
         Returns True if a client file was present and removed.
         """
-        client_path = self._client_info_path()
-        if not client_path.exists():
-            return False
-        backup = client_path.with_name(client_path.name + ".bak")
-        try:
-            backup.write_bytes(client_path.read_bytes())
-        except OSError as exc:  # non-fatal — proceed with the removal anyway
-            logger.warning("Could not back up client info at %s: %s", client_path, exc)
-        client_path.unlink(missing_ok=True)
-        self._meta_path().unlink(missing_ok=True)
+        with _exclusive_oauth_state_lock(self._state_lock_path):
+            self._assert_current_generation_locked()
+            client_path = self._client_info_path()
+            if not client_path.exists():
+                return False
+            backup = self._client_backup_path()
+            try:
+                _write_bytes(backup, client_path.read_bytes())
+            except OSError as exc:  # non-fatal — proceed with the removal anyway
+                logger.warning("Could not back up client info at %s: %s", client_path, exc)
+            client_path.unlink(missing_ok=True)
+            self._meta_path().unlink(missing_ok=True)
         logger.warning(
             "MCP OAuth '%s': cached client registration rejected as invalid_client; "
             "removed client.json + meta.json (backup at %s) to force re-registration",
@@ -719,7 +1065,9 @@ class HermesTokenStorage:
 
     def has_cached_tokens(self) -> bool:
         """Return True if we have tokens on disk (may be expired)."""
-        return self._tokens_path().exists()
+        with _exclusive_oauth_state_lock(self._state_lock_path):
+            self._assert_current_generation_locked()
+            return self._tokens_path().exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1408,8 +1756,8 @@ def _has_cached_client_info(storage: "HermesTokenStorage | None") -> bool:
     if storage is None:
         return False
     try:
-        return _read_json(storage._client_info_path()) is not None
-    except (AttributeError, TypeError, ValueError):
+        return storage.has_cached_client_info()
+    except (AttributeError, RuntimeError, TypeError, ValueError):
         return False
 
 
@@ -1429,7 +1777,7 @@ def _server_declined_cimd(storage: "HermesTokenStorage | None") -> bool:
         return False
     try:
         metadata = storage.load_oauth_metadata()
-    except (AttributeError, TypeError, ValueError):
+    except (AttributeError, RuntimeError, TypeError, ValueError):
         return False
     if metadata is None:
         return False
@@ -1758,34 +2106,16 @@ def _invalidate_tokens_on_client_change(
     Port of cline/cline#12983's "invalidate tokens when OAuth client
     changes" invariant.
     """
-    existing = _read_json(storage._client_info_path())
-    if not isinstance(existing, dict):
-        return
-    old_client_id = existing.get("client_id")
-    if not old_client_id:
-        return
-    old_client_secret = existing.get("client_secret") or None
-    if old_client_id == new_client_id and old_client_secret == (
-        new_client_secret or None
-    ):
-        return
-    removed = False
-    for path in (storage._tokens_path(), storage._meta_path()):
-        try:
-            if path.exists():
-                path.unlink()
-                removed = True
-        except OSError as exc:  # non-fatal — stale tokens fail later anyway
-            logger.warning(
-                "MCP OAuth '%s': could not remove stale %s after client "
-                "change: %s", storage._server_name, path.name, exc,
-            )
+    removed = storage.invalidate_tokens_for_client_change(
+        new_client_id,
+        new_client_secret,
+    )
     if removed:
         logger.warning(
-            "MCP OAuth '%s': configured OAuth client changed (client_id %r "
-            "-> %r); discarded tokens minted under the previous client. "
+            "MCP OAuth '%s': configured OAuth client changed to %r; discarded "
+            "tokens minted under the previous client. "
             "Re-authorize with: hermes mcp login %s",
-            storage._server_name, old_client_id, new_client_id,
+            storage._server_name, new_client_id,
             storage._server_name,
         )
 
@@ -1801,9 +2131,7 @@ def _maybe_preregister_client(
         return
     if OAuthClientInformationFull is None:
         _ensure_sdk_loaded()
-    _invalidate_tokens_on_client_change(
-        storage, client_id, cfg.get("client_secret")
-    )
+
     port = cfg["_resolved_port"]
     redirect_uri = _resolve_redirect_uri(cfg, port)
 
@@ -1822,7 +2150,13 @@ def _maybe_preregister_client(
         info_dict["scope"] = cfg["scope"]
 
     client_info = OAuthClientInformationFull.model_validate(info_dict)
-    _write_json(storage._client_info_path(), client_info.model_dump(mode="json", exclude_none=True))
+    removed = storage.save_preregistered_client_info(client_info)
+    if removed:
+        logger.warning(
+            "MCP OAuth '%s': configured OAuth client changed; discarded tokens "
+            "minted under the previous client",
+            storage._server_name,
+        )
     logger.debug("Pre-registered client_id=%s for '%s'", client_id, storage._server_name)
 
 

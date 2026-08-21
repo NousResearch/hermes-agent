@@ -264,6 +264,35 @@ mcp_servers:
 
 On first connect, Hermes prints an authorize URL, opens your browser when possible, and waits for the OAuth callback on a local loopback port. Tokens are cached at `~/.hermes/mcp-tokens/<server>.json` with 0o600 perms; subsequent runs reuse them silently until refresh fails.
 
+#### Share one OAuth grant with named profiles (opt-in)
+
+Named profiles keep separate MCP OAuth grants by default. To let profiles use
+one root-owned grant for a specific server, export that server's token pool in
+the **root** `~/.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  atlassian:
+    url: "https://mcp.atlassian.com/v1/mcp/authv2"
+    auth: oauth
+    oauth:
+      share_with_profiles: true
+```
+
+Each consuming profile must still configure the same server name, literal URL,
+`auth: oauth`, transport, and OAuth client settings. Hermes shares only the
+OAuth files for that exact matching server; it does not inherit any other root
+config. Mismatches and dynamic `${...}` references stay profile-local and emit
+a warning.
+
+The root profile owns the shared grant. Re-authenticating or removing that MCP
+from any participating profile updates the same root token pool for every
+participant. Enable this only for profiles in the same operator and trust
+boundary. Shared-pool writes are serialized across local processes, and removal
+revokes older provider instances so a concurrent refresh cannot resurrect the
+deleted grant. If reauthorization fails, Hermes restores the prior grant only
+when no newer authorization has already succeeded.
+
 **Remote / headless hosts.** When Hermes runs on a different machine than your browser, the loopback callback can't reach your laptop. Two ways to complete the flow:
 
 - **Paste-back (no setup):** on an interactive terminal Hermes prints "Or paste the redirect URL here…" alongside the authorize URL. Open the URL in your browser, approve, copy the full URL the browser ends up on (the redirect will show a connection error — that's expected), paste it at the prompt. Bare `?code=…&state=…` query strings work too.

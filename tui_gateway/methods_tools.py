@@ -2264,9 +2264,9 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from hermes_cli.mcp_config import _remove_mcp_server
+        from hermes_cli.mcp_config import _remove_mcp_server_with_oauth
 
-        removed = _remove_mcp_server(name)
+        removed = _remove_mcp_server_with_oauth(name)
         if not removed:
             return _err(rid, 4064, f"server '{name}' not found")
         return _ok(rid, {"ok": True, "removed": True})

@@ -337,6 +337,33 @@ Behavior:
 - Token refresh is automatic; re-authorization only happens when refresh fails
 - Only applies to HTTP/StreamableHTTP transport (`url`-based servers)
 
+### Root-owned token pools for named profiles
+
+OAuth state is profile-local by default. The root profile can explicitly share
+one server's OAuth grant with named profiles:
+
+```yaml
+mcp_servers:
+  protected_api:
+    url: "https://mcp.example.com/mcp"
+    auth: oauth
+    oauth:
+      share_with_profiles: true
+```
+
+`share_with_profiles` is honored only from the root config. A named profile
+uses the root token pool only when it also defines the same server name,
+literal URL, `auth: oauth`, transport, and OAuth client settings. Mismatches or
+dynamic `${...}` references keep that profile isolated and produce a warning.
+No other root settings are inherited.
+
+Shared grants are one credential lifecycle: login, refresh, and removal from
+any participating profile affect every participant. Use this only for profiles
+inside the same trust boundary. Hermes serializes shared-pool updates across
+threads and local processes; removal revokes older provider instances so an
+in-flight refresh cannot recreate deleted credentials. A failed reauthorization
+restores the previous state only when no newer authorization has succeeded.
+
 ### Client identification: CIMD and DCR
 
 Hermes identifies itself to authorization servers with a **Client ID Metadata Document** (CIMD), the mechanism the MCP `2026-07-28` spec adopted in place of Dynamic Client Registration. The document is published at

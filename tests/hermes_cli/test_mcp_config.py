@@ -8,6 +8,7 @@ any actual MCP servers or API keys.
 import argparse
 import os
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -167,6 +168,102 @@ class TestMcpRemove:
 
         cmd_mcp_remove(_make_args(name="oauth-srv"))
         assert not token_file.exists()
+
+    def test_remove_cleans_root_exported_profile_tokens_before_config(self, tmp_path, monkeypatch):
+        import yaml
+
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "worker"
+        profile.mkdir(parents=True)
+        server = {
+            "url": "https://mcp.example.com/mcp",
+            "auth": "oauth",
+        }
+        (root / "config.yaml").write_text(yaml.safe_dump({
+            "mcp_servers": {
+                "shared": {
+                    **server,
+                    "oauth": {"share_with_profiles": True},
+                },
+            },
+        }))
+        (profile / "config.yaml").write_text(yaml.safe_dump({
+            "mcp_servers": {"shared": server},
+        }))
+        token_dir = root / "mcp-tokens"
+        token_dir.mkdir()
+        token_file = token_dir / "shared.json"
+        token_file.write_text("{}")
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: profile)
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: profile / "config.yaml")
+        monkeypatch.setattr("hermes_cli.mcp_config.get_hermes_home", lambda: profile)
+        monkeypatch.setattr("builtins.input", lambda _: "y")
+        from hermes_cli.mcp_config import cmd_mcp_remove
+
+        cmd_mcp_remove(_make_args(name="shared"))
+
+        assert not token_file.exists()
+        assert "shared" not in yaml.safe_load((profile / "config.yaml").read_text()).get(
+            "mcp_servers", {}
+        )
+
+
+def test_replace_mcp_servers_revokes_removed_oauth_state(tmp_path, monkeypatch):
+    _seed_config(tmp_path, {
+        "shared": {"url": "https://example.com/mcp", "auth": "oauth"},
+    })
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
+
+    reset_manager_for_tests()
+    storage = HermesTokenStorage("shared")
+    token = MagicMock()
+    token.model_dump.return_value = {
+        "access_token": "TOKEN",
+        "token_type": "Bearer",
+    }
+    import asyncio
+
+    asyncio.run(storage.set_tokens(token))
+    manager = get_manager()
+    assert manager.get_or_build_provider(
+        "shared", "https://example.com/mcp", {}
+    ) is not None
+    from hermes_cli.mcp_config import _replace_mcp_servers
+
+    assert _replace_mcp_servers({}) == (True, [])
+
+    assert not storage._tokens_path().exists()
+    assert manager._key("shared") not in manager._entries
+
+
+def test_save_changed_oauth_identity_revokes_uncached_tokens(tmp_path, monkeypatch):
+    _seed_config(tmp_path, {
+        "shared": {"url": "https://old.example/mcp", "auth": "oauth"},
+    })
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth import HermesTokenStorage
+
+    storage = HermesTokenStorage("shared")
+    token = MagicMock()
+    token.model_dump.return_value = {
+        "access_token": "OLD",
+        "token_type": "Bearer",
+    }
+    import asyncio
+
+    asyncio.run(storage.set_tokens(token))
+    from hermes_cli.mcp_config import _save_mcp_server
+
+    assert _save_mcp_server(
+        "shared",
+        {"url": "https://new.example/mcp", "auth": "oauth"},
+    ) is True
+
+    assert not storage._tokens_path().exists()
 
 
 # ---------------------------------------------------------------------------
@@ -720,6 +817,15 @@ class TestMcpLogin:
         out = capsys.readouterr().out
         assert "not found" in out
 
+    def test_token_presence_check_fails_closed_on_storage_error(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.mcp_oauth.HermesTokenStorage.has_cached_tokens",
+            lambda self: (_ for _ in ()).throw(RuntimeError("revoked")),
+        )
+        from hermes_cli.mcp_config import _oauth_tokens_present
+
+        assert _oauth_tokens_present("server") is False
+
 
     def test_login_false_success_no_token(self, tmp_path, capsys, monkeypatch):
         """Probe lists tools without auth (Google Drive), but no token landed.
@@ -750,6 +856,42 @@ class TestMcpLogin:
         assert "no OAuth token was obtained" in out
         assert "Authenticated" not in out
         assert "client_id" in out
+
+    @pytest.mark.parametrize("failure_mode", ["no-token", "exception"])
+    def test_login_failure_restores_prior_oauth_state(
+        self, tmp_path, capsys, monkeypatch, failure_mode
+    ):
+        _seed_config(tmp_path, {
+            "server": {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
+        })
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        expected = {
+            "server.json": b'{"access_token":"old"}',
+            "server.client.json": b'{"client_id":"old-client"}',
+            "server.meta.json": b'{"token_endpoint":"https://old.example/token"}',
+            "server.cimd-off": b"",
+        }
+        for name, content in expected.items():
+            (token_dir / name).write_bytes(content)
+
+        def failed_probe(name, cfg, connect_timeout=30):
+            if failure_mode == "exception":
+                raise RuntimeError("authorization failed")
+            return [("public_tool", "available without authentication")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", failed_probe
+        )
+        from hermes_cli.mcp_config import cmd_mcp_login
+
+        cmd_mcp_login(_make_args(name="server"))
+
+        out = capsys.readouterr().out
+        assert "Authenticated" not in out
+        for name, content in expected.items():
+            assert (token_dir / name).read_bytes() == content
 
     def test_login_genuine_success_with_token(self, tmp_path, capsys, monkeypatch):
         """Probe lists tools AND a token exists → report real success."""

@@ -339,7 +339,7 @@ def test_main_desktop_serve_backend_still_blocks(monkeypatch, capsys):
     assert data["pausable_gateways"] == 0
 
 def test_main_gateway_with_long_managed_runtime_path_is_exempt(monkeypatch, capsys):
-    """Regression: the detector must hand the FULL cmdline to the exemption.
+    r"""Regression: the detector must hand the FULL cmdline to the exemption.
 
     Gateways launched via the managed-runtime interpreter carry a >120-char
     exe path (`.hermes-runtime\python\generation-...\cpython-3.11-...`).

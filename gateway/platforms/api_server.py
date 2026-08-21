@@ -6978,13 +6978,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 continue
             if msg.get("role") not in {"assistant", "tool"}:
                 continue
-            if _is_compressed_summary_message(msg):
-                projected = cls._message_response(msg)
-                if projected.get("display_kind") == "hidden":
-                    continue
-                out.append(projected)
+            # _message_response projects compaction scaffolding itself and
+            # marks pure handoffs display_kind == "hidden"; classifying here
+            # first would re-run the content classifier (a full content
+            # flatten + prefix scan) a second time per message.
+            projected = cls._message_response(msg)
+            if projected.get("display_kind") == "hidden":
                 continue
-            out.append(cls._message_response(msg))
+            out.append(projected)
         return out
 
     @staticmethod

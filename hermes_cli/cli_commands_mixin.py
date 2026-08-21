@@ -2661,7 +2661,7 @@ class CLICommandsMixin:
         cross-process schedules use `hermes cron`.
         """
         from cli import _DIM, _RST, _cprint
-        from hermes_cli.heartbeat import parse_interval, format_interval
+        from hermes_cli.heartbeat import split_interval_prefix, format_interval
 
         parts = (cmd or "").strip().split(None, 1)
         arg = parts[1].strip() if len(parts) > 1 else ""
@@ -2700,16 +2700,9 @@ class CLICommandsMixin:
                 _cprint(f"  {_DIM}No heartbeat set.{_RST}")
             return
 
-        # Set: `/heartbeat every 10m <prompt>` (also accepts `10m <prompt>`).
-        tokens = arg.split(None, 2)
-        interval = None
-        prompt = ""
-        if tokens and tokens[0].lower() == "every" and len(tokens) >= 2:
-            interval = parse_interval(f"every {tokens[1]}")
-            prompt = tokens[2] if len(tokens) > 2 else ""
-        elif tokens:
-            interval = parse_interval(tokens[0])
-            prompt = arg[len(tokens[0]):].strip() if interval and interval > 0 else ""
+        # Set: `/heartbeat every 10m <prompt>` (also accepts `10m <prompt>` and
+        # the spaced forms `every 90 minutes <prompt>` / `every 2 hours <prompt>`).
+        interval, prompt = split_interval_prefix(arg)
 
         if interval is None:
             _cprint("  Usage: /heartbeat every <interval> <prompt>   (e.g. /heartbeat every 10m Check CI)")

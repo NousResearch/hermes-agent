@@ -425,7 +425,10 @@ function releaseSecondaryLease(entry: Secondary, kind: SecondaryLeaseKind): void
     entry.activeRequests = Math.max(0, entry.activeRequests - 1)
   }
 
-  if (entry.commandLeases > 0 || entry.activeRequests > 0 || !entry.prunePending) {
+  const activationLeased =
+    entry.activationLeases > 0 && Number.isFinite(entry.activationLeaseUntil) && entry.activationLeaseUntil > Date.now()
+
+  if (activationLeased || entry.commandLeases > 0 || entry.activeRequests > 0 || !entry.prunePending) {
     return
   }
 

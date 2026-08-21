@@ -4652,6 +4652,62 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
     })
   })
 
+  it('submits once through authoritative recovery when routed resume publication lags (#90428)', async () => {
+    const staleStoredId = 'stored-previous-selection'
+    const staleRuntimeId = 'rt-previous-selection'
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: staleStoredId }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: staleRuntimeId }
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([[staleStoredId, staleRuntimeId]])
+    }
+
+    const resumeStoredSession = vi.fn(async () => undefined)
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.resume') {
+        return { session_id: RESUMED_RUNTIME_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={staleRuntimeId}
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => STORED_ID}
+        getRouteToken={() => `/${STORED_ID}::`}
+        getRuntimeIdForStoredSession={storedId => runtimeIdByStoredSessionIdRef.current.get(storedId) ?? null}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        resumeStoredSession={resumeStoredSession}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={staleStoredId}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    expect(await handle!.submitText('deliver despite lagging local publication')).toBe(true)
+    expect(resumeStoredSession).toHaveBeenCalledOnce()
+    expect(calls).toEqual([
+      {
+        method: 'session.resume',
+        params: { session_id: STORED_ID, source: 'desktop', omit_messages: true }
+      },
+      {
+        method: 'prompt.submit',
+        params: { session_id: RESUMED_RUNTIME_ID, text: 'deliver despite lagging local publication' }
+      }
+    ])
+  })
+
   it('still aborts when the user genuinely moves to a different chat mid-submit', async () => {
     // The churn tolerance must not weaken the real guard: selection AND route
     // moving to another actual chat is a user switch and must abort.

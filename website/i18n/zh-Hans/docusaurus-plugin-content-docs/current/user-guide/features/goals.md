@@ -40,12 +40,33 @@ description: "设置一个持续目标，让 Hermes 跨轮次持续工作直到�
 | 命令 | 功能 |
 |---|---|
 | `/goal <text>` | 设置（或替换）持续目标。立即启动第一轮，无需再发送单独消息。 |
+| `/goal --file <path>` | 从 UTF-8 文件加载目标文本，而无需粘贴。**仅限 CLI、TUI、Desktop 和 Dashboard Chat（Web 控制台）** ——消息 gateway 不可用。见[从文件加载目标](#从文件加载目标)。 |
 | `/goal` 或 `/goal status` | 显示当前目标、状态及已用轮次。 |
 | `/goal pause` | 停止自动续行循环，但不清除目标。 |
 | `/goal resume` | 恢复循环（将轮次计数器重置为零）。 |
 | `/goal clear` | 完全删除目标。 |
 
-在 CLI 及所有 gateway 平台（Telegram、Discord、Slack、Matrix、Signal、WhatsApp、SMS、iMessage、Webhook、API server 以及 Web 控制台）上行为完全一致。
+所有子命令在 CLI、TUI、Desktop、Dashboard Chat（Web 控制台）及消息 gateway（Telegram、Discord、Slack、Matrix、Signal、WhatsApp、SMS、iMessage、Webhook 和 API server）上行为完全一致，**但 `/goal --file <path>` 除外**。文件输入可在 CLI、TUI、Desktop 和 Dashboard Chat 中使用；消息 gateway 会拒绝它，防止远程聊天命令读取 Hermes 后端主机上的文件（见[从文件加载目标](#从文件加载目标)）。
+
+## 从文件加载目标
+
+长目标难以粘贴进 TUI、Dashboard Chat（Web 控制台）或 CLI。`/goal --file <path>` 改为从 UTF-8 文件读取目标文本：
+
+```
+/goal --file ~/goal.txt
+```
+
+文件内容会成为目标文本，并像内联目标一样被解析——因此包含内联 `verify:` / `constraints:` / `boundaries:` / `stop when:` 行的文件，会像你键入这些行一样生成完成契约。恰好等于某个子命令的内容（例如文件唯一一行是 `status`）会被当作目标数据，而不会被重新解释为命令。
+
+路径解析与语义：
+
+- **路径在 Hermes 后端主机上读取**，使用 Hermes 进程用户。在 TUI、Dashboard Chat（Web 控制台）和 Desktop 中，相对路径基于活动会话的工作目录解析；在 Classic CLI 中，基于进程工作目录。`~` 展开为后端进程用户的 home 目录。
+- **连接到远程 Hermes 的 Desktop 读取的是远程后端文件**，而非你 Desktop 客户端机器上的文件。若需要客户端上的文件，请先将其复制到后端主机。
+- **SSH / Docker 终端后端：** 若会话的工作目录仅存在于终端后端内部（在 Hermes 主机上不存在），相对路径会被拒绝——请改用 Hermes 主机上可见的绝对路径。Hermes 不会猜测，也不会静默回退到进程 cwd。
+- 包含空格的路径无需加引号，但你也可以用一对匹配的单引号或双引号包裹。原生 Windows 反斜杠会被保留。
+- 缺失、不可读、非常规、UTF-8 无效或空白的文件会返回明确错误，且不影响任何现有目标——加载是原子操作。
+
+`/goal --file` 可在 CLI、TUI、Desktop 和 Dashboard Chat（Web 控制台）中使用，并且在所有这些界面中都从 Hermes 后端主机读取文件。在消息 gateway（Telegram、Discord、Slack 等）上会返回不支持的错误，且绝不读取文件——这一边界防止远程聊天用户读取后端主机上的任意文件。
 
 ## 目标进行中追加条件：`/subgoal`
 

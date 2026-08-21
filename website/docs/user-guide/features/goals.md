@@ -58,6 +58,7 @@ What you'll see:
 | Command | What it does |
 |---|---|
 | `/goal <text>` | Set (or replace) the standing goal. Kicks off the first turn immediately so you don't need to send a separate message. |
+| `/goal --file <path>` | Load the goal text from a UTF-8 file instead of pasting it. **CLI, TUI, Desktop, and Dashboard Chat only** — not available on messaging gateways. See [Loading a goal from a file](#loading-a-goal-from-a-file). |
 | `/goal draft <text>` | Draft a structured completion contract from a plain-language objective, then set it. See [Completion contracts](#completion-contracts). |
 | `/goal show` | Print the active goal's completion contract. |
 | `/goal` or `/goal status` | Show the current goal, its status, and turns used. |
@@ -71,7 +72,27 @@ What you'll see:
 | `/goal gate remove <N>` | Remove the Nth gate (1-based). |
 | `/goal gate clear` | Remove all gates. |
 
-Works identically on the CLI and every gateway platform (Telegram, Discord, Slack, Matrix, Signal, WhatsApp, SMS, iMessage, Webhook, API server, and the web dashboard).
+All subcommands work identically in the CLI, TUI, Desktop, Dashboard Chat, and messaging gateways (Telegram, Discord, Slack, Matrix, Signal, WhatsApp, SMS, iMessage, Webhook, and the API server), **except** `/goal --file <path>`. File input works in the CLI, TUI, Desktop, and Dashboard Chat, but messaging gateways reject it so a remote chat command cannot read files from the Hermes backend host (see [Loading a goal from a file](#loading-a-goal-from-a-file)).
+
+## Loading a goal from a file
+
+Long goals are painful to paste into the TUI, Dashboard Chat, or CLI. `/goal --file <path>` reads the goal text from a UTF-8 file instead:
+
+```
+/goal --file ~/goal.txt
+```
+
+The file's content becomes the goal text and is parsed exactly like an inline goal — so a file with inline `verify:` / `constraints:` / `boundaries:` / `stop when:` lines produces a [completion contract](#completion-contracts) the same way typing those lines would. Content that happens to equal a subcommand (e.g. a file whose only line is `status`) is treated as goal data, not reinterpreted as a command.
+
+Path resolution and semantics:
+
+- **The path is read on the Hermes backend host**, using the Hermes process user. In the TUI, Dashboard Chat, and Desktop, a relative path resolves against the active session's working directory; in the Classic CLI, against the process working directory. `~` expands to the backend process user's home.
+- **Desktop connected to a remote Hermes reads the remote backend file**, not a file on your Desktop client machine. If you want a file from your client, copy it onto the backend host first.
+- **SSH / Docker terminal backends:** if the session's working directory exists only inside the terminal backend (not on the Hermes host), a relative path is rejected — use an absolute path visible on the Hermes host instead. Hermes will not guess or silently fall back to the process cwd.
+- Paths with spaces don't require quoting, though you may wrap them in a matching pair of single or double quotes. Native Windows backslashes are preserved.
+- A missing, unreadable, non-regular, invalid-UTF-8, or blank file returns a clear error and leaves any existing goal untouched — the load is atomic.
+
+`/goal --file` is available in the CLI, TUI, Desktop, and Dashboard Chat, and reads from the Hermes backend host in every case. On messaging gateways (Telegram, Discord, Slack, etc.) it returns an unsupported error and never reads a file — that boundary prevents a remote chat user from reading arbitrary files off the backend host.
 
 ## Completion contracts
 

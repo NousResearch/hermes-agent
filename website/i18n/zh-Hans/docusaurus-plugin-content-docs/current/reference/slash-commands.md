@@ -49,7 +49,7 @@ Hermes 有两个斜杠命令入口，均由 `hermes_cli/commands.py` 中的中�
 | `/stop` | 终止所有正在运行的后台进程 |
 | `/queue <prompt>`（别名：`/q`） | 将 prompt（提示词）加入队列等待下一轮处理（不会中断当前 agent 响应）。 |
 | `/steer <prompt>` | 在**下一次工具调用之后**向 agent 注入一条中途说明——不中断、不产生新的用户轮次。当前工具完成后，该文本会追加到最后一条工具结果的内容中，在不打断当前工具调用循环的情况下为 agent 提供新上下文。可用于在任务进行中调整方向（例如在 agent 运行测试时说"专注于 auth 模块"）。 |
-| `/goal <text>` | 设置一个持续目标，Hermes 将跨轮次持续推进——这是我们对 Ralph loop 的实现。每轮结束后，辅助裁判模型会判断目标是否完成；若未完成，Hermes 自动继续。子命令：`/goal status`、`/goal pause`、`/goal resume`、`/goal clear`。预算默认为 20 轮（`goals.max_turns`）；任何真实用户消息都会抢占继续循环，状态在 `/resume` 后保留。完整说明见 [持续目标](/user-guide/features/goals)。 |
+| `/goal <text>` | 设置一个持续目标，Hermes 将跨轮次持续推进——这是我们对 Ralph loop 的实现。每轮结束后，辅助裁判模型会判断目标是否完成；若未完成，Hermes 自动继续。子命令：`/goal status`、`/goal pause`、`/goal resume`、`/goal clear`；`/goal --file <path>` 从 UTF-8 文件加载目标文本（**仅限 CLI/TUI/Desktop/Dashboard Chat（Web 控制台）**——消息 gateway 会拒绝，以防远程聊天用户读取后端文件）。预算默认为 20 轮（`goals.max_turns`）；任何真实用户消息都会抢占继续循环，状态在 `/resume` 后保留。完整说明见 [持续目标](/user-guide/features/goals)。 |
 | `/subgoal <text>` | 在循环进行中向活动目标追加一个用户自定义条件。继续 prompt 会将所有子目标原文呈现给 agent，裁判也会将其纳入 DONE/CONTINUE 判断——因此只有原始目标**和**所有子目标都满足时，目标才会被标记为完成。子命令：`/subgoal`（列出）、`/subgoal remove <N>`、`/subgoal clear`。需要有活动的 `/goal`。 |
 | `/resume [name]` | 恢复之前命名的会话 |
 | `/sessions` | 在交互式选择器中浏览并恢复历史会话 |
@@ -223,7 +223,7 @@ hermes config set model.aliases.grok x-ai/grok-4
 | `/background <prompt>` | 在独立的后台会话中运行 prompt。任务完成后结果投递回同一聊天。见 [消息平台后台会话](/user-guide/messaging/#background-sessions)。 |
 | `/queue <prompt>`（别名：`/q`） | 将 prompt 加入队列等待下一轮处理，不中断当前轮次。 |
 | `/steer <prompt>` | 在下一次工具调用后注入一条消息，不中断——模型在下一次迭代时获取，而非作为新轮次。 |
-| `/goal <text>` | 设置一个持续目标，Hermes 将跨轮次持续推进——这是我们对 Ralph loop 的实现。裁判模型在每轮后检查；若未完成，Hermes 自动继续，直到完成、你暂停/清除，或达到轮次预算（默认 20）。子命令：`/goal status`、`/goal pause`、`/goal resume`、`/goal clear`。agent 运行中可安全执行 status/pause/clear；设置新目标需先执行 `/stop`。见 [持续目标](/user-guide/features/goals)。 |
+| `/goal <text>` | 设置一个持续目标，Hermes 将跨轮次持续推进——这是我们对 Ralph loop 的实现。裁判模型在每轮后检查；若未完成，Hermes 自动继续，直到完成、你暂停/清除，或达到轮次预算（默认 20）。子命令：`/goal status`、`/goal pause`、`/goal resume`、`/goal clear`；`/goal --file <path>` 从 UTF-8 文件加载目标文本（**仅限 CLI/TUI/Desktop/Dashboard Chat（Web 控制台）**）。agent 运行中可安全执行 status/pause/clear；设置新目标需先执行 `/stop`。见 [持续目标](/user-guide/features/goals)。 |
 | `/footer [on\|off\|status]` | 切换最终回复中的运行时元数据页脚（显示模型、工具调用次数、耗时）。 |
 | `/curator [status\|run\|pin\|archive]` | 后台 skill 维护控制。 |
 | `/suggestions [accept\|dismiss N\|catalog\|clear]` | 直接在聊天中审核建议的自动化。`/suggestions` 列出待处理建议，`catalog` 添加精选起步自动化，`clear` 清理已解决的建议记录。被接受的建议会保留当前聊天/线程作为任务投递来源。 |

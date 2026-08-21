@@ -1841,23 +1841,54 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
-    # Inherit the parent's fallback provider chain so subagents can recover
-    # from rate-limits and credential exhaustion exactly like the top-level
-    # agent does.  _fallback_chain is a list accepted by AIAgent's
-    # fallback_model parameter (which handles both list and dict forms).
+    # Fallback chain precedence: delegation.fallback_providers (explicit
+    # child config) > parent inheritance subject to the pinned-provider
+    # exception.
     #
-    # EXCEPT when the user pinned delegation.provider: an explicit pin means
-    # "children run on THIS provider".  Inheriting the parent chain would let
-    # a mid-run auth/429 failure silently reroute the quiet-mode child onto
-    # the parent's fallback models with no surfaced signal (#80450) — the
-    # same class of silent-drag the override_provider filter-clearing below
-    # already prevents for OpenRouter routing preferences.  Predictability >
-    # liveness for explicit pins: the pinned child fails loudly instead.
-    parent_fallback = (
-        None
-        if override_provider
-        else (getattr(parent_agent, "_fallback_chain", None) or None)
-    )
+    # When delegation.fallback_providers is declared, it is the child's own
+    # chain — a worker explicitly routed via delegation.* uses exactly those
+    # fallback models, never the head agent's (#65038). ``[]`` explicitly
+    # disables child fallback; a malformed value logs a warning and falls
+    # back to parent inheritance (mirroring reasoning_effort above).
+    #
+    # When it is unset, children inherit the parent's resolved chain so
+    # subagents recover from rate-limits and credential exhaustion exactly
+    # like the top-level agent does (#7481) — EXCEPT when the user pinned
+    # delegation.provider: an explicit pin means "children run on THIS
+    # provider". Inheriting the parent chain would let a mid-run auth/429
+    # failure silently reroute the quiet-mode child onto the parent's
+    # fallback models with no surfaced signal (#80450) — the same class of
+    # silent-drag the override_provider filter-clearing below already
+    # prevents for OpenRouter routing preferences. Predictability > liveness
+    # for explicit pins: the pinned child fails loudly instead.
+    delegation_fallback_raw = delegation_cfg.get("fallback_providers")
+    if delegation_fallback_raw is not None:
+        try:
+            from hermes_cli.fallback_config import get_fallback_chain
+
+            child_fallback = get_fallback_chain(
+                {"fallback_providers": delegation_fallback_raw}
+            )
+        except Exception as exc:
+            logger.debug("Could not resolve delegation.fallback_providers: %s", exc)
+            child_fallback = None
+        else:
+            if not child_fallback and delegation_fallback_raw:
+                logger.warning(
+                    "delegation.fallback_providers has no valid entries "
+                    "(each needs provider + model); inheriting parent chain"
+                )
+                child_fallback = (
+                    None
+                    if override_provider
+                    else (getattr(parent_agent, "_fallback_chain", None) or None)
+                )
+    else:
+        child_fallback = (
+            None
+            if override_provider
+            else (getattr(parent_agent, "_fallback_chain", None) or None)
+        )
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -1943,10 +1974,9 @@ def _build_child_agent(
                 acp_command=effective_acp_command,
                 acp_args=effective_acp_args,
                 max_iterations=max_iterations,
-
                 reasoning_config=child_reasoning,
                 prefill_messages=getattr(parent_agent, "prefill_messages", None),
-                fallback_model=parent_fallback,
+                fallback_model=child_fallback,
                 enabled_toolsets=child_toolsets,
                 disabled_toolsets=child_disabled_toolsets,
                 quiet_mode=True,

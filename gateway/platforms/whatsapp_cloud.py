@@ -1040,6 +1040,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         caption: Optional[str] = None,
         filename: Optional[str] = None,
         reply_to: Optional[str] = None,
+        voice: bool = False,
     ) -> SendResult:
         """POST a media message referencing either an uploaded media_id or
         a public ``link``.
@@ -1047,6 +1048,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         Exactly one of ``media_id`` or ``media_link`` must be set. Captions
         and filenames are passed through where Meta accepts them (caption
         on image/video/document; filename on document only).
+
+        ``voice`` marks an audio message as a voice note. Meta documents the
+        flag as "only include if sending voice message", so it is emitted
+        only when true and only on ``audio`` -- a generic audio attachment
+        carries no ``voice`` key at all (#80052).
         """
         if self._http_client is None:
             return SendResult(success=False, error="Not connected")
@@ -1071,6 +1077,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             media_block["caption"] = caption
         if filename and media_kind == "document":
             media_block["filename"] = filename
+        if voice and media_kind == "audio":
+            media_block["voice"] = True
 
         payload: Dict[str, Any] = {
             "messaging_product": "whatsapp",
@@ -1118,6 +1126,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         filename: Optional[str] = None,
         reply_to: Optional[str] = None,
         mime_type: Optional[str] = None,
+        voice: bool = False,
     ) -> SendResult:
         """Smart dispatcher: HTTPS URL → ``link`` send; local path → upload + ``id`` send.
 
@@ -1134,6 +1143,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 caption=caption,
                 filename=filename,
                 reply_to=reply_to,
+                voice=voice,
             )
         media_id, err = await self._upload_media(source, media_kind, mime_type)
         if err:
@@ -1145,6 +1155,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             caption=caption,
             filename=filename,
             reply_to=reply_to,
+            voice=voice,
         )
 
     async def send_image(
@@ -1206,6 +1217,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         a generic audio attachment. Hermes TTS produces MP3, so we try
         ffmpeg conversion to opus first and fall back to sending the
         MP3 as-is when ffmpeg is unavailable.
+
+        The converted-opus send also sets Meta's documented ``voice``
+        discriminator. Only that path sets it: the MP3 fallback is already
+        documented below as arriving as an attachment rather than a voice
+        note, and a remote source is of unknown format, so neither claims to
+        be a voice message (#80052).
         """
         source = audio_path
         mime_type: Optional[str] = None
@@ -1223,6 +1240,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         chat_id, opus_path, "audio",
                         caption=caption, reply_to=reply_to,
                         mime_type="audio/ogg; codecs=opus",
+                        voice=True,
                     )
                 finally:
                     # The .ogg is a transient conversion artifact next to

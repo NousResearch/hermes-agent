@@ -17,6 +17,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from types import SimpleNamespace
 
 from gateway.config import Platform
 
@@ -1400,3 +1401,161 @@ class TestReplyContextResolution:
         assert event.reply_to_text is None
         assert event.reply_to_is_own_message is False
 
+
+# ---------------------------------------------------------------------------
+# Outbound voice-note discriminator (#80052)
+# ---------------------------------------------------------------------------
+
+class _OkResp:
+    status_code = 200
+    text = "{}"
+
+    @staticmethod
+    def json():
+        return {"messages": [{"id": "wamid.v1"}]}
+
+
+def _capture_adapter():
+    """Adapter whose Graph POSTs are captured instead of sent."""
+    adapter = _make_adapter()
+    captured = {}
+
+    async def _post(url, headers=None, json=None):
+        captured.clear()
+        captured.update(json or {})
+        return _OkResp()
+
+    adapter._http_client = SimpleNamespace(post=_post)
+    return adapter, captured
+
+
+class TestOutboundVoiceFlag:
+    """Meta's audio object takes a ``voice`` discriminator.
+
+    Docs: ``{"audio": {"id": ..., "voice": <IS_VOICE?>}}`` -- "only include if
+    sending voice message". Without it a converted opus TTS clip is delivered
+    as a plain audio attachment rather than the voice-note bubble the adapter
+    converts to opus specifically to produce (#80052).
+    """
+
+    @pytest.mark.asyncio
+    async def test_audio_marked_voice_carries_the_flag(self):
+        adapter, captured = _capture_adapter()
+
+        await adapter._send_media("15551234567", "audio", media_id="m1", voice=True)
+
+        assert captured["audio"]["voice"] is True
+
+    @pytest.mark.asyncio
+    async def test_generic_audio_has_no_voice_key_at_all(self):
+        """Absent, not ``false`` -- Meta says only include it for voice."""
+        adapter, captured = _capture_adapter()
+
+        await adapter._send_media("15551234567", "audio", media_id="m1")
+
+        assert "voice" not in captured["audio"]
+
+    @pytest.mark.asyncio
+    async def test_voice_flag_never_leaks_onto_other_media_kinds(self):
+        adapter, captured = _capture_adapter()
+
+        await adapter._send_media(
+            "15551234567", "document", media_id="m1", voice=True
+        )
+
+        assert "voice" not in captured["document"]
+
+    @pytest.mark.asyncio
+    async def test_link_branch_forwards_the_flag(self):
+        """The dispatcher's HTTPS branch forwards ``voice`` too.
+
+        No current caller reaches it -- send_voice only sets the flag for a
+        locally converted opus file, which always takes the upload branch --
+        so this pins the forwarding rather than asserting live behaviour.
+        Meta's acceptance of ``voice`` on a ``link`` send is unverified.
+        """
+        adapter, captured = _capture_adapter()
+
+        await adapter._send_media_from_path_or_link(
+            "15551234567", "https://example.com/a.ogg", "audio", voice=True
+        )
+
+        assert captured["audio"]["link"] == "https://example.com/a.ogg"
+        assert captured["audio"]["voice"] is True
+
+    @pytest.mark.asyncio
+    async def test_converted_opus_send_is_flagged_as_voice(self, tmp_path, monkeypatch):
+        """The path that converts to opus for the voice bubble must say so."""
+        adapter, captured = _capture_adapter()
+        mp3 = tmp_path / "tts.mp3"
+        mp3.write_bytes(b"fake-mp3")
+        opus = tmp_path / "tts.ogg"
+        opus.write_bytes(b"fake-opus")
+
+        async def _convert(_path):
+            return str(opus)
+
+        async def _upload(_src, _kind, _mime=None):
+            return "media-1", None
+
+        monkeypatch.setattr(adapter, "_convert_to_opus", _convert)
+        monkeypatch.setattr(adapter, "_upload_media", _upload)
+
+        await adapter.send_voice("15551234567", str(mp3))
+
+        assert captured["type"] == "audio"
+        assert captured["audio"]["voice"] is True
+
+    @pytest.mark.asyncio
+    async def test_mp3_fallback_is_not_claimed_as_voice(self, tmp_path, monkeypatch):
+        """With no ffmpeg the clip ships as MP3, which the adapter already
+        documents as an attachment -- it must not claim to be a voice note."""
+        adapter, captured = _capture_adapter()
+        mp3 = tmp_path / "tts.mp3"
+        mp3.write_bytes(b"fake-mp3")
+
+        async def _no_convert(_path):
+            return None
+
+        async def _upload(_src, _kind, _mime=None):
+            return "media-1", None
+
+        monkeypatch.setattr(adapter, "_convert_to_opus", _no_convert)
+        monkeypatch.setattr(adapter, "_upload_media", _upload)
+
+        await adapter.send_voice("15551234567", str(mp3))
+
+        assert captured["type"] == "audio"
+        assert "voice" not in captured["audio"]
+
+    @pytest.mark.asyncio
+    async def test_inbound_voice_webhook_still_maps_to_voice(self, monkeypatch):
+        """Regression guard from the issue's verification steps.
+
+        Drives a real inbound ``voice`` payload rather than asserting the enum
+        exists -- the outbound flag must not disturb the inbound type map.
+        """
+        from gateway.platforms.whatsapp_cloud import MessageType
+
+        adapter = _make_adapter()
+        adapter._dm_policy = "open"
+
+        async def _no_download(_id, ext_hint=None):
+            return None, None
+
+        monkeypatch.setattr(adapter, "_download_media_to_cache", _no_download)
+
+        event = await adapter._build_message_event_from_cloud(
+            {
+                "from": "15551234567",
+                "id": "wamid.in1",
+                "timestamp": "0",
+                "type": "voice",
+                "voice": {"id": "media-in-1", "mime_type": "audio/ogg; codecs=opus"},
+            },
+            {"15551234567": "Alice"},
+            {},
+        )
+
+        assert event is not None
+        assert event.message_type is MessageType.VOICE

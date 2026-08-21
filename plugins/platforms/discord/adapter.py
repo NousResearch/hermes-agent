@@ -562,6 +562,10 @@ def _discord_ready_timeout_seconds() -> float:
     return 30.0
 
 
+_DISCORD_VOICE_SILENCE_SECONDS_DEFAULT = 2.0
+_DISCORD_VOICE_MIN_SPEECH_SECONDS_DEFAULT = 0.5
+
+
 class VoiceReceiver:
     """Captures and decodes voice audio from a Discord voice channel.
 
@@ -571,14 +575,31 @@ class VoiceReceiver:
     completed utterances via a callback.
     """
 
-    SILENCE_THRESHOLD = 1.5    # seconds of silence → end of utterance
-    MIN_SPEECH_DURATION = 0.5  # minimum seconds to process (skip noise)
+    SILENCE_THRESHOLD = _DISCORD_VOICE_SILENCE_SECONDS_DEFAULT
+    MIN_SPEECH_DURATION = _DISCORD_VOICE_MIN_SPEECH_SECONDS_DEFAULT
     SAMPLE_RATE = 48000        # Discord native rate
     CHANNELS = 2               # Discord sends stereo
 
-    def __init__(self, voice_client, allowed_user_ids: set = None):
+    def __init__(
+        self,
+        voice_client,
+        allowed_user_ids: set = None,
+        *,
+        silence_threshold: Optional[float] = None,
+        min_speech_duration: Optional[float] = None,
+    ):
         self._vc = voice_client
         self._allowed_user_ids = allowed_user_ids or set()
+        self.SILENCE_THRESHOLD = (
+            float(silence_threshold)
+            if silence_threshold is not None
+            else type(self).SILENCE_THRESHOLD
+        )
+        self.MIN_SPEECH_DURATION = (
+            float(min_speech_duration)
+            if min_speech_duration is not None
+            else type(self).MIN_SPEECH_DURATION
+        )
         self._running = False
 
         # Decryption
@@ -1090,6 +1111,14 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
         self._voice_timeout_seconds = self._load_voice_timeout()
         self._playback_timeout_seconds = self._load_playback_timeout()
+        self._voice_silence_seconds = self._positive_config_float_or_default(
+            "voice_silence_seconds",
+            _DISCORD_VOICE_SILENCE_SECONDS_DEFAULT,
+        )
+        self._voice_min_speech_seconds = self._positive_config_float_or_default(
+            "voice_min_speech_seconds",
+            _DISCORD_VOICE_MIN_SPEECH_SECONDS_DEFAULT,
+        )
         # Phase 2: voice listening
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
@@ -1192,6 +1221,17 @@ class DiscordAdapter(BasePlatformAdapter):
         except (TypeError, ValueError):
             return 0.0
         return value if math.isfinite(value) and value > 0 else 0.0
+
+    def _positive_config_float_or_default(self, key: str, default: float) -> float:
+        """Resolve a positive duration from Discord config, preserving defaults."""
+        raw = self._config_value(key, default)
+        if isinstance(raw, bool):
+            return default
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return default
+        return value if math.isfinite(value) and value > 0 else default
 
     def _config_int(
         self, key: str, default: int, *, env_key: Optional[str] = None
@@ -4581,7 +4621,12 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Start voice receiver (Phase 2: listen to users)
             try:
-                receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
+                receiver = VoiceReceiver(
+                    vc,
+                    allowed_user_ids=self._allowed_user_ids,
+                    silence_threshold=self._voice_silence_seconds,
+                    min_speech_duration=self._voice_min_speech_seconds,
+                )
                 receiver.start()
                 self._voice_receivers[guild_id] = receiver
                 self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
@@ -10455,11 +10500,16 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
                 os.environ[env_key] = str(allow_mentions_cfg[yaml_key]).lower()
     # reply_to_mode: top-level preferred, falls back to extra.reply_to_mode.
     # YAML 1.1 parses bare 'off' as boolean False — coerce to string "off".
-    _discord_extra = discord_cfg.get("extra") if isinstance(discord_cfg.get("extra"), dict) else {}
+    _discord_extra_raw = discord_cfg.get("extra")
+    _discord_extra = _discord_extra_raw if isinstance(_discord_extra_raw, dict) else {}
     _discord_rtm = (
         discord_cfg["reply_to_mode"] if "reply_to_mode" in discord_cfg
         else _discord_extra.get("reply_to_mode")
     )
+    for key in ("voice_silence_seconds", "voice_min_speech_seconds"):
+        value = discord_cfg.get(key, _discord_extra.get(key))
+        if value is not None:
+            seeded_extra[key] = value
     if _discord_rtm is not None and not os.getenv("DISCORD_REPLY_TO_MODE"):
         _rtm_str = "off" if _discord_rtm is False else str(_discord_rtm).lower()
         os.environ["DISCORD_REPLY_TO_MODE"] = _rtm_str

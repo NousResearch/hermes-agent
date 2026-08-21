@@ -37,12 +37,14 @@ import json
 import logging
 import os
 import queue
+import re
 import sys
 import threading
 import time
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.secret_scope import get_secret
@@ -82,6 +84,13 @@ _DEFAULT_RETAIN_SOURCE = ""
 # Hindsight brand mark — the logo is an eye ringed by graph nodes. Used for
 # the deterministic recall/retain indicators (overrides the generic core default).
 _HINDSIGHT_GLYPH = "👁️"
+_DEFAULT_AUTO_RETAIN_ARTIFACT_LINE_PATTERNS = [
+    r"(?i)^\s*\[Note:\s*model was just switched\b[^\n]*\]\s*$",
+]
+_DEFAULT_AUTO_RETAIN_BLOCK_PATTERNS = [
+    r"(?is)\[CONTEXT COMPACTION\s+—\s+REFERENCE ONLY\].*?"
+    r"--- END OF CONTEXT SUMMARY[^\n]*(?:\n|$)",
+]
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
 # `update_mode='append'` semantics on retain (vectorize-io/hindsight#932).
 # Without it, reusing a stable session-scoped document_id silently
@@ -111,6 +120,91 @@ def _parse_int_setting(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         logger.warning("Invalid integer Hindsight setting %r; using default %s", value, default)
         return default
+
+
+def _parse_bool_setting(value: Any, default: bool) -> bool:
+    """Parse bool-ish config values without treating ``"false"`` as true."""
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    lowered = str(value).strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    logger.warning("Invalid boolean Hindsight setting %r; using default %s", value, default)
+    return default
+
+
+def _normalize_pattern_list(value: Any) -> list[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item).strip()]
+    return [str(value)]
+
+
+def _resolve_profile_path(
+    value: str | os.PathLike[str] | None,
+    default: Path | None = None,
+) -> Path | None:
+    if not value:
+        return default
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = get_hermes_home() / path
+    return path
+
+
+def _load_mapping_file(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists():
+        return {}
+    try:
+        import yaml
+
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Failed to load Hindsight filter file %s: %s", path, exc)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _matches_any_pattern(text: str, patterns: list[str]) -> str | None:
+    if not text:
+        return None
+    for pattern in patterns:
+        try:
+            if re.search(pattern, text):
+                return pattern
+        except re.error as exc:
+            logger.warning("Invalid Hindsight filter regex %r: %s", pattern, exc)
+    return None
+
+
+def _strip_patterns(text: str, patterns: list[str]) -> str:
+    result = text or ""
+    for pattern in patterns:
+        try:
+            result = re.sub(pattern, "", result)
+        except re.error as exc:
+            logger.warning("Invalid Hindsight strip regex %r: %s", pattern, exc)
+    return result.strip()
+
+
+def _strip_standalone_artifact_lines(text: str, patterns: list[str]) -> str:
+    """Remove matching standalone lines while preserving neighboring content."""
+    kept_lines = []
+    for line in (text or "").splitlines(keepends=True):
+        candidate = line.rstrip("\r\n")
+        if _matches_any_pattern(candidate, patterns):
+            continue
+        kept_lines.append(line)
+    return "".join(kept_lines).strip()
 
 
 # Env var the embedded daemon manager reads (at import time, as a module-level
@@ -842,6 +936,20 @@ class HindsightMemoryProvider(MemoryProvider):
         # update_mode='append' (legacy/overwrite path still sends everything).
         self._last_retained_turn_count = 0
 
+        # Low-noise filtering applies to auto-retain and background auto-recall.
+        # Manual hindsight_retain / hindsight_recall tool calls remain explicit
+        # user/model actions and are not altered by this automatic filter.
+        self._auto_retain_filter_enabled = True
+        self._auto_retain_artifact_line_patterns = list(
+            _DEFAULT_AUTO_RETAIN_ARTIFACT_LINE_PATTERNS
+        )
+        self._auto_retain_strip_patterns = list(_DEFAULT_AUTO_RETAIN_BLOCK_PATTERNS)
+        self._auto_retain_skip_patterns: list[str] = []
+        self._auto_retain_preserve_patterns: list[str] = []
+        self._recall_skip_patterns: list[str] = []
+        self._max_auto_retain_chars_per_turn = 0
+        self._auto_retain_audit_log_path = ""
+
         # Recall controls
         self._auto_recall = True
         self._recall_sync = False
@@ -1196,6 +1304,15 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_indicator", "description": "Show a '👁️ Hindsight — recalled N memories' status line when auto-recall injects memory (turn off for customer-facing agents)", "default": True},
             {"key": "retain_indicator", "description": "Show a '👁️ Hindsight — saving to memory…' status line when a turn is saved to memory (turn off for customer-facing agents)", "default": True},
             {"key": "auto_retain", "description": "Automatically retain conversation turns", "default": True},
+            {"key": "auto_retain_filter_enabled", "description": "Filter known Hermes lifecycle artifacts from automatic retain and background auto-recall. False is a true no-op: no rewriting, query/result suppression, truncation, or audit logging.", "default": True},
+            {"key": "auto_retain_filter_path", "description": "Optional YAML filter file. Relative paths resolve under HERMES_HOME; the default is hindsight/auto_retain_filter.yaml.", "default": ""},
+            {"key": "auto_retain_artifact_line_patterns", "description": "Additional regexes that strip only matching standalone lines while preserving neighboring content.", "default": ""},
+            {"key": "auto_retain_strip_patterns", "description": "Additional regexes removed from automatic retain and each background recall result before filtering.", "default": ""},
+            {"key": "auto_retain_skip_patterns", "description": "Additional regexes that skip an automatic turn after sanitization unless a preserve pattern matches.", "default": ""},
+            {"key": "auto_retain_preserve_patterns", "description": "Regexes that preserve an automatic turn even when an auto_retain_skip_pattern matches.", "default": ""},
+            {"key": "recall_skip_patterns", "description": "Additional regexes that suppress noisy background auto-recall queries/results. Filtering is evaluated per result; manual hindsight_recall is unchanged.", "default": ""},
+            {"key": "max_auto_retain_chars_per_turn", "description": "Optional per-message character cap for automatic retain after filtering (0 disables truncation).", "default": 0},
+            {"key": "auto_retain_audit_log_path", "description": "Optional JSONL path for metadata-only filter audit entries (actions, reasons, character counts; never transcript text). Relative paths resolve under HERMES_HOME.", "default": ""},
             {"key": "retain_every_n_turns", "description": "Retain every N turns (1 = every turn)", "default": 1},
             {"key": "retain_async","description": "Process retain asynchronously on the Hindsight server", "default": True},
             {"key": "prefetch_waits_for_retain", "description": "Have the background next-turn prefetch wait for the just-completed retain to become recall-visible on the server (local queue drain + async operation completion) before recalling, so recall includes the just-completed turn (runs off the reply path, adds no response latency)", "default": True},
@@ -1562,6 +1679,188 @@ class HindsightMemoryProvider(MemoryProvider):
             return self._session_id, "append"
         return fallback_document_id, None
 
+    def _load_auto_retain_filter_settings(self) -> None:
+        cfg = self._config if isinstance(self._config, dict) else {}
+        if "auto_retain_filter_enabled" in cfg and not _parse_bool_setting(
+            cfg.get("auto_retain_filter_enabled"), True
+        ):
+            # Explicit config disable is a true no-op and must not even read a
+            # default/custom YAML file whose patterns or audit path could alter
+            # behavior despite the disable switch.
+            self._auto_retain_filter_enabled = False
+            self._auto_retain_artifact_line_patterns = []
+            self._auto_retain_strip_patterns = []
+            self._auto_retain_skip_patterns = []
+            self._auto_retain_preserve_patterns = []
+            self._recall_skip_patterns = []
+            self._max_auto_retain_chars_per_turn = 0
+            self._auto_retain_audit_log_path = ""
+            return
+        default_filter_path = get_hermes_home() / "hindsight" / "auto_retain_filter.yaml"
+        filter_path = _resolve_profile_path(
+            cfg.get("auto_retain_filter_path"), default_filter_path
+        )
+        file_cfg = _load_mapping_file(filter_path)
+
+        self._auto_retain_filter_enabled = _parse_bool_setting(
+            cfg.get("auto_retain_filter_enabled", file_cfg.get("enabled")),
+            True,
+        )
+        if not self._auto_retain_filter_enabled:
+            # A disabled filter is a true no-op: do not load patterns, truncate,
+            # audit, reject queries, or rewrite recall/retain payloads.
+            self._auto_retain_artifact_line_patterns = []
+            self._auto_retain_strip_patterns = []
+            self._auto_retain_skip_patterns = []
+            self._auto_retain_preserve_patterns = []
+            self._recall_skip_patterns = []
+            self._max_auto_retain_chars_per_turn = 0
+            self._auto_retain_audit_log_path = ""
+            return
+
+        self._auto_retain_artifact_line_patterns = (
+            list(_DEFAULT_AUTO_RETAIN_ARTIFACT_LINE_PATTERNS)
+            + _normalize_pattern_list(file_cfg.get("artifact_line_patterns"))
+            + _normalize_pattern_list(cfg.get("auto_retain_artifact_line_patterns"))
+        )
+        self._auto_retain_strip_patterns = (
+            list(_DEFAULT_AUTO_RETAIN_BLOCK_PATTERNS)
+            + _normalize_pattern_list(file_cfg.get("strip_patterns"))
+            + _normalize_pattern_list(cfg.get("auto_retain_strip_patterns"))
+        )
+        self._auto_retain_skip_patterns = (
+            _normalize_pattern_list(file_cfg.get("skip_turn_patterns"))
+            + _normalize_pattern_list(cfg.get("auto_retain_skip_patterns"))
+        )
+        self._auto_retain_preserve_patterns = (
+            _normalize_pattern_list(file_cfg.get("preserve_patterns"))
+            + _normalize_pattern_list(cfg.get("auto_retain_preserve_patterns"))
+        )
+        self._recall_skip_patterns = (
+            _normalize_pattern_list(file_cfg.get("recall_skip_patterns"))
+            + _normalize_pattern_list(cfg.get("recall_skip_patterns"))
+        )
+        self._max_auto_retain_chars_per_turn = max(
+            0,
+            _parse_int_setting(
+                cfg.get(
+                    "max_auto_retain_chars_per_turn",
+                    file_cfg.get("max_auto_retain_chars_per_turn"),
+                ),
+                0,
+            ),
+        )
+        audit_path = cfg.get("auto_retain_audit_log_path") or file_cfg.get(
+            "audit_log_path"
+        )
+        resolved_audit = _resolve_profile_path(audit_path)
+        self._auto_retain_audit_log_path = str(resolved_audit or "")
+
+    def _audit_auto_retain_filter(
+        self,
+        action: str,
+        reason: str,
+        raw_user: str,
+        raw_assistant: str,
+        sanitized_user: str = "",
+        sanitized_assistant: str = "",
+    ) -> None:
+        if not self._auto_retain_audit_log_path:
+            return
+        entry = {
+            "timestamp": _utc_timestamp(),
+            "session_id": self._session_id,
+            "thread_id": self._thread_id,
+            "action": action,
+            "reason": reason,
+            "raw_user_chars": len(raw_user or ""),
+            "raw_assistant_chars": len(raw_assistant or ""),
+            "raw_total_chars": len((raw_user or "") + (raw_assistant or "")),
+            "sanitized_user_chars": len(sanitized_user or ""),
+            "sanitized_assistant_chars": len(sanitized_assistant or ""),
+            "sanitized_total_chars": len(
+                (sanitized_user or "") + (sanitized_assistant or "")
+            ),
+        }
+        try:
+            path = Path(self._auto_retain_audit_log_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as audit_file:
+                audit_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            logger.debug("Failed to write Hindsight auto-retain audit log: %s", exc)
+
+    def _sanitize_filtered_text(self, text: str) -> str:
+        sanitized = _strip_patterns(text or "", self._auto_retain_strip_patterns)
+        return _strip_standalone_artifact_lines(
+            sanitized,
+            self._auto_retain_artifact_line_patterns,
+        )
+
+    def _sanitize_auto_retain_turn(
+        self,
+        user_content: str,
+        assistant_content: str,
+    ) -> tuple[str, str, str, str]:
+        if not self._auto_retain_filter_enabled:
+            return user_content, assistant_content, "", ""
+
+        raw_user = user_content or ""
+        raw_assistant = assistant_content or ""
+        raw_combined = f"{raw_user}\n{raw_assistant}"
+        preserve_match = _matches_any_pattern(
+            raw_combined,
+            self._auto_retain_preserve_patterns,
+        )
+        sanitized_user = self._sanitize_filtered_text(raw_user)
+        sanitized_assistant = self._sanitize_filtered_text(raw_assistant)
+        action = ""
+        reason = ""
+
+        limit = self._max_auto_retain_chars_per_turn
+        if limit > 0:
+            if len(sanitized_user) > limit:
+                sanitized_user = sanitized_user[:limit].rstrip()
+                action = "sanitize_turn"
+                reason = "truncate_user"
+            if len(sanitized_assistant) > limit:
+                sanitized_assistant = sanitized_assistant[:limit].rstrip()
+                action = "sanitize_turn"
+                reason = reason or "truncate_assistant"
+
+        combined = f"{sanitized_user}\n{sanitized_assistant}".strip()
+        if not preserve_match:
+            if not combined:
+                return sanitized_user, sanitized_assistant, "skip_turn", "empty_after_sanitize"
+            matched = _matches_any_pattern(combined, self._auto_retain_skip_patterns)
+            if matched:
+                return sanitized_user, sanitized_assistant, "skip_turn", matched
+
+        if action:
+            return sanitized_user, sanitized_assistant, action, reason
+        if sanitized_user != raw_user or sanitized_assistant != raw_assistant:
+            return sanitized_user, sanitized_assistant, "sanitize_turn", "strip_patterns"
+        return sanitized_user, sanitized_assistant, "", ""
+
+    def _recall_text_is_noise(self, text: str) -> bool:
+        if not self._auto_retain_filter_enabled:
+            return False
+        return _matches_any_pattern(text, self._recall_skip_patterns) is not None
+
+    def _filtered_recall_result_texts(self, results) -> list[str]:
+        texts: list[str] = []
+        for result in results or []:
+            text = str(getattr(result, "text", "") or "")
+            if not text:
+                continue
+            if not self._auto_retain_filter_enabled:
+                texts.append(text)
+                continue
+            sanitized = self._sanitize_filtered_text(text)
+            if sanitized and not self._recall_text_is_noise(sanitized):
+                texts.append(sanitized)
+        return texts
+
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = str(session_id or "").strip()
         self._parent_session_id = str(kwargs.get("parent_session_id", "") or "").strip()
@@ -1645,6 +1944,7 @@ class HindsightMemoryProvider(MemoryProvider):
         default_url = _DEFAULT_LOCAL_URL if self._mode in {"local_embedded", "local_external"} else _DEFAULT_API_URL
         self._api_url = self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)
         self._llm_base_url = self._config.get("llm_base_url", "")
+        self._load_auto_retain_filter_settings()
 
         banks = cfg_get(self._config, "banks", "hermes", default={})
         static_bank_id = self._config.get("bank_id") or banks.get("bankId", "hermes")
@@ -1882,9 +2182,11 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.debug("Recall: calling recall (bank=%s, query_len=%d, budget=%s)",
                          self._bank_id, len(query), self._budget)
             resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
-            num_results = len(resp.results) if resp.results else 0
-            logger.debug("Recall: returned %d results", num_results)
-            text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
+            filtered_texts = self._filtered_recall_result_texts(resp.results)
+            num_results = len(filtered_texts)
+            logger.debug("Recall: returned %d results (%d after noise filtering)",
+                         len(resp.results) if resp.results else 0, num_results)
+            text = "\n".join(f"- {item}" for item in filtered_texts)
             return _RecallResult(text, num_results)
         except Exception as e:
             logger.debug("Hindsight recall failed: %s", e, exc_info=True)
@@ -1954,6 +2256,15 @@ class HindsightMemoryProvider(MemoryProvider):
             return
         if self._recall_disabled():
             return
+        if self._shutting_down.is_set():
+            logger.debug("Prefetch: skipped (shutting down)")
+            return
+        if self._recall_text_is_noise(query):
+            logger.debug("Prefetch: skipped noisy query")
+            return
+        # Truncate query to max chars
+        if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
+            query = query[:self._recall_max_input_chars]
 
         def _run():
             # Ensure the just-completed turn's retain is recall-visible on the
@@ -2066,7 +2377,36 @@ class HindsightMemoryProvider(MemoryProvider):
         if session_id:
             self._session_id = str(session_id).strip()
 
-        turn = json.dumps(self._build_turn_messages(user_content, assistant_content), ensure_ascii=False)
+        raw_user = user_content or ""
+        raw_assistant = assistant_content or ""
+        sanitized_user, sanitized_assistant, filter_action, filter_reason = (
+            self._sanitize_auto_retain_turn(raw_user, raw_assistant)
+        )
+        if filter_action == "skip_turn":
+            logger.debug("sync_turn: skipped by auto-retain filter (%s)", filter_reason)
+            self._audit_auto_retain_filter(
+                "skip_turn",
+                filter_reason,
+                raw_user,
+                raw_assistant,
+                sanitized_user,
+                sanitized_assistant,
+            )
+            return
+        if filter_action == "sanitize_turn":
+            self._audit_auto_retain_filter(
+                "sanitize_turn",
+                filter_reason,
+                raw_user,
+                raw_assistant,
+                sanitized_user,
+                sanitized_assistant,
+            )
+
+        turn = json.dumps(
+            self._build_turn_messages(sanitized_user, sanitized_assistant),
+            ensure_ascii=False,
+        )
         self._session_turns.append(turn)
         self._turn_counter += 1
         self._turn_index = self._turn_counter

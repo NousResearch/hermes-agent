@@ -102,6 +102,54 @@ Config file: `~/.hermes/hindsight/config.json`
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
 
+### Automatic noise filtering
+
+The filter runs only on **automatic** conversation retention and background auto-recall.
+Manual `hindsight_retain` and `hindsight_recall` tool calls are unchanged. Built-in
+rules remove Hermes lifecycle artifacts such as standalone model-switch notices and
+context-compaction reference blocks. Recall filtering is applied **per result**, so a
+noisy result cannot suppress useful sibling results; standalone artifact lines are
+removed without discarding useful text before or after them.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `auto_retain_filter_enabled` | `true` | Enables automatic retain/recall filtering. Set to `false` for a true no-op: no rewriting, query/result suppression, truncation, custom-pattern loading, or audit logging. |
+| `auto_retain_filter_path` | `hindsight/auto_retain_filter.yaml` | Optional YAML settings file. Relative paths resolve under `$HERMES_HOME`; config.json values extend/override the file. |
+| `auto_retain_artifact_line_patterns` | built-in lifecycle lines | Additional regex list. A match removes only the complete standalone line, preserving neighboring content. |
+| `auto_retain_strip_patterns` | built-in lifecycle blocks | Additional regex list removed from automatic retain text and from each auto-recall result. |
+| `auto_retain_skip_patterns` | — | Regex list that skips an automatic turn after sanitization. |
+| `auto_retain_preserve_patterns` | — | Regex list that preserves a turn even when a skip pattern matches. |
+| `recall_skip_patterns` | — | Additional regex list for suppressing noisy background auto-recall queries/results. Evaluated per result; manual recall is unaffected. |
+| `max_auto_retain_chars_per_turn` | `0` | Optional per-message cap after filtering; `0` disables truncation. |
+| `auto_retain_audit_log_path` | — | Optional JSONL audit path. Entries contain action/reason and character counts only, never transcript text. Relative paths resolve under `$HERMES_HOME`. |
+
+Example `~/.hermes/hindsight/auto_retain_filter.yaml`:
+
+```yaml
+enabled: true
+artifact_line_patterns:
+  - '(?i)^\s*\[temporary lifecycle notice[^\n]*\]\s*$'
+strip_patterns:
+  - '(?is)<temporary-context>.*?</temporary-context>'
+skip_turn_patterns:
+  - '(?is)^temporary debug note$'
+preserve_patterns:
+  - '(?i)remember'
+recall_skip_patterns:
+  - '(?is)^temporary debug note$'
+max_auto_retain_chars_per_turn: 0
+audit_log_path: hindsight/auto_retain_filter_audit.jsonl
+```
+
+### Retain/replay lifecycle scope
+
+Hermes keeps the in-memory turn buffer and append cursor local to the current provider
+lifecycle. Hindsight servers with append support receive only the new turn delta under
+the stable session document ID. Older servers receive the lifecycle-local accumulated
+buffer under a per-process document ID so resuming a session cannot overwrite content
+retained by a previous process. Buffered partial batches are flushed before a session
+switch, then the local replay state is reset for the new session.
+
 ### Integration
 
 | Key | Default | Description |

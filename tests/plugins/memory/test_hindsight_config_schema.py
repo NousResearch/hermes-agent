@@ -18,16 +18,44 @@ def test_hindsight_is_declared():
         "api_url",
         "bank_id",
         "recall_budget",
+        "auto_retain_filter_enabled",
+        "auto_retain_filter_path",
+        "auto_retain_artifact_line_patterns",
+        "auto_retain_strip_patterns",
+        "auto_retain_skip_patterns",
+        "auto_retain_preserve_patterns",
+        "recall_skip_patterns",
+        "max_auto_retain_chars_per_turn",
+        "auto_retain_audit_log_path",
     }
 
 
-def test_fields_are_all_inline():
+def test_basic_fields_are_inline_and_advanced_filtering_uses_full_config():
     provider = get_provider_config_schema("hindsight")
     assert provider is not None
 
-    # Hindsight is simple enough to render fully in the compact panel, so it
-    # never grows a Full config… modal.
-    assert all(field.inline for field in provider.fields)
+    inline = {field.key for field in provider.fields if field.inline}
+    assert inline == {
+        "mode",
+        "api_key",
+        "api_url",
+        "bank_id",
+        "recall_budget",
+    }
+
+    advanced = [field for field in provider.fields if not field.inline]
+    assert {field.group for field in advanced} == {"Automatic filtering"}
+    assert {field.key for field in advanced} == {
+        "auto_retain_filter_enabled",
+        "auto_retain_filter_path",
+        "auto_retain_artifact_line_patterns",
+        "auto_retain_strip_patterns",
+        "auto_retain_skip_patterns",
+        "auto_retain_preserve_patterns",
+        "recall_skip_patterns",
+        "max_auto_retain_chars_per_turn",
+        "auto_retain_audit_log_path",
+    }
 
 
 def test_mode_gating_is_expressed_as_select_options():

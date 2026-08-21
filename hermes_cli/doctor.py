@@ -35,6 +35,7 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_state_common import FTS_STORAGE_VERSION
 from utils import base_url_host_matches
 
 
@@ -496,21 +497,20 @@ def _render_state_db_stats(stats: dict, holders=None) -> list:
             "optimize-storage' with the gateway stopped)",
         ))
 
-    # Advisory: oversized database. Suggest auto_prune, and — when the v23
-    # FTS rebuild is pending OR the DB still carries the legacy inline
-    # trigram layout (fts_storage_version marker absent) — the offline
+    # Advisory: oversized database. Suggest auto_prune, and — when the FTS
+    # rebuild is pending OR the DB predates the current trigram layout — the offline
     # optimize-storage pass that migrates/compacts the FTS indexes.
     if logical is not None and logical > STATE_DB_SIZE_WARN_BYTES:
         detail = (
             "consider enabling sessions.auto_prune in config.yaml "
             "to bound growth"
         )
-        legacy_trigram = (
+        stale_trigram = (
             fts is not None
             and fts.get("messages_fts_trigram")
-            and stats.get("fts_storage_version") is None
+            and (stats.get("fts_storage_version") or 0) < FTS_STORAGE_VERSION
         )
-        if stats.get("fts_rebuild_pending") or legacy_trigram:
+        if stats.get("fts_rebuild_pending") or stale_trigram:
             detail += (
                 "; run 'hermes sessions optimize-storage' offline "
                 "(with the gateway stopped) to compact FTS storage"

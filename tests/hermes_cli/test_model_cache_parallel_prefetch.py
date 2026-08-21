@@ -204,7 +204,7 @@ class TestPrefetchIntegration:
         slugs = [f"prov_{i}" for i in range(5)]
         captured_slugs = []
 
-        def mock_collect(data, curated, excluded):
+        def mock_collect(data, curated, excluded, _pool_cache=None):
             return slugs
 
         with patch.object(model_switch_providers, "_collect_authed_provider_slugs", side_effect=mock_collect), \
@@ -224,7 +224,7 @@ class TestPrefetchIntegration:
 
         slugs = ["prov_a", "prov_b"]
 
-        def mock_collect(data, curated, excluded):
+        def mock_collect(data, curated, excluded, _pool_cache=None):
             return slugs
 
         with patch.object(model_switch_providers, "_collect_authed_provider_slugs", side_effect=mock_collect), \

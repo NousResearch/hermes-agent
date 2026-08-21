@@ -5619,7 +5619,18 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
     print()
     print("  Pass --force to start a separate profile gateway anyway (not")
     print("  recommended while the multiplexer is running).")
-    sys.exit(1)
+    # EX_CONFIG, not a generic failure. This refusal is decided entirely by
+    # configuration (multiplex_profiles plus the allowlist), so it is permanent:
+    # no number of retries can change the answer. Exiting 1 made it look
+    # transient to a service manager -- and the systemd unit this module
+    # generates pairs Restart=always/RestartSec=5 with StartLimitIntervalSec=0,
+    # deliberately trading systemd's generic start-rate limiter for the specific
+    # RestartPreventExitStatus=GATEWAY_FATAL_CONFIG_EXIT_CODE backstop declared
+    # beside it. Returning 1 left that backstop unarmed with the limiter already
+    # off, so a correct refusal became an unbounded restart loop. 78 also reaches
+    # the s6 finish script's 125 "permanent failure" translation (see #51228),
+    # the same path the other fatal-config exits take.
+    sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
 
 def _guard_supervised_gateway_conflict(force: bool = False) -> None:

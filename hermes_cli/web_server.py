@@ -417,6 +417,13 @@ async def _lifespan(app: "FastAPI"):
     # Reap idle/dead keep-alive PTY sessions in the background (30-min TTL).
     pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
 
+    # Reap finished dashboard action subprocesses unconditionally, so headless
+    # (``--no-open``) deployments don't accumulate ``<defunct>`` zombies. The
+    # ``/api/actions/{name}/status`` endpoint's ``poll()`` used to be the only
+    # reap path; without a browser polling it, exited children are never
+    # ``wait()``ed. See ``run_action_reaper`` for details.
+    action_reaper_task = asyncio.create_task(run_action_reaper())
+
     # Periodic authenticated self-test (feeds the ``dashboard`` component on
     # /api/status).  The loop exits immediately when httpx is unavailable.
     selftest_task = asyncio.create_task(_dashboard_selftest_loop())
@@ -433,6 +440,7 @@ async def _lifespan(app: "FastAPI"):
         pty_reaper_task.cancel()
         selftest_task.cancel()
         auto_archive_task.cancel()
+        action_reaper_task.cancel()
         await PTY_REGISTRY.close_all()
         if os.getenv("HERMES_DESKTOP") == "1":
             _terminate_desktop_managed_gateway()
@@ -4410,6 +4418,87 @@ _LAST_GATEWAY_RESTART: Optional[Tuple[float, subprocess.Popen, Tuple[str, ...]]]
 # without spawning a subprocess (for example, unsupported Docker updates).
 _ACTION_RESULTS: Dict[str, Dict[str, Any]] = {}
 
+# Handles that have lost their ``_ACTION_PROCS`` slot (overwritten by a newer
+# same-name action) but may not have exited yet.  They must be tracked
+# separately: ``_spawn_hermes_action`` overwrites ``_ACTION_PROCS[name]``, and
+# a subprocess is only reaped when its own ``Popen`` handle is ``wait()``ed.
+# Without this list, an overwritten handle is dropped on the floor and its
+# child lingers as a ``<defunct>`` zombie forever.
+_ACTION_ORPHANS: List[subprocess.Popen] = []
+_ACTION_ORPHANS_LOCK = threading.Lock()
+
+
+def _try_reap_action(proc: subprocess.Popen) -> bool:
+    """Non-blocking reap of one action child. True = reaped or nothing to do."""
+    try:
+        if proc.poll() is None:
+            return False           # still running; retry next tick
+        proc.wait(timeout=0)       # exited: releases the ``task_struct``
+        return True
+    except Exception:
+        # Already reaped elsewhere (ECHILD) or bad handle — nothing to track.
+        return True
+
+
+def _retire_action_proc(proc: Optional[subprocess.Popen]) -> None:
+    """Hand a ``Popen`` handle about to lose its reference to the reaper."""
+    if proc is None:
+        return
+    if _try_reap_action(proc):
+        return                     # already exited, reaped on the spot
+    with _ACTION_ORPHANS_LOCK:     # still running: let the reaper poll it
+        _ACTION_ORPHANS.append(proc)
+
+
+async def run_action_reaper(interval: float = 60.0) -> None:
+    """Periodically reap finished dashboard action subprocesses.
+
+    Action children (``gateway restart``/``start``/``stop``, ``doctor``,
+    ``backup``, ``update``, …) are spawned detached and, until this loop was
+    added, were only reaped when the UI polled
+    ``GET /api/actions/{name}/status``.  A headless dashboard (``--no-open``)
+    has no browser to poll that endpoint, so finished children are never
+    ``wait()``ed and accumulate as ``<defunct>`` zombies.
+    ``start_new_session=True`` only detaches the controlling terminal; it
+    does not reparent to init, so the kernel keeps the zombie until this
+    process reaps it.  This loop reaps unconditionally.
+
+    Design choices:
+
+    * Non-blocking poll (``poll()`` + ``wait(timeout=0)``) rather than
+      ``SIGCHLD``: asyncio installs its own child watcher on Unix, and a
+      module-level signal handler would conflict with it in surprising ways.
+    * Preserve the ``exit_code`` in ``_ACTION_RESULTS`` when reaping an
+      in-registry handle, so the ``/api/actions/{name}/status`` endpoint
+      keeps reporting exit codes exactly as before — only the timing of the
+      reap changes, never the observable result.
+    * Runs on the same event loop as the rest of the dashboard, so it is
+      naturally cancelled when the lifespan exits.
+    """
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            # In-registry handles: reap on exit, preserve exit_code so
+            # ``/api/actions/{name}/status`` can still report it.
+            for name, proc in list(_ACTION_PROCS.items()):
+                code = proc.poll()
+                if code is None:
+                    continue
+                if _try_reap_action(proc):
+                    _ACTION_RESULTS[name] = {"exit_code": code, "pid": proc.pid}
+                    _ACTION_PROCS.pop(name, None)
+                    _ACTION_COMMANDS.pop(name, None)
+            # Orphaned handles (overwritten by a newer same-name spawn, or
+            # retired via _retire_action_proc).
+            with _ACTION_ORPHANS_LOCK:
+                _ACTION_ORPHANS[:] = [
+                    p for p in _ACTION_ORPHANS if not _try_reap_action(p)
+                ]
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - defensive: never let the loop die
+            _log.exception("action reaper tick failed")
+
 
 def _terminate_desktop_managed_gateway() -> None:
     """Stop a live gateway restart child when its Desktop backend shuts down."""
@@ -4436,7 +4525,7 @@ def _record_completed_action(name: str, message: str, exit_code: int = 1) -> Non
         log_file.write(message.encode("utf-8", errors="replace"))
         if not message.endswith("\n"):
             log_file.write(b"\n")
-    _ACTION_PROCS.pop(name, None)
+    _retire_action_proc(_ACTION_PROCS.pop(name, None))
     _ACTION_COMMANDS.pop(name, None)
     _ACTION_IDS.pop(name, None)
     _ACTION_RESULTS[name] = {"exit_code": exit_code, "pid": None}
@@ -4503,6 +4592,10 @@ def _spawn_hermes_action(
     log_file.close()
     _ACTION_RESULTS.pop(name, None)
     _ACTION_COMMANDS[name] = tuple(subcommand)
+    # The previous same-name handle is about to lose its ``_ACTION_PROCS``
+    # slot; hand it to the reaper first so its child can never linger
+    # unreaped as a zombie.
+    _retire_action_proc(_ACTION_PROCS.get(name))
     _ACTION_PROCS[name] = proc
     action_id = (env_overrides or {}).get("HERMES_ACTION_ID")
     if action_id:

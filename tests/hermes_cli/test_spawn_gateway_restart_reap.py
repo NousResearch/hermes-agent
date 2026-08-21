@@ -1,7 +1,9 @@
 """Tests for _spawn_gateway_restart orphan-reap guard (#77276)."""
 from __future__ import annotations
 
+import asyncio
 import subprocess
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -65,3 +67,91 @@ class TestSpawnGatewayRestartReapsOrphans:
 
         mock_spawn.assert_called_once()
         assert proc is mock_proc
+
+
+class _FinishedProc:
+    def __init__(self, pid: int, code: int = 0):
+        self.pid = pid
+        self._code = code
+        self.wait_calls = 0
+
+    def poll(self):
+        return self._code
+
+    def wait(self, timeout=None):
+        assert timeout == 0
+        self.wait_calls += 1
+        return self._code
+
+
+class _RunningThenFinishedProc(_FinishedProc):
+    def __init__(self, pid: int, code: int = 0):
+        super().__init__(pid, code)
+        self._running = True
+
+    def poll(self):
+        if self._running:
+            return None
+        return self._code
+
+    def finish(self):
+        self._running = False
+
+
+@pytest.mark.asyncio
+async def test_action_reaper_reaps_completed_registered_action():
+    from hermes_cli import web_server
+
+    proc = _FinishedProc(pid=1234, code=7)
+    web_server._ACTION_PROCS["unit-action"] = cast(Any, proc)
+    web_server._ACTION_COMMANDS["unit-action"] = ("doctor",)
+    web_server._ACTION_RESULTS.pop("unit-action", None)
+
+    task = asyncio.create_task(web_server.run_action_reaper(interval=0.001))
+    try:
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+            if "unit-action" not in web_server._ACTION_PROCS:
+                break
+        assert "unit-action" not in web_server._ACTION_PROCS
+        assert "unit-action" not in web_server._ACTION_COMMANDS
+        assert web_server._ACTION_RESULTS["unit-action"] == {"exit_code": 7, "pid": 1234}
+        assert proc.wait_calls == 1
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        web_server._ACTION_PROCS.pop("unit-action", None)
+        web_server._ACTION_COMMANDS.pop("unit-action", None)
+        web_server._ACTION_RESULTS.pop("unit-action", None)
+
+
+@pytest.mark.asyncio
+async def test_action_reaper_drains_retired_same_name_orphan():
+    from hermes_cli import web_server
+
+    proc = _RunningThenFinishedProc(pid=5678)
+    with web_server._ACTION_ORPHANS_LOCK:
+        web_server._ACTION_ORPHANS.clear()
+
+    web_server._retire_action_proc(proc)
+    with web_server._ACTION_ORPHANS_LOCK:
+        assert web_server._ACTION_ORPHANS == [proc]
+
+    proc.finish()
+    task = asyncio.create_task(web_server.run_action_reaper(interval=0.001))
+    try:
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+            with web_server._ACTION_ORPHANS_LOCK:
+                if not web_server._ACTION_ORPHANS:
+                    break
+        with web_server._ACTION_ORPHANS_LOCK:
+            assert web_server._ACTION_ORPHANS == []
+        assert proc.wait_calls == 1
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        with web_server._ACTION_ORPHANS_LOCK:
+            web_server._ACTION_ORPHANS.clear()

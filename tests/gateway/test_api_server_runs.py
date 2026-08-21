@@ -10,6 +10,7 @@ Covers:
 """
 
 import asyncio
+import json
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -333,6 +334,51 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_events_stream_emits_completed_interim_messages(self, adapter):
+        """Visible assistant commentary between tool calls should be surfaced
+        as assistant.interim.completed events, not just tool.* activity."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            def create_agent(**kwargs):
+                callback = kwargs["interim_assistant_callback"]
+                agent = MagicMock()
+
+                def run_conversation(**_run_kwargs):
+                    callback("checking the docs first", already_streamed=False)
+                    callback("found it, applying the fix", already_streamed=True)
+                    return {"final_response": "Done!"}
+
+                agent.run_conversation.side_effect = run_conversation
+                agent.session_prompt_tokens = 10
+                agent.session_completion_tokens = 5
+                agent.session_total_tokens = 15
+                return agent
+
+            with patch.object(adapter, "_create_agent", side_effect=create_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                body = await events_resp.text()
+
+        events = [
+            json.loads(line[len("data: "):])
+            for line in body.splitlines()
+            if line.startswith("data: ")
+        ]
+        interim = [e for e in events if e.get("event") == "assistant.interim.completed"]
+        assert [e["event_id"] for e in interim] == [
+            f"{run_id}:interim:0",
+            f"{run_id}:interim:1",
+        ]
+        assert [e["content"] for e in interim] == [
+            "checking the docs first",
+            "found it, applying the fix",
+        ]
+        assert any(
+            e.get("event") == "run.completed" and e.get("output") == "Done!"
+            for e in events
+        )
 
     @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):

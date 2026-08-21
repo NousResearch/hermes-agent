@@ -2780,6 +2780,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        interim_assistant_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
@@ -3093,6 +3094,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "session_id": session_id,
             "platform": "api_server",
             "stream_delta_callback": stream_delta_callback,
+            "interim_assistant_callback": interim_assistant_callback,
             "tool_progress_callback": tool_progress_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
@@ -7595,6 +7597,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_approval_sessions[run_id] = approval_session_key
 
         event_cb = self._make_run_event_callback(run_id, loop)
+        interim_sequence = 0
 
         def _put_event_if_active(event: Optional[Dict]) -> None:
             """Enqueue only while this run still owns live transport state."""
@@ -7614,6 +7617,34 @@ class APIServerAdapter(BasePlatformAdapter):
                     "timestamp": time.time(),
                     "delta": delta,
                 })
+            except Exception:
+                pass
+
+        # Surface completed interim assistant commentary (the visible text
+        # of an assistant turn that also requested tool calls) as its own
+        # event. AIAgent._emit_interim_assistant_message() already strips
+        # reasoning blocks and drops empty turns before invoking this
+        # callback, so no extra model call is needed here — without this,
+        # SSE consumers only saw tool.started/tool.completed activity and
+        # had no way to see what the assistant said between tool calls.
+        def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
+            nonlocal interim_sequence
+            if not text:
+                return
+            if run_id not in self._run_streams:
+                return
+            event_id = f"{run_id}:interim:{interim_sequence}"
+            interim_sequence += 1
+            event = {
+                "event": "assistant.interim.completed",
+                "run_id": run_id,
+                "event_id": event_id,
+                "timestamp": time.time(),
+                "content": text,
+            }
+            self._set_run_status(run_id, "running", last_event=event["event"])
+            try:
+                loop.call_soon_threadsafe(_put_event_if_active, event)
             except Exception:
                 pass
 
@@ -7655,6 +7686,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         ephemeral_system_prompt=ephemeral_system_prompt,
                         session_id=session_id,
                         stream_delta_callback=_text_cb,
+                        interim_assistant_callback=_interim_assistant_cb,
                         tool_progress_callback=event_cb,
                         gateway_session_key=gateway_session_key,
                         requested_model=agent_overrides.get("requested_model"),

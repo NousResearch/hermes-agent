@@ -95,52 +95,40 @@ def completed_tool_call_pairs(
     return pairs
 
 
-def _neutralize_anthropic_sidecar(blocks: Any, removed_ids: set[Any]) -> Any:
-    if not isinstance(blocks, list):
-        return blocks
-    sanitized = []
-    note_inserted = False
-    for block in blocks:
-        if (
-            isinstance(block, dict)
-            and block.get("type") == "tool_use"
-            and block.get("id") in removed_ids
-        ):
-            if not note_inserted:
-                sanitized.append({"type": "text", "text": _WIRE_HISTORY_NOTE})
-                note_inserted = True
-            continue
-        sanitized.append(deepcopy(block))
-    return sanitized
-
-
 def neutralize_completed_incomplete_tool_calls(
     messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Return a provider-safe request copy without completed marker calls.
+    """Project canonical history into a conservative provider-safe request copy.
 
     Compression provenance belongs in Hermes' canonical transcript so the
     execution guard can fail closed. Once such a call has a tool result,
     replaying the pair on a later provider request makes the marker look like
-    fresh executable arguments. Remove both sides of only those completed
-    pairs and leave a plain assistant note. Unpaired calls remain untouched
-    for the execution guard, and ordinary calls in a mixed batch retain their
-    call/result pairing.
+    fresh executable arguments. Remove both sides of only those completed,
+    unambiguous pairs and leave a plain note.
+
+    An affected assistant turn is rebuilt only from canonical wire-neutral
+    fields (role, visible content, and any remaining ordinary tool calls).
+    Provider-native replay sidecars are deliberately discarded wholesale:
+    after one canonical tool call is removed, their IDs, inputs, signatures,
+    and cross-block ordering can no longer be trusted. The stored transcript
+    remains unchanged. Malformed non-dict history entries are also excluded
+    from the request projection rather than forwarded to provider schemas.
     """
-    pairs = completed_tool_call_pairs(messages)
+    request_messages = [message for message in messages if isinstance(message, dict)]
+    pairs = completed_tool_call_pairs(request_messages)
     neutralized_calls = {
         position
         for position in pairs
         if _tool_call_has_incomplete_arguments(
-            messages[position[0]]["tool_calls"][position[1]]
+            request_messages[position[0]]["tool_calls"][position[1]]
         )
     }
     if not neutralized_calls:
-        return messages
+        return messages if len(request_messages) == len(messages) else request_messages
     neutralized_results = {pairs[position] for position in neutralized_calls}
     note_boundaries: set[int] = set()
     for assistant_index in {position[0] for position in neutralized_calls}:
-        tool_calls = messages[assistant_index].get("tool_calls")
+        tool_calls = request_messages[assistant_index].get("tool_calls")
         if not isinstance(tool_calls, list) or not tool_calls:
             continue
         positions = [(assistant_index, index) for index in range(len(tool_calls))]
@@ -149,18 +137,15 @@ def neutralize_completed_incomplete_tool_calls(
         result_indices = [pairs[position] for position in positions]
         boundary = max(result_indices)
         next_index = boundary + 1
-        while next_index < len(messages) and next_index in neutralized_results:
+        while next_index < len(request_messages) and next_index in neutralized_results:
             next_index += 1
-        if next_index < len(messages):
-            following = messages[next_index]
-            if isinstance(following, dict) and following.get("role") == "assistant":
+        if next_index < len(request_messages):
+            following = request_messages[next_index]
+            if following.get("role") == "assistant":
                 note_boundaries.add(boundary)
 
     sanitized: list[dict[str, Any]] = []
-    for message_index, message in enumerate(messages):
-        if not isinstance(message, dict):
-            sanitized.append(message)
-            continue
+    for message_index, message in enumerate(request_messages):
         if message_index in neutralized_results:
             if message_index in note_boundaries:
                 sanitized.append({"role": "user", "content": _WIRE_HISTORY_NOTE})
@@ -182,29 +167,18 @@ def neutralize_completed_incomplete_tool_calls(
             sanitized.append(message)
             continue
 
-        copied = deepcopy(message)
-        removed_ids = {
-            call.get("id")
-            for call_index, call in enumerate(tool_calls)
-            if (message_index, call_index) in neutralized_calls
-            and isinstance(call, dict)
-        }
-        if kept_calls:
-            copied["tool_calls"] = deepcopy(kept_calls)
-        else:
-            copied.pop("tool_calls", None)
-        if "anthropic_content_blocks" in copied:
-            copied["anthropic_content_blocks"] = _neutralize_anthropic_sidecar(
-                copied["anthropic_content_blocks"], removed_ids
-            )
-        content = copied.get("content")
+        content = deepcopy(message.get("content"))
         if isinstance(content, list):
             content.append({"type": "text", "text": _WIRE_HISTORY_NOTE})
         elif isinstance(content, str) and content.strip():
-            copied["content"] = f"{content.rstrip()}\n{_WIRE_HISTORY_NOTE}"
+            content = f"{content.rstrip()}\n{_WIRE_HISTORY_NOTE}"
         else:
-            copied["content"] = _WIRE_HISTORY_NOTE
-        sanitized.append(copied)
+            content = _WIRE_HISTORY_NOTE
+
+        rebuilt: dict[str, Any] = {"role": "assistant", "content": content}
+        if kept_calls:
+            rebuilt["tool_calls"] = deepcopy(kept_calls)
+        sanitized.append(rebuilt)
     return sanitized
 
 

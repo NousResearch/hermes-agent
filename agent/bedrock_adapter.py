@@ -617,6 +617,11 @@ def convert_messages_to_converse(
     Converse requires strict user/assistant alternation. Consecutive messages
     with the same role are merged into a single message.
     """
+    from agent.tool_argument_integrity import (
+        neutralize_completed_incomplete_tool_calls,
+    )
+
+    messages = neutralize_completed_incomplete_tool_calls(messages)
     system_blocks: List[Dict] = []
     converse_msgs: List[Dict] = []
 

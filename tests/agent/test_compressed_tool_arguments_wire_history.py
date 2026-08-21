@@ -8,6 +8,7 @@ import json
 from agent.codex_responses_adapter import _chat_messages_to_responses_input
 from agent.transports.chat_completions import ChatCompletionsTransport
 from agent.transports.anthropic import AnthropicTransport
+from agent.transports.bedrock import BedrockTransport
 from agent.tool_argument_integrity import neutralize_completed_incomplete_tool_calls
 
 
@@ -210,7 +211,81 @@ def test_all_compressed_multi_call_history_is_provider_valid():
     )
 
 
-def test_malformed_non_dict_history_does_not_crash_sanitizer():
+def test_malformed_non_dict_history_is_dropped_from_every_provider_request():
     history = _all_compressed_history()[:3] + [None]
-    converted = neutralize_completed_incomplete_tool_calls(history)
-    assert converted[-1] is None
+
+    chat = ChatCompletionsTransport().convert_messages(history, model="gpt-5.6")
+    _system, anthropic = AnthropicTransport().convert_messages(history)
+    bedrock = BedrockTransport().build_kwargs(model="anthropic.claude", messages=history)
+
+    assert None not in chat
+    assert all(isinstance(message, dict) for message in anthropic)
+    assert all(isinstance(message, dict) for message in bedrock["messages"])
+
+
+def test_affected_turn_discards_malformed_and_stale_anthropic_sidecars():
+    history = _all_compressed_history()
+    affected = history[1]
+    affected["anthropic_content_blocks"] = [
+        {
+            "type": "tool_use",
+            "id": [],
+            "name": "terminal",
+            "input": {"command": "must never survive"},
+        },
+        {
+            "type": "tool_use",
+            "id": "stale-unmatched",
+            "name": "terminal",
+            "input": {"command": "also must never survive"},
+        },
+        {"type": "thinking", "thinking": "signed after tool", "signature": "sig"},
+    ]
+
+    projected = neutralize_completed_incomplete_tool_calls(history)
+    _system, anthropic = AnthropicTransport().convert_messages(history)
+
+    assert "anthropic_content_blocks" not in projected[1]
+    serialized = json.dumps(anthropic)
+    assert "must never survive" not in serialized
+    assert "also must never survive" not in serialized
+    assert "signed after tool" not in serialized
+    assert '"signature": "sig"' not in serialized
+
+
+def test_affected_turn_discards_all_provider_native_sidecars():
+    history = _all_compressed_history()
+    affected = history[1]
+    affected["reasoning_details"] = [
+        {"type": "thinking", "thinking": "provider native", "signature": "sig"}
+    ]
+    affected["codex_reasoning_items"] = [{"type": "reasoning", "id": "r1"}]
+    affected["codex_message_items"] = [
+        {"type": "message", "role": "assistant", "content": "provider native"}
+    ]
+
+    projected = neutralize_completed_incomplete_tool_calls(history)
+
+    for key in (
+        "anthropic_content_blocks",
+        "reasoning_details",
+        "codex_reasoning_items",
+        "codex_message_items",
+    ):
+        assert key not in projected[1]
+
+
+def test_direct_bedrock_build_kwargs_neutralizes_completed_marker_call():
+    history = _mixed_history()
+    original = copy.deepcopy(history)
+
+    kwargs = BedrockTransport().build_kwargs(
+        model="anthropic.claude-3-5-sonnet", messages=history
+    )
+
+    assert history == original
+    serialized = json.dumps(kwargs)
+    assert "__hermes_incomplete_tool_arguments__" not in serialized
+    assert "call_incomplete" not in serialized
+    assert "call_complete" in serialized
+    assert "README contents" in serialized

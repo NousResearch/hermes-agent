@@ -28,6 +28,7 @@ from gateway.relay.adapter import RelayAdapter
 from gateway.relay.command_manifest import build_relay_command_manifest
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 from gateway.relay.ws_transport import _event_from_wire
+from gateway.session import SessionSource
 
 from tests.gateway.relay.stub_connector import StubConnector
 
@@ -367,9 +368,7 @@ def _mk_runner_stub():
 
 
 def _relay_channel_source():
-    from types import SimpleNamespace
-
-    return SimpleNamespace(
+    return SessionSource(
         platform=Platform.DISCORD,
         chat_id="chan-parent",
         chat_type="group",
@@ -378,6 +377,76 @@ def _relay_channel_source():
         auto_thread_created=False,
         auto_thread_initial_name=None,
     )
+
+
+@pytest.mark.asyncio
+async def test_title_rename_native_uses_native_adapter_call_shape():
+    """Native Discord must not receive relay-only rename kwargs."""
+    calls = []
+
+    class NativeAdapter:
+        async def rename_thread(
+            self, thread_id, name, *, only_if_current_name=None
+        ):
+            calls.append((thread_id, name, only_if_current_name))
+            return True
+
+    runner = _mk_runner_stub()(NativeAdapter())
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="thread-1",
+        chat_type="thread",
+        thread_id="thread-1",
+        auto_thread_created=True,
+        auto_thread_initial_name="raw opener",
+        delivered_via_upstream_relay=False,
+    )
+
+    await runner._rename_discord_auto_thread_for_session_title(
+        source, "sess-native", "Semantic Session Title"
+    )
+
+    assert calls == [("thread-1", "Semantic Session Title", "raw opener")]
+
+
+@pytest.mark.asyncio
+async def test_title_rename_relay_keeps_relay_adapter_call_shape():
+    """Relay Discord keeps its connector guard and parent-channel routing."""
+    calls = []
+
+    class RelayRenameAdapter:
+        async def rename_thread(
+            self,
+            thread_id,
+            name,
+            *,
+            prefer_connector_created=False,
+            only_if_current_name=None,
+            parent_chat_id=None,
+        ):
+            calls.append(
+                (
+                    thread_id,
+                    name,
+                    prefer_connector_created,
+                    only_if_current_name,
+                    parent_chat_id,
+                )
+            )
+            return True
+
+    runner = _mk_runner_stub()(RelayRenameAdapter())
+
+    await runner._rename_discord_auto_thread_for_session_title(
+        _relay_channel_source(),
+        "sess-relay",
+        "Semantic Relay Title",
+        relay_info=("relay-thread-1", "raw opener"),
+    )
+
+    assert calls == [
+        ("relay-thread-1", "Semantic Relay Title", True, None, "chan-parent")
+    ]
 
 
 def test_relay_channel_lane_shape_gate():

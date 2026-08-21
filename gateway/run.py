@@ -5254,11 +5254,9 @@ class TurnRunner:
     def _attach_session_title_callback(self, agent, ctx) -> None:
         """Wire the platform thread-rename lane onto the agent as `_on_session_title`.
 
-        The session titler runs inside the turn prologue now (it derives the
-        title from the user's first message, so it no longer needs the
-        response), which means the callback has to be attached before the run
-        rather than registered after it. The lane predicates and their
-        rationale are unchanged from the old post-response registration.
+        Telegram follows normal turn-start auto-titling. Discord deliberately
+        does not: its semantic auto-thread rename is generated from the first
+        completed turn and dispatched by ``_dispatch_discord_contextual_title``.
         """
         try:
             # Gateway auto-title failures must NOT be surfaced as user-visible
@@ -5288,25 +5286,99 @@ class TurnRunner:
                         source, session_id, title,
                     )
                 )
-            elif self._runner._is_discord_auto_thread_lane(source) or (
-                self._runner._is_relay_discord_channel_lane(source)
-            ):
-                # Relay note: the second predicate is shape-only (relay
-                # Discord channel event). Whether the connector actually
-                # auto-threaded our reply is only knowable AFTER delivery
-                # (send-result feedback), so the callback must be registered
-                # eagerly and the rename lane performs the cache lookup at
-                # fire time (staging repro 2026-07-31: gating registration on
-                # the cache read meant it never registered and no
-                # thread_rename op was ever sent).
-                agent._on_session_title = lambda title, title_source: (
-                    title_source == "llm"
-                    and self._runner._schedule_discord_semantic_thread_rename(
-                        source, session_id, title,
-                    )
-                )
         except Exception:
             logger.debug("Failed to attach session title callback", exc_info=True)
+
+    def _dispatch_discord_contextual_title(
+        self,
+        agent,
+        ctx,
+        result: dict,
+        agent_history: list,
+        effective_session_id: Optional[str],
+    ) -> None:
+        """Dispatch one Discord auto-thread title after the first completed reply."""
+        source = ctx.source
+        if not (
+            self._runner._is_discord_auto_thread_lane(source)
+            or self._runner._is_relay_discord_channel_lane(source)
+        ):
+            return
+        if not effective_session_id:
+            return
+        if getattr(agent, "_discord_contextual_title_dispatched", False):
+            return
+        if not isinstance(result, dict) or result.get("completed") is not True:
+            return
+        if result.get("failed") or result.get("partial") or result.get("interrupted") or result.get("error"):
+            return
+        if not str(result.get("final_response") or "").strip():
+            return
+
+        messages = result.get("messages")
+        if not isinstance(messages, list):
+            return
+        from agent.message_content import flatten_message_text
+
+        history_len = len(agent_history or [])
+        current_turn = messages[history_len:] if len(messages) >= history_len else messages
+        if not any(
+            isinstance(message, dict)
+            and message.get("role") == "assistant"
+            and flatten_message_text(message.get("content")).strip()
+            for message in current_turn
+        ):
+            return
+        opening_message = next(
+            (
+                flatten_message_text(message.get("content")).strip()
+                for message in current_turn
+                if isinstance(message, dict)
+                and message.get("role") == "user"
+                and flatten_message_text(message.get("content")).strip()
+            ),
+            str(ctx.message or "").strip(),
+        )
+        if not opening_message:
+            return
+
+        # Mark before spawning so a queued/re-entrant turn cannot dispatch a
+        # second model call. Adapter-side current-name guards remain the durable
+        # no-clobber backstop across gateway restarts.
+        agent._discord_contextual_title_dispatched = True
+        try:
+            from agent.title_generator import maybe_generate_contextual_title
+
+            model = getattr(agent, "model", None)
+            provider = getattr(agent, "provider", None)
+
+            def _rename_contextual_title(title: str, title_source: str) -> None:
+                if title_source == "llm":
+                    self._runner._schedule_discord_semantic_thread_rename(
+                        source, effective_session_id, title,
+                    )
+
+            maybe_generate_contextual_title(
+                getattr(agent, "_session_db", None),
+                effective_session_id,
+                opening_message,
+                current_turn,
+                failure_callback=getattr(agent, "_title_failure_callback", None),
+                main_runtime={
+                    "model": model,
+                    "provider": provider,
+                    "base_url": getattr(agent, "base_url", None),
+                    "api_key": getattr(agent, "api_key", None),
+                    "api_mode": getattr(agent, "api_mode", None),
+                },
+                title_callback=_rename_contextual_title,
+                runtime_validator=lambda: (
+                    getattr(agent, "model", None) == model
+                    and getattr(agent, "provider", None) == provider
+                ),
+            )
+        except Exception:
+            logger.debug("Discord contextual title dispatch failed", exc_info=True)
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
         ctx = self._ctx
@@ -6661,13 +6733,12 @@ class TurnRunner:
                     unique_tags.insert(0, "[[audio_as_voice]]")
                 final_response = final_response + "\n" + "\n".join(unique_tags)
 
-        # Auto-titling runs at TURN START (agent/turn_context.py) from the
-        # user's message alone, so it no longer waits on final_response — a
-        # failed or interrupted turn still gets a titled session. The
-        # platform-specific thread-rename callbacks are attached to the agent
-        # as `_on_session_title` before the run starts (see
-        # _attach_session_title_callback), because the titler now fires from
-        # inside the turn prologue rather than from here.
+        # Session auto-titling still runs at turn start. Discord auto-thread
+        # renaming is the exception: generate its semantic title only now, from
+        # the completed first-turn transcript (including tools + assistant).
+        self._dispatch_discord_contextual_title(
+            agent, ctx, result, agent_history, effective_session_id,
+        )
 
         return {
             "final_response": final_response,
@@ -22927,13 +22998,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             thread_name,
         )
         try:
-            renamed = await rename_thread(
-                target_thread_id,
-                thread_name,
-                prefer_connector_created=use_connector_guard,
-                only_if_current_name=guard_name,
-                parent_chat_id=parent_chat_id,
-            )
+            if use_connector_guard:
+                renamed = await rename_thread(
+                    target_thread_id,
+                    thread_name,
+                    prefer_connector_created=True,
+                    only_if_current_name=guard_name,
+                    parent_chat_id=parent_chat_id,
+                )
+            else:
+                renamed = await rename_thread(
+                    target_thread_id,
+                    thread_name,
+                    only_if_current_name=guard_name,
+                )
             logger.info(
                 "discord auto-thread rename result: thread=%s applied=%s",
                 target_thread_id,

@@ -1088,6 +1088,13 @@ def clear_model_endpoint_credentials(
     if clear_api_key:
         model_cfg.pop("api_key", None)
         model_cfg.pop("api", None)
+        # key_env is a first-class credential POINTER (runtime_provider and
+        # auxiliary_client resolve it), written by custom-endpoint activation.
+        # Leaving it behind on a provider switch routes the NEW provider's
+        # requests to the OLD endpoint's env var — same staleness class as an
+        # inline api_key, so it clears under the same flag.
+        model_cfg.pop("key_env", None)
+        model_cfg.pop("api_key_env", None)
     if clear_api_mode:
         model_cfg.pop("api_mode", None)
     if clear_base_url:

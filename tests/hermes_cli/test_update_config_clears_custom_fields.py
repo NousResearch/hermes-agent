@@ -66,6 +66,33 @@ class TestUpdateConfigForProviderClearsStaleCustomFields:
         assert "api_mode" not in model_cfg
         assert model_cfg["provider"] == "openrouter"
 
+    def test_clear_model_endpoint_credentials_removes_key_env_pointer(self):
+        # key_env is a live credential pointer (runtime_provider /
+        # auxiliary_client resolve it), written by custom-endpoint activation.
+        # Surviving a provider switch it routes the NEW provider's requests to
+        # the OLD endpoint's env var — it clears with the inline key.
+        model_cfg = {
+            "provider": "custom_myendpoint",
+            "default": "some-model",
+            "key_env": "CUSTOM_MYENDPOINT_API_KEY",
+            "api_key_env": "LEGACY_PTR",
+        }
+
+        clear_model_endpoint_credentials(model_cfg)
+
+        assert "key_env" not in model_cfg
+        assert "api_key_env" not in model_cfg
+
+    def test_clear_api_key_false_preserves_key_env(self):
+        # The clear_api_key=False flavor (same-provider re-pick) must keep the
+        # pointer exactly as it keeps the inline key.
+        model_cfg = {"provider": "custom_x", "key_env": "CUSTOM_X_API_KEY", "api_mode": "openai"}
+
+        clear_model_endpoint_credentials(model_cfg, clear_api_key=False)
+
+        assert model_cfg["key_env"] == "CUSTOM_X_API_KEY"
+        assert "api_mode" not in model_cfg
+
     def test_switching_to_openrouter_clears_api_key_and_api_mode(self):
         _seed_custom_provider_config()
 

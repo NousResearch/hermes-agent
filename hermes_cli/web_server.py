@@ -1763,12 +1763,15 @@ def _apply_main_model_assignment(
     if api_key.strip():
         model_cfg["api_key"] = api_key.strip()
         model_cfg.pop("api", None)
-    elif (model_cfg.get("api_key") or model_cfg.get("api")) and new_provider != prev_provider:
+    elif (
+        model_cfg.get("api_key") or model_cfg.get("api") or model_cfg.get("key_env") or model_cfg.get("api_key_env")
+    ) and new_provider != prev_provider:
         # A stale endpoint secret can live under the legacy ``api`` alias with
-        # no ``api_key`` (the resolver still reads ``model.api`` as a key), so
-        # the switch-clears-the-key path must trigger on either field — else the
-        # old endpoint's secret survives in config.yaml and contaminates a later
-        # custom resolution. clear_model_endpoint_credentials scrubs both.
+        # no ``api_key`` (the resolver still reads ``model.api`` as a key), or
+        # as a ``key_env`` POINTER with no inline key at all (custom-endpoint
+        # activation writes key_env only) — the switch-clears path must trigger
+        # on any of them, else the old endpoint's credential routing survives
+        # in config.yaml and contaminates the new provider's resolution.
         clear_model_endpoint_credentials(model_cfg, clear_api_mode=False)
     if new_provider != prev_provider:
         clear_model_endpoint_credentials(model_cfg, clear_api_key=False)

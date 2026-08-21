@@ -8,7 +8,7 @@ import {
 } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useCallback, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useInRouterContext, useNavigate } from 'react-router'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { SETTINGS_ROUTE } from '@/app/routes'
@@ -462,6 +462,19 @@ const ErrorLayerLabel: FC = () => {
   return <div className="font-medium">{label}</div>
 }
 
+// Isolated because useNavigate() THROWS outside a <Router> (bare test
+// harnesses, embedded panes render threads router-free). The parent gates
+// this child's mount on useInRouterContext(), which is safe anywhere.
+const SwitchProviderAction: FC<{ label: string }> = ({ label }) => {
+  const navigate = useNavigate()
+
+  return (
+    <button className="aui-error-action" onClick={() => navigate(`${SETTINGS_ROUTE}?tab=config:model`)} type="button">
+      {label}
+    </button>
+  )
+}
+
 const ErrorRecoveryActions: FC = () => {
   const { t } = useI18n()
   const copy = t.assistant.thread
@@ -473,7 +486,9 @@ const ErrorRecoveryActions: FC = () => {
     return status?.type === 'incomplete' && typeof status.error === 'string' ? status.error : ''
   })
 
-  const navigate = useNavigate()
+  // useNavigate() would throw here when no Router is above us; the deep-link
+  // child mounts only when one is (see SwitchProviderAction).
+  const inRouter = useInRouterContext()
   const model = useStore($currentModel)
 
   // Retry = assistant-ui reload (same wiring as the footer's refresh action):
@@ -525,11 +540,7 @@ const ErrorRecoveryActions: FC = () => {
           </button>
         </ActionBarPrimitive.Reload>
       )}
-      {showSwitchProvider && (
-        <button className="aui-error-action" onClick={() => navigate(`${SETTINGS_ROUTE}?tab=config:model`)} type="button">
-          {copy.errorSwitchProvider}
-        </button>
-      )}
+      {showSwitchProvider && inRouter && <SwitchProviderAction label={copy.errorSwitchProvider} />}
       {window.hermesDesktop?.logsRoot && (
         <button className="aui-error-action" onClick={() => void openLogs()} type="button">
           {copy.errorOpenLogs}

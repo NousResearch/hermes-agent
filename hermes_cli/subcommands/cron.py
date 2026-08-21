@@ -46,6 +46,12 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Attach a skill. Repeat to add multiple skills.",
     )
     cron_create.add_argument(
+        "--toolset",
+        dest="enabled_toolsets",
+        action="append",
+        help="Restrict the job to this toolset. Repeat to add multiple toolsets.",
+    )
+    cron_create.add_argument(
         "--script",
         help=(
             "Path to a script under ~/.hermes/scripts/. Default mode: "
@@ -144,6 +150,12 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         dest="skills",
         action="append",
         help="Replace the job's skills with this set. Repeat to attach multiple skills.",
+    )
+    cron_edit.add_argument(
+        "--toolset",
+        dest="enabled_toolsets",
+        action="append",
+        help="Replace the job's toolset scope. Repeat to add multiple toolsets.",
     )
     cron_edit.add_argument(
         "--add-skill",

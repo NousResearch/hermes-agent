@@ -128,6 +128,27 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
 
+    def test_create_persists_repeatable_toolset_scope(self, tmp_cron_dir, capsys):
+        cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="every 1h",
+                prompt="Scoped prep",
+                name="Scoped job",
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=["beca-meeting-prep"],
+                enabled_toolsets=["file", "google_calendar", "attio"],
+                script=None,
+                workdir=None,
+                no_agent=False,
+            )
+        )
+
+        jobs = list_jobs()
+        assert jobs[0]["enabled_toolsets"] == ["file", "google_calendar", "attio"]
+
 
 
 class TestGatewayNotRunningWarning:

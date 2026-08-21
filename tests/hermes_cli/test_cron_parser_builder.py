@@ -48,3 +48,16 @@ def test_cron_accept_hooks_flag_on_run_and_tick():
     assert ns.accept_hooks is True
     ns2 = parser.parse_args(["cron", "tick", "--accept-hooks"])
     assert ns2.accept_hooks is True
+
+
+def test_cron_create_and_edit_accept_repeatable_toolset_scope():
+    parser = _build()
+    created = parser.parse_args([
+        "cron", "create", "30m", "prep", "--toolset", "file", "--toolset", "attio",
+    ])
+    edited = parser.parse_args([
+        "cron", "edit", "jobid", "--toolset", "file", "--toolset", "no_mcp",
+    ])
+
+    assert created.enabled_toolsets == ["file", "attio"]
+    assert edited.enabled_toolsets == ["file", "no_mcp"]

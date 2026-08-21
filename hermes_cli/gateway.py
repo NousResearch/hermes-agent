@@ -4831,6 +4831,24 @@ def generate_launchd_plist() -> str:
     <key>ThrottleInterval</key>
     <integer>30</integer>
 
+    <!-- macOS launchd defaults RLIMIT_NOFILE to 256, which is too low for a
+         long-running gateway: a burst of outbound connections (agent runs,
+         platform polling, model streaming) can exhaust the descriptor limit
+         in minutes, after which every open() in the process raises
+         OSError: [Errno 24] Too many open files and the gateway wedges
+         (existing #37011 / #14210 issue class). Raise the soft+hard limit
+         to 10240 so the keepalive HTTP pools have ample headroom. -->
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>10240</integer>
+    </dict>
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>10240</integer>
+    </dict>
+
     <key>ExitTimeOut</key>
     <integer>25</integer>
 {nofile_block}

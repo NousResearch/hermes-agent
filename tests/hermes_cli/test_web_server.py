@@ -2993,6 +2993,98 @@ class TestModelInfoEndpoint:
         assert data["effective_context_length"] == 100000  # override wins
 
 
+    def test_model_info_custom_provider_capabilities(self, monkeypatch):
+        """Named custom providers expose their configured model capabilities."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "load_config", lambda: {
+            "model": {
+                "default": "inkling",
+                "provider": "custom:vllm-cwb101",
+            },
+            "custom_providers": [{
+                "name": "vllm-cwb101",
+                "base_url": "http://127.0.0.1:18080/v1",
+                "models": {
+                    "inkling": {
+                        "context_length": 1048576,
+                        "max_output_tokens": 65536,
+                        "supports_tools": True,
+                        "supports_vision": True,
+                        "supports_reasoning": True,
+                        "reasoning_efforts": [
+                            "none", "low", "medium", "high", "xhigh"
+                        ],
+                    }
+                },
+            }],
+        })
+
+        with patch("agent.model_metadata.get_model_context_length", return_value=1048576), \
+             patch("agent.models_dev.get_model_capabilities") as models_dev_caps:
+            resp = self.client.get("/api/model/info")
+
+        caps = resp.json()["capabilities"]
+        assert caps == {
+            "supports_tools": True,
+            "supports_vision": True,
+            "supports_reasoning": True,
+            "reasoning_efforts": ["none", "low", "medium", "high", "xhigh"],
+            "context_window": 1048576,
+            "max_output_tokens": 65536,
+            "model_family": "",
+        }
+        models_dev_caps.assert_not_called()
+
+    def test_model_info_custom_provider_legacy_display_name_with_spaces(self, monkeypatch):
+        """Legacy custom-provider display names with spaces (e.g. "Inkling
+        Local") are canonicalised by ``custom_provider_slug()`` to
+        ``custom:inkling-local``.  When ``model.provider`` carries that
+        slug, the capability resolver must still match the entry — the raw
+        display name ("inkling local") would not.  Regression test for the
+        sweeper-reported gap."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "load_config", lambda: {
+            "model": {
+                "default": "inkling",
+                "provider": "custom:inkling-local",
+            },
+            "custom_providers": [{
+                "name": "Inkling Local",
+                "base_url": "http://127.0.0.1:18080/v1",
+                "models": {
+                    "inkling": {
+                        "context_length": 1048576,
+                        "max_output_tokens": 65536,
+                        "supports_tools": True,
+                        "supports_vision": False,
+                        "supports_reasoning": True,
+                        "reasoning_efforts": [
+                            "none", "low", "medium", "high", "xhigh"
+                        ],
+                    }
+                },
+            }],
+        })
+
+        with patch("agent.model_metadata.get_model_context_length", return_value=1048576), \
+             patch("agent.models_dev.get_model_capabilities") as models_dev_caps:
+            resp = self.client.get("/api/model/info")
+
+        assert resp.status_code == 200
+        caps = resp.json()["capabilities"]
+        assert caps == {
+            "supports_tools": True,
+            "supports_vision": False,
+            "supports_reasoning": True,
+            "reasoning_efforts": ["none", "low", "medium", "high", "xhigh"],
+            "context_window": 1048576,
+            "max_output_tokens": 65536,
+            "model_family": "",
+        }
+        models_dev_caps.assert_not_called()
+
     def test_model_info_graceful_on_metadata_error(self, monkeypatch):
         """Endpoint should return zeros on import/resolution errors, not 500."""
         import hermes_cli.web_server as ws

@@ -539,7 +539,12 @@ def ensure_fresh_token(
         return rotated.access_token, True
 
 
-def force_refresh_token(path: Path, host: str) -> str | None:
+def force_refresh_token(
+    path: Path,
+    host: str,
+    *,
+    rejected_access_token: str | None = None,
+) -> str | None:
     """Rotate ``host``'s access token now, ignoring local expiry.
 
     Recovers a 401 on a token the local clock still thinks is valid.
@@ -559,6 +564,19 @@ def force_refresh_token(path: Path, host: str) -> str | None:
             # cycle — callers fail open and retry after the cooldown.
             return None
         cached = _expiry_cache.get(key)
+        # A sibling thread/process may already have rotated the single-use
+        # refresh grant after this request left with ``rejected_access_token``.
+        # Adopt that newer valid disk token.  Comparing only against this
+        # process's expiry cache is insufficient: the winning thread updates
+        # both disk and cache, so every waiter would otherwise rotate again and
+        # invalidate the winner in sequence (a persistent 401 storm).
+        if (
+            rejected_access_token
+            and cred.access_token != rejected_access_token
+            and not cred.is_expired(now=now)
+        ):
+            _expiry_cache[key] = (cred.expires_at, cred.access_token)
+            return cred.access_token
         # Another thread or process already rotated: adopt the newer on-disk token.
         if cached is not None and cred.access_token != cached[1] and not cred.is_expired(now=now):
             _expiry_cache[key] = (cred.expires_at, cred.access_token)

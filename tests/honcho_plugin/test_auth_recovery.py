@@ -193,6 +193,30 @@ class TestForceRefreshToken:
         )
         assert oauth.force_refresh_token(path, "hermes") == "hch-at-2"
 
+    def test_waiting_401_adopts_winner_even_when_cache_already_advanced(
+        self, tmp_path, monkeypatch
+    ):
+        """A waiter must not rotate again after the winner updated disk+cache."""
+        path = tmp_path / "honcho.json"
+        far = int(time.time() + 7200)
+        old = _host_block(expires_at=far)
+        _write(path, {"hosts": {"hermes": old}})
+        oauth.ensure_fresh_token(path, "hermes")
+
+        winner = _host_block(refresh="hch-rt-2", expires_at=far)
+        winner["apiKey"] = "hch-at-2"
+        _write(path, {"hosts": {"hermes": winner}})
+        oauth._expiry_cache[(str(path), "hermes")] = (far, "hch-at-2")
+        monkeypatch.setattr(
+            oauth,
+            "_http_post_form_status",
+            lambda *a, **k: pytest.fail("waiter must adopt the winner"),
+        )
+
+        assert oauth.force_refresh_token(
+            path, "hermes", rejected_access_token="hch-at-old"
+        ) == "hch-at-2"
+
     def test_transient_failure_returns_none(self, tmp_path, monkeypatch):
         path = tmp_path / "honcho.json"
         _write(path, {"hosts": {"hermes": _host_block(expires_at=time.time() + 3600)}})
@@ -344,7 +368,13 @@ class TestForceReauth:
         applied = {}
         monkeypatch.setattr(session_mod, "get_honcho_client", lambda *a, **k: fake_client)
         monkeypatch.setattr(client_mod, "resolve_config_path", lambda: tmp_path / "honcho.json")
-        monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h: "hch-at-new")
+        rejected = {}
+
+        def force(p, h, **kw):
+            rejected.update(kw)
+            return "hch-at-new"
+
+        monkeypatch.setattr(oauth, "force_refresh_token", force)
 
         def apply(client, token):
             applied["client"] = client
@@ -354,14 +384,20 @@ class TestForceReauth:
         monkeypatch.setattr(oauth, "apply_token_to_client", apply)
 
         mgr = HonchoSessionManager(config=HonchoClientConfig(host="hermes"))
+        mgr._peers_cache["u"] = object()
+        mgr._sessions_cache["s"] = object()
         assert mgr._force_reauth() is True
         assert applied == {"client": fake_client, "token": "hch-at-new"}
+        assert rejected == {"rejected_access_token": None}
+        assert mgr._peers_cache == {}
+        assert mgr._sessions_cache == {}
+        assert mgr._client_generation == 1
 
     def test_returns_false_when_refresh_yields_nothing(self, tmp_path, monkeypatch):
         from plugins.memory.honcho import client as client_mod
 
         monkeypatch.setattr(client_mod, "resolve_config_path", lambda: tmp_path / "honcho.json")
-        monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h: None)
+        monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h, **kw: None)
         mgr = HonchoSessionManager(config=HonchoClientConfig(host="hermes"))
         assert mgr._force_reauth() is False
 
@@ -731,7 +767,7 @@ def _wire_rebuild(tmp_path, monkeypatch, fresh_client):
     clients = {"current": MagicMock()}
     monkeypatch.setattr(session_mod, "get_honcho_client", lambda *a, **k: clients["current"])
     monkeypatch.setattr(client_mod, "resolve_config_path", lambda: tmp_path / "honcho.json")
-    monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h: "hch-at-rotated")
+    monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h, **kw: "hch-at-rotated")
     monkeypatch.setattr(oauth, "apply_token_to_client", lambda c, t: False)
     monkeypatch.setattr(
         client_mod, "reset_honcho_client",
@@ -871,7 +907,7 @@ def _wire_init(tmp_path, monkeypatch, client, *, recall_mode="hybrid", dead_refr
     monkeypatch.setattr(client_mod, "get_honcho_client", lambda *a, **k: client)
     monkeypatch.setattr(session_mod, "get_honcho_client", lambda *a, **k: client)
     if dead_refresh:
-        monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h: None)
+        monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h, **kw: None)
     cfg = HonchoClientConfig(
         host="hermes", api_key="hch-at-old", enabled=True, recall_mode=recall_mode,
         timeout=0.5, session_strategy="per-session",
@@ -980,7 +1016,7 @@ class TestInitAuthFailureNotice:
         client.peer.side_effect = TimeoutError("request timed out")
         _wire_init(tmp_path, monkeypatch, client, dead_refresh=False)
         reauths = []
-        monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h: reauths.append(1))
+        monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h, **kw: reauths.append(1))
         provider = _initialized_provider()
 
         assert provider._manager is None

@@ -290,16 +290,28 @@ class HonchoSessionManager:
             host = getattr(self._config, "host", "") or ""
             if not host:
                 return False
-            token = oauth.force_refresh_token(self._bound_config_path(), host)
+            live_http = getattr(self.honcho, "_http", None)
+            rejected_token = getattr(live_http, "api_key", None)
+            token = oauth.force_refresh_token(
+                self._bound_config_path(),
+                host,
+                rejected_access_token=(
+                    rejected_token if isinstance(rejected_token, str) else None
+                ),
+            )
             if not token:
                 return False
-            if not oauth.apply_token_to_client(self.honcho, token):
+            applied_in_place = oauth.apply_token_to_client(self.honcho, token)
+            if not applied_in_place:
                 # SDK shape changed: rebuild the client and drop objects holding the old transport.
                 reset_honcho_client()
-                with self._cache_lock:
-                    self._client_generation += 1
-                    self._peers_cache.clear()
-                    self._sessions_cache.clear()
+            # Peer and Session SDK objects may retain their own transport/auth
+            # state even when the root client's Bearer rotated in place.  Always
+            # evict them so the retry resolves objects against the fresh token.
+            with self._cache_lock:
+                self._client_generation += 1
+                self._peers_cache.clear()
+                self._sessions_cache.clear()
             return True
         except Exception:
             logger.warning("Honcho post-401 token refresh failed", exc_info=True)

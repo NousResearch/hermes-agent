@@ -407,7 +407,7 @@ def test_capability_manifest_reads_config(monkeypatch):
     assert cb._cua_capability_manifest() is None
 
 
-def test_session_yolo_overrides_configured_bounded(monkeypatch):
+def test_session_yolo_does_not_override_configured_bounded(monkeypatch):
     import tools.computer_use.tool as cu_tool
 
     monkeypatch.setattr(
@@ -418,7 +418,8 @@ def test_session_yolo_overrides_configured_bounded(monkeypatch):
     monkeypatch.setattr(
         approval, "is_approval_bypass_active_for_session", lambda sid: True
     )
-    assert cu_tool._cua_permission_mode("sess-1") == "unrestricted"
+    # Yolo should NOT escalate the driver mode; configured ceiling is preserved.
+    assert cu_tool._cua_permission_mode("sess-1") == "bounded"
 
 
 def test_no_yolo_uses_configured_bounded(monkeypatch):

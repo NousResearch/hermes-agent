@@ -3026,6 +3026,14 @@ def _ensure_session_db_row(session: dict) -> None:
             # means the launch/default profile (matches run_agent's convention).
             profile_name=Path(profile_home).name if profile_home else None,
         )
+        # The insert above writes cwd but not git_branch. The enrichment
+        # could not start earlier: update_session_cwd claims a generation
+        # only when the row exists, and the row did not exist before this
+        # insert. Claim one now. Then the branch probe publishes, and the
+        # sidebar PR join has a branch to join on.
+        row_cwd = _persisted_session_cwd(session)
+        if row_cwd:
+            _persist_session_cwd_and_schedule_git_meta(session, row_cwd, db=db)
         # A session can be born hidden (session.create hidden=true, or a
         # session.set_hidden that arrived before the row existed): apply the
         # deferred intent now that the row exists, mirroring pending_title.
@@ -7288,6 +7296,20 @@ def _init_session(
                 with _sessions_lock:
                     if sid in _sessions:
                         _sessions[sid]["cwd"] = row["cwd"]
+                # The adopt path did not start enrichment before. A row with
+                # no git_branch stayed branchless forever, and the sidebar PR
+                # badge never rendered. Heal the row here. The claim is
+                # generation-guarded, so a concurrent move still wins.
+                if not (row.get("git_branch") and row.get("git_repo_root")):
+                    try:
+                        if hasattr(db, "update_session_cwd"):
+                            _persist_session_cwd_and_schedule_git_meta(
+                                _sessions[sid], row["cwd"], db=db
+                            )
+                    except Exception:
+                        logger.debug(
+                            "failed to backfill session git metadata", exc_info=True
+                        )
             else:
                 try:
                     _cwd = _sessions[sid]["cwd"]

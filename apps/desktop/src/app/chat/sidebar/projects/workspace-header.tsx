@@ -185,6 +185,7 @@ export function WorkspaceHeader({
   emphasis = false,
   icon,
   label,
+  meta,
   onToggle,
   open,
   title,
@@ -195,6 +196,10 @@ export function WorkspaceHeader({
   emphasis?: boolean
   icon: React.ReactNode
   label: string
+  /** Identity chips beside the label (the lane's PR badge). A SIBLING of the
+   *  toggle button, not a child: the chip is itself a button, and a button
+   *  inside a button is invalid HTML (and unreachable by keyboard). */
+  meta?: React.ReactNode
   onToggle: () => void
   open: boolean
   /** Hover tooltip — the lane's full on-disk path (worktree / repo root). */
@@ -211,7 +216,11 @@ export function WorkspaceHeader({
     >
       <button
         className={cn(
-          'flex min-w-0 flex-1 items-center gap-1.5 bg-transparent text-left',
+          'flex min-w-0 items-center gap-1.5 bg-transparent text-left',
+          // With a chip beside the label the button yields the chip's width
+          // (flex-1 would push the chip into the actions' corner); without one
+          // it keeps the whole row as its click target.
+          meta ? 'min-w-0 shrink' : 'min-w-0 flex-1',
           emphasis ? 'hover:text-foreground' : 'hover:text-(--ui-text-secondary)'
         )}
         onClick={onToggle}
@@ -224,6 +233,8 @@ export function WorkspaceHeader({
           open={open}
         />
       </button>
+      {meta}
+      {meta ? <div className="min-w-0 flex-1" /> : null}
       {action}
     </div>
   )

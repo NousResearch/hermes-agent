@@ -6913,6 +6913,19 @@ class TestSupportsReasoningExtraBody:
             agent.model = model
             assert agent._supports_reasoning_extra_body() is True, model
 
+    def test_nvidia_models_are_treated_as_reasoning_capable(self):
+        """NVIDIA Nemotron reasoning models on OpenRouter must support
+        reasoning extra_body so that ``reasoning_effort: none`` can disable
+        reasoning (GH #75386)."""
+        agent = self._make_agent()
+        for model in (
+            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+            "nvidia/nemotron-ultra-253b",
+            "nvidia/llama-3.1-nemotron-70b-instruct:free",
+        ):
+            agent.model = model
+            assert agent._supports_reasoning_extra_body() is True, model
+
 
 class TestMemoryContextSanitization:
     """sanitize_context() helper correctness — used at provider boundaries."""

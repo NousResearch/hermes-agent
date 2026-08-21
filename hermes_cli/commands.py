@@ -2353,11 +2353,15 @@ class SlashCommandAutoSuggest(AutoSuggest):
         # English word-level match: a query word that shares a prefix with a
         # description token (learn → "learn"/"learning" in "Learn a reusable
         # skill"). Requires words ≥3 chars so "he"/"lo" noise never fires.
+        # Only the description-token-starts-with-query direction is allowed:
+        # the reverse (query starts with a description token) misfires on
+        # compound words — "helpline"/"helping" must never ghost-suggest
+        # /help just because the help description contains "help".
         q_words = [w for w in re.split(r"[^a-z0-9]+", q) if len(w) >= 3]
         if q_words:
             d_words = [w for w in re.split(r"[^a-z0-9]+", d) if len(w) >= 3]
             if any(
-                any(w == tw or w.startswith(tw) or tw.startswith(w) for tw in d_words)
+                any(w == tw or tw.startswith(w) for tw in d_words)
                 for w in q_words
             ):
                 return 3.0

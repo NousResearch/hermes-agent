@@ -5895,8 +5895,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     or ""
                 ).strip()
                 if _cur_branch and _cur_branch != branch:
-                    import time as _time
-
                     print(
                         f"  ⚠ Checkout is on custom branch '{_cur_branch}' — "
                         f"merging origin/{branch} instead of resetting so local commits survive..."

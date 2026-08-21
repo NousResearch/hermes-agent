@@ -1121,6 +1121,7 @@ def _build_tool_start(
         content = [_text(f"$ {command}")]
         return acp.start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
+            raw_input={"command": command},
         )
 
     if tool_name == "read_file":

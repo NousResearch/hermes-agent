@@ -161,6 +161,16 @@ class TestBuildToolStart:
 
 
 
+    def test_terminal_start_sends_untruncated_command_as_raw_input(self):
+        """The title is truncated for display; raw_input must carry the whole command."""
+        long_cmd = "echo " + "x" * 500
+        result = build_tool_start("tc-terminal-start", "terminal", {"command": long_cmd})
+
+        assert isinstance(result, ToolCallStart)
+        assert result.kind == "execute"
+        assert "..." in result.title
+        assert result.raw_input == {"command": long_cmd}
+
     def test_build_tool_start_for_browser_navigate(self):
         """browser_navigate should emit a polished start event."""
         args = {"url": "https://x.com"}

@@ -2034,6 +2034,10 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Include the <available_skills> catalogue in new sessions. Disable
+        # when a plugin or scripted caller provides its own skill-discovery
+        # surface; skill tools remain available either way.
+        "inject_index": True,
         # Project-local skill discovery: when a session starts inside a git
         # checkout, ``<root>/.hermes/skills/`` and ``<root>/.agents/skills/``
         # are sourced as the highest-precedence skill tier — but ONLY when the

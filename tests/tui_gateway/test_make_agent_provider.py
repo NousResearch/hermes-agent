@@ -60,6 +60,38 @@ def test_make_agent_passes_resolved_provider():
         assert call_kwargs.kwargs["api_mode"] == "anthropic_messages"
 
 
+def test_make_agent_forwards_no_skills_index_handoff(monkeypatch):
+    fake_runtime = {
+        "provider": "anthropic",
+        "base_url": "https://api.anthropic.com",
+        "api_key": "sk-test-key",
+        "api_mode": "anthropic_messages",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+    }
+    monkeypatch.setenv("HERMES_TUI_NO_SKILLS_INDEX", "1")
+
+    with (
+        patch("tui_gateway.server._load_cfg", return_value={"agent": {}}),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch("tui_gateway.server._load_tool_progress_mode", return_value="compact"),
+        patch("tui_gateway.server._load_reasoning_config", return_value=None),
+        patch("tui_gateway.server._load_service_tier", return_value=None),
+        patch("tui_gateway.server._load_enabled_toolsets", return_value=None),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ),
+        patch("run_agent.AIAgent") as mock_agent,
+    ):
+        from tui_gateway.server import _make_agent
+
+        _make_agent("sid-1", "key-1")
+
+    assert mock_agent.call_args.kwargs["inject_skills_index"] is False
+
+
 def test_probe_config_health_flags_null_sections():
     """Bare YAML keys (`agent:` with no value) parse as None and silently
     drop nested settings; probe must surface them so users can fix."""

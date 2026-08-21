@@ -6712,6 +6712,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "platform": "tui",
         "session_db": _get_db(),
         "fallback_model": _agent_fallback_model(agent),
+        "inject_skills_index": getattr(agent, "_inject_skills_index", None),
     }
 
 
@@ -7202,6 +7203,13 @@ def _make_agent(
         ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
+        inject_skills_index=(
+            # Internal bridge var (set by _launch_tui when
+            # --no-skills-index is passed); not a user-facing knob.
+            False
+            if is_truthy_value(os.environ.get("HERMES_TUI_NO_SKILLS_INDEX"))
+            else None
+        ),
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         fallback_model=_load_fallback_model(),

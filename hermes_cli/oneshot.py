@@ -206,6 +206,7 @@ def run_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: Optional[str] = None,
+    inject_skills_index: Optional[bool] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -282,6 +283,7 @@ def run_oneshot(
                     provider=provider,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
+                    inject_skills_index=inject_skills_index,
                     skills=skills,
                 )
             except BaseException as exc:  # noqa: BLE001
@@ -360,6 +362,7 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    inject_skills_index: Optional[bool] = None,
     skills: object = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
@@ -486,6 +489,7 @@ def _run_agent(
             session_db=session_db,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,
+            inject_skills_index=inject_skills_index,
             ephemeral_system_prompt=skills_prompt,
             # Interactive callbacks are intentionally NOT wired beyond this
             # one.  In oneshot mode there's no user sitting at a terminal:

@@ -104,6 +104,25 @@ def _ra():
     return run_agent
 
 
+def _resolve_skills_index_injection(
+    skills_config: object,
+    override: Optional[bool] = None,
+) -> bool:
+    """Resolve the session-static skill-index setting without truthy coercion."""
+    if override is not None:
+        return override
+    if not isinstance(skills_config, dict):
+        logger.warning(
+            "skills config must be a mapping; defaulting inject_index to true"
+        )
+        return True
+    configured = skills_config.get("inject_index", True)
+    if not isinstance(configured, bool):
+        logger.warning("skills.inject_index must be a boolean; defaulting to true")
+        return True
+    return configured
+
+
 def _moa_reference_output_allowed(agent: Any) -> bool:
     """Keep MoA display events off only the machine-readable ``-Q`` surface."""
     return not (
@@ -589,6 +608,7 @@ def init_agent(
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
     requested_provider: str = None,
+    inject_skills_index: Optional[bool] = None,
 ):
     """
     Initialize the AI Agent.
@@ -1938,13 +1958,26 @@ def init_agent(
     from agent.memory_manager import inject_memory_provider_tools as _inject_memory_provider_tools
     _inject_memory_provider_tools(agent)
 
-    # Skills config: nudge interval for skill creation reminders
-    agent._skill_nudge_interval = 10
+    # Skills config: prompt-index injection and skill-creation reminders.
+    # ``inject_index`` is session-static because the rendered system prompt is
+    # cached for the conversation lifetime.
+    agent._inject_skills_index = _resolve_skills_index_injection(
+        _agent_cfg.get("skills", {}),
+        inject_skills_index,
+    )
+    # Narrow the guard to the cast itself: a non-numeric value is a local
+    # config error we can diagnose, while config-read failures should surface
+    # instead of being swallowed by a broad except (Copilot review #83314).
     try:
-        skills_config = _agent_cfg.get("skills", {})
-        agent._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
-    except Exception:
-        pass
+        agent._skill_nudge_interval = int(
+            _agent_cfg.get("skills", {}).get("creation_nudge_interval", 10)
+        )
+    except (TypeError, ValueError) as _nudge_err:
+        logger.warning(
+            "skills.creation_nudge_interval must be an integer; "
+            "defaulting to 10 (%s)",
+            _nudge_err,
+        )
 
     # Tool-use enforcement config: "auto" (default — matches hardcoded
     # model list), true (always), false (never), or list of substrings.

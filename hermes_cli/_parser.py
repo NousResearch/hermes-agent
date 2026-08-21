@@ -262,6 +262,13 @@ def build_top_level_parser():
     )
     _inherited_flag(
         parser,
+        "--no-skills-index",
+        action="store_true",
+        default=False,
+        help="Omit <available_skills> for this invocation without disabling skill tools",
+    )
+    _inherited_flag(
+        parser,
         "--safe-mode",
         action="store_true",
         default=False,
@@ -501,6 +508,13 @@ def build_top_level_parser():
         action="store_true",
         default=argparse.SUPPRESS,
         help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills. Combine with --ignore-user-config for a fully isolated run.",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--no-skills-index",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Omit <available_skills> for this invocation without disabling skill tools.",
     )
     _inherited_flag(
         chat_parser,

@@ -57,10 +57,63 @@ def _write(path: Path, payload: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_profile_can_disable_global_credential_pool_fallback(profile_env):
+    """Security-sensitive profiles can refuse every root pool credential."""
+    from hermes_cli.auth import read_credential_pool
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "xai-oauth": [{
+            "id": "global-xai",
+            "label": "global-xai",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "manual",
+            "access_token": "global-access",
+            "refresh_token": "global-refresh",
+        }],
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={}))
+    (profile_env["profile"] / "config.yaml").write_text(
+        "auth:\n  global_fallback: false\n"
+    )
+
+    assert read_credential_pool("xai-oauth") == []
+    assert read_credential_pool(None) == {}
 
 
+def test_managed_config_can_disable_global_credential_pool_fallback(
+    profile_env, monkeypatch
+):
+    """An administrator-pinned false value overrides the profile config."""
+    from hermes_cli import managed_scope
+    from hermes_cli.auth import read_credential_pool
+    import hermes_cli.config as config_module
 
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "xai-oauth": [{
+            "id": "global-xai",
+            "label": "global-xai",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "manual",
+            "access_token": "global-access",
+            "refresh_token": "global-refresh",
+        }],
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={}))
+    (profile_env["profile"] / "config.yaml").write_text(
+        "auth:\n  global_fallback: true\n"
+    )
+    managed_dir = profile_env["global"] / "managed"
+    managed_dir.mkdir()
+    (managed_dir / "config.yaml").write_text(
+        "auth:\n  global_fallback: false\n"
+    )
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+    config_module._LOAD_CONFIG_CACHE.clear()
+    managed_scope.invalidate_managed_cache()
 
+    assert read_credential_pool("xai-oauth") == []
 
 
 def test_missing_global_auth_file_is_safe(profile_env):
@@ -125,6 +178,21 @@ def test_provider_auth_state_falls_back_to_global_when_profile_has_none(profile_
     state = get_provider_auth_state("nous")
     assert state is not None
     assert state["access_token"] == "nous-global"
+
+
+def test_profile_can_disable_global_provider_state_fallback(profile_env):
+    """The same opt-out covers singleton provider state, not only pools."""
+    from hermes_cli.auth import get_provider_auth_state
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
+        "nous": {"access_token": "nous-global", "refresh_token": "rt-global"},
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
+    (profile_env["profile"] / "config.yaml").write_text(
+        "auth:\n  global_fallback: false\n"
+    )
+
+    assert get_provider_auth_state("nous") is None
 
 
 def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):

@@ -1144,8 +1144,19 @@ def _handle_attach(args: dict, **kw) -> str:
         return tool_error("content_base64 is required")
     import base64
     import binascii
+    import re as _re
+    # Normalize before strict validation: tolerate a `data:<mime>;base64,`
+    # URI prefix (common for anything touched by browser/vision tooling) and
+    # whitespace/newlines (the coreutils `base64` CLI line-wraps at 76 chars,
+    # RFC 2045). Both are valid base64 once the non-alphabet formatting is
+    # stripped; validate=True then still rejects genuinely bad characters.
+    raw = str(content_b64).strip()
+    raw = _re.sub(r"^data:[^;]*;base64,", "", raw)
+    raw = _re.sub(r"\s+", "", raw)
+    if not raw:
+        return tool_error("content_base64 is not valid base64: empty payload")
     try:
-        data = base64.b64decode(str(content_b64), validate=True)
+        data = base64.b64decode(raw, validate=True)
     except (binascii.Error, ValueError) as e:
         return tool_error(f"content_base64 is not valid base64: {e}")
     content_type = args.get("content_type")

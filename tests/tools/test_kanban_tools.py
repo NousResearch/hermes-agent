@@ -1134,3 +1134,84 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# kanban_attach — permissive base64 (line-wrapped / data-URI prefixed)
+# ---------------------------------------------------------------------------
+
+
+def _b64_wrap_76(data: bytes) -> str:
+    """Encode ``data`` the way the coreutils `base64` CLI does: newline-
+    wrapped at 76 characters (RFC 2045)."""
+    import base64 as _b64
+
+    encoded = _b64.b64encode(data).decode()
+    return "\n".join(encoded[i:i + 76] for i in range(0, len(encoded), 76))
+
+
+def test_attach_accepts_line_wrapped_base64(worker_env):
+    """76-char-wrapped base64 (coreutils CLI output) decodes successfully."""
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    payload = b"line-wrapped attachment payload " * 8
+    wrapped = _b64_wrap_76(payload)
+
+    out = kt._handle_attach({"filename": "wrapped.txt", "content_base64": wrapped})
+    d = json.loads(out)
+    assert d.get("ok") is True, out
+    assert d["size"] == len(payload)
+
+    conn = kb.connect()
+    try:
+        atts = kb.list_attachments(conn, worker_env)
+        assert [a.filename for a in atts] == ["wrapped.txt"]
+        assert Path(atts[0].stored_path).read_bytes() == payload
+    finally:
+        conn.close()
+
+
+def test_attach_accepts_data_uri_base64_prefix(worker_env):
+    """A data:<mime>;base64, URI prefix is stripped before decoding."""
+    import base64 as _b64
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    payload = b"\x89PNG\r\n\x1a\n fake image bytes"
+    uri = f"data:image/png;base64,{_b64.b64encode(payload).decode()}"
+
+    out = kt._handle_attach(
+        {
+            "filename": "img.png",
+            "content_base64": uri,
+            "content_type": "image/png",
+        }
+    )
+    d = json.loads(out)
+    assert d.get("ok") is True, out
+
+    conn = kb.connect()
+    try:
+        atts = kb.list_attachments(conn, worker_env)
+        assert [a.filename for a in atts] == ["img.png"]
+        assert atts[0].content_type == "image/png"
+        assert Path(atts[0].stored_path).read_bytes() == payload
+    finally:
+        conn.close()
+
+
+def test_attach_rejects_genuinely_invalid_base64(worker_env):
+    """Non-whitespace garbage still fails cleanly after normalization."""
+    from tools import kanban_tools as kt
+
+    out = kt._handle_attach(
+        {"filename": "bad.txt", "content_base64": "%%%not-base64%%%"}
+    )
+    d = json.loads(out)
+    assert "error" in d, out
+    assert "not valid base64" in d["error"]

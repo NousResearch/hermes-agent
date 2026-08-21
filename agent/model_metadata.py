@@ -1595,6 +1595,13 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     patterns = [
         r'max_model_len\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM: "max_model_len 32768", "=32768", ": 32768", "(32768)", "is 32768"
         r'maximum model length\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM alt: "maximum model length 131072", "... is 131072"
+        # llama.cpp exceed_context_size_error: "request (33056 tokens) exceeds
+        # the available context size (32768 tokens), try increasing it".  The
+        # limit sits behind a paren, which the generic context pattern below
+        # cannot cross (same delimiter class the vLLM patterns above fix) —
+        # and the leading "request (33056 tokens)" must NOT be captured, so
+        # anchor on the "available context size" phrasing specifically.
+        r'available context size\s*\(?\s*(\d{4,})\s*tokens?\)?',
         r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
         r'context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})',
         r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',

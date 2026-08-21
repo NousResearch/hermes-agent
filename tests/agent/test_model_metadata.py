@@ -1298,6 +1298,37 @@ class TestParseContextLimitFromError:
         fell through to None."""
         assert parse_context_limit_from_error(msg) == expected
 
+    @pytest.mark.parametrize("msg,expected", [
+        # llama.cpp exceed_context_size_error, message field only.  Must
+        # return the LIMIT (32768), never the request size (33056) that
+        # appears first in the message.
+        ("request (33056 tokens) exceeds the available context size "
+         "(32768 tokens), try increasing it", 32768),
+        # Same error as the full stringified JSON body a client may surface.
+        ('{"error":{"code":400,"message":"request (33056 tokens) exceeds '
+         'the available context size (32768 tokens), try increasing it",'
+         '"type":"exceed_context_size_error","n_prompt_tokens":33056,'
+         '"n_ctx":32768}}', 32768),
+    ])
+    def test_llamacpp_exceed_context_size_error(self, msg, expected):
+        """llama.cpp's exceed_context_size_error puts the limit behind a
+        paren ("available context size (32768 tokens)"), which the generic
+        context pattern could not cross — the parser returned None, so
+        overflow recovery kept a wrong catalog-guessed window (e.g. 131072
+        for a server enforcing 32768) and compression never converged
+        ("Cannot compress further")."""
+        assert parse_context_limit_from_error(msg) == expected
+
+    def test_get_context_length_from_llamacpp_error_adopts_lower_limit(self):
+        from agent.model_metadata import get_context_length_from_provider_error
+        msg = ("request (33056 tokens) exceeds the available context size "
+               "(32768 tokens), try increasing it")
+        # Catalog guessed 131072 for a llama.cpp server enforcing 32768: the
+        # provider-reported lower limit must be adopted.
+        assert get_context_length_from_provider_error(msg, 131072) == 32768
+        # Guard unchanged: never raise the window from an error message.
+        assert get_context_length_from_provider_error(msg, 16384) is None
+
     def test_get_context_length_from_vllm_max_model_len_error(self):
         from agent.model_metadata import get_context_length_from_provider_error
 

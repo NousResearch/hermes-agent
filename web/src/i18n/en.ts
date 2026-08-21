@@ -512,6 +512,8 @@ export const en: Translations = {
     customKeyNamePlaceholder: "e.g. MY_SERVICE_API_KEY",
     add: "Add",
     invalidKeyName: "Use letters, numbers and underscores only (must start with a letter or underscore).",
+    managedByOnePassword: "Managed via 1Password",
+    onePasswordStaleHint: "Mapped to 1Password, but a stale value is still stored here. Remove it to let 1Password manage this key.",
   },
 
   oauth: {

@@ -529,6 +529,12 @@ export interface Translations {
     customKeyNamePlaceholder: string;
     add: string;
     invalidKeyName: string;
+    managedByOnePassword?: string;
+    // Optional: non-English locales fall back to the English literal in the
+    // component until translated. Shown on a row that is mapped to
+    // 1Password but still has a stale .env value, so Save fails with the
+    // backend's 1Password guard error.
+    onePasswordStaleHint?: string;
   };
 
   // ── OAuth ──

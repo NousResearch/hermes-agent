@@ -695,7 +695,9 @@ export const en: Translations = {
       couldNotSave: 'Could not save credential.',
       remove: 'Remove',
       getKey: 'Get a key',
-      saving: 'Saving'
+      saving: 'Saving',
+      managedByOnePassword: 'Managed via 1Password',
+      onePasswordStaleHint: 'Mapped to 1Password, but a stale value is still stored here. Remove it to let 1Password manage this key.'
     },
     envActions: {
       actions: 'Actions',

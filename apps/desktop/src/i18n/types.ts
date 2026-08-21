@@ -584,6 +584,14 @@ export interface Translations {
       remove: string
       getKey: string
       saving: string
+      /** Optional — fall back to the English literal until translated (matches
+       *  web/src/i18n/types.ts's `env.managedByOnePassword`). */
+      managedByOnePassword?: string
+      /** Optional — fall back to the English literal until translated (matches
+       *  web/src/i18n/types.ts's `env.onePasswordStaleHint`). Shown on a row
+       *  that is mapped to 1Password but still has a stale .env value, so
+       *  Save fails with the backend's 1Password guard error. */
+      onePasswordStaleHint?: string
     }
     envActions: {
       actions: string

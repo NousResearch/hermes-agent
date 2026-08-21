@@ -900,7 +900,9 @@ export const zh: Translations = {
       couldNotSave: '无法保存凭据。',
       remove: '移除',
       getKey: '获取密钥',
-      saving: '保存中'
+      saving: '保存中',
+      managedByOnePassword: '通过 1Password 管理',
+      onePasswordStaleHint: '已映射到 1Password，但此处仍存有旧值。移除它以便由 1Password 管理此密钥。'
     },
     envActions: {
       actions: '操作',

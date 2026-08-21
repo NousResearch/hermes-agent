@@ -150,3 +150,207 @@ def test_update_rotates_config_yaml_model_mirror(hermes_home):
 # ---------------------------------------------------------------------------
 
 
+def test_save_env_value_refuses_onepassword_managed_key(hermes_home):
+    _write_config(
+        hermes_home,
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: true\n"
+        "    env:\n"
+        '      ANTHROPIC_API_KEY: "op://Private/Anthropic/credential"\n',
+    )
+    from hermes_cli.config import save_env_value
+
+    with pytest.raises(ValueError, match="1Password"):
+        save_env_value("ANTHROPIC_API_KEY", "sk-ant-" + "x" * 24)
+
+    assert not hermes_home.joinpath(".env").exists()
+
+
+def test_save_env_value_unaffected_for_key_not_mapped_in_onepassword(hermes_home):
+    _write_config(
+        hermes_home,
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: true\n"
+        "    env:\n"
+        '      ANTHROPIC_API_KEY: "op://Private/Anthropic/credential"\n',
+    )
+    from hermes_cli.config import load_env, save_env_value
+
+    new_value = "sk-or-" + "y" * 24
+    save_env_value("OPENROUTER_API_KEY", new_value)
+    assert load_env()["OPENROUTER_API_KEY"] == new_value
+
+
+def test_save_env_value_unaffected_when_onepassword_disabled(hermes_home):
+    _write_config(
+        hermes_home,
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: false\n"
+        "    env:\n"
+        '      ANTHROPIC_API_KEY: "op://Private/Anthropic/credential"\n',
+    )
+    from hermes_cli.config import load_env, save_env_value
+
+    new_value = "sk-ant-" + "w" * 24
+    save_env_value("ANTHROPIC_API_KEY", new_value)
+    assert load_env()["ANTHROPIC_API_KEY"] == new_value
+
+
+def test_get_env_reports_onepassword_managed_key(hermes_home, monkeypatch):
+    _write_config(
+        hermes_home,
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: true\n"
+        "    env:\n"
+        '      ANTHROPIC_API_KEY: "op://Private/Anthropic/credential"\n',
+    )
+    resolved = "sk-ant-" + "z" * 24
+    monkeypatch.setenv("ANTHROPIC_API_KEY", resolved)
+
+    resp = client.get("/api/env", headers=HEADERS)
+    assert resp.status_code == 200
+    row = resp.json()["ANTHROPIC_API_KEY"]
+    assert row["is_set"] is True
+    assert row["managed_by"] == "onepassword"
+    assert resolved not in resp.text
+
+
+def test_get_env_unmapped_key_has_no_managed_by(hermes_home):
+    resp = client.get("/api/env", headers=HEADERS)
+    assert resp.status_code == 200
+    row = resp.json()["ANTHROPIC_API_KEY"]
+    assert row["is_set"] is False
+    assert row.get("managed_by") is None
+
+
+# ---------------------------------------------------------------------------
+# Final-review fix 1: onepassword_managed_env_keys() must be evaluated inside
+# the REQUESTED profile's scope, not the dashboard/default profile's.
+# ---------------------------------------------------------------------------
+
+
+def test_get_env_onepassword_mapping_is_profile_scoped(hermes_home, monkeypatch):
+    """A key mapped via 1Password in profile A must not appear managed when
+    profile B (which never mapped it) is queried, and vice versa.
+
+    Regression for the final-review finding that ``onepassword_managed_env_keys()``
+    was called OUTSIDE ``with _profile_scope(profile):`` in
+    ``_get_env_vars_sync()``, so it always read the dashboard/default
+    profile's config.yaml regardless of the ``?profile=`` query param.
+    """
+    from hermes_cli import profiles as profiles_mod
+
+    # Default profile (the dashboard's own home, via the hermes_home fixture)
+    # maps ANTHROPIC_API_KEY via 1Password. It must NOT leak into the
+    # "worker" profile's view.
+    _write_config(
+        hermes_home,
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: true\n"
+        "    env:\n"
+        '      ANTHROPIC_API_KEY: "op://Private/Anthropic/credential"\n',
+    )
+    resolved = "sk-ant-" + "z" * 24
+    monkeypatch.setenv("ANTHROPIC_API_KEY", resolved)
+
+    worker_home = profiles_mod.get_profile_dir("worker")
+    worker_home.mkdir(parents=True)
+    # "worker" maps a DIFFERENT key (OPENROUTER_API_KEY) via 1Password, and
+    # does NOT map ANTHROPIC_API_KEY at all.
+    (worker_home / "config.yaml").write_text(
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: true\n"
+        "    env:\n"
+        '      OPENROUTER_API_KEY: "op://Private/OpenRouter/credential"\n',
+        encoding="utf-8",
+    )
+
+    # Default profile: ANTHROPIC_API_KEY is 1Password-managed, OPENROUTER is not.
+    default_resp = client.get("/api/env", headers=HEADERS)
+    assert default_resp.status_code == 200
+    default_rows = default_resp.json()
+    assert default_rows["ANTHROPIC_API_KEY"]["managed_by"] == "onepassword"
+    assert default_rows["OPENROUTER_API_KEY"].get("managed_by") is None
+
+    # "worker" profile: OPENROUTER_API_KEY is 1Password-managed there, and
+    # ANTHROPIC_API_KEY must NOT be reported as managed (it's only mapped in
+    # the default profile's config.yaml, which "worker" must not see).
+    worker_resp = client.get("/api/env?profile=worker", headers=HEADERS)
+    assert worker_resp.status_code == 200
+    worker_rows = worker_resp.json()
+    assert worker_rows["OPENROUTER_API_KEY"]["managed_by"] == "onepassword"
+    assert worker_rows["ANTHROPIC_API_KEY"].get("managed_by") is None
+    assert worker_rows["ANTHROPIC_API_KEY"]["is_set"] is False
+
+
+# ---------------------------------------------------------------------------
+# Final-review fix 2: a stale plaintext .env copy must win over the
+# 1Password mapping — the row must behave like a normal, editable key.
+# ---------------------------------------------------------------------------
+
+
+def test_get_env_onepassword_mapped_key_with_stale_env_value_is_editable(
+    hermes_home,
+):
+    """If .env still has a real value for a 1Password-mapped key (e.g. the
+    user mapped it without cleaning up the old plaintext copy), the row must
+    NOT be reported as locked/managed — it must look like a normal key so
+    the user can remove the stale plaintext value from the Keys page.
+    """
+    _write_config(
+        hermes_home,
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: true\n"
+        "    env:\n"
+        '      ANTHROPIC_API_KEY: "op://Private/Anthropic/credential"\n',
+    )
+    stale_value = "sk-ant-" + "s" * 24
+    _write_env(hermes_home, ANTHROPIC_API_KEY=stale_value)
+
+    resp = client.get("/api/env", headers=HEADERS)
+    assert resp.status_code == 200
+    row = resp.json()["ANTHROPIC_API_KEY"]
+    assert row["is_set"] is True
+    assert row.get("managed_by") is None
+
+
+# ---------------------------------------------------------------------------
+# Final-review fix 3: a key ONLY mapped via 1Password (never in .env, never
+# in OPTIONAL_ENV_VARS/the provider catalog) must still appear as a row.
+# ---------------------------------------------------------------------------
+
+
+def test_get_env_onepassword_only_custom_key_appears_as_a_row(hermes_home, monkeypatch):
+    """A custom-endpoint key that's ONLY mapped via 1Password (e.g. a
+    HERMES_CUSTOM_<slug>_API_KEY that's never written to .env, never hand
+    declared in OPTIONAL_ENV_VARS, and never in the provider catalog) must
+    still show up in GET /api/env — otherwise it's invisible on the Keys page.
+    """
+    custom_key = "HERMES_CUSTOM_ACMELLM_API_KEY"
+    _write_config(
+        hermes_home,
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: true\n"
+        "    env:\n"
+        f'      {custom_key}: "op://Private/AcmeLLM/credential"\n',
+    )
+    resolved = "sk-acme-" + "q" * 24
+    monkeypatch.setenv(custom_key, resolved)
+
+    resp = client.get("/api/env", headers=HEADERS)
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert custom_key in rows
+    row = rows[custom_key]
+    assert row["is_set"] is True
+    assert row["managed_by"] == "onepassword"
+    assert resolved not in resp.text
+

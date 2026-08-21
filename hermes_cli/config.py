@@ -4204,6 +4204,25 @@ def _env_line_defines_key(line: str, key: str) -> bool:
     return stripped.startswith(f"{key}=")
 
 
+def onepassword_managed_env_keys() -> frozenset[str]:
+    """Env var names currently mapped to the 1Password secret source.
+
+    Reads ``secrets.onepassword.enabled`` / ``secrets.onepassword.env`` from
+    config.yaml. Used so ``save_env_value`` refuses to shadow a
+    1Password-mapped key with a plaintext .env write, and so the desktop
+    Keys tab can report such a key as set/managed without it ever living in
+    .env (see docs/rfcs/2026-08-onepassword-provider-keys.md).
+    """
+    cfg = load_config_readonly()
+    op_cfg = (cfg.get("secrets") or {}).get("onepassword")
+    if not isinstance(op_cfg, dict) or not op_cfg.get("enabled"):
+        return frozenset()
+    env_map = op_cfg.get("env")
+    if not isinstance(env_map, dict):
+        return frozenset()
+    return frozenset(k for k in env_map if isinstance(k, str))
+
+
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env."""
     if is_managed():
@@ -4225,6 +4244,14 @@ def save_env_value(key: str, value: str):
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     _reject_denylisted_env_var(key)
+    if key in onepassword_managed_env_keys():
+        raise ValueError(
+            f"{key} is managed by 1Password (mapped via secrets.onepassword.env "
+            f"in config.yaml) and can't be set here. Update it with "
+            f"`hermes secrets onepassword set {key} <op://vault/item/field>`, "
+            f"or `hermes secrets onepassword remove {key}` to unmap it and "
+            f"edit it here instead."
+        )
     value = value.replace("\n", "").replace("\r", "")
     # API keys / tokens must be ASCII — strip non-ASCII with a warning.
     value = _check_non_ascii_credential(key, value)

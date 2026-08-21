@@ -1,4 +1,5 @@
 import { configure } from '@testing-library/react'
+import '@testing-library/jest-dom/vitest'
 
 // Node 26 defines its own `localStorage` accessor on the global object, which
 // returns `undefined` unless the process was started with --localstorage-file

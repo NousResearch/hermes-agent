@@ -115,6 +115,18 @@ export interface EnvVarInfo {
   description: string
   is_password: boolean
   is_set: boolean
+  // 'onepassword' when this key is resolved via the 1Password secret source
+  // (secrets.onepassword.env in config.yaml) rather than stored in .env.
+  // The Keys UI shows it as a locked, non-editable "Managed via 1Password"
+  // row — manage it via the 1Password app + `hermes secrets onepassword`.
+  managed_by?: null | string
+  // True when this key is mapped via secrets.onepassword.env AND a stale
+  // plaintext value still exists in .env — `hermes secrets onepassword set`
+  // maps a key without deleting any prior .env copy. This row renders as a
+  // normal editable key (managed_by is null), but save_env_value() still
+  // refuses any Save for it until the stale value is removed. The Keys UI
+  // uses this to hint that the stale value must be removed first.
+  onepassword_stale?: boolean
   // Backend-derived provider grouping hints (from the unified provider catalog
   // in hermes_cli/provider_catalog.py). When present, the Keys tab groups by
   // this provider identity — the SAME one `hermes model` uses — instead of

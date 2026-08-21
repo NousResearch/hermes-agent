@@ -98,7 +98,7 @@ const CATEGORY_META_ICONS: Record<string, typeof KeyRound> = {
 /*  EnvVarRow — single key edit row                                    */
 /* ------------------------------------------------------------------ */
 
-function EnvVarRow({
+export function EnvVarRow({
   varKey,
   info,
   edits,
@@ -131,6 +131,33 @@ function EnvVarRow({
   const displayValue = isRevealed
     ? revealed[varKey]
     : (info.redacted_value ?? "---");
+
+  // Locked, read-only row for a key resolved via the 1Password secret source
+  // (secrets.onepassword.env in config.yaml). No edit/save/clear/reveal
+  // controls — the backend guard in hermes_cli/config.py's save_env_value()
+  // already refuses to write a plaintext .env copy for these, so offering
+  // edit controls here would just produce a confusing error toast. Mirrors
+  // the desktop app's KeyField locked state (credential-key-ui.tsx).
+  if (info.managed_by === "onepassword") {
+    return (
+      <div className="grid gap-2 border border-border p-4 min-w-0 overflow-hidden">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2">
+            <Label className="font-mono-ui text-xs">{varKey}</Label>
+            <Badge tone="success">{t.common.set}</Badge>
+          </div>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {t.env.managedByOnePassword ?? "Managed via 1Password"}
+        </p>
+        <div className="flex items-center gap-2">
+          <div className="flex-1 border border-border px-3 py-2 font-mono-ui text-xs bg-muted/30 text-muted-foreground">
+            {info.redacted_value ?? "---"}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Compact inline row for unset, non-editing keys (used inside provider groups)
   if (compact && !info.is_set && !isEditing) {
@@ -225,6 +252,13 @@ function EnvVarRow({
           </a>
         )}
       </div>
+
+      {info.onepassword_stale && (
+        <p className="text-xs text-amber-500">
+          {t.env.onePasswordStaleHint ??
+            "Mapped to 1Password, but a stale value is still stored here. Remove it to let 1Password manage this key."}
+        </p>
+      )}
 
       <p className="text-xs text-muted-foreground">{info.description}</p>
 

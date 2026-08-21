@@ -82,6 +82,23 @@ export function KeyField({
 
   const editType = info.is_password ? 'password' : 'text'
 
+  if (info.managed_by === 'onepassword') {
+    return (
+      <div
+        className={cn(
+          CREDENTIAL_CONTROL_CLASS,
+          bare && CRED_BARE,
+          'flex items-center gap-1.5 text-muted-foreground'
+        )}
+      >
+        <span className="truncate">{masked}</span>
+        <span className="shrink-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+          {t.settings.credentials.managedByOnePassword ?? 'Managed via 1Password'}
+        </span>
+      </div>
+    )
+  }
+
   if (info.is_set && !editing) {
     return (
       <Input
@@ -168,9 +185,19 @@ export function CredentialKeyCard({
   rowProps,
   varKey
 }: CredentialKeyCardProps) {
+  const { t } = useI18n()
   const docsUrl = info.url?.trim()
   const description = info.description?.trim()
-  const expandable = Boolean(description || docsUrl)
+  // A key mapped to 1Password with a stale .env value renders as a normal
+  // editable row (managed_by is null, see KeyField), but save_env_value()
+  // still refuses the Save with a 1Password-guard error — expand the card
+  // to explain the mismatch instead of leaving the user with only an error
+  // toast (final-review finding #2).
+  const staleHint = info.onepassword_stale
+    ? t.settings.credentials.onePasswordStaleHint ??
+      'Mapped to 1Password, but a stale value is still stored here. Remove it to let 1Password manage this key.'
+    : null
+  const expandable = Boolean(description || docsUrl || staleHint)
 
   return (
     <div
@@ -238,6 +265,12 @@ export function CredentialKeyCard({
 
         {expandable && expanded && (
           <div className="grid gap-3 @2xl:col-span-2" onClick={e => e.stopPropagation()}>
+            {staleHint && (
+              <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-amber-500">
+                {staleHint}
+              </p>
+            )}
+
             {description && (
               <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
                 {description}

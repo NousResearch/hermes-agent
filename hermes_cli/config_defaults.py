@@ -3728,6 +3728,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "DEEPINFRA_API_KEY": {
+        "description": "DeepInfra API key",
+        "prompt": "DeepInfra API key",
+        "url": "https://deepinfra.com/dash/api_keys",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "DEEPINFRA_BASE_URL": {
+        "description": "DeepInfra OpenAI-compatible base URL override",
+        "prompt": "DeepInfra base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "LM_API_KEY": {
         "description": "LM Studio bearer token for auth-enabled local servers",
         "prompt": "LM Studio API key / bearer token",

@@ -198,6 +198,57 @@ class TestCustomProviderModelSwitch:
         assert config["custom_providers"][0]["key_env"] == "EXAMPLE_PROVIDER_API_KEY"
         assert "sk-live-example-provider" not in config_path.read_text()
 
+    def test_same_url_picker_updates_only_selected_named_provider(
+        self, config_home, monkeypatch
+    ):
+        """A named picker selection must not mutate a same-URL sibling."""
+        import yaml
+        from hermes_cli.main import _model_flow_named_custom
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  default: old-model\n"
+            "custom_providers:\n"
+            "- name: relay-a\n"
+            "  base_url: https://relay.example/v1\n"
+            "  api_key: KEY_A\n"
+            "  model: model-a\n"
+            "- name: relay-b\n"
+            "  base_url: https://relay.example/v1\n"
+            "  key_env: RELAY_B_API_KEY\n"
+            "  model: model-b\n"
+        )
+        monkeypatch.setenv("RELAY_B_API_KEY", "KEY_B")
+        provider_info = {
+            "name": "relay-b",
+            "base_url": "https://relay.example/v1",
+            "api_key": "",
+            "key_env": "RELAY_B_API_KEY",
+            "model": "model-b",
+        }
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=["model-b-new"]), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        config = yaml.safe_load(config_path.read_text()) or {}
+        relay_a, relay_b = config["custom_providers"]
+        assert relay_a == {
+            "name": "relay-a",
+            "base_url": "https://relay.example/v1",
+            "api_key": "KEY_A",
+            "model": "model-a",
+        }
+        assert relay_b == {
+            "name": "relay-b",
+            "base_url": "https://relay.example/v1",
+            "key_env": "RELAY_B_API_KEY",
+            "model": "model-b-new",
+        }
+
     def test_env_ref_base_url_preserves_api_key_ref_through_picker(
         self, config_home, monkeypatch
     ):

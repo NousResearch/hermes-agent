@@ -662,6 +662,75 @@ def test_save_custom_provider_references_the_key_instead_of_inlining_it(monkeypa
     assert "sk-secret" not in yaml.safe_dump(saved)
 
 
+def test_save_custom_provider_allows_explicit_names_to_share_a_url(monkeypatch):
+    from hermes_cli.main import _save_custom_provider
+
+    config = {
+        "custom_providers": [
+            {"name": "relay-a", "base_url": "https://relay.example/v1", "api_key": "KEY_A"}
+        ]
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+
+    _save_custom_provider(
+        "https://relay.example/v1",
+        api_key="KEY_B",
+        name="relay-b",
+    )
+
+    assert [(entry["name"], entry["api_key"]) for entry in config["custom_providers"]] == [
+        ("relay-a", "KEY_A"),
+        ("relay-b", "KEY_B"),
+    ]
+
+
+def test_save_custom_provider_updates_only_the_explicit_named_entry(monkeypatch):
+    from hermes_cli.main import _save_custom_provider
+
+    config = {
+        "custom_providers": [
+            {"name": "relay-a", "base_url": "https://relay.example/v1", "api_key": "KEY_A"},
+            {"name": "relay-b", "base_url": "https://relay.example/v1", "api_key": "OLD_B"},
+        ]
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+
+    _save_custom_provider(
+        "https://new-relay.example/v1",
+        api_key="KEY_B",
+        name="Relay B",
+    )
+    _save_custom_provider(
+        "https://new-relay.example/v1",
+        name="relay-b",
+        key_env="RELAY_B_API_KEY",
+    )
+    assert config["custom_providers"][1] == {
+        "name": "relay-b",
+        "base_url": "https://new-relay.example/v1",
+        "key_env": "RELAY_B_API_KEY",
+    }
+    _save_custom_provider(
+        "https://new-relay.example/v1",
+        api_key="NEW_KEY_B",
+        name="relay-b",
+    )
+
+    relay_a, relay_b = config["custom_providers"]
+    assert relay_a == {
+        "name": "relay-a",
+        "base_url": "https://relay.example/v1",
+        "api_key": "KEY_A",
+    }
+    assert relay_b == {
+        "name": "relay-b",
+        "base_url": "https://new-relay.example/v1",
+        "api_key": "NEW_KEY_B",
+    }
+
+
 
 
 def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():

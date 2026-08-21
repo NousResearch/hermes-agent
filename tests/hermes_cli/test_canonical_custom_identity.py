@@ -98,3 +98,35 @@ def test_legacy_unkeyed_entry_keeps_its_name_identity(monkeypatch):
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
 
     assert rp.canonical_custom_identity(config_provider="Legacy Endpoint") == "custom:legacy-endpoint"
+
+
+def test_explicit_identity_wins_when_url_and_model_are_ambiguous(monkeypatch):
+    config = {
+        "custom_providers": [
+            {
+                "name": "relay-a",
+                "base_url": BASE_URL,
+                "api_key": "KEY_A",
+                "model": MODEL,
+            },
+            {
+                "name": "relay-b",
+                "base_url": BASE_URL,
+                "api_key": "KEY_B",
+                "model": MODEL,
+            },
+        ]
+    }
+    monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+
+    identity = rp.canonical_custom_identity(
+        config_provider="custom:relay-b",
+        base_url=BASE_URL,
+        model=MODEL,
+    )
+
+    assert identity == "custom:relay-b"
+    assert rp._get_named_custom_provider(identity)["api_key"] == "KEY_B"
+    assert rp.canonical_custom_identity(base_url=BASE_URL) == "custom:relay-a"

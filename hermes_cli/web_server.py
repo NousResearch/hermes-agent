@@ -7381,7 +7381,8 @@ def _apply_model_assignment_sync(
         # (_save_custom_provider). Without this the endpoint only lives in
         # ``model.*`` and the picker has no proper ready row for it — the
         # GUI then surfaces a "needs setup" dead-end on the bare ``custom``
-        # provider. Dedups by base_url, so re-saving is idempotent.
+        # provider. The generated name makes re-saving idempotent while still
+        # allowing separately named entries to share an endpoint.
         if provider.strip().lower() in {"custom", "local"} and base_url:
             try:
                 from hermes_cli.main import _auto_provider_name, _save_custom_provider

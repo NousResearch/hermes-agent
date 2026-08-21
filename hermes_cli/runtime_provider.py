@@ -777,6 +777,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 if base_url:
                     result = {
                         "name": entry.get("name", ep_name),
+                        "provider_key": str(ep_name),
                         "base_url": base_url.strip(),
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
@@ -1009,77 +1010,71 @@ def canonical_custom_identity(
 
     Any code path that persists or restores a session's provider override
     must run the resolved provider through this helper so a bare ``"custom"``
-    is upgraded back to its durable ``custom:<name>`` menu key. Three
+    is upgraded back to its durable ``custom:<name>`` menu key. Four
     recovery sources, in priority order:
 
-    1. ``base_url`` — reverse-lookup the entry that owns the endpoint URL
+    1. An explicitly passed, configured ``config_provider`` identity. Unlike
+       endpoint/model reverse lookup, this remains unambiguous when entries
+       intentionally share a URL or model.
+    2. ``base_url`` — reverse-lookup the entry that owns the endpoint URL
        (the one fact that always survives the persistence round-trip when a
        URL was recorded).
-    2. ``model`` — reverse-lookup the entry that serves the session's model
+    3. ``model`` — reverse-lookup the entry that serves the session's model
        (``model``/``default_model``/``models`` catalog). The session row
        always stores the model name, so when no base_url survived (the
        recurring Desktop/TUI regression vector) the model is the last
        session-scoped fact that can recover the entry — and unlike the
        config fallback below it stays correct after the user points their
        global default at a different provider.
-    3. ``config_provider`` — the active ``config.model.provider`` (or its
-       ``provider``/``HERMES_INFERENCE_PROVIDER`` equivalent). When neither
-       a base_url nor a model recovered the entry, the configured provider
-       is the only durable identity left, so fall back to it when it names
-       a real entry.
+    4. The active ``config.model.provider`` (or
+       ``HERMES_INFERENCE_PROVIDER`` equivalent). When no session-scoped
+       source recovered the entry, the configured provider is the only
+       durable identity left, so fall back to it when it names a real entry.
 
     Returns ``custom:<name>`` when a routable identity is recovered, else
     ``None`` (caller keeps whatever it had — bare ``"custom"`` only as a last
     resort, e.g. a genuine ad-hoc endpoint with no config entry).
     """
-    # 1. Reverse-lookup by endpoint URL.
+    def _configured_identity(candidate: Optional[str]) -> Optional[str]:
+        candidate_norm = _normalize_custom_provider_name(str(candidate or ""))
+        if not candidate_norm or candidate_norm in {"custom", "auto", "openrouter"}:
+            return None
+        try:
+            entry = _get_named_custom_provider(str(candidate or ""))
+        except Exception:
+            return None
+        if entry is None:
+            return None
+        return custom_provider_slug(
+            str(entry.get("name") or candidate),
+            str(entry.get("provider_key", "") or ""),
+        )
+
+    # 1. Prefer an explicit configured identity before ambiguous reverse lookup.
+    identity = _configured_identity(config_provider)
+    if identity:
+        return identity
+
+    # 2. Reverse-lookup by endpoint URL.
     if base_url:
         identity = find_custom_provider_identity(base_url)
         if identity:
             return identity
 
-    # 2. Reverse-lookup by the session's model name.
+    # 3. Reverse-lookup by the session's model name.
     if model:
         identity = find_custom_provider_identity_by_model(model)
         if identity:
             return identity
 
-    # 3. Fall back to the configured provider when it names a real entry.
-    candidate = str(config_provider or "").strip()
-    if not candidate:
-        try:
-            candidate = str(_get_model_config().get("provider") or "").strip()
-        except Exception:
-            candidate = ""
+    # 4. Fall back to the global configured provider when it names a real entry.
+    try:
+        candidate = str(_get_model_config().get("provider") or "").strip()
+    except Exception:
+        candidate = ""
     if not candidate:
         candidate = os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip()
-
-    candidate_norm = _normalize_custom_provider_name(candidate)
-    # A bare/non-routable candidate cannot heal a bare custom override.
-    if not candidate_norm or candidate_norm in {"custom", "auto", "openrouter"}:
-        return None
-    # Only return it when it actually resolves to a configured custom entry,
-    # so we never invent a `custom:<x>` that resolution can't honor.
-    try:
-        entry = _get_named_custom_provider(candidate)
-        if entry is not None:
-            # ``candidate`` matched, but it may be the entry's DISPLAY NAME —
-            # ``_get_named_custom_provider`` accepts either spelling. For a
-            # keyed ``providers:`` entry the display name is not the durable
-            # identity, so re-resolve through the endpoint the matched entry
-            # owns and return the same config-key slug every other path
-            # returns (7b5a18817). Without this, a display name that differs
-            # from its key heals to ``custom:<display-name>`` and stops
-            # matching the persisted identity.
-            identity = find_custom_provider_identity(str(entry.get("base_url") or ""))
-            if identity:
-                return identity
-            if candidate_norm.startswith("custom:"):
-                return candidate_norm
-            return f"custom:{candidate_norm}"
-    except Exception:
-        pass
-    return None
+    return _configured_identity(candidate)
 
 
 def _normalize_base_url_for_match(value) -> str:

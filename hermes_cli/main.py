@@ -4689,9 +4689,9 @@ def _save_custom_provider(
 ):
     """Save a custom endpoint to custom_providers in config.yaml.
 
-    Deduplicates by base_url — if the URL already exists, updates the
-    model name, context_length, and api_mode but doesn't add a duplicate entry.
-    Uses *name* when provided, otherwise auto-generates from the URL.
+    An explicit *name* is the provider identity, so different names may share
+    one endpoint. Callers without a name retain legacy base-URL deduplication.
+    Existing entries are updated in place, including supplied credentials.
 
     When *key_env* is set the caller has already written the key to ``.env``,
     so the entry references it instead of inlining the secret (#69449).
@@ -4703,12 +4703,24 @@ def _save_custom_provider(
     if not isinstance(providers, list):
         providers = []
 
-    # Check if this URL is already saved — update model/context_length if so
+    explicit_name = str(name or "").strip()
+    normalized_name = explicit_name.lower().replace(" ", "-")
+    normalized_url = str(base_url or "").rstrip("/")
+
+    # Explicit identities deduplicate by name. Legacy unnamed callers have no
+    # identity to disambiguate with, so they continue to deduplicate by URL.
     for entry in providers:
-        if isinstance(entry, dict) and entry.get("base_url", "").rstrip(
-            "/"
-        ) == base_url.rstrip("/"):
+        if not isinstance(entry, dict):
+            continue
+        entry_name = str(entry.get("name", "") or "").strip().lower().replace(" ", "-")
+        entry_url = str(entry.get("base_url", "") or "").rstrip("/")
+        if (explicit_name and entry_name == normalized_name) or (
+            not explicit_name and entry_url == normalized_url
+        ):
             changed = False
+            if explicit_name and entry_url != normalized_url:
+                entry["base_url"] = base_url
+                changed = True
             if model and entry.get("model") != model:
                 entry["model"] = model
                 changed = True
@@ -4726,16 +4738,22 @@ def _save_custom_provider(
             elif "api_mode" in entry:
                 entry.pop("api_mode", None)
                 changed = True
-            if key_env and (entry.get("key_env") != key_env or entry.get("api_key")):
-                entry["key_env"] = key_env
-                entry.pop("api_key", None)
+            if key_env:
+                if entry.get("key_env") != key_env or entry.get("api_key"):
+                    entry["key_env"] = key_env
+                    entry.pop("api_key", None)
+                    changed = True
+            elif api_key and (entry.get("api_key") != api_key or entry.get("key_env")):
+                entry["api_key"] = api_key
+                entry.pop("key_env", None)
                 changed = True
             if changed:
                 cfg["custom_providers"] = providers
                 save_config(cfg)
-            return  # already saved, updated if needed
+            return
 
     # Use provided name or auto-generate from URL
+    name = explicit_name
     if not name:
         name = _auto_provider_name(base_url)
 

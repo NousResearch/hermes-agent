@@ -256,7 +256,69 @@ def _openai_http_client_kwargs(
         return {}
     return {"http_client": client}
 
-def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
+def _apply_custom_provider_extra_headers(
+    kwargs: Dict[str, Any],
+    base_url: str,
+    explicit_headers: Optional[Dict[str, str]] = None,
+    named_identity_selected: bool = False,
+) -> None:
+    """Merge per-provider ``extra_headers`` onto ``kwargs['default_headers']`` last.
+
+    Thin wrapper around the shared config helper so every auxiliary OpenAI-wire
+    client-construction route mirrors the main agent (``agent/agent_init.py`` /
+    ``run_agent.py``): the most specific config level wins, applied AFTER
+    provider/SDK defaults and ``model.default_headers``. Without this the main
+    turn inherits ``custom_providers[].extra_headers`` but the auxiliary client
+    (title generation, compression, vision, web_extract) built a separate
+    OpenAI client and never received them — so a host-scoped override such as
+    ``User-Agent: curl/8.7.1`` reached the main turn but NOT the same turn's
+    title-generation call, which 502ed behind a gateway/WAF rejecting the
+    OpenAI SDK's identifying headers.
+
+    *named_identity_selected* (set by the named-custom-provider resolution
+    branch of ``resolve_provider_client``) means a provider was selected BY
+    IDENTITY, not merely by endpoint. Its own ``extra_headers`` (lifted by
+    ``_get_named_custom_provider`` and passed as *explicit_headers*, possibly
+    empty) are then authoritative — applied AFTER defaults already in *kwargs*,
+    and generic base-URL matching is SUPPRESSED. This must hold even when the
+    selected provider declares no headers: two named providers may share one
+    ``base_url`` (tenant routing / per-tenant auth) and the generic matcher
+    selects the first URL-matching entry, so a headerless ``tenant-b`` would
+    otherwise inherit ``tenant-a``'s credentials. Selecting a named provider
+    by identity is authoritative for headers, including "no headers"; generic
+    URL matching must never overwrite (or fill in) an explicitly selected
+    provider's headers.
+
+    When *named_identity_selected* is False (non-named / base-url-only routes
+    that resolved only an endpoint, not an identity), fall back to the shared
+    config helper's generic base-URL matching so behaviour is unchanged.
+
+    SECURITY: values may carry credentials — never log them.
+    """
+    if named_identity_selected:
+        if explicit_headers:
+            from hermes_cli.config import normalize_extra_headers
+            selected = normalize_extra_headers(explicit_headers)
+            if selected:
+                merged = dict(kwargs.get("default_headers") or {})
+                merged.update(selected)
+                kwargs["default_headers"] = merged
+        return
+    try:
+        from hermes_cli.config import apply_custom_provider_extra_headers_to_client_kwargs
+        apply_custom_provider_extra_headers_to_client_kwargs(kwargs, base_url)
+    except Exception:
+        logger.debug("auxiliary custom-provider extra_headers skipped", exc_info=True)
+
+
+def _create_openai_client(
+    *,
+    api_key: str,
+    base_url: str,
+    extra_headers: Optional[Dict[str, str]] = None,
+    named_identity_selected: bool = False,
+    **kwargs: Any,
+) -> Any:
     if _aux_probe_active():
         # Availability probe: credentials/base_url resolved — that is the
         # answer. Skip the openai import + httpx/SSL construction entirely.
@@ -286,6 +348,18 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     # by default and let Hermes control the budget; explicit callers can still
     # override via kwargs.
     kwargs.setdefault("max_retries", 0)
+    # Per-provider extra HTTP headers (providers.<name>.extra_headers /
+    # custom_providers[].extra_headers) — applied LAST so the most specific
+    # config level survives, mirroring the main agent. *extra_headers*, when
+    # supplied, is the exact selected named provider's headers and takes
+    # precedence over generic base-URL matching (see helper docstring).
+    # *named_identity_selected* suppresses that generic matching even when the
+    # named provider declares no headers of its own.
+    _apply_custom_provider_extra_headers(
+        kwargs, base_url,
+        explicit_headers=extra_headers,
+        named_identity_selected=named_identity_selected,
+    )
     return OpenAI(api_key=api_key, base_url=base_url, **kwargs)
 
 
@@ -6123,7 +6197,13 @@ def _effective_provider_for_client(client: Any, fallback: str) -> str:
 # below — never look up auth env vars ad-hoc.
 
 
-def _to_async_client(sync_client, model: str, is_vision: bool = False):
+def _to_async_client(
+    sync_client,
+    model: str,
+    is_vision: bool = False,
+    extra_headers: Optional[Dict[str, str]] = None,
+    named_identity_selected: bool = False,
+):
     """Convert a sync client to its async counterpart, preserving Codex routing.
 
     When ``is_vision=True`` and the underlying base URL is Copilot, the
@@ -6200,6 +6280,18 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     # See _create_openai_client: disable SDK-internal retries so Hermes owns
     # the auxiliary retry/timeout budget (issue #54465).
     async_kwargs.setdefault("max_retries", 0)
+    # Per-provider extra HTTP headers — applied LAST (same precedence as the
+    # sync chokepoint _create_openai_client) so this distinct OpenAI-wire
+    # construction route inherits custom_providers[].extra_headers too.
+    # *extra_headers* + *named_identity_selected*, when supplied by a
+    # named-provider caller, preserve the selected provider's identity over
+    # generic base-URL matching — including suppressing it for a headerless
+    # named provider that shares another provider's base_url.
+    _apply_custom_provider_extra_headers(
+        async_kwargs, sync_base_url,
+        explicit_headers=extra_headers,
+        named_identity_selected=named_identity_selected,
+    )
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -6648,6 +6740,15 @@ def resolve_provider_client(
             # An explicit per-task api_mode override (from _resolve_task_provider_model)
             # wins; otherwise fall back to what the provider entry declared.
             entry_api_mode = (api_mode or custom_entry.get("api_mode") or "").strip()
+            # Carry the selected named provider's exact ``extra_headers``
+            # through to OpenAI client construction instead of re-deriving
+            # them from base_url. Two named providers may share one base_url
+            # while declaring distinct headers (tenant routing / per-tenant
+            # auth); generic base-URL matching would then select the first
+            # entry and route the auxiliary request to the wrong tenant / send
+            # the wrong credentials. The construction helpers apply these
+            # AFTER generic defaults and skip URL matching when they're set.
+            _named_extra_headers = custom_entry.get("extra_headers")
             if custom_base:
                 final_model = _normalize_resolved_model(
                     model
@@ -6697,8 +6798,16 @@ def resolve_provider_client(
                         _fb_headers = _apply_user_default_headers(_fb_extra.get("default_headers"))
                         if _fb_headers:
                             _fb_extra["default_headers"] = _fb_headers
-                        client = _create_openai_client(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
-                        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                        client = _create_openai_client(
+                            api_key=custom_key, base_url=_fb_clean,
+                            extra_headers=_named_extra_headers,
+                            named_identity_selected=True, **_fb_extra,
+                        )
+                        return (_to_async_client(
+                            client, final_model, is_vision=is_vision,
+                            extra_headers=_named_extra_headers,
+                            named_identity_selected=True,
+                        ) if async_mode
                                 else (client, final_model))
                     sync_anthropic = AnthropicAuxiliaryClient(
                         real_client, final_model, custom_key, custom_base, is_oauth=False,
@@ -6706,7 +6815,11 @@ def resolve_provider_client(
                     if async_mode:
                         return AsyncAnthropicAuxiliaryClient(sync_anthropic), final_model
                     return sync_anthropic, final_model
-                client = _create_openai_client(api_key=custom_key, base_url=_clean_base2, **_extra2)
+                client = _create_openai_client(
+                    api_key=custom_key, base_url=_clean_base2,
+                    extra_headers=_named_extra_headers,
+                    named_identity_selected=True, **_extra2,
+                )
                 # codex_responses or inherited auto-detect (via _wrap_if_needed).
                 # _wrap_if_needed reads the closed-over `api_mode` (the task-level
                 # override). Named-provider entry api_mode=codex_responses also
@@ -6717,7 +6830,11 @@ def resolve_provider_client(
                     client = CodexAuxiliaryClient(client, final_model)
                 else:
                     client = _wrap_if_needed(client, final_model, raw_base_for_wrap, custom_key)
-                return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                return (_to_async_client(
+                    client, final_model, is_vision=is_vision,
+                    extra_headers=_named_extra_headers,
+                    named_identity_selected=True,
+                ) if async_mode
                         else (client, final_model))
             logger.warning(
                 "resolve_provider_client: named custom provider %r has no base_url",

@@ -383,6 +383,19 @@ export const api = {
       ),
     );
   },
+  getMemoryOverview: () => fetchJSON<MemoryOverviewResponse>("/api/memory/overview"),
+  getMemorySubjects: (q = "", limit = 100) => {
+    const qs = new URLSearchParams();
+    if (q.trim()) qs.set("q", q.trim());
+    qs.set("limit", String(limit));
+    return fetchJSON<MemorySubjectsResponse>(`/api/memory/subjects?${qs.toString()}`);
+  },
+  getMemorySubject: (slug: string) =>
+    fetchJSON<MemorySubjectResponse>(`/api/memory/subjects/${encodeURIComponent(slug)}`),
+  getMemoryDays: (limit = 60) =>
+    fetchJSON<MemoryDaysResponse>(`/api/memory/days?limit=${limit}`),
+  getMemoryDay: (date: string) =>
+    fetchJSON<MemoryDayResponse>(`/api/memory/days/${encodeURIComponent(date)}`),
   getSessionMessages: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionMessagesResponse>(
       appendProfileParam(
@@ -1958,6 +1971,92 @@ export interface PaginatedSessions {
   total: number;
   limit: number;
   offset: number;
+}
+
+export interface MemorySessionInfo {
+  id: string;
+  title: string | null;
+  source: string | null;
+  started_at: number;
+  last_active: number;
+  preview: string;
+}
+
+export interface MemorySnippet {
+  message_id: number | null;
+  session_id: string;
+  role: string | null;
+  timestamp: number;
+  text: string;
+}
+
+export interface MemorySubject {
+  slug: string;
+  name: string;
+  keywords: string[];
+  session_count: number;
+  message_count: number;
+  first_seen: number;
+  last_seen: number;
+  sessions: MemorySessionInfo[];
+  snippets: MemorySnippet[];
+}
+
+export interface DailyMemorySubject {
+  slug: string;
+  name: string;
+  count: number;
+}
+
+export interface DailyMemoryWorkItem {
+  session_id: string;
+  kind: "conversation" | "tool" | "coding" | "research" | "planning";
+  text: string;
+  timestamp: number;
+}
+
+export interface DailyMemoryLog {
+  date: string;
+  started_at_min: number;
+  last_active_max: number;
+  session_count: number;
+  message_count: number;
+  subjects: DailyMemorySubject[];
+  sessions: MemorySessionInfo[];
+  work_items: DailyMemoryWorkItem[];
+}
+
+export interface MemoryNotes {
+  memory: string[];
+  user: string[];
+  memory_count: number;
+  user_count: number;
+}
+
+export interface MemoryOverviewResponse {
+  subjects: MemorySubject[];
+  daily_logs: DailyMemoryLog[];
+  recent_sessions: MemorySessionInfo[];
+  notes?: MemoryNotes;
+}
+
+export interface MemorySubjectsResponse {
+  subjects: MemorySubject[];
+  query: string;
+  limit: number;
+}
+
+export interface MemorySubjectResponse {
+  subject: MemorySubject;
+}
+
+export interface MemoryDaysResponse {
+  daily_logs: DailyMemoryLog[];
+  limit: number;
+}
+
+export interface MemoryDayResponse {
+  daily_log: DailyMemoryLog;
 }
 
 export interface EnvVarInfo {

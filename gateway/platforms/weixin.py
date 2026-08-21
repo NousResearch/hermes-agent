@@ -1225,6 +1225,15 @@ class WeixinAdapter(BasePlatformAdapter):
             extra.get("rate_limit_circuit_open_seconds")
             or os.getenv("WEIXIN_RATE_LIMIT_CIRCUIT_OPEN_SECONDS", "30.0")
         )
+        self._rate_limit_circuit_backoff_factor = float(
+            extra.get("rate_limit_circuit_backoff_factor")
+            or os.getenv("WEIXIN_RATE_LIMIT_CIRCUIT_BACKOFF_FACTOR", "2.0")
+        )
+        self._rate_limit_circuit_max_open_seconds = float(
+            extra.get("rate_limit_circuit_max_open_seconds")
+            or os.getenv("WEIXIN_RATE_LIMIT_CIRCUIT_MAX_OPEN_SECONDS", "600.0")
+        )
+        self._rate_limit_backoff_multiplier = 1.0
         self._rate_limit_circuit_until = 0.0
         self._rate_limit_events: List[float] = []
         self._dm_policy = str(extra.get("dm_policy") or os.getenv("WEIXIN_DM_POLICY", "pairing")).strip().lower()
@@ -1767,13 +1776,33 @@ class WeixinAdapter(BasePlatformAdapter):
     def _open_rate_limit_circuit(self) -> None:
         if self._rate_limit_circuit_open_seconds <= 0:
             return
+        open_seconds = min(
+            self._rate_limit_circuit_max_open_seconds,
+            self._rate_limit_circuit_open_seconds * self._rate_limit_backoff_multiplier,
+        )
         self._rate_limit_circuit_until = max(
             self._rate_limit_circuit_until,
-            time.monotonic() + self._rate_limit_circuit_open_seconds,
+            time.monotonic() + open_seconds,
+        )
+        # Exponential backoff: each consecutive open doubles the cooldown
+        # (1x, 2x, 4x, ...) up to the configured cap. Without this, a
+        # persistent rate limit re-opens the breaker for the same flat
+        # window on every retry, so the cooldown never ends (Issue #77836).
+        self._rate_limit_backoff_multiplier = min(
+            self._rate_limit_circuit_max_open_seconds / self._rate_limit_circuit_open_seconds,
+            self._rate_limit_backoff_multiplier * self._rate_limit_circuit_backoff_factor,
         )
 
     def _record_rate_limit_event(self) -> bool:
-        """Record a genuine iLink rate limit and return True if breaker opened."""
+        """Record a genuine iLink rate limit and return True if breaker opened.
+
+        While the breaker is already open the response is NOT recorded:
+        re-recording on every retry would re-open the breaker and reset the
+        cooldown to the full window each time, making the cooldown
+        effectively infinite (Issue #77836).
+        """
+        if self._rate_limit_cooldown_remaining() > 0:
+            return False
         now = time.monotonic()
         window_start = now - self._rate_limit_circuit_window_seconds
         self._rate_limit_events = [ts for ts in self._rate_limit_events if ts >= window_start]
@@ -1786,6 +1815,7 @@ class WeixinAdapter(BasePlatformAdapter):
     def _reset_rate_limit_circuit(self) -> None:
         self._rate_limit_events.clear()
         self._rate_limit_circuit_until = 0.0
+        self._rate_limit_backoff_multiplier = 1.0
 
     async def _send_text_chunk(
         self,
@@ -1856,6 +1886,14 @@ class WeixinAdapter(BasePlatformAdapter):
                                 self.name, _safe_id(chat_id),
                             )
                             continue
+                        # Stale session (-2 + "unknown error") or -14 that could
+                        # not be salvaged by a tokenless retry — treat as session
+                        # expiry, never as a rate limit (Issue #77836).
+                        if is_session_expired:
+                            errmsg = resp.get("errmsg") or resp.get("msg") or "session expired"
+                            raise RuntimeError(
+                                f"iLink sendmessage session expired: ret={ret} errcode={errcode} errmsg={errmsg}"
+                            )
                         # Rate limit (-2) — backoff and retry
                         is_rate_limited = (
                             ret == RATE_LIMIT_ERRCODE
@@ -1869,6 +1907,12 @@ class WeixinAdapter(BasePlatformAdapter):
                             last_error = RuntimeError(
                                 f"iLink sendmessage rate limited: ret={ret} errcode={errcode} errmsg={errmsg}"
                             )
+                            if self._rate_limit_cooldown_remaining() > 0:
+                                # Breaker already open — do not record a fresh
+                                # event (that would re-open it and reset the
+                                # cooldown, looping forever). Fail fast instead.
+                                last_error = self._rate_limit_error()
+                                break
                             if self._record_rate_limit_event():
                                 last_error = self._rate_limit_error()
                                 break

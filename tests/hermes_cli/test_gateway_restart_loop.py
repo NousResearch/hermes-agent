@@ -107,6 +107,85 @@ class TestGatewayLifecyclePattern:
         assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
 
 
+class TestProfileFlagGatewayLifecycle:
+    """#78028: `hermes -p <profile> gateway restart|stop` bypasses Branch A's
+    literal adjacency, so it needs its own pattern. It is only the same
+    self-termination foot-gun when the named profile IS the profile running
+    the guard; sibling-profile restarts are legitimate fleet operations and
+    must stay allowed."""
+
+    @pytest.fixture(autouse=True)
+    def _pin_profile_identity(self, monkeypatch):
+        # The ambient test env may carry HERMES_HOME/HERMES_PROFILE; pin the
+        # profile identity explicitly so every assertion is deterministic.
+        monkeypatch.setenv("HERMES_PROFILE", "zeus")
+        monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+
+    @pytest.mark.parametrize("text", [
+        "hermes -p zeus gateway stop",
+        "hermes -p zeus gateway restart",
+        "hermes --profile zeus gateway restart",
+        "hermes --profile zeus gateway stop",
+        "hermes --profile=zeus gateway restart",
+        # Global flags before/after the selector must not hide the shape.
+        "hermes -v -p zeus gateway restart",
+        "hermes -p zeus -v gateway restart",
+        "hermes --debug --profile zeus gateway stop",
+        # Shell quoting of the profile id is equivalent to the bare name.
+        "hermes -p 'zeus' gateway restart",
+        "hermes --profile \"zeus\" gateway stop",
+    ])
+    def test_self_target_blocked(self, text):
+        assert _contains_gateway_lifecycle_command(text), f"Should block: {text!r}"
+
+    @pytest.mark.parametrize("text", [
+        "hermes -p venus gateway stop",
+        "hermes -p venus gateway restart",
+        "hermes --profile venus gateway restart",
+        "hermes --profile=venus gateway stop",
+        "hermes -p venus -v gateway restart",
+    ])
+    def test_sibling_allowed(self, text):
+        assert not _contains_gateway_lifecycle_command(text), f"Should allow: {text!r}"
+
+    @pytest.mark.parametrize("text", [
+        "hermes -p zeus gateway start",
+        "hermes -p zeus gateway start --all",
+    ])
+    def test_start_still_allowed(self, text):
+        # `start` is intentionally excluded from the guard, with or without
+        # the profile flag (#30719 rationale).
+        assert not _contains_gateway_lifecycle_command(text), f"Should allow: {text!r}"
+
+    def test_adjacent_form_still_blocked(self):
+        # Branch A remains unconditional — the profile-flag check is an
+        # additional layer, not a replacement.
+        assert _contains_gateway_lifecycle_command("hermes gateway restart")
+        assert _contains_gateway_lifecycle_command("hermes gateway stop")
+
+    def test_hermes_home_derived_profile(self, monkeypatch):
+        # Without HERMES_PROFILE the guard falls back to the HERMES_HOME-
+        # derived profile identity (get_active_profile_name) — the signal the
+        # gateway process itself carries.
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
+        monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+        import hermes_cli.profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "zeus")
+        assert _contains_gateway_lifecycle_command("hermes -p zeus gateway restart")
+        assert not _contains_gateway_lifecycle_command("hermes -p venus gateway restart")
+
+    def test_no_profile_context_conservative_allow(self, monkeypatch):
+        # With no profile identity the guard cannot prove self-targeting, so
+        # the profile-flag form is allowed rather than over-blocking siblings;
+        # the adjacent form stays blocked unconditionally.
+        import cron.lifecycle_guard as lifecycle_guard
+
+        monkeypatch.setattr(lifecycle_guard, "_current_profile_name", lambda: None)
+        assert not _contains_gateway_lifecycle_command("hermes -p zeus gateway restart")
+        assert _contains_gateway_lifecycle_command("hermes gateway restart")
+
+
 class TestCronCreateLifecycleBlock:
     """Verify cron create rejects gateway lifecycle prompts."""
 

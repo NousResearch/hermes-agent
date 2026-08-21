@@ -7619,6 +7619,37 @@ def get_mcp_status() -> List[dict]:
     return result
 
 
+def summarize_mcp_reload(old_servers: set) -> Dict[str, Any]:
+    """Classify servers after a reload against config.yaml, not just ``_servers``.
+
+    Diffing ``_servers`` alone reports a still-configured server as removed
+    whenever it is slow to connect, lazily registered from the schema cache,
+    ``enabled: false``, or failed (#80771).  Only a name that vanished from
+    config counts as removed; every other configured-but-not-connected server
+    is returned in ``pending`` with its real status from :func:`get_mcp_status`
+    ("connecting"/"failed"/"disabled"/"configured").
+
+    Availability comes from one :func:`get_mcp_status` snapshot rather than
+    ``_servers`` membership: a parked/mid-reconnect server sits in ``_servers``
+    with ``session=None`` (so it is NOT available), while a lazily-registered
+    one has live tools with no ``_servers`` entry at all (so it IS).
+
+    Returns ``{"connected", "added", "reconnected", "removed", "pending"}``.
+    """
+    statuses = {s["name"]: s.get("status", "configured") for s in get_mcp_status()}
+    with _lock:
+        lazy = set(_lazy_server_configs)
+    connected = {n for n, st in statuses.items() if st == "connected"}
+    connected |= lazy & set(statuses)
+    return {
+        "connected": connected,
+        "added": connected - old_servers,
+        "reconnected": connected & old_servers,
+        "removed": {n for n in old_servers - connected if n not in statuses},
+        "pending": {n: st for n, st in statuses.items() if n not in connected},
+    }
+
+
 def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     """Temporarily connect to configured MCP servers and list their tools.
 

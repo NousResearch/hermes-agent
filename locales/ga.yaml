@@ -221,6 +221,7 @@ gateway:
     reconnected:           "♻️ Athcheanglaithe: {names}"
     added:                 "➕ Curtha leis: {names}"
     removed:               "➖ Bainte: {names}"
+    pending:               "⏳ Cumraithe fós, gan ceangal: {names}"
     none_connected:        "Níl aon fhreastalaí MCP ceangailte."
     tools_available:       "\n🔧 {tools} uirlis(í) ar fáil ó {servers} freastalaí(thí)"
     failed:                "❌ Theip ar athlódáil MCP: {error}"

@@ -217,6 +217,7 @@ gateway:
     reconnected:           "♻️ 再接続: {names}"
     added:                 "➕ 追加: {names}"
     removed:               "➖ 削除: {names}"
+    pending:               "⏳ 設定には残っていますが未接続: {names}"
     none_connected:        "接続中の MCP サーバーはありません。"
     tools_available:       "\n🔧 {servers} 台のサーバーから {tools} 個のツールが利用可能"
     failed:                "❌ MCP の再読み込みに失敗しました: {error}"

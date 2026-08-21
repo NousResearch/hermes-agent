@@ -217,6 +217,7 @@ gateway:
     reconnected:           "♻️ 재연결됨: {names}"
     added:                 "➕ 추가됨: {names}"
     removed:               "➖ 제거됨: {names}"
+    pending:               "⏳ 설정에는 남아 있으나 연결되지 않음: {names}"
     none_connected:        "연결된 MCP 서버가 없습니다."
     tools_available:       "\n🔧 {servers}개 서버에서 {tools}개 도구 사용 가능"
     failed:                "❌ MCP 재로드 실패: {error}"

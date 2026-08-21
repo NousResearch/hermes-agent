@@ -240,6 +240,7 @@ gateway:
     reconnected:           "♻️ أُعيد الاتصال: {names}"
     added:                 "➕ أُضيف: {names}"
     removed:               "➖ أُزيل: {names}"
+    pending:               "⏳ لا تزال مُهيّأة لكنها غير متصلة: {names}"
     none_connected:        "لا توجد خوادم MCP متصلة."
     tools_available:       "\n🔧 {tools} أداة متاحة من {servers} خادم"
     failed:                "❌ فشلت إعادة تحميل MCP: {error}"

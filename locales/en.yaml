@@ -232,6 +232,7 @@ gateway:
     reconnected:           "♻️ Reconnected: {names}"
     added:                 "➕ Added: {names}"
     removed:               "➖ Removed: {names}"
+    pending:               "⏳ Still configured, not connected: {names}"
     none_connected:        "No MCP servers connected."
     tools_available:       "\n🔧 {tools} tool(s) available from {servers} server(s)"
     failed:                "❌ MCP reload failed: {error}"

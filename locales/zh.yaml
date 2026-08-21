@@ -217,6 +217,7 @@ gateway:
     reconnected:           "♻️ 已重新连接：{names}"
     added:                 "➕ 已添加：{names}"
     removed:               "➖ 已移除：{names}"
+    pending:               "⏳ 仍在配置中但未连接: {names}"
     none_connected:        "没有连接的 MCP 服务器。"
     tools_available:       "\n🔧 来自 {servers} 个服务器的 {tools} 个工具可用"
     failed:                "❌ MCP 重新加载失败：{error}"

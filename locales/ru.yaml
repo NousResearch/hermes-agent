@@ -217,6 +217,7 @@ gateway:
     reconnected:           "♻️ Переподключено: {names}"
     added:                 "➕ Добавлено: {names}"
     removed:               "➖ Удалено: {names}"
+    pending:               "⏳ Всё ещё в конфигурации, не подключены: {names}"
     none_connected:        "Нет подключённых MCP-серверов."
     tools_available:       "\n🔧 {tools} инструмент(ов) доступно с {servers} сервер(ов)"
     failed:                "❌ Ошибка перезагрузки MCP: {error}"

@@ -217,6 +217,7 @@ gateway:
     reconnected:           "♻️ Yeniden bağlanan: {names}"
     added:                 "➕ Eklenen: {names}"
     removed:               "➖ Kaldırılan: {names}"
+    pending:               "⏳ Hâlâ yapılandırılmış, bağlı değil: {names}"
     none_connected:        "Bağlı MCP sunucusu yok."
     tools_available:       "\n🔧 {servers} sunucudan {tools} araç kullanılabilir"
     failed:                "❌ MCP yeniden yükleme başarısız: {error}"

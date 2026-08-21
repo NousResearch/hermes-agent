@@ -217,6 +217,7 @@ gateway:
     reconnected:           "♻️ Herverbind: {names}"
     added:                 "➕ Bygevoeg: {names}"
     removed:               "➖ Verwyder: {names}"
+    pending:               "⏳ Steeds gekonfigureer, nie gekoppel nie: {names}"
     none_connected:        "Geen MCP-bedieners verbind nie."
     tools_available:       "\n🔧 {tools} gereedskap beskikbaar van {servers} bediener(s)"
     failed:                "❌ MCP-herlaai het misluk: {error}"

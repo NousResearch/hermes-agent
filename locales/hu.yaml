@@ -217,6 +217,7 @@ gateway:
     reconnected:           "♻️ Újracsatlakozva: {names}"
     added:                 "➕ Hozzáadva: {names}"
     removed:               "➖ Eltávolítva: {names}"
+    pending:               "⏳ Továbbra is beállítva, nincs csatlakozva: {names}"
     none_connected:        "Nincsenek csatlakoztatott MCP-szerverek."
     tools_available:       "\n🔧 {tools} eszköz érhető el {servers} szerverről"
     failed:                "❌ MCP újratöltés sikertelen: {error}"

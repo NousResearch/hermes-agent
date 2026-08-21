@@ -301,6 +301,93 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(settings.ws_reconnect_interval, 120)
 
 
+    def test_ws_connect_ip_failover_skips_blackhole_ips(self):
+        """msg-frontier DNS pools contain black-hole IPs: a per-IP deadline
+        must skip a hanging first address and connect via the next one."""
+        import socket as _socket
+        import sys
+        from types import ModuleType
+
+        connect_attempts = []
+
+        class _FakeConn:
+            async def recv(self):
+                await asyncio.sleep(3600)
+                return b""
+
+        async def _fake_ws_connect(url, **kw):
+            host = kw.get("host")
+            connect_attempts.append(host)
+            if host == "9.9.9.9":
+                await asyncio.sleep(60)  # black hole: handshake never completes
+            return _FakeConn()
+
+        class _FakeWSClient:
+            def __init__(self):
+                self._reconnect_nonce = 30
+                self._reconnect_interval = 120
+                self._ping_interval = 120
+                self.connected_ip = None
+
+            def start(self):
+                # SDK-style connect: through the module-global patched
+                # websockets.connect, driven by the module-global loop.
+                conn_url = "wss://msg-frontier.feishu.cn/ws?device_id=d1&service_id=s1"
+                coro = fake_client_module.websockets.connect(conn_url)
+                # The wrapper resolves + dials; drive it on this thread's loop.
+                loop = fake_client_module.loop
+                conn = loop.run_until_complete(coro)
+                self.connected_ip = conn  # wrapper returns the conn; record via attempts
+
+        fake_client = _FakeWSClient()
+        fake_adapter = SimpleNamespace(
+            _ws_thread_loop=None,
+            _ws_reconnect_nonce=2,
+            _ws_reconnect_interval=3,
+            _ws_ping_interval=4,
+            _ws_ping_timeout=5,
+        )
+        fake_client_module = ModuleType("lark_oapi.ws.client")
+        fake_client_module.loop = None
+        fake_client_module.logger = SimpleNamespace(
+            info=lambda *_a, **_k: None,
+            debug=lambda *_a, **_k: None,
+            error=lambda *_a, **_k: None,
+        )
+        fake_client_module.websockets = SimpleNamespace(
+            connect=_fake_ws_connect,
+            InvalidStatusCode=RuntimeError,
+        )
+        fake_ws_module = ModuleType("lark_oapi.ws")
+        fake_ws_module.client = fake_client_module
+        fake_root_module = ModuleType("lark_oapi")
+        fake_root_module.ws = fake_ws_module
+
+        original_modules = sys.modules.copy()
+        sys.modules["lark_oapi"] = fake_root_module
+        sys.modules["lark_oapi.ws"] = fake_ws_module
+        sys.modules["lark_oapi.ws.client"] = fake_client_module
+        try:
+            import plugins.platforms.feishu.adapter as adapter_mod
+
+            # Two resolved IPs: the first is a black hole, the second answers.
+            resolved = [
+                (_socket.AF_INET, _socket.SOCK_STREAM, 6, "", ("9.9.9.9", 443)),
+                (_socket.AF_INET, _socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443)),
+            ]
+            with patch.object(_socket, "getaddrinfo", return_value=resolved), \
+                    patch.object(adapter_mod, "_WS_CONNECT_PER_IP_TIMEOUT", 0.2):
+                from plugins.platforms.feishu.adapter import _run_official_feishu_ws_client
+
+                _run_official_feishu_ws_client(fake_client, fake_adapter)
+        finally:
+            sys.modules.clear()
+            sys.modules.update(original_modules)
+
+        # The black hole was attempted first and skipped within the per-IP
+        # deadline; the working IP completed the handshake.
+        self.assertEqual(connect_attempts, ["9.9.9.9", "8.8.8.8"])
+
     def test_runtime_ws_overrides_reapply_after_sdk_configure(self):
         import sys
         from types import ModuleType

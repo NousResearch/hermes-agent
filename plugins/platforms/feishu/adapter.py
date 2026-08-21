@@ -1322,9 +1322,16 @@ def _strip_edge_self_mentions(
             return remaining
 
 
+# Per-IP deadline for the feishu WS connect failover (seconds). Black-hole IPs
+# hang the TLS/WS handshake indefinitely, so each address gets a short budget
+# instead of one long open_timeout covering the whole pool.
+_WS_CONNECT_PER_IP_TIMEOUT = 4.0
+
+
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     """Run the official Lark WS client in its own thread-local event loop."""
     import lark_oapi.ws.client as ws_client_module
+    from urllib.parse import urlparse as _urlparse
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -1343,12 +1350,53 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         except Exception:
             logger.debug("[Feishu] Failed to apply websocket runtime overrides", exc_info=True)
 
-    def _connect_with_overrides(*args: Any, **kwargs: Any) -> Any:
+    import socket as _socket
+
+    async def _connect_with_ip_failover(conn_url: str, ws_host: str, ws_port: int) -> Any:
+        """Connect with per-IP failover.
+
+        msg-frontier.feishu.cn resolves to a ~12-IP pool in which ~3 are
+        black holes (TCP or TLS hangs indefinitely with no RST).
+        websockets.connect() tries the resolved addresses sequentially under
+        one open_timeout, so a black hole first in the pool dooms the whole
+        connect. Resolve here, try each unique IP with a short per-IP
+        deadline, and keep the first handshake that completes. Replace with
+        happy eyeballs (RFC 8305) if websockets grows native support, or
+        drop entirely if the DNS pool is cleaned up.
+        """
+        try:
+            infos = _socket.getaddrinfo(ws_host, ws_port, type=_socket.SOCK_STREAM)
+            unique_ips: list = list(dict.fromkeys(sa[0] for *_, sa in infos))
+        except Exception:
+            unique_ips = [ws_host]
+
+        last_err: Exception | None = None
+        for ip in unique_ips:
+            try:
+                kw: dict = {"open_timeout": None}  # deadline is ours, via wait_for
+                if ip != ws_host:
+                    kw["host"] = ip
+                    kw["port"] = ws_port
+                return await asyncio.wait_for(
+                    original_connect(conn_url, **kw),
+                    timeout=_WS_CONNECT_PER_IP_TIMEOUT,
+                )
+            except Exception as e:
+                last_err = e
+                ws_client_module.logger.debug(
+                    "feishu WS connect to %s via IP %s failed (%s), trying next IP",
+                    ws_host, ip, type(e).__name__,
+                )
+                continue
+        raise last_err or ConnectionError(f"all IPs failed for {ws_host}")
+
+    async def _connect_with_overrides(conn_url: str, **kwargs: Any) -> Any:
         if adapter._ws_ping_interval is not None and "ping_interval" not in kwargs:
             kwargs["ping_interval"] = adapter._ws_ping_interval
         if adapter._ws_ping_timeout is not None and "ping_timeout" not in kwargs:
             kwargs["ping_timeout"] = adapter._ws_ping_timeout
-        return original_connect(*args, **kwargs)
+        u = _urlparse(conn_url)
+        return await _connect_with_ip_failover(conn_url, u.hostname, u.port or 443)
 
     def _configure_with_overrides(conf: Any) -> Any:
         if original_configure is None:

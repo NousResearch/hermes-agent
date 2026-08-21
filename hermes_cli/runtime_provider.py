@@ -567,10 +567,8 @@ def _resolve_runtime_from_pool_entry(
             if cfg_base_url:
                 base_url = cfg_base_url
         configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-        is_opencode_provider = provider in {"opencode-zen", "opencode-go"} or (
-            isinstance(provider, str) and provider.lower().startswith(("opencode-go", "opencode-zen"))
-        )
-        if is_opencode_provider:
+        from hermes_cli.models import opencode_provider_family
+        if opencode_provider_family(provider) is not None:
             # Re-derive api_mode from the effective model rather than the
             # persisted api_mode: the opencode providers serve both
             # anthropic_messages and chat_completions models, so the previous
@@ -591,10 +589,8 @@ def _resolve_runtime_from_pool_entry(
     # symmetrically: strip /v1 for anthropic_messages, re-append it for
     # chat_completions / codex_responses (heals a stripped URL persisted to
     # model.base_url by an earlier switch into an anthropic-routed model).
-    is_opencode_provider = provider in {"opencode-zen", "opencode-go"} or (
-        isinstance(provider, str) and provider.lower().startswith(("opencode-go", "opencode-zen"))
-    )
-    if is_opencode_provider:
+    from hermes_cli.models import opencode_provider_family
+    if opencode_provider_family(provider) is not None:
         from hermes_cli.models import normalize_opencode_base_url
 
         base_url = normalize_opencode_base_url(provider, api_mode, base_url)
@@ -2311,10 +2307,8 @@ def resolve_runtime_provider(
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             # Only honor persisted api_mode when it belongs to the same provider family.
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            is_opencode_provider = provider in {"opencode-zen", "opencode-go"} or (
-                isinstance(provider, str) and provider.lower().startswith(("opencode-go", "opencode-zen"))
-            )
-            if is_opencode_provider:
+            from hermes_cli.models import opencode_provider_family
+            if opencode_provider_family(provider) is not None:
                 # opencode-zen/go must always re-derive api_mode from the
                 # target model (not the stale persisted api_mode), because
                 # the same provider serves both anthropic_messages
@@ -2336,10 +2330,8 @@ def resolve_runtime_provider(
                     provider, base_url, target_model or model_cfg.get("default", "")
                 )
         # Normalize the /v1 suffix for OpenCode by API mode (see comment above).
-        is_opencode_provider = provider in {"opencode-zen", "opencode-go"} or (
-            isinstance(provider, str) and provider.lower().startswith(("opencode-go", "opencode-zen"))
-        )
-        if is_opencode_provider:
+        from hermes_cli.models import opencode_provider_family
+        if opencode_provider_family(provider) is not None:
             from hermes_cli.models import normalize_opencode_base_url
             base_url = normalize_opencode_base_url(provider, api_mode, base_url)
         if provider == "lmstudio":

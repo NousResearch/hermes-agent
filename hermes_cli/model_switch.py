@@ -2164,7 +2164,8 @@ def switch_model(
     # page — and without the re-append, a stripped URL persisted to
     # model.base_url broke every later chat_completions model (glm, deepseek,
     # kimi) the same way.
-    if target_provider in {"opencode-zen", "opencode-go"} and isinstance(base_url, str):
+    from hermes_cli.models import opencode_provider_family as _oc_family_fn
+    if _oc_family_fn(target_provider) is not None and isinstance(base_url, str):
         from hermes_cli.models import normalize_opencode_base_url
         base_url = normalize_opencode_base_url(target_provider, api_mode, base_url)
 

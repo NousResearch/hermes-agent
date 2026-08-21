@@ -68,6 +68,12 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # (Slack's default), and costs no extra API calls — the existing typing
     # refresh cadence just renders different text.
     "live_status": "full",
+    # Collapse runs of N+ consecutive tool-progress lines into a single
+    # live-updating summary line ("🔍 web_search ×3, 📄 web_extract ×3")
+    # instead of one line per call (#15514).  0/off disables; /verbose
+    # tool progress never collapses.  Only applies to "accumulate"
+    # grouping (the summary is edited into the bubble in place).
+    "tool_chain_threshold": 3,
 }
 
 # ---------------------------------------------------------------------------
@@ -300,6 +306,27 @@ def _normalise(setting: str, value: Any) -> Any:
     if setting == "tool_progress_grouping":
         val = str(value).lower()
         return val if val in ("accumulate", "separate") else "accumulate"
+    if setting == "tool_chain_threshold":
+        # bools/YAML on-off strings toggle the default; ints set the chain
+        # length; anything unparseable falls back to the default so a typo
+        # doesn't silently disable the feature.
+        from gateway.tool_chain import DEFAULT_TOOL_CHAIN_THRESHOLD
+        if isinstance(value, bool):
+            return DEFAULT_TOOL_CHAIN_THRESHOLD if value else 0
+        if isinstance(value, str):
+            val = value.strip().lower()
+            if val in {"off", "false", "no", "0"}:
+                return 0
+            if val in {"on", "true", "yes"}:
+                return DEFAULT_TOOL_CHAIN_THRESHOLD
+            try:
+                return max(0, int(val))
+            except ValueError:
+                return DEFAULT_TOOL_CHAIN_THRESHOLD
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return DEFAULT_TOOL_CHAIN_THRESHOLD
     if setting == "reasoning_style":
         val = str(value).lower()
         return val if val in ("code", "blockquote", "subtext") else "code"

@@ -1442,6 +1442,15 @@ DEFAULT_CONFIG = {
         # applies where tool_progress is already enabled. Per-platform override
         # via display.platforms.<platform>.tool_progress_grouping.
         "tool_progress_grouping": "accumulate",
+        # Collapse runs of N+ consecutive gateway tool-progress lines into one
+        # live-updating summary line (e.g. "🔍 web_search ×3, 📄 web_extract ×3")
+        # so A2A-heavy turns don't bury the answer under one line per call
+        # (#15514). 0/off disables; values below 2 are treated as disabled.
+        # /verbose tool progress always shows every call, and the setting only
+        # applies to "accumulate" grouping (the summary is edited into the
+        # bubble in place). Per-platform override via
+        # display.platforms.<platform>.tool_chain_threshold.
+        "tool_chain_threshold": 3,
         # Optional custom phrases for generic long-running status messages.
         # Built-in defaults live in gateway/assets/status_phrases.yaml. Users
         # can set `path`/`paths` to HERMES_HOME-relative YAML files/directories

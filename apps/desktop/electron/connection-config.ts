@@ -491,8 +491,26 @@ function profileRemoteOverride(config, profile) {
     url,
     authMode: normAuthMode(entry.authMode),
     token: entry.token,
-    ...(Object.keys(headers).length > 0 ? { headers } : {})
+    ...(Object.keys(headers).length > 0 ? { headers } : {}),
+    // A URL-remote/cloud host serves every profile via ?profile=, so a Desktop
+    // profile that is only a routing label (e.g. `gris` for the backend's
+    // `main-gris`) can map its explicit self-profile scope into the backend's
+    // namespace — same contract as the managed-SSH `remoteProfile`.
+    ...(normalizeRemoteProfileName(entry.remoteProfile) ?? {})
   }
+}
+
+// Validate a remote profile mapping the same way the SSH path does (a valid
+// Hermes profile identifier, never a reserved alias). Invalid/blank → no
+// mapping, so callers fall back to the historical same-name behavior.
+function normalizeRemoteProfileName(value) {
+  const remoteProfile = String(value || '').trim()
+
+  if (/^[a-z0-9][a-z0-9_-]{0,63}$/.test(remoteProfile) && !RESERVED_REMOTE_PROFILES.has(remoteProfile)) {
+    return { remoteProfile }
+  }
+
+  return null
 }
 
 export interface ProfileRouteOptions {
@@ -934,6 +952,7 @@ export {
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normalizeRemoteHeaders,
+  normalizeRemoteProfileName,
   normalizeSshConfig,
   normAuthMode,
   pathWithGlobalRemoteProfile,

@@ -68,6 +68,25 @@ from gateway.response_filters import is_autonomous_silence_response
 logger = logging.getLogger(__name__)
 
 
+def _payload_delivery_id(route_name: str, payload: Any) -> Optional[str]:
+    """Return a route-scoped delivery ID for a safe top-level payload ID.
+
+    Some providers do not send a delivery header but do retry the same object
+    with a stable top-level ``id``.  Only scalar string/integer IDs are safe to
+    use here; otherwise the caller retains the timestamp fallback.
+    """
+    if not isinstance(payload, dict):
+        return None
+    payload_id = payload.get("id")
+    if isinstance(payload_id, bool) or not isinstance(payload_id, (str, int)):
+        return None
+    if isinstance(payload_id, str) and not payload_id:
+        return None
+    return "payload-id:" + json.dumps(
+        [route_name, payload_id], separators=(",", ":"), ensure_ascii=True
+    )
+
+
 def _is_webhook_silence_response(content: Any) -> bool:
     """Whether an agent response means "deliberately say nothing".
 
@@ -288,6 +307,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # Content-Length and would otherwise bypass the header check below.
         app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get("/health", self._handle_health)
+        app.router.add_get("/webhooks/{route_name}", self._handle_webhook_readiness)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
         # Multi-profile multiplexing: a /p/<profile>/webhooks/<route> prefix
         # routes the inbound event to that profile. Same handler; the profile is
@@ -296,6 +316,9 @@ class WebhookAdapter(BasePlatformAdapter):
         # when gateway.multiplex_profiles is on (the handler validates).
         app.router.add_post(
             "/p/{profile}/webhooks/{route_name}", self._handle_webhook
+        )
+        app.router.add_get(
+            "/p/{profile}/webhooks/{route_name}", self._handle_webhook_readiness
         )
 
         self._runner = web.AppRunner(app)
@@ -500,6 +523,28 @@ class WebhookAdapter(BasePlatformAdapter):
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "webhook"})
+
+    async def _handle_webhook_readiness(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        """Confirm that a webhook route is registered without processing an event."""
+        # Keep readiness entirely separate from the POST pipeline: do not read a
+        # body, authenticate, rate-limit, deduplicate, or invoke the agent.
+        self._reload_dynamic_routes()
+
+        profile = self._resolve_request_profile(request)
+        if profile is _PROFILE_REJECTED:
+            return web.json_response(
+                {"error": "Unknown or unconfigured profile"}, status=404
+            )
+
+        route_name = request.match_info.get("route_name", "")
+        if route_name not in self._routes:
+            return web.json_response({"error": "Unknown webhook route"}, status=404)
+
+        # Intentionally omit the route name and all route configuration. This
+        # endpoint proves only that the URL is ready to receive webhook POSTs.
+        return web.json_response({"status": "ready"})
 
     def _reload_dynamic_routes(self) -> None:
         """Reload agent-created subscriptions from disk if the file changed."""
@@ -734,10 +779,16 @@ class WebhookAdapter(BasePlatformAdapter):
                     {"error": "Cannot parse body"}, status=400
                 )
 
+        # Capture the provider's signed top-level ID before any route script
+        # can transform the payload used for prompting.
+        payload_delivery_id = _payload_delivery_id(route_name, payload)
+
         # Check event type filter
         event_type = (
-            request.headers.get("X-GitHub-Event", "")
+            request.headers.get("Linear-Event", "")
+            or request.headers.get("X-GitHub-Event", "")
             or request.headers.get("X-GitLab-Event", "")
+            or request.headers.get("X-Event-Type", "")
             or payload.get("event_type", "")
             or payload.get("type", "")
             or "unknown"
@@ -828,12 +879,17 @@ class WebhookAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[webhook] Skill loading failed: %s", e)
 
-        # Build a unique delivery ID
+        # Build a unique delivery ID.  Trusted provider delivery headers keep
+        # their existing priority; a stable top-level payload ID is only a
+        # fallback for providers (such as Circleback) that omit them.
         delivery_id = request.headers.get(
             "X-GitHub-Delivery",
             request.headers.get(
                 "svix-id",
-                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+                request.headers.get(
+                    "X-Request-ID",
+                    payload_delivery_id or str(int(time.time() * 1000)),
+                ),
             ),
         )
 
@@ -1119,23 +1175,11 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # Generic V2: X-Webhook-Signature-V2 = <hex HMAC-SHA256 of "<timestamp>.<body>">
         #             X-Webhook-Timestamp = <unix seconds> (required for V2)
-        # Checked independently of (and before) legacy V1 below — a sender
-        # that only ever sends V2 headers must still validate here; nesting
-        # this inside `if generic_sig:` would silently skip V2-only senders.
-        #
-        # The presence of X-Webhook-Signature-V2 alone selects V2 mode and
-        # commits to it — it must NOT fall through to the V1 branch just
-        # because the timestamp is missing/malformed/expired. A sender
-        # migrating to V2 typically sends both V1 and V2 headers together
-        # for compatibility; if incomplete V2 fell through to V1, an
-        # attacker who captured one such mixed request could strip the
-        # X-Webhook-Timestamp header from a replay and have it validate
-        # against the still-present, still-unprotected V1 signature instead
-        # — silently downgrading a V2-protected request back to the replay
-        # hole V2 exists to close.
-        v2_sig = request.headers.get("X-Webhook-Signature-V2", "")
+        # Checked before legacy/provider body-only signatures; the presence of
+        # V2 commits to V2 validation and must not downgrade to V1 if malformed.
+        v2_sig = _header("X-Webhook-Signature-V2")
         if v2_sig:
-            v2_timestamp = request.headers.get("X-Webhook-Timestamp", "")
+            v2_timestamp = _header("X-Webhook-Timestamp")
             if not v2_timestamp:
                 logger.warning(
                     "[webhook] Route '%s' sent X-Webhook-Signature-V2 with "
@@ -1158,21 +1202,24 @@ class WebhookAdapter(BasePlatformAdapter):
             expected_v2 = hmac.new(
                 secret.encode(), signed_content, hashlib.sha256
             ).hexdigest()
-            return _hmac_str_equal(v2_sig, expected_v2)
+            return _hmac_str_equal(v2_sig.removeprefix("sha256="), expected_v2)
 
-        # Generic V1 (legacy): X-Webhook-Signature = <hex HMAC-SHA256 of body>
-        # (deprecated — no replay protection, since the signature only
-        # covers the body: a captured (body, signature) pair replays
-        # indefinitely with no timestamp binding it to a specific delivery.)
-        # Only reachable when X-Webhook-Signature-V2 was not sent at all —
-        # see the guard above.
-        generic_sig = request.headers.get("X-Webhook-Signature", "")
-        if generic_sig:
-            expected = hmac.new(
-                secret.encode(), body, hashlib.sha256
-            ).hexdigest()
+        # Generic/provider HMAC-SHA256 signatures (legacy body-only; no replay
+        # protection). Providers differ mostly by header name and whether they
+        # prefix the hex digest with "sha256=".
+        expected_hex = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        for header_name in (
+            "X-Webhook-Signature",
+            "Linear-Signature",
+            "Attio-Signature",
+            "X-Attio-Signature",
+            "X-Signature",
+        ):
+            signature = _header(header_name)
+            if not signature:
+                continue
             route_name = request.match_info.get("route_name", "")
-            if route_name not in self._v1_signature_warned:
+            if header_name == "X-Webhook-Signature" and route_name not in self._v1_signature_warned:
                 self._v1_signature_warned.add(route_name)
                 logger.warning(
                     "[webhook] Route '%s' uses legacy body-only HMAC (no "
@@ -1182,7 +1229,8 @@ class WebhookAdapter(BasePlatformAdapter):
                     "'<timestamp>.<body>').",
                     route_name,
                 )
-            return _hmac_str_equal(generic_sig, expected)
+            normalized = signature.removeprefix("sha256=")
+            return _hmac_str_equal(normalized, expected_hex)
 
         # No recognised signature header but secret is configured → reject
         logger.debug(

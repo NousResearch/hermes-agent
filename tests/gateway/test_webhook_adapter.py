@@ -19,6 +19,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import socket
 import time
 from collections import deque
@@ -73,7 +74,11 @@ def _create_app(adapter: WebhookAdapter) -> web.Application:
     # Mirror connect(): client_max_size enforces the cap on chunked bodies.
     app = web.Application(client_max_size=adapter._max_body_bytes)
     app.router.add_get("/health", adapter._handle_health)
+    app.router.add_get("/webhooks/{route_name}", adapter._handle_webhook_readiness)
     app.router.add_post("/webhooks/{route_name}", adapter._handle_webhook)
+    app.router.add_get(
+        "/p/{profile}/webhooks/{route_name}", adapter._handle_webhook_readiness
+    )
     return app
 
 
@@ -487,6 +492,68 @@ class TestPayloadFilters:
 class TestHTTPHandling:
 
     @pytest.mark.asyncio
+    async def test_registered_route_get_returns_readiness_without_post_side_effects(self):
+        """GET validates only route registration and never enters POST processing."""
+        routes = {
+            "circleback": {
+                "secret": "super-secret",
+                "prompt": "private prompt {payload}",
+                "skills": ["private-skill"],
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+        adapter._rate_counts["circleback"] = deque([123.0])
+        adapter._seen_deliveries["existing"] = 456.0
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                "/webhooks/circleback",
+                data=b"this is not a webhook payload",
+                headers={"X-Webhook-Signature": "invalid"},
+            )
+            assert resp.status == 200
+            assert await resp.json() == {"status": "ready"}
+
+        adapter.handle_message.assert_not_called()
+        assert list(adapter._rate_counts["circleback"]) == [123.0]
+        assert adapter._seen_deliveries == {"existing": 456.0}
+
+    @pytest.mark.asyncio
+    async def test_unknown_route_get_returns_404_without_disclosing_routes(self):
+        adapter = _make_adapter(
+            routes={"real": {"secret": "super-secret", "prompt": "private"}}
+        )
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/webhooks/nonexistent")
+            assert resp.status == 404
+            assert await resp.json() == {"error": "Unknown webhook route"}
+
+    @pytest.mark.asyncio
+    async def test_profile_route_get_preserves_profile_validation(self, monkeypatch):
+        routes = {"circleback": {"secret": "secret", "prompt": "private"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.gateway_runner = MagicMock()
+        adapter.gateway_runner.config.multiplex_profiles = True
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex, profile_allowlist=None: [("default", None)],
+        )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            known = await cli.get("/p/default/webhooks/circleback")
+            unknown = await cli.get("/p/ghost/webhooks/circleback")
+            assert known.status == 200
+            assert await known.json() == {"status": "ready"}
+            assert unknown.status == 404
+            assert await unknown.json() == {
+                "error": "Unknown or unconfigured profile"
+            }
+
+    @pytest.mark.asyncio
     async def test_unknown_route_returns_404(self):
         """POST to an unknown route returns 404."""
         adapter = _make_adapter(routes={"real": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}})
@@ -519,6 +586,99 @@ class TestHTTPHandling:
 
 
 class TestIdempotency:
+
+    @pytest.mark.asyncio
+    async def test_signed_retries_without_delivery_header_use_top_level_payload_id(self):
+        """Circleback-style retries with the same meeting ID invoke the agent once."""
+        secret = "circleback-webhook-secret"
+        routes = {"circleback": {"secret": secret, "prompt": "meeting {id}"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+        body = json.dumps(
+            {"id": "a4doyWdskaVjMqRgU4GK8", "name": "private meeting"}
+        ).encode()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            headers = {"X-Webhook-Signature": _generic_signature(body, secret)}
+            first = await cli.post("/webhooks/circleback", data=body, headers=headers)
+            retry = await cli.post("/webhooks/circleback", data=body, headers=headers)
+            await asyncio.sleep(0)
+
+            assert first.status == 202
+            assert retry.status == 200
+            assert (await retry.json())["status"] == "duplicate"
+            adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_distinct_top_level_payload_ids_invoke_separate_runs(self):
+        secret = "circleback-webhook-secret"
+        routes = {"circleback": {"secret": secret, "prompt": "meeting {id}"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            for payload_id in ("meeting-one", "meeting-two"):
+                body = json.dumps({"id": payload_id}).encode()
+                response = await cli.post(
+                    "/webhooks/circleback",
+                    data=body,
+                    headers={"X-Webhook-Signature": _generic_signature(body, secret)},
+                )
+                assert response.status == 202
+            await asyncio.sleep(0)
+
+            assert adapter.handle_message.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_delivery_header_keeps_priority_over_payload_id(self):
+        routes = {"idem": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/webhooks/idem",
+                json={"id": "same-payload-id"},
+                headers={"X-GitHub-Delivery": "header-one"},
+            )
+            second = await cli.post(
+                "/webhooks/idem",
+                json={"id": "same-payload-id"},
+                headers={"X-GitHub-Delivery": "header-two"},
+            )
+            await asyncio.sleep(0)
+
+            assert first.status == second.status == 202
+            assert (await first.json())["delivery_id"] == "header-one"
+            assert (await second.json())["delivery_id"] == "header-two"
+            assert adapter.handle_message.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_payload_id_fallback_does_not_leak_payload_or_secret(self, caplog):
+        secret = "do-not-log-this-secret"
+        private_value = "do-not-log-this-payload"
+        routes = {"circleback": {"secret": secret, "prompt": "meeting"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+        body = json.dumps({"id": "meeting-id", "notes": private_value}).encode()
+        headers = {"X-Webhook-Signature": _generic_signature(body, secret)}
+
+        app = _create_app(adapter)
+        with caplog.at_level(logging.INFO, logger="gateway.platforms.webhook"):
+            async with TestClient(TestServer(app)) as cli:
+                await cli.post("/webhooks/circleback", data=body, headers=headers)
+                duplicate = await cli.post(
+                    "/webhooks/circleback", data=body, headers=headers
+                )
+                response_text = await duplicate.text()
+
+        assert duplicate.status == 200
+        evidence = response_text + caplog.text
+        assert secret not in evidence
+        assert private_value not in evidence
 
     @pytest.mark.asyncio
     async def test_duplicate_delivery_id_returns_200(self):

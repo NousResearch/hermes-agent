@@ -191,6 +191,7 @@ import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import {
   oauthGuardMayHardFail,
   oauthSessionIsLive,
+  oauthTicketFailureAuthMessage,
   resolveGatedDownloadAuth,
   resolveJsonBody,
   resolveOauthRestAuth,
@@ -8981,7 +8982,7 @@ async function buildRemoteConnection(
     } catch (error) {
       throw gatewayTicketFailure(
         error,
-        'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.',
+        oauthTicketFailureAuthMessage(hasNativeSession(baseUrl)),
         'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.'
       )
     }

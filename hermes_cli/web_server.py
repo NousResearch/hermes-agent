@@ -1747,6 +1747,45 @@ def _apply_main_model_assignment(
         model_cfg = {}
     prev_provider = str(model_cfg.get("provider") or "").strip().lower()
     new_provider = provider.strip().lower()
+    # A dashboard re-save of a local endpoint sends the canonical
+    # ``custom:<name>`` slug (e.g. ``custom:local-ollama``) while the CLI
+    # wrote bare ``custom`` + ``base_url``. Both name the SAME endpoint;
+    # treat them as the same provider so the re-save does not wipe the
+    # user's configured base_url/api_mode (#76324). Two cases:
+    #   1. The request carries a base_url equal to the current one.
+    #   2. The request carries no base_url at all and the slug did not
+    #      resolve to a configured entry (fix in _apply_model_assignment_sync
+    #      already filled it when it did) — the only durable endpoint fact is
+    #      the one already in config, so preserve it instead of treating the
+    #      bare->named rename as a provider switch.
+    _prev_is_custom = prev_provider == "custom" or prev_provider.startswith("custom:")
+    _new_is_custom = new_provider == "custom" or new_provider.startswith("custom:")
+    _cur_base_norm = str(model_cfg.get("base_url") or "").strip().rstrip("/").lower()
+    _new_base_norm = base_url.strip().rstrip("/").lower()
+    # Case 2 only fires for the bare ``custom`` -> ``custom:<name>`` rename
+    # (the CLI's form -> the dashboard picker's canonical slug). A named ->
+    # named change without a base_url is an ambiguous provider switch and
+    # must not be assumed to be the same endpoint.
+    _bare_to_named_rename = (
+        prev_provider == "custom"
+        and new_provider.startswith("custom:")
+        and new_provider != "custom"
+    )
+    _same_endpoint = (
+        _prev_is_custom
+        and _new_is_custom
+        and (
+            (_new_base_norm and _cur_base_norm == _new_base_norm)
+            or (not _new_base_norm and bool(_cur_base_norm) and _bare_to_named_rename)
+        )
+    )
+    if _same_endpoint:
+        new_provider = prev_provider
+        # Keep the existing provider spelling (e.g. bare ``custom`` as the
+        # CLI wrote it) instead of switching to the request's
+        # ``custom:<name>`` slug: the re-save is the same endpoint, so the
+        # on-disk YAML must stay byte-identical to the CLI's form (#76324).
+        provider = str(model_cfg.get("provider") or provider)
     model_cfg["provider"] = provider
     model_cfg["default"] = model
     if base_url.strip():
@@ -7336,6 +7375,24 @@ def _apply_model_assignment_sync(
         provider, model = _normalize_main_model_assignment(provider, model)
         providers_cfg = cfg.get("providers")
         provider_entry = providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
+        # The dashboard picker sends the canonical custom:<name> slug for a
+        # local endpoint (e.g. ``custom:local-ollama``), but ``providers:``
+        # keys those entries by the bare name (``local-ollama``). Resolve the
+        # entry before filling base_url — otherwise a dashboard re-save of a
+        # CLI-configured local model (``provider: custom`` + ``base_url``)
+        # loses the endpoint (#76324).
+        if not isinstance(provider_entry, dict) and provider.lower().startswith("custom:"):
+            bare_key = provider.split(":", 1)[1]
+            provider_entry = providers_cfg.get(bare_key) if isinstance(providers_cfg, dict) else None
+        if not isinstance(provider_entry, dict):
+            try:
+                from hermes_cli.runtime_provider import _get_named_custom_provider
+
+                _named = _get_named_custom_provider(provider)
+                if isinstance(_named, dict):
+                    provider_entry = _named
+            except Exception:
+                provider_entry = None
         if not base_url and isinstance(provider_entry, dict) and provider_entry.get("base_url"):
             base_url = str(provider_entry.get("base_url") or "").strip()
         model_cfg = _apply_main_model_assignment(

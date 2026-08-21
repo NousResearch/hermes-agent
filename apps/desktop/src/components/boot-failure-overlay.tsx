@@ -7,7 +7,8 @@ import { Loader } from '@/components/ui/loader'
 import { LogView } from '@/components/ui/log-view'
 import type { DesktopConnectionConfig } from '@/global'
 import { useI18n } from '@/i18n'
-import { ChevronLeft, FileText, Loader2, LogIn, RefreshCw, SlidersHorizontal, Wrench } from '@/lib/icons'
+import { openExternalLink } from '@/lib/external-link'
+import { ChevronLeft, ExternalLink, FileText, Loader2, LogIn, RefreshCw, SlidersHorizontal, Wrench } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -268,9 +269,28 @@ export function BootFailureOverlay() {
     hint = copy.remoteSignInHint(label)
   } else if (cloudDown) {
     // A Nous Cloud agent is down — the user cannot restart the managed
-    // instance and Repair is local-only, so the actionable paths are Gateway
-    // settings (switch host / use local), a secondary Retry, and open logs.
-    actions = [settingsAction, { ...retryAction, variant: 'secondary' }, localAction]
+    // instance and Repair is local-only. Lead with the paths that actually
+    // resolve it: check the portal (status/instance controls), switch to the
+    // local gateway, retry, or get support on Discord. Portal/Discord are
+    // buttons (not URLs buried in the hint prose) so localized hints can't
+    // drift the links.
+    actions = [
+      {
+        key: 'portal',
+        label: copy.cloudDownCheckPortal,
+        onClick: () => openExternalLink('https://portal.nousresearch.com'),
+        icon: <ExternalLink />
+      },
+      localAction,
+      { ...retryAction, variant: 'secondary' },
+      {
+        key: 'discord',
+        label: copy.cloudDownDiscord,
+        onClick: () => openExternalLink('https://discord.gg/NousResearch'),
+        variant: 'ghost'
+      },
+      { ...settingsAction, variant: 'ghost' }
+    ]
     hint = copy.cloudDownHint
   } else if (remoteFailure) {
     actions = [settingsAction, { ...retryAction, variant: 'secondary' }, localAction]

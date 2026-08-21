@@ -107,7 +107,9 @@ export const ja = defineLocale({
       cloudDownDescription:
         'このゲートウェイが接続している Nous 管理のクラウドエージェントがサーバーエラーを返しています。ここから再起動することはできません。ステータスを確認するか、ローカルゲートウェイに切り替えるか、サポートに連絡してください。',
       cloudDownHint:
-        'https://portal.nousresearch.com でバックエンドのステータスを確認するか、下のローカルゲートウェイを使用するか、Discord (discord.gg/NousResearch) でご連絡ください。',
+        '下のボタンから Nous Portal（インスタンスの状態と操作）を開くか、Discord でサポートを受けられます。',
+      cloudDownCheckPortal: 'Portal のステータスを確認',
+      cloudDownDiscord: 'Discord でサポートを受ける',
       hideRecentLogs: '最近のログを非表示',
       showRecentLogs: '最近のログを表示',
       signedInTitle: 'サインインしました',

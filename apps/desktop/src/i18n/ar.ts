@@ -87,7 +87,9 @@ export const ar = defineLocale({
       useLocalGateway: 'استخدام البوابة المحلية',
       cloudDownTitle: 'عامل Nous Cloud معطّل',
       cloudDownDescription: 'يعيد عامل السحابة المُدار من Nous الذي يتصل به هذا البوابة خطأً من الخادم. لا يمكن إعادة تشغيله من هنا — تحقق من حالته، أو بدّل إلى البوابة المحلية، أو احصل على الدعم.',
-      cloudDownHint: 'تحقق من https://portal.nousresearch.com لحالة الخادم، أو استخدم البوابة المحلية أدناه، أو تواصل معنا عبر Discord (discord.gg/NousResearch).',
+      cloudDownHint: 'تفتح الأزرار أدناه بوابة Nous (حالة المثيل وعناصر التحكم) أو Discord للحصول على الدعم.',
+      cloudDownCheckPortal: 'التحقق من حالة البوابة',
+      cloudDownDiscord: 'الحصول على مساعدة عبر Discord',
       openLogs: 'فتح السجلات',
       repairHint: 'يعيد الإصلاح تشغيل المثبت وقد يستغرق بضع دقائق على جهاز جديد.',
       remoteSignInHint: signInLabel =>

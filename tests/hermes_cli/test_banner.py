@@ -1,5 +1,7 @@
 """Tests for banner toolset name normalization and skin color usage."""
 
+import threading
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from rich.console import Console
@@ -17,6 +19,36 @@ def test_cprint_falls_back_to_plain_print_when_prompt_toolkit_has_no_console(cap
         banner.cprint("fallback text")
 
     assert capsys.readouterr().out == "fallback text\n"
+
+
+def test_deferred_update_notice_is_plain_text_for_interactive_console():
+    """Late startup notices must not send Rich markup through the ANSI bridge."""
+    notice = banner._format_update_notice_plain(31)
+
+    assert notice == "⚠ 31 commits behind — run hermes update to update"
+    assert "[" not in notice
+    assert "\x1b" not in notice
+
+
+def test_deferred_update_notice_sends_plain_text(monkeypatch):
+    printed = []
+    event = threading.Event()
+    event.set()
+    monkeypatch.setattr(banner, "_deferred_update_notice_started", False)
+    monkeypatch.setattr(banner, "_update_check_done", event)
+    monkeypatch.setattr(banner, "_update_result", 31)
+
+    class ImmediateThread:
+        def __init__(self, *, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(banner.threading, "Thread", ImmediateThread)
+    banner._defer_update_notice(SimpleNamespace(print=printed.append))
+
+    assert printed == ["⚠ 31 commits behind — run hermes update to update"]
 
 
 

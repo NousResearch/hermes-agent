@@ -5578,7 +5578,7 @@ def complete_task(
     # Recompute ready status for dependents (separate txn so children see done).
     recompute_ready(conn)
     # Clean up the scratch workspace and any stale tmux session for the worker.
-    _cleanup_workspace(conn, task_id)
+    cleanup_task_workspace(conn, task_id)
     _done_task = get_task(conn, task_id)
     if fire_lifecycle_hook:
         _fire_kanban_lifecycle_hook(
@@ -5893,6 +5893,11 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             return
         kind: Optional[str] = row["workspace_kind"]
         path: Optional[str] = row["workspace_path"]
+        # Older cards may not have persisted the generated scratch path.
+        # Reconstruct only the managed default location; never infer a path
+        # for a user-supplied workspace.
+        if kind == "scratch" and not path:
+            path = str(workspaces_root() / task_id)
         if kind not in ("scratch", "worktree") or not path:
             # This task's own workspace isn't a removable scratch dir, but its
             # completion may still unblock a deferred parent scratch cleanup
@@ -5951,6 +5956,15 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         _try_cleanup_parent_workspaces(conn, task_id)
     except Exception:
         pass  # best-effort — never block completion
+
+
+def cleanup_task_workspace(conn: sqlite3.Connection, task_id: str) -> None:
+    """Apply the task workspace cleanup policy once the card is terminal.
+
+    Completion, archive, and garbage collection all use this same entry point
+    so cleanup stays idempotent and ``dir:<path>`` workspaces remain protected.
+    """
+    _cleanup_workspace(conn, task_id)
 
 
 def _cleanup_worktree_workspace(
@@ -7535,7 +7549,7 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     recompute_ready(conn)
     # Reap the workspace on archive too — tasks archived without ever
     # completing previously kept their scratch dir / worktree forever.
-    _cleanup_workspace(conn, task_id)
+    cleanup_task_workspace(conn, task_id)
     return True
 
 

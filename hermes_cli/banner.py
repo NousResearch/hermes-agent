@@ -710,6 +710,21 @@ def _format_update_notice(behind: int) -> str:
     return line
 
 
+def _format_update_notice_plain(behind: int) -> str:
+    """Render the deferred interactive notice without Rich markup or ANSI."""
+    from hermes_cli.config import get_managed_update_command, recommended_update_command
+
+    if behind > 0:
+        commits_word = "commit" if behind == 1 else "commits"
+        return (
+            f"⚠ {behind} {commits_word} behind — run "
+            f"{recommended_update_command()} to update"
+        )
+
+    managed_cmd = get_managed_update_command()
+    return f"⚠ update available — run {managed_cmd}" if managed_cmd else "⚠ update available"
+
+
 _deferred_update_notice_started = False
 
 
@@ -731,7 +746,11 @@ def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
             behind = _update_result
             if behind is None or behind == 0:
                 return
-            console.print(_format_update_notice(behind))
+            # This path runs after startup from a background thread.  Passing
+            # Rich's ANSI output through prompt_toolkit's renderer can expose
+            # CSI sequences as literal ``?[...m`` text, so keep this late
+            # notice plain while the in-banner path retains its styling.
+            console.print(_format_update_notice_plain(behind))
         except Exception:
             pass  # never break the session over an update notice
 

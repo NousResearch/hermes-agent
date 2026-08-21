@@ -128,6 +128,42 @@ def test_non_git_dir_preserved(tmp_path: Path) -> None:
     assert plain.is_dir()
 
 
+def test_terminal_cleanup_removes_generated_scratch_but_preserves_dir(
+    kanban_home: Path, tmp_path: Path
+) -> None:
+    """The shared cleanup policy removes generated work, never ``dir:`` data."""
+    generated = kb.workspaces_root() / "t_scratch1234"
+    generated.mkdir(parents=True)
+    source = tmp_path / "user-source"
+    source.mkdir()
+    (source / "keep.txt").write_text("keep\n", encoding="utf-8")
+
+    with kb.connect_closing() as conn:
+        scratch = kb.create_task(conn, title="generated", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET workspace_kind='scratch', workspace_path=? WHERE id=?",
+                (str(generated), scratch),
+            )
+        direct = kb.create_task(conn, title="source", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET workspace_kind='dir', workspace_path=? WHERE id=?",
+                (str(source), direct),
+            )
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (scratch,))
+        assert kb.claim_task(conn, scratch, claimer="worker") is not None
+        assert kb.complete_task(conn, scratch, summary="verified")
+        # A retry after completion is safe and must not affect other paths.
+        kb.cleanup_task_workspace(conn, scratch)
+        assert kb.archive_task(conn, direct)
+
+    assert not generated.exists()
+    assert source.is_dir()
+    assert (source / "keep.txt").read_text(encoding="utf-8") == "keep\n"
+
+
 def test_tree_dirtied_between_check_and_removal_preserved(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

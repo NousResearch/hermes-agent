@@ -3216,7 +3216,6 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
 def _cmd_gc(args: argparse.Namespace) -> int:
     """Remove scratch workspaces of archived tasks, prune old events, and
     delete old worker logs."""
-    import shutil
     scratch_root = kb.workspaces_root()
     removed_ws = 0
     with kb.connect_closing() as conn:
@@ -3224,32 +3223,12 @@ def _cmd_gc(args: argparse.Namespace) -> int:
             "SELECT id, workspace_kind, workspace_path, branch_name FROM tasks "
             "WHERE status = 'archived'"
         ).fetchall()
-    for row in rows:
-        if row["workspace_kind"] == "worktree":
-            # Backstop for worktrees that escaped the completion/archive hook
-            # (e.g. tasks archived before that hook existed). Same safety
-            # predicate: only clean, fully-pushed worktrees are removed.
-            wt_path = row["workspace_path"]
-            if wt_path and Path(wt_path).is_dir():
-                kb._cleanup_worktree_workspace(row["id"], wt_path, row["branch_name"])
-                if not Path(wt_path).is_dir():
-                    removed_ws += 1
-            continue
-        if row["workspace_kind"] != "scratch":
-            continue
-        path = Path(row["workspace_path"] or (scratch_root / row["id"]))
-        try:
-            path = path.resolve()
-        except OSError:
-            continue
-        try:
-            path.relative_to(scratch_root.resolve())
-        except ValueError:
-            # Safety: never delete outside the scratch root.
-            continue
-        if path.exists() and path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-            removed_ws += 1
+        for row in rows:
+            path = Path(row["workspace_path"] or (scratch_root / row["id"]))
+            existed = path.is_dir()
+            kb.cleanup_task_workspace(conn, row["id"])
+            if existed and not path.is_dir():
+                removed_ws += 1
 
     event_days = getattr(args, "event_retention_days", 30)
     log_days = getattr(args, "log_retention_days", 30)

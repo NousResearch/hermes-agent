@@ -2746,6 +2746,7 @@ export const ja = defineLocale({
       errorSwitchProvider: 'プロバイダーを切り替え',
       errorOpenLogs: 'ログを開く',
       errorOpenLogsFailed: 'ログフォルダを開けませんでした',
+      errorNousSupport: 'Nousサポート',
       errorCopyDiagnostics: '診断情報をコピー',
       filesChanged: count => `${count} 件のファイルを変更`,
       reviewChanges: 'レビュー',

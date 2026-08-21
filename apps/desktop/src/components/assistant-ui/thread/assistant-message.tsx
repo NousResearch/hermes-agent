@@ -31,6 +31,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
 import { type ErrorSurface, formatErrorDiagnostics } from '@/lib/error-surface'
+import { openExternalLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import { AudioLines, GitForkIcon, Loader2Icon, RefreshCwIcon, SmilePlusIcon, VolumeXIcon, XIcon } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
@@ -39,12 +40,16 @@ import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
-import { $currentModel } from '@/store/session'
+import { $currentModel, $currentProvider } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
 
 // Stable empty identity for the settled-parts selector — a fresh [] per render
 // would re-derive the changed-files card on every message re-render.
 const EMPTY_PARTS: readonly unknown[] = []
+
+// Nous Portal's help hub (docs, Discord, GitHub, support) — the error card's
+// "Nous support" action for sessions running on Portal auth.
+const NOUS_SUPPORT_URL = 'https://portal.nousresearch.com/help'
 
 // PERF: hoisted to module scope so the element OBJECT is identical on every
 // render of every assistant message. React bails out of re-rendering a child
@@ -490,6 +495,13 @@ const ErrorRecoveryActions: FC = () => {
   // child mounts only when one is (see SwitchProviderAction).
   const inRouter = useInRouterContext()
   const model = useStore($currentModel)
+  const provider = useStore($currentProvider)
+
+  // Nous Portal users get a direct line to Nous support (docs/Discord/GitHub
+  // hub behind their portal account). Provider === 'nous' means the session
+  // runs on Portal auth — the "logged in" signal that's available
+  // synchronously without an extra billing query per error card.
+  const showNousSupport = provider.trim().toLowerCase() === 'nous'
 
   // Retry = assistant-ui reload (same wiring as the footer's refresh action):
   // re-runs the failed turn's prompt in place. Suppressed when the classifier
@@ -541,6 +553,15 @@ const ErrorRecoveryActions: FC = () => {
         </ActionBarPrimitive.Reload>
       )}
       {showSwitchProvider && inRouter && <SwitchProviderAction label={copy.errorSwitchProvider} />}
+      {showNousSupport && (
+        <button
+          className="aui-error-action"
+          onClick={() => openExternalLink(NOUS_SUPPORT_URL)}
+          type="button"
+        >
+          {copy.errorNousSupport}
+        </button>
+      )}
       {window.hermesDesktop?.logsRoot && (
         <button className="aui-error-action" onClick={() => void openLogs()} type="button">
           {copy.errorOpenLogs}

@@ -2449,6 +2449,7 @@ export const ar = defineLocale({
       errorSwitchProvider: 'تبديل المزوّد',
       errorOpenLogs: 'فتح السجلات',
       errorOpenLogsFailed: 'تعذّر فتح مجلد السجلات',
+      errorNousSupport: 'دعم Nous',
       errorCopyDiagnostics: 'نسخ التشخيصات',
       filesChanged: count => `${count} ملفات تم تغييرها`,
       reviewChanges: 'مراجعة',

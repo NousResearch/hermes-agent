@@ -7317,9 +7317,18 @@ def run_conversation(
                 # flushing here prevents it from wrapping tool feed lines.
                 # Only signal the display callback — TTS (_stream_callback)
                 # should NOT receive None (it uses None as end-of-stream).
+                #
+                # PATCH (2026-07-29): Send a text chunk instead of None to keep
+                # the SSE stream alive for OpenWebUI's browser client. The browser
+                # client closes the connection when it doesn't receive text chunks
+                # during tool execution. Sending a text chunk (not None) keeps the
+                # SSE stream open while tool progress events are also sent.
                 if agent.stream_delta_callback:
                     try:
-                        agent.stream_delta_callback(None)
+                        # Send a text chunk to keep the SSE stream alive.
+                        # This prevents OpenWebUI's browser client from closing
+                        # the connection during tool execution.
+                        agent.stream_delta_callback("...")
                     except Exception:
                         pass
 
@@ -7352,7 +7361,9 @@ def run_conversation(
                         if agent.stream_delta_callback:
                             try:
                                 agent.stream_delta_callback(final_response)
-                                agent.stream_delta_callback(None)
+                                # PATCH (2026-07-29): Send a text chunk instead of None
+                                # to keep the SSE stream alive for OpenWebUI.
+                                agent.stream_delta_callback("")
                             except Exception:
                                 pass
                     break

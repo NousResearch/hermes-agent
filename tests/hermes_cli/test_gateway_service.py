@@ -764,6 +764,105 @@ class TestGatewaySystemServiceRouting:
         assert "21627" not in out  # must use the mocked budget, not live defaults
         assert "27" in out
 
+    def test_launchd_restart_uses_after_turn_sigusr1_before_hard_restart(
+        self, monkeypatch, capsys
+    ):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 0.0)
+        monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 42.0)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 987)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: calls.append((pid, timeout)) or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("hard launchctl restart must not run after a graceful exit")
+            ),
+        )
+        monkeypatch.setattr(gateway_cli, "_clear_launchd_unsupported_marker", lambda: None)
+
+        gateway_cli.launchd_restart()
+
+        assert calls == [(987, 42.0)]
+        out = capsys.readouterr().out.lower()
+        assert "restarting gracefully" in out
+        assert "42" in out
+
+    def test_launchd_restart_rearms_detached_fallback_before_graceful_exit(
+        self, monkeypatch, capsys
+    ):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 180.0)
+        monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 42.0)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 987)
+        monkeypatch.setattr(gateway_cli, "_launchd_unsupported_marker_exists", lambda: True)
+        monkeypatch.setattr(gateway_cli, "_gateway_run_command", lambda: ["python", "gateway"])
+        monkeypatch.setattr(
+            gateway_cli,
+            "_spawn_gateway_restart_watcher",
+            lambda pid, argv: calls.append(("watcher", pid, argv)) or True,
+        )
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: calls.append(("graceful", pid, timeout)) or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("launchctl must not run for a detached fallback")
+            ),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_clear_launchd_unsupported_marker",
+            lambda: (_ for _ in ()).throw(
+                AssertionError("a detached restart must preserve the unsupported marker")
+            ),
+        )
+
+        gateway_cli.launchd_restart()
+
+        assert calls == [
+            ("watcher", 987, ["python", "gateway"]),
+            ("graceful", 987, 42.0),
+        ]
+        assert "detached gateway restart requested" in capsys.readouterr().out.lower()
+
+    def test_launchd_restart_leaves_detached_gateway_running_if_watcher_fails(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 180.0)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 987)
+        monkeypatch.setattr(gateway_cli, "_launchd_unsupported_marker_exists", lambda: True)
+        monkeypatch.setattr(gateway_cli, "_gateway_run_command", lambda: ["python", "gateway"])
+        monkeypatch.setattr(gateway_cli, "_spawn_gateway_restart_watcher", lambda *args: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_request_gateway_self_restart",
+            lambda pid: (_ for _ in ()).throw(
+                AssertionError("must not stop the old gateway without a replacement")
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match="left untouched"):
+            gateway_cli.launchd_restart()
+
 
 
 

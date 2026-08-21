@@ -5125,6 +5125,44 @@ def launchd_restart():
 
     try:
         pid = get_running_pid()
+        if pid is not None and _launchd_unsupported_marker_exists():
+            # launchd cannot relaunch a detached fallback after SIGUSR1 makes
+            # it exit. Arm the existing watcher first so a replacement starts
+            # only after the old gateway has drained and stopped. Do not clear
+            # the marker: successful detached restart does not mean launchd
+            # supervision has recovered.
+            if not _spawn_gateway_restart_watcher(pid, _gateway_run_command()):
+                raise RuntimeError(
+                    "Could not prepare a replacement for the detached gateway; "
+                    "the running gateway was left untouched"
+                )
+            wait_budget = _get_restart_exit_wait_budget()
+            print(
+                f"⏳ Detached gateway restarting gracefully (PID {pid}) — "
+                f"waiting up to {wait_budget:.0f}s for in-flight turns + drain..."
+            )
+            if _request_gateway_self_restart(pid) or _graceful_restart_via_sigusr1(
+                pid, wait_budget
+            ):
+                print("✓ Detached gateway restart requested")
+                return
+
+            # The watcher remains armed, so the hard fallback below still
+            # brings the detached gateway back after the old PID exits.
+            try:
+                terminate_pid(pid, force=False)
+            except (ProcessLookupError, PermissionError, OSError):
+                pid = None
+            if pid is None or _wait_for_gateway_exit(
+                timeout=drain_timeout, force_after=None
+            ):
+                print("✓ Detached gateway restart requested")
+                return
+            raise RuntimeError(
+                f"Detached gateway PID {pid} did not exit after "
+                f"{drain_timeout:.0f}s; replacement remains armed"
+            )
+
         if pid is not None and _request_gateway_self_restart(pid):
             print("✓ Service restart requested")
             _clear_launchd_unsupported_marker()
@@ -5144,6 +5182,21 @@ def launchd_restart():
             _escalate_wedged_gateway(pid)
             pid = None
         if pid is not None:
+            # An external macOS CLI can use the same drain-aware SIGUSR1 path
+            # as systemd. Wait before stop() until active chat and cron work
+            # finishes instead of force-killing a legitimate long cron run.
+            wait_budget = _get_restart_exit_wait_budget()
+            print(
+                f"⏳ Launchd service restarting gracefully (PID {pid}) — "
+                f"waiting up to {wait_budget:.0f}s for in-flight turns + drain..."
+            )
+            if _graceful_restart_via_sigusr1(pid, wait_budget):
+                print("✓ Service restart requested")
+                _clear_launchd_unsupported_marker()
+                return
+
+            # Preserve the existing hard fallback when SIGUSR1 is unavailable
+            # or the configured after-turn safety cap expires.
             # Announce the drain BEFORE waiting on it. This wait can run for
             # the full drain budget (180s by default) while the old gateway
             # finishes in-flight agent runs, and it streams into surfaces with

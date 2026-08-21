@@ -12434,7 +12434,30 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             platform=str(getattr(self, "platform", None) or "cli"),
                         )
                         if result:
-                            _cprint(str(result))
+                            # ── KENSEI CUSTOM: interactive plugin command results ──
+                            # A plugin handler may return a structured dict
+                            # {"interactive": {"title", "items", "detail"}} to
+                            # render an arrow-key navigable picker instead of
+                            # flat text. Selection prints the chosen item's
+                            # detail. Mirrors /reasoning-style interactivity.
+                            if isinstance(result, dict) and result.get("interactive"):
+                                _spec = result["interactive"]
+                                _items = _spec.get("items") or []
+                                if _items:
+                                    _idx = self._run_curses_picker(
+                                        _spec.get("title", base_cmd.lstrip("/")),
+                                        [i.get("label", str(i)) for i in _items],
+                                        default_index=0,
+                                    )
+                                    if _idx is not None and 0 <= _idx < len(_items):
+                                        _chosen = _items[_idx]
+                                        _detail = _chosen.get("detail")
+                                        _cprint(_detail if _detail else _chosen.get("label", ""))
+                                else:
+                                    _cprint(_spec.get("empty", "No items."))
+                            else:
+                                _cprint(str(result))
+                            # ── END KENSEI CUSTOM ──
                     except Exception as e:
                         _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")
             # Skill bundles take precedence over individual skills — /<bundle>

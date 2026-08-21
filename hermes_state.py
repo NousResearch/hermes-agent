@@ -65,6 +65,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     escape_like as _escape_like,
     DEFERRED_INDEX_SQL,
     FTS_CJK_STALE_KEY,
+    FTS_STALE_HEALTH_REASON,
     FTS_SQL,
     FTS_STALE_KEY,
     FTS_STORAGE_VERSION,
@@ -2157,6 +2158,22 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
         # working), so tokenizer absence must never classify as corruption.
         load_fts5_cjk_extension(conn)
         conn.execute("PRAGMA journal_mode").fetchone()
+
+        # A stale marker is the durable handoff from live fail-open to the
+        # explicit offline repair command. Check it before integrity/FTS
+        # probes: the detached index is expected to remain corrupt until that
+        # command runs, and scanning it first would hide the actionable state
+        # behind a generic malformed-page error.
+        try:
+            if conn.execute(
+                "SELECT 1 FROM state_meta WHERE key = ? LIMIT 1",
+                (FTS_STALE_KEY,),
+            ).fetchone():
+                return FTS_STALE_HEALTH_REASON
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc).lower():
+                raise
+
         rows = conn.execute("PRAGMA integrity_check").fetchall()
         problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != "ok"]
         if problems:
@@ -2363,7 +2380,8 @@ def _repair_state_db_schema_locked(
     # repaired the file, in which case redoing the surgery would undo its
     # work on a now-healthy DB (the repair/re-corrupt cascade this lock
     # exists to break).
-    if _db_opens_cleanly(db_path) is None:
+    probe_reason = _db_opens_cleanly(db_path)
+    if probe_reason is None:
         report["repaired"] = True
         report["strategy"] = "already_healthy"
         return report
@@ -2384,6 +2402,25 @@ def _repair_state_db_schema_locked(
             )
             logger.error("state.db repair aborted: %s", report["error"])
             return report
+
+    # A live SessionDB deliberately detached corrupt FTS triggers and left a
+    # durable marker. Rebuild only from this explicit repair path: the
+    # constructor opt-in is never set by gateway/desktop/session opens, so an
+    # unbounded full-message scan cannot block a user request or startup.
+    if probe_reason == FTS_STALE_HEALTH_REASON:
+        try:
+            repair_db = SessionDB(db_path=db_path, allow_fts_rebuild=True)
+            repair_db.close()
+            if _db_opens_cleanly(db_path) is None:
+                report["repaired"] = True
+                report["strategy"] = "rebuild_stale_fts_offline"
+                logger.warning(
+                    "state.db stale FTS indexes rebuilt by explicit offline repair: %s",
+                    db_path,
+                )
+                return report
+        except sqlite3.DatabaseError as exc:
+            logger.warning("state.db explicit stale-FTS rebuild failed: %s", exc)
 
     # ── Strategy 0: rebuild FTS indexes in place (FTS write-corruption) ──
     # The FTS5 'rebuild' command rewrites the internal index from the canonical
@@ -2474,7 +2511,7 @@ def _repair_state_db_schema_locked(
     except sqlite3.DatabaseError as exc:
         logger.warning("state.db dedup repair pass failed: %s", exc)
 
-    # ── Strategy 2: drop all FTS schema, VACUUM, rebuild on next open ──
+    # ── Strategy 2: drop all FTS schema, VACUUM, defer rebuild ──
     try:
         conn = sqlite3.connect(str(db_path), isolation_level=None)
         try:
@@ -2487,15 +2524,25 @@ def _repair_state_db_schema_locked(
         finally:
             conn.close()
         reason = _db_opens_cleanly(db_path)
-        if reason is None:
-            report["repaired"] = True
-            report["strategy"] = "drop_fts_rebuild"
-            logger.warning(
-                "state.db schema repaired by dropping FTS schema; indexes "
-                "will rebuild from messages on next open: %s", db_path
-            )
-            return report
-        report["error"] = reason
+        # Dropping the derived schema is not a repair: allowing an ordinary
+        # SessionDB open to notice missing triggers and rebuild synchronously
+        # would reintroduce the outage this path is meant to prevent. Leave a
+        # durable marker and keep the index detached even when the remaining
+        # structural damage makes the final probe fail.
+        try:
+            marker_conn = sqlite3.connect(str(db_path), isolation_level=None)
+            try:
+                marker_conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, '1') "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (FTS_STALE_KEY,),
+                )
+                marker_conn.commit()
+            finally:
+                marker_conn.close()
+        except sqlite3.DatabaseError as marker_exc:
+            logger.warning("Could not persist stale FTS marker after drop: %s", marker_exc)
+        report["error"] = reason or FTS_STALE_HEALTH_REASON
     except sqlite3.DatabaseError as exc:
         report["error"] = str(exc)
 
@@ -3219,13 +3266,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         except Exception:
             logger.debug("Could not close a SessionDB connection", exc_info=True)
 
-    def __init__(self, db_path: Path = None, read_only: bool = False):
+    def __init__(
+        self,
+        db_path: Path = None,
+        read_only: bool = False,
+        *,
+        allow_fts_rebuild: bool = False,
+    ):
         self.db_path = db_path or _default_db_path()
         # Fail hard (before any connection/pragma/mkdir) if a pytest-context
         # process resolved the developer's production state.db — see the
         # live-DB test-isolation guard block near _default_db_path().
         _ensure_test_isolation(self.db_path)
         self.read_only = read_only
+        # Full FTS rebuild is an unbounded maintenance operation. Only the
+        # explicit offline repair command opts in; ordinary gateway, desktop,
+        # CLI, and search opens always degrade to canonical LIKE search.
+        self._allow_fts_rebuild = bool(allow_fts_rebuild)
 
         self._lock = threading.Lock()
         # Read-path split (WAL only): recall/browse queries borrow a
@@ -4095,6 +4152,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # derived indexes and retry against the canonical tables.
                 if self._try_runtime_fts_rebuild(exc):
                     continue
+                if self._fts_stale or not self._fts_enabled:
+                    continue
                 if self._enter_fts_fail_open(exc):
                     continue
                 raise
@@ -4217,14 +4276,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         be retried; False when the error isn't the FTS-corruption class, FTS
         is disabled, or a rebuild was already attempted for this instance.
 
-        Delegates to :meth:`rebuild_fts` (the FTS5 ``'rebuild'`` command —
-        index rewritten from the canonical messages table, zero message-row
-        mutation). Safe to call from ``_execute_write``'s except path: the
-        failed transaction was rolled back and ``self._lock`` released before
-        the exception propagated, and ``rebuild_fts`` re-acquires it.
-        E2E-verified: a corrupted ``messages_fts_data`` shadow table rejects
-        every append; after the in-place rebuild the same append succeeds and
-        search works again.
+        Live gateways do not rebuild here. FTS5 ``'rebuild'`` scans every
+        canonical message while holding the SQLite write lock; on the
+        production 9GB store that turned one bad search index into a 15-minute
+        message outage and then a gateway crash. The default path detaches
+        the derived indexes and retries the canonical write. An explicit
+        offline maintenance command can rebuild them later. The environment
+        switch is retained only as an emergency escape hatch for small,
+        disposable profiles by constructing ``SessionDB(...,
+        allow_fts_rebuild=True)`` from an offline maintenance command.
         """
         if self._fts_runtime_rebuild_attempted:
             return False
@@ -4233,6 +4293,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if not self._is_fts_write_corruption_error(exc):
             return False
         self._fts_runtime_rebuild_attempted = True
+        if not self._allow_fts_rebuild:
+            logger.warning(
+                "state.db FTS corruption detected; deferring index rebuild to "
+                "explicit offline maintenance and keeping canonical writes "
+                "available."
+            )
+            self._enter_fts_fail_open(exc)
+            return False
         logger.warning(
             "state.db write failed with an FTS-corruption error (%s) — "
             "attempting one-shot in-place FTS rebuild; canonical message "
@@ -4311,7 +4379,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         logger.error(
             "state.db FTS indexes remain corrupt (%s); disabled FTS sync and "
             "retrying the canonical write. Search temporarily uses LIKE until "
-            "a later SessionDB open rebuilds the indexes.",
+            "the explicit hermes sessions repair command rebuilds them.",
             exc,
         )
         return True
@@ -13031,12 +13099,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         no handoff record.
         """
         try:
-            cur = self._conn.execute(
-                "SELECT handoff_state, handoff_platform, handoff_error "
-                "FROM sessions WHERE id = ?",
-                (session_id,),
-            )
-            row = cur.fetchone()
+            with self._read_ctx() as conn:
+                row = conn.execute(
+                    "SELECT handoff_state, handoff_platform, handoff_error "
+                    "FROM sessions WHERE id = ?",
+                    (session_id,),
+                ).fetchone()
             if not row:
                 return None
             return {
@@ -13053,15 +13121,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Used by the gateway's handoff watcher.
         """
         try:
-            cur = self._conn.execute(
-                "SELECT s.*, "
-                "COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
-                "FROM sessions s "
-                "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
-                "WHERE s.handoff_state = 'pending' "
-                "ORDER BY s.started_at ASC"
-            )
-            return [self._session_row_dict(r) for r in cur.fetchall()]
+            with self._read_ctx() as conn:
+                rows = conn.execute(
+                    "SELECT s.*, "
+                    "COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
+                    "FROM sessions s "
+                    "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
+                    "WHERE s.handoff_state = 'pending' "
+                    "ORDER BY s.started_at ASC"
+                ).fetchall()
+            return [self._session_row_dict(r) for r in rows]
         except Exception:
             return []
 

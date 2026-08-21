@@ -46,6 +46,11 @@ def escape_like(text: str) -> str:
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+FTS_STALE_HEALTH_REASON = (
+    "FTS indexes are marked stale; offline repair is required"
+)
+
+
 _PREVIEW_CONTENT_SQL = "REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' ')"
 
 

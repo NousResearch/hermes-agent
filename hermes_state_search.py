@@ -2121,17 +2121,29 @@ class SessionSearchMixin:
             except sqlite3.DatabaseError as exc:
                 # A corrupt FTS index raises the malformed / "fts5: corrupt
                 # structure record" class on the MATCH read, the same class the
-                # write path self-heals (#66296). OperationalError (query
-                # syntax) is a subclass caught above; this arm is the corruption
-                # parent. Rebuild the index in place once — the read context
-                # holds no writer lock, so rebuild_fts() can acquire it — and
-                # retry, so search self-heals for read-only sessions (cron/CLI
-                # history search) that never trigger a write to repair it first.
-                if not self._try_runtime_fts_rebuild(exc):
-                    raise
-                with self._read_ctx() as conn:
-                    cursor = conn.execute(sql, params)
-                    matches = [dict(row) for row in cursor.fetchall()]
+                # write path handles (#66296). OperationalError (query syntax)
+                # is a subclass caught above; this arm is the corruption
+                # parent. Live search must never run the unbounded rebuild:
+                # detach the derived indexes and fall back to canonical LIKE
+                # results until the explicit offline repair command runs.
+                if self._try_runtime_fts_rebuild(exc):
+                    with self._read_ctx() as conn:
+                        cursor = conn.execute(sql, params)
+                        matches = [dict(row) for row in cursor.fetchall()]
+                else:
+                    # Live search must remain bounded. The corruption handler
+                    # detached the derived indexes, so answer from canonical
+                    # message rows and leave the rebuild to `sessions repair`.
+                    matches = self._search_messages_like_fallback(
+                        query,
+                        source_filter=source_filter,
+                        exclude_sources=exclude_sources,
+                        role_filter=role_filter,
+                        limit=limit,
+                        offset=offset,
+                        sort=sort,
+                        include_inactive=include_inactive,
+                    )
 
         # Deferred-rebuild supplement (schema v23): while the background
         # backfill is pending, the FTS indexes only cover rows outside the

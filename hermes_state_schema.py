@@ -1233,7 +1233,21 @@ class SessionSchemaMixin:
             # DBs have no legacy inline FTS, so they get the v23 DDL.
             legacy_fts = self._db_has_legacy_inline_fts(cursor)
             if self._fts_stale:
-                if self._recover_stale_fts(cursor, legacy=legacy_fts):
+                if not getattr(self, "_allow_fts_rebuild", False):
+                    # A stale FTS marker is deliberately durable. Rebuilding
+                    # here would make every gateway restart scan the complete
+                    # message store while holding a write transaction. Keep
+                    # the derived indexes detached and let the explicit
+                    # `hermes sessions repair` command rebuild them.
+                    self._fts_enabled = False
+                    self._trigram_available = False
+                    self._fts_cjk_available = False
+                    logger.error(
+                        "state.db FTS indexes are stale; automatic startup "
+                        "rebuild is disabled. Run `hermes sessions repair` "
+                        "with the gateway stopped."
+                    )
+                elif self._recover_stale_fts(cursor, legacy=legacy_fts):
                     # CJK was detached alongside the corrupt base indexes and
                     # has its own stale marker. Its existing ensure path keeps
                     # it offline until its dedicated rebuild.

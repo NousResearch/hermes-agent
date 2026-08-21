@@ -73,16 +73,22 @@ def _attempt_track(path_str: str, task_id: str, session_id: str) -> None:
     """Best-effort auto-track. Never raises."""
     try:
         p = Path(path_str).expanduser()
-    except Exception:
-        return
-    if not p.exists():
-        return
-    category = dg.guess_category(p)
-    if category is None:
-        return
-    newly = dg.track(str(p), category, silent=True)
-    if newly:
-        _record_track(task_id, session_id, p, category)
+        # Reject host paths before any stat so unreadable locations
+        # outside HERMES_HOME never reach Path.exists() (#82661).
+        if not dg.is_safe_path(p) or not p.exists():
+            return
+        category = dg.guess_category(p)
+        if category is None:
+            return
+        newly = dg.track(str(p), category, silent=True)
+        if newly:
+            _record_track(task_id, session_id, p, category)
+    except OSError:
+        # Paths we can't stat (e.g. under /root or another user's home —
+        # Path.exists() raises PermissionError there) must never escape the
+        # hook: the dispatcher would log a WARNING per occurrence and the
+        # "never raises" contract above would be broken. Skip the candidate.
+        logger.debug("disk-cleanup: skipping unreadable path %r", path_str, exc_info=True)
 
 
 def _extract_paths_from_write_file(args: Dict[str, Any]) -> Set[str]:

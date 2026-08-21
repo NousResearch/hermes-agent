@@ -3071,6 +3071,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             and getattr(loop, "is_running", lambda: False)()
         )
         delivered = False
+        suppressed = False
         target_errors = []
 
         # Continuable cron surface (D1/D2/D6): resolve the delivery surface for
@@ -3376,17 +3377,36 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             # {"success": True, "delivered": False, ...}.
                             # Normalize both shapes so a getattr default doesn't
                             # misread a dict, and so a None / success-less object
-                            # is NOT counted as delivered (#47056).
+                            # is NOT counted as delivered (#47056).  A dict with
+                            # explicit delivered=False means the message was
+                            # deliberately NOT sent — success=True there only
+                            # means the filter ran, so it must not be logged as
+                            # a delivery either.
                             if isinstance(send_result, dict):
                                 send_success = bool(send_result.get("success", False))
+                                suppressed = send_result.get("delivered") is False
+                                suppressed_kind = send_result.get("filtered", "filtered")
                                 send_raw_response = send_result.get("raw_response")
                                 delivered_message_id = send_result.get("message_id")
                             else:
                                 send_success = _confirm_adapter_delivery(send_result)
+                                suppressed_kind = "filtered"
                                 send_raw_response = getattr(send_result, "raw_response", None)
                                 delivered_message_id = getattr(send_result, "message_id", None)
 
-                            if not send_success:
+                            if suppressed:
+                                # Deliberately suppressed (e.g. silence-narration
+                                # filter): the message must NOT be sent.  Resolve
+                                # the obligation without claiming delivery and
+                                # without falling through to a standalone resend.
+                                logger.info(
+                                    "Job '%s': delivery suppressed to %s:%s (%s, not sent)",
+                                    job["id"], platform_name, chat_id,
+                                    suppressed_kind,
+                                )
+                                adapter_ok = False
+                                delivered = True
+                            elif not send_success:
                                 if isinstance(send_result, dict):
                                     err = send_result.get("error", "unknown")
                                     shape = "dict"

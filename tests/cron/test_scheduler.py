@@ -512,6 +512,58 @@ class TestDeliverResultWrapping:
         voice_call = adapter.send_voice.call_args
         assert voice_call[1]["audio_path"] == str(media_path)
 
+    def test_suppressed_delivery_not_counted_as_delivered(self, tmp_path, monkeypatch, caplog):
+        """A live-adapter send that returns {success: True, delivered: False}
+        (silence-narration filter) must NOT be logged as \"delivered via live
+        adapter\", and must not fall through to a standalone resend."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = {
+            "success": True,
+            "delivered": False,
+            "filtered": "silence_narration",
+        }
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        job = {
+            "id": "silent-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "12345"},
+        }
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=mock_cfg),
+            patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
+            patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro),
+            patch("tools.send_message_tool._send_to_platform", new=AsyncMock()) as standalone_send,
+            caplog.at_level(logging.INFO, logger="cron.scheduler"),
+        ):
+            result = _deliver_result(job, "*(silent)*", adapters={Platform.TELEGRAM: adapter}, loop=loop)
+
+        assert result is None  # suppression is not an error
+        standalone_send.assert_not_awaited()  # no standalone resend
+        logs = caplog.text
+        assert "delivered to telegram:12345 via live adapter" not in logs
+        assert "delivery suppressed to telegram:12345" in logs
+
 
 class TestDeliverResultErrorReturns:
     """Verify _deliver_result returns error strings on failure, None on success."""

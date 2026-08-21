@@ -2906,10 +2906,13 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
     provider = None
     base_url = None
     api_key = None
+    requested_provider = None
+    user_providers = None
     custom_providers = None
     configured_model = None
     configured_provider = None
     configured_base_url = None
+    data = None
 
     try:
         data = _load_gateway_config()
@@ -2930,8 +2933,10 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
             try:
                 from hermes_cli.config import get_compatible_custom_providers
 
+                user_providers = data.get("providers")
                 custom_providers = get_compatible_custom_providers(data)
             except Exception:
+                user_providers = data.get("providers")
                 custom_providers = data.get("custom_providers")
     except Exception:
         pass
@@ -2939,6 +2944,7 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
     try:
         runtime = _resolve_runtime_agent_kwargs()
         provider = runtime.get("provider") or provider
+        requested_provider = runtime.get("requested_provider") or configured_provider
         base_url = runtime.get("base_url") or base_url
         api_key = runtime.get("api_key")
     except Exception:
@@ -2960,14 +2966,35 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
         except Exception:
             config_context_length = None
 
-    if config_context_length is None and custom_providers and base_url:
+    _gw_provider_identity = (
+        # The effective runtime provider (session/override-aware) wins over the
+        # globally-configured provider so a shared-endpoint sibling can't lend
+        # its per-model metadata.
+        requested_provider or provider or configured_provider or ""
+    )
+    if config_context_length is None and user_providers:
         try:
-            from hermes_cli.config import get_custom_provider_context_length
+            from hermes_cli.config import get_named_provider_context_length
 
-            custom_ctx = get_custom_provider_context_length(
+            config_context_length = get_named_provider_context_length(
+                model=resolved_model,
+                provider=_gw_provider_identity,
+                user_providers=user_providers,
+            )
+        except Exception:
+            pass
+
+    if config_context_length is None and base_url:
+        try:
+            from hermes_cli.config import get_endpoint_fallback_context_length
+
+            custom_ctx = get_endpoint_fallback_context_length(
                 model=resolved_model,
                 base_url=base_url,
-                custom_providers=custom_providers,
+                provider=_gw_provider_identity,
+                config=data if isinstance(data, dict) else None,
+                user_providers=user_providers,
+                custom_providers=custom_providers if custom_providers else None,
             )
             if custom_ctx:
                 config_context_length = custom_ctx
@@ -8057,6 +8084,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             override_model = override.get("model", model)
             override_runtime = {
                 "provider": override.get("provider"),
+                # Carry the named provider identity so per-model context
+                # metadata resolves against the session's provider, not the
+                # globally-configured one on a shared endpoint.
+                "requested_provider": (
+                    override.get("requested_provider") or override.get("provider")
+                ),
                 "api_key": override.get("api_key"),
                 "base_url": override.get("base_url"),
                 "api_mode": override.get("api_mode"),
@@ -18447,14 +18480,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _msg_config_ctx = None
                     except Exception:
                         _msg_config_ctx = None
-                if _msg_custom_providers and _msg_base_url:
+                _msg_provider_identity = (
+                    _msg_runtime.get("requested_provider")
+                    # The effective session-override provider must win over the
+                    # globally-configured provider so a session /model switch to
+                    # a shared-endpoint sibling doesn't borrow the default
+                    # route's per-model metadata.
+                    or _msg_runtime.get("provider")
+                    or (
+                        _msg_model_cfg.get("provider")
+                        if isinstance(_msg_model_cfg, dict)
+                        else None
+                    )
+                    or ""
+                )
+                if _msg_config_ctx is None and isinstance(_msg_cfg, dict):
                     try:
-                        from hermes_cli.config import get_custom_provider_context_length
+                        from hermes_cli.config import get_named_provider_context_length
 
-                        _msg_custom_ctx = get_custom_provider_context_length(
+                        _msg_config_ctx = get_named_provider_context_length(
+                            model=_msg_model,
+                            provider=_msg_provider_identity,
+                            user_providers=_msg_cfg.get("providers"),
+                        )
+                    except Exception:
+                        pass
+                if _msg_config_ctx is None and _msg_base_url:
+                    try:
+                        from hermes_cli.config import (
+                            get_endpoint_fallback_context_length,
+                        )
+
+                        _msg_custom_ctx = get_endpoint_fallback_context_length(
                             model=_msg_model,
                             base_url=_msg_base_url,
-                            custom_providers=_msg_custom_providers,
+                            provider=_msg_provider_identity,
+                            config=_msg_cfg if isinstance(_msg_cfg, dict) else None,
+                            user_providers=(
+                                _msg_cfg.get("providers")
+                                if isinstance(_msg_cfg, dict)
+                                else None
+                            ),
+                            custom_providers=_msg_custom_providers or None,
                         )
                         if _msg_custom_ctx:
                             _msg_config_ctx = _msg_custom_ctx
@@ -19227,6 +19294,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _hyg_configured_provider = None
             _hyg_configured_base_url = None
             _hyg_data = {}
+            _hyg_runtime = {}
             try:
                 _hyg_data = _load_gateway_config()
                 if _hyg_data:
@@ -19326,29 +19394,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception:
                         _hyg_config_context_length = None
 
-                # Check custom_providers per-model context_length
+                # Check selected named-provider metadata before the legacy
+                # endpoint-scoped custom_providers fallback.
                 # (same fallback as run_agent.py lines 1171-1189).
                 # Must run after runtime resolution so _hyg_base_url is set.
+                _hyg_provider_identity = (
+                    _hyg_runtime.get("requested_provider")
+                    # Prefer the effective session-override provider over the
+                    # globally-configured one so a shared-endpoint sibling
+                    # can't lend its per-model metadata to this session.
+                    or _hyg_provider
+                    or _hyg_configured_provider
+                    or ""
+                )
+                if _hyg_config_context_length is None:
+                    try:
+                        from hermes_cli.config import (
+                            get_named_provider_context_length as _gw_gnpcl,
+                        )
+
+                        _hyg_config_context_length = _gw_gnpcl(
+                            model=_hyg_model,
+                            provider=_hyg_provider_identity,
+                            user_providers=_hyg_data.get("providers"),
+                        )
+                    except Exception:
+                        pass
                 if _hyg_config_context_length is None and _hyg_base_url:
                     try:
-                        try:
-                            from hermes_cli.config import (
-                                get_compatible_custom_providers as _gw_gcp,
-                                get_custom_provider_context_length as _gw_gccl,
-                            )
-                            _hyg_custom_providers = _gw_gcp(_hyg_data)
-                        except Exception:
-                            _hyg_custom_providers = _hyg_data.get("custom_providers")
-                            if not isinstance(_hyg_custom_providers, list):
-                                _hyg_custom_providers = []
-                        _hyg_custom_ctx = _gw_gccl(
+                        from hermes_cli.config import (
+                            get_endpoint_fallback_context_length as _gw_gefcl,
+                        )
+                        _hyg_custom_ctx = _gw_gefcl(
                             model=_hyg_model,
                             base_url=_hyg_base_url,
-                            custom_providers=_hyg_custom_providers,
+                            provider=_hyg_provider_identity,
+                            config=_hyg_data if isinstance(_hyg_data, dict) else None,
+                            user_providers=(
+                                _hyg_data.get("providers")
+                                if isinstance(_hyg_data, dict)
+                                else None
+                            ),
                         )
                         if _hyg_custom_ctx:
                             _hyg_config_context_length = int(_hyg_custom_ctx)
                     except (TypeError, ValueError):
+                        pass
+                    except Exception:
                         pass
             except Exception:
                 pass
@@ -26284,6 +26376,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         override: Dict[str, Any] = {
             "model": persisted.get("model"),
             "provider": persisted.get("provider"),
+            # Restore the named provider identity (non-secret) so a rehydrated
+            # session keeps resolving its own per-model context metadata after
+            # a restart, not a shared-endpoint sibling's.
+            "requested_provider": (
+                persisted.get("requested_provider") or persisted.get("provider")
+            ),
             "base_url": persisted.get("base_url"),
         }
         provider = persisted.get("provider")
@@ -26327,10 +26425,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
-        for key in ("provider", "api_key", "base_url", "api_mode", "credential_pool"):
+        for key in (
+            "provider",
+            "requested_provider",
+            "api_key",
+            "base_url",
+            "api_mode",
+            "credential_pool",
+        ):
             val = override.get(key)
             if val is not None:
                 runtime_kwargs[key] = val
+        # A named-provider override that predates requested_provider
+        # write-through (or a built-in switch that only set provider) still
+        # needs the named identity so per-model metadata resolves against this
+        # session. When the override changes provider without carrying its own
+        # requested_provider, the override's provider is authoritative — never
+        # leave a stale global requested_provider paired with the new provider.
+        if override.get("provider") and not override.get("requested_provider"):
+            runtime_kwargs["requested_provider"] = override.get("provider")
         if (
             runtime_kwargs.get("api_key")
             and runtime_kwargs.get("credential_pool") is None

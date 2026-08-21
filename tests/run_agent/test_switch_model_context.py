@@ -44,7 +44,12 @@ def test_route_url_normalization_preserves_path_slash_before_query():
 
 
 def _make_direct_start_agent(
-    cfg: dict, *, model: str, provider: str, base_url: str
+    cfg: dict,
+    *,
+    model: str,
+    provider: str,
+    base_url: str,
+    requested_provider: str | None = None,
 ) -> AIAgent:
     with (
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
@@ -56,6 +61,7 @@ def _make_direct_start_agent(
         return AIAgent(
             model=model,
             provider=provider,
+            requested_provider=requested_provider,
             api_key="fake-test-token",
             base_url=base_url,
             quiet_mode=True,
@@ -133,6 +139,82 @@ def test_switch_model_without_config_context_length():
         assert call_kwargs.get("config_context_length") is None
 
 
+def test_switch_model_uses_selected_named_provider_model_metadata(monkeypatch):
+    agent = _make_agent_with_compressor(config_context_length=32_768)
+    shared_url = "http://da-aihost01:4000/v1"
+    model = "vllm/DeepSeek-V4-Flash-0731"
+    cfg = {
+        "providers": {
+            "other": {
+                "base_url": shared_url,
+                "models": {model: {"context_length": 1_000_000}},
+            },
+            "bifrost": {
+                "base_url": shared_url,
+                "models": {model: {"context_length": 1_048_576}},
+            },
+        }
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+
+    def _resolve_context(*_args, config_context_length=None, **_kwargs):
+        return config_context_length or 1_000_000
+
+    with patch(
+        "agent.model_metadata.get_model_context_length",
+        side_effect=_resolve_context,
+    ):
+        agent.switch_model(
+            model,
+            "bifrost",
+            api_key="sk-test",
+            base_url=shared_url,
+        )
+
+    assert agent.requested_provider == "bifrost"
+    assert agent._config_context_length == 1_048_576
+    assert agent.context_compressor.context_length == 1_048_576
+
+
+def test_switch_model_endpoint_fallback_no_sibling_named_provider_leak(monkeypatch):
+    """After an exact named-provider miss, ``switch_model`` must NOT borrow a
+    sibling named provider's per-model window via the shared endpoint.
+
+    ``beta`` (selected) declares the model but no ``context_length``; ``alpha``
+    shares the endpoint and declares 1,048,576. Selecting ``beta`` must fall
+    through to the live probe, not inherit ``alpha``'s window through the
+    converted-new-style compatible list (Medium review finding on #89714)."""
+    agent = _make_agent_with_compressor(config_context_length=None)
+    shared_url = "http://da-aihost01:4000/v1"
+    model = "vllm/DeepSeek-V4-Flash-0731"
+    cfg = {
+        "providers": {
+            "alpha": {
+                "base_url": shared_url,
+                "models": {model: {"context_length": 1_048_576}},
+            },
+            "beta": {
+                "base_url": shared_url,
+                "models": {model: {}},
+            },
+        }
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+
+    with patch(
+        "agent.model_metadata.get_model_context_length",
+        return_value=200_000,
+    ) as mock_ctx:
+        agent.switch_model(model, "beta", api_key="sk-test", base_url=shared_url)
+
+    assert agent.requested_provider == "beta"
+    assert agent._config_context_length != 1_048_576
+    assert mock_ctx.call_args.kwargs.get("config_context_length") != 1_048_576
+    assert agent.context_compressor.context_length == 200_000
+
+
 def test_direct_start_model_override_does_not_inherit_profile_context_length():
     """A CLI ``--model`` startup override must not inherit another model's window."""
     cfg = {
@@ -181,6 +263,38 @@ def test_direct_start_preserves_context_for_normalized_default_model_alias():
 
     assert agent.context_compressor.config_context_length == 272_000
     assert agent.context_compressor.context_length == 272_000
+
+
+def test_direct_start_uses_selected_named_provider_model_metadata():
+    shared_url = "http://da-aihost01:4000/v1"
+    model = "vllm/DeepSeek-V4-Flash-0731"
+    cfg = {
+        "model": {
+            "default": model,
+            "provider": "bifrost",
+        },
+        "providers": {
+            "other": {
+                "base_url": shared_url,
+                "models": {model: {"context_length": 1_000_000}},
+            },
+            "bifrost": {
+                "base_url": shared_url,
+                "models": {model: {"context_length": 1_048_576}},
+            },
+        },
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model=model,
+        provider="custom",
+        requested_provider="bifrost",
+        base_url=shared_url,
+    )
+
+    assert agent.context_compressor.config_context_length == 1_048_576
+    assert agent.context_compressor.context_length == 1_048_576
 
 
 

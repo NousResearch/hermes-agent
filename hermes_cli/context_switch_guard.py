@@ -67,6 +67,7 @@ def merge_preflight_compression_warning(
     *,
     agent: Any = None,
     messages: Optional[List[dict]] = None,
+    user_providers: dict | None = None,
     custom_providers: list | None = None,
     config_context_length: int | None = None,
     configured_model: str | None = None,
@@ -89,6 +90,8 @@ def merge_preflight_compression_warning(
     # even when custom_providers[].models.<id>.context_length was 1M.
     if custom_providers is None:
         custom_providers = getattr(agent, "_custom_providers", None)
+    if user_providers is None:
+        user_providers = getattr(agent, "_user_providers", None)
 
     old_ctx = int(getattr(cc, "context_length", 0) or 0)
     new_ctx = resolve_display_context_length(
@@ -97,6 +100,7 @@ def merge_preflight_compression_warning(
         base_url=result.base_url or getattr(agent, "base_url", "") or "",
         api_key=result.api_key or getattr(agent, "api_key", "") or "",
         model_info=result.model_info,
+        user_providers=user_providers,
         custom_providers=custom_providers,
         config_context_length=config_context_length,
         configured_model=(
@@ -150,6 +154,7 @@ def enrich_model_switch_warnings_for_gateway(
     *,
     session_key: str,
     source: Any,
+    user_providers: dict | None = None,
     custom_providers: list | None = None,
     load_gateway_config: Callable[[], dict] | None = None,
 ) -> None:
@@ -195,6 +200,7 @@ def enrich_model_switch_warnings_for_gateway(
         result,
         agent=agent,
         messages=messages,
+        user_providers=user_providers,
         custom_providers=custom_providers,
         config_context_length=cfg_ctx,
         configured_model=configured_model,

@@ -133,3 +133,60 @@ def test_sanitize_model_override():
         "provider": "openai",
         "base_url": "https://api.openai.example/v1",
     }
+
+
+# --- named-provider identity must survive session overrides + restart -------
+# Two named providers (A configured globally, B chosen per-session) can share a
+# single model id AND base_url yet declare different exact context windows. The
+# session override must carry B's *named* identity (``requested_provider``) so a
+# later metadata lookup resolves B's window, not the globally-configured A's.
+
+_NAMED_SHARED_URL = "http://da-aihost01:4000/v1"
+_NAMED_MODEL = "vllm/DeepSeek-V4-Flash-0731"
+_NAMED_OVERRIDE_B = {
+    "model": _NAMED_MODEL,
+    "provider": "beta",
+    "requested_provider": "beta",
+    "api_key": "sk-SECRET-do-not-persist",
+    "base_url": _NAMED_SHARED_URL,
+    "api_mode": "chat_completions",
+}
+
+
+def test_named_requested_provider_persists_and_survives_restart(store_factory):
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+
+    store.set_model_override(session_key, _NAMED_OVERRIDE_B)
+
+    store2 = store_factory()
+    persisted = store2.get_model_override(session_key)
+    assert persisted is not None
+    # The named identity must round-trip so a shared-endpoint sibling cannot
+    # borrow it after a restart.
+    assert persisted.get("requested_provider") == "beta"
+    # Secrets are still never written.
+    assert "api_key" not in persisted
+
+
+def test_runner_rehydrate_restores_named_requested_provider(store_factory):
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+    store.set_model_override(session_key, _NAMED_OVERRIDE_B)
+
+    runner = _make_runner(store_factory())
+    with patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        return_value={
+            "api_key": "sk-fresh",
+            "api_mode": "chat_completions",
+            "base_url": _NAMED_SHARED_URL,
+            "provider": "beta",
+        },
+    ):
+        runner._rehydrate_session_model_override(session_key)
+
+    override = runner._session_model_overrides[session_key]
+    assert override["requested_provider"] == "beta"

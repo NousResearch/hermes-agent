@@ -2868,20 +2868,35 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
     # ── LM Studio: preload before probing context length ──
     _sm_custom_providers = None
+    _sm_user_providers = None
     try:
         from hermes_cli.config import (
             get_compatible_custom_providers,
-            get_custom_provider_context_length,
+            get_endpoint_fallback_context_length,
+            get_named_provider_context_length,
             load_config,
         )
 
         _sm_cfg = load_config()
+        _sm_user_providers = _sm_cfg.get("providers")
         _sm_custom_providers = get_compatible_custom_providers(_sm_cfg)
-        _destination_context_intent = get_custom_provider_context_length(
+        _destination_context_intent = get_named_provider_context_length(
             model=agent.model,
-            base_url=agent.base_url,
-            custom_providers=_sm_custom_providers,
+            provider=agent.requested_provider,
+            user_providers=_sm_user_providers,
         )
+        if _destination_context_intent is None:
+            # Endpoint fallback stays identity-aware: once the selected provider
+            # is a named ``providers:`` entry, a shared-endpoint sibling must not
+            # lend its per-model window through the converted compatible view.
+            _destination_context_intent = get_endpoint_fallback_context_length(
+                model=agent.model,
+                base_url=agent.base_url,
+                provider=agent.requested_provider,
+                config=_sm_cfg,
+                user_providers=_sm_user_providers,
+                custom_providers=_sm_custom_providers,
+            )
     except Exception:
         _destination_context_intent = None
     agent._config_context_length = _destination_context_intent
@@ -2907,6 +2922,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # switch (the policy would read the stale init-time snapshot).
     if _sm_custom_providers is not None:
         agent._custom_providers = _sm_custom_providers
+    if isinstance(_sm_user_providers, dict):
+        agent._user_providers = _sm_user_providers
     agent._use_prompt_caching, agent._use_native_cache_layout = (
         agent._anthropic_prompt_cache_policy(
             provider=new_provider,

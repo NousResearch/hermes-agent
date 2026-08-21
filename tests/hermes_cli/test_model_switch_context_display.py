@@ -91,5 +91,99 @@ class TestResolveDisplayContextLength:
             "over probe-down fallback"
         )
 
+    def test_named_provider_exact_model_metadata_wins(self):
+        user_providers = {
+            "bifrost": {
+                "base_url": "http://da-aihost01:4000/v1",
+                "models": {
+                    "vllm/DeepSeek-V4-Flash-0731": {
+                        "context_length": 1_048_576,
+                    }
+                },
+            }
+        }
+        with patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=1_000_000,
+        ):
+            ctx = resolve_display_context_length(
+                "vllm/DeepSeek-V4-Flash-0731",
+                "bifrost",
+                base_url="http://da-aihost01:4000/v1",
+                user_providers=user_providers,
+            )
+
+        assert ctx == 1_048_576
+
+    def test_named_provider_metadata_matches_model_case_insensitively(self):
+        user_providers = {
+            "bifrost": {
+                "base_url": "http://da-aihost01:4000/v1",
+                "models": {
+                    "VLLM/DEEPSEEK-V4-FLASH-0731": {
+                        "context_length": 1_048_576,
+                    }
+                },
+            }
+        }
+        with patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=1_000_000,
+        ):
+            ctx = resolve_display_context_length(
+                "vllm/deepseek-v4-flash-0731",
+                "BIFROST",
+                base_url="http://da-aihost01:4000/v1",
+                user_providers=user_providers,
+            )
+
+        assert ctx == 1_048_576
+
+    def test_named_provider_metadata_does_not_leak_across_provider_identity(self):
+        user_providers = {
+            "other": {
+                "base_url": "http://da-aihost01:4000/v1",
+                "models": {
+                    "vllm/DeepSeek-V4-Flash-0731": {
+                        "context_length": 1_048_576,
+                    }
+                },
+            }
+        }
+        with patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=1_000_000,
+        ):
+            ctx = resolve_display_context_length(
+                "vllm/DeepSeek-V4-Flash-0731",
+                "bifrost",
+                base_url="http://da-aihost01:4000/v1",
+                user_providers=user_providers,
+            )
+
+        assert ctx == 1_000_000
+
+    def test_named_provider_metadata_does_not_substring_match_model_alias(self):
+        user_providers = {
+            "bifrost": {
+                "models": {
+                    "DeepSeek-V4-Flash-0731": {
+                        "context_length": 1_048_576,
+                    }
+                },
+            }
+        }
+        with patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=1_000_000,
+        ):
+            ctx = resolve_display_context_length(
+                "vllm/DeepSeek-V4-Flash-0731",
+                "bifrost",
+                user_providers=user_providers,
+            )
+
+        assert ctx == 1_000_000
+
 
 

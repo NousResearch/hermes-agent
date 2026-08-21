@@ -1864,6 +1864,157 @@ def get_custom_provider_context_length(
     return None
 
 
+def get_named_provider_context_length(
+    model: str,
+    provider: str,
+    user_providers: Optional[Dict[str, Any]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Return exact per-model metadata for the selected ``providers:`` entry.
+
+    Provider and model keys match case-insensitively but otherwise exactly.
+    The provider identity is required so entries sharing an endpoint cannot
+    borrow each other's metadata.
+    """
+    model_id = str(model or "").strip()
+    provider_id = str(provider or "").strip()
+    if not model_id or not provider_id:
+        return None
+    if user_providers is None:
+        if config is None:
+            try:
+                config = load_config_readonly()
+            except Exception:
+                return None
+        user_providers = config.get("providers") if isinstance(config, dict) else None
+    if not isinstance(user_providers, dict):
+        return None
+
+    provider_cfg = None
+    provider_key = provider_id.casefold()
+    for key, candidate in user_providers.items():
+        if str(key).strip().casefold() == provider_key and isinstance(candidate, dict):
+            provider_cfg = candidate
+            break
+    if provider_cfg is None or not is_provider_enabled(provider_cfg):
+        return None
+
+    models = provider_cfg.get("models")
+    if not isinstance(models, dict):
+        return None
+    model_key = model_id.casefold()
+    for configured_model, metadata in models.items():
+        if str(configured_model).strip().casefold() != model_key:
+            continue
+        if not isinstance(metadata, dict):
+            return None
+        raw_ctx = metadata.get("context_length")
+        if raw_ctx is None:
+            return None
+        try:
+            context_length = int(raw_ctx)
+        except (TypeError, ValueError):
+            return None
+        return context_length if context_length > 0 else None
+    return None
+
+
+def is_named_provider(
+    provider: str,
+    config: Optional[Dict[str, Any]] = None,
+    user_providers: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Return ``True`` when ``provider`` names an entry under config ``providers:``.
+
+    Matching is case-insensitive, mirroring
+    :func:`get_named_provider_context_length`. Used to decide whether an
+    endpoint-scoped context fallback may reach through the compatible view
+    (which merges converted ``providers:`` entries) or must stay restricted to
+    genuine legacy ``custom_providers`` so a shared-endpoint sibling can't lend
+    its per-model metadata.
+    """
+    provider_id = str(provider or "").strip()
+    if not provider_id:
+        return False
+    if user_providers is None:
+        if config is None:
+            try:
+                config = load_config_readonly()
+            except Exception:
+                return False
+        user_providers = config.get("providers") if isinstance(config, dict) else None
+    if not isinstance(user_providers, dict):
+        return False
+    provider_key = provider_id.casefold()
+    return any(str(key).strip().casefold() == provider_key for key in user_providers)
+
+
+def get_legacy_custom_providers(
+    config: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Return a normalized view of *genuine* on-disk ``custom_providers`` only.
+
+    Unlike :func:`get_compatible_custom_providers`, this excludes the converted
+    new-style ``providers:`` entries. Endpoint-scoped context fallbacks use it
+    when the selected provider is a named ``providers:`` entry, so a sibling
+    named provider sharing the same ``base_url`` cannot lend its
+    ``context_length`` through the compatibility layer while genuine legacy
+    behavior is preserved.
+    """
+    if config is None:
+        config = load_config()
+    custom_providers = config.get("custom_providers")
+    if not isinstance(custom_providers, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for entry in custom_providers:
+        normalized = _normalize_custom_provider_entry(entry)
+        if normalized is not None:
+            out.append(normalized)
+    return out
+
+
+def get_endpoint_fallback_context_length(
+    model: str,
+    base_url: str,
+    provider: str = "",
+    *,
+    config: Optional[Dict[str, Any]] = None,
+    user_providers: Optional[Dict[str, Any]] = None,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[int]:
+    """Endpoint-scoped context fallback that never borrows a sibling's metadata.
+
+    Exact per-model metadata for a configured ``providers:`` entry is resolved
+    by :func:`get_named_provider_context_length` (identity-aware). This is the
+    *endpoint* fallback used only after that exact lookup misses.
+
+    When ``provider`` names a ``providers:`` entry, the endpoint match is
+    restricted to genuine legacy ``custom_providers`` (via
+    :func:`get_legacy_custom_providers`) so a sibling named provider sharing the
+    same ``base_url`` cannot lend its ``context_length`` through the converted
+    entries in the compatible view. Otherwise the caller-supplied
+    ``custom_providers`` (or the full compatible view) is used unchanged, which
+    preserves real legacy ``custom_providers`` behavior.
+    """
+    if not model or not base_url:
+        return None
+    if is_named_provider(provider, config=config, user_providers=user_providers):
+        providers_for_match = get_legacy_custom_providers(config)
+    elif custom_providers is not None:
+        providers_for_match = custom_providers
+    else:
+        try:
+            providers_for_match = get_compatible_custom_providers(config)
+        except Exception:
+            providers_for_match = []
+    return get_custom_provider_context_length(
+        model=model,
+        base_url=base_url,
+        custom_providers=providers_for_match,
+    )
+
+
 def get_custom_provider_model_capability(
     model: str,
     base_url: str,

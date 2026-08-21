@@ -1235,6 +1235,7 @@ def resolve_display_context_length(
     configured_model: str | None = None,
     configured_provider: str | None = None,
     configured_base_url: str | None = None,
+    user_providers: dict | None = None,
 ) -> Optional[int]:
     """Resolve the context length to show in /model output.
 
@@ -1245,10 +1246,9 @@ def resolve_display_context_length(
     about Codex OAuth, Copilot, Nous, and falls back to models.dev for the
     rest.
 
-    When ``custom_providers`` is provided, per-model ``context_length``
-    overrides from ``custom_providers[].models.<id>.context_length`` are
-    honored — this closes #15779 where ``/model`` switch ignored user-set
-    overrides.
+    Exact per-model ``context_length`` metadata from the selected
+    ``providers.<name>`` entry takes precedence over endpoint probes and
+    catalogs. Legacy ``custom_providers`` metadata remains supported.
 
     Prefer the provider-aware value; fall back to ``model_info.context_window``
     only if the resolver returns nothing.
@@ -1270,6 +1270,20 @@ def resolve_display_context_length(
                 config_context_length = None
         except Exception:
             config_context_length = None
+
+    if config_context_length is None and user_providers:
+        try:
+            from hermes_cli.config import get_named_provider_context_length
+
+            named_context_length = get_named_provider_context_length(
+                model=model,
+                provider=provider,
+                user_providers=user_providers,
+            )
+            if named_context_length is not None:
+                return named_context_length
+        except Exception:
+            pass
 
     try:
         from agent.model_metadata import get_model_context_length
@@ -1301,6 +1315,7 @@ async def resolve_display_context_length_async(
     configured_model: str | None = None,
     configured_provider: str | None = None,
     configured_base_url: str | None = None,
+    user_providers: dict | None = None,
 ) -> Optional[int]:
     """Async variant of :func:`resolve_display_context_length`.
 
@@ -1324,6 +1339,7 @@ async def resolve_display_context_length_async(
         base_url=base_url,
         api_key=api_key,
         model_info=model_info,
+        user_providers=user_providers,
         custom_providers=custom_providers,
         config_context_length=config_context_length,
         configured_model=configured_model,

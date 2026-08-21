@@ -137,3 +137,72 @@ fallback_providers:
     assert runtime_kwargs["api_key"] == "sk-openrouter"
 
 
+def test_session_override_threads_named_requested_provider(monkeypatch):
+    """A per-session /model override to a named provider must expose that
+    provider's *named* identity via ``requested_provider`` in the resolved
+    runtime, so a shared-endpoint sibling declared globally cannot lend its
+    exact context metadata to this session (High review finding on #89714)."""
+    runner = _make_runner()
+    session_key = "agent:main:telegram:dm:c1"
+    runner._session_model_overrides[session_key] = {
+        "model": "vllm/DeepSeek-V4-Flash-0731",
+        "provider": "beta",
+        "requested_provider": "beta",
+        "api_key": "sk-live",
+        "base_url": "http://da-aihost01:4000/v1",
+        "api_mode": "chat_completions",
+    }
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda cfg=None: "global-model")
+    monkeypatch.setattr(gateway_run, "_credential_pool_for_provider", lambda _p: None)
+
+    model, runtime_kwargs = runner._resolve_session_agent_runtime(
+        session_key=session_key,
+        user_config={"model": {"default": "global-model", "provider": "alpha"}},
+    )
+
+    assert model == "vllm/DeepSeek-V4-Flash-0731"
+    assert runtime_kwargs.get("provider") == "beta"
+    assert runtime_kwargs.get("requested_provider") == "beta"
+
+
+def test_apply_session_model_override_threads_requested_provider():
+    """The credential-less override merge path must also carry the named
+    identity onto the runtime kwargs it patches."""
+    runner = _make_runner()
+    session_key = "agent:main:telegram:dm:c2"
+    runner._session_model_overrides[session_key] = {
+        "model": "vllm/DeepSeek-V4-Flash-0731",
+        "provider": "beta",
+        "requested_provider": "beta",
+        "base_url": "http://da-aihost01:4000/v1",
+    }
+
+    model, runtime_kwargs = runner._apply_session_model_override(
+        session_key, "old-model", {"provider": "alpha", "requested_provider": "alpha"}
+    )
+
+    assert model == "vllm/DeepSeek-V4-Flash-0731"
+    assert runtime_kwargs.get("provider") == "beta"
+    assert runtime_kwargs.get("requested_provider") == "beta"
+
+
+def test_apply_session_model_override_replaces_stale_requested_provider():
+    """A legacy override (provider only, no requested_provider) must not leave a
+    stale global requested_provider paired with the new provider — the
+    override's provider is authoritative for identity."""
+    runner = _make_runner()
+    session_key = "agent:main:telegram:dm:c3"
+    runner._session_model_overrides[session_key] = {
+        "model": "vllm/DeepSeek-V4-Flash-0731",
+        "provider": "beta",
+        "base_url": "http://da-aihost01:4000/v1",
+    }
+
+    model, runtime_kwargs = runner._apply_session_model_override(
+        session_key, "old-model", {"provider": "alpha", "requested_provider": "alpha"}
+    )
+
+    assert runtime_kwargs.get("provider") == "beta"
+    assert runtime_kwargs.get("requested_provider") == "beta"
+
+

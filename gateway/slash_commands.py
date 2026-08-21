@@ -1929,6 +1929,7 @@ class GatewaySlashCommandsMixin:
                                 _self,
                                 session_key=_session_key,
                                 source=event.source,
+                                user_providers=user_provs,
                                 custom_providers=custom_provs,
                                 load_gateway_config=_load_gateway_config,
                             )
@@ -2006,6 +2007,10 @@ class GatewaySlashCommandsMixin:
                         _self._session_model_overrides[_session_key] = {
                             "model": result.new_model,
                             "provider": result.target_provider,
+                            # Preserve the *named* provider identity so a
+                            # shared-endpoint sibling can't lend its exact
+                            # per-model context metadata to this session.
+                            "requested_provider": result.target_provider,
                             "api_key": result.api_key,
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
@@ -2116,6 +2121,7 @@ class GatewaySlashCommandsMixin:
                             base_url=result.base_url or current_base_url or "",
                             api_key=result.api_key or current_api_key or "",
                             model_info=mi,
+                            user_providers=user_provs,
                             custom_providers=custom_provs,
                             config_context_length=_sw_config_ctx,
                             configured_model=(
@@ -2239,6 +2245,7 @@ class GatewaySlashCommandsMixin:
                 self,
                 session_key=session_key,
                 source=source,
+                user_providers=user_provs,
                 custom_providers=custom_provs,
                 load_gateway_config=_load_gateway_config,
             )
@@ -2318,6 +2325,10 @@ class GatewaySlashCommandsMixin:
             self._session_model_overrides[session_key] = {
                 "model": result.new_model,
                 "provider": result.target_provider,
+                # Preserve the *named* provider identity so a shared-endpoint
+                # sibling can't lend its exact per-model context metadata to
+                # this session.
+                "requested_provider": result.target_provider,
                 "api_key": result.api_key,
                 "base_url": result.base_url,
                 "api_mode": result.api_mode,
@@ -2443,6 +2454,7 @@ class GatewaySlashCommandsMixin:
                 base_url=result.base_url or current_base_url or "",
                 api_key=result.api_key or current_api_key or "",
                 model_info=mi,
+                user_providers=user_provs,
                 custom_providers=custom_provs,
                 config_context_length=_sw2_config_ctx,
                 configured_model=(

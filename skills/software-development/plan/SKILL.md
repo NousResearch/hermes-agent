@@ -23,11 +23,28 @@ For this turn, you are planning only.
 - Do not edit project files except the plan markdown file.
 - Do not run mutating terminal commands, commit, push, or perform external actions.
 - You may inspect the repo or other context with read-only commands/tools when needed.
-- Your deliverable is a markdown plan saved inside the active workspace under `.hermes/plans/`.
+- Your deliverable is either a markdown plan saved inside the active workspace under `.hermes/plans/`, or a questions-only intake artifact when clarity is still below the planning threshold.
+
+## Planning Confidence Gate
+
+For any non-trivial plan or plan-like artifact, do not draft the plan until you have **greater than 96% confidence** that you understand what you are planning for.
+
+Before planning, ask follow-up questions until all of the following are clear:
+- Objective
+- Scope boundaries
+- Success criteria
+- Constraints and preferences
+- Dependencies, risks, and unknowns
+
+If those are not clear enough, do **not** draft a partial plan. Produce a **questions-only intake artifact** instead.
+
+Apply this rule both when generating a plan and when reviewing a drafted plan.
+
+Skip the formal gate only when the task is trivial and no real plan artifact is needed.
 
 ## Output requirements
 
-Write a markdown plan that is concrete and actionable.
+Write a markdown plan that is concrete, actionable, and reviewable.
 
 Include, when relevant:
 - Goal
@@ -37,6 +54,11 @@ Include, when relevant:
 - Files likely to change
 - Tests / validation
 - Risks, tradeoffs, and open questions
+
+Every non-trivial plan MUST also include:
+- Confidence
+- Known Unknowns
+- Blocking Questions Resolved
 
 If the task is code-related, include exact file paths, likely test targets, and verification steps.
 
@@ -52,16 +74,18 @@ If not, create a sensible timestamped filename yourself under `.hermes/plans/`.
 
 ## Interaction style
 
-- If the request is clear enough, write the plan directly.
+- If the task is trivial and no real plan artifact is needed, skip the formal confidence gate.
+- Otherwise, do not write the plan directly just because the request sounds familiar; first confirm you have >96% confidence.
 - If no explicit instruction accompanies `/plan`, infer the task from the current conversation context.
-- If it is genuinely underspecified, ask a brief clarifying question instead of guessing.
-- After saving the plan, reply briefly with what you planned and the saved path.
+- Ask follow-up questions until the objective, scope, success criteria, constraints/preferences, and unknowns are sufficiently clear.
+- If clarity is still insufficient after initial clarification, produce a questions-only intake artifact instead of a plan.
+- After saving the plan, reply briefly with what you planned, the saved path, and the confidence level.
 
 ---
 
 # Writing the Plan Well
 
-The rest of this skill is the craft of authoring a *good* implementation plan — the content that goes inside the markdown file above.
+The rest of this skill is the craft of authoring a *good* plan artifact — the content that goes inside the markdown file above. Most examples below are implementation-oriented, but the same discipline applies to research plans, debugging plans, architecture proposals, migration checklists, and review task lists.
 
 ## Overview
 
@@ -69,14 +93,15 @@ Write comprehensive implementation plans assuming the implementer has zero conte
 
 Assume the implementer is a skilled developer but knows almost nothing about the toolset or problem domain. Assume they don't know good test design very well.
 
-**Core principle:** A good plan makes implementation obvious. If someone has to guess, the plan is incomplete.
+**Core principle:** A good plan makes execution or review obvious. If someone has to guess, the plan is incomplete.
 
-## When a Full Implementation Plan Helps
+## When a Full Plan Artifact Helps
 
 **Always use before:**
 - Implementing multi-step features
 - Breaking down complex requirements
 - Delegating to subagents via subagent-driven-development
+- Producing research plans, debugging plans, architecture proposals, migration checklists, or review task lists that others will execute or review
 
 **Don't skip when:**
 - Feature seems simple (assumptions cause bugs)
@@ -116,7 +141,7 @@ Every step is one action:
 
 ### Header (Required)
 
-Every plan MUST start with:
+Every non-trivial plan MUST start with:
 
 ```markdown
 # [Feature Name] Implementation Plan
@@ -128,6 +153,12 @@ Every plan MUST start with:
 **Architecture:** [2-3 sentences about approach]
 
 **Tech Stack:** [Key technologies/libraries]
+
+**Confidence:** [e.g. 97% — why the objective/scope/success criteria are clear enough to plan safely]
+
+**Known Unknowns:** [Unknown but acceptable items, or "None currently"]
+
+**Blocking Questions Resolved:** [Questions that had to be answered before planning, or "None"]
 
 ---
 ```
@@ -235,13 +266,53 @@ For each task, include:
 ### Step 6: Review the Plan
 
 Check:
+- [ ] Confidence is >96% for this non-trivial plan artifact
+- [ ] Objective is explicit
+- [ ] Scope boundaries are explicit
+- [ ] Success criteria are explicit
+- [ ] Constraints and preferences are explicit
+- [ ] Dependencies, risks, and unknowns are identified
+- [ ] Unknowns are either resolved or explicitly accepted
 - [ ] Tasks are sequential and logical
 - [ ] Each task is bite-sized (2-5 min)
 - [ ] File paths are exact
 - [ ] Code examples are complete (copy-pasteable)
 - [ ] Commands are exact with expected output
-- [ ] No missing context
+- [ ] The plan does not hide assumptions in place of clarification
+- [ ] Confidence, Known Unknowns, and Blocking Questions Resolved are present
 - [ ] DRY, YAGNI, TDD principles applied
+
+### When Confidence Is Below Threshold
+
+If you cannot honestly claim >96% confidence, do **not** finalize the plan. Write a questions-only intake artifact instead:
+
+```markdown
+# Questions-Only Intake
+
+## Why no plan yet
+I do not yet have >96% confidence that I understand what to plan for correctly.
+
+## Missing clarity
+- Objective:
+- Scope boundaries:
+- Success criteria:
+- Constraints/preferences:
+- Dependencies/risks/unknowns:
+
+## Follow-up questions
+1.
+2.
+3.
+
+## What is blocked until clarified
+-
+-
+-
+
+## Confidence
+Current confidence: __%
+Threshold required to plan: >96%
+```
 
 ## Principles
 
@@ -322,6 +393,15 @@ When executing, use the `subagent-driven-development` skill:
 - Spec compliance review after each task
 - Code quality review after spec passes
 - Proceed only when both reviews approve
+
+## Final Planning Check
+
+Append this review block to the end of plan-related prompts and ask it explicitly before finalizing:
+
+```text
+Final planning check:
+Do not finalize this plan unless you have greater than 96% confidence that the objective, scope, success criteria, constraints, and unknowns are clear enough for safe execution. If confidence is lower, stop and ask follow-up questions instead.
+```
 
 ## Remember
 

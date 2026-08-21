@@ -88,9 +88,11 @@ _REPLY_ATTEMPT_TTL_SECONDS = 15 * 60.0
 _MAX_REPLY_ATTEMPTS = 256
 _MAX_REPLY_TEXT_CHARS = 2_000
 _MAX_REPLY_COMMENT_CHARS = 5_000
+_MAX_NEW_TOPIC_ANSWERS = 256
 _SESSION_PAGE_SIZE = 200
 _MAX_SESSION_SCAN = 10_000
 _TELEGRAM_ID_RE = re.compile(r"^-?\d+$")
+_POSITIVE_TELEGRAM_ID_RE = re.compile(r"^[1-9]\d{0,19}$")
 
 
 @dataclass(frozen=True)
@@ -489,6 +491,10 @@ class BeckyLoopsBridgeServer:
         self.reply_generator = reply_generator
         self._reply_attempts: dict[str, _ReplyAttempt] = {}
         self._reply_attempts_lock = asyncio.Lock()
+        self._new_topic_answers: dict[
+            str, tuple[str, asyncio.Future[dict[str, Any]]]
+        ] = {}
+        self._new_topic_answers_lock = asyncio.Lock()
         self._close_results: dict[str, tuple[str, str, dict[str, Any]]] = {}
         self._close_results_lock = asyncio.Lock()
         self._server: Server | None = None
@@ -732,6 +738,18 @@ class BeckyLoopsBridgeServer:
                 raise _RemoteFailure("idempotency_conflict")
             self._current_topic(source_ref, expected_revision)
             return await self._continue_reply_attempt(attempt=attempt)
+        if method == "becky.loops.answer_new_topic":
+            if not self._valid_new_topic_reply_params(params):
+                return _PROTOCOL_FAILURE
+            if not self._topic_reply_available():
+                raise _RemoteFailure("topic_reply_unavailable")
+            return await self._answer_new_topic(
+                title=params["title"],
+                text=params["text"],
+                topic_id=params["topic_id"],
+                message_id=params["message_id"],
+                idempotency_key=params["idempotency_key"].lower(),
+            )
         if method == "becky.loops.close":
             if not self._valid_close_params(params):
                 return _PROTOCOL_FAILURE
@@ -747,6 +765,85 @@ class BeckyLoopsBridgeServer:
                 return _PROTOCOL_FAILURE
             raise _RemoteFailure("topic_control_unavailable")
         return _PROTOCOL_FAILURE
+
+    async def _answer_new_topic(
+        self,
+        *,
+        title: str,
+        text: str,
+        topic_id: str,
+        message_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        fingerprint = json.dumps(
+            {
+                "title": title,
+                "text": text,
+                "topic_id": topic_id,
+                "message_id": message_id,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        loop = asyncio.get_running_loop()
+        async with self._new_topic_answers_lock:
+            existing = self._new_topic_answers.get(idempotency_key)
+            if existing is not None:
+                if existing[0] != fingerprint:
+                    raise _RemoteFailure("idempotency_conflict")
+                future = existing[1]
+                owner = False
+            else:
+                if len(self._new_topic_answers) >= _MAX_NEW_TOPIC_ANSWERS:
+                    oldest_key = next(iter(self._new_topic_answers))
+                    oldest = self._new_topic_answers[oldest_key][1]
+                    if not oldest.done():
+                        raise _RemoteFailure("topic_reply_unavailable")
+                    self._new_topic_answers.pop(oldest_key, None)
+                future = loop.create_future()
+                self._new_topic_answers[idempotency_key] = (fingerprint, future)
+                owner = True
+        if not owner:
+            return await asyncio.shield(future)
+
+        result: dict[str, Any]
+        try:
+            answer = await self._generate_reply(
+                row={
+                    "title": title,
+                    "chat_id": self.config.chat_id,
+                    "thread_id": topic_id,
+                    "source_ref": f"shortcut_{idempotency_key}",
+                },
+                transcript=[
+                    {
+                        "role": "user",
+                        "content": text,
+                        "timestamp": datetime.now(UTC).timestamp(),
+                    }
+                ],
+                comment="Answer the user's opening message.",
+            )
+            answer = answer.strip()
+            if not 1 <= len(answer) <= _MAX_REPLY_TEXT_CHARS:
+                raise ValueError("reply unavailable")
+            await self._send_topic(
+                thread_id=topic_id,
+                text=answer,
+                reply_to_message_id=message_id,
+            )
+            result = {"schema_version": "1", "answer_state": "answered"}
+        except asyncio.CancelledError:
+            result = {"schema_version": "1", "answer_state": "answer_unavailable"}
+            if not future.done():
+                future.set_result(result)
+            raise
+        except Exception:
+            result = {"schema_version": "1", "answer_state": "answer_unavailable"}
+        if not future.done():
+            future.set_result(result)
+        return result
 
     def _find_topic(self, source_ref: str) -> dict[str, Any] | None:
         rows = self.store.list_topics(self.config.chat_id)
@@ -782,7 +879,9 @@ class BeckyLoopsBridgeServer:
                 return False
             if not bool(state):
                 return False
-        return getattr(self.topic_controller, "method", None) == self.config.topic_control
+        return (
+            getattr(self.topic_controller, "method", None) == self.config.topic_control
+        )
 
     def _topic_control_method(self) -> str:
         if not self._topic_control_available():
@@ -1167,6 +1266,25 @@ class BeckyLoopsBridgeServer:
             and _SOURCE_REF_RE.fullmatch(params["source_ref"]) is not None
             and isinstance(params.get("expected_revision"), str)
             and _REVISION_RE.fullmatch(params["expected_revision"]) is not None
+            and isinstance(params.get("idempotency_key"), str)
+            and _UUID_RE.fullmatch(params["idempotency_key"]) is not None
+        )
+
+    @staticmethod
+    def _valid_new_topic_reply_params(params: dict[str, Any]) -> bool:
+        title = params.get("title")
+        text = params.get("text")
+        return (
+            set(params)
+            == {"title", "text", "topic_id", "message_id", "idempotency_key"}
+            and isinstance(title, str)
+            and 1 <= len(title.strip()) <= 128
+            and isinstance(text, str)
+            and 1 <= len(text.strip()) <= _MAX_REPLY_COMMENT_CHARS
+            and isinstance(params.get("topic_id"), str)
+            and _POSITIVE_TELEGRAM_ID_RE.fullmatch(params["topic_id"]) is not None
+            and isinstance(params.get("message_id"), str)
+            and _POSITIVE_TELEGRAM_ID_RE.fullmatch(params["message_id"]) is not None
             and isinstance(params.get("idempotency_key"), str)
             and _UUID_RE.fullmatch(params["idempotency_key"]) is not None
         )

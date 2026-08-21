@@ -387,6 +387,23 @@ def retry_params(
     }
 
 
+def new_topic_reply_params(
+    *,
+    title: str = "Trip planning",
+    text: str = "Please help me plan this.",
+    topic_id: str = "42",
+    message_id: str = "101",
+    idempotency_key: str = IDEMPOTENCY_KEY,
+) -> dict[str, str]:
+    return {
+        "title": title,
+        "text": text,
+        "topic_id": topic_id,
+        "message_id": message_id,
+        "idempotency_key": idempotency_key,
+    }
+
+
 def reply_server(
     *,
     store: FakeStore | None = None,
@@ -689,6 +706,150 @@ async def test_bridge_advertises_reply_only_with_proven_injected_sender() -> Non
 
     assert capabilities["topic_control"] == "unavailable"
     assert capabilities["topic_reply"] == "bot_api_private_topic"
+
+
+@pytest.mark.asyncio
+async def test_bridge_answers_a_new_topic_without_exposing_answer_text() -> None:
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator(["Use the smaller layout."])
+    server = reply_server(sender=sender, generator=generator)
+
+    response = await server._dispatch(json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "becky.loops.answer_new_topic",
+        "params": new_topic_reply_params(),
+    }))
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {"schema_version": "1", "answer_state": "answered"},
+    }
+    assert sender.calls == [
+        {
+            "chat_id": "123456789",
+            "thread_id": "42",
+            "text": "Use the smaller layout.",
+            "reply_to_message_id": "101",
+        }
+    ]
+    assert generator.calls[0]["row"]["title"] == "Trip planning"
+    assert generator.calls[0]["transcript"][0]["content"] == (
+        "Please help me plan this."
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params",
+    [
+        {**new_topic_reply_params(), "extra": True},
+        {
+            key: value
+            for key, value in new_topic_reply_params().items()
+            if key != "text"
+        },
+        {**new_topic_reply_params(), "topic_id": "0"},
+        {**new_topic_reply_params(), "message_id": "not-a-number"},
+        {**new_topic_reply_params(), "title": ""},
+        {**new_topic_reply_params(), "text": " "},
+        {**new_topic_reply_params(), "idempotency_key": "not-a-uuid"},
+    ],
+)
+async def test_bridge_new_topic_answer_requires_exact_bounded_params(
+    params: dict[str, object],
+) -> None:
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator()
+    server = reply_server(sender=sender, generator=generator)
+
+    response = await server._dispatch(json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "becky.loops.answer_new_topic",
+        "params": params,
+    }))
+
+    assert response["error"] == {"code": -32600, "message": "protocol"}
+    assert sender.calls == []
+    assert generator.calls == []
+
+
+@pytest.mark.asyncio
+async def test_bridge_new_topic_answer_replays_same_key_without_sending_twice() -> None:
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator(["Use the smaller layout."])
+    server = reply_server(sender=sender, generator=generator)
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "becky.loops.answer_new_topic",
+        "params": new_topic_reply_params(),
+    }
+
+    first = await server._dispatch(json.dumps(request))
+    second = await server._dispatch(json.dumps({**request, "id": 2}))
+
+    assert first["result"] == second["result"]
+    assert len(sender.calls) == 1
+    assert len(generator.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_bridge_new_topic_answer_failure_is_safe_and_does_not_send() -> None:
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator([RuntimeError("provider secret")])
+    server = reply_server(sender=sender, generator=generator)
+
+    response = await server._dispatch(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "becky.loops.answer_new_topic",
+                "params": new_topic_reply_params(),
+            }
+        )
+    )
+
+    assert response["result"] == {
+        "schema_version": "1",
+        "answer_state": "answer_unavailable",
+    }
+    assert sender.calls == []
+
+
+@pytest.mark.asyncio
+async def test_bridge_new_topic_answer_rejects_idempotency_conflict() -> None:
+    server = reply_server()
+    first = new_topic_reply_params()
+    await server._dispatch(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "becky.loops.answer_new_topic",
+                "params": first,
+            }
+        )
+    )
+
+    response = await server._dispatch(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "becky.loops.answer_new_topic",
+                "params": {**first, "topic_id": "43"},
+            }
+        )
+    )
+
+    assert response["error"] == {
+        "code": -32000,
+        "message": "idempotency_conflict",
+    }
 
 
 @pytest.mark.asyncio

@@ -421,6 +421,16 @@ def ensure_mcp_discovery_started() -> None:
 def main():
     _install_sidecar_publisher()
 
+    # One-time sweep of session rows orphaned by a previous gateway process
+    # (#65194) — the in-process WS-orphan reap timer dies with the process.
+    # Desktop/dashboard reach the agent through handle_ws instead; the
+    # scheduler is once-per-process + config-gated so the second site is a
+    # no-op when this already ran.
+    try:
+        server._schedule_startup_orphan_sweep()
+    except Exception:
+        logger.warning("startup orphan sweep scheduling failed", exc_info=True)
+
     # MCP tool discovery — backgrounded so a slow or unreachable MCP server
     # can't freeze TUI startup (a dead stdio/http server burns 1+2+4s of
     # connect retries → ~7s of dead air before the composer appears).  The

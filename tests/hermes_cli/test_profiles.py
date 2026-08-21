@@ -1030,6 +1030,65 @@ class TestEdgeCases:
         assert (target_dir / ".env").read_text().strip() == "SECRET=yes"
 
 
+class TestCloneStripsGatewayRuntimeState:
+    """A cloned profile must never inherit the source's live gateway identity
+    files (gateway.pid / gateway.lock / gateway_state.json / takeover markers).
+    Copying them verbatim makes the new profile's gateway refuse to start
+    ("another instance is running") or, with --replace, SIGTERM the source
+    profile's gateway process — a cross-profile outage (issue #89315)."""
+
+    def _write_gateway_runtime_files(self, profile_dir, pid=4242):
+        for name in (
+            "gateway.pid",
+            "gateway.lock",
+            "gateway_state.json",
+            "processes.json",
+            ".gateway-takeover.json",
+            ".gateway-planned-stop.json",
+        ):
+            (profile_dir / name).write_text(f'{{"pid": {pid}, "kind": "hermes-gateway"}}')
+
+    def test_clone_config_strips_gateway_files(self, profile_env):
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test")
+        (default_home / ".env").write_text("KEY=val")
+        self._write_gateway_runtime_files(default_home)
+
+        profile_dir = create_profile("worker", clone_config=True, no_alias=True)
+
+        for name in (
+            "gateway.pid",
+            "gateway.lock",
+            "gateway_state.json",
+            "processes.json",
+            ".gateway-takeover.json",
+            ".gateway-planned-stop.json",
+        ):
+            assert not (profile_dir / name).exists(), (
+                f"cloned profile must not inherit {name}"
+            )
+        # Config itself is still cloned
+        assert (profile_dir / ".env").read_text().strip() == "KEY=val"
+
+    def test_clone_all_strips_gateway_files(self, profile_env):
+        default_home = profile_env / ".hermes"
+        self._write_gateway_runtime_files(default_home)
+
+        profile_dir = create_profile("worker2", clone_all=True, no_alias=True)
+
+        for name in (
+            "gateway.pid",
+            "gateway.lock",
+            "gateway_state.json",
+            "processes.json",
+            ".gateway-takeover.json",
+            ".gateway-planned-stop.json",
+        ):
+            assert not (profile_dir / name).exists(), (
+                f"cloned profile must not inherit {name}"
+            )
+
+
 
 class TestProfilesToServe:
     """profiles_to_serve(multiplex) — the gateway's profile-enumeration chokepoint."""

@@ -30286,6 +30286,36 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if existing_pid is not None and existing_pid != os.getpid():
         if replace:
             existing_start_time = get_process_start_time(existing_pid)
+
+            # ── Cross-profile guard ──────────────────────────────────
+            # Verify the existing PID belongs to the same HERMES_HOME
+            # before sending SIGTERM.  A polluted gateway.pid (e.g.
+            # copied from another profile's clone, or a hybrid process)
+            # would otherwise make --replace kill a different profile's
+            # gateway — a silent cross-profile outage.
+            from gateway.status import _read_pid_record
+            _pid_rec = _read_pid_record()
+            if _pid_rec is not None:
+                _rec_home = _pid_rec.get("hermes_home")
+                if _rec_home is not None:
+                    try:
+                        from gateway.status import _same_hermes_home
+                        if not _same_hermes_home(_rec_home, _hermes_home):
+                            logger.warning(
+                                "Refusing --replace: PID %d belongs to "
+                                "HERMES_HOME=%s (ours=%s). "
+                                "Remove the stale gateway.pid file manually.",
+                                existing_pid, _rec_home, _hermes_home,
+                            )
+                            print(
+                                f"\n⚠ --replace refused: PID {existing_pid} belongs to "
+                                f"a different profile ({_rec_home}).\n"
+                                f"  Remove the stale gateway.pid from this profile and retry.\n"
+                            )
+                            return False
+                    except Exception:
+                        pass  # Best-effort — proceed if comparison fails
+
             logger.info(
                 "Replacing existing gateway instance (PID %d) with --replace.",
                 existing_pid,

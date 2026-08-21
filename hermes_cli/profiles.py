@@ -75,10 +75,18 @@ _CLONE_SUBDIR_FILES = [
 # Runtime files stripped after --clone-all (shouldn't carry over).
 # Kept as a post-copy step rather than in the ignore filter because they
 # are created dynamically during normal use and may be absent at copy time.
+# Also stripped after a config clone (clone_config / clone_from) so a cloned
+# profile never inherits the source profile's running-gateway identity files —
+# those reference the source's live PID and, if copied verbatim, make the new
+# profile's gateway believe another instance is already running or that it may
+# SIGTERM the source profile's process.
 _CLONE_ALL_STRIP: list[str] = [
     "gateway.pid",
     "gateway_state.json",
+    "gateway.lock",
     "processes.json",
+    ".gateway-takeover.json",
+    ".gateway-planned-stop.json",
 ]
 
 # Infrastructure artifacts excluded from --clone-all when the source is the
@@ -1209,6 +1217,19 @@ def create_profile(
                     dst = profile_dir / relpath
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, dst)
+
+            # Strip gateway runtime identity files even on a config clone.
+            # `_CLONE_ALL_STRIP` is normally only applied in the --clone-all
+            # branch above; a config clone (desktop "clone from default",
+            # `--clone-from`) copies config.yaml/.env verbatim and would
+            # otherwise inherit the source profile's live gateway.pid /
+            # gateway.lock / gateway_state.json.  Those files name the source
+            # profile's running PID — copying them makes the new profile's
+            # gateway either refuse to start ("another instance is running")
+            # or, with --replace, SIGTERM the source profile's gateway process.
+            # The cloned profile must start from a clean gateway identity.
+            for stale in _CLONE_ALL_STRIP:
+                (profile_dir / stale).unlink(missing_ok=True)
 
     # Seed an empty .env so the profile has its own credentials file from
     # day one. Without it, profile-scoped env writes (dashboard Channels /

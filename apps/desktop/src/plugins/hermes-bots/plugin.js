@@ -12143,7 +12143,7 @@ function BotsPane() {
                               'flex size-7 shrink-0 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
                               activeFilterCount && 'text-(--ui-accent)'
                             ),
-                            children: jsx(Codicon, { name: 'filter' })
+                            children: jsx(Codicon, { name: 'list-filter' })
                           })
                         })
                       }),

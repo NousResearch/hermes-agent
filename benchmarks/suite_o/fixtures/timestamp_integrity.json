@@ -1,0 +1,109 @@
+[
+  {
+    "id": "ti_e01",
+    "description": "Newer fact recalled preferentially over older contradicting fact",
+    "facts": [
+      {"content": "The deploy timeout was set to 10 minutes", "stored_days_ago": 14},
+      {"content": "The deploy timeout was updated to 20 minutes after load-test findings", "stored_days_ago": 2}
+    ],
+    "time_advance_days": 0,
+    "run_consolidation": false,
+    "query": "What is the current deploy timeout?",
+    "gold_answer": "20 minutes",
+    "difficulty": "easy"
+  },
+  {
+    "id": "ti_e02",
+    "description": "Older fact still accessible after newer unrelated fact stored",
+    "facts": [
+      {"content": "The founding engineer who designed the auth system is Priya Nair", "stored_days_ago": 30},
+      {"content": "The on-call rotation was updated to include the new hire last week", "stored_days_ago": 1}
+    ],
+    "time_advance_days": 0,
+    "run_consolidation": false,
+    "query": "Who designed the original auth system?",
+    "gold_answer": "Priya Nair",
+    "difficulty": "easy"
+  },
+  {
+    "id": "ti_m01",
+    "description": "Facts remain accessible after significant simulated time advance",
+    "facts": [
+      {"content": "The production database is PostgreSQL 15 with pgvector enabled", "stored_days_ago": 45},
+      {"content": "The staging replica is PostgreSQL 14 without pgvector", "stored_days_ago": 45}
+    ],
+    "time_advance_days": 30,
+    "run_consolidation": false,
+    "query": "What PostgreSQL version runs in production?",
+    "gold_answer": "PostgreSQL 15 with pgvector",
+    "difficulty": "medium"
+  },
+  {
+    "id": "ti_m02",
+    "description": "Explicit date string in fact content preserved after time advance",
+    "facts": [
+      {"content": "As of March 2024, the SLA for the core API was upgraded to 99.95 percent uptime", "stored_days_ago": 20},
+      {"content": "Prior to March 2024, the SLA was 99.9 percent uptime", "stored_days_ago": 40}
+    ],
+    "time_advance_days": 15,
+    "run_consolidation": false,
+    "query": "What is the current SLA for the core API as of March 2024?",
+    "gold_answer": "99.95 percent uptime",
+    "difficulty": "medium"
+  },
+  {
+    "id": "ti_m03",
+    "description": "Consolidation preserves the newer of two related facts",
+    "facts": [
+      {"content": "The connection pool max was originally set to 50 connections per instance", "stored_days_ago": 60},
+      {"content": "The connection pool max was raised to 200 connections per instance after the Q1 capacity review", "stored_days_ago": 7}
+    ],
+    "time_advance_days": 30,
+    "run_consolidation": true,
+    "query": "What is the current connection pool maximum per instance?",
+    "gold_answer": "200 connections",
+    "difficulty": "medium"
+  },
+  {
+    "id": "ti_h01",
+    "description": "Core fact survives multiple consolidation cycles spanning 90 days",
+    "facts": [
+      {"content": "The data retention policy requires GDPR-covered user event logs to be deleted after 365 days", "stored_days_ago": 90},
+      {"content": "Interim note: audit team reviewed retention policy and found it compliant", "stored_days_ago": 60},
+      {"content": "Quarterly compliance review completed with no changes to retention policy", "stored_days_ago": 30}
+    ],
+    "time_advance_days": 60,
+    "run_consolidation": true,
+    "query": "How long are GDPR-covered user event logs retained before deletion?",
+    "gold_answer": "365 days",
+    "difficulty": "hard"
+  },
+  {
+    "id": "ti_h02",
+    "description": "Interleaved facts at multiple ages maintain correct temporal ordering",
+    "facts": [
+      {"content": "Sprint 10 goal was to ship the payments module — completed", "stored_days_ago": 42},
+      {"content": "Sprint 11 goal was to refactor the auth service — partially completed", "stored_days_ago": 28},
+      {"content": "Sprint 12 goal was to add observability dashboards — completed", "stored_days_ago": 14},
+      {"content": "Sprint 13 goal is to harden the API gateway — in progress", "stored_days_ago": 1}
+    ],
+    "time_advance_days": 0,
+    "run_consolidation": false,
+    "query": "What is the current sprint goal?",
+    "gold_answer": "harden the API gateway",
+    "difficulty": "hard"
+  },
+  {
+    "id": "ti_h03",
+    "description": "Consolidation after contradiction leaves newer fact dominant",
+    "facts": [
+      {"content": "The JWT signing algorithm was HS256 with a shared secret", "stored_days_ago": 90},
+      {"content": "Security audit finding: HS256 is insufficient; migrated to RS256 asymmetric keys", "stored_days_ago": 10}
+    ],
+    "time_advance_days": 45,
+    "run_consolidation": true,
+    "query": "What JWT signing algorithm is currently in use?",
+    "gold_answer": "RS256",
+    "difficulty": "hard"
+  }
+]

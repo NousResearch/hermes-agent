@@ -772,10 +772,12 @@ class TestLoadGatewayConfig:
 
 
     def test_relay_exclusive_reads_profile_scoped_env(self, tmp_path, monkeypatch):
-        """Under a multiplexed profile secret scope, the relay-exclusive
-        trigger and opt-out must read the PROFILE's values, not process
-        globals. A process-wide GATEWAY_RELAY_URL must not disable direct
-        platforms in a profile whose own .env carries no relay stamp."""
+        """GATEWAY_RELAY_URL is a process-global deployment stamp (like the
+        API_SERVER listener vars, #69379): the scoped runner reload in a
+        multiplexed gateway must keep seeing it, so config's relay enablement
+        and sweep agree with gateway.relay.relay_url()/register_relay_adapter()
+        (which read os.environ). A relay URL in a profile's .env is NOT a
+        supported activation path — the scope is never consulted for globals."""
         from agent import secret_scope as ss
 
         hermes_home = tmp_path / ".hermes"
@@ -790,12 +792,12 @@ class TestLoadGatewayConfig:
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        # Process-global stamp that must be INVISIBLE inside the scope.
-        monkeypatch.setenv("GATEWAY_RELAY_URL", "https://global.example/relay")
+        # Managed-deploy stamp in the process env; the profile .env has none.
+        monkeypatch.setenv("GATEWAY_RELAY_URL", "https://deploy.example/relay")
 
         profile_dir = tmp_path / "profile-a"
         profile_dir.mkdir()
-        (profile_dir / ".env").write_text("", encoding="utf-8")  # no relay stamp
+        (profile_dir / ".env").write_text("", encoding="utf-8")
 
         ss.set_multiplex_active(True)
         tok = ss.set_secret_scope(ss.build_profile_secret_scope(profile_dir))
@@ -805,11 +807,13 @@ class TestLoadGatewayConfig:
             ss.reset_secret_scope(tok)
             ss.set_multiplex_active(False)
 
-        # No profile-scoped relay stamp -> no exclusive sweep in this profile.
-        assert config.platforms[Platform.TELEGRAM].enabled is True
+        # The deploy stamp survives the profile scope: relay enabled, sweep
+        # ran — matching what register_relay_adapter() sees in os.environ.
+        assert config.platforms[Platform.RELAY].enabled is True
+        assert config.platforms[Platform.TELEGRAM].enabled is False
 
-        # And the inverse: a profile-scoped stamp triggers the sweep even
-        # though the process env carries none.
+        # A profile-only stamp does NOT activate relay: globals read only the
+        # process env, so config and the relay transport can never disagree.
         monkeypatch.delenv("GATEWAY_RELAY_URL", raising=False)
         (profile_dir / ".env").write_text(
             "GATEWAY_RELAY_URL=https://profile.example/relay\n", encoding="utf-8"
@@ -822,8 +826,9 @@ class TestLoadGatewayConfig:
             ss.reset_secret_scope(tok)
             ss.set_multiplex_active(False)
 
-        assert config.platforms[Platform.RELAY].enabled is True
-        assert config.platforms[Platform.TELEGRAM].enabled is False
+        relay_cfg = config.platforms.get(Platform.RELAY)
+        assert relay_cfg is None or relay_cfg.enabled is False
+        assert config.platforms[Platform.TELEGRAM].enabled is True
 
 
     def test_relay_exclusive_sweep_log_levels_and_marker_cleanup(self, tmp_path, monkeypatch, caplog):

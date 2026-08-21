@@ -368,10 +368,44 @@ class ToolCallGuardrailController:
         # single agent loop rather than accumulating across the session.
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        # Tool-call batch bookkeeping for the failure counters below. A batch
+        # is one assistant message's worth of tool calls; `None` means the
+        # runtime never declared one, in which case every call is counted.
+        self._tool_batch_seq = 0
+        self._tool_batch_token: int | None = None
+        self._counted_failure_batch: dict[tuple[str, Any], int] = {}
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
+
+    def begin_tool_batch(self) -> None:
+        """Open a new tool-call batch (one assistant message's tool calls).
+
+        The failure counters treat a batch as a single observation: the model
+        emits every call in a batch *before* any of their results exist, so
+        N failures inside one batch are not N retries — it never saw the
+        first failure. Counting them individually lets one bad argument,
+        fanned out over a parallel batch, reach a halt threshold that is
+        meant to catch a model stubbornly repeating a call it knows failed.
+        """
+        self._tool_batch_seq += 1
+        self._tool_batch_token = self._tool_batch_seq
+
+    def _count_failure_once_per_batch(self, key: tuple[str, Any]) -> bool:
+        """Return True when this failure should bump `key`'s counter.
+
+        Without a declared batch the answer is always True, so any dispatch
+        path that does not call `begin_tool_batch` keeps the pre-existing
+        per-call counting rather than silently capping every counter at 1.
+        """
+        batch = self._tool_batch_token
+        if batch is None:
+            return True
+        if self._counted_failure_batch.get(key) == batch:
+            return False
+        self._counted_failure_batch[key] = batch
+        return True
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
@@ -442,12 +476,16 @@ class ToolCallGuardrailController:
             failed, _ = classify_tool_failure(tool_name, result)
 
         if failed:
-            exact_count = self._exact_failure_counts.get(signature, 0) + 1
-            self._exact_failure_counts[signature] = exact_count
+            exact_count = self._exact_failure_counts.get(signature, 0)
+            if self._count_failure_once_per_batch(("exact", signature)):
+                exact_count += 1
+                self._exact_failure_counts[signature] = exact_count
             self._no_progress.pop(signature, None)
 
-            same_count = self._same_tool_failure_counts.get(tool_name, 0) + 1
-            self._same_tool_failure_counts[tool_name] = same_count
+            same_count = self._same_tool_failure_counts.get(tool_name, 0)
+            if self._count_failure_once_per_batch(("tool", tool_name)):
+                same_count += 1
+                self._same_tool_failure_counts[tool_name] = same_count
 
             if self.config.hard_stop_enabled and same_count >= self.config.same_tool_failure_halt_after:
                 decision = ToolGuardrailDecision(
@@ -492,6 +530,10 @@ class ToolCallGuardrailController:
 
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
+        # Drop the batch markers too, so a later failure in the same batch is
+        # counted afresh instead of being mistaken for an already-counted one.
+        self._counted_failure_batch.pop(("exact", signature), None)
+        self._counted_failure_batch.pop(("tool", tool_name), None)
 
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)

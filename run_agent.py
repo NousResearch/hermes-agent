@@ -8323,6 +8323,15 @@ class AIAgent:
         """
         tool_calls = assistant_message.tool_calls
 
+        # One assistant message = one guardrail batch. Its calls are emitted
+        # before any result comes back, so the loop detector must not read
+        # several failures from this batch as several retries. Advisory only:
+        # never let the bookkeeping abort dispatch for an agent that has no
+        # controller (partially constructed instances, test stubs).
+        _guardrails = getattr(self, "_tool_guardrails", None)
+        if _guardrails is not None:
+            _guardrails.begin_tool_batch()
+
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
         try:

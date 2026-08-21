@@ -119,6 +119,123 @@ def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution()
 
 
 
+_TOOL_ERROR = '{"error":"server is unreachable"}'
+
+
+def _batch_controller(**overrides):
+    """Controller that halts on same-tool failures and warns from the first."""
+    kwargs = {
+        "hard_stop_enabled": True,
+        "same_tool_failure_warn_after": 1,
+        "same_tool_failure_halt_after": 8,
+        # Keep the exact-args counters out of the way so the decisions we read
+        # back are always the same-tool ones.
+        "exact_failure_warn_after": 99,
+        "exact_failure_block_after": 99,
+    }
+    kwargs.update(overrides)
+    return ToolCallGuardrailController(ToolCallGuardrailConfig(**kwargs))
+
+
+def test_parallel_batch_failures_count_as_one_observation():
+    # A batch is emitted before any of its results exist, so eight failures
+    # inside it are one observation, not eight retries.
+    controller = _batch_controller()
+    controller.begin_tool_batch()
+
+    for i in range(8):
+        decision = controller.after_call(
+            "mcp_odoo_search_records", {"domain": i}, _TOOL_ERROR, failed=True
+        )
+        assert decision.action == "warn"
+        assert decision.code == "same_tool_failure_warning"
+        assert decision.count == 1
+
+    assert controller.halt_decision is None
+
+
+def test_sequential_failures_across_batches_still_halt():
+    controller = _batch_controller(same_tool_failure_halt_after=3)
+
+    for i in range(2):
+        controller.begin_tool_batch()
+        assert controller.after_call(
+            "terminal", {"command": i}, _TOOL_ERROR, failed=True
+        ).action != "halt"
+
+    controller.begin_tool_batch()
+    decision = controller.after_call(
+        "terminal", {"command": 99}, _TOOL_ERROR, failed=True
+    )
+
+    assert decision.action == "halt"
+    assert decision.code == "same_tool_failure_halt"
+    assert decision.count == 3
+
+
+def test_partially_failed_batch_counts_once():
+    controller = _batch_controller(same_tool_failure_halt_after=2)
+
+    controller.begin_tool_batch()
+    controller.after_call("terminal", {"command": 1}, '{"ok":true}', failed=False)
+    controller.after_call("terminal", {"command": 2}, _TOOL_ERROR, failed=True)
+    controller.after_call("terminal", {"command": 3}, _TOOL_ERROR, failed=True)
+    assert controller.halt_decision is None
+
+    controller.begin_tool_batch()
+    decision = controller.after_call(
+        "terminal", {"command": 4}, _TOOL_ERROR, failed=True
+    )
+
+    assert decision.action == "halt"
+    assert decision.count == 2
+
+
+def test_distinct_tools_in_one_batch_keep_separate_counters():
+    controller = _batch_controller()
+    controller.begin_tool_batch()
+
+    first = controller.after_call("terminal", {"command": 1}, _TOOL_ERROR, failed=True)
+    second = controller.after_call("web_search", {"query": "x"}, _TOOL_ERROR, failed=True)
+
+    assert first.count == 1
+    assert second.count == 1
+
+
+def test_failures_without_declared_batch_count_per_call():
+    # Fail-safe: a dispatch path that never declares a batch keeps the
+    # pre-existing per-call counting instead of capping every counter at 1.
+    controller = _batch_controller(same_tool_failure_halt_after=3)
+
+    for i in range(2):
+        assert controller.after_call(
+            "terminal", {"command": i}, _TOOL_ERROR, failed=True
+        ).action != "halt"
+
+    decision = controller.after_call(
+        "terminal", {"command": 9}, _TOOL_ERROR, failed=True
+    )
+
+    assert decision.action == "halt"
+    assert decision.count == 3
+
+
+def test_reset_for_turn_clears_batch_bookkeeping():
+    controller = _batch_controller(same_tool_failure_halt_after=2)
+    controller.begin_tool_batch()
+    controller.after_call("terminal", {"command": 1}, _TOOL_ERROR, failed=True)
+
+    controller.reset_for_turn()
+
+    controller.begin_tool_batch()
+    decision = controller.after_call(
+        "terminal", {"command": 1}, _TOOL_ERROR, failed=True
+    )
+
+    assert decision.action != "halt"
+    assert decision.count == 1
+
+
 def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)

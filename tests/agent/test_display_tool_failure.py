@@ -119,3 +119,62 @@ class TestGetCuteToolMessageFailureSuffix:
         line = get_cute_tool_message("web_search", {"query": "hi"}, 0.2, result=ok)
         assert "[" not in line.split("0.2s", 1)[1]
 
+
+
+class TestDetectToolFailureNullErrorField:
+    """Per-item ``"error": null`` must not read as a failure.
+
+    Regression guard: tools that report per item (web_extract, and any
+    multi-URL/multi-file tool) emit an explicit null error field on every
+    successful entry. A bare substring test flags those successes as
+    failures, so the agent sees "[error]" on a call that returned the
+    content it asked for.
+    """
+
+    def test_web_extract_success_with_null_error_not_flagged(self):
+        result = json.dumps({
+            "results": [{
+                "url": "https://example.com",
+                "title": "Example Domain",
+                "content": "Example Domain\n==============\n\nThis domain is "
+                           "for use in documentation examples.",
+                "error": None,
+            }]
+        }, indent=2)
+        assert _detect_tool_failure("web_extract", result) == (False, "")
+
+    def test_web_extract_real_error_still_flagged(self):
+        result = json.dumps({
+            "results": [{
+                "url": "https://example.com",
+                "title": "",
+                "content": "",
+                "error": "Blocked: URL targets a private or internal network address",
+            }]
+        }, indent=2)
+        assert _detect_tool_failure("web_extract", result) == (True, " [error]")
+
+    def test_mixed_batch_with_one_real_error_is_flagged(self):
+        result = json.dumps({
+            "results": [
+                {"url": "https://ok.example", "content": "fine", "error": None},
+                {"url": "https://bad.example", "content": "", "error": "timeout"},
+            ]
+        }, indent=2)
+        assert _detect_tool_failure("web_extract", result) == (True, " [error]")
+
+    def test_false_failed_flag_not_flagged(self):
+        result = json.dumps({"items": [{"name": "a", "failed": False}]})
+        assert _detect_tool_failure("some_tool", result) == (False, "")
+
+    def test_error_as_string_value_still_flagged(self):
+        # {"status": "error"} has no error *key*, but plainly reports one.
+        result = json.dumps({"status": "error", "detail": "upstream refused"})
+        assert _detect_tool_failure("some_tool", result) == (True, " [error]")
+
+    def test_null_error_beyond_scan_window_not_flagged(self):
+        # The key sits past the 500-char prefix that gets scanned; the value
+        # must still be read correctly rather than assumed truthy.
+        padding = "x" * 600
+        result = json.dumps({"content": padding, "error": None})
+        assert _detect_tool_failure("web_extract", result) == (False, "")

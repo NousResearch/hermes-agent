@@ -710,6 +710,10 @@ load_hermes_dotenv(
     load_external_secrets=sys.argv[1:2] != ["update"],
 )
 
+from hermes_cli.ssl_certs import ensure_ssl_certs as _ensure_ssl_certs
+
+_ensure_ssl_certs()
+
 # Bridge security.redact_secrets from config.yaml → HERMES_REDACT_SECRETS env
 # var BEFORE hermes_logging imports agent.redact (which snapshots the flag at
 # module-import time). Without this, config.yaml's toggle is ignored because

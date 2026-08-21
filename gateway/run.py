@@ -1967,60 +1967,7 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
                         break
     return paths
 
-# ---------------------------------------------------------------------------
-# SSL certificate auto-detection for NixOS and other non-standard systems.
-# Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
-# ---------------------------------------------------------------------------
-def _ensure_ssl_certs() -> None:
-    """Set SSL_CERT_FILE if the system doesn't expose CA certs to Python.
-
-    Windows startup paths (Desktop, Scheduled Tasks, installer children) can
-    occasionally inherit a stale SSL_CERT_FILE. Returning just because the
-    variable is present makes every later httpx/OpenAI client construction fail
-    with FileNotFoundError from ssl.load_verify_locations(). Treat a missing
-    path as unset and fall back to certifi instead.
-    """
-    configured_cert = os.environ.get("SSL_CERT_FILE")
-    if configured_cert:
-        if os.path.exists(configured_cert):
-            return  # user already configured it to a real file
-        logging.getLogger(__name__).warning(
-            "Ignoring stale SSL_CERT_FILE=%r because the path does not exist",
-            configured_cert,
-        )
-        os.environ.pop("SSL_CERT_FILE", None)
-
-    import ssl
-
-    # 1. Python's compiled-in defaults
-    paths = ssl.get_default_verify_paths()
-    for candidate in (paths.cafile, paths.openssl_cafile):
-        if candidate and os.path.exists(candidate):
-            os.environ["SSL_CERT_FILE"] = candidate
-            return
-
-    # 2. certifi (ships its own Mozilla bundle)
-    try:
-        import certifi
-        os.environ["SSL_CERT_FILE"] = certifi.where()
-        return
-    except ImportError:
-        pass
-
-    # 3. Common distro / macOS locations
-    for candidate in (
-        "/etc/ssl/certs/ca-certificates.crt",               # Debian/Ubuntu/Gentoo
-        "/etc/pki/tls/certs/ca-bundle.crt",                 # RHEL/CentOS 7
-        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", # RHEL/CentOS 8+
-        "/etc/ssl/ca-bundle.pem",                            # SUSE/OpenSUSE
-        "/etc/ssl/cert.pem",                                 # Alpine / macOS
-        "/etc/pki/tls/cert.pem",                             # Fedora
-        "/usr/local/etc/openssl@1.1/cert.pem",               # macOS Homebrew Intel
-        "/opt/homebrew/etc/openssl@1.1/cert.pem",            # macOS Homebrew ARM
-    ):
-        if os.path.exists(candidate):
-            os.environ["SSL_CERT_FILE"] = candidate
-            return
+from hermes_cli.ssl_certs import ensure_ssl_certs as _ensure_ssl_certs
 
 def _home_target_env_var(platform_name: str) -> str:
     """Return the configured home-target env var for a platform.

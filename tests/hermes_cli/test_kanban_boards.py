@@ -112,7 +112,106 @@ class TestPathResolution:
 
 class TestCurrentBoard:
 
+    def test_profile_default_board_beats_shared_current_pointer(self, fresh_home):
+        """A repository profile must not inherit another profile's CLI board."""
+        kb.create_board("repo-alpha")
+        kb.create_board("repo-beta")
+        kb.set_current_board("repo-beta")
+        (fresh_home / "config.yaml").write_text(
+            "kanban:\n  default_board: repo-alpha\n",
+            encoding="utf-8",
+        )
 
+        assert kb.get_current_board() == "repo-alpha"
+        assert kb.kanban_db_path() == (
+            fresh_home / "kanban" / "boards" / "repo-alpha" / "kanban.db"
+        )
+
+    def test_env_board_still_overrides_profile_default(self, fresh_home, monkeypatch):
+        kb.create_board("repo-alpha")
+        kb.create_board("explicit")
+        (fresh_home / "config.yaml").write_text(
+            "kanban:\n  default_board: repo-alpha\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "explicit")
+
+        assert kb.get_current_board() == "explicit"
+
+    def test_two_profiles_resolve_different_defaults_on_one_shared_board_root(
+        self, fresh_home, monkeypatch
+    ):
+        profiles = fresh_home / "profiles"
+        alpha = profiles / "alpha"
+        beta = profiles / "beta"
+        alpha.mkdir(parents=True)
+        beta.mkdir(parents=True)
+        (alpha / "config.yaml").write_text(
+            "kanban:\n  default_board: repo-alpha\n", encoding="utf-8"
+        )
+        (beta / "config.yaml").write_text(
+            "kanban:\n  default_board: repo-beta\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(fresh_home))
+        kb.create_board("repo-alpha")
+        kb.create_board("repo-beta")
+        kb.set_current_board("repo-beta")
+
+        monkeypatch.setenv("HERMES_HOME", str(alpha))
+        assert kb.get_current_board() == "repo-alpha"
+        monkeypatch.setenv("HERMES_HOME", str(beta))
+        assert kb.get_current_board() == "repo-beta"
+
+    def test_none_profile_default_preserves_shared_pointer(self, fresh_home):
+        kb.create_board("shared")
+        kb.set_current_board("shared")
+        (fresh_home / "config.yaml").write_text(
+            "kanban:\n  default_board: null\n", encoding="utf-8"
+        )
+
+        assert kb.get_current_board() == "shared"
+
+    def test_invalid_profile_default_warns_and_preserves_shared_pointer(
+        self, fresh_home, caplog
+    ):
+        kb.create_board("shared")
+        kb.set_current_board("shared")
+        (fresh_home / "config.yaml").write_text(
+            "kanban:\n  default_board: ../../wrong\n", encoding="utf-8"
+        )
+
+        assert kb.get_current_board() == "shared"
+        assert "Ignoring invalid kanban.default_board" in caplog.text
+
+    def test_non_string_profile_default_warns_and_preserves_shared_pointer(
+        self, fresh_home, caplog
+    ):
+        kb.create_board("shared")
+        kb.set_current_board("shared")
+        (fresh_home / "config.yaml").write_text(
+            "kanban:\n  default_board: 123\n", encoding="utf-8"
+        )
+
+        assert kb.get_current_board() == "shared"
+        assert "must be a board slug string or null" in caplog.text
+
+    def test_profile_default_bootstraps_board_schema(self, fresh_home, caplog):
+        (fresh_home / "config.yaml").write_text(
+            "kanban:\n  default_board: repo-new\n", encoding="utf-8"
+        )
+        assert not kb.board_exists("repo-new")
+
+        with kb.connect() as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+
+        assert kb.board_exists("repo-new")
+        assert "does not exist yet; the first connection will initialize it" in caplog.text
+        assert {"tasks", "task_events"}.issubset(tables)
 
     def test_stale_file_pointer_falls_back_to_default(self, fresh_home):
         current = fresh_home / "kanban" / "current"
@@ -308,6 +407,20 @@ def _cli(args: list[str], env_extra: dict | None = None) -> subprocess.Completed
 
 
 class TestCLI:
+    def test_switch_reports_profile_default_precedence(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        (tmp_path / "config.yaml").write_text(
+            "kanban:\n  default_board: pinned\n", encoding="utf-8"
+        )
+        assert _cli(["boards", "create", "pinned"], env_extra=env).returncode == 0
+        assert _cli(["boards", "create", "other"], env_extra=env).returncode == 0
+
+        res = _cli(["boards", "switch", "other"], env_extra=env)
+
+        assert res.returncode == 0, res.stderr
+        assert "Shared fallback board is now 'other'" in res.stdout
+        assert "this profile remains on 'pinned'" in res.stdout
+
     def test_boards_list_default_only(self, tmp_path):
         env = {"HERMES_HOME": str(tmp_path)}
         res = _cli(["boards", "list", "--json"], env_extra=env)

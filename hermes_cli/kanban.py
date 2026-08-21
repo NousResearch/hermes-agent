@@ -1389,7 +1389,16 @@ def _cmd_boards_switch(args: argparse.Namespace) -> int:
         )
         return 1
     kb.set_current_board(normed)
-    print(f"Active board is now {normed!r}.")
+    effective = kb.get_current_board()
+    if effective != normed:
+        print(
+            f"Shared fallback board is now {normed!r}; this profile remains on "
+            f"{effective!r} because a higher-precedence profile or environment "
+            "default is configured. Use --board for one command, or update "
+            "kanban.default_board / HERMES_KANBAN_BOARD.",
+        )
+    else:
+        print(f"Active board is now {normed!r}.")
     return 0
 
 

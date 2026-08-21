@@ -2587,6 +2587,10 @@ DEFAULT_CONFIG = {
     # each claimable ready task. One dispatcher per profile is sufficient;
     # running more than one on the same kanban.db will race for claims.
     "kanban": {
+        # Profile-scoped board used by CLI and model tools when a call does not
+        # pass an explicit board. ``None`` preserves the shared human CLI
+        # current-board pointer for backward compatibility.
+        "default_board": None,
         # Auto-subscribe the originating gateway/TUI session to task
         # completion + block events when ``kanban_create`` is called from
         # inside a session that has a persistent delivery channel. The

@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import select
@@ -142,13 +143,22 @@ def _context_peers_path() -> Path:
 
 
 def _persist_context_peers(peers: Dict[str, str]) -> None:
-    """Best-effort write-through of the context→peer map to disk (atomic)."""
+    """Best-effort write-through of the context→peer map to disk (atomic).
+
+    Like context sessions, use the same restrictive 0o600 mode on the
+    temp file before replacement so the final path never inherits a
+    permissive umask.
+    """
     try:
         path = _context_peers_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
         with tmp.open("w", encoding="utf-8") as fh:
             json.dump(peers, fh, ensure_ascii=False)
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
         tmp.replace(path)
     except Exception:
         logger.debug("A2A: could not persist context peers", exc_info=True)
@@ -1784,14 +1794,20 @@ class A2AAdapter(BasePlatformAdapter):
         Priority: the message's stamped ``sender.timeout`` (the client's
         own advertised read timeout) → the configured
         ``a2a_agents[peer].timeout`` → 120s default.
+
+        A peer-supplied timeout is capped at ``_ORPHAN_TIMEOUT -
+        _PATIENCE_MARGIN`` (270s) so the patience deadline never exceeds
+        the orphan watchdog horizon.  Non-finite, zero, negative, and
+        over-ceiling values are clamped or rejected consistently.
         """
+        _TIMEOUT_CEILING = _ORPHAN_TIMEOUT - _PATIENCE_MARGIN  # 270s
         msg = params.get("message") if isinstance(params, dict) else None
         sender = msg.get("sender") if isinstance(msg, dict) else None
         if isinstance(sender, dict):
             try:
                 t = float(sender.get("timeout") or 0)
-                if t > 0:
-                    return t
+                if math.isfinite(t) and t > 0:
+                    return min(t, _TIMEOUT_CEILING)
             except (TypeError, ValueError):
                 pass
         try:
@@ -1799,8 +1815,8 @@ class A2AAdapter(BasePlatformAdapter):
             entry = a2a_tools._resolve_peer(peer)
             if entry:
                 t = float(entry.get("timeout") or 0)
-                if t > 0:
-                    return t
+                if math.isfinite(t) and t > 0:
+                    return min(t, _TIMEOUT_CEILING)
         except Exception:
             logger.debug("A2A: could not resolve peer timeout for patience", exc_info=True)
         return 120.0

@@ -100,6 +100,71 @@ def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
         assert kb.get_task(conn, child).status == "ready"
 
 
+def test_dependency_block_names_sibling_creates_parent_link(kanban_home: Path) -> None:
+    """A dependency block naming sibling X links the blocked card to X."""
+    with kb.connect_closing() as conn:
+        sibling = kb.create_task(conn, title="sibling", assignee="worker")
+        child = _running_task(conn, title="child")
+        kb.block_task(
+            conn, child,
+            reason=f"waiting on sibling {sibling}", kind="dependency",
+        )
+        assert kb.get_task(conn, child).status == "todo"
+        link = conn.execute(
+            "SELECT parent_id, child_id FROM task_links "
+            "WHERE parent_id = ? AND child_id = ?",
+            (sibling, child),
+        ).fetchone()
+        assert link is not None, "expected parent link child -> sibling"
+        ev = [e for e in kb.list_events(conn, child)
+              if e.kind == "dependency_wait"][-1]
+        payload = ev.payload or {}
+        assert payload.get("sibling_id") == sibling
+        assert payload.get("sibling_resolved") is True
+        assert payload.get("link_created") is True
+
+
+def test_dependency_block_unknown_sibling_fails_safe(kanban_home: Path) -> None:
+    """An unresolvable sibling id still blocks, with alert metadata recorded."""
+    with kb.connect_closing() as conn:
+        child = _running_task(conn, title="child")
+        kb.block_task(
+            conn, child,
+            reason="waiting on t_ffffffff (missing)", kind="dependency",
+        )
+        assert kb.get_task(conn, child).status == "todo"
+        assert conn.execute(
+            "SELECT 1 FROM task_links WHERE child_id = ?", (child,)
+        ).fetchone() is None
+        ev = [e for e in kb.list_events(conn, child)
+              if e.kind == "dependency_wait"][-1]
+        payload = ev.payload or {}
+        assert payload.get("sibling_resolved") is False
+        assert payload.get("link_created") is False
+
+
+def test_dependency_block_sibling_gates_recompute_ready(kanban_home: Path) -> None:
+    """A dependency-blocked card stays parked until the named sibling completes."""
+    with kb.connect_closing() as conn:
+        sibling = kb.create_task(conn, title="sibling", assignee="worker")
+        child = _running_task(conn, title="child")
+        kb.block_task(
+            conn, child,
+            reason=f"needs {sibling} first", kind="dependency",
+        )
+        assert kb.get_task(conn, child).status == "todo"
+        # Sibling still incomplete: recompute_ready must NOT re-promote.
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, child).status == "todo"
+        # Sibling completes: the card may now promote.
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (sibling,))
+        kb.claim_task(conn, sibling, claimer="worker")
+        kb.complete_task(conn, sibling, result="done")
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, child).status == "ready"
+
+
 # ---------------------------------------------------------------------------
 # Completion resets loop memory
 # ---------------------------------------------------------------------------

@@ -6243,6 +6243,49 @@ def edit_completed_task_result(
     return True
 
 
+_DEPENDENCY_SIBLING_RE = re.compile(r"\bt_[0-9a-f]{8}\b")
+
+
+def _resolve_dependency_sibling(
+    conn: sqlite3.Connection, task_id: str, reason: Optional[str]
+) -> Optional[str]:
+    """Return the first sibling task id named in ``reason`` that exists and
+    is not ``task_id`` itself, else ``None``.
+
+    Best-effort by design: a reason that names no sibling, or names one
+    that cannot be resolved to a card, yields ``None`` so the block still
+    succeeds — the caller records the unresolved state on the block event
+    for alerting instead of failing the worker exit path.
+    """
+    if not reason:
+        return None
+    for candidate in _DEPENDENCY_SIBLING_RE.findall(reason):
+        if candidate == task_id:
+            continue
+        if get_task(conn, candidate) is not None:
+            return candidate
+    return None
+
+
+def _insert_dependency_link(
+    conn: sqlite3.Connection, parent_id: str, child_id: str
+) -> None:
+    """Persist a ``parent_id -> child_id`` dependency link.
+
+    Runs inside the caller's open transaction (``link_tasks`` opens its
+    own, so it cannot be reused here). Raises ``ValueError`` on a cycle;
+    duplicate links are idempotent via ``INSERT OR IGNORE``.
+    """
+    if _would_cycle(conn, parent_id, child_id):
+        raise ValueError(
+            f"linking {parent_id} -> {child_id} would create a cycle"
+        )
+    conn.execute(
+        "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
+        (parent_id, child_id),
+    )
+
+
 def block_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -6324,6 +6367,22 @@ def block_task(
             )
             if cur.rowcount != 1:
                 return False
+            # Persist a parent link to the sibling named in the reason BEFORE the
+            # block outcome lands, so ``recompute_ready`` sees an unmet parent
+            # instead of a parentless todo card (which it would re-promote on the
+            # next tick — the bug this link exists to prevent). Resolution is
+            # best-effort: a reason that names no resolvable sibling must not
+            # fail the block, so any failure is recorded on the event payload
+            # for alerting instead of raised.
+            sibling_id = _resolve_dependency_sibling(conn, task_id, reason)
+            link_created = False
+            link_error = None
+            if sibling_id is not None:
+                try:
+                    _insert_dependency_link(conn, parent_id=sibling_id, child_id=task_id)
+                    link_created = True
+                except ValueError as exc:
+                    link_error = str(exc)
             run_id = _end_run(
                 conn, task_id,
                 outcome="blocked", status="blocked",
@@ -6339,6 +6398,10 @@ def block_task(
                     "reason": reason,
                     "kind": kind,
                     "source_status": source_status,
+                    "sibling_id": sibling_id,
+                    "sibling_resolved": sibling_id is not None,
+                    "link_created": link_created,
+                    "link_error": link_error,
                 },
                 run_id=run_id,
             )

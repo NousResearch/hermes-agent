@@ -1914,6 +1914,20 @@ def _append_cancelled_tool_results(messages: list, tool_calls, *, reason: str) -
         ))
 
 
+def _session_search_scope_context(agent) -> dict[str, Any]:
+    """Return public agent provenance used by Telegram session-search scoping."""
+    provider = getattr(agent, "session_search_scope_context", None)
+    if callable(provider):
+        context = provider()
+        if isinstance(context, dict):
+            return context
+    return {
+        "current_session_id": getattr(agent, "session_id", None),
+        "current_platform": getattr(agent, "platform", None),
+        "current_session_key": None,
+    }
+
+
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools.
 
@@ -2107,8 +2121,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     window=next_args.get("window", 5),
                     sort=next_args.get("sort"),
                     detail=next_args.get("detail", "adaptive"),
+                    profile=next_args.get("profile"),
+                    scope=next_args.get("scope"),
                     db=session_db,
-                    current_session_id=agent.session_id,
+                    **_session_search_scope_context(agent),
                 )
             function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
                 agent,

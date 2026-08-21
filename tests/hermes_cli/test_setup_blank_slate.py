@@ -82,7 +82,11 @@ class TestBlankSlateFork:
     def _patch_common(self, monkeypatch):
         import hermes_cli.setup as s
         # Neutralize side-effecting setup steps and I/O.
-        monkeypatch.setattr(s, "setup_model_provider", lambda cfg, **k: None)
+        monkeypatch.setattr(
+            s,
+            "setup_model_provider",
+            lambda cfg, **k: s._SetupResult("success"),
+        )
         monkeypatch.setattr(s, "setup_terminal_backend", lambda cfg, **k: None)
         monkeypatch.setattr(s, "save_config", lambda cfg: None)
         monkeypatch.setattr(s, "_print_setup_summary", lambda cfg, home: None)
@@ -111,4 +115,3 @@ class TestBlankSlateFork:
         assert walked["called"] is False
         # Finish-now path records the skill opt-out (no bundled skills).
         assert opted_out["value"] is True
-

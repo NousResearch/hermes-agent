@@ -126,9 +126,9 @@ dependency does not change the collection or privacy policy.
 
 ## Current Slices
 
-The current vertical slices record pseudonymous profile activity, logical
-model calls, top-level task runs, tool and approval outcomes, and skill
-lifecycle and reuse:
+The current vertical slices record pseudonymous profile activity, setup and
+first-use milestones, logical model calls, top-level task runs, tool and
+approval outcomes, and skill lifecycle and reuse:
 
 ```text
 Hermes turn, API, tool, and approval hooks
@@ -159,6 +159,25 @@ version, OS family, architecture, and install method remain bounded package
 resources. Concurrent Hermes processes share the SQLite latch, so simultaneous
 starts cannot double-count one install. A later session or task can attempt the
 mark again, but the subscriber suppresses it until the rolling window expires.
+
+An opted-in `hermes setup` run, including the equivalent `hermes portal`
+onboarding entry point, emits `hermes.setup.started` and
+`hermes.setup.finished` marks through a short-lived Relay scope. The marks
+contain only a bounded setup mode, outcome, and failure stage; provider names,
+credentials, answers, and error text are never included. An unflagged setup
+invocation is classified as `interactive` because a new user chooses quick,
+full, or blank-slate setup after the lifecycle begins. Setup that begins before
+shared-metrics consent is available is not recorded retroactively. This
+preserves the rule that no telemetry identity or local state exists before the
+profile has explicitly enabled collection.
+
+The first consented session or task that reaches Hermes's normal runtime
+boundary records `hermes.client.first_usable` once. The first accepted task
+terminal with the bounded `success` outcome records
+`hermes.client.first_successful_task` once. Both use transactional SQLite
+latches, survive process restarts, and remain single-counted when concurrent
+Hermes processes reach the milestone together. The successful-task latch is
+committed in the same transaction as its terminal task counter.
 
 Each task run is a Relay `Function` scope named `hermes.task_run`, parented to
 the owning Hermes session. The start counter contains only bounded execution
@@ -250,10 +269,24 @@ The script uses the installed `nemo-relay` dependency by default. Pass
 `--relay-python ../nemo-relay/python` only when testing a locally built Relay
 binding.
 
-The smoke has the local model request a real `read_file` tool call before its
-final response, then drives create, load, reuse, patch, edit, stale, archive,
-restore, and install skill transitions through the installed Relay binding. It
-verifies model, provider, task, tool, and skill counters in SQLite, validates
-all exported delta packages against the closed schema, verifies the
-pseudonymous client-active counter, and checks that prompt, response, tool-call
-ID, tool-result, and skill-name canaries are absent from the packages.
+To repeat the complete scenario and add a real NVIDIA NIM turn, set
+`NVIDIA_API_KEY` and run:
+
+```bash
+./.venv/bin/python scripts/smoke_nemo_relay_shared_metrics_nvidia.py
+```
+
+The live wrapper keeps the deterministic tool and skill assertions, restarts
+Hermes against NVIDIA NIM, and verifies that exactly one additional model call
+and task reach SQLite and a new schema-valid delta package. The API key remains
+in the subprocess environment and is checked alongside the prompt as
+prohibited persisted data.
+
+The smoke first emits an opted-in setup lifecycle, then has the local model
+request a real `read_file` tool call before its final response. It also drives
+create, load, reuse, patch, edit, stale, archive, restore, and install skill
+transitions through the installed Relay binding. It verifies setup, first-use,
+model, provider, task, tool, and skill counters in SQLite, validates all
+exported delta packages against the closed schema, verifies the pseudonymous
+client-active counter, and checks that prompt, response, tool-call ID,
+tool-result, and skill-name canaries are absent from the packages.

@@ -269,6 +269,9 @@ security:
 telemetry:
   shared_metrics:
     enabled: true
+auxiliary:
+  title_generation:
+    enabled: false
 """,
         encoding="utf-8",
     )
@@ -299,7 +302,11 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         by_name.setdefault(counter["name"], []).append(counter)
     if set(by_name) != {
         "hermes.client.active",
+        "hermes.client.first_successful_task",
+        "hermes.client.first_usable",
         "hermes.model_route.count",
+        "hermes.setup.finished",
+        "hermes.setup.started",
         "hermes.skill.lifecycle.count",
         "hermes.skill.load.count",
         "hermes.task_run.finished",
@@ -319,6 +326,45 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     ]:
         raise AssertionError(
             f"Unexpected client-active counter: {by_name['hermes.client.active']}"
+        )
+    for metric_name in (
+        "hermes.client.first_usable",
+        "hermes.client.first_successful_task",
+    ):
+        if by_name[metric_name] != [
+            {
+                "name": metric_name,
+                "dimensions": {},
+                "value": 1,
+                "packaged_value": 1,
+            }
+        ]:
+            raise AssertionError(f"Unexpected one-time metric: {by_name[metric_name]}")
+    if by_name["hermes.setup.started"] != [
+        {
+            "name": "hermes.setup.started",
+            "dimensions": {"mode": "quick"},
+            "value": 1,
+            "packaged_value": 1,
+        }
+    ]:
+        raise AssertionError(
+            f"Unexpected setup start: {by_name['hermes.setup.started']}"
+        )
+    if by_name["hermes.setup.finished"] != [
+        {
+            "name": "hermes.setup.finished",
+            "dimensions": {
+                "failure_stage": "none",
+                "mode": "quick",
+                "outcome": "success",
+            },
+            "value": 1,
+            "packaged_value": 1,
+        }
+    ]:
+        raise AssertionError(
+            f"Unexpected setup finish: {by_name['hermes.setup.finished']}"
         )
     [model] = by_name["hermes.model_route.count"]
     expected_model = {
@@ -468,7 +514,11 @@ def _validate_packages(
             metrics.setdefault(metric["name"], []).append(metric)
     if set(metrics) != {
         "hermes.client.active",
+        "hermes.client.first_successful_task",
+        "hermes.client.first_usable",
         "hermes.model_route.count",
+        "hermes.setup.finished",
+        "hermes.setup.started",
         "hermes.skill.lifecycle.count",
         "hermes.skill.load.count",
         "hermes.task_run.finished",
@@ -488,6 +538,33 @@ def _validate_packages(
     ]:
         raise AssertionError(
             f"Unexpected client-active metric: {metrics['hermes.client.active']}"
+        )
+    for metric_name in (
+        "hermes.client.first_usable",
+        "hermes.client.first_successful_task",
+    ):
+        if metrics[metric_name] != [
+            {
+                "name": metric_name,
+                "type": "counter",
+                "dimensions": {},
+                "value": 1,
+            }
+        ]:
+            raise AssertionError(
+                f"Unexpected one-time package metric: {metrics[metric_name]}"
+            )
+    if metrics["hermes.setup.started"][0]["dimensions"] != {"mode": "quick"}:
+        raise AssertionError(
+            f"Unexpected setup-start metric: {metrics['hermes.setup.started']}"
+        )
+    if metrics["hermes.setup.finished"][0]["dimensions"] != {
+        "failure_stage": "none",
+        "mode": "quick",
+        "outcome": "success",
+    }:
+        raise AssertionError(
+            f"Unexpected setup-finish metric: {metrics['hermes.setup.finished']}"
         )
     [model] = metrics["hermes.model_route.count"]
     if model["dimensions"] != {
@@ -614,6 +691,28 @@ def main() -> int:
             python_paths.append(str(relay_python))
         python_paths.append(env.get("PYTHONPATH", ""))
         env["PYTHONPATH"] = os.pathsep.join(python_paths).rstrip(os.pathsep)
+        setup_result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "\n".join([
+                    "from types import SimpleNamespace",
+                    "from hermes_cli import main, setup",
+                    "setup.run_setup_wizard = lambda _: True",
+                    "main.cmd_setup(SimpleNamespace(portal=False, quick=True, reset=False, section=None))",
+                ]),
+            ],
+            cwd=workdir,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        if setup_result.returncode != 0:
+            raise AssertionError(
+                f"Setup lifecycle probe exited with {setup_result.returncode}\n"
+                f"stdout:\n{setup_result.stdout}\nstderr:\n{setup_result.stderr}"
+            )
         result = subprocess.run(
             [
                 str(hermes),
@@ -690,9 +789,9 @@ def main() -> int:
                 "runtime = relay_shared_metrics._get_runtime()",
                 "assert runtime is not None",
                 "runtime.shutdown()",
-                # Production leaves same-day deltas pending. Force a package so
-                # this smoke can validate them without waiting for the next day.
-                "runtime.subscriber.store.create_and_export_package()",
+                # Setup already consumed the automatic daily export. Force a
+                # final package so the smoke can validate all pending deltas.
+                "assert len(runtime.subscriber.store.create_and_export_package()) == 1",
             ]),
         ],
         cwd=workdir,

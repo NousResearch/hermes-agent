@@ -7,6 +7,7 @@ import contextvars
 import logging
 import threading
 from collections import deque
+import uuid
 from dataclasses import dataclass, field
 from time import monotonic_ns
 from typing import Any, Callable
@@ -17,10 +18,16 @@ from hermes_cli import __version__
 from .shared_metrics import SharedMetricsStore
 from .shared_metrics_contract import (
     CLIENT_ACTIVE_MARK,
+    CLIENT_FIRST_USABLE_MARK,
     MODEL_CALL_PROFILE_MODEL,
     MODEL_CALL_SCOPE,
     SCHEMA_KEY,
     SCHEMA_VERSION,
+    SETUP_FAILURE_STAGES,
+    SETUP_FINISHED_MARK,
+    SETUP_MODES,
+    SETUP_OUTCOMES,
+    SETUP_STARTED_MARK,
     SKILL_LIFECYCLE_MARK,
     SKILL_LOAD_MARK,
     SUBSCRIBER_NAME,
@@ -102,6 +109,15 @@ class _TaskRun:
     retry_count: int = 0
 
 
+@dataclass(frozen=True)
+class SetupMetricsAttempt:
+    """Opaque handle for one consented setup lifecycle."""
+
+    session_id: str
+    mode: str
+    _runtime: _Runtime = field(repr=False, compare=False)
+
+
 @dataclass
 class _MetricsSession:
     session_id: str
@@ -130,6 +146,7 @@ class _Runtime:
         self._sessions_lock = threading.RLock()
         self._active = True
         self._sessions: dict[str, _MetricsSession] = {}
+        self._owned_session_ids: set[str] = set()
         self._task_creation_lock = threading.RLock()
         self._task_sessions_lock = threading.RLock()
         self._task_sessions: dict[tuple[str, str], _MetricsSession] = {}
@@ -175,17 +192,75 @@ class _Runtime:
         self._emit_client_active(session)
 
     def _emit_client_active(self, session: _MetricsSession) -> None:
+        self._emit_client_mark(session, CLIENT_ACTIVE_MARK, {})
+        self._emit_client_mark(session, CLIENT_FIRST_USABLE_MARK, {})
+
+    def _emit_client_mark(
+        self,
+        session: _MetricsSession,
+        name: str,
+        data: dict[str, str],
+    ) -> None:
         with session.lock:
             if session.closing:
                 return
             self._run_in_session(
                 session,
                 self.relay.scope.event,
-                CLIENT_ACTIVE_MARK,
+                name,
                 handle=session.relay_session.handle,
-                data={},
+                data=data,
                 metadata=self._event_metadata(),
             )
+
+    def record_setup_started(self, attempt: SetupMetricsAttempt) -> bool:
+        with self._sessions_lock:
+            if not self._active:
+                return False
+            self._owned_session_ids.add(attempt.session_id)
+        session = self.ensure_session({
+            "session_id": attempt.session_id,
+            "platform": "cli",
+        })
+        if session is None:
+            return False
+        self._emit_client_mark(session, SETUP_STARTED_MARK, {"mode": attempt.mode})
+        return True
+
+    def record_setup_finished(
+        self,
+        attempt: SetupMetricsAttempt,
+        *,
+        outcome: str,
+        failure_stage: str,
+    ) -> None:
+        try:
+            session = self.ensure_session({
+                "session_id": attempt.session_id,
+                "platform": "cli",
+            })
+            if session is None:
+                return
+            self._emit_client_mark(
+                session,
+                SETUP_FINISHED_MARK,
+                {
+                    "failure_stage": failure_stage,
+                    "mode": attempt.mode,
+                    "outcome": outcome,
+                },
+            )
+        finally:
+            self.close_owned_session(attempt.session_id)
+
+    def close_owned_session(self, session_id: str) -> None:
+        """Close a synthetic metrics session in both runtime ownership layers."""
+        try:
+            self.close_session({"session_id": session_id})
+        finally:
+            with self._sessions_lock:
+                self._owned_session_ids.discard(session_id)
+            self.host.close_session({"session_id": session_id})
 
     def _run_in_session(
         self,
@@ -652,8 +727,13 @@ class _Runtime:
         with self._sessions_lock:
             self._active = False
             session_ids = list(self._sessions)
+            owned_session_ids = set(self._owned_session_ids)
         for session_id in session_ids:
             self._safe(self.close_session, {"session_id": session_id})
+        for session_id in owned_session_ids:
+            self._safe(self.host.close_session, {"session_id": session_id})
+        with self._sessions_lock:
+            self._owned_session_ids.clear()
         if not self._registered:
             return
         try:
@@ -684,6 +764,7 @@ class _Runtime:
             self._registered = False
         with self._sessions_lock:
             sessions = list(self._sessions.values())
+            owned_session_ids = set(self._owned_session_ids)
         for session in sessions:
             with session.lock:
                 if session.closing:
@@ -703,6 +784,9 @@ class _Runtime:
                 self._end_pending_model_calls(session, {})
         with self._sessions_lock:
             self._sessions.clear()
+            self._owned_session_ids.clear()
+        for session_id in owned_session_ids:
+            self._safe(self.host.close_session, {"session_id": session_id})
         with self._task_sessions_lock:
             self._task_sessions.clear()
             self._turn_sessions.clear()
@@ -1163,6 +1247,52 @@ def prepare_session_start() -> None:
     """Register the subscriber before any producer opens the session scope."""
     if enabled():
         _get_runtime(retry_failed=True)
+
+
+def start_setup_lifecycle(mode: str) -> SetupMetricsAttempt | None:
+    """Start one setup lifecycle only when collection is already allowed."""
+    if not enabled():
+        return None
+    runtime = _get_runtime(retry_failed=True)
+    if runtime is None:
+        return None
+    normalized_mode = mode if mode in SETUP_MODES else "unknown"
+    attempt = SetupMetricsAttempt(
+        session_id=f"hermes-shared-metrics-setup-{uuid.uuid4()}",
+        mode=normalized_mode,
+        _runtime=runtime,
+    )
+    if runtime._safe(runtime.record_setup_started, attempt) is not True:
+        runtime._safe(runtime.close_owned_session, attempt.session_id)
+        return None
+    return attempt
+
+
+def finish_setup_lifecycle(
+    attempt: SetupMetricsAttempt | None,
+    *,
+    outcome: str,
+    failure_stage: str = "none",
+) -> None:
+    """Finish and export one consented setup lifecycle without raw error data."""
+    if attempt is None:
+        return
+    runtime = attempt._runtime
+    if not enabled():
+        runtime._safe(runtime.close_owned_session, attempt.session_id)
+        return
+    normalized_outcome = outcome if outcome in SETUP_OUTCOMES else "failed"
+    normalized_stage = (
+        failure_stage if failure_stage in SETUP_FAILURE_STAGES else "unknown"
+    )
+    if normalized_outcome == "success":
+        normalized_stage = "none"
+    runtime._safe(
+        runtime.record_setup_finished,
+        attempt,
+        outcome=normalized_outcome,
+        failure_stage=normalized_stage,
+    )
 
 
 def _prepare_core_session(

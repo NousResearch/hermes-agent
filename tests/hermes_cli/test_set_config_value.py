@@ -205,6 +205,44 @@ class TestConfigGetUnset:
         assert "Unset platforms.teams.extra.access_token" in capsys.readouterr().out
 
 
+    def test_config_unset_removes_list_item_by_name(self, _isolated_hermes_home, capsys):
+        """`hermes config unset platform_toolsets.cli.messaging` must remove the
+        list element, not the whole list. Regression for #76847."""
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "platform_toolsets:\n"
+            "  cli:\n"
+            "    - browser\n"
+            "    - messaging\n"
+            "    - terminal\n"
+        )
+
+        args = argparse.Namespace(
+            config_command="unset", key="platform_toolsets.cli.messaging"
+        )
+        config_command(args)
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["platform_toolsets"]["cli"] == ["browser", "terminal"]
+        assert "Unset platform_toolsets.cli.messaging" in capsys.readouterr().out
+
+
+    def test_config_unset_list_item_missing_is_reported(self, _isolated_hermes_home, capsys):
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "platform_toolsets:\n"
+            "  cli:\n"
+            "    - browser\n"
+        )
+
+        args = argparse.Namespace(
+            config_command="unset", key="platform_toolsets.cli.messaging"
+        )
+        with pytest.raises(SystemExit) as exc:
+            config_command(args)
+        assert exc.value.code == 1
+        assert "Config key not set" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # List navigation — regression tests for #17876
 # ---------------------------------------------------------------------------

@@ -1142,10 +1142,26 @@ def _unset_nested(config, dotted_key: str) -> bool:
     removed = False
     if isinstance(current, list):
         try:
-            current.pop(int(last))
-            removed = True
-        except (TypeError, ValueError, IndexError):
-            return False
+            index = int(last)
+        except (TypeError, ValueError):
+            index = None
+        if index is not None:
+            try:
+                current.pop(index)
+                removed = True
+            except IndexError:
+                return False
+        else:
+            # A non-numeric key against a list removes the matching element,
+            # e.g. `hermes config unset platform_toolsets.cli.messaging`
+            # drops 'messaging' from the cli toolset list. (#76847)
+            for i, item in enumerate(current):
+                if isinstance(item, str) and item == last:
+                    current.pop(i)
+                    removed = True
+                    break
+            if not removed:
+                return False
     elif isinstance(current, dict):
         if last not in current:
             return False
@@ -2394,22 +2410,39 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 config["mcp_servers"] = raw_mcp_servers
                 _persist_migration(config)
 
-    # ── Always: validate platform_toolsets after migration ──
+    # ── Always: validate + clean platform_toolsets after migration ──
     # A migration (or hand-edit) that leaves an invalid toolset name in
     # platform_toolsets silently disables the affected tools — resolve_toolset()
     # returns [] for an unknown name, so the agent quietly loses tools with no
-    # error or warning. Surface it loudly instead. See #38798.
+    # error or warning. Surface it loudly instead. See #38798. Beyond warning,
+    # drop stale names outright (e.g. the legacy 'messaging' toolset removed in
+    # v0.19) so the per-startup "Unknown toolsets" warning stops firing. #76847
     try:
         from toolsets import validate_toolset
-        from hermes_cli.toolset_validation import validate_platform_toolsets
+        from hermes_cli.toolset_validation import (
+            clean_platform_toolsets,
+            validate_platform_toolsets,
+        )
 
+        raw_ts_config = read_raw_config()
         ts_warnings = validate_platform_toolsets(
-            read_raw_config().get("platform_toolsets"), validate_toolset
+            raw_ts_config.get("platform_toolsets"), validate_toolset
         )
         for w in ts_warnings:
             results["warnings"].append(w)
             if not quiet:
                 print(f"  ⚠ {w}")
+        ts_mapping = raw_ts_config.get("platform_toolsets")
+        if isinstance(ts_mapping, dict) and clean_platform_toolsets(
+            ts_mapping, validate_toolset
+        ):
+            raw_ts_config["platform_toolsets"] = ts_mapping
+            _persist_migration(raw_ts_config)
+            if not quiet:
+                print(
+                    "  ✓ Removed unknown toolset entries from platform_toolsets "
+                    "(run `hermes config migrate` after any toolset rename)"
+                )
     except Exception as _ts_val_err:
         # best-effort; never block migration on validation
         logger.debug("platform_toolsets validation skipped: %s", _ts_val_err)

@@ -57,6 +57,8 @@ def _ns(**kw):
         ignore_existing=False,
         hermes_root=None,
         cwd=None,
+        setup_tcc_identity=False,
+        identity=None,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -488,6 +490,109 @@ def test_relaunchable_fixup_falls_back_to_legacy_adhoc_on_failure(tmp_path, monk
     assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is False
     assert ["xattr", "-cr", str(app)] in calls
     assert ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)] in calls
+
+
+# --- desktop --setup-tcc-identity ------------------------------------------
+
+
+def _fake_proc(cmd, returncode=0, stdout="", stderr=""):
+    return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr=stderr)
+
+
+def test_setup_tcc_identity_creates_cert_imports_and_configures(tmp_path, monkeypatch, capsys):
+    """Fresh identity: openssl generates, security imports, config is written."""
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        cli_main.shutil,
+        "which",
+        lambda name: {"openssl": "/usr/bin/openssl", "security": "/usr/bin/security", "codesign": "/usr/bin/codesign"}.get(name),
+    )
+    monkeypatch.setattr(cli_main.Path, "home", classmethod(lambda cls: tmp_path))
+
+    identity = "Hermes Local Signing"
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        # `security find-identity` on first run reports no matching identity.
+        if cmd[:3] == ["/usr/bin/security", "find-identity", "-p"]:
+            return _fake_proc(cmd, stdout="     0 identities found")
+        return _fake_proc(cmd)
+
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_main, "_desktop_packaged_executable", lambda d: None)
+    monkeypatch.setattr(cli_main, "_desktop_macos_relaunchable_fixup", lambda d: True)
+    # Avoid writing the real user config.
+    monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
+
+    assert cli_main._desktop_macos_setup_tcc_identity(identity) is True
+
+    out = capsys.readouterr().out
+    assert "created and imported self-signed identity" in out
+    assert "set desktop.macos_signing_identity" in out
+    # openssl cert generation + pkcs12 export + security import all ran.
+    assert any(c[0] == "/usr/bin/openssl" and "req" in c for c in calls)
+    assert any(c[0] == "/usr/bin/openssl" and "pkcs12" in c for c in calls)
+    assert any(c[0] == "/usr/bin/security" and c[1] == "import" for c in calls)
+    # Temp files cleaned up.
+    assert not list(tmp_path.glob("hermes-tcc-*"))
+
+
+def test_setup_tcc_identity_skips_generation_when_already_present(tmp_path, monkeypatch, capsys):
+    """Idempotent: an existing identity is reused, not regenerated."""
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        cli_main.shutil,
+        "which",
+        lambda name: {"openssl": "/usr/bin/openssl", "security": "/usr/bin/security", "codesign": "/usr/bin/codesign"}.get(name),
+    )
+    monkeypatch.setattr(cli_main.Path, "home", classmethod(lambda cls: tmp_path))
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:3] == ["/usr/bin/security", "find-identity", "-p"]:
+            return _fake_proc(cmd, stdout='  "Hermes Local Signing" (CSSMERR_TP_NOT_TRUSTED)')
+        return _fake_proc(cmd)
+
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_main, "_desktop_packaged_executable", lambda d: None)
+    monkeypatch.setattr(cli_main, "_desktop_macos_relaunchable_fixup", lambda d: True)
+    monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
+
+    assert cli_main._desktop_macos_setup_tcc_identity("Hermes Local Signing") is True
+
+    out = capsys.readouterr().out
+    assert "already in keychain" in out
+    # No openssl generation, no security import — only find-identity + config.
+    assert not any(c[0] == "/usr/bin/openssl" for c in calls)
+    assert not any(c[0] == "/usr/bin/security" and c[1] == "import" for c in calls)
+
+
+def test_setup_tcc_identity_non_macos_skips(tmp_path, monkeypatch, capsys):
+    """On non-macOS the setup is a no-op failure (not a crash)."""
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+
+    assert cli_main._desktop_macos_setup_tcc_identity() is False
+    assert "macOS-only" in capsys.readouterr().out
+
+
+def test_cmd_gui_setup_tcc_identity_exits_before_build(tmp_path, monkeypatch):
+    """`hermes desktop --setup-tcc-identity` calls the setup and exits 0/1
+    without building or launching the app."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch, platform="darwin")
+
+    with patch("hermes_cli.main._desktop_macos_setup_tcc_identity", return_value=True) as mock_setup, \
+         patch("hermes_cli.main._run_npm_install_deterministic") as mock_install, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(setup_tcc_identity=True, identity="Hermes Local Signing"))
+
+    assert exc.value.code == 0
+    mock_setup.assert_called_once_with("Hermes Local Signing")
+    mock_install.assert_not_called()
 
 
 # --- desktop.* launch options (config.yaml) -------------------------------

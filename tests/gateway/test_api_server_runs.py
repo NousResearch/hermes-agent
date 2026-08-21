@@ -800,3 +800,123 @@ class TestRunsProviderAuthFailure:
                 assert status["status"] == "failed"
                 assert status["error"] == "⚠️ Provider authentication failed: No credentials found for provider 'nous'"
                 assert status["last_event"] == "run.failed"
+
+
+# ---------------------------------------------------------------------------
+# Session-history load for run-addressed clients
+#
+# /v1/runs must hydrate prior turns from the persisted session when the
+# client supplies only a session_id, mirroring /api/sessions/{id}/chat
+# (_handle_session_chat). Otherwise clients that address a session purely by
+# id (e.g. a bridge that reuses session_id="hub-<channel>" across calls) get
+# conversation_history=[] on every turn instead of continuing the session.
+# ---------------------------------------------------------------------------
+
+
+async def _wait_for_completion(cli, run_id, tries=40):
+    status = None
+    for _ in range(tries):
+        status_resp = await cli.get(f"/v1/runs/{run_id}")
+        status = await status_resp.json()
+        if status["status"] in {"completed", "failed"}:
+            return status
+        await asyncio.sleep(0.05)
+    return status
+
+
+class TestRunSessionHistoryLoad:
+    @pytest.mark.asyncio
+    async def test_loads_persisted_history_when_only_session_id(self, adapter):
+        app = _create_runs_app(adapter)
+        prior = [
+            {"role": "user", "content": "first turn"},
+            {"role": "assistant", "content": "first reply"},
+        ]
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create, \
+                 patch.object(
+                     adapter,
+                     "_conversation_history_for_session",
+                     return_value=prior,
+                 ) as mock_hist:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "ok"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "second turn", "session_id": "hub-selftest"},
+                )
+                assert resp.status == 202
+                data = await resp.json()
+                status = await _wait_for_completion(cli, data["run_id"])
+
+        assert status["status"] == "completed"
+        # The persisted session was consulted with the client's session_id ...
+        mock_hist.assert_called_once_with("hub-selftest")
+        # ... and its result was handed to the agent as prior context.
+        assert (
+            mock_agent.run_conversation.call_args.kwargs["conversation_history"]
+            == prior
+        )
+
+    @pytest.mark.asyncio
+    async def test_explicit_history_takes_precedence_over_session_load(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create, \
+                 patch.object(
+                     adapter, "_conversation_history_for_session"
+                 ) as mock_hist:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "ok"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "second turn",
+                        "session_id": "hub-selftest",
+                        "conversation_history": [
+                            {"role": "user", "content": "explicit prior"}
+                        ],
+                    },
+                )
+                assert resp.status == 202
+                data = await resp.json()
+                status = await _wait_for_completion(cli, data["run_id"])
+
+        assert status["status"] == "completed"
+        # Explicit body history wins; the session store is never consulted.
+        mock_hist.assert_not_called()
+        passed = mock_agent.run_conversation.call_args.kwargs["conversation_history"]
+        assert passed == [{"role": "user", "content": "explicit prior"}]
+
+    @pytest.mark.asyncio
+    async def test_no_session_id_does_not_consult_session_store(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create, \
+                 patch.object(
+                     adapter, "_conversation_history_for_session"
+                 ) as mock_hist:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "ok"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "no session"})
+                assert resp.status == 202
+                data = await resp.json()
+                status = await _wait_for_completion(cli, data["run_id"])
+
+        assert status["status"] == "completed"
+        mock_hist.assert_not_called()

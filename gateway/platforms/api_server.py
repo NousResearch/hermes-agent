@@ -7565,6 +7565,18 @@ class APIServerAdapter(BasePlatformAdapter):
                         )
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
+        # Fall back to persisted session history when the client addresses an
+        # existing session but supplies no explicit conversation_history or
+        # previous_response_id chain. Mirrors /api/sessions/{id}/chat
+        # (_handle_session_chat), so run-addressed clients that only pass a
+        # session_id get durable multi-turn memory instead of a cold session
+        # on every call. Lowest precedence: explicit history and the
+        # previous_response_id chain above still win.
+        if not conversation_history:
+            client_session_id = body.get("session_id")
+            if client_session_id:
+                conversation_history = await self._conversation_history_for_session(client_session_id)
+
         session_id = body.get("session_id") or stored_session_id
         route = self._resolve_route(body.get("model"))
         agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)

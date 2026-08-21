@@ -560,6 +560,8 @@ def _export_dump_excluding_session_vars(
     ``mv``. The brace-group redirect is expanded in the current shell,
     keeping both expansions consistent.
     """
+    from agent.delegation_context import SCOPED_SUBPROCESS_ENV_MARKERS
+
     # ${!PREFIX*} is bash 3.2+ name-prefix expansion; empty matches are fine
     # because ``unset`` with only missing names is ignored under 2>/dev/null.
     # Quote caller-provided names so malformed configuration can never become
@@ -582,6 +584,14 @@ def _export_dump_excluding_session_vars(
         # harness value arriving via the process env, exactly like the
         # session-var leak this dump already guards against.
         "AI_AGENT HERMES_AGENT "
+        # Scoped subprocess markers (delegation child, cron session bridge):
+        # injected into subprocess envs by scrub_kanban_env()/cron bridging,
+        # excluded here by construction. The unset list is BUILT from
+        # SCOPED_SUBPROCESS_ENV_MARKERS so a marker added at the injection
+        # side is excluded automatically — persisting one would make every
+        # later `source` re-assert it (#90782's leak class, closed
+        # structurally rather than per-incident).
+        f"{' '.join(SCOPED_SUBPROCESS_ENV_MARKERS)} "
         f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
         "export -p; "
         ") || true; } "

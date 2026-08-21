@@ -846,6 +846,8 @@ class BaseEnvironment(ABC):
         """
         return shlex.quote(path)
 
+    _cwd_probe_command = "pwd -P"
+
     def _wrap_command(self, command: str, cwd: str) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
         re-dumps env vars, and emits CWD markers."""
@@ -953,7 +955,7 @@ class BaseEnvironment(ABC):
         # end with a newline (e.g. printf 'exact'). We'll strip this
         # injected newline in _extract_cwd_from_output.
         parts.append(
-            f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\""
+            f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$({self._cwd_probe_command})\""
         )
         parts.append("exit $__hermes_ec")
 

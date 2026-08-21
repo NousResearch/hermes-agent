@@ -156,6 +156,171 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Create-time blocked rows are also sticky
+# ---------------------------------------------------------------------------
+
+
+def _event_kinds(conn, task_id: str) -> list[str]:
+    return [
+        row["kind"]
+        for row in conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
+            (task_id,),
+        ).fetchall()
+    ]
+
+
+def test_create_time_blocked_task_is_sticky_and_not_claimable(kanban_home: Path) -> None:
+    """``create_task(initial_status='blocked')`` is a deliberate human-ops
+    parking state. It must emit the same durable sticky marker as an explicit
+    ``kanban block`` call, otherwise ``recompute_ready`` can promote it on the
+    next dispatcher tick and the selector can claim it."""
+    with kb.connect() as conn:
+        marker_id = kb.create_task(
+            conn,
+            title="marker-only row",
+            assignee="default",
+            initial_status="blocked",
+        )
+        control_id = kb.create_task(conn, title="dispatchable control", assignee="default")
+
+        assert kb.recompute_ready(conn) == 0
+
+        marker = kb.get_task(conn, marker_id)
+        control = kb.get_task(conn, control_id)
+        assert marker is not None
+        assert marker.status == "blocked"
+        assert control is not None
+        assert control.status == "ready"
+        assert _event_kinds(conn, marker_id) == ["created", "blocked"]
+        assert kb._has_sticky_block(conn, marker_id) is True
+
+        assert kb.claim_task(conn, marker_id) is None
+        claimed_control = kb.claim_task(conn, control_id)
+        assert claimed_control is not None
+        assert claimed_control.id == control_id
+
+
+def test_initial_blocked_child_inherits_parent_notify_after_block_marker(
+    kanban_home: Path,
+) -> None:
+    """Parent-chat subscriptions inherited by a create-time blocked child
+    must start after both the child ``created`` and child ``blocked`` markers.
+    Otherwise the inherited parent notifier will later replay the child's
+    create-time blocked marker as if it were a future child event."""
+    with kb.connect() as conn:
+        parent_id = kb.create_task(conn, title="subscribed parent", assignee="default")
+        conn.execute(
+            """
+            INSERT INTO kanban_notify_subs (
+                task_id, platform, chat_id, thread_id, user_id,
+                notifier_profile, created_at, last_event_id
+            ) VALUES (?, 'discord', 'parent-chat', '', 'u1', 'notifier', 0, 0)
+            """,
+            (parent_id,),
+        )
+        conn.commit()
+
+        child_id = kb.create_task(
+            conn,
+            title="blocked child",
+            assignee="default",
+            parents=[parent_id],
+            initial_status="blocked",
+        )
+
+        rows = conn.execute(
+            """
+            SELECT id, kind
+              FROM task_events
+             WHERE task_id = ?
+             ORDER BY id
+            """,
+            (child_id,),
+        ).fetchall()
+        assert [row["kind"] for row in rows] == ["created", "blocked"]
+        blocked_event_id = next(row["id"] for row in rows if row["kind"] == "blocked")
+
+        sub = conn.execute(
+            """
+            SELECT last_event_id
+              FROM kanban_notify_subs
+             WHERE task_id = ?
+               AND platform = 'discord'
+               AND chat_id = 'parent-chat'
+               AND thread_id = ''
+            """,
+            (child_id,),
+        ).fetchone()
+        assert sub is not None
+        assert sub["last_event_id"] >= blocked_event_id
+
+        future_inherited_parent_events = conn.execute(
+            """
+            SELECT kind
+              FROM task_events
+             WHERE task_id = ?
+               AND id > ?
+             ORDER BY id
+            """,
+            (child_id, sub["last_event_id"]),
+        ).fetchall()
+        assert [row["kind"] for row in future_inherited_parent_events] == []
+
+
+def test_idempotent_initial_blocked_reuse_backfills_legacy_nonsticky_row(
+    kanban_home: Path,
+) -> None:
+    """Retries with the same idempotency key should repair old still-blocked
+    rows created before initial blocked rows wrote a sticky ``blocked`` event.
+    The repair is deliberately narrow: the reused row must still be blocked and
+    the caller must again request ``initial_status='blocked'``."""
+    with kb.connect() as conn:
+        old_id = "t_oldblocked"
+        conn.execute(
+            """
+            INSERT INTO tasks (
+                id, title, assignee, status, created_by, created_at,
+                workspace_kind, idempotency_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                old_id,
+                "old non-sticky blocked row",
+                "default",
+                "blocked",
+                "legacy-test",
+                int(time.time()),
+                "scratch",
+                "reuse-key",
+            ),
+        )
+        kb._append_event(
+            conn,
+            old_id,
+            "created",
+            {"status": "blocked", "assignee": "default", "parents": []},
+        )
+        conn.commit()
+        assert kb._has_sticky_block(conn, old_id) is False
+
+        reused_id = kb.create_task(
+            conn,
+            title="retry same blocked marker",
+            assignee="default",
+            initial_status="blocked",
+            idempotency_key="reuse-key",
+        )
+
+        assert reused_id == old_id
+        old_task = kb.get_task(conn, old_id)
+        assert old_task is not None
+        assert old_task.status == "blocked"
+        assert kb._has_sticky_block(conn, old_id) is True
+        assert _event_kinds(conn, old_id) == ["created", "blocked"]
+
+
+# ---------------------------------------------------------------------------
 # Schema-init recovery on legacy DBs is covered by
 # tests/hermes_cli/test_kanban_db.py::test_connect_migrates_legacy_db_before_optional_column_indexes
 # (landed via #28754 / #28781).  The original PR shipped a duplicate test

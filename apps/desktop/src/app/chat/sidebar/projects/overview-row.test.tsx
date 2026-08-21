@@ -44,6 +44,13 @@ const project = { id: 'p1', label: 'Test D' } as unknown as SidebarProjectTree
 const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"]')
 
 describe('ProjectOverviewRow', () => {
+  it('keeps long project labels single-line truncated', () => {
+    render(<ProjectOverviewRow project={project} />)
+
+    const label = screen.getByText('Test D')
+    expect(label.className).toContain('truncate')
+  })
+
   it('wraps the "new session" add button in a Tip with the project-scoped label', () => {
     render(<ProjectOverviewRow onNewSession={vi.fn()} project={project} />)
 

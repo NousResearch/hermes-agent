@@ -1171,13 +1171,18 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
     timer.start()
 
 
+def _count_orphaned_ws_sessions() -> int:
+    """Count how many registered sessions are currently detached and orphaned."""
+    with _sessions_lock:
+        return sum(1 for s in _sessions.values() if _ws_session_is_orphaned(s))
+
+
 def _close_sessions_for_transport(
     transport, *, end_reason: str = "ws_disconnect"
 ) -> tuple[int, int]:
     """On transport disconnect, reap the sessions that opted into
-    close_on_disconnect (sidecar/dashboard) immediately via the unified
-    ``_close_session_by_id`` path, and re-point the rest back to stdio so later
-    emits don't hit a dead socket.
+    close_on_disconnect (sidecar/dashboard) immediately, and re-point the rest
+    back to the drop sentinel so later emits don't hit a dead socket.
 
     Non-flagged detached sessions are handed to the grace-windowed WS-orphan
     reaper (``_schedule_ws_orphan_reap``): a quick reconnect / session.resume
@@ -1186,25 +1191,76 @@ def _close_sessions_for_transport(
     the single WS-disconnect teardown entry point — there is no second
     independent reap loop in ``handle_ws``.
 
+    The initial snapshot below is taken outside any lock, so each session's
+    close/detach decision is re-validated (transport still matches) under
+    ``_session_resume_lock`` immediately before acting. session.resume's
+    warm-reuse rebind (``_reuse_live_payload`` / ``_live_session_payload``)
+    takes the same lock to repoint ``session["transport"]``, so a reconnect
+    that wins the race is never silently closed or stomped back to the
+    detached sentinel by this (now-stale) transport's teardown.
+
     Returns ``(reaped, detached)`` counts for disconnect-path observability."""
+    # Defense-in-depth (start of flow): snapshot owned sessions and inspect initial state
     with _sessions_lock:
-        owned = [(sid, s) for sid, s in _sessions.items() if s.get("transport") is transport]
+        owned_sids = [sid for sid, s in _sessions.items() if s.get("transport") is transport]
     reaped = 0
     detached = 0
-    for sid, session in owned:
-        if session.get("close_on_disconnect"):
-            _close_session_by_id(sid, end_reason=end_reason)
+
+    def _process_sid(sid: str) -> tuple[dict | None, str | None]:
+        to_td = None
+        to_dt = None
+        with _session_resume_lock:
+            with _sessions_lock:
+                session = _sessions.get(sid)
+                if session is None or session.get("transport") is not transport:
+                    # Already torn down, or reattached to a new transport
+                    # since the snapshot above — leave it alone.
+                    return None, None
+                if session.get("close_on_disconnect"):
+                    to_td = _pop_session_by_id(sid)
+                else:
+                    # Point detached sessions at the drop sentinel (NOT real
+                    # stdio) so _ws_session_is_orphaned recognizes them and the
+                    # grace-reap can actually fire; a standalone `hermes --tui`
+                    # keeps real _stdio.
+                    session["transport"] = _detached_ws_transport
+                    to_dt = sid
+        return to_td, to_dt
+
+    for sid in owned_sids:
+        to_teardown, to_detach = _process_sid(sid)
+        # Slow teardown/timer scheduling happens after releasing both locks —
+        # see the module note above _pop_session_by_id about keeping that work
+        # off _session_resume_lock.
+        if to_teardown is not None:
+            _teardown_popped_session(to_teardown, end_reason=end_reason)
             reaped += 1
-        else:
-            # Point detached sessions at the drop sentinel (NOT real stdio) so
-            # _ws_session_is_orphaned recognizes them and the grace-reap can
-            # actually fire; a standalone `hermes --tui` keeps real _stdio.
-            session["transport"] = _detached_ws_transport
+        elif to_detach is not None:
             detached += 1
             try:
-                _schedule_ws_orphan_reap(sid)
+                _schedule_ws_orphan_reap(to_detach)
             except Exception:
                 pass
+
+    # Defense-in-depth (end of flow): safety sweep for stragglers that may have
+    # attached to the disconnecting transport during the teardown window
+    with _sessions_lock:
+        stragglers = [
+            sid for sid, s in _sessions.items()
+            if s.get("transport") is transport
+        ]
+    for sid in stragglers:
+        to_teardown, to_detach = _process_sid(sid)
+        if to_teardown is not None:
+            _teardown_popped_session(to_teardown, end_reason=end_reason)
+            reaped += 1
+        elif to_detach is not None:
+            detached += 1
+            try:
+                _schedule_ws_orphan_reap(to_detach)
+            except Exception:
+                pass
+
     return reaped, detached
 
 

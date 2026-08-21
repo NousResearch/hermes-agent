@@ -16723,8 +16723,8 @@ def test_session_close_rpc_claims_then_tears_down(monkeypatch):
 def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     seen = []
     monkeypatch.setattr(
-        server, "_close_session_by_id",
-        lambda sid, *, end_reason: bool(seen.append((sid, end_reason))) or True,
+        server, "_teardown_popped_session",
+        lambda session, *, end_reason: bool(seen.append((session["_sid"], end_reason))) or True,
     )
     # Detached session "b" would schedule a real grace-reap threading.Timer that
     # outlives the test; grace=0 short-circuits it so no thread lingers.
@@ -16736,7 +16736,242 @@ def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     try:
         server._close_sessions_for_transport(transport, end_reason="ws_disconnect")
         assert seen == [("a", "ws_disconnect")]  # only the flagged one closed
+        assert "a" not in server._sessions  # claimed/popped
         assert server._sessions["b"]["transport"] is server._detached_ws_transport  # re-pointed
+    finally:
+        server._sessions.clear()
+
+
+def test_close_sessions_for_transport_close_claims_via_pop_sets_closing_blocks_queued_prompt(monkeypatch):
+    """Regression: _close_sessions_for_transport must claim close_on_disconnect
+    sessions via _pop_session_by_id under lock, which marks session["_closing"] = True.
+    This ensures that while _teardown_popped_session is settling active threads,
+    a concurrent or finishing turn cannot dispatch queued prompts via _drain_queued_prompt."""
+    seen = []
+    transport = object()
+    session = {
+        "transport": transport,
+        "close_on_disconnect": True,
+        "history_lock": threading.Lock(),
+        "queued_prompt": {"text": "should not drain"},
+        "running": False,
+    }
+    server._sessions.clear()
+    server._sessions["closing_test"] = session
+
+    def fake_teardown(popped_session, *, end_reason):
+        seen.append((popped_session["_sid"], end_reason))
+        assert popped_session.get("_closing") is True
+        # Verify that _drain_queued_prompt honors the _closing invariant and refuses to dispatch
+        dispatched = server._drain_queued_prompt("req-1", "closing_test", popped_session)
+        assert dispatched is False
+        assert popped_session.get("running") is False
+        assert popped_session.get("queued_prompt") == {"text": "should not drain"}
+        return True
+
+    monkeypatch.setattr(server, "_teardown_popped_session", fake_teardown)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+
+    try:
+        reaped, detached = server._close_sessions_for_transport(
+            transport, end_reason="ws_disconnect"
+        )
+        assert reaped == 1 and detached == 0
+        assert seen == [("closing_test", "ws_disconnect")]
+        assert "closing_test" not in server._sessions
+        assert session["_sid"] == "closing_test"
+        assert session.get("_closing") is True
+    finally:
+        server._sessions.clear()
+
+
+def test_close_sessions_for_transport_skips_session_reattached_mid_teardown(monkeypatch):
+    """Regression for the disconnect/reconnect race: if session.resume rebinds
+    a session onto a new (live) transport between the ownership snapshot and
+    this function's per-session claim, the old transport's teardown must not
+    close it or stomp its transport back to the detached sentinel.
+
+    Unlike a naive version of this test that starts both sessions already on
+    ``new_transport`` (which never even enters ``owned_sids`` and exercises
+    nothing beyond the initial filter), this drives the actual interleaving
+    the fix revalidates against: the session starts on ``old_transport`` so
+    the snapshot captures it, and the reattach happens strictly between that
+    snapshot and this function's per-sid claim under ``_session_resume_lock``
+    — the exact TOCTOU window closed by the WS disconnect/reconnect fix. A
+    ``_RaceLock`` stand-in for the module's real resume lock performs the
+    reattach the first time the loop acquires it, modeling session.resume
+    winning the lock race before teardown's revalidation runs. Against the
+    pre-fix implementation (no per-sid lock/revalidation at all) the injected
+    mutation never fires and the session is torn down/stomped regardless —
+    this test fails there and passes only once the race window is closed."""
+    seen = []
+    reap_scheduled = []
+    monkeypatch.setattr(
+        server, "_teardown_popped_session",
+        lambda session, *, end_reason: bool(seen.append((session["_sid"], end_reason))) or True,
+    )
+    monkeypatch.setattr(
+        server, "_schedule_ws_orphan_reap",
+        lambda sid: reap_scheduled.append(sid),
+    )
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    old_transport = object()
+    new_transport = object()
+    server._sessions.clear()
+    server._sessions["x"] = {"transport": old_transport, "close_on_disconnect": True}
+
+    real_resume_lock = server._session_resume_lock
+
+    class _RaceLock:
+        """Wraps the real resume lock. The first acquire simulates
+        session.resume winning the race: it rebinds "x" onto new_transport
+        right after the snapshot above already captured it as owned by
+        old_transport, but before this function's own per-sid claim (which
+        also needs this lock) gets to revalidate."""
+
+        def __init__(self):
+            self._fired = False
+
+        def __enter__(self):
+            real_resume_lock.acquire()
+            if not self._fired:
+                self._fired = True
+                with server._sessions_lock:
+                    server._sessions["x"]["transport"] = new_transport
+            return self
+
+        def __exit__(self, *exc_info):
+            real_resume_lock.release()
+            return False
+
+    monkeypatch.setattr(server, "_session_resume_lock", _RaceLock())
+    try:
+        reaped, detached = server._close_sessions_for_transport(
+            old_transport, end_reason="ws_disconnect"
+        )
+        assert reaped == 0 and detached == 0
+        assert seen == []  # teardown must not have claimed the reattached session
+        assert reap_scheduled == []
+        assert "x" in server._sessions  # not closed
+        assert server._sessions["x"]["transport"] is new_transport  # not stomped back
+        assert server._sessions["x"].get("_closing") is not True
+    finally:
+        server._sessions.clear()
+
+
+def test_close_sessions_for_transport_skips_reattached_session_on_detach_path(monkeypatch):
+    """Regression for the detach/orphan branch of the disconnect/reconnect race:
+    when close_on_disconnect is False, if session.resume rebinds the session to a
+    new transport between snapshot and locked claim, teardown must neither close it,
+    nor stomp its transport back to _detached_ws_transport, nor schedule orphan reap."""
+    teardown_called = []
+    reap_scheduled = []
+    monkeypatch.setattr(
+        server, "_teardown_popped_session",
+        lambda session, *, end_reason: bool(teardown_called.append((session["_sid"], end_reason))) or True,
+    )
+    monkeypatch.setattr(
+        server, "_schedule_ws_orphan_reap",
+        lambda sid: reap_scheduled.append(sid),
+    )
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    old_transport = object()
+    new_transport = object()
+    server._sessions.clear()
+    server._sessions["detach_race"] = {"transport": old_transport, "close_on_disconnect": False}
+
+    real_resume_lock = server._session_resume_lock
+
+    class _RaceLock:
+        def __init__(self):
+            self._fired = False
+
+        def __enter__(self):
+            real_resume_lock.acquire()
+            if not self._fired:
+                self._fired = True
+                with server._sessions_lock:
+                    server._sessions["detach_race"]["transport"] = new_transport
+            return self
+
+        def __exit__(self, *exc_info):
+            real_resume_lock.release()
+            return False
+
+    monkeypatch.setattr(server, "_session_resume_lock", _RaceLock())
+    try:
+        reaped, detached = server._close_sessions_for_transport(
+            old_transport, end_reason="ws_disconnect"
+        )
+        assert reaped == 0 and detached == 0
+        assert teardown_called == []
+        assert reap_scheduled == []
+        assert "detach_race" in server._sessions
+        assert server._sessions["detach_race"]["transport"] is new_transport
+        assert server._sessions["detach_race"].get("_closing") is not True
+    finally:
+        server._sessions.clear()
+
+
+def test_close_sessions_for_transport_sweeps_stragglers_defense_in_depth(monkeypatch):
+    """Defense-in-depth: if a straggler session attaches to the disconnecting
+    transport mid-teardown, the final sweep at the end of the flow must catch
+    and process it so no session is left pointing to a dead transport."""
+    reap_scheduled = []
+    seen_teardown = []
+    transport = object()
+
+    def fake_teardown(session, *, end_reason):
+        seen_teardown.append((session["_sid"], end_reason))
+        # Simulate a concurrent action injecting a straggler attached to the same transport
+        with server._sessions_lock:
+            server._sessions["straggler"] = {
+                "transport": transport,
+                "close_on_disconnect": False,
+            }
+        return True
+
+    monkeypatch.setattr(server, "_teardown_popped_session", fake_teardown)
+    monkeypatch.setattr(
+        server, "_schedule_ws_orphan_reap",
+        lambda sid: reap_scheduled.append(sid),
+    )
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+
+    server._sessions.clear()
+    server._sessions["s1"] = {"transport": transport, "close_on_disconnect": True}
+
+    try:
+        reaped, detached = server._close_sessions_for_transport(
+            transport, end_reason="ws_disconnect"
+        )
+        assert reaped == 1
+        assert detached == 1
+        assert seen_teardown == [("s1", "ws_disconnect")]
+        assert reap_scheduled == ["straggler"]
+        assert "s1" not in server._sessions
+        assert server._sessions["straggler"]["transport"] is server._detached_ws_transport
+        # Verify no sessions remain attached to the dead transport
+        assert not any(s.get("transport") is transport for s in server._sessions.values())
+    finally:
+        server._sessions.clear()
+
+
+def test_count_orphaned_ws_sessions():
+    """Verify _count_orphaned_ws_sessions correctly counts idle detached WS sessions."""
+    server._sessions.clear()
+    try:
+        assert server._count_orphaned_ws_sessions() == 0
+        server._sessions["live_stdio"] = {"transport": object(), "running": False}
+        server._sessions["live_detached"] = {"transport": server._detached_ws_transport, "running": False}
+        server._sessions["running_detached"] = {"transport": server._detached_ws_transport, "running": True}
+        server._sessions["finalized_detached"] = {
+            "transport": server._detached_ws_transport,
+            "running": False,
+            "_finalized": True,
+        }
+        # Only live_detached meets all criteria for orphaned WS session
+        assert server._count_orphaned_ws_sessions() == 1
     finally:
         server._sessions.clear()
 

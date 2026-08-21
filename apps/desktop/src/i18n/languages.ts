@@ -12,6 +12,12 @@ export const LOCALE_OPTIONS = [
     configValue: 'en'
   },
   {
+    id: 'pt-br',
+    name: 'Português (Brasil)',
+    englishName: 'Portuguese (Brazil)',
+    configValue: 'pt-br'
+  },
+  {
     id: 'zh',
     name: '简体中文',
     englishName: 'Simplified Chinese',

@@ -679,3 +679,18 @@ class TestShippedCatalog:
                     )
 
         assert not problems, "unpinned catalog entries:\n" + "\n".join(problems)
+
+    def test_hugging_face_url_uses_oauth_login_query(self, monkeypatch):
+        """HF only advertises OAuth at ``/mcp?login``. The anonymous ``/mcp``
+        URL serves tools without a WWW-Authenticate challenge, so the desktop
+        suggestion pill's forced-OAuth flow never gets an authorization URL
+        and rolls the config write back.
+        """
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import get_entry
+
+        entry = get_entry("hugging_face")
+        assert entry is not None, "hugging_face catalog entry missing"
+        assert entry.transport.url == "https://huggingface.co/mcp?login"
+        assert entry.auth is not None
+        assert entry.auth.type == "oauth"

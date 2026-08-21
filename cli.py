@@ -1447,7 +1447,12 @@ def _finalize_single_query(cli) -> None:
         except Exception:
             logger.debug("one-shot session store flush failed", exc_info=True)
         _notify_single_query_session_finalize(cli)
-        _run_cleanup(notify_session_finalize=False)
+        try:
+            _run_cleanup(notify_session_finalize=False)
+        finally:
+            close_agent = getattr(getattr(cli, "agent", None), "close", None)
+            if callable(close_agent):
+                close_agent()
     finally:
         cli._release_active_session()
 

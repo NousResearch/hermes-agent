@@ -1,6 +1,7 @@
+import { useStore } from '@nanostores/react'
 import { type ReactNode, useState } from 'react'
 
-import { pickRevealLabel } from '@/app/right-sidebar/file-actions'
+import { Codicon } from '@/components/ui/codicon'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -8,9 +9,18 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { translateNow, useI18n } from '@/i18n'
-import { isDesktopFsRemoteMode, revealDesktopPath } from '@/lib/desktop-fs'
+import { revealDesktopPath } from '@/lib/desktop-fs'
+import { pickRevealLabel } from '@/lib/file-manager'
 import { notify, notifyError } from '@/store/notifications'
+import { $connection } from '@/store/session'
+
+function isUnsafeRevealPath(path: string): boolean {
+  // A transcript-controlled UNC/device path can make Explorer initiate an SMB
+  // connection merely by revealing it. Reveal only local filesystem paths.
+  return /^\\\\(?:[?.]\\|[^\\])/.test(path)
+}
 
 /**
  * Right-click menu over a transcript file affordance ("Open …" fallback link,
@@ -24,13 +34,20 @@ import { notify, notifyError } from '@/store/notifications'
  */
 export function RevealInFolderTrigger({ children, path }: { children: ReactNode; path: string }) {
   const { t } = useI18n()
+  const connection = useStore($connection)
   const [open, setOpen] = useState(false)
 
-  if (isDesktopFsRemoteMode()) {
+  if (connection?.mode === 'remote') {
     return <>{children}</>
   }
 
   const reveal = () => {
+    if (isUnsafeRevealPath(path)) {
+      notifyError(new Error('Unsafe path'), translateNow('errors.genericFailure'))
+
+      return
+    }
+
     void revealDesktopPath(path).catch(error => notifyError(error, translateNow('errors.genericFailure')))
   }
 
@@ -42,15 +59,30 @@ export function RevealInFolderTrigger({ children, path }: { children: ReactNode;
   }
 
   return (
-    <ContextMenu onOpenChange={setOpen} open={open}>
-      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-      <ContextMenuContent onCloseAutoFocus={event => event.preventDefault()}>
-        <ContextMenuItem onSelect={reveal}>
-          {pickRevealLabel(t.fileMenu.revealFinder, t.fileMenu.revealExplorer, t.fileMenu.revealFileManager)}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem onSelect={copyPath}>{t.fileMenu.copyPath}</ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
+    <span className="inline-flex max-w-full items-start gap-1">
+      <ContextMenu onOpenChange={setOpen} open={open}>
+        <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+        <ContextMenuContent onCloseAutoFocus={event => event.preventDefault()}>
+          <ContextMenuItem onSelect={reveal}>
+            {pickRevealLabel(t.fileMenu.revealFinder, t.fileMenu.revealExplorer, t.fileMenu.revealFileManager)}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={copyPath}>{t.fileMenu.copyPath}</ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button aria-label={t.fileMenu.actions} className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground" type="button">
+            <Codicon name="kebab-vertical" size="0.875rem" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onSelect={reveal}>
+            {pickRevealLabel(t.fileMenu.revealFinder, t.fileMenu.revealExplorer, t.fileMenu.revealFileManager)}
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={copyPath}>{t.fileMenu.copyPath}</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </span>
   )
 }

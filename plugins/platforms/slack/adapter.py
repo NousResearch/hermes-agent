@@ -2564,7 +2564,15 @@ class SlackAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         fallback_text: Optional[str] = None,
     ) -> SendResult:
-        """Start or update a Slack-native plan/task progress stream."""
+        """Start or update a Slack-native plan/task progress stream.
+
+        ``fallback_text`` is accepted for call-site compatibility but is
+        deliberately NOT used: chat.appendStream rejects markdown_text
+        alongside chunks (#87743), and the gateway caller keeps its own
+        editable-text fallback rail (``_send_or_edit_fallback``) that
+        activates when this native call itself fails — so the text has no
+        legitimate place on the append payload.
+        """
         if not self._app:
             return SendResult(success=False, error="Not connected")
         if not tasks:
@@ -2640,8 +2648,13 @@ class SlackAdapter(BasePlatformAdapter):
                     "ts": stream.stream_ts,
                     "chunks": chunks,
                 }
-                if fallback_text:
-                    append_payload["markdown_text"] = fallback_text
+                # Do NOT attach markdown_text here: chat.appendStream
+                # rejects a request carrying both markdown_text and chunks
+                # with `cannot_provide_both_markdown_text_and_chunks`, which
+                # made every native task-card update fail and downgraded
+                # each turn to the plain-text fallback (#87743). The chunks
+                # are the native rendering; the caller keeps its own
+                # editable-text fallback rail for when this call fails.
                 await client.api_call("chat.appendStream", json=append_payload)
                 return SendResult(success=True, message_id=stream.stream_ts)
             except Exception as exc:  # pragma: no cover - defensive logging

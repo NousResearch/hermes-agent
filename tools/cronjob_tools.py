@@ -1213,7 +1213,6 @@ def cronjob(
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
-    reasoning_effort: Optional[str] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
 ) -> str:
@@ -1314,7 +1313,6 @@ def cronjob(
                     attach_to_session=attach_to_session,
                     monitor_script=_normalize_optional_job_value(monitor_script),
                     monitor_url=_normalize_optional_job_value(monitor_url),
-                    reasoning_effort=reasoning_effort,
                 )
             except CronSchedulerRegistrationError as exc:
                 _partial = exc.to_dict()
@@ -1497,10 +1495,6 @@ def cronjob(
                 updates["provider"] = _normalize_optional_job_value(provider)
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
-            if reasoning_effort is not None:
-                # update_job validates against the canonical grammar and
-                # normalizes; empty string clears the pin.
-                updates["reasoning_effort"] = reasoning_effort
             # Re-validate the EFFECTIVE provider/base_url on EVERY update, not
             # only when this update supplies provider/base_url. A job persisted
             # before this guard (or written directly to the jobs store) may
@@ -1755,10 +1749,6 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
                 "type": "boolean",
                 "description": "When True, this job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context instead of asking 'what is that?'. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened for the job and its replies; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM session. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. Only the origin chat is touched (never fan-out targets); no effect when deliver='local'."
             },
-            "reasoning_effort": {
-                "type": "string",
-                "description": "Optional per-job reasoning (thinking) effort pin. One of: none, minimal, low, medium, high, xhigh, max, ultra. When set, it overrides BOTH the global agent.reasoning_effort and per-model agent.reasoning_overrides for this job's runs; 'none' disables thinking. Levels above what the job's resolved model supports are clamped or omitted by the provider at request time, so pinning e.g. 'xhigh' on a model that caps at 'high' runs at 'high'. Inert with no_agent=True (no LLM call). Omit to follow config resolution. On update, pass empty string to clear the pin."
-            },
         },
         "required": ["action"]
     }
@@ -1819,11 +1809,6 @@ registry.register(
         no_agent=args.get("no_agent"),
         monitor_script=args.get("monitor_script"),
         monitor_url=args.get("monitor_url"),
-        # reasoning_effort IS agent-settable (unlike model/provider above):
-        # it cannot redirect spend to a different model — it only tunes the
-        # thinking level within whatever model the job already resolves to,
-        # and the transports clamp unsupported levels at request time.
-        reasoning_effort=args.get("reasoning_effort"),
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
     ),

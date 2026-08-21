@@ -29,6 +29,37 @@ def test_env_can_disable(clear_kanban_env):
     assert build_kanban_stop_nudge(messages=[]) is None
 
 
+def test_no_nudge_for_delegated_child(clear_kanban_env):
+    """A delegate_task child has the kanban toolset stripped, so the guard
+    must not demand a terminal board call from it.
+
+    The child still inherits HERMES_KANBAN_TASK: the env scrub only
+    materializes across a subprocess boundary and in-process children
+    never fork.
+    """
+    from agent.delegation_context import delegated_child_context
+
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_delegated")
+
+    assert kanban_stop_nudge_enabled() is True  # parent worker: unchanged
+
+    with delegated_child_context():
+        assert kanban_stop_nudge_enabled() is False
+        assert build_kanban_stop_nudge(messages=[], attempts=0) is None
+
+    # leaving the child scope restores the parent's behaviour
+    assert kanban_stop_nudge_enabled() is True
+
+
+def test_delegated_child_guard_fails_open(clear_kanban_env, monkeypatch):
+    """If the delegation module cannot be imported, behave as before."""
+    import agent.kanban_stop as ks
+
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+    monkeypatch.setattr(ks, "_is_delegated_child_context", lambda: False)
+    assert kanban_stop_nudge_enabled() is True
+
+
 def test_nudge_when_no_terminal_tool(clear_kanban_env):
     clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_46be8aa5")
     messages = [

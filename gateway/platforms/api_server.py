@@ -300,6 +300,49 @@ def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
         return default
 
 
+def _message_text_for_display(content: Any) -> str:
+    """Coerce a message ``content`` (str / list / dict) into plain text.
+
+    Mirrors ``tui_gateway.server._coerce_message_text``: provider-side content
+    may be a plain string, a list of multimodal parts, or a structured dict.
+    List/dict shapes are flattened so display projections (like
+    ``_is_display_hidden_marker``) can sniff the text reliably without
+    crashing on non-string content.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            _message_text_for_display(part.get("text") if isinstance(part, dict) else part)
+            for part in content
+        )
+    if isinstance(content, dict):
+        text = content.get("text")
+        if isinstance(text, str):
+            return text
+        image = content.get("image_url")
+        if isinstance(image, dict):
+            return str(image.get("url") or "")
+        if isinstance(image, str):
+            return image
+        return ""
+    return str(content)
+
+
+def _is_display_hidden_marker(role: Any, text: str) -> bool:
+    """Return True when a persisted row is model-facing scaffolding, not a user turn.
+
+    Mirrors ``tui_gateway.server._is_display_hidden_marker``: gateway
+    bookkeeping notices (model-switch, personality, continuation nudges) are
+    persisted as ``role=user`` ``[System: …]`` rows so strict providers accept
+    them mid-history.  They are runtime metadata, not user turns, and must not
+    render as a user bubble in any client transcript (desktop, TUI, CLI, web).
+    """
+    return role == "user" and text.lstrip().startswith("[System:")
+
+
 _TRUE_REQUEST_BOOL_STRINGS = frozenset({"1", "true", "yes", "on"})
 _FALSE_REQUEST_BOOL_STRINGS = frozenset({"0", "false", "no", "off"})
 
@@ -4462,15 +4505,32 @@ class APIServerAdapter(BasePlatformAdapter):
             offset=offset,
             latest=latest_page,
         )
+        # Display projection: model-facing scaffolding rows (continuation
+        # nudges, model-switch/personality notices, compaction checkpoints)
+        # are persisted as role=user "[System: …]" rows (or carry an explicit
+        # display_kind="hidden") so strict providers accept them mid-history.
+        # They are runtime metadata, not user turns — never render them as
+        # user bubbles. Mirrors tui_gateway.server._history_to_messages.
+        visible = []
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            if m.get("display_kind") == "hidden":
+                continue
+            if _is_display_hidden_marker(
+                m.get("role"), _message_text_for_display(m.get("content"))
+            ):
+                continue
+            visible.append(m)
         return web.json_response({
             "object": "list",
             "session_id": resolved_id,
-            "data": [self._message_response(m) for m in messages],
+            "data": [self._message_response(m) for m in visible],
             "pagination": {
                 "limit": limit,
                 "offset": offset,
                 "order": order or ("latest" if default_page else "oldest"),
-                "returned": len(messages),
+                "returned": len(visible),
             },
         })
 

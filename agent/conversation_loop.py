@@ -8014,11 +8014,26 @@ def run_conversation(
                     final_response = _join_truncated_parts([*truncated_response_parts, final_response])
                     truncated_response_parts = []
                     length_continue_retries = 0
-                    # The continuation recovered, so the fragments stay in the transcript.
-                    for _frag in messages:
-                        if isinstance(_frag, dict):
-                            _frag.pop("_length_continuation_fragment", None)
-                            _frag.pop("_length_continuation_nudge", None)
+                    # The continuation recovered and the content is already
+                    # folded into final_response via truncated_response_parts.
+                    # Strip the trailing scaffolding pair (interim assistant
+                    # fragment + [System: ...] continuation nudge) so the
+                    # transcript doesn't carry an assistant->assistant
+                    # adjacency that models treat as a real user turn on the
+                    # next query.  Only strip the trailing-most pair;
+                    # multiple previous recovery rounds are each cleaned up
+                    # as the success path reaches this point.
+                    if (
+                        len(messages) >= 2
+                        and isinstance(messages[-1], dict)
+                        and isinstance(messages[-2], dict)
+                        and messages[-1].get("role") == "user"
+                        and isinstance(messages[-1].get("content"), str)
+                        and messages[-1]["content"].lstrip().startswith("[System:")
+                        and messages[-2].get("role") == "assistant"
+                    ):
+                        messages.pop()
+                        messages.pop()
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
                 

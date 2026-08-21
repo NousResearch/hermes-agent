@@ -117,6 +117,58 @@ async def test_session_messages_default_to_latest_bounded_page(adapter, session_
 
 
 @pytest.mark.asyncio
+async def test_session_messages_hide_display_scaffolding(adapter, session_db):
+    """[System: ...] continuation nudges / display_kind=hidden rows never render."""
+    session_id = session_db.create_session("hidden-scaffolding", "api_server")
+    session_db.replace_messages(
+        session_id,
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {
+                "role": "user",
+                "content": (
+                    "[System: Your previous response was truncated by the output "
+                    "length limit. Continue exactly where you left off. Do not "
+                    "restart or repeat prior text. Finish the answer directly.]"
+                ),
+            },
+            {"role": "assistant", "content": "the rest of the answer"},
+            {
+                "role": "user",
+                "content": "[System: The previous response was cut off by a network error mid-stream.]",
+            },
+            {"role": "assistant", "content": "more"},
+            {"role": "user", "content": "next question"},
+            {"role": "user", "content": "hidden row", "display_kind": "hidden"},
+            {"role": "assistant", "content": "final"},
+        ],
+    )
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(f"/api/sessions/{session_id}/messages")
+        assert resp.status == 200
+        payload = await resp.json()
+
+    rendered = [m["content"] for m in payload["data"]]
+    assert rendered == [
+        "hello",
+        "hi",
+        "the rest of the answer",
+        "more",
+        "next question",
+        "final",
+    ]
+    # No user bubble may ever carry a [System: ...] scaffolding marker.
+    assert not any(
+        m["role"] == "user" and str(m.get("content", "")).lstrip().startswith("[System:")
+        for m in payload["data"]
+    )
+    assert "hidden row" not in rendered
+
+
+@pytest.mark.asyncio
 async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeypatch):
     """API-server request sessions should reach tools and terminal subprocess env."""
     monkeypatch.setenv("HERMES_SESSION_ID", "stale-session")

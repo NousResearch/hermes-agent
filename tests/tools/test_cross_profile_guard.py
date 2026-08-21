@@ -82,6 +82,19 @@ class TestWriteFileCrossProfileGuard:
         # File untouched.
         assert target.read_text() == original
 
+    def test_cross_profile_True_bypass(self, fake_hermes):
+        """Explicit override after user direction must succeed."""
+        from tools.file_tools import read_file_tool, write_file_tool
+        target = fake_hermes["root"] / "skills" / "shared-skill" / "SKILL.md"
+        read = json.loads(read_file_tool(str(target), task_id="cross_profile_bypass"))
+        assert not read.get("error"), f"baseline read must succeed: {read}"
+        result_json = write_file_tool(
+            str(target), "user-directed override",
+            task_id="cross_profile_bypass", cross_profile=True,
+        )
+        result = json.loads(result_json)
+        assert not result.get("error"), f"cross_profile=True must succeed: {result}"
+        assert target.read_text() == "user-directed override"
 
     def test_non_hermes_path_unaffected(self, fake_hermes, tmp_path):
         from tools.file_tools import write_file_tool

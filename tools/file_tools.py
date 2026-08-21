@@ -1140,6 +1140,10 @@ _file_ops_cache: dict = {}
 #                      external changes between the agent's read and write.
 #                      Updated after successful writes so consecutive edits
 #                      by the same task don't trigger false warnings.
+#   "full_write_baselines": set of resolved paths whose whole-file content is
+#                           current enough for write_file full replacement.
+#                           Populated by non-partial read_file and successful
+#                           write_file only; patch does not qualify.
 _read_tracker_lock = threading.Lock()
 _read_tracker: dict = {}
 
@@ -1189,6 +1193,7 @@ def _reset_patch_failures(task_id: str, resolved_paths: list) -> None:
 _READ_HISTORY_CAP = 500       # set; used only by get_read_files_summary
 _DEDUP_CAP = 1000             # dict; skip-identical-reread guard
 _READ_TIMESTAMPS_CAP = 1000   # dict; external-edit detection for write/patch
+_FULL_WRITE_BASELINES_CAP = 1000  # set; read-before-write guard for write_file
 _NOT_FOUND_CAP = 500          # dict; per-task negative-result cache for missing paths
 _NOT_FOUND_TTL_SECONDS = 60.0 # short TTL — a path that didn't exist may be created soon
 _READ_DEDUP_STATUS_MESSAGE = (
@@ -1211,6 +1216,8 @@ def _cap_read_tracker_data(task_data: dict) -> None:
         skip on a future re-read (the file gets re-sent once) and
         external-edit mtime comparison (the write/patch falls back to
         a non-mtime check).  Both are graceful degradations, not bugs.
+      * ``full_write_baselines`` (set): pop arbitrary entries on overflow.
+        Evicted entries require a future read_file before full overwrite.
     """
     rh = task_data.get("read_history")
     if rh is not None and len(rh) > _READ_HISTORY_CAP:
@@ -1248,6 +1255,15 @@ def _cap_read_tracker_data(task_data: dict) -> None:
             except (StopIteration, KeyError):
                 break
 
+    baselines = task_data.get("full_write_baselines")
+    if baselines is not None and len(baselines) > _FULL_WRITE_BASELINES_CAP:
+        excess = len(baselines) - _FULL_WRITE_BASELINES_CAP
+        for _ in range(excess):
+            try:
+                baselines.pop()
+            except KeyError:
+                break
+
     nf = task_data.get("not_found")
     if nf is not None and len(nf) > _NOT_FOUND_CAP:
         excess = len(nf) - _NOT_FOUND_CAP
@@ -1256,6 +1272,19 @@ def _cap_read_tracker_data(task_data: dict) -> None:
                 nf.pop(next(iter(nf)))
             except (StopIteration, KeyError):
                 break
+
+
+def _new_read_tracker_task() -> dict:
+    return {
+        "last_key": None,
+        "consecutive": 0,
+        "read_history": set(),
+        "dedup": {},
+        "dedup_hits": {},
+        "read_timestamps": {},
+        "full_write_baselines": set(),
+        "not_found": {},
+    }
 
 
 def _check_not_found_cache(op: str, resolved_str: str, task_id: str) -> str | None:
@@ -1312,11 +1341,7 @@ def _record_not_found(op: str, resolved_str: str, task_id: str, error_json: str)
     """Cache a not-found error so the next *op* call for *resolved_str* skips I/O."""
     import time
     with _read_tracker_lock:
-        task_data = _read_tracker.setdefault(task_id, {
-            "last_key": None, "consecutive": 0,
-            "read_history": set(), "dedup": {},
-            "dedup_hits": {}, "read_timestamps": {},
-        })
+        task_data = _read_tracker.setdefault(task_id, _new_read_tracker_task())
         nf = task_data.setdefault("not_found", {})
         nf[(op, resolved_str)] = (time.monotonic(), error_json)
         _cap_read_tracker_data(task_data)
@@ -1793,11 +1818,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         resolved_str = str(_resolved)
         dedup_key = (resolved_str, offset, limit)
         with _read_tracker_lock:
-            task_data = _read_tracker.setdefault(task_id, {
-                "last_key": None, "consecutive": 0,
-                "read_history": set(), "dedup": {},
-                "dedup_hits": {}, "read_timestamps": {},
-            })
+            task_data = _read_tracker.setdefault(task_id, _new_read_tracker_task())
             # Backward-compat for pre-existing tracker entries that predate
             # dedup_hits/read_timestamps (long-lived task or crossed an
             # upgrade boundary).
@@ -1805,6 +1826,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 task_data["dedup_hits"] = {}
             if "read_timestamps" not in task_data:
                 task_data["read_timestamps"] = {}
+            if "full_write_baselines" not in task_data:
+                task_data["full_write_baselines"] = set()
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
 
         if cached_mtime is not None:
@@ -1906,8 +1929,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             content_len = len(trimmed)
 
         # ── Redact secrets (after guard check to skip oversized content) ──
+        redaction_altered_content = False
         if result.content:
+            content_before_redaction = result.content
             result.content = redact_sensitive_text(result.content, file_read=True)
+            redaction_altered_content = result.content != content_before_redaction
             result_dict["content"] = result.content
 
         # Large-file hint: if the file is big and the caller didn't ask
@@ -1953,6 +1979,14 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             except OSError:
                 pass  # Can't stat — skip tracking for this entry
 
+            _partial = (offset > 1) or bool(result_dict.get("truncated"))
+            # Full-file write_file overwrites are safe only after the agent saw
+            # complete, round-trippable contents.  File-read redaction returns a
+            # non-reusable sentinel for secrets, so a redacted read must not
+            # bless a later full overwrite that would persist that sentinel.
+            if not _partial and not redaction_altered_content:
+                task_data.setdefault("full_write_baselines", set()).add(resolved_str)
+
             # Bound the per-task containers so a long CLI session doesn't
             # accumulate megabytes of dict/set state.  See _cap_read_tracker_data.
             _cap_read_tracker_data(task_data)
@@ -1965,7 +1999,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         # Outside the _read_tracker_lock so the registry's own locking
         # isn't nested under ours.
         try:
-            _partial = (offset > 1) or bool(result_dict.get("truncated"))
             file_state.record_read(task_id, resolved_str, partial=_partial)
         except Exception:
             logger.debug("file_state.record_read failed", exc_info=True)
@@ -2012,12 +2045,16 @@ def reset_file_dedup(task_id: str = None):
                     task_data["dedup"].clear()
                 if "dedup_hits" in task_data:
                     task_data["dedup_hits"].clear()
+                if "full_write_baselines" in task_data:
+                    task_data["full_write_baselines"].clear()
         else:
             for task_data in _read_tracker.values():
                 if "dedup" in task_data:
                     task_data["dedup"].clear()
                 if "dedup_hits" in task_data:
                     task_data["dedup_hits"].clear()
+                if "full_write_baselines" in task_data:
+                    task_data["full_write_baselines"].clear()
 
 
 def notify_other_tool_call(task_id: str = "default"):
@@ -2103,10 +2140,63 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
     except (OSError, ValueError):
         return
     with _read_tracker_lock:
-        task_data = _read_tracker.get(task_id)
-        if task_data is not None:
-            task_data.setdefault("read_timestamps", {})[resolved] = current_mtime
-            _cap_read_tracker_data(task_data)
+        task_data = _read_tracker.setdefault(task_id, _new_read_tracker_task())
+        task_data.setdefault("read_timestamps", {})[resolved] = current_mtime
+        _cap_read_tracker_data(task_data)
+
+
+def _mark_full_write_baseline(resolved: str, task_id: str) -> None:
+    """Mark *resolved* safe for future same-task write_file overwrites.
+
+    A full-write baseline means the task has either read the whole file via
+    read_file or successfully replaced the whole file via write_file.  Targeted
+    patch operations intentionally do not call this helper.
+    """
+    with _read_tracker_lock:
+        task_data = _read_tracker.setdefault(task_id, _new_read_tracker_task())
+        task_data.setdefault("full_write_baselines", set()).add(str(resolved))
+        _cap_read_tracker_data(task_data)
+
+
+def _has_full_write_baseline(resolved: str, task_id: str) -> bool:
+    with _read_tracker_lock:
+        task_data = _read_tracker.get(task_id) or {}
+        return str(resolved) in task_data.get("full_write_baselines", set())
+
+
+def _existing_file_requires_read(resolved: str, task_id: str) -> str | None:
+    """Return a refusal reason when write_file would overwrite unread content."""
+    resolved_s = str(resolved)
+    if _has_full_write_baseline(resolved_s, task_id):
+        return None
+    try:
+        if Path(resolved_s).exists():
+            return (
+                f"{resolved_s} exists but has not been read by this agent in "
+                "the current session. Read the file before using write_file "
+                "so a stale conversation copy cannot overwrite current disk "
+                "content."
+            )
+    except OSError:
+        return None
+    return None
+
+
+def _stale_write_refusal(path: str, reason: str, resolved: str | None = None) -> dict:
+    result = {
+        "error": (
+            f"Refusing to overwrite {path}: {reason} "
+            "The file was NOT modified. Use read_file to reload the current "
+            "contents, merge the requested change, then call write_file again. "
+            "For small edits, prefer patch so existing unrelated changes are "
+            "preserved."
+        ),
+        "stale_write_blocked": True,
+        "path": path,
+    }
+    if resolved:
+        result["resolved_path"] = resolved
+    return result
 
 
 def _check_file_staleness(filepath: str, task_id: str) -> str | None:
@@ -2263,14 +2353,15 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
 
         if _resolved is None:
             stale_warning = _check_file_staleness(path, task_id)
+            if stale_warning:
+                return json.dumps(_stale_write_refusal(path, stale_warning), ensure_ascii=False)
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(path, content)
             result_dict = result.to_dict()
-            if stale_warning:
-                result_dict["_warning"] = stale_warning
             if not result_dict.get("error"):
                 _mark_verification_stale(task_id, [path], session_id=session_id)
-            _update_read_timestamp(path, task_id)
+                _update_read_timestamp(path, task_id)
+                _mark_full_write_baseline(path, task_id)
             return json.dumps(result_dict, ensure_ascii=False)
 
         # Serialize the read→modify→write region per-path so concurrent
@@ -2284,12 +2375,17 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # Workspace-divergence warning: relative path resolving outside the
             # terminal's cwd (the worktree-cwd bug). Lowest priority of the three.
             cwd_warning = _path_resolution_warning(path, Path(_resolved), task_id)
+            write_blocker = cross_warning or stale_warning or _existing_file_requires_read(_resolved, task_id)
+            if write_blocker:
+                return json.dumps(
+                    _stale_write_refusal(path, write_blocker, resolved=_resolved),
+                    ensure_ascii=False,
+                )
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(_resolved, content)
             result_dict = result.to_dict()
-            effective_warning = cross_warning or stale_warning or cwd_warning
-            if effective_warning:
-                result_dict["_warning"] = effective_warning
+            if cwd_warning:
+                result_dict["_warning"] = cwd_warning
             # Always report the ABSOLUTE path actually written, so a wrong-cwd
             # mismatch is visible in the response instead of silently routing
             # the edit to the wrong checkout.
@@ -2297,10 +2393,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             if not result_dict.get("error"):
                 result_dict["files_modified"] = [_resolved]
                 _mark_verification_stale(task_id, [_resolved], session_id=session_id)
-            # Refresh stamps after the successful write so consecutive
-            # writes by this task don't trigger false staleness warnings.
-            _update_read_timestamp(path, task_id)
-            if not result_dict.get("error"):
+                # Refresh stamps after the successful write so consecutive
+                # writes by this task don't trigger false staleness warnings.
+                _update_read_timestamp(path, task_id)
+                _mark_full_write_baseline(_resolved, task_id)
                 file_state.note_write(task_id, _resolved)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
@@ -2665,7 +2761,7 @@ READ_FILE_SCHEMA = {
 
 WRITE_FILE_SCHEMA = {
     "name": "write_file",
-    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
+    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For existing files, call read_file first; in host-visible/local workspaces, write_file refuses existing files without a current read/write baseline and refuses known-stale writes. If refused, call read_file, merge the current contents, then retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
     "parameters": {
         "type": "object",
         "properties": {

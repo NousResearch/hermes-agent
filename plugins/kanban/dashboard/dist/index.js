@@ -629,12 +629,25 @@
     const [configApplied, setConfigApplied] = useState(false);
 
     const [selectedTaskId, setSelectedTaskId] = useState(null);
+    const drawerOpenerRef = useRef(null);
     const [selectedIds, setSelectedIds] = useState(() => new Set());
     const [lastSelectedId, setLastSelectedId] = useState(null);
     const [failedIds, setFailedIds] = useState(() => new Set());
     const [draggingTaskId, setDraggingTaskId] = useState(null);
     const handleDragStart = useCallback(function (taskId) { setDraggingTaskId(taskId); }, []);
     const handleDragEnd = useCallback(function () { setDraggingTaskId(null); }, []);
+    const openTaskDrawer = useCallback(function (taskId) {
+      drawerOpenerRef.current = document.activeElement;
+      setSelectedTaskId(taskId);
+    }, []);
+    const closeTaskDrawer = useCallback(function () {
+      const opener = drawerOpenerRef.current;
+      setSelectedTaskId(null);
+      drawerOpenerRef.current = null;
+      if (opener && opener.isConnected && typeof opener.focus === "function") {
+        requestAnimationFrame(function () { opener.focus(); });
+      }
+    }, []);
     // Per-task event counter incremented whenever the WS stream reports
     // a new event for that task id. TaskDrawer useEffect-depends on its
     // own task's counter so it reloads itself on live events instead of
@@ -1283,7 +1296,7 @@
         h(OrchestrationPanel, null),
         h(AttentionStrip, {
           boardData,
-          onOpen: setSelectedTaskId,
+          onOpen: openTaskDrawer,
         }),
         h(BoardToolbar, {
           board: boardData,
@@ -1328,15 +1341,15 @@
           onMoveSelected: moveSelected,
           onDelete: deleteTask,
           onDeleteSelected: deleteSelected,
-          onOpen: setSelectedTaskId,
+          onOpen: openTaskDrawer,
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
         }),
         selectedTaskId ? h(TaskDrawer, {
           taskId: selectedTaskId,
           boardSlug: board,
-          onClose: function () { setSelectedTaskId(null); },
-          onOpenTask: setSelectedTaskId,
+          onClose: closeTaskDrawer,
+          onOpenTask: openTaskDrawer,
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
@@ -2707,7 +2720,8 @@
       const column = rail.querySelector(`[data-kanban-column="${columnName}"]`);
       if (!column) return;
       setActiveColumn(columnName);
-      rail.scrollTo({ left: column.offsetLeft, behavior: "smooth" });
+      const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      rail.scrollTo({ left: column.offsetLeft, behavior: reduceMotion ? "auto" : "smooth" });
       column.focus({ preventScroll: true });
     }, []);
 

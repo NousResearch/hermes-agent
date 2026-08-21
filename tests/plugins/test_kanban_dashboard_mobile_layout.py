@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -80,6 +81,11 @@ window.__HERMES_PLUGIN_SDK__ = {
     if (url.includes('/config')) return {lane_by_profile: true, render_markdown: true};
     if (url.includes('/boards')) return {boards: [{slug: 'default', name: 'Default'}], current: 'default'};
     if (url.includes('/board')) return window.__BOARD_FIXTURE__;
+    if (url.includes('/tasks/')) {
+      const id = decodeURIComponent(url.split('/tasks/')[1].split('?')[0]);
+      const task = window.__BOARD_FIXTURE__.columns.flatMap(column => column.tasks).find(item => item.id === id);
+      return {task, comments: [], events: [], attachments: []};
+    }
     return {};
   },
   // Keep the event stream pending: deterministic fixtures do not need a socket,
@@ -115,15 +121,45 @@ window.__HERMES_PLUGINS__ = {register(_name, Component) { createRoot(document.qu
     return page
 
 
-def _run_browser(page: Path, width: int, screenshot: Path | None = None) -> dict[str, Any]:
+def _run_browser(
+    page: Path,
+    width: int,
+    screenshot: Path | None = None,
+    *,
+    reduced_motion: bool = False,
+) -> dict[str, Any]:
     repo = Path(__file__).resolve().parents[2]
     playwright = repo / "node_modules" / "playwright"
+    browser_executable = next(
+        (path for name in ("chromium", "chromium-browser", "google-chrome", "msedge") if (path := shutil.which(name))),
+        "",
+    )
     probe = page.parent / f"probe-{width}.cjs"
     probe.write_text(
         """const { chromium } = require(process.argv[2]);
 (async () => {
-  const browser = await chromium.launch({headless:true, executablePath:'/usr/bin/chromium', args:['--no-sandbox']});
-  const context = await browser.newContext({viewport:{width:Number(process.argv[4]),height:900}});
+  let browser;
+  try {
+    browser = await chromium.launch({headless:true});
+  } catch (error) {
+    if (!String(error).includes("Executable doesn't exist")) throw error;
+    if (!process.argv[7]) throw error;
+    browser = await chromium.launch({headless:true, executablePath:process.argv[7]});
+  }
+  const context = await browser.newContext({
+    viewport:{width:Number(process.argv[4]),height:900},
+    reducedMotion:process.argv[6] === 'reduce' ? 'reduce' : 'no-preference'
+  });
+  await context.addInitScript(() => {
+    window.__KANBAN_SCROLL_BEHAVIORS__ = [];
+    const original = Element.prototype.scrollTo;
+    Element.prototype.scrollTo = function (...args) {
+      if (this.classList?.contains('hermes-kanban-columns')) {
+        window.__KANBAN_SCROLL_BEHAVIORS__.push(args[0]?.behavior || null);
+      }
+      return original.apply(this, args);
+    };
+  });
   const page = await context.newPage();
   await page.goto(process.argv[3]);
   page.on('console', msg => console.error('browser:', msg.text()));
@@ -175,19 +211,49 @@ def _run_browser(page: Path, width: int, screenshot: Path | None = None) -> dict
     .find(el => el.textContent.includes('Lanes by profile')).querySelector('input').click());
   console.error('step: grouping');
   const groupedAfter = await page.locator('[data-kanban-column="running"] .hermes-kanban-lane').count();
-  const navTargets = await page.locator('.hermes-kanban-column-nav-item').evaluateAll(xs => xs.map(x => x.getBoundingClientRect().height));
+  const rects = xs => xs.map(x => {
+    const r = x.getBoundingClientRect(); return {width:r.width,height:r.height};
+  });
+  const navTargets = await page.locator('.hermes-kanban-column-nav-item').evaluateAll(rects);
+  const toolbarTargets = await page.locator('.hermes-kanban-toolbar input:not([type="checkbox"]), .hermes-kanban-toolbar select, .hermes-kanban-toolbar button, .hermes-kanban-toolbar-toggle').evaluateAll(rects);
+  const addTargets = await page.locator('.hermes-kanban-column-add').evaluateAll(rects);
+  const triageBody = page.locator('[data-kanban-column="triage"] .hermes-kanban-column-body');
+  const verticalScroll = await triageBody.evaluate(el => {
+    const before = el.scrollTop; el.scrollTop = el.scrollHeight;
+    return {before,after:el.scrollTop,clientHeight:el.clientHeight,scrollHeight:el.scrollHeight};
+  });
+  const opener = page.locator('[data-task-id="triage-0"]');
+  await opener.focus(); await page.keyboard.press('Enter');
+  const drawer = page.locator('.hermes-kanban-drawer');
+  await drawer.waitFor({state:'visible'});
+  await page.waitForTimeout(250);
+  const drawerRect = await drawer.evaluate(el => {
+    const r = el.getBoundingClientRect(); return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};
+  });
+  const drawerCloseTarget = await page.locator('.hermes-kanban-drawer-close').evaluate(el => {
+    const r = el.getBoundingClientRect(); return {width:r.width,height:r.height};
+  });
+  await page.locator('.hermes-kanban-drawer-close').click();
+  await drawer.waitFor({state:'detached'});
+  await page.waitForTimeout(50);
+  const focusReturned = await opener.evaluate(el => document.activeElement === el);
   const laneWidth = await page.locator('.hermes-kanban-column').first().evaluate(el => el.getBoundingClientRect().width);
   const navHeight = await page.locator('.hermes-kanban-column-nav').evaluate(el => el.getBoundingClientRect().height);
   if (process.argv[5]) await page.screenshot({path:process.argv[5], fullPage:true});
   process.stdout.write(JSON.stringify({labels,visits,empty,filteredCounts,tenantFilteredCounts,tenantAssigneeFilteredCounts,
-    clearedCounts,clearedFilterValues,groupedBefore,groupedAfter,navTargets,laneWidth,navHeight,
+    clearedCounts,clearedFilterValues,groupedBefore,groupedAfter,navTargets,toolbarTargets,addTargets,
+    verticalScroll,drawerRect,drawerCloseTarget,focusReturned,
+    scrollBehaviors:await page.evaluate(() => window.__KANBAN_SCROLL_BEHAVIORS__),laneWidth,navHeight,
     bodyWidth:await page.evaluate(() => document.body.scrollWidth), viewport:await page.evaluate(() => innerWidth)}));
   await browser.close();
 })().catch(e => {console.error(e);process.exit(1)});""",
         encoding="utf-8",
     )
     result = subprocess.run(
-        ["node", str(probe), str(playwright), page.as_uri(), str(width), str(screenshot or "")],
+        [
+            "node", str(probe), str(playwright), page.as_uri(), str(width),
+            str(screenshot or ""), "reduce" if reduced_motion else "no-preference", browser_executable,
+        ],
         check=False, capture_output=True, text=True, timeout=30,
     )
     if result.returncode:
@@ -210,7 +276,18 @@ def test_real_app_exposes_and_activates_every_mobile_lane(app_fixture: Path, wid
     assert measured["clearedFilterValues"] == {"tenant": "", "assignee": ""}
     assert measured["groupedBefore"] == 2
     assert measured["groupedAfter"] == 0
-    assert all(height >= 44 for height in measured["navTargets"])
+    required_targets = measured["navTargets"] + measured["toolbarTargets"] + measured["addTargets"]
+    assert required_targets
+    assert all(target["width"] >= 44 and target["height"] >= 44 for target in required_targets)
+    assert measured["drawerCloseTarget"]["width"] >= 44
+    assert measured["drawerCloseTarget"]["height"] >= 44
+    assert measured["verticalScroll"]["scrollHeight"] > measured["verticalScroll"]["clientHeight"]
+    assert measured["verticalScroll"]["after"] > measured["verticalScroll"]["before"]
+    assert measured["drawerRect"]["left"] >= 0
+    assert measured["drawerRect"]["right"] <= width
+    assert measured["drawerRect"]["top"] >= 0
+    assert measured["drawerRect"]["bottom"] <= 900
+    assert measured["focusReturned"] is True
     assert measured["bodyWidth"] == width
     assert measured["laneWidth"] == pytest.approx(width - 32, abs=1)
 
@@ -220,3 +297,10 @@ def test_real_app_preserves_desktop_lane_geometry(app_fixture: Path):
     assert measured["bodyWidth"] == 1280
     assert measured["laneWidth"] == pytest.approx(280, abs=1)
     assert measured["navHeight"] == 0
+
+
+def test_real_app_honors_reduced_motion_for_lane_activation(app_fixture: Path):
+    normal = _run_browser(app_fixture, 390)
+    reduced = _run_browser(app_fixture, 390, reduced_motion=True)
+    assert normal["scrollBehaviors"] and set(normal["scrollBehaviors"]) == {"smooth"}
+    assert reduced["scrollBehaviors"] and set(reduced["scrollBehaviors"]) == {"auto"}

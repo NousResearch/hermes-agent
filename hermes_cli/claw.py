@@ -81,13 +81,17 @@ def _detect_openclaw_processes() -> list[str]:
         # forever on Windows in post-timeout cleanup when a conhost.exe
         # descendant holds duplicated pipe handles (#87134) — and a hang is
         # not an exception, so the try/except here can't save the caller.
-        from hermes_cli._subprocess_compat import bounded_probe_run
+        from hermes_cli._subprocess_compat import (
+            bounded_probe_run,
+            windows_probe_encoding,
+        )
 
         try:
             for exe in ("openclaw.exe", "clawd.exe"):
                 result = bounded_probe_run(
                     ["tasklist", "/FI", f"IMAGENAME eq {exe}"],
                     timeout=5,
+                    encoding=windows_probe_encoding(),
                 )
                 if result is not None and exe in (result.stdout or "").lower():
                     found.append(f"process: {exe}")
@@ -102,6 +106,7 @@ def _detect_openclaw_processes() -> list[str]:
             result = bounded_probe_run(
                 ["powershell", "-NoProfile", "-Command", ps_cmd],
                 timeout=5,
+                encoding=windows_probe_encoding(),
             )
             if result is not None and (result.stdout or "").strip():
                 found.append(f"node.exe process with openclaw in command line (PID {result.stdout.strip()})")

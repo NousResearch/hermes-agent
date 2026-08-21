@@ -28,6 +28,7 @@ guarantee.
 
 from __future__ import annotations
 
+import locale
 import os
 import shutil
 import subprocess
@@ -45,6 +46,7 @@ __all__ = [
     "windows_detach_popen_kwargs",
     "bounded_git_probe",
     "bounded_probe_run",
+    "windows_probe_encoding",
     "noninteractive_git_env",
 ]
 
@@ -443,11 +445,47 @@ def kill_process_tree(proc: "subprocess.Popen") -> None:
             pass
 
 
+def windows_probe_encoding() -> str:
+    """Codec for decoding output from Windows-native console probes.
+
+    ``wmic``, ``tasklist`` and Windows PowerShell write in the machine's code
+    page, not UTF-8 -- CP932 on a Japanese host, CP936 on a Chinese one.
+    Decoding that as UTF-8 does not raise at the probe call sites, because they
+    pass ``errors="ignore"``: the bytes are deleted silently, and a DBCS trail
+    byte in the 0x40-0x7E range survives as a literal ASCII character. A path
+    segment whose CP932 bytes are ``90 66 92 66 83 7E`` decodes to ``ff~``, so
+    a later match against the same path read from the filesystem never fires.
+
+    Resolution order: the OEM code page (what a console-mode child writes),
+    then the locale's ANSI code page, then UTF-8. ``locale.getencoding()`` is
+    used rather than ``locale.getpreferredencoding(False)`` because the latter
+    honours Python UTF-8 Mode, which Hermes turns on for its own processes and
+    which has no bearing on what the child emits.
+
+    Always ``"utf-8"`` off Windows.
+    """
+    if not IS_WINDOWS:
+        return "utf-8"
+    try:
+        import ctypes
+
+        code_page = int(ctypes.windll.kernel32.GetOEMCP())
+        if code_page:
+            return "cp%d" % code_page
+    except Exception:
+        pass
+    try:
+        return locale.getencoding() or "utf-8"
+    except Exception:
+        return "utf-8"
+
+
 def bounded_probe_run(
     argv: Sequence[str],
     *,
     timeout: float,
     errors: str = "replace",
+    encoding: str = "utf-8",
 ) -> "subprocess.CompletedProcess[str] | None":
     """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=...)``
     for fail-open probe call sites. Returns a ``CompletedProcess`` when the
@@ -469,11 +507,12 @@ def bounded_probe_run(
     (the orphaned reader threads are daemonic and cost nothing).
 
     The spawn contract mirrors the ``run`` calls it replaces: PIPE/PIPE/DEVNULL,
-    ``text`` with UTF-8 decoding (*errors* configurable — the process scans use
-    ``"ignore"``), and the hidden-window ``creationflags`` on Windows only. On
-    POSIX the child is placed in its own process group (``process_group=0``,
-    Python ≥3.11) so timeout cleanup can take down descendants with the
-    launcher instead of orphaning them.
+    ``text`` decoding (*encoding* and *errors* configurable — the Windows-native
+    process scans pass :func:`windows_probe_encoding` and ``"ignore"``), and the
+    hidden-window ``creationflags`` on Windows only. On POSIX the child is
+    placed in its own process group (``process_group=0``, Python ≥3.11) so
+    timeout cleanup can take down descendants with the launcher instead of
+    orphaning them.
     """
     _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
     try:
@@ -483,7 +522,7 @@ def bounded_probe_run(
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             text=True,
-            encoding="utf-8",
+            encoding=encoding,
             errors=errors,
             **_popen_kwargs,
         )

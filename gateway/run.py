@@ -4673,6 +4673,15 @@ class TurnRunner:
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
             )
         except Exception as exc:
+            # Not every resolution failure is an auth failure — e.g. an
+            # UnboundLocalError from a scoping bug.  Log the real exception
+            # type so such bugs are not masked as "Provider authentication
+            # failed", and only surface the auth wording for actual auth
+            # errors.
+            logger.error(
+                "run_agent: session runtime resolution failed (%s): %s",
+                type(exc).__name__, exc, exc_info=True,
+            )
             return {
                 "final_response": f"⚠️ Provider authentication failed: {exc}",
                 "messages": [],
@@ -7112,6 +7121,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         global config/env (``_resolve_gateway_model(user_config)`` and default
         provider resolution).
         """
+        # Initialize the default model up-front so the per-platform override
+        # block and the session-override block below can safely read `model`
+        # before any later assignment.  Without this, `model` is function-local
+        # (it is assigned later in this method) and any read before the first
+        # assignment raises UnboundLocalError — which the caller's broad
+        # `except Exception` mislabels as "Provider authentication failed"
+        # (e.g. /model qwen3.8:27b on a platform with no model_platforms entry).
+        model = _resolve_gateway_model(user_config)
+
         resolved_session_key = session_key
         if not resolved_session_key and source is not None:
             try:

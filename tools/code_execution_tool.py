@@ -330,9 +330,9 @@ def check_sandbox_requirements() -> bool:
 _TOOL_STUBS = {
     "web_search": (
         "web_search",
-        "query: str, limit: int = 5",
-        '"""Search the web. Returns dict with data.web list of {url, title, description}."""',
-        '{"query": query, "limit": limit}',
+        'query: str, limit: int = 5, search_engine: str = "auto"',
+        '"""Search the web. Returns dict with data.web list of {url, title, description}. search_engine="auto" walks the fallback chain; pass a provider name to pin one."""',
+        '{"query": query, "limit": limit, "search_engine": search_engine}',
     ),
     "web_extract": (
         "web_extract",

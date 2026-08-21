@@ -413,6 +413,161 @@ def _is_backend_available(backend: str) -> bool:
     return False
 
 
+def _get_registered_backend_names() -> set[str]:
+    """Return all currently-registered web search backend names.
+
+    Dynamically sourced from the plugin registry so adding a new
+    provider plugin automatically extends the set — no hardcoded list.
+    Used for config value validation in ``check_web_api_key()``.
+    """
+    try:
+        return {p.name for p in _list_registered_web_providers()}
+    except Exception:
+        return set()
+
+
+def _get_valid_engine_names() -> set[str]:
+    """Return the set of usable search engine choices for the model.
+
+    Only providers where ``is_available()`` returns True are included,
+    so the model never sees engines that lack API keys.  ``"auto"`` is
+    always present — it walks the fallback chain.
+    """
+    choices = {"auto"}
+    try:
+        for p in _list_registered_web_providers():
+            try:
+                if p.is_available():
+                    choices.add(p.name)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return choices
+
+
+def _get_fallback_chain() -> list[str]:
+    """Return an ordered list of backends to try when ``search_engine == "auto"``.
+
+    Priority:
+    1. ``web.search_backend`` / ``web.backend`` — explicit choice (always first)
+    2. ``web.fallback_backends`` — user-configured ordered list
+    3. All other registered providers not already in the chain (alphabetical)
+    """
+    cfg = _load_web_config()
+
+    chain: list[str] = []
+
+    primary = _get_search_backend()
+    if primary and primary not in chain:
+        chain.append(primary)
+
+    user_fbs = cfg.get("fallback_backends", [])
+    if isinstance(user_fbs, str):
+        user_fbs = [b.strip() for b in user_fbs.split(",") if b.strip()]
+    for b in user_fbs:
+        b = b.lower().strip()
+        if b and b not in chain:
+            chain.append(b)
+
+    # Append remaining registered providers (those not already listed).
+    try:
+        for p in _list_registered_web_providers():
+            if p.name not in chain:
+                chain.append(p.name)
+    except Exception:
+        pass
+
+    return chain
+
+
+def _search_with_fallback(
+    query: str,
+    limit: int,
+    chain: list[str],
+) -> tuple[dict | None, list[str], Exception | None]:
+    """Try each backend in *chain* until one succeeds.
+
+    Returns ``(success_result, error_trace, primary_exception)``.  A backend
+    is skipped when it is not found or unavailable (missing key/package) —
+    that is the fallback trigger.  A backend that is alive but *fails* is
+    treated as authoritative: its failure result (or raised exception) is
+    surfaced directly, matching main's single-backend contract, with an
+    optional one-shot keyless rescue when eligible.
+
+    ``success_result`` is ``None`` only when every backend was skipped as
+    unavailable; ``primary_exception`` carries the raw exception raised by
+    the first backend that was tried but failed.
+    """
+    from agent.web_search_registry import get_provider
+
+    errors: list[str] = []
+    primary_exc: Exception | None = None
+    for name in chain:
+        provider = get_provider(name)
+        if provider is None or not provider.supports_search():
+            errors.append(f"{name}: not found or search unsupported")
+            continue
+        if not provider.is_available():
+            # A missing key is a fallback trigger — unless the provider can
+            # serve the request without one via the keyless free tier
+            # (e.g. Tavily in keyless mode).  main's dispatcher does not
+            # gate the configured backend on is_available() for this reason;
+            # the provider's own search() routes through the ring.
+            keyless_ok = False
+            is_keyless = getattr(provider, "is_keyless_available", None)
+            if callable(is_keyless):
+                try:
+                    keyless_ok = bool(is_keyless())
+                except Exception:  # noqa: BLE001 — broken provider == not ready
+                    keyless_ok = False
+            if not keyless_ok:
+                errors.append(f"{name}: not available (missing key or package)")
+                continue
+
+        try:
+            result = provider.search(query, limit)
+        except Exception as exc:
+            if primary_exc is None:
+                primary_exc = exc
+            if _rescue_eligible(provider):
+                rescued = _rescue_search(name, str(exc), query, limit)
+                if rescued.get("success"):
+                    return rescued, errors, primary_exc
+                # Ring failed too: surface the ORIGINAL backend error (it
+                # names the user's configured setup) with the note appended.
+                return rescued, errors, primary_exc
+            # A live backend that raises keeps main's behavior: let the
+            # exception bubble to the top-level "Error searching web: ..."
+            # envelope instead of silently falling through the chain.
+            raise
+
+        if not isinstance(result, dict):
+            errors.append(f"{name}: unexpected response type {type(result).__name__}")
+            continue
+        if not result.get("success"):
+            if _rescue_eligible(provider):
+                rescued = _rescue_search(
+                    name, str(result.get("error", "")), query, limit
+                )
+                if rescued.get("success"):
+                    return rescued, errors, primary_exc
+                return rescued, errors, primary_exc
+            # Failure result from a live backend is authoritative (main
+            # contract) — do not fall through to other backends.
+            return result, errors, primary_exc
+        if not len(result.get("data", {}).get("web", [])):
+            # A healthy backend returning zero hits is a valid outcome — the
+            # query simply matched nothing.  Do not treat it as a failure and
+            # fall through to other backends (main contract).
+            return result, errors, primary_exc
+
+        # Success — return immediately
+        return result, errors, primary_exc
+
+    return None, errors, primary_exc
+
+
 def _ddgs_package_importable() -> bool:
     """Return True when the ``ddgs`` Python package can be imported.
 
@@ -835,20 +990,25 @@ def _ensure_web_plugins_loaded() -> None:
         logger.warning("Web plugin discovery failed (non-fatal): %s", exc)
 
 
-def web_search_tool(query: str, limit: int = 5) -> str:
+def web_search_tool(query: str, limit: int = 5, search_engine: str = "auto") -> str:
     """
-    Search the web for information using available search API backend.
+    Search the web for information using available search API backends.
 
     This function provides a generic interface for web search that can work
-    with multiple backends (Parallel or Firecrawl).
+    with multiple backends. When ``search_engine`` is ``"auto"`` (default),
+    backends are tried in order until one succeeds.  An explicit engine name
+    runs that single backend with no fallback.
 
     Note: This function returns search result metadata only (URLs, titles, descriptions).
     Use web_extract_tool to get full content from specific URLs.
-    
+
     Args:
         query (str): The search query to look up
         limit (int): Maximum number of results to return (default: 5)
-    
+        search_engine (str): Which provider to use. ``"auto"`` (default) walks
+            the fallback chain.  Any registered provider name (e.g. ``"baidu"``,
+            ``"serper"``, ``"ddgs"``) runs that single backend.
+
     Returns:
         str: JSON string containing search results with the following structure:
              {
@@ -865,7 +1025,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                      ]
                  }
              }
-    
+
     Raises:
         Exception: If search fails or API key is not set
     """
@@ -878,23 +1038,22 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     debug_call_data = {
         "parameters": {
             "query": query,
-            "limit": limit
+            "limit": limit,
+            "search_engine": search_engine,
         },
         "error": None,
         "results_count": 0,
         "original_response_size": 0,
         "final_response_size": 0
     }
-    
+
     try:
         from tools.interrupt import is_interrupted
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        # Dispatch through the web search registry. All 7 providers
-        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
-        # now live as plugins; the dispatcher is just a registry lookup +
-        # delegation. Sync only — every provider's search() is sync.
+        # Dispatch through the web search registry. All providers now live
+        # as plugins; the dispatcher is just a registry lookup + delegation.
         _ensure_web_plugins_loaded()
         from agent.web_search_registry import (
             get_active_search_provider,
@@ -902,67 +1061,22 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _disabled_web_plugin_for,
         )
 
-        backend = _get_search_backend()
-        provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not provider.supports_search():
-            from tools.tool_backend_helpers import (
-                selection_error,
-                selection_exists,
-            )
-
-            if provider is None and backend and selection_exists("web"):
-                disabled_key = _disabled_web_plugin_for(capability="search")
-                if disabled_key:
-                    _vendor = disabled_key.split("/", 1)[-1]
-                    error_text = (
-                        f"web.search_backend is set to '{_vendor}', but its "
-                        f"plugin ('{disabled_key}') is disabled in config. "
-                        f"Re-enable it with `hermes plugins enable {disabled_key}` "
-                        "(or remove it from plugins.disabled)."
-                    )
-                else:
-                    error_text = selection_error(
-                        "web",
-                        f"'{backend}'",
-                        "no registered web search provider has that name",
-                    )
-                response_data = {"success": False, "error": error_text}
-                result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-                debug_call_data["error"] = error_text
-                _debug.log_call("web_search_tool", debug_call_data)
-                _debug.save()
-                return result_json
-            # Never-configured install: fall back to the availability-walked
-            # active provider (legacy autodetect behavior).
-            provider = get_active_search_provider()
-
-        if provider is None:
-            # A bundled web plugin the user explicitly disabled looks
-            # identical to "no provider" here — point at the real cause
-            # (re-enable the plugin) rather than a generic setup hint.
-            disabled_key = _disabled_web_plugin_for(capability="search")
-            if disabled_key:
-                _vendor = disabled_key.split("/", 1)[-1]
-                response_data = {
-                    "success": False,
-                    "error": (
-                        f"web.search_backend is set to '{_vendor}', but its "
-                        f"plugin ('{disabled_key}') is disabled in config. "
-                        f"Re-enable it with `hermes plugins enable {disabled_key}` "
-                        "(or remove it from plugins.disabled)."
-                    ),
-                }
-            else:
-                response_data = {
-                    "success": False,
-                    "error": (
-                        "No web search provider configured. "
-                        "Run `hermes tools` to set one up."
-                    ),
-                }
-        else:
+        # --- Explicit engine requested ---
+        if search_engine and search_engine != "auto":
+            provider = _wsp_get_provider(search_engine)
+            if provider is None:
+                valid = _get_valid_engine_names()
+                return tool_error(
+                    f"Unknown search engine: '{search_engine}'. "
+                    f"Valid values: {', '.join(repr(e) for e in sorted(valid))}"
+                )
+            if not provider.is_available():
+                return tool_error(
+                    f"Search engine '{search_engine}' is not available "
+                    "(missing API key or package)."
+                )
             logger.info(
-                "Web search via %s: '%s' (limit: %d)",
+                "Web search via %s (explicit): '%s' (limit: %d)",
                 provider.name, query, limit,
             )
             try:
@@ -987,6 +1101,43 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                         query,
                         limit,
                     )
+        else:
+            # --- Auto mode: walk the fallback chain ---
+            chain = _get_fallback_chain()
+            response_data, errors, primary_exc = _search_with_fallback(query, limit, chain)
+
+            if response_data is None:
+                # All backends failed. Keep main's public error envelope
+                # (tool_error shape, no internal diagnostics); the trial
+                # trace stays in the log for debugging.
+                disabled_key = _disabled_web_plugin_for(capability="search")
+                if disabled_key:
+                    _vendor = disabled_key.split("/", 1)[-1]
+                    error_text = (
+                        f"web.search_backend is set to '{_vendor}', but its "
+                        f"plugin ('{disabled_key}') is disabled in config. "
+                        f"Re-enable it with `hermes plugins enable {disabled_key}` "
+                        "(or remove it from plugins.disabled)."
+                    )
+                elif primary_exc is not None:
+                    # The configured primary backend itself raised — surface
+                    # its original message (main's single-backend contract)
+                    # rather than a generic setup hint.
+                    raise primary_exc
+                else:
+                    error_text = (
+                        "No web search backend available. Set a provider API "
+                        "key (e.g. FIRECRAWL_API_KEY) or run `hermes tools`."
+                    )
+                # Re-raise so the top-level handler wraps this into the
+                # standard "Error searching web: ..." envelope, keeping the
+                # public error string free of per-backend diagnostics.
+                logger.debug(
+                    "Web search fallback chain exhausted: %s", "; ".join(errors)
+                )
+                raise RuntimeError(error_text)
+            elif errors:
+                response_data.setdefault("_fallback_trace", errors)
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -1545,6 +1696,12 @@ WEB_SEARCH_SCHEMA = {
                 "minimum": 1,
                 "maximum": 100,
                 "default": 5
+            },
+            "search_engine": {
+                "type": "string",
+                "description": "Which search engine to use. \"auto\" (default) walks the fallback chain in config. An explicit engine name (e.g. \"baidu\", \"serper\") uses only that engine. Only engines that are currently configured appear in the choices.",
+                "enum": sorted(_get_valid_engine_names()),
+                "default": "auto"
             }
         },
         "required": ["query"]
@@ -1573,11 +1730,24 @@ WEB_EXTRACT_SCHEMA = {
     }
 }
 
+def _web_search_handler(args: dict) -> str:
+    """Registry handler for ``web_search``.
+
+    Forwards ``search_engine`` only when the model supplied it, so callers
+    that omit it keep the exact ``web_search_tool(query, limit=...)`` call
+    signature (contract asserted by the tool-config unit tests).
+    """
+    kwargs: dict = {"limit": args.get("limit", 5)}
+    if "search_engine" in args:
+        kwargs["search_engine"] = args["search_engine"]
+    return web_search_tool(args.get("query", ""), **kwargs)
+
+
 registry.register(
     name="web_search",
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
-    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
+    handler=_web_search_handler,
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),
     emoji="🔍",

@@ -2228,6 +2228,11 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/pause", self._handle_pause_job),
             ("POST", "/api/jobs/{job_id}/resume", self._handle_resume_job),
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job),
+            # Headless provider login (paste-a-code PKCE). Lets deployments
+            # that run only the gateway re-authenticate a model provider
+            # without an interactive TTY on the host.
+            ("POST", "/api/providers/{provider}/oauth/start", self._handle_provider_oauth_start),
+            ("POST", "/api/providers/{provider}/oauth/submit", self._handle_provider_oauth_submit),
             ("POST", "/v1/runs", self._handle_runs),
             ("GET", "/v1/runs/{run_id}", self._handle_get_run),
             ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
@@ -3274,6 +3279,82 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=500,
             )
 
+    async def _handle_provider_oauth_start(self, request: "web.Request") -> "web.Response":
+        """POST /api/providers/{provider}/oauth/start — begin a PKCE login.
+
+        Returns the authorization URL for a human to open. Nothing is
+        persisted until the code comes back through the submit endpoint.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        provider = request.match_info.get("provider", "")
+        try:
+            from gateway.provider_oauth import ProviderOAuthError, start
+
+            # urllib call chain is blocking-free here, but constant import
+            # touches disk — keep it off the event loop for consistency.
+            payload = await asyncio.to_thread(start, provider)
+            return web.json_response(payload)
+        except ProviderOAuthError as exc:
+            return web.json_response(
+                _openai_error(str(exc), code="provider_oauth_failed"),
+                status=exc.status,
+            )
+        except Exception:
+            logger.exception(
+                "[%s] POST /api/providers/%s/oauth/start failed", self.name, provider
+            )
+            return web.json_response(
+                _openai_error(
+                    "Failed to start provider OAuth.", code="provider_oauth_failed"
+                ),
+                status=500,
+            )
+
+    async def _handle_provider_oauth_submit(self, request: "web.Request") -> "web.Response":
+        """POST /api/providers/{provider}/oauth/submit — finish a PKCE login.
+
+        Body: ``{"session_id": "...", "code": "<code>#<state>"}``. On success
+        the credential is written exactly as ``hermes auth add`` would, and
+        the running gateway picks it up without a restart.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        provider = request.match_info.get("provider", "")
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        session_id = str(body.get("session_id") or "").strip()
+        code = str(body.get("code") or "")
+        if not session_id:
+            return web.json_response(
+                _openai_error("session_id is required", code="invalid_request"),
+                status=400,
+            )
+        try:
+            from gateway.provider_oauth import ProviderOAuthError, submit
+
+            # Token exchange is a blocking HTTP round-trip.
+            payload = await asyncio.to_thread(submit, session_id, code, provider)
+            return web.json_response(payload)
+        except ProviderOAuthError as exc:
+            return web.json_response(
+                _openai_error(str(exc), code="provider_oauth_failed"),
+                status=exc.status,
+            )
+        except Exception:
+            logger.exception(
+                "[%s] POST /api/providers/%s/oauth/submit failed", self.name, provider
+            )
+            return web.json_response(
+                _openai_error(
+                    "Failed to complete provider OAuth.", code="provider_oauth_failed"
+                ),
+                status=500,
+            )
+
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — advertise the stable API surface.
 
@@ -3318,6 +3399,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "approval_events": True,
                 "session_resources": True,
                 "model_options": True,
+                "provider_oauth": True,
                 "session_chat": True,
                 "session_chat_streaming": True,
                 "session_fork": True,

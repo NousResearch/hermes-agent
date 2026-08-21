@@ -1988,6 +1988,14 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         _omit_temp = False
         _fixed_temp = None
 
+    # top_p: some endpoints reject the server-side default when the param is
+    # omitted (Ollama-cloud Kimi requires exactly 0.95). None = no override.
+    try:
+        from agent.auxiliary_client import _fixed_top_p_for_model
+        _fixed_top_p = _fixed_top_p_for_model(agent.model, agent.base_url)
+    except Exception:
+        _fixed_top_p = None
+
     # Provider preferences (aggregator profile decides whether to emit them).
     _prefs = _provider_preferences_for_agent(agent)
 
@@ -2053,6 +2061,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             session_id=getattr(agent, "session_id", None),
             cache_scope_id=_cache_scope_id,
             provider_profile=_profile,
+            fixed_top_p=_fixed_top_p,
             ollama_num_ctx=agent._ollama_num_ctx,
             # Context forwarded to profile hooks:
             provider_preferences=_prefs or None,
@@ -2103,6 +2112,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         qwen_session_metadata=_qwen_meta,
         fixed_temperature=_fixed_temp,
         omit_temperature=_omit_temp,
+        fixed_top_p=_fixed_top_p,
         supports_reasoning=agent._supports_reasoning_extra_body(),
         github_reasoning_extra=agent._github_models_reasoning_extra_body() if _is_gh else None,
         lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
@@ -2971,6 +2981,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         )
         _omit_summary_temperature = _raw_summary_temp is _OMIT_TEMP
         _summary_temperature = None if _omit_summary_temperature else _raw_summary_temp
+        # Same per-model top_p contract as the main path (Ollama-cloud Kimi
+        # 400s unless top_p=0.95 is sent explicitly).
+        try:
+            from agent.auxiliary_client import _fixed_top_p_for_model as _fixed_top_p_fn
+            _summary_top_p = _fixed_top_p_fn(agent.model, agent.base_url)
+        except Exception:
+            _summary_top_p = None
         _is_nous = "nousresearch" in agent._base_url_lower
         # LM Studio uses top-level `reasoning_effort` (not extra_body.reasoning).
         # Mirror ChatCompletionsTransport.build_kwargs() so the summary path
@@ -3010,6 +3027,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             }
             if _summary_temperature is not None:
                 summary_kwargs["temperature"] = _summary_temperature
+            if _summary_top_p is not None:
+                summary_kwargs["top_p"] = _summary_top_p
             if agent.max_tokens is not None:
                 summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
             if _lm_reasoning_effort is not None:
@@ -3065,6 +3084,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
             if summary_extra_body:
                 summary_kwargs["extra_body"] = summary_extra_body
+            if agent.request_overrides:
+                for key, value in agent.request_overrides.items():
+                    if key == "extra_body" and isinstance(value, dict):
+                        summary_kwargs.setdefault("extra_body", {}).update(value)
+                    else:
+                        summary_kwargs[key] = value
 
             if agent.api_mode == "anthropic_messages":
                 _tsum = agent._get_transport()
@@ -3145,12 +3170,20 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 }
                 if _summary_temperature is not None:
                     summary_kwargs["temperature"] = _summary_temperature
+                if _summary_top_p is not None:
+                    summary_kwargs["top_p"] = _summary_top_p
                 if agent.max_tokens is not None:
                     summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
                 if _lm_reasoning_effort is not None:
                     summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body
+                if agent.request_overrides:
+                    for key, value in agent.request_overrides.items():
+                        if key == "extra_body" and isinstance(value, dict):
+                            summary_kwargs.setdefault("extra_body", {}).update(value)
+                        else:
+                            summary_kwargs[key] = value
 
                 summary_client = agent._ensure_primary_openai_client(
                     reason="iteration_limit_summary_retry"

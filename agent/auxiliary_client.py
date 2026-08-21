@@ -730,6 +730,42 @@ def _fixed_temperature_for_model(
     return None
 
 
+def _is_ollama_cloud_model(model: Optional[str]) -> bool:
+    """True for Ollama-cloud-proxied models (the ``:cloud`` tag suffix).
+
+    Ollama marks cloud-hosted models with a ``:cloud`` tag (e.g.
+    ``kimi-k2.6:cloud``) whether reached directly (ollama.com) or proxied
+    through a local Ollama daemon. No other provider uses this suffix.
+    """
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return bare.endswith(":cloud")
+
+
+def _fixed_top_p_for_model(
+    model: Optional[str],
+    base_url: Optional[str] = None,
+) -> Optional[float]:
+    """Return a top_p override for models whose endpoint rejects the default.
+
+    Ollama-cloud-proxied Kimi models (``kimi-*:cloud`` via a local Ollama
+    daemon or ollama.com) reject requests that omit ``top_p``: the Ollama
+    server fills in its own default of 1 and the cloud endpoint 400s with
+    "Invalid value for 'top_p': 1. This endpoint requires top_p=0.95." — so
+    we must send exactly 0.95.
+
+    Scoped tightly to Kimi + ``:cloud`` because that is the only combination
+    where this contract is verified; other providers' top_p is never touched.
+    Callers must still let an explicit user/request-override top_p win.
+
+    Returns a float the caller should place in api kwargs (unless the caller
+    already has an explicit top_p), or ``None`` for no override.
+    """
+    if _is_kimi_model(model) and _is_ollama_cloud_model(model):
+        logger.debug("Pinning top_p=0.95 for Ollama-cloud Kimi model %r", model)
+        return 0.95
+    return None
+
+
 def _compression_threshold_for_model(
     model: Optional[str],
     provider: Optional[str] = None,
@@ -8550,6 +8586,13 @@ def _build_call_kwargs(
 
     if temperature is not None:
         kwargs["temperature"] = temperature
+
+    # Ollama-cloud Kimi requires top_p=0.95 exactly (400s on the server-side
+    # default of 1 when the param is omitted). No caller supplies top_p here,
+    # so this cannot clobber an intentional value.
+    _fixed_top_p = _fixed_top_p_for_model(model, base_url)
+    if _fixed_top_p is not None:
+        kwargs["top_p"] = _fixed_top_p
 
     if max_tokens is not None:
         # We do NOT cap output by default. Most chat-completions providers treat

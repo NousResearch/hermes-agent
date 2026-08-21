@@ -491,6 +491,9 @@ class ChatCompletionsTransport(ProviderTransport):
             # Temperature
             fixed_temperature: Any — from _fixed_temperature_for_model()
             omit_temperature: bool
+            # top_p (used on BOTH profile and legacy paths)
+            fixed_top_p: float | None — from _fixed_top_p_for_model(); never
+                clobbers an existing/overridden top_p
             # Reasoning
             supports_reasoning: bool
             github_reasoning_extra: dict | None
@@ -696,6 +699,14 @@ class ChatCompletionsTransport(ProviderTransport):
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
+        # top_p: per-model contract override (Ollama-cloud Kimi requires
+        # exactly 0.95 — omitting the param 400s on the server-side default).
+        # Never clobbers an existing top_p, and request_overrides below can
+        # still replace it — an intentional override always wins.
+        _fixed_top_p = params.get("fixed_top_p")
+        if _fixed_top_p is not None:
+            api_kwargs["top_p"] = _fixed_top_p
+
         # Request overrides last (service_tier etc.)
         overrides = params.get("request_overrides")
         if overrides:
@@ -807,6 +818,13 @@ class ChatCompletionsTransport(ProviderTransport):
             )
         )
         api_kwargs.update(top_level_from_profile)
+
+        # Apply the model contract after provider extras so a profile cannot
+        # accidentally replace the endpoint-required value. Explicit request
+        # overrides are applied below and still win.
+        _fixed_top_p = params.get("fixed_top_p")
+        if _fixed_top_p is not None:
+            api_kwargs["top_p"] = _fixed_top_p
 
         # extra_body assembly
         extra_body: dict[str, Any] = {}

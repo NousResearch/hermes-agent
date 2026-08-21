@@ -22,6 +22,7 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
+import { appendComposerToSessionDraft, type ComposerAttachment } from '@/store/composer'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import type { ClientSessionState } from '@/app/types'
 import {
@@ -381,6 +382,13 @@ async function awaitProfileActivation(
 }
 
 export const host = {
+  composer: {
+    /** Append text and attachments to a durable session draft, even when its
+     * ChatBar is currently hidden behind another pane. */
+    appendToSession: (sessionKey: string, text: string, attachments: ComposerAttachment[] = []) => {
+      appendComposerToSessionDraft(sessionKey, text, attachments)
+    }
+  },
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
     activeSessionId: readonlyAtom<null | string>($activeSessionId),
@@ -789,6 +797,12 @@ export const host = {
     revealTreePane(paneId)
 
     return close
+  },
+
+  /** Reveal and front an existing contributed pane in its docked zone. */
+  revealPane: (paneId: string): void => {
+    const key = paneId.trim()
+    if (key) revealTreePane(key)
   },
 
   /** Start a fresh chat draft, optionally pointed at another profile (its

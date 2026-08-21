@@ -2,7 +2,7 @@
 // Tests for the NS-656 memory-pressure banner: trigger selection,
 // severity precedence, dismissal semantics, and escalation re-opening.
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { ReactNode } from "react";
@@ -18,6 +18,20 @@ import type {
 let container: HTMLDivElement;
 let root: Root;
 
+function makeStorage(): Storage {
+  const store = new Map<string, string>();
+  return {
+    get length() {
+      return store.size;
+    },
+    clear: () => store.clear(),
+    getItem: (key) => store.get(String(key)) ?? null,
+    key: (index) => [...store.keys()][index] ?? null,
+    removeItem: (key) => void store.delete(String(key)),
+    setItem: (key, value) => void store.set(String(key), String(value)),
+  };
+}
+
 async function render(ui: ReactNode) {
   container = document.createElement("div");
   document.body.append(container);
@@ -30,6 +44,11 @@ async function rerender(ui: ReactNode) {
 }
 
 beforeEach(() => {
+  // Node 26 exposes storage globals as undefined unless a backing file is
+  // configured. Keep these browser-facing tests deterministic across Node
+  // versions instead of relying on the host's experimental storage accessor.
+  vi.stubGlobal("localStorage", makeStorage());
+  vi.stubGlobal("sessionStorage", makeStorage());
   localStorage.clear();
   sessionStorage.clear();
 });
@@ -37,6 +56,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root?.unmount());
   container?.remove();
+  vi.unstubAllGlobals();
 });
 
 function statusWith(memory: MemoryPressureStatus | undefined): StatusResponse {

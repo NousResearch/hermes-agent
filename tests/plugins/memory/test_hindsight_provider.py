@@ -88,6 +88,10 @@ def _make_mock_client():
         return_value=SimpleNamespace(text="Synthesized answer")
     )
     client.aretain_batch = AsyncMock()
+    client.banks.get_bank_config = AsyncMock(
+        return_value={"config": {}, "overrides": {}}
+    )
+    client.banks.update_bank_config = AsyncMock(return_value={"ok": True})
     client.aclose = AsyncMock()
     return client
 
@@ -332,6 +336,147 @@ class TestConfig:
         p = provider_with_config(retain_source="cogoport")
         assert p._retain_source == "cogoport"
         assert p._build_metadata(message_count=2, turn_index=1)["source"] == "cogoport"
+
+
+class TestBankMissionSync:
+    @pytest.fixture(autouse=True)
+    def _clear_sync_state(self):
+        from plugins.memory import hindsight as hindsight_mod
+
+        hindsight_mod._BANK_CONFIG_SYNC_CACHE.clear()
+        yield
+        hindsight_mod._BANK_CONFIG_SYNC_CACHE.clear()
+
+    def test_initialize_applies_configured_missions_with_generated_banks_api(
+        self, tmp_path, monkeypatch
+    ):
+        from hindsight_client_api.models.bank_config_update import BankConfigUpdate
+
+        config = {
+            "mode": "cloud",
+            "apiKey": "test-key",
+            "api_url": "http://localhost:9999",
+            "bank_id": "test-bank",
+            "bank_mission": " Reflect with operational context ",
+            "bank_retain_mission": " Extract durable facts ",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+        client = _make_mock_client()
+        client.banks.get_bank_config.return_value = {
+            "config": {"reflect_mission": None, "retain_mission": None},
+            "overrides": {},
+        }
+        monkeypatch.setattr(HindsightMemoryProvider, "_get_client", lambda self: client)
+
+        provider = HindsightMemoryProvider()
+        provider.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
+
+        client.banks.get_bank_config.assert_awaited_once_with("test-bank", _request_timeout=120)
+        client.banks.update_bank_config.assert_awaited_once()
+        bank_id, request = client.banks.update_bank_config.await_args.args
+        assert bank_id == "test-bank"
+        assert isinstance(request, BankConfigUpdate)
+        assert request.updates == {
+            "reflect_mission": "Reflect with operational context",
+            "retain_mission": "Extract durable facts",
+        }
+        assert client.banks.update_bank_config.await_args.kwargs == {"_request_timeout": 120}
+
+    def test_explicit_empty_missions_clear_only_active_overrides(self, provider):
+        from hindsight_client_api.models.bank_config_update import BankConfigUpdate
+
+        provider._config["bank_mission"] = ""
+        provider._config["bank_retain_mission"] = None
+        provider._client.banks.get_bank_config.return_value = {
+            "config": {
+                "reflect_mission": "server default reflect",
+                "retain_mission": "server default retain",
+            },
+            "overrides": {
+                "reflect_mission": "stale reflect override",
+                "retain_mission": "stale retain override",
+            },
+        }
+
+        provider._apply_configured_bank_config()
+
+        provider._client.banks.update_bank_config.assert_awaited_once()
+        request = provider._client.banks.update_bank_config.await_args.args[1]
+        assert isinstance(request, BankConfigUpdate)
+        assert request.updates == {"reflect_mission": None, "retain_mission": None}
+
+    def test_sync_cache_is_bounded_and_scoped_by_auth_bank_and_config(self, provider, monkeypatch):
+        from plugins.memory import hindsight as hindsight_mod
+
+        monkeypatch.setattr(hindsight_mod, "_BANK_CONFIG_SYNC_CACHE_MAX", 2)
+        provider._config["bank_mission"] = "mission-a"
+        provider._client.banks.get_bank_config.return_value = {
+            "config": {"reflect_mission": None}, "overrides": {}
+        }
+
+        provider._apply_configured_bank_config()
+        provider._api_key = "key-b"
+        provider._apply_configured_bank_config()
+        provider._bank_id = "bank-c"
+        provider._config["bank_mission"] = "mission-c"
+        provider._apply_configured_bank_config()
+
+        assert len(hindsight_mod._BANK_CONFIG_SYNC_CACHE) == 2
+        assert provider._client.banks.get_bank_config.await_count == 3
+        assert provider._client.banks.update_bank_config.await_count == 3
+
+    def test_failed_sync_is_suppressed_only_for_matching_scope(self, provider, monkeypatch):
+        from plugins.memory import hindsight as hindsight_mod
+
+        now = [100.0]
+        monkeypatch.setattr(hindsight_mod.time, "monotonic", lambda: now[0])
+        provider._config["bank_mission"] = "mission-a"
+        provider._client.banks.get_bank_config.side_effect = RuntimeError("API down")
+
+        provider._apply_configured_bank_config()
+        provider._apply_configured_bank_config()
+        assert provider._client.banks.get_bank_config.await_count == 1
+
+        provider._bank_id = "different-bank"
+        provider._apply_configured_bank_config()
+        assert provider._client.banks.get_bank_config.await_count == 2
+
+        now[0] += 31.0
+        provider._bank_id = "test-bank"
+        provider._apply_configured_bank_config()
+        assert provider._client.banks.get_bank_config.await_count == 3
+
+    def test_missing_generated_client_falls_back_without_blocking_initialize(self, tmp_path, monkeypatch, caplog):
+        import builtins
+
+        config = {
+            "mode": "cloud", "apiKey": "test-key",
+            "api_url": "http://localhost:9999", "bank_id": "test-bank",
+            "bank_mission": "mission",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+        client = _make_mock_client()
+        monkeypatch.setattr(HindsightMemoryProvider, "_get_client", lambda self: client)
+        real_import = builtins.__import__
+
+        def import_without_generated_client(name, *args, **kwargs):
+            if name.startswith("hindsight_client_api"):
+                raise ImportError("generated client unavailable")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", import_without_generated_client)
+
+        provider = HindsightMemoryProvider()
+        provider.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
+
+        assert provider._mode == "cloud"
+        assert "bank mission sync unavailable" in caplog.text.lower()
 
     def test_embedded_profile_env_includes_idle_timeout_from_config(self):
         env = _build_embedded_profile_env({

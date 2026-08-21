@@ -101,3 +101,47 @@ class TestWeixinAdapterConstructionScope:
             secret_scope.reset_secret_scope(token)
         assert adapter._account_id == "env-account"
         assert adapter._token == "env-token"
+
+
+class TestWeixinOpenDmAllowAllScope:
+    """``_open_dm_opted_in`` gates open-DM access at intake (Weixin enforces its
+    own access policy). It must read the allow-all flags through the scoped
+    helper: a secondary multiplex profile that never opted in must NOT inherit
+    the default profile's process-env GATEWAY_ALLOW_ALL_USERS / WEIXIN_ALLOW_ALL_USERS.
+    """
+
+    def test_scoped_miss_does_not_inherit_gateway_allow_all(self, multiplex_on, monkeypatch):
+        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")  # default profile opted in
+        adapter = WeixinAdapter(PlatformConfig(enabled=True))
+        token = secret_scope.set_secret_scope({})  # secondary profile: no opt-in
+        try:
+            assert adapter._open_dm_opted_in() is False
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+    def test_scoped_miss_does_not_inherit_platform_allow_all(self, multiplex_on, monkeypatch):
+        monkeypatch.setenv("WEIXIN_ALLOW_ALL_USERS", "true")
+        adapter = WeixinAdapter(PlatformConfig(enabled=True))
+        token = secret_scope.set_secret_scope({})
+        try:
+            assert adapter._open_dm_opted_in() is False
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+    def test_scoped_opt_in_is_honored(self, multiplex_on):
+        adapter = WeixinAdapter(PlatformConfig(enabled=True))
+        token = secret_scope.set_secret_scope({"GATEWAY_ALLOW_ALL_USERS": "true"})
+        try:
+            assert adapter._open_dm_opted_in() is True
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+    def test_unscoped_default_profile_uses_environ(self, multiplex_on, monkeypatch):
+        """Default-profile adapter runs unscoped; os.environ is its own value."""
+        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+        adapter = WeixinAdapter(PlatformConfig(enabled=True))
+        token = secret_scope.set_secret_scope(None)
+        try:
+            assert adapter._open_dm_opted_in() is True
+        finally:
+            secret_scope.reset_secret_scope(token)

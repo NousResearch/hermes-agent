@@ -3195,7 +3195,11 @@ class QQAdapter(BasePlatformAdapter):
         return stripped
 
     def _open_dm_opted_in(self) -> bool:
-        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+        # GATEWAY_ALLOW_ALL_USERS must go through the profile-scoped resolver
+        # too, exactly like the QQ_ALLOW_ALL_USERS read below. A raw os.getenv
+        # here let a secondary multiplex profile inherit the DEFAULT profile's
+        # process-env opt-in and open its DMs to everyone (cross-profile leak).
+        if _resolve_qq_secret("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
             return True
         return _resolve_qq_secret("QQ_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
 

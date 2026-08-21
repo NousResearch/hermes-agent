@@ -154,9 +154,12 @@ def browser_control_developer_mode(config: Optional[dict] = None) -> bool:
     """
     if config is None:
         try:
-            from hermes_cli.config import load_config
+            # Read-only flag probe on every browser tool call / check_fn
+            # evaluation: skip load_config()'s defensive deepcopy (~135us);
+            # this function only reads nested dicts and never mutates.
+            from hermes_cli.config import load_config_readonly
 
-            config = load_config()
+            config = load_config_readonly()
         except Exception:
             return False
     if not isinstance(config, dict):
@@ -1007,9 +1010,12 @@ def browser_control_enabled(config: Optional[dict] = None) -> bool:
     """Return the explicit browser-control feature flag (disabled by default)."""
     if config is None:
         try:
-            from hermes_cli.config import load_config
+            # Read-only flag probe on every browser tool call / check_fn
+            # evaluation: skip load_config()'s defensive deepcopy (~135us);
+            # this function only reads nested dicts and never mutates.
+            from hermes_cli.config import load_config_readonly
 
-            config = load_config()
+            config = load_config_readonly()
         except Exception:
             return False
     if not isinstance(config, dict):

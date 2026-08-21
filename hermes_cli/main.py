@@ -10079,6 +10079,22 @@ def cmd_update(args):
         managed_error("update Hermes Agent")
         return
 
+    # --plan is read-only and deployment-kind aware, so it runs BEFORE the
+    # docker/nix/apt refusal gates: on an image-managed or package-managed
+    # install the plan itself reports "not updatable in place" plus the
+    # right mechanism — strictly more useful than the bare refusal text.
+    if getattr(args, "plan", False):
+        # Read-only plan phase (#91277 Phase 2): inventory every running
+        # Hermes runtime across profiles, its supervisor, and its running
+        # code version — without mutating anything. Safe on a live fleet.
+        from hermes_cli.update_inventory import (
+            collect_runtime_inventory,
+            print_update_plan,
+        )
+
+        print_update_plan(collect_runtime_inventory())
+        return
+
     # Docker users can't ``git pull`` — the image excludes ``.git`` from
     # the build context.  Bail with a friendly explanation pointing at
     # ``docker pull`` BEFORE any of the apply-path / check-path branches

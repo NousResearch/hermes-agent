@@ -5133,6 +5133,27 @@ def _cmd_update_impl(args, gateway_mode: bool):
     except Exception as _receipt_exc:
         logger.debug("Update receipt unavailable: %s", _receipt_exc)
 
+    # Plan phase (#91277 Phase 2): snapshot the pre-update fleet — every
+    # running Hermes runtime, its supervisor, and its running code version —
+    # into the receipt, so a post-mortem can compare what the update SAW
+    # against what it did. Read-only; a probe failure records nothing.
+    try:
+        from hermes_cli.update_inventory import (
+            collect_runtime_inventory,
+            record_plan_in_receipt,
+        )
+
+        _pre_update_plan = collect_runtime_inventory()
+        record_plan_in_receipt(_pre_update_plan)
+        if _pre_update_plan.runtimes:
+            _n = len(_pre_update_plan.runtimes)
+            _profiles = ", ".join(
+                sorted({r.profile for r in _pre_update_plan.runtimes})
+            )
+            print(f"→ Fleet: {_n} running service(s) across profiles: {_profiles}")
+    except Exception as _plan_exc:
+        logger.debug("Update plan phase failed: %s", _plan_exc)
+
     # On Windows, abort early if another hermes.exe is holding the venv shim
     # open. Continuing would result in a string of WinError 32 warnings and
     # then either a deferred-rename leftover or a failed git-pull fast path

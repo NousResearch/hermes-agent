@@ -32,6 +32,17 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         help="Check whether an update is available without installing anything",
     )
     update_parser.add_argument(
+        "--plan",
+        action="store_true",
+        default=False,
+        help=(
+            "Show the update plan and exit without changing anything: install "
+            "kind (git/docker/nix), every running Hermes service across all "
+            "profiles with its supervisor and running code version, and how "
+            "each will be restarted. Read-only; safe on a live fleet."
+        ),
+    )
+    update_parser.add_argument(
         "--no-backup",
         action="store_true",
         default=False,

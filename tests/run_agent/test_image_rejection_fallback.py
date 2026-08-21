@@ -6,6 +6,9 @@ verify that stripping preserves the role-alternation invariants providers
 require, and that the phrase detector fires on the expected error bodies.
 """
 
+from types import SimpleNamespace
+
+from agent.conversation_loop import _is_image_rejection_error
 from run_agent import _strip_images_from_messages
 
 
@@ -116,34 +119,20 @@ class TestStripImagesPreservesAlternation:
 
 
 class TestImageRejectionPhraseIsolation:
-    """The image-rejection phrase list must NOT false-match on other
-    image-related error categories (size-too-large, format errors, etc.)
-    so they route to the correct recovery handler (e.g. _try_shrink_image_parts).
-    """
+    """Exercise the production matcher without false-matching other categories."""
 
-    # Reproduces the phrase list used in run_agent.py's error-handler block.
-    _REJECTION_PHRASES = (
-        "only 'text' content type is supported",
-        "only text content type is supported",
-        "image_url is not supported",
-        "image content is not supported",
-        "multimodal is not supported",
-        "multimodal content is not supported",
-        "multimodal input is not supported",
-        "vision is not supported",
-        "vision input is not supported",
-        "does not support images",
-        "does not support image input",
-        "does not support multimodal",
-        "does not support vision",
-        "model does not support image",
-        "image_url'. expected",
-        "no endpoints found that support image input",
-    )
+    @staticmethod
+    def _matches(body: str, status_code: int | None = 400) -> bool:
+        error = SimpleNamespace(body=body, status_code=status_code)
+        return _is_image_rejection_error(error)
 
-    def _matches(self, body: str) -> bool:
-        low = body.lower()
-        return any(p in low for p in self._REJECTION_PHRASES)
+    def test_openai_malformed_image_trips_production_recovery_matcher(self):
+        body = "The image data you provided does not represent a valid image."
+        assert self._matches(body) is True
+
+    def test_openai_malformed_image_5xx_stays_on_transient_error_path(self):
+        body = "The image data you provided does not represent a valid image."
+        assert self._matches(body, status_code=503) is False
 
     def test_anthropic_image_too_large_does_not_trip(self):
         # From agent/error_classifier.py _IMAGE_TOO_LARGE_PATTERNS —

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from io import BytesIO
 from unittest.mock import patch
 
 
@@ -26,6 +27,47 @@ from tools.vision_tools import (
 _TINY_PNG = base64.b64decode(
     b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 )
+
+
+def _animated_gif_bytes(colors, *, size=(4, 4)):
+    from PIL import Image
+
+    frames = [Image.new("RGB", size, color) for color in colors]
+    encoded = BytesIO()
+    frames[0].save(
+        encoded,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=100,
+        loop=0,
+    )
+    return encoded.getvalue()
+
+
+def _track_validated_frame_loads(monkeypatch):
+    from PIL import ImageSequence
+
+    loaded_frames = []
+    real_iterator = ImageSequence.Iterator
+
+    class TrackedFrame:
+        def __init__(self, frame, frame_number):
+            self.frame = frame
+            self.frame_number = frame_number
+            self.width = frame.width
+            self.height = frame.height
+
+        def load(self):
+            loaded_frames.append(self.frame_number)
+            return self.frame.load()
+
+    def tracking_iterator(image):
+        for frame_number, frame in enumerate(real_iterator(image), start=1):
+            yield TrackedFrame(frame, frame_number)
+
+    monkeypatch.setattr(ImageSequence, "Iterator", tracking_iterator)
+    return loaded_frames
 
 
 # ─── _supports_media_in_tool_results ─────────────────────────────────────────
@@ -94,6 +136,121 @@ class TestVisionAnalyzeNative:
         url = next(p["image_url"]["url"] for p in parts if p.get("type") == "image_url")
         assert url.startswith("data:image/")
 
+    def test_truncated_supported_image_is_rejected_before_embedding(self, tmp_path):
+        """A valid header must not let partially downloaded bytes poison history."""
+        pytest = __import__("pytest")
+        Image = pytest.importorskip(
+            "PIL.Image", reason="Pillow is required for full raster decode validation"
+        )
+
+        truncated = tmp_path / "truncated.png"
+        truncated.write_bytes(_TINY_PNG[:-22])
+
+        # This is the production failure shape: header parsing succeeds, but a
+        # complete decode fails after the partial download is read.
+        with Image.open(truncated) as image:
+            assert image.format == "PNG"
+            with pytest.raises(OSError, match="truncated"):
+                image.load()
+
+        result = asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(str(truncated), "describe")
+        )
+
+        assert isinstance(result, str), "corrupt image must not return a multimodal envelope"
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert "decode" in payload["error"].lower()
+
+    def test_truncated_animated_gif_frame_is_rejected_before_embedding(
+        self, tmp_path, monkeypatch
+    ):
+        """Every frame must decode before an animated raster enters history."""
+        pytest = __import__("pytest")
+        pytest.importorskip(
+            "PIL.Image", reason="Pillow is required for full raster decode validation"
+        )
+        from PIL import Image, ImageSequence
+
+        truncated = tmp_path / "truncated.gif"
+        truncated.write_bytes(_animated_gif_bytes(["red", "blue"])[:-3])
+        monkeypatch.setattr(
+            "tools.vision_tools._VISION_MAX_VALIDATED_FRAME_COUNT", 2
+        )
+        monkeypatch.setattr(
+            "tools.vision_tools._VISION_MAX_VALIDATED_AGGREGATE_PIXELS", 32
+        )
+
+        with Image.open(truncated) as image:
+            assert image.format == "GIF"
+            assert getattr(image, "n_frames", 1) == 2
+            with pytest.raises(OSError, match="truncated"):
+                for frame in ImageSequence.Iterator(image):
+                    frame.load()
+
+        result = asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(str(truncated), "describe")
+        )
+
+        assert isinstance(result, str), "corrupt animation must not return a multimodal envelope"
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert "decode" in payload["error"].lower()
+
+    def test_animation_over_frame_validation_limit_is_rejected(
+        self, tmp_path, monkeypatch
+    ):
+        """A small animation is rejected before an excess frame is decoded."""
+        pytest = __import__("pytest")
+        pytest.importorskip(
+            "PIL.Image", reason="Pillow is required for full raster decode validation"
+        )
+
+        animation = tmp_path / "too-many-frames.gif"
+        animation.write_bytes(_animated_gif_bytes(["red", "green", "blue"]))
+        monkeypatch.setattr(
+            "tools.vision_tools._VISION_MAX_VALIDATED_FRAME_COUNT", 2
+        )
+        loaded_frames = _track_validated_frame_loads(monkeypatch)
+
+        result = asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(str(animation), "describe")
+        )
+
+        assert isinstance(result, str)
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert "frame 3" in payload["error"].lower()
+        assert "maximum 2" in payload["error"].lower()
+        assert loaded_frames == [1, 2]
+
+    def test_animation_over_aggregate_pixel_validation_limit_is_rejected(
+        self, tmp_path, monkeypatch
+    ):
+        """Aggregate decoded pixels are bounded independently of file size."""
+        pytest = __import__("pytest")
+        pytest.importorskip(
+            "PIL.Image", reason="Pillow is required for full raster decode validation"
+        )
+
+        animation = tmp_path / "too-many-pixels.gif"
+        animation.write_bytes(_animated_gif_bytes(["red", "blue"]))
+        monkeypatch.setattr(
+            "tools.vision_tools._VISION_MAX_VALIDATED_AGGREGATE_PIXELS", 31
+        )
+        loaded_frames = _track_validated_frame_loads(monkeypatch)
+
+        result = asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(str(animation), "describe")
+        )
+
+        assert isinstance(result, str)
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert "aggregate decoded pixel" in payload["error"].lower()
+        assert "32" in payload["error"]
+        assert "maximum 31" in payload["error"].lower()
+        assert loaded_frames == [1]
 
     def test_file_url_scheme_resolves(self, tmp_path):
         img = tmp_path / "t.png"

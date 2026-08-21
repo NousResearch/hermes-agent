@@ -3841,6 +3841,17 @@ def _run_job_script(
                 "errors": "replace",
             }
         env = build_subprocess_env()
+        # A cron script runs as the USER's workload, not as Hermes code: the
+        # gateway's own PYTHONPATH (agent repo + agent-venv site-packages)
+        # must not leak into the child. A wrapper invoking a project venv on
+        # another Python version imports the agent's mismatched site-packages
+        # and dies at import time with a cross-version ModuleNotFoundError
+        # (#89422). The Windows/uv bootstrap below already treats PYTHONPATH
+        # as scheduler-owned (it builds its own overlay), so dropping the
+        # inherited one keeps a single owner for the child's interpreter
+        # environment. PYTHONHOME rides along for the same reason.
+        env.pop("PYTHONPATH", None)
+        env.pop("PYTHONHOME", None)
         env.update(env_overlay)
         # Use the job's workdir as the subprocess cwd when configured,
         # otherwise default to the scripts-dir parent (back-compat).

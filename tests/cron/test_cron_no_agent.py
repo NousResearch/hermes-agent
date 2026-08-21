@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import subprocess
 from unittest.mock import patch
@@ -105,6 +106,43 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     assert error is None
     assert "RAM 92% on host" in final_response
     assert "RAM 92% on host" in doc
+
+
+def test_run_job_no_agent_scrubs_gateway_pythonpath(hermes_env, monkeypatch):
+    """A cron script runs as the USER's workload, not as Hermes code (#89422).
+
+    The gateway process carries its own PYTHONPATH (agent repo + agent-venv
+    site-packages); leaking it into the child made wrappers that invoke a
+    project venv on another Python version import the agent's mismatched
+    site-packages and die at import time with a cross-version
+    ModuleNotFoundError."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    gateway_repo = str(hermes_env / "hermes-agent")
+    gateway_site = str(hermes_env / "hermes-agent" / "venv" / "lib" / "python3.11" / "site-packages")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([gateway_repo, gateway_site]))
+    monkeypatch.setenv("PYTHONHOME", "/opt/agent-python")
+
+    # A python script resolves its own imports: the agent venv must be
+    # invisible to it. Print whether any agent path leaked into sys.path.
+    script_path = hermes_env / "scripts" / "check_path.py"
+    script_path.write_text(
+        "import os, sys\n"
+        "leaked = [p for p in sys.path if "
+        f"{gateway_site!r} in p or {gateway_repo!r} in p]\n"
+        "print('LEAKED:' + ';'.join(leaked) if leaked else 'CLEAN')\n"
+        "print('PYTHONHOME=' + os.environ.get('PYTHONHOME', 'unset'))\n"
+    )
+
+    job = create_job(
+        prompt=None, schedule="every 5m", script="check_path.py", no_agent=True, deliver="local"
+    )
+    success, _doc, final_response, error = run_job(job)
+    assert success is True, error
+    assert "LEAKED" not in final_response
+    assert "CLEAN" in final_response
+    assert "PYTHONHOME=unset" in final_response
 
 
 def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):

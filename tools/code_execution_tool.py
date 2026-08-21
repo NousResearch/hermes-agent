@@ -506,6 +506,29 @@ def retry(fn, max_attempts=3, delay=2):
 
 '''
 
+# Execute the user's untouched source with only the three documented helpers
+# added to its module globals.  ``runpy`` compiles script.py directly, so
+# traceback line numbers continue to match the source the user submitted.
+# Keeping this bootstrap outside script.py also avoids exposing its imports in
+# user globals; explicit ``from hermes_tools import ...`` imports still work.
+_USER_SCRIPT_RUNNER = (
+    "import runpy,sys;"
+    "from hermes_tools import json_parse,shell_quote,retry;"
+    "path=sys.argv.pop(1);sys.argv[0]=path;"
+    "runpy.run_path(path,run_name='__main__',init_globals={"
+    "'json_parse':json_parse,'shell_quote':shell_quote,'retry':retry})"
+)
+
+
+def _user_script_argv(python: str, script_path: str) -> List[str]:
+    """Build an argv that executes user source with documented helper globals."""
+    return [python, "-c", _USER_SCRIPT_RUNNER, script_path]
+
+
+def _user_script_shell_command(python: str, script_path: str) -> str:
+    """Build the remote shell form of :func:`_user_script_argv`."""
+    return " ".join(shlex.quote(arg) for arg in _user_script_argv(python, script_path))
+
 # ---- UDS transport (local backend) ---------------------------------------
 
 _UDS_TRANSPORT_HEADER = '''\
@@ -1156,7 +1179,8 @@ def _execute_remote(
         logger.info("Executing code on %s backend (task %s)...",
                      env_type, effective_task_id[:8])
         script_result = env.execute(
-            f"cd {quoted_sandbox_dir} && {env_prefix} python3 script.py",
+            f"cd {quoted_sandbox_dir} && {env_prefix} "
+            f"{_user_script_shell_command('python3', 'script.py')}",
             timeout=timeout,
         )
 
@@ -1512,7 +1536,7 @@ def execute_code(
         child_env["PYTHONPATH"] = os.pathsep.join(_pp_parts)
 
         proc = subprocess.Popen(
-            [_child_python, _script_path],
+            _user_script_argv(_child_python, _script_path),
             cwd=_child_cwd,
             env=child_env,
             stdout=subprocess.PIPE,

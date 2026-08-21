@@ -18,6 +18,8 @@ import pytest
 import json
 import os
 import socket
+import subprocess
+import tempfile
 import time
 
 os.environ["TERMINAL_ENV"] = "local"
@@ -118,6 +120,65 @@ class TestHermesToolsGeneration(unittest.TestCase):
 
 
 class TestExecuteCodeRemoteTempDir(unittest.TestCase):
+    def test_generated_remote_module_injects_helpers_without_breaking_explicit_imports(self):
+        """Run the file-transport module and untouched user source for real."""
+        class LocalRemoteEnv:
+            def __init__(self, temp_dir):
+                self.temp_dir = temp_dir
+
+            def get_temp_dir(self):
+                return self.temp_dir
+
+            def execute(self, command, cwd=None, timeout=None):
+                completed = subprocess.run(
+                    command,
+                    cwd=cwd,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+                return {
+                    "output": completed.stdout + completed.stderr,
+                    "returncode": completed.returncode,
+                }
+
+        code = """from hermes_tools import json_parse as imported_json_parse
+attempts = 0
+
+def flaky():
+    global attempts
+    attempts += 1
+    if attempts == 1:
+        raise RuntimeError("retry me")
+    return "retried"
+
+assert imported_json_parse('{"explicit": true}')["explicit"] is True
+assert json_parse('{"direct": true}')["direct"] is True
+assert shell_quote("a b") == "'a b'"
+assert retry(flaky, max_attempts=2, delay=0) == "retried"
+assert "runpy" not in globals()
+assert "hermes_tools" not in globals()
+print("remote helpers ok", attempts)
+"""
+        with tempfile.TemporaryDirectory() as td:
+            env = LocalRemoteEnv(td)
+            fake_thread = MagicMock()
+            with patch(
+                "tools.code_execution_tool._load_config",
+                return_value={"timeout": 30, "max_tool_calls": 5},
+            ), patch(
+                "tools.code_execution_tool._get_or_create_env",
+                return_value=(env, "ssh"),
+            ), patch(
+                "tools.code_execution_tool.threading.Thread",
+                return_value=fake_thread,
+            ):
+                result = json.loads(_execute_remote(code, "task-remote-builtins", []))
+
+        self.assertEqual(result["status"], "success", msg=result)
+        self.assertIn("remote helpers ok 2", result["output"])
+
     def test_execute_remote_uses_backend_temp_dir_for_sandbox(self):
         class FakeEnv:
             def __init__(self):
@@ -130,7 +191,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
                 self.commands.append((command, cwd, timeout))
                 if "command -v python3" in command:
                     return {"output": "OK\n"}
-                if "python3 script.py" in command:
+                if "runpy.run_path" in command:
                     return {"output": "hello\n", "returncode": 0}
                 return {"output": ""}
 
@@ -148,7 +209,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         self.assertFalse(result["stdout_truncated"])
         self.assertEqual(result["stdout_bytes_total"], len("hello\n".encode("utf-8")))
         mkdir_cmd = env.commands[1][0]
-        run_cmd = next(cmd for cmd, _, _ in env.commands if "python3 script.py" in cmd)
+        run_cmd = next(cmd for cmd, _, _ in env.commands if "runpy.run_path" in cmd)
         cleanup_cmd = env.commands[-1][0]
         self.assertIn("mkdir -p /data/data/com.termux/files/usr/tmp/hermes_exec_", mkdir_cmd)
         self.assertIn("HERMES_RPC_DIR=/data/data/com.termux/files/usr/tmp/hermes_exec_", run_cmd)
@@ -168,7 +229,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
                 self.commands.append((command, cwd, timeout))
                 if "command -v python3" in command:
                     return {"output": "OK\n"}
-                if "python3 script.py" in command:
+                if "runpy.run_path" in command:
                     return {"output": "hello\n", "returncode": 0}
                 return {"output": ""}
 
@@ -188,7 +249,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
             result = json.loads(_execute_remote("print('hello')", "task-1", ["terminal"]))
 
         self.assertEqual(result["status"], "success")
-        run_cmd = next(cmd for cmd, _, _ in env.commands if "python3 script.py" in cmd)
+        run_cmd = next(cmd for cmd, _, _ in env.commands if "runpy.run_path" in cmd)
         # The TZ value must be shell-quoted — it should NOT contain unescaped semicolons
         self.assertNotIn("TZ=US/Eastern; echo PWNED", run_cmd,
                          "TZ value with shell metacharacters must not appear unquoted")
@@ -322,6 +383,34 @@ raise RuntimeError("deliberate crash")
         self.assertIn("before error", result["output"])
         self.assertIn("RuntimeError", result.get("error", "") + result.get("output", ""))
 
+
+    def test_helpers_are_available_without_import_alongside_explicit_tool_import(self):
+        """Documented helpers live in user globals; tools remain importable."""
+        code = """import sys
+from hermes_tools import terminal
+attempts = 0
+
+def flaky():
+    global attempts
+    attempts += 1
+    if attempts == 1:
+        raise RuntimeError("retry me")
+    return "retried"
+
+parsed = json_parse('\\ufeff{"value": "ok"}')
+quoted = shell_quote("a b")
+result = retry(flaky, max_attempts=2, delay=0)
+assert len(sys.argv) == 1, sys.argv
+assert "runpy" not in globals()
+assert "hermes_tools" not in globals()
+tool_result = terminal("echo explicit-import")
+print(parsed["value"], quoted, result, attempts)
+print(tool_result["output"])
+"""
+        result = self._run(code)
+        self.assertEqual(result["status"], "success", msg=result)
+        self.assertIn("ok 'a b' retried 2", result["output"])
+        self.assertIn("mock output for: echo explicit-import", result["output"])
 
     def test_shell_quote_helper(self):
         """shell_quote properly escapes dangerous characters."""
@@ -741,7 +830,7 @@ class TestHeadTailTruncation(unittest.TestCase):
                 self.commands.append((command, cwd, timeout))
                 if "command -v python3" in command:
                     return {"output": "OK\n"}
-                if "python3 script.py" in command:
+                if "runpy.run_path" in command:
                     return {"output": "HEAD\n" + ("x" * 80_000) + "\nTAIL\n", "returncode": 0}
                 return {"output": ""}
 

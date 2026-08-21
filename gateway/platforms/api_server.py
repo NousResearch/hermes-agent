@@ -1204,6 +1204,22 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
+def _usage_context_fields(usage: Dict[str, Any]) -> Dict[str, int]:
+    """Context-window fields for OpenAI-compatible usage dicts.
+
+    _run_agent in gateway/run.py populates these in the internal usage dict;
+    we forward them on API responses so the WebUI/Hermex context-ring
+    indicator gets its data via /v1/chat/completions. They are intentional
+    extensions to the OpenAI usage schema, documented as such for consumers
+    that round-trip the usage object.
+    """
+    return {
+        "last_prompt_tokens": usage.get("last_prompt_tokens", 0),
+        "context_length": usage.get("context_length", 0),
+        "threshold_tokens": usage.get("threshold_tokens", 0),
+    }
+
+
 _api_agent_request_reservation: ContextVar[Optional[dict[str, bool]]] = ContextVar(
     "api_agent_request_reservation", default=None
 )
@@ -5305,6 +5321,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "prompt_tokens": usage.get("input_tokens", 0),
                 "completion_tokens": usage.get("output_tokens", 0),
                 "total_tokens": usage.get("total_tokens", 0),
+                **_usage_context_fields(usage),
             },
         }
         if is_partial or is_failed or not completed:
@@ -5666,6 +5683,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "input_tokens": usage.get("input_tokens", 0),
                 "output_tokens": usage.get("output_tokens", 0),
                 "total_tokens": usage.get("total_tokens", 0),
+                **_usage_context_fields(usage),
             }
             incomplete_history = list(conversation_history)
             incomplete_history.append({"role": "user", "content": user_message})
@@ -6008,6 +6026,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "input_tokens": usage.get("input_tokens", 0),
                     "output_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
+                    **_usage_context_fields(usage),
                 }
                 _failed_history = list(conversation_history)
                 _failed_history.append({"role": "user", "content": user_message})
@@ -6112,6 +6131,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "input_tokens": usage.get("input_tokens", 0),
                     "output_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
+                    **_usage_context_fields(usage),
                 }
                 await _write_event("response.failed", {
                     "type": "response.failed",

@@ -87,6 +87,16 @@ describe('ProjectOverviewRow', () => {
     expect(onNewSession).toHaveBeenCalledWith(null)
   })
 
+  it('renders a Lucide project icon stored by the appearance picker', async () => {
+    const lucideProject = { ...project, icon: 'lucide:briefcase-business' } as SidebarProjectTree
+    const { container } = render(<ProjectOverviewRow project={lucideProject} />)
+
+    expect(await screen.findByLabelText('Enter Test D')).toBeTruthy()
+    await vi.waitFor(() =>
+      expect(container.querySelector('svg[data-project-icon="lucide:briefcase-business"]')).toBeTruthy()
+    )
+  })
+
   it('tags the row with data-sessions-project so a skin can target one project', () => {
     const { container } = render(<ProjectOverviewRow project={project} />)
 

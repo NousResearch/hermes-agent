@@ -4,6 +4,7 @@ import { Dialog as DialogPrimitive } from 'radix-ui'
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
+import { projectIconComponent } from '@/app/chat/sidebar/projects/project-icon'
 import {
   HUD_HEADING,
   HUD_ITEM,
@@ -766,7 +767,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     // from the palette. Plain select is a pure scope switch (sidebar enters the
     // project — never spends main); ⌘-Enter / ⌘-click also starts a new session
     // at the project root (stacked as a tab when main holds a chat), previewed
-    // by the label swap while ⌘ is held. Rows carry the project's own codicon,
+    // by the label swap while ⌘ is held. Rows carry the project's own glyph,
     // matching the sidebar. The pinned "Open folder…" row is the ⌘O upsert.
     const projectGroup: PaletteGroup = {
       heading: cc.projects,
@@ -781,7 +782,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         },
         ...filterVisibleProjects(projectTree, dismissedAutoProjects).map(project => ({
           comboHint: 'mod+enter',
-          icon: codiconIcon(project.icon || (project.isNoProject ? 'home' : 'folder-library')),
+          icon: projectIconComponent(project.icon, project.isNoProject ? 'home' : 'folder-library'),
           id: `project-${project.id}`,
           keywords: ['project', 'workspace', 'go to', project.label, ...(project.path ? [project.path] : [])],
           label: project.label,

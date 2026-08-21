@@ -1321,6 +1321,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
                 "docker_forward_env": config.get("docker_forward_env", []),
                 "docker_env": config.get("docker_env", {}),
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                "docker_network": config.get("docker_network", True),
                 "docker_extra_args": config.get("docker_extra_args", []),
                 "docker_shm_size": config.get("docker_shm_size", "1g"),
                 "docker_persist_across_processes": config.get("docker_persist_across_processes", True),

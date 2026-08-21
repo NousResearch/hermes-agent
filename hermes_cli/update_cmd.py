@@ -5040,6 +5040,8 @@ def _service_unit_supports_graceful_sigusr1_restart(svc_name: str) -> bool:
 
 def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
     """Print an explicit incomplete-update warning for unrestarted units."""
+    from hermes_cli.gateway import is_macos
+
     if not failed_units:
         return
     # Preserve discovery order while de-duplicating.
@@ -5054,6 +5056,18 @@ def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
     print("⚠ Update incomplete — some units were not restarted:")
     for name in ordered:
         print(f"    - {name}")
+    if is_macos():
+        # A launchd label reaches this list when launchd was not supervising a
+        # live process after the restart (#88848), so the unit is not merely
+        # stale — it is very likely deregistered, and `launchctl kickstart`
+        # cannot revive a job launchd no longer knows about.
+        print("  Listed services may be deregistered from launchd, or still")
+        print("  running pre-update code (mixed sys.modules). Recover with:")
+        print("    hermes gateway status")
+        print("    launchctl list | grep <label>")
+        print("    launchctl bootstrap gui/$(id -u) "
+              "~/Library/LaunchAgents/<label>.plist")
+        return
     print("  Skipped units may still be running pre-update code (mixed")
     print("  sys.modules). Restart them manually, then verify:")
     print("    hermes gateway status")
@@ -5095,6 +5109,7 @@ def _restart_macos_launchd_gateways(
         _launchd_service_registered,
         _locate_launchd_gateway_service,
         _wait_for_launchd_service_pid,
+        wait_for_launchd_gateway_supervision,
     )
 
     # --- Current profile: unchanged single-service path ---------------------
@@ -5112,11 +5127,38 @@ def _restart_macos_launchd_gateways(
         ):
             try:
                 launchd_restart()
-                restarted_services.append(current_label)
             except subprocess.CalledProcessError as e:
                 stderr = (getattr(e, "stderr", "") or "").strip()
                 print(f"  ⚠ Gateway restart failed: {stderr}")
                 failed_or_stale_units.append(current_label)
+            else:
+                # Siblings below are only counted as restarted once launchd
+                # reports a fresh supervised pid; the invoking profile was
+                # counted on "launchd_restart() did not raise" alone. That is
+                # not the same claim: launchd_restart() returns as soon as the
+                # restart has been REQUESTED -- the self-restart branch hands
+                # the work to the running gateway and returns immediately, and
+                # a plist reload is handed to a detached helper. Both are
+                # asynchronous, so a helper that dies before its first
+                # bootstrap (#88848), or a `launchctl bootstrap` that exits 0
+                # without registering (measured on macOS 26.6.1), both reached
+                # "Update complete!" with nothing supervising the gateway.
+                #
+                # Verified domain-agnostically, NOT via
+                # _wait_for_launchd_service_pid: that needs an explicit domain,
+                # and the gate above deliberately avoids a domain locate
+                # because it fails on macOS-26 hosts whose per-user domains
+                # reject service management even though launchd_restart() owns
+                # that fallback.
+                if wait_for_launchd_gateway_supervision(label=current_label):
+                    restarted_services.append(current_label)
+                else:
+                    failed_or_stale_units.append(current_label)
+                    print(
+                        f"  ✗ {current_label} restarted but launchd is not "
+                        "supervising it.\n"
+                        "    Check logs, then: hermes gateway restart"
+                    )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 

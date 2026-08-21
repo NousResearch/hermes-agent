@@ -14,6 +14,10 @@ Credential search order (matching Copilot CLI behaviour):
   2. GH_TOKEN env var
   3. GITHUB_TOKEN env var
   4. gh auth token  CLI fallback
+
+Optional env vars for gh CLI fallback:
+  COPILOT_GH_HOST   Override the GitHub hostname (--hostname flag)
+  COPILOT_GH_USER   Select a specific account on the host (--user flag)
 """
 
 from __future__ import annotations
@@ -190,6 +194,7 @@ def _try_gh_cli_token() -> Optional[str]:
 def _probe_gh_cli_token() -> Optional[str]:
     """Uncached ``gh auth token`` subprocess probe (see ``_try_gh_cli_token``)."""
     hostname = os.getenv("COPILOT_GH_HOST", "").strip()
+    user = os.getenv("COPILOT_GH_USER", "").strip()
 
     # Build a clean env so gh doesn't short-circuit on GITHUB_TOKEN / GH_TOKEN
     clean_env = {k: v for k, v in os.environ.items()
@@ -203,6 +208,8 @@ def _probe_gh_cli_token() -> Optional[str]:
         cmd = [gh_path, "auth", "token"]
         if hostname:
             cmd += ["--hostname", hostname]
+        if user:
+            cmd += ["--user", user]
         try:
             result = subprocess.run(
                 cmd,

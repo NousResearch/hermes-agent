@@ -219,12 +219,15 @@ def verify_export_file(path: Path | str, session: dict[str, Any]) -> tuple[bool,
 def redact_session_data(session: dict[str, Any]) -> dict[str, Any]:
     """Return a deep copy of a session export dict with secrets redacted.
 
-    Runs every message's content and tool-call arguments through the
-    force-mode redaction pass (``agent.redact.redact_sensitive_text``), so
-    API keys, tokens, and credentials that appeared in tool output never
-    land in plaintext export files. Force mode ignores the user's global
-    ``security.redact_secrets`` preference — an explicit ``--redact`` export
-    must never emit raw secrets.
+    Runs every string in the export through the force-mode redaction pass
+    (``agent.redact.redact_sensitive_text``) — message content, tool-call
+    arguments, AND session-level fields outside ``messages``/``segments``.
+    The auto-generated session title quotes the first user message, so a
+    credential pasted into that message rides into the title and, before
+    this walked the whole dict, straight into the export header in
+    plaintext despite ``--redact`` (#90361). Force mode ignores the user's
+    global ``security.redact_secrets`` preference — an explicit ``--redact``
+    export must never emit raw secrets anywhere in the file.
     """
     from agent.redact import redact_sensitive_text
 
@@ -234,14 +237,13 @@ def redact_session_data(session: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value, list):
             return [_clean(v) for v in value]
         if isinstance(value, dict):
-            return {k: _clean(v) for k, v in value.items()}
+            # Keys are strings too — a credential-shaped key (a misbehaving
+            # JSON emitter writing {"sk-...": value}) must not pass through
+            # verbatim when the user asked for --redact (review on #90361).
+            return {_clean(k) if isinstance(k, str) else k: _clean(v) for k, v in value.items()}
         return value
 
-    redacted = dict(session)
-    for key in ("messages", "segments"):
-        if key in redacted and redacted[key] is not None:
-            redacted[key] = _clean(redacted[key])
-    return redacted
+    return _clean(session)
 
 
 def write_session_markdown(

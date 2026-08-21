@@ -37,6 +37,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Optional
 
 
@@ -275,3 +276,40 @@ def cmd_gateway_enroll(args) -> None:
         "  secret and verifies signed inbound deliveries with the tenant delivery\n"
         "  key. Restart the gateway to pick up the new env."
     )
+    # GATEWAY_RELAY_URL / GATEWAY_RELAY_WAKE_URL are process-global deployment
+    # stamps (agent/secret_scope.py): a multiplexed gateway resolves them from
+    # the PROCESS environment only, never from a secondary profile's .env
+    # (which is loaded into an isolated secret scope, not exported). The .env
+    # write above works for a single-profile gateway and for the profile the
+    # process is launched under (load_hermes_dotenv exports that .env), so
+    # warn rather than refuse — but don't let a secondary-profile enroll claim
+    # a config that will silently never activate.
+    if explicit_url or explicit_wake_url:
+        _warn_if_secondary_multiplex_profile()
+
+
+def _warn_if_secondary_multiplex_profile() -> None:
+    """Warn when relay routing stamps were written to a profile .env that a
+    multiplexed gateway will never read them from. Best-effort — any failure
+    to determine the topology stays silent (the write itself succeeded)."""
+    try:
+        from gateway.config import load_gateway_config
+        from hermes_cli.config import get_hermes_home
+
+        home = Path(get_hermes_home()).resolve()
+        is_secondary = home.parent.name == "profiles"
+        if not is_secondary:
+            return
+        if not getattr(load_gateway_config(), "multiplex_profiles", False):
+            return
+        print()
+        print(
+            "  ⚠ This profile is a SECONDARY profile of a multiplexed gateway.\n"
+            "    GATEWAY_RELAY_URL / GATEWAY_RELAY_WAKE_URL are process-level\n"
+            "    deployment settings: the gateway reads them from the process\n"
+            "    environment (or the default profile's .env), not from this\n"
+            "    profile's .env. Set them in the environment the gateway process\n"
+            "    is launched with, or enroll from the default profile."
+        )
+    except Exception:
+        pass

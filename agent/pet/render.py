@@ -73,9 +73,10 @@ def detect_terminal_graphics() -> str:
     if term_program in {"ghostty"}:
         return "kitty"
 
-    # WezTerm speaks both kitty and iterm; prefer kitty (richer placement).
+    # WezTerm speaks both kitty and iterm; kitty placement renders incorrectly
+    # in practice, so prefer iterm here (Ghostty keeps kitty above).
     if term_program == "wezterm" or os.environ.get("WEZTERM_PANE"):
-        return "kitty"
+        return "iterm"
 
     # iTerm2 inline images
     if term_program == "iterm.app" or os.environ.get("ITERM_SESSION_ID"):

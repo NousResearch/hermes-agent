@@ -193,6 +193,8 @@ class TestLaunchdRestartWedgedIntegration:
         monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
         monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 180.0)
+        # Wait budget covers after-turn deferral + drain + headroom (#77184).
+        monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 195.0)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 4242)
         monkeypatch.setattr(
             gateway_cli, "_request_gateway_self_restart", lambda pid: False
@@ -212,10 +214,11 @@ class TestLaunchdRestartWedgedIntegration:
             "terminate_pid",
             lambda pid, force=False: events.append("sigterm"),
         )
+        # Never let a real SIGUSR1 escape to PID 4242 during tests.
         monkeypatch.setattr(
             gateway_cli,
-            "_wait_for_gateway_exit",
-            lambda timeout, force_after=None: events.append(("drain", timeout)) or True,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: events.append(("drain", pid, timeout)) or True,
         )
         monkeypatch.setattr(
             gateway_cli.subprocess,
@@ -241,11 +244,11 @@ class TestLaunchdRestartWedgedIntegration:
         events = self._setup(monkeypatch, gateway_cli.GATEWAY_LOOP_ALIVE)
         gateway_cli.launchd_restart()
         assert "escalate" not in events
-        assert ("drain", 180.0) in events
+        assert ("drain", 4242, 195.0) in events
 
     def test_unknown_liveness_keeps_full_drain_budget(self, monkeypatch):
         """Ambiguity (no heartbeat) must never trigger escalation."""
         events = self._setup(monkeypatch, gateway_cli.GATEWAY_LOOP_UNKNOWN)
         gateway_cli.launchd_restart()
         assert "escalate" not in events
-        assert ("drain", 180.0) in events
+        assert ("drain", 4242, 195.0) in events

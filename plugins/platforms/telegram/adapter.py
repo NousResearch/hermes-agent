@@ -2107,7 +2107,7 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata = metadata or {}
         if not (
             metadata.get("telegram_dm_topic_reply_fallback")
-            or metadata.get("direct_messages_topic_id")
+            or self._metadata_direct_messages_topic_id(metadata)
         ):
             return False
         return self._rich_eligible(content)

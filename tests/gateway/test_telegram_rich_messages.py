@@ -400,6 +400,12 @@ def test_prefers_fresh_final_streaming_for_dm_topic_tables():
     assert adapter.prefers_fresh_final_streaming(
         RICH_CONTENT, {"direct_messages_topic_id": "20189"}
     ) is True
+    # The documented telegram_-prefixed alias is honored through the same
+    # canonical accessor the send path uses (gateway/delivery.py treats the
+    # two keys as equivalent) — an alias-only lane must not flatten tables.
+    assert adapter.prefers_fresh_final_streaming(
+        RICH_CONTENT, {"telegram_direct_messages_topic_id": "20189"}
+    ) is True
 
 
 @pytest.mark.asyncio
@@ -551,7 +557,10 @@ async def test_dm_topic_table_stream_uses_send_rich_message():
     assert draft_kwargs["text"] == TOPIC_TABLE
     assert draft_kwargs["message_thread_id"] == 20189
     rich_endpoints = [call.args[0] for call in adapter._bot.do_api_request.await_args_list]
-    assert rich_endpoints == ["sendRichMessage"]
+    # Invariant, not a frozen call list: the persistent final goes through
+    # sendRichMessage, and no rich DRAFT frames fire (rich_drafts is off).
+    assert "sendRichMessage" in rich_endpoints
+    assert "sendRichMessageDraft" not in rich_endpoints
     adapter._bot.send_message.assert_not_called()
 
 

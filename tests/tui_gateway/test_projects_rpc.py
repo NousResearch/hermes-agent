@@ -208,6 +208,48 @@ def test_tree_build_warms_every_path_it_will_resolve(monkeypatch, tmp_path):
     assert str(repo) in warmed
 
 
+@pytest.mark.parametrize(
+    ("profile_name", "expected_profile"),
+    [("builder", "builder"), (None, "default")],
+)
+def test_project_session_rows_carry_profile_identity(tmp_path, profile_name, expected_profile):
+    """Project overview and drill-in rows preserve their owning profile."""
+    workspace = tmp_path / expected_profile
+    workspace.mkdir()
+    project = _call(
+        "projects.create",
+        {"name": f"Project {expected_profile}", "folders": [str(workspace)]},
+    )["project"]
+
+    session_id = f"project-profile-{expected_profile}"
+    db = server._get_db()
+    assert db is not None
+    db.create_session(
+        session_id,
+        "desktop",
+        cwd=str(workspace),
+        profile_name=profile_name,
+    )
+    db.append_message(session_id, "user", "show my owning profile")
+
+    overview = _call("projects.tree", {"preview_limit": 3})
+    overview_project = next(item for item in overview["projects"] if item["id"] == project["id"])
+    overview_row = next(item for item in overview_project["previewSessions"] if item["id"] == session_id)
+
+    assert overview_row["profile"] == expected_profile
+
+    detail = _call("projects.project_sessions", {"project_id": project["id"]})["project"]
+    detail_row = next(
+        item
+        for repo in detail["repos"]
+        for group in repo["groups"]
+        for item in group["sessions"]
+        if item["id"] == session_id
+    )
+
+    assert detail_row["profile"] == expected_profile
+
+
 def test_create_list_roundtrip(tmp_path):
     created = _call("projects.create", {"name": "Demo", "folders": [str(tmp_path)], "use": True})
     assert created["project"]["slug"] == "demo"

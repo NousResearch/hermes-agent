@@ -13121,6 +13121,7 @@ def _project_tree_row(r: dict) -> dict:
         "ended_at": r.get("ended_at"),
         "last_active": r.get("last_active") or r.get("started_at") or 0,
         "source": r.get("source"),
+        "profile": r.get("profile_name") or "default",
         "archived": bool(r.get("archived")),
         "message_count": r.get("message_count") or 0,
         "tool_call_count": r.get("tool_call_count") or 0,

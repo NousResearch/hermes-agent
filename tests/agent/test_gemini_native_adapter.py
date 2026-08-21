@@ -133,6 +133,62 @@ def test_consecutive_user_messages_merge_for_gemini_alternation():
 
 
 
+def test_build_native_request_array_properties_are_repaired():
+    """Wire regression for bare arrays and homogeneous tuple schemas.
+
+    A bare array must gain ``items: {}`` or Gemini rejects the whole tool
+    catalog. A bounded homogeneous ``prefixItems`` tuple must retain its item
+    schema when translated to the legacy ``FunctionDeclaration.parameters``.
+    """
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[{"role": "user", "content": "Decide."}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "propose_action",
+                    "description": "Propose candidate decisions.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "decisions": {
+                                "type": "array",
+                                "description": "Candidate decisions",
+                            },
+                            "bbox": {
+                                "type": "array",
+                                "prefixItems": [{"type": "integer"}] * 4,
+                                "minItems": 4,
+                                "maxItems": 4,
+                            },
+                        },
+                        "required": ["decisions", "bbox"],
+                    },
+                },
+            }
+        ],
+        tool_choice=None,
+    )
+
+    decisions = request["tools"][0]["functionDeclarations"][0]["parameters"][
+        "properties"
+    ]["decisions"]
+    assert decisions["type"] == "array"
+    assert decisions["items"] == {}
+
+    bbox = request["tools"][0]["functionDeclarations"][0]["parameters"][
+        "properties"
+    ]["bbox"]
+    assert bbox == {
+        "type": "array",
+        "items": {"type": "integer"},
+        "minItems": 4,
+        "maxItems": 4,
+    }
+
+
 def test_translate_native_response_surfaces_reasoning_and_tool_calls():
     from agent.gemini_native_adapter import translate_gemini_response
 

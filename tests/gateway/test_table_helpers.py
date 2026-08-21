@@ -68,3 +68,57 @@ class TestConvertTableToBullets:
         assert "• head2: b" in out
 
 
+    def test_surrounding_prose_preserved(self):
+        text = (
+            "Scores:\n\n"
+            "| Player | Score |\n"
+            "|--------|-------|\n"
+            "| Alice  | 150   |\n"
+            "\nEnd."
+        )
+        out = convert_table_to_bullets(text)
+        assert out.startswith("Scores:")
+        assert out.endswith("End.")
+
+    def test_table_inside_code_fence_untouched(self):
+        text = "```\n| a | b |\n|---|---|\n| 1 | 2 |\n```"
+        assert convert_table_to_bullets(text) == text
+
+    def test_plain_text_with_pipes_untouched(self):
+        text = "Use the | pipe operator to chain."
+        assert convert_table_to_bullets(text) == text
+
+    def test_horizontal_rule_not_matched(self):
+        text = "Section A\n\n---\n\nSection B"
+        assert convert_table_to_bullets(text) == text
+
+    def test_no_pipe_short_circuits(self):
+        text = "Plain **bold** text."
+        assert convert_table_to_bullets(text) == text
+
+    def test_row_groups_separated_by_blank_line(self):
+        text = (
+            "| A | B |\n"
+            "|---|---|\n"
+            "| x | 1 |\n"
+            "| y | 2 |"
+        )
+        out = convert_table_to_bullets(text)
+        assert "• B: 1\n\n**y**" in out
+        assert "\n\n• " not in out
+
+    def test_bold_heading_not_doubled(self):
+        """Regression: bold first-column cells must not become ****heading****.
+
+        Nested bold markers break Telegram MarkdownV2 conversion, which makes
+        Telegram fall back to plain text with raw ** symbols visible.
+        """
+        text = (
+            "| Advantage | Real value |\n"
+            "|-----------|-----------|\n"
+            "| **Live/work in UK freely** | Only if he wants to move there |"
+        )
+        out = convert_table_to_bullets(text)
+        assert "****" not in out
+        assert "**Live/work in UK freely**" in out
+        assert "• Real value: Only if he wants to move there" in out

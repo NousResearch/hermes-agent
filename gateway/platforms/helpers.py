@@ -359,6 +359,10 @@ def _render_table_block(table_block: list[str]) -> str:
             heading = next((cell for cell in cells if cell), f"Row {index}")
             data_cells = cells
 
+        # Strip markdown bold from the heading — the group wrapper adds its
+        # own **...**, and nested bold breaks Telegram MarkdownV2 conversion.
+        heading_clean = re.sub(r'\*\*(.+?)\*\*', r'\1', heading)
+
         if len(data_cells) < len(headers):
             data_cells.extend([""] * (len(headers) - len(data_cells)))
         elif len(data_cells) > len(headers):
@@ -370,7 +374,7 @@ def _render_table_block(table_block: list[str]) -> str:
                 continue
             bullets.append(f"• {header}: {value}")
 
-        group_lines = [f"**{heading}**", *bullets]
+        group_lines = [f"**{heading_clean}**", *bullets]
         rendered_groups.append("\n".join(group_lines))
 
     return "\n\n".join(rendered_groups)

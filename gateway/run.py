@@ -1920,17 +1920,26 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
     paths: set = set()
     tool_name_by_call_id: Dict[str, str] = {}
 
+    def _norm_media_path(p: str) -> str:
+        # Canonicalize so spellings that differ only by case/separator
+        # (D:/a/b vs D:\\a\\b vs d:\\a\\b) dedupe to one entry, matching the
+        # extract_media seen-key logic (#78383).
+        try:
+            return os.path.normcase(os.path.normpath(p))
+        except (OSError, RuntimeError, ValueError):
+            return p
+
     def _add_text_media_paths(content: str) -> None:
         for match in _TOOL_MEDIA_RE.finditer(content):
             path = match.group(1).strip().rstrip('",}')
             if path:
-                paths.add(path)
+                paths.add(_norm_media_path(path))
         # The regex alone misses quoted and spaced paths that the delivery
         # pipeline's extract_media grammar accepts — collect through the same
         # extractor so the dedup set sees every path that could actually have
         # been delivered.
         media_files, _ = BasePlatformAdapter.extract_media(content)
-        paths.update(path for path, _is_voice in media_files)
+        paths.update(_norm_media_path(path) for path, _is_voice in media_files)
 
     for msg in agent_history:
         if msg.get("role") == "assistant":

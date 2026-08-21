@@ -4998,6 +4998,18 @@ class BasePlatformAdapter(ABC):
         # referenced twice in one response — e.g. a MEDIA tag inline AND in a
         # summary footer — is uploaded once, not twice (#29131).
         seen_paths: set = set()
+
+        def _seen_key(p: str) -> str:
+            # Windows is case-insensitive and treats '/' and '\\' as
+            # interchangeable separators, so the same file can be spelled
+            # several ways (D:/a/b, D:\\a\\b, d:\\a\\b). Canonicalize before
+            # deduping so one file referenced with mixed spellings uploads
+            # once, not twice (#78383).
+            try:
+                return os.path.normcase(os.path.normpath(p))
+            except (OSError, RuntimeError, ValueError):
+                return p
+
         for match in media_pattern.finditer(scan_content):
             path = _normalize_media_tag_path(match.group("path"))
             if path:
@@ -5016,8 +5028,8 @@ class BasePlatformAdapter(ABC):
                     # Skip a crafted ~\x00 path rather than aborting extraction
                     # and dropping every other attachment in the response.
                     continue
-                if expanded not in seen_paths:
-                    seen_paths.add(expanded)
+                if _seen_key(expanded) not in seen_paths:
+                    seen_paths.add(_seen_key(expanded))
                     media.append((expanded, is_voice))
 
         for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(scan_content):
@@ -5028,10 +5040,10 @@ class BasePlatformAdapter(ABC):
             if resolved is None:
                 continue
             safe = resolved[0]
-            if safe not in seen_paths:
+            if _seen_key(safe) not in seen_paths:
                 _safe_ext = os.path.splitext(safe)[1].lower()
                 media.append((safe, has_voice_tag and _safe_ext in _AUDIO_EXTS))
-                seen_paths.add(safe)
+                seen_paths.add(_seen_key(safe))
 
         # Remove the delivered MEDIA tags from the user-visible text. Mask a
         # length-equal copy of ``cleaned`` (same union of protected regions) to

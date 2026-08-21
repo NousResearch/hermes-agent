@@ -452,14 +452,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
             return Err(anyhow!(msg));
         }
         other => {
-            let msg = format!(
-                "hermes update failed (exit {:?}). See {} for details.",
-                other,
-                crate::paths::hermes_home()
-                    .join("logs")
-                    .join("update.log")
-                    .display()
-            );
+            let msg = update_failure_message(other, &crate::paths::log_path());
             emit_stage(
                 &app,
                 "update",
@@ -1208,9 +1201,34 @@ fn emit_log(app: &AppHandle, stage: Option<&str>, stream: LogStream, line: &str)
     );
 }
 
+/// Message shown when `hermes update` exits non-zero.
+///
+/// The log this points at MUST be `paths::log_path()`
+/// (`HERMES_HOME/logs/bootstrap-installer.log`) — the file `init_logging`
+/// creates and that `run_streamed` mirrors the child's stdout/stderr into. It
+/// is emphatically NOT `logs/update.log`: that one is written by
+/// `_install_hangup_protection` in hermes_cli/main.py, which returns early
+/// under `--gateway` — and we always pass `--gateway`, so it is never written
+/// on this path. Pointing there sent operators to a file months out of date.
+fn update_failure_message(exit_code: Option<i32>, log_path: &Path) -> String {
+    format!(
+        "hermes update failed (exit {:?}). See {} for details.",
+        exit_code,
+        log_path.display()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_failure_message_names_the_installer_log() {
+        let msg = update_failure_message(Some(1), &crate::paths::log_path());
+        assert!(msg.contains("bootstrap-installer.log"), "{msg}");
+        // Pin against re-drift to the phantom path.
+        assert!(!msg.contains("update.log"), "{msg}");
+    }
 
     #[test]
     fn venv_hermes_is_under_install_root() {

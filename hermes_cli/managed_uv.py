@@ -39,6 +39,19 @@ from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo, probe_sqlite_runtime
 
 logger = logging.getLogger(__name__)
 
+
+def _no_window_creationflags() -> int:
+    """Windows-only ``CREATE_NO_WINDOW`` for console-less spawns.
+
+    When Hermes runs as a console-less process (desktop ``pythonw`` backend,
+    gateway), any child spawned without this flag opens a visible console
+    window that flashes on screen — most noticeable for ``uv`` and ``git``
+    invocations (#88945). Returns 0 on POSIX (no-op).
+    """
+    if sys.platform == "win32":
+        return getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    return 0
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _RUNTIME_DIR_NAME = ".hermes-runtime"
 _VENV_NAME = "venv"
@@ -222,7 +235,7 @@ def _ensure_uv_path(
             capture_output=True,
             text=True, encoding='utf-8', errors='replace',
             check=False,
-        ).stdout.strip()
+        creationflags=_no_window_creationflags(),).stdout.strip()
         print(f"  ✓ Managed uv installed ({version})")
         # Compatibility boundary: an older, already-imported updater calls the
         # freshly pulled ``ensure_uv()`` after bootstrapping uv.  Repair here so
@@ -342,7 +355,7 @@ def update_managed_uv(
                 text=True, encoding='utf-8', errors='replace',
                 check=False,
                 timeout=UV_SELF_UPDATE_TIMEOUT_SECONDS,
-            )
+            creationflags=_no_window_creationflags(),)
         except subprocess.TimeoutExpired:
             logger.debug("uv self update timed out after %ss", UV_SELF_UPDATE_TIMEOUT_SECONDS)
             result = None
@@ -353,7 +366,7 @@ def update_managed_uv(
                 capture_output=True,
                 text=True, encoding='utf-8', errors='replace',
                 check=False,
-            ).stdout.strip()
+            creationflags=_no_window_creationflags(),).stdout.strip()
             print(f"  ✓ Managed uv updated ({version})")
         elif result is not None:
             # Non-fatal — old uv still works fine.
@@ -478,7 +491,7 @@ def _list_available_patches(
             text=True,
             check=False,
             timeout=15,
-        )
+        creationflags=_no_window_creationflags(),)
         if result.returncode != 0 or not result.stdout.strip():
             return []
         entries = json.loads(result.stdout)
@@ -552,7 +565,7 @@ def _attempt_install_generation(
         capture_output=True,
         text=True,
         check=False,
-    )
+    creationflags=_no_window_creationflags(),)
     if install.returncode != 0:
         logger.warning(
             "private Python install failed for %s (rc=%d): %s",
@@ -577,7 +590,7 @@ def _attempt_install_generation(
         capture_output=True,
         text=True,
         check=False,
-    )
+    creationflags=_no_window_creationflags(),)
     if found.returncode != 0 or not found.stdout.strip():
         logger.warning(
             "private Python lookup failed for %s (rc=%d): %s",
@@ -783,7 +796,7 @@ def _smoke_candidate_venv(venv_dir: Path) -> tuple[bool, str, SQLiteRuntimeInfo 
             text=True,
             timeout=90,
             check=False,
-        )
+        creationflags=_no_window_creationflags(),)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, str(exc), info
     if result.returncode != 0:
@@ -832,7 +845,7 @@ def _stage_candidate_venv(
         capture_output=True,
         text=True,
         check=False,
-    )
+    creationflags=_no_window_creationflags(),)
     if created.returncode != 0:
         logger.warning(
             "candidate venv creation failed (rc=%d): %s",
@@ -863,7 +876,7 @@ def _stage_candidate_venv(
         cwd=project_root,
         env=sync_env,
         check=False,
-    )
+    creationflags=_no_window_creationflags(),)
     if synced.returncode != 0:
         logger.warning("candidate dependency sync failed (rc=%d)", synced.returncode)
         _remove_tree(candidate, boundary=runtime_root)
@@ -1039,7 +1052,7 @@ def _uv_version_string(uv_bin: str) -> str:
             errors="replace",
             check=False,
             timeout=15,
-        )
+        creationflags=_no_window_creationflags(),)
     except Exception:
         return ""
     if result.returncode != 0:
@@ -1345,13 +1358,13 @@ def _install_uv_posix(env: dict[str, str]) -> None:
             ["curl", "-LsSf", "https://astral.sh/uv/install.sh", "-o", installer_path],
             check=True,
             capture_output=True,
-        )
+        creationflags=_no_window_creationflags(),)
         subprocess.run(
             ["sh", installer_path],
             env=env,
             check=True,
             capture_output=True,
-        )
+        creationflags=_no_window_creationflags(),)
     finally:
         try:
             os.unlink(installer_path)
@@ -1367,7 +1380,7 @@ def _install_uv_windows(env: dict[str, str]) -> None:
         env=env,
         check=True,
         capture_output=True,
-    )
+    creationflags=_no_window_creationflags(),)
 
 
 def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:

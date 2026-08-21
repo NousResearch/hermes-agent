@@ -2265,7 +2265,7 @@ def _should_use_copilot_responses_api(model_id: str) -> bool:
 def copilot_model_api_mode(
     model_id: Optional[str], *, catalog: Optional[list[dict[str, Any]]] = None,
     api_key: Optional[str] = None) -> str:
-    """API mode for a Copilot model from the id pattern (opencode's approach). Copilot's Claude models
+    """API mode for a Copilot model from its id pattern and catalog metadata. Copilot's Claude models
     go through its OpenAI-compatible chat endpoint, not the native Anthropic adapter: the catalog may
     advertise /v1/messages but the Copilot token/header scheme lives in the OpenAI client path."""
     if catalog is None and api_key:  # fetch once so normalize + endpoint check share it
@@ -2273,6 +2273,37 @@ def copilot_model_api_mode(
     normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
     if normalized and _should_use_copilot_responses_api(normalized):
         return "codex_responses"
+
+    # Copilot Claude uses the provider's OpenAI-compatible chat transport,
+    # never Hermes' native Anthropic or Responses adapters. Keep that invariant
+    # ahead of generic catalog endpoint handling.
+    if normalized.lower().startswith(("claude-", "anthropic/claude-")):
+        return "chat_completions"
+
+    # Catalog-driven fallback for models the pattern check does not cover.
+    # Copilot advertises the accepted wire endpoint per model and rejects a
+    # mismatch with ``unsupported_api_for_model``. Only upgrade a non-GPT
+    # model when it is explicitly Responses-only; Claude models remain on
+    # Copilot's OpenAI-compatible chat path even when /v1/messages is listed.
+    catalog_entry = next(
+        (
+            item
+            for item in catalog or []
+            if isinstance(item, dict) and item.get("id") == normalized
+        ),
+        None,
+    )
+    if catalog_entry is not None:
+        supported_endpoints = {
+            str(endpoint).strip()
+            for endpoint in (catalog_entry.get("supported_endpoints") or [])
+            if str(endpoint).strip()
+        }
+        if (
+            "/responses" in supported_endpoints
+            and "/chat/completions" not in supported_endpoints
+        ):
+            return "codex_responses"
     return "chat_completions"
 
 

@@ -1814,7 +1814,7 @@ def _fallback_api_mode_hint(fb: dict, fb_provider: str, fb_base_url_hint: Option
     return False, "chat_completions"
 
 
-def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_url: str) -> str:
+def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_url: str, api_key=None) -> str:
     """Re-detect api_mode from provider / resolved base URL / model when the hint pass
     landed on the chat_completions default (never called for an explicit api_mode)."""
     if fb_provider == "openai-codex":
@@ -1837,7 +1837,9 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
     if agent._is_azure_openai_url(fb_base_url):
         return "chat_completions"  # Azure serves gpt-5.x on /chat/completions — no Responses API.
     # Provider exceptions (Copilot gpt-5-mini) stay inside the requires-responses predicate.
-    if agent._is_direct_openai_url(fb_base_url) or agent._provider_model_requires_responses_api(fb_model, provider=fb_provider):
+    if agent._is_direct_openai_url(fb_base_url) or agent._provider_model_requires_responses_api(
+        fb_model, provider=fb_provider, api_key=api_key
+    ):
         return "codex_responses"
     host = base_url_hostname(fb_base_url)
     if fb_provider == "bedrock" or (host.startswith("bedrock-runtime.") and base_url_host_matches(fb_base_url, "amazonaws.com")):
@@ -2086,7 +2088,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
                 if is_actual_route(fb_provider, fb_base_url):
                     fb_api_mode = "chat_completions"
                 elif not fb_api_mode_explicit and fb_api_mode == "chat_completions":
-                    fb_api_mode = _fallback_api_mode_resolved(agent, fb_provider, fb_model, fb_base_url)
+                    fb_api_mode = _fallback_api_mode_resolved(
+                        agent, fb_provider, fb_model, fb_base_url,
+                        api_key=(fb_api_key_hint or getattr(fb_client, "api_key", None)),
+                    )
 
             old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
 

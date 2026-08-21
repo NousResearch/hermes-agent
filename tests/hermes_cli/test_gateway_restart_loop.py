@@ -1421,3 +1421,51 @@ class TestLifecycleGuardNeverRaises:
         if os.name != "nt":
             with pytest.raises(GatewayLifecycleBlocked):
                 check_gateway_lifecycle("clean prompt", "/dev/null")
+
+
+class TestSshRemotePayloadExemption:
+    """Non-local ssh remote payloads are data, not local lifecycle commands.
+
+    Regression: sshpass/ssh to a non-local host with a lifecycle-shaped
+    REMOTE command was blocked by the plain regex (the payload text matches),
+    killing legitimate remote administration from gateway sessions and
+    silently dropping chained commands around it.
+    """
+
+    _scan = staticmethod(
+        __import__(
+            "cron.lifecycle_guard",
+            fromlist=["contains_gateway_lifecycle_command_or_referenced_script"],
+        ).contains_gateway_lifecycle_command_or_referenced_script
+    )
+
+    @pytest.mark.parametrize("command", [
+        # Remote payload to a provably non-local destination: ALLOW.
+        'sshpass -p secret ssh root@192.168.50.103 "systemctl restart hermes-gateway; sleep 8"',
+        "ssh root@10.0.0.5 systemctl restart hermes-gateway",
+        'ssh admin@build01.internal "hermes gateway restart"',
+        'ssh -i /key -p 2222 user@203.0.113.9 "systemctl stop hermes-gateway"',
+        # Local segments around the ssh stay clean; only remote payload carries the phrase.
+        "ssh user@host cat file.txt",
+        'ssh user@host2 "uptime" && ssh user@host3 "df -h"',
+    ])
+    def test_non_local_ssh_payload_not_blocked(self, command):
+        assert self._scan(command) is False
+
+    @pytest.mark.parametrize("command", [
+        # Self-targeting destinations keep blocking.
+        "ssh localhost systemctl restart hermes-gateway",
+        "ssh 127.0.0.1 hermes gateway restart",
+        "ssh root@[::1] systemctl restart hermes-gateway",
+        # Bare alias (no dot/colon/user@): could be this machine. Fail closed.
+        "ssh buildhost systemctl restart hermes-gateway",
+        # Local lifecycle command OUTSIDE the ssh payload still blocks.
+        'ssh user@host "uptime"; systemctl restart hermes-gateway',
+        'sshpass -p x ssh user@host uptime && hermes gateway stop',
+        # Plain local lifecycle commands unaffected.
+        "systemctl restart hermes-gateway",
+        "sudo systemctl stop hermes-gateway",
+        "hermes gateway restart",
+    ])
+    def test_local_and_self_targeting_still_blocked(self, command):
+        assert self._scan(command) is True

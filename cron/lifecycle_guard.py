@@ -157,6 +157,98 @@ _PIPE_TO_INTERPRETER = re.compile(
     r"\|\s*&?\s*(?:sudo\s+)?(?:sh|bash|dash|ksh|zsh|xargs|eval|source)\b"
 )
 
+# SSH client executables whose trailing argument (after options and the
+# [user@]destination operand) is a REMOTE command, executed on the target
+# host, never locally. A lifecycle-shaped string inside that payload targets
+# the REMOTE gateway, not this process, so it is not the foot-gun the guard
+# exists for. Deliberately conservative: only the OpenSSH client names.
+_SSH_CLIENT_EXECUTABLES = frozenset({"ssh", "slogin"})
+# sshpass / env / sudo wrappers that may precede the real ssh executable.
+_SSH_WRAPPER_EXECUTABLES = frozenset({"sshpass", "env", "sudo", "nohup"})
+# Destinations that are PROVABLY this machine: a lifecycle payload sent
+# there still self-targets the local gateway and must keep blocking.
+_SSH_LOCAL_DESTINATIONS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+# ssh option characters whose NEXT token is a value (so it is not mistaken
+# for the destination operand). Short-form options only; long-form
+# (--option=value) is handled by the leading "--" check.
+_SSH_OPTIONS_WITH_VALUE = frozenset(
+    {"-b", "-D", "-e", "-F", "-i", "-I", "-L", "-l", "-m", "-O", "-o", "-p", "-R", "-w", "-W"}
+)
+
+
+def _ssh_segment_remote_payload_is_data(segment: list[str]) -> Optional[list[str]]:
+    """If *segment* is an ssh invocation to a provably non-local host, return
+    the remote-payload argument span (start index INCLUSIVE, end EXCLUSIVE);
+    otherwise ``None``.
+
+    Walks leading wrappers (sshpass/env/sudo/nohup with their own value
+    options), finds the ssh executable, skips ssh's own options (including
+    their value tokens), then treats the next token as the destination. If
+    that destination is not a local address, everything AFTER it is the
+    remote command payload — data with respect to THIS machine. ``None`` on
+    any parse doubt (fail closed to the plain regex verdict).
+    """
+    index = _command_token_index(segment)
+    if index is None:
+        return None
+    # Strip wrappers: each wrapper may carry -p VALUE style options of its
+    # own (sshpass -p pass, env FOO=bar, sudo -u user). Skip any token that
+    # is a wrapper until we reach a non-wrapper executable.
+    wrappers_seen = 0
+    while index < len(segment):
+        name = Path(segment[index]).name
+        if name in _SSH_WRAPPER_EXECUTABLES:
+            wrappers_seen += 1
+            index += 1
+            # skip wrapper value-options conservatively: only known sshpass
+            # (-p, -P, -f) and sudo/env single-token flags starting with '-'
+            # that are not value-taking are skipped trivially; value-taking
+            # ones consume the next token.
+            while index < len(segment) and segment[index].startswith("-") and segment[index] != "-":
+                token = segment[index]
+                if name == "sshpass" and token in {"-p", "-P", "-f", "-e"}:
+                    index += 2  # flag + value
+                elif token.startswith("--") and "=" not in token and name == "sshpass":
+                    index += 2
+                else:
+                    index += 1
+            continue
+        break
+    if wrappers_seen == 0 and Path(segment[index]).name not in _SSH_CLIENT_EXECUTABLES:
+        return None
+    if index >= len(segment) or Path(segment[index]).name not in _SSH_CLIENT_EXECUTABLES:
+        return None
+    index += 1  # past the ssh executable
+    # Skip ssh options. Short options with separate values consume 2 tokens;
+    # combined forms (-p2222) and unknown flags consume 1. Long options with
+    # = are one token; long options without = that take a value consume 2
+    # (conservative for the common ones).
+    _SSH_LONG_WITH_VALUE = {"--bind-address", "--identity-file", "--port", "--listen-address", "--control-path", "--local-command", "--remote-user", "--ssh-config", "--user"}
+    while index < len(segment):
+        token = segment[index]
+        if not token.startswith("-") or token == "-":
+            break
+        if token in _SSH_OPTIONS_WITH_VALUE:
+            index += 2
+        elif token.startswith("--") and "=" not in token and token in _SSH_LONG_WITH_VALUE:
+            index += 2
+        else:
+            index += 1
+    if index >= len(segment):
+        return None  # ssh with no destination: nothing to exempt
+    destination = segment[index]
+    # Strip an optional user@ prefix before comparing to local names.
+    host_part = destination.rsplit("@", 1)[-1] if "@" in destination else destination
+    host_compare = host_part.strip("[]").lower()
+    if host_compare in _SSH_LOCAL_DESTINATIONS:
+        return None  # provably self-targeting: keep blocking
+    if wrappers_seen == 0 and host_part == destination and not re.search(r"[.:@\[]", destination):
+        # Bare word with no user@/dots/colons: could be a /etc/hosts alias
+        # for THIS machine. Fail closed — unknown aliases stay blocked.
+        return None
+    # Non-local destination: everything after it is the remote payload.
+    return [index + 1, len(segment)]
+
 # Executable-image magic numbers: ELF, PE/COFF, Mach-O (universal + thin,
 # both endiannesses). A referenced file starting with one of these is a
 # compiled binary, never a shell script — don't read or scan it at all.
@@ -310,18 +402,81 @@ def _mask_data_sink_arguments(text: str) -> str:
     return "\n".join(lines_out)
 
 
+def _mask_ssh_remote_payload_arguments(text: str) -> str:
+    """Replace remote-command payloads of non-local ssh invocations with a
+    neutral placeholder — the SSH analogue of ``_mask_data_sink_arguments``.
+
+    An ``ssh root@10.0.0.5 "systemctl restart hermes-gateway"`` sent from a
+    gateway process on host A restarts host B's gateway: the SIGTERM
+    foot-gun the terminal guard exists for cannot occur, because the local
+    process is the ssh CLIENT, not systemctl. Blocking it (the pre-fix
+    behavior) also poisons chained commands: the whole line dies
+    pre-execution, so a legitimate ``hermes config set ... && systemctl
+    restart ...`` payload loses BOTH halves silently.
+
+    Uses the same shell-tokenized, fail-closed masking contract as the data
+    sink masker: masking can only ever ALLOW a line the plain regex would
+    have blocked — any parse doubt (ssh with no destination, localhost /
+    loopback / bare-alias destinations, tokenization failure, pipes into an
+    interpreter) leaves the original text in place, preserving the block.
+    """
+    lines_out: list[str] = []
+    changed = False
+    for line in text.splitlines() or [text]:
+        if _PIPE_TO_INTERPRETER.search(line):
+            lines_out.append(line)
+            continue
+        try:
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
+            lexer.whitespace_split = True
+            lexer.commenters = "#"
+            tokens = list(lexer)
+        except ValueError:
+            lines_out.append(line)
+            continue
+        segments: list[list[str]] = []
+        current: list[str] = []
+        for token in tokens:
+            if token and set(token) <= _CONTROL_CHARS:
+                segments.append(current)
+                segments.append([token])
+                current = []
+                continue
+            current.append(token)
+        segments.append(current)
+        rebuilt: list[str] = []
+        for segment in segments:
+            if not segment:
+                continue
+            payload_span = _ssh_segment_remote_payload_is_data(segment)
+            if payload_span is not None:
+                start, end = payload_span
+                changed = True
+                rebuilt.extend(segment[:start])
+                rebuilt.extend("remote" for _ in range(end - start))
+                continue
+            rebuilt.extend(segment)
+        lines_out.append(" ".join(rebuilt))
+    if not changed:
+        return text
+    return "\n".join(lines_out)
+
+
 def _lifecycle_command_scan_with_data_exemption(text: str) -> bool:
-    """Lifecycle-regex scan that exempts matches living inside data arguments.
+    """Lifecycle-regex scan that exempts matches living inside data arguments
+    or non-local ssh remote payloads.
 
     Two-pass: the cheap regex first (the overwhelmingly common no-match case
-    pays nothing extra); on a raw match, re-scan with data-sink arguments
-    masked out. Only a match that survives masking — i.e. one in actual
-    command position — blocks.
+    pays nothing extra); on a raw match, re-scan with data-sink arguments and
+    non-local ssh payloads masked out. Only a match that survives masking —
+    i.e. one in actual local command position — blocks.
     """
     if not contains_gateway_lifecycle_command(text):
         return False
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
-    return contains_gateway_lifecycle_command(_mask_data_sink_arguments(normalized))
+    return contains_gateway_lifecycle_command(
+        _mask_ssh_remote_payload_arguments(_mask_data_sink_arguments(normalized))
+    )
 
 
 def _direct_lifecycle_scan(command: str) -> bool:

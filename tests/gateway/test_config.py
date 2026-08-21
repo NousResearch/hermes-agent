@@ -776,8 +776,11 @@ class TestLoadGatewayConfig:
         API_SERVER listener vars, #69379): the scoped runner reload in a
         multiplexed gateway must keep seeing it, so config's relay enablement
         and sweep agree with gateway.relay.relay_url()/register_relay_adapter()
-        (which read os.environ). A relay URL in a profile's .env is NOT a
-        supported activation path — the scope is never consulted for globals."""
+        (which read os.environ). A secondary profile's .env stamp does NOT
+        override the shared process stamp — an isolated multiplex scope is
+        never consulted for globals. (A single-profile gateway, or the profile
+        the process is launched under, still activates via its .env because
+        load_hermes_dotenv exports that file into os.environ at startup.)"""
         from agent import secret_scope as ss
 
         hermes_home = tmp_path / ".hermes"

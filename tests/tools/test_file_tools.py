@@ -404,8 +404,10 @@ class TestSearchHints:
 
         from tools.file_tools import search_tool
         raw = search_tool(pattern="foo", offset=0, limit=50)
-        assert "[Hint:" in raw
-        assert "offset=50" in raw
+        # The hint rides inside the payload as a structured field — the tool
+        # result must stay pure JSON (#90322).
+        parsed = json.loads(raw)
+        assert "offset=50" in parsed["_hint"]
 
 
     @patch("tools.file_tools._get_file_ops")
@@ -422,8 +424,8 @@ class TestSearchHints:
 
         from tools.file_tools import search_tool
         raw = search_tool(pattern="foo", offset=50, limit=50)
-        assert "[Hint:" in raw
-        assert "offset=100" in raw
+        parsed = json.loads(raw)
+        assert "offset=100" in parsed["_hint"]
 
 
 # ---------------------------------------------------------------------------

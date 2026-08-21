@@ -164,7 +164,7 @@ def test_search_tool_filters_credential_results(fake_home, tmp_path, monkeypatch
     assert out["_omitted"].startswith("4 result(s) omitted")
     assert out["total_count"] == 5
     assert out["truncated"] is True
-    assert "[Hint: Results truncated." in search_response
+    assert out["_hint"].startswith("Results truncated. Use offset=")
 
 
 # ---------------------------------------------------------------------------

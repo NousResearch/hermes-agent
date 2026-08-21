@@ -211,6 +211,10 @@ const $openBotChat = atom(null)
  *  Cronjobs lifecycles all key off this rather than reading host.state
  *  conditionally from render. */
 const $botChatFocused = atom(false)
+/** True only while the Bots home is the visible main-area surface. A focused
+ *  chat can remain alive behind it, so session focus alone cannot decide which
+ *  roster row owns the visible workspace. */
+const $botsHomeFronted = atom(false)
 
 let botsHomeClose = null
 let suppressBotsHomeReopen = false
@@ -6347,6 +6351,25 @@ function rosterActivityMatches(row, filter, now = Date.now()) {
   return filter === 'recent' ? recent : !recent
 }
 
+function botRowOwnsWorkspace(
+  bot,
+  activeGroup,
+  botChatFocused,
+  botsHomeFronted,
+  focusedProfile,
+  selectedRosterKey
+) {
+  if (activeGroup) {
+    return false
+  }
+
+  if (botsHomeFronted || !botChatFocused) {
+    return selectedRosterKey === botRosterKey(bot)
+  }
+
+  return !bot.remoteSource && bot.name === focusedProfile
+}
+
 // ── bot row ──────────────────────────────────────────────────────────────────
 
 function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
@@ -6354,6 +6377,7 @@ function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
   const focusedProfile = useValue($focusedBotProfile)
   const selectedRosterKey = useValue($selectedRosterKey)
   const botChatFocused = useValue($botChatFocused)
+  const botsHomeFronted = useValue($botsHomeFronted)
   const activeGroup = useValue($groupChatWorkspace)
   const allMeta = useValue($botMeta)
   const meta = botRosterMeta(bot, allMeta)
@@ -6372,11 +6396,14 @@ function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
   // highlight to a bot you are not reading). While the Bots home owns it, the
   // source-qualified selection is the owner — and it is the only rule that
   // can highlight a remote row, which has no focusable local chat.
-  const isActive =
-    !activeGroup &&
-    (botChatFocused
-      ? !bot.remoteSource && bot.name === focusedProfile
-      : selectedRosterKey === botRosterKey(bot))
+  const isActive = botRowOwnsWorkspace(
+    bot,
+    activeGroup,
+    botChatFocused,
+    botsHomeFronted,
+    focusedProfile,
+    selectedRosterKey
+  )
   // Turn-busy is a SOCKET fact: only the gateway-home profile can be mid-turn.
   const isGatewayHome = !bot.remoteSource && bot.name === activeProfile
   const { shape, color, image } = botAppearance(bot.name, meta)
@@ -9640,8 +9667,11 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
     }
   }, [open])
 
-  const selected = roster.filter(bot => checked[botRosterKey(bot)])
-  const visible = filterBots(roster, allMeta, query)
+  // An outage placeholder preserves one selected owner's identity in the
+  // sidebar, but it is not a routable room member. Never offer it here.
+  const selectableRoster = roster.filter(bot => !bot?.ghost)
+  const selected = selectableRoster.filter(bot => checked[botRosterKey(bot)])
+  const visible = filterBots(selectableRoster, allMeta, query)
   const atCap = selected.length >= GROUP_CHAT_MAX_MEMBERS
   const placeholder = selected.length
     ? selected.map(bot => displayName(bot, botRosterMeta(bot, allMeta))).join(', ')
@@ -11148,7 +11178,9 @@ function BotsHomeView() {
 
   const meta = botRosterMeta(bot, allMeta)
   const status = botSourceStatus(bot)
-  const handle = botHandle(bot.name, bot)
+  // A ghost is reconstructed from a persisted owner key while its gateway is
+  // offline. That proves the profile name, not its public mention handle.
+  const handle = bot.ghost ? '' : botHandle(bot.name, bot)
   const gateway = bot.connectionLabel || (bot.connectionId === 'local' ? 'This device' : 'Hermes gateway')
   const gatewayKind = bot.connectionKind || (bot.connectionId === 'local' ? 'local' : 'remote')
   const { shape, color, image } = botAppearance(bot.name, meta)
@@ -11183,8 +11215,9 @@ function BotsHomeView() {
                 className: 'flex min-w-0 items-center gap-1.5 text-xs text-(--ui-text-tertiary)',
                 children: [
                   jsx('span', { children: 'Bot' }),
-                  jsx('span', { children: '·' }),
-                  jsx('span', { className: 'truncate font-mono', children: `@${handle}` })
+                  handle
+                    ? jsx('span', { className: 'truncate font-mono', children: `· @${handle}` })
+                    : null
                 ]
               })
             ]
@@ -11239,7 +11272,10 @@ function BotsHomeView() {
                       : `${gateway} is unavailable. Retry when it is back online.`
                     : 'Open this bot’s continuous chat. Its background work keeps running when you switch away.'
                 })
-              : null,
+              : jsx('p', {
+                  className: 'mt-4 max-w-lg text-xs leading-5 text-(--ui-text-tertiary)',
+                  children: `This bot lives on ${gateway}. Mention it from any Bot Chat to send it a message.`
+                }),
             unavailable && !sourceRemoved
               ? jsx(Button, {
                   variant: 'secondary',
@@ -11387,13 +11423,13 @@ function openBotsHomeWorkspace(explicit = false) {
  *  deliberately does not close an open home — the home may sit over a
  *  focused-but-hidden chat after an explicit selection; the chat reclaims
  *  the center on its focus EDGE (handleWorkspaceFocusChange). */
-function syncBotsHomeWorkspace(explicit = false) {
+function syncBotsHomeWorkspace() {
   if (!$botsPaneVisible.get() || $groupChatWorkspace.get() || $openBotChat.get()) {
     closeBotsHomeWorkspace()
     return
   }
 
-  openBotsHomeWorkspace(explicit)
+  openBotsHomeWorkspace(false)
 }
 
 /** An opened bot chat stops owning the center once focus leaves it (closed,
@@ -12731,8 +12767,8 @@ export default {
 
       // One recompute for both main-area surfaces: they answer the same
       // question (who owns the center) from the same three signals.
-      const syncWorkspaceSurfaces = (explicitHome = false) => {
-        syncBotsHomeWorkspace(explicitHome)
+      const syncWorkspaceSurfaces = () => {
+        syncBotsHomeWorkspace()
         syncRoutinesPane()
       }
 
@@ -12757,7 +12793,13 @@ export default {
           syncWorkspaceSurfaces()
         }
       }
-      const stopHomeVisibleSync = host.paneVisibility(BOTS_HOME_PANE_ID).listen(scheduleSurfaceSync)
+      const homeVisibleStore = host.paneVisibility(BOTS_HOME_PANE_ID)
+      const stopHomeVisibleSync = homeVisibleStore.listen(visible => {
+        // Update selection ownership immediately; the deferred pass below may
+        // mutate registrations, but the visible row must never lag a frame.
+        $botsHomeFronted.set(Boolean(visible))
+        scheduleSurfaceSync()
+      })
       // Tab focus moves without swapping the gateway socket, so the focused
       // STORED session is the truth about session focus; older shells fall
       // back to the active session id. A RISING edge means a session just
@@ -12781,6 +12823,7 @@ export default {
 
       $botsPaneVisible.set(Boolean($sidebarVisible.get()))
       $botChatFocused.set(sessionOwnsWorkspace())
+      $botsHomeFronted.set(Boolean(homeVisibleStore.get()))
       // A persisted layout can boot directly into Bot Mode while restoring
       // the generic Sessions workspace as the active sibling. Reconcile now,
       // then once more after the layout mutation finishes: the deferred pass
@@ -12796,6 +12839,7 @@ export default {
           stopGroupSync()
           stopHomeVisibleSync()
           stopFocusSync?.()
+          $botsHomeFronted.set(false)
           closeBotsHomeWorkspace()
         })
       }

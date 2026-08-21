@@ -21,6 +21,10 @@ function activitySessionSource() {
   return sourceBetween('function botActivitySession(', '/** Bots that are working')
 }
 
+function rowOwnershipSource() {
+  return sourceBetween('function botRowOwnsWorkspace(', '// ── bot row')
+}
+
 function renderBotRow(input = 'alpha') {
   const bot = typeof input === 'string' ? { name: input } : input
   const name = bot.name
@@ -58,6 +62,7 @@ function renderBotRow(input = 'alpha') {
     // where a remote click may only advise — never route.
     $selectedRosterKey: atom(''),
     $botChatFocused: atom(false),
+    $botsHomeFronted: atom(false),
     $openBotChat: atom(null),
     botRosterKey: bot => `${bot?.connectionId || 'legacy'}::${bot?.name || 'default'}`,
     saveSelectedRosterBot: () => undefined,
@@ -116,7 +121,10 @@ function renderBotRow(input = 'alpha') {
     useValue: store => store.get()
   }
 
-  vm.runInNewContext(`${activitySessionSource()}\n${prepareSource}\n${botRowSource}\nglobalThis.BotRow = BotRow`, context)
+  vm.runInNewContext(
+    `${activitySessionSource()}\n${rowOwnershipSource()}\n${prepareSource}\n${botRowSource}\nglobalThis.BotRow = BotRow`,
+    context
+  )
 
   const tree = context.BotRow({ bot, onEdit: context.onEdit })
   const row = tree.type === 'button' ? tree : tree.props.children[0].props.children
@@ -204,6 +212,7 @@ test('behavior: remote default does not open this-device chat when the source di
     // where a remote click may only advise — never route.
     $selectedRosterKey: atom(''),
     $botChatFocused: atom(false),
+    $botsHomeFronted: atom(false),
     $openBotChat: atom(null),
     botRosterKey: bot => `${bot?.connectionId || 'legacy'}::${bot?.name || 'default'}`,
     saveSelectedRosterBot: () => undefined,
@@ -255,7 +264,10 @@ test('behavior: remote default does not open this-device chat when the source di
     useValue: store => store.get()
   }
 
-  vm.runInNewContext(`${activitySessionSource()}\n${prepareSource}\n${botRowSource}\nglobalThis.BotRow = BotRow`, context)
+  vm.runInNewContext(
+    `${activitySessionSource()}\n${rowOwnershipSource()}\n${prepareSource}\n${botRowSource}\nglobalThis.BotRow = BotRow`,
+    context
+  )
   const tree = context.BotRow({ bot, onEdit: context.onEdit })
   const row = tree.type === 'button' ? tree : tree.props.children[0].props.children
 

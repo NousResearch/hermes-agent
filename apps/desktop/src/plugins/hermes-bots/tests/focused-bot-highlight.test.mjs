@@ -1,8 +1,26 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import vm from 'node:vm'
 
 const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
+
+function loadOwnershipRule() {
+  const start = source.indexOf('function botRowOwnsWorkspace(')
+  const end = source.indexOf('// ── bot row', start)
+
+  assert.notEqual(start, -1)
+  assert.notEqual(end, -1)
+
+  const context = {
+    botRosterKey: bot => `${bot.connectionId || 'local'}::${bot.name}`
+  }
+  vm.runInNewContext(
+    `${source.slice(start, end)}\nglobalThis.botRowOwnsWorkspace = botRowOwnsWorkspace`,
+    context
+  )
+  return context.botRowOwnsWorkspace
+}
 
 // The roster highlight and the Routines (Cronjobs) tile must follow the chat
 // the user is LOOKING AT — the focused session's owner profile — not the
@@ -25,18 +43,25 @@ test('BotRow keys the highlight off the focused profile, not the socket home', (
   const row = source.slice(rowStart, rowStart + 2000)
 
   assert.match(row, /const focusedProfile = useValue\(\$focusedBotProfile\)/)
-  // While a chat owns the main workspace the ORIGINAL rule stands verbatim:
-  // the focused chat's owner is highlighted, never the socket home, and never
-  // a remote row (which has no focusable local chat).
-  assert.match(
-    row,
-    /botChatFocused\s*\n\s*\? !bot\.remoteSource && bot\.name === focusedProfile/,
-    'a focused chat still keys the highlight to its own profile'
-  )
-  // Only when NO chat owns the center does the source-qualified selection
-  // (the Bots home's owner) take over.
-  assert.match(row, /: selectedRosterKey === botRosterKey\(bot\)/)
-  assert.match(row, /const isActive =\s*\n\s*!activeGroup &&/)
+  assert.match(row, /const botsHomeFronted = useValue\(\$botsHomeFronted\)/)
+  assert.match(row, /const isActive = botRowOwnsWorkspace\(/)
+})
+
+test('visible Bots home owns selection even when a local chat remains focused underneath', () => {
+  const ownsWorkspace = loadOwnershipRule()
+  const localBot = { connectionId: 'local', name: 'writer', remoteSource: false }
+  const remoteBot = { connectionId: 'work', name: 'research', remoteSource: true }
+  const selectedRemote = 'work::research'
+
+  assert.equal(ownsWorkspace(remoteBot, null, true, true, 'writer', selectedRemote), true)
+  assert.equal(ownsWorkspace(localBot, null, true, true, 'writer', selectedRemote), false)
+
+  // When the chat returns to the front, its focused local owner takes over.
+  assert.equal(ownsWorkspace(remoteBot, null, true, false, 'writer', selectedRemote), false)
+  assert.equal(ownsWorkspace(localBot, null, true, false, 'writer', selectedRemote), true)
+
+  // A group room owns the workspace independently of either bot row.
+  assert.equal(ownsWorkspace(remoteBot, { name: 'room' }, true, true, 'writer', selectedRemote), false)
 })
 
 test('BotRow keeps turn-busy (work mood) a socket fact', () => {

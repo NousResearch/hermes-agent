@@ -1149,9 +1149,10 @@ test('closing an older selected group does not clear the newer selection', () =>
 
 test('source contract: active group styling suppresses bot styling', () => {
   // A selected group owns the roster selection outright: `!activeGroup` gates
-  // the whole expression, so NEITHER the focused-chat rule nor the Bots home
-  // selection can light a bot row while a group chat is open (#88979).
-  assert.match(pluginSource, /const isActive =\s*\n\s*!activeGroup &&\s*\n\s*\(botChatFocused/)
+  // the ownership helper, so neither a focused chat nor the Bots home can
+  // light a bot row while a group chat is open (#88979).
+  assert.match(pluginSource, /const isActive = botRowOwnsWorkspace\(/)
+  assert.match(pluginSource, /function botRowOwnsWorkspace\([\s\S]{0,260}?if \(activeGroup\) \{\s*return false/)
   assert.match(pluginSource, /active && 'bg-\(--ui-row-active-background\)'/)
   assert.match(pluginSource, /active: groupChatName === row\.name/)
 })

@@ -125,6 +125,7 @@ globalThis.__home = {
   $botMeta,
   $botsPaneVisible,
   $botChatFocused,
+  $botsHomeFronted,
   $groupChatWorkspace,
   $lastRoster,
   $lastSources,
@@ -537,24 +538,29 @@ test('an explicit remote selection fronts the home over a focused chat', async (
   assert.equal(t.$selectedRosterKey.get(), 'work-vps::relay')
 })
 
-test('entering Bot Mode fronts the selected-owner home over a Sessions composer', () => {
+test('an explicit Bots-home gesture fronts the selected owner over a Sessions composer', () => {
   const t = load({ focusedStoredSessionId: 'sessions-chat' })
   t.$botsPaneVisible.set(true)
 
   t.syncBotsHomeWorkspace()
   assert.deepEqual(t.opened, [], 'passive polling still leaves a focused session alone')
 
-  t.syncBotsHomeWorkspace(true)
-  assert.equal(t.opened.length, 1, 'the Bot Mode transition has an exact owner instead of the Sessions composer')
+  t.openBotsHomeWorkspace(true)
+  assert.equal(t.opened.length, 1, 'the explicit gesture has an exact owner instead of the Sessions composer')
   assert.equal(t.opened[0].id, 'hermes-bots:home')
 })
 
 test('source contract: sidebar entry and boot restore reconcile passively after layout hydration', () => {
+  assert.match(pluginSource, /const syncWorkspaceSurfaces = \(\) =>/)
   assert.match(pluginSource, /stopSidebarSync = \$sidebarVisible\.listen\(visible => \{[\s\S]{0,450}?syncWorkspaceSurfaces\(\)/)
   assert.doesNotMatch(pluginSource, /stopSidebarSync = \$sidebarVisible\.listen\(visible => \{[\s\S]{0,450}?syncWorkspaceSurfaces\(Boolean\(visible\)\)/)
   assert.match(
     pluginSource,
     /\$botChatFocused\.set\(sessionOwnsWorkspace\(\)\)[\s\S]{0,500}?syncWorkspaceSurfaces\(\)[\s\S]{0,120}?scheduleSurfaceSync\(\)/
+  )
+  assert.match(
+    pluginSource,
+    /homeVisibleStore\.listen\(visible => \{[\s\S]{0,260}?\$botsHomeFronted\.set\(Boolean\(visible\)\)[\s\S]{0,120}?scheduleSurfaceSync\(\)/
   )
 })
 
@@ -750,15 +756,23 @@ test('an unavailable owner offers retry instead of a dead Open chat button', () 
   assert.doesNotMatch(view, /its work keeps running on that gateway/)
 })
 
-test('an available remote owner stays presentation-only without a fake mention action', () => {
+test('an available remote owner explains the supported Bot Chat path without a fake direct action', () => {
   const start = pluginSource.indexOf('function BotsHomeView(')
   const view = pluginSource.slice(start, pluginSource.indexOf('function closeBotsHomeWorkspace('))
 
   assert.match(view, /unavailable \|\| !bot\.remoteSource/)
-  assert.match(view, /bot\.remoteSource\s*\n\s*\? null/)
-  assert.doesNotMatch(view, /This bot lives on/)
+  assert.match(view, /This bot lives on \$\{gateway\}\. Mention it from any Bot Chat to send it a message\./)
   assert.doesNotMatch(view, /Copy @/)
   assert.doesNotMatch(view, /remoteCopy/)
+  assert.doesNotMatch(view, /ensureAgent|requestProfile|newChat/)
+})
+
+test('an unavailable owner never presents a guessed mention handle', () => {
+  const start = pluginSource.indexOf('function BotsHomeView(')
+  const view = pluginSource.slice(start, pluginSource.indexOf('function closeBotsHomeWorkspace('))
+
+  assert.match(view, /const handle = bot\.ghost \? '' : botHandle\(bot\.name, bot\)/)
+  assert.match(view, /handle\s*\n\s*\? jsx\('span'/)
 })
 
 test('Bot Mode copy says bot, not agent', () => {

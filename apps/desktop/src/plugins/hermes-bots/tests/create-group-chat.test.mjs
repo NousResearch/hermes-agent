@@ -17,8 +17,10 @@ test('source contract: header + is a dropdown offering agent and group chat', ()
 
 test('source contract: create-group modal has search, checkboxes, name, create', () => {
   assert.match(pluginSource, /function CreateGroupChatDialog\(/)
+  // An outage placeholder preserves identity, but cannot receive a message.
+  assert.match(pluginSource, /const selectableRoster = roster\.filter\(bot => !bot\?\.ghost\)/)
   // Reuses the roster search filter so name/@handle/title all match.
-  assert.match(pluginSource, /const visible = filterBots\(roster, allMeta, query\)/)
+  assert.match(pluginSource, /const visible = filterBots\(selectableRoster, allMeta, query\)/)
   // Selection is checkbox-driven and capped at the room member limit.
   assert.match(pluginSource, /const atCap = selected\.length >= GROUP_CHAT_MAX_MEMBERS/)
   // Create requires 2+ members. Membership mutation is covered by the

@@ -323,6 +323,14 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
         ),
         patch("agent.file_safety._resolve_active_profile_name", return_value="default"),
         patch("hermes_time.now", return_value=datetime(2026, 1, 2)),
+        # Pin the zone too, not just the clock. ``now`` alone is not enough:
+        # the timestamp line appends a zone suffix derived from
+        # ``hermes_time.get_timezone()``, whose result is cached process-wide
+        # and never reset between tests. conftest scrubs HERMES_TIMEZONE, but a
+        # zone resolved by an earlier test in the same process persists and
+        # would append " (America/New_York)" here, breaking this exact-equality
+        # assert depending on test ordering.
+        patch("hermes_time.get_timezone", return_value=None),
     ):
         prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
 

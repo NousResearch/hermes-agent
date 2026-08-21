@@ -187,11 +187,11 @@ Leave `container_disk` unset or at the shared default `51200`; custom disk sizin
 
 ### Container Resources
 
-Configure CPU, memory, disk, and persistence for all container backends:
+Configure CPU, memory, disk, and persistence for supported container backends:
 
 ```yaml
 terminal:
-  backend: docker  # or singularity, modal, daytona, e2b, vercel_sandbox
+  backend: docker  # or singularity, modal, daytona, vercel_sandbox
   container_cpu: 1              # CPU cores (default: 1)
   container_memory: 5120        # Memory in MB (default: 5GB)
   container_disk: 51200         # Disk in MB (default: 50GB)
@@ -199,6 +199,8 @@ terminal:
 ```
 
 When `container_persistent: true`, installed packages, files, and config survive across sessions.
+
+E2B resource sizing is defined by `e2b_template`, so `container_cpu`, `container_memory`, and `container_disk` do not apply to that backend. `container_persistent` still controls whether Hermes pauses or kills the E2B sandbox during cleanup.
 
 ### Container Security
 

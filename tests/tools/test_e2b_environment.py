@@ -122,6 +122,9 @@ class SandboxSession:
         self.kill_calls: list[dict] = []
         self.reconnect_effect: Exception | None = None
         self.pause_effect: Exception | None = None
+        self.kill_effect: Exception | None = None
+        self.pause_result = True
+        self.kill_result = True
 
     def connect(self, **kwargs):
         self.connect_calls.append(kwargs)
@@ -133,11 +136,13 @@ class SandboxSession:
         self.pause_calls.append(kwargs)
         if self.pause_effect:
             raise self.pause_effect
-        return True
+        return self.pause_result
 
     def kill(self, **kwargs):
         self.kill_calls.append(kwargs)
-        return True
+        if self.kill_effect:
+            raise self.kill_effect
+        return self.kill_result
 
 
 class SandboxService:
@@ -167,13 +172,26 @@ class RecordingSyncManager:
         self.kwargs = kwargs
         self.sync_calls: list[bool] = []
         self.sync_back_calls = 0
+        self.reset_calls = 0
         self.instances.append(self)
 
     def sync(self, *, force=False):
         self.sync_calls.append(force)
+        return True
 
     def sync_back(self):
         self.sync_back_calls += 1
+
+    def reset_remote_state(self):
+        self.reset_calls += 1
+
+
+class CleanupRecorder:
+    def __init__(self):
+        self.cleanup_calls = 0
+
+    def cleanup(self):
+        self.cleanup_calls += 1
 
 
 @pytest.fixture()
@@ -267,6 +285,42 @@ def test_ephemeral_cleanup_kills_sandbox(e2b_backend):
     assert session.pause_calls == []
 
 
+def test_false_kill_result_means_sandbox_is_already_gone(e2b_backend, caplog):
+    backend, _service = e2b_backend
+    env = make_environment(backend, persistent_filesystem=False)
+    session = env._sandbox
+    session.kill_result = False
+    caplog.set_level("INFO", logger=backend.__name__)
+
+    env.cleanup()
+
+    assert "already gone" in caplog.text
+    assert env._sandbox is None
+    assert env._sandbox_id is None
+
+
+def test_failed_ephemeral_kill_remains_retryable(e2b_backend, caplog):
+    backend, _service = e2b_backend
+    env = make_environment(backend, persistent_filesystem=False)
+    session = env._sandbox
+    session.kill_effect = RuntimeError("kill unavailable")
+
+    env.cleanup()
+
+    assert "kill unavailable" in caplog.text
+    assert env._sandbox is session
+    assert env._sandbox_id == session.sandbox_id
+
+    session.kill_effect = None
+    env.cleanup()
+    assert session.kill_calls == [
+        {"api_key": "profile-key"},
+        {"api_key": "profile-key"},
+    ]
+    assert env._sandbox is None
+    assert env._sandbox_id is None
+
+
 def test_missing_saved_sandbox_creates_fresh_but_transient_resume_does_not(
     e2b_backend,
 ):
@@ -299,6 +353,19 @@ def test_failed_pause_preserves_persistence_pointer(e2b_backend, caplog):
     env.cleanup()
 
     assert "pause unavailable" in caplog.text
+    assert backend._load_sandbox_record("task-1", "base")["sandbox_id"] == sandbox_id
+
+
+def test_false_pause_result_preserves_persistence_pointer(e2b_backend, caplog):
+    backend, _service = e2b_backend
+    env = make_environment(backend, persistent_filesystem=True)
+    sandbox_id = env._sandbox_id
+    env._sandbox.pause_result = False
+    caplog.set_level("INFO", logger=backend.__name__)
+
+    env.cleanup()
+
+    assert "already paused" in caplog.text
     assert backend._load_sandbox_record("task-1", "base")["sandbox_id"] == sandbox_id
 
 
@@ -337,11 +404,44 @@ def test_command_cancellation_is_pid_scoped_and_race_safe(e2b_backend):
     assert process.wait(timeout=2) == 137
     assert handle.kill_calls == 1
     assert session.kill_calls == []
+    env.cleanup()
+
+
+def test_command_cancellation_after_handle_creation_kills_only_command(e2b_backend):
+    backend, _service = e2b_backend
+    env = make_environment(backend, persistent_filesystem=False)
+    session = env._sandbox
+    wait_entered = threading.Event()
+    command_killed = threading.Event()
+
+    class WaitingCommandHandle(RecordingCommandHandle):
+        def wait(self, on_stdout=None, on_stderr=None):
+            wait_entered.set()
+            assert command_killed.wait(timeout=2)
+            raise CommandFailed(stderr="killed", exit_code=137)
+
+        def kill(self):
+            super().kill()
+            command_killed.set()
+            return True
+
+    handle = WaitingCommandHandle()
+    session.commands.run_hook = lambda _command, _kwargs: handle
+    process = env._run_bash("sleep 30", timeout=1)
+    assert wait_entered.wait(timeout=2)
+
+    process.kill()
+
+    assert process.wait(timeout=2) == 137
+    assert handle.kill_calls == 1
+    assert session.kill_calls == []
+    env.cleanup()
 
 
 def test_command_transport_failure_is_reported_as_backend_degradation(e2b_backend):
-    backend, _service = e2b_backend
+    backend, service = e2b_backend
     env = make_environment(backend, persistent_filesystem=False)
+    session = env._sandbox
 
     def unavailable(_command, _kwargs):
         raise ApiRateLimited("capacity unavailable")
@@ -350,6 +450,10 @@ def test_command_transport_failure_is_reported_as_backend_degradation(e2b_backen
 
     with pytest.raises(backend.EnvironmentConnectionError, match="capacity unavailable"):
         env.execute("echo hello", timeout=2)
+
+    env.cleanup()
+    assert session.kill_calls == [{"api_key": "profile-key"}]
+    assert service.sessions[session.sandbox_id] is session
 
 
 def test_e2b_file_transport_uses_bulk_bytes_and_idempotent_delete(
@@ -413,6 +517,58 @@ def test_config_bridge_and_profile_scoped_cache_keys(monkeypatch):
     assert key_a != key_b
     assert key_a.endswith(":default")
     assert key_b.endswith(":default")
+
+
+def test_cleanup_vm_resolves_config_only_e2b_key(monkeypatch):
+    from hermes_constants import hermes_home_key
+    from tools import terminal_tool
+
+    home = Path(__import__("os").environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        "terminal:\n  backend: e2b\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", False)
+
+    env = CleanupRecorder()
+    scoped_key = f"e2b:{hermes_home_key()}:default"
+    monkeypatch.setattr(terminal_tool, "_active_environments", {scoped_key: env})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {scoped_key: 1.0})
+
+    terminal_tool.cleanup_vm("public-task")
+
+    assert env.cleanup_calls == 1
+    assert terminal_tool._active_environments == {}
+    assert terminal_tool._last_activity == {}
+
+
+def test_cleanup_vm_does_not_drop_legacy_raw_e2b_environment(monkeypatch):
+    from tools import terminal_tool
+
+    monkeypatch.setenv("TERMINAL_ENV", "e2b")
+    monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", True)
+
+    scoped = CleanupRecorder()
+    legacy = CleanupRecorder()
+    scoped_key = terminal_tool._resolve_container_task_id("public-task")
+    monkeypatch.setattr(
+        terminal_tool,
+        "_active_environments",
+        {scoped_key: scoped, "public-task": legacy},
+    )
+    monkeypatch.setattr(
+        terminal_tool,
+        "_last_activity",
+        {scoped_key: 1.0, "public-task": 1.0},
+    )
+
+    terminal_tool.cleanup_vm("public-task")
+
+    assert scoped.cleanup_calls == 1
+    assert legacy.cleanup_calls == 1
+    assert terminal_tool._active_environments == {}
+    assert terminal_tool._last_activity == {}
 
 
 def test_factory_uses_scoped_key_and_never_foreign_process_secret(

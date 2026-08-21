@@ -56,6 +56,16 @@ class TestMtimeSkip:
         mgr.sync(force=True)
         assert upload.call_count == 0, "unchanged files should not be re-uploaded"
 
+    def test_replaced_remote_reuploads_unchanged_files(self, tmp_files):
+        upload = MagicMock()
+        mgr = _make_manager(tmp_files, upload=upload)
+        assert mgr.sync(force=True)
+        upload.reset_mock()
+
+        mgr.reset_remote_state()
+        assert mgr.sync()
+
+        assert upload.call_count == 3
 
     def test_new_file_detected(self, tmp_files, tmp_path):
         upload = MagicMock()

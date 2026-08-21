@@ -450,7 +450,7 @@ DEFAULT_CONFIG = {
         # Vercel Sandbox runtime (vercel_sandbox backend only).
         # Supported: node24, node22, python3.13.
         "vercel_runtime": "node24",
-        # Container resource limits (docker, singularity, modal, daytona, e2b, vercel_sandbox — ignored for local/ssh)
+        # Container settings. E2B uses persistence only; its template defines resources.
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)

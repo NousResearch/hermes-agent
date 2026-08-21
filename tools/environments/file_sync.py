@@ -1,9 +1,8 @@
 """Shared file sync manager for remote execution backends.
 
-Tracks local file changes via mtime+size, detects deletions, and
-syncs to remote environments transactionally.  Used by SSH, Modal,
-and Daytona.  Docker and Singularity use bind mounts (live host FS
-view) and don't need this.
+Tracks local file changes via mtime+size, detects deletions, and syncs to
+remote environments transactionally. Docker and Singularity use bind mounts
+(live host FS view) and don't need this.
 """
 
 import hashlib
@@ -13,6 +12,7 @@ import posixpath
 import shlex
 import shutil
 import signal
+import sys
 import tarfile
 import tempfile
 import threading
@@ -21,8 +21,8 @@ import time
 try:
     import fcntl
 except ImportError:
-    fcntl = None  # Windows — file locking skipped
-from pathlib import Path
+    fcntl = None  # type: ignore[invalid-assignment]  # Windows — locking skipped
+from pathlib import Path, PurePosixPath
 from typing import Callable
 
 from hermes_constants import get_hermes_home
@@ -150,20 +150,26 @@ class FileSyncManager:
         sync_interval: float = _SYNC_INTERVAL_SECONDS,
         bulk_upload_fn: BulkUploadFn | None = None,
         bulk_download_fn: BulkDownloadFn | None = None,
+        sync_back_roots: list[tuple[str, str]] | None = None,
     ):
         self._get_files_fn = get_files_fn
         self._upload_fn = upload_fn
         self._bulk_upload_fn = bulk_upload_fn
         self._bulk_download_fn = bulk_download_fn
         self._delete_fn = delete_fn
+        self._sync_back_roots = [
+            (Path(host).expanduser().resolve(), posixpath.normpath(remote))
+            for host, remote in (sync_back_roots or [])
+        ]
         self._transaction_lock = threading.Lock()
         self._synced_files: dict[str, tuple[float, int]] = {}  # remote_path -> (mtime, size)
         self._pushed_hashes: dict[str, str] = {}  # remote_path -> sha256 hex digest
         self._upload_only_host_paths: set[str] = set()
+        self._has_successful_sync = False
         self._last_sync_time: float = 0.0  # monotonic; 0 ensures first sync runs
         self._sync_interval = sync_interval
 
-    def sync(self, *, force: bool = False) -> None:
+    def sync(self, *, force: bool = False) -> bool:
         """Run a sync cycle: upload changed files, delete removed files.
 
         Rate-limited to once per ``sync_interval`` unless *force* is True
@@ -171,16 +177,35 @@ class FileSyncManager:
 
         Transactional: state only committed if ALL operations succeed.
         On failure, state rolls back so the next cycle retries everything.
+
+        Returns ``True`` when the cycle succeeds (including when there is no
+        work), and ``False`` when a transport operation fails and rolls back.
         """
         with self._transaction_lock:
-            self._sync_transaction(force=force)
+            return self._sync_transaction(force=force)
 
-    def _sync_transaction(self, *, force: bool = False) -> None:
+    def reset_remote_state(self) -> None:
+        """Forget committed transport state after the remote is replaced.
+
+        The next sync uploads every current file even when none changed on the
+        host. Content hashes from the old remote must not suppress sync-back
+        comparisons against the replacement.
+        """
+        with self._transaction_lock:
+            self._synced_files.clear()
+            self._pushed_hashes.clear()
+            self._has_successful_sync = False
+            self._last_sync_time = 0.0
+
+    def _sync_transaction(self, *, force: bool = False) -> bool:
         """Execute one sync cycle while holding the per-manager lock."""
         if not force and not os.environ.get(_FORCE_SYNC_ENV):
             now = _monotonic()
-            if now - self._last_sync_time < self._sync_interval:
-                return
+            if (
+                self._has_successful_sync
+                and now - self._last_sync_time < self._sync_interval
+            ):
+                return True
 
         current_files = self._get_files_fn()
         self._upload_only_host_paths.update(_credential_host_paths())
@@ -202,8 +227,9 @@ class FileSyncManager:
         to_delete = [p for p in self._synced_files if p not in current_remote_paths]
 
         if not to_upload and not to_delete:
+            self._has_successful_sync = True
             self._last_sync_time = _monotonic()
-            return
+            return True
 
         # Snapshot for rollback (only when there's work to do)
         prev_files = dict(self._synced_files)
@@ -236,7 +262,9 @@ class FileSyncManager:
                 self._pushed_hashes.pop(p, None)
 
             self._synced_files = new_files
+            self._has_successful_sync = True
             self._last_sync_time = _monotonic()
+            return True
 
         except Exception as exc:
             self._synced_files = prev_files
@@ -248,6 +276,7 @@ class FileSyncManager:
             # leaving the remote with stale files — contradicting this method's
             # documented "next cycle retries everything" contract.
             logger.warning("file_sync: sync failed, rolled back state: %s", exc)
+            return False
 
     # ------------------------------------------------------------------
     # Sync-back: pull remote changes to host on teardown
@@ -270,12 +299,15 @@ class FileSyncManager:
         """Execute sync-back against a stable snapshot of manager state."""
         if self._bulk_download_fn is None:
             return
+        if sys.is_finalizing():
+            logger.debug("sync_back: interpreter shutting down — skipping")
+            return
 
-        # Nothing was ever committed through this manager — the initial
-        # push failed or never ran. Skip sync_back to avoid retry storms
-        # against an uninitialized remote .hermes/ directory.
-        if not self._pushed_hashes and not self._synced_files:
-            logger.debug("sync_back: no prior push state — skipping")
+        # A successful no-work cycle still initializes an empty remote and may
+        # later produce new agent state. Only skip when no sync cycle has ever
+        # succeeded (for example, after a rolled-back initial upload).
+        if not self._has_successful_sync:
+            logger.debug("sync_back: no successful prior sync — skipping")
             return
 
         lock_path = (hermes_home or get_hermes_home()) / ".sync.lock"
@@ -457,8 +489,10 @@ class FileSyncManager:
                          upload_only_host_paths: set[str] | None = None) -> str | None:
         """Infer a host path for a new remote file by matching path prefixes.
 
-        Uses the existing file mapping to find a remote->host directory
-        pair, then applies the same prefix substitution to the new file.
+        Uses the existing file mapping to find a remote->host directory pair,
+        then applies the same prefix substitution to the new file. Backends
+        may also declare narrow sync-back roots for initially empty state
+        directories.
         For example, if the mapping has ``/root/.hermes/skills/a.md`` →
         ``~/.hermes/skills/a.md``, a new remote file at
         ``/root/.hermes/skills/b.md`` maps to ``~/.hermes/skills/b.md``.
@@ -468,11 +502,39 @@ class FileSyncManager:
         for host, remote in mapping:
             if self._is_upload_only_host_path(host, upload_only_host_paths):
                 continue
-            remote_dir = str(Path(remote).parent)
+            remote_dir = posixpath.dirname(remote)
             if remote_path.startswith(remote_dir + "/"):
                 host_dir = str(Path(host).parent)
                 suffix = remote_path[len(remote_dir):]
                 return host_dir + suffix
+
+        # An empty local skill/memory directory produces no file mapping, and
+        # a newly-created nested directory shares no file-level prefix with an
+        # existing sibling. Backends can declare the specific state roots that
+        # are safe to recreate on the host for those cases.
+        normalized_remote = posixpath.normpath(remote_path)
+        for host_root, remote_root in self._sync_back_roots:
+            prefix = remote_root.rstrip("/") + "/"
+            if not normalized_remote.startswith(prefix):
+                continue
+
+            relative = normalized_remote[len(prefix):]
+            parts = PurePosixPath(relative).parts
+            if not parts or any(part in {"", ".", ".."} for part in parts):
+                continue
+
+            candidate = host_root.joinpath(*parts).resolve()
+            if candidate != host_root and host_root not in candidate.parents:
+                logger.warning(
+                    "sync_back: refusing %s because it escapes host root %s",
+                    remote_path,
+                    host_root,
+                )
+                continue
+            candidate_str = str(candidate)
+            if self._is_upload_only_host_path(candidate_str, upload_only_host_paths):
+                continue
+            return candidate_str
         return None
 
     @staticmethod

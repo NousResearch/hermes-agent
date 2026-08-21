@@ -672,7 +672,8 @@ def load_cli_config() -> Dict[str, Any]:
         "ssh_user": "TERMINAL_SSH_USER",
         "ssh_port": "TERMINAL_SSH_PORT",
         "ssh_key": "TERMINAL_SSH_KEY",
-        # Container resource config (docker, singularity, modal, daytona, e2b, vercel_sandbox -- ignored for local/ssh)
+        # Container settings. E2B consumes persistence only; its template
+        # defines CPU, memory, and disk resources.
         "container_cpu": "TERMINAL_CONTAINER_CPU",
         "container_memory": "TERMINAL_CONTAINER_MEMORY",
         "container_disk": "TERMINAL_CONTAINER_DISK",

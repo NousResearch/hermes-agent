@@ -424,7 +424,9 @@ terminal:
 
 **Persistence:** With `container_persistent: true`, Hermes creates the sandbox with an E2B lifecycle policy that pauses with `keep_memory: false` on timeout, explicitly pauses with `pause(keep_memory=False)` during cleanup, and reconnects with `Sandbox.connect()` on the next session. The sandbox pointer is stored in the active profile's Hermes home. This preserves filesystem state only; live processes, PID space, shell state, and open connections do not survive. If an explicit pause fails, Hermes keeps the pointer so a later retry or the E2B timeout lifecycle can reconnect/pause it; inspect the warning before treating cleanup as complete.
 
-**Credential files:** Hermes synchronizes the active profile's required credential files into the sandbox before execution and syncs them back on cleanup. Host environment credentials are not forwarded implicitly.
+File sync transfers regular file contents. Executable mode bits, symlinks, and empty directories are not preserved as portable state.
+
+**Credential files:** Hermes uploads the active profile's required credential files before execution, but treats them as upload-only and never overwrites their host copies during sync-back. Host environment credentials are not forwarded implicitly.
 
 ### Vercel Sandbox Backend
 

@@ -441,8 +441,9 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # Hardline only applies to environments that can actually damage the host
 # (local, ssh, container-host cron).  Containerized backends (docker,
 # singularity, modal, daytona, e2b) already bypass the dangerous-command layer
-# because nothing they do can touch the host, so we leave that behavior
-# alone.
+# because commands cannot execute directly on the host, so we leave that
+# behavior alone. Backend-managed mounts and sync-back remain explicitly
+# scoped host write surfaces.
 #
 # The list is deliberately tiny — only things with no recovery path:
 # filesystem destruction rooted at /, raw block device overwrites, kernel
@@ -3703,8 +3704,9 @@ def _run_approval_gate(
 def _should_skip_container_guards(env_type: str, has_host_access: bool = False) -> bool:
     """Return True when the backend is isolated enough to skip dangerous-command prompts.
 
-    Isolated container backends sandbox the agent away from the host, so their
-    commands can't damage real files/services and we skip the approval layer.
+    Isolated container backends sandbox command execution away from arbitrary
+    host files and services, so we skip the approval layer. Explicit backend
+    mounts and sync-back paths remain separate, scoped host write surfaces.
     Docker is the exception once host paths are bind-mounted into the container:
     at that point a command like ``rm -rf /workspace`` reaches host files, so it
     must go through the normal approval flow.
@@ -5015,8 +5017,9 @@ def check_execute_code_guard(code: str, env_type: str,
 
     # Isolated backends already sandbox the child — matches the container skip
     # in check_all_command_guards / check_dangerous_command. Docker stops
-    # skipping once host paths are bind-mounted into the sandbox; e2b and
-    # vercel_sandbox have no host-bind concept so they stay always-skipped.
+    # skipping once host paths are bind-mounted into the sandbox. E2B and
+    # Vercel Sandbox have no live host-bind concept, so they stay skipped;
+    # backend-managed state sync remains limited to its declared paths.
     if env_type == "vercel_sandbox":
         return {"approved": True, "message": None}
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):

@@ -10,10 +10,14 @@ from __future__ import annotations
 
 import logging
 import os
+import posixpath
 import shlex
 import threading
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from e2b import SandboxLifecycle
 
 from hermes_constants import get_hermes_home
 from tools.environments.base import (
@@ -23,12 +27,18 @@ from tools.environments.base import (
     _load_json_store,
     _save_json_store,
 )
-from tools.environments.file_sync import FileSyncManager, iter_sync_files
+from tools.environments.file_sync import (
+    FileSyncManager,
+    iter_sync_files,
+    quoted_mkdir_command,
+    unique_parent_dirs,
+)
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_E2B_CWD = "/home/user"
 DEFAULT_E2B_TEMPLATE = "base"
+_E2B_HERMES_HOME = f"{DEFAULT_E2B_CWD}/.hermes"
 _SANDBOX_STORE_NAME = "e2b_sandboxes.json"
 _COMMAND_TIMEOUT_GRACE_SECONDS = 5
 _STORE_LOCK = threading.Lock()
@@ -117,7 +127,8 @@ def _connection_error(action: str, exc: BaseException) -> EnvironmentConnectionE
         f"E2B {action} failed: {exc}",
         retry_hint=(
             "Verify E2B connectivity and the E2B_API_KEY configured for the active "
-            "Hermes profile, then retry. The saved sandbox pointer was preserved."
+            "Hermes profile, then retry. Existing persistent sandboxes are preserved "
+            "when recovery is possible."
         ),
     )
 
@@ -155,27 +166,36 @@ class E2BEnvironment(BaseEnvironment):
         self._lock = threading.RLock()
         self._sandbox: Any | None = None
         self._sandbox_id: str | None = None
+        self._created_for_initialization = False
+        hermes_home = get_hermes_home()
         self._sync_manager = FileSyncManager(
-            get_files_fn=lambda: iter_sync_files(f"{DEFAULT_E2B_CWD}/.hermes"),
+            get_files_fn=lambda: iter_sync_files(_E2B_HERMES_HOME),
             upload_fn=self._e2b_upload,
             delete_fn=self._e2b_delete,
             bulk_upload_fn=self._e2b_bulk_upload,
             bulk_download_fn=self._e2b_bulk_download,
+            sync_back_roots=[
+                (str(hermes_home / "skills"), f"{_E2B_HERMES_HOME}/skills"),
+                (str(hermes_home / "memories"), f"{_E2B_HERMES_HOME}/memories"),
+            ],
         )
 
-        self._sandbox = self._connect_or_create()
-        self._sandbox_id = _sandbox_id(self._sandbox)
-        if requested_cwd in {"", "~", "/root"}:
-            self.cwd = DEFAULT_E2B_CWD
-        self._ensure_remote_hermes_dir()
-        self._sync_manager.sync(force=True)
-        self.init_session()
+        try:
+            self._sandbox = self._connect_or_create()
+            self._sandbox_id = _sandbox_id(self._sandbox)
+            if requested_cwd in {"", "~", "/root"}:
+                self.cwd = DEFAULT_E2B_CWD
+            self._initialize_remote_state()
+            self.init_session()
+        except Exception:
+            self._abort_initialization()
+            raise
 
     def _create_sandbox(self):
         _ensure_e2b_sdk()
         from e2b import Sandbox
 
-        lifecycle = (
+        lifecycle: SandboxLifecycle = (
             {
                 "on_timeout": {"action": "pause", "keep_memory": False},
                 "auto_resume": False,
@@ -194,6 +214,7 @@ class E2BEnvironment(BaseEnvironment):
             raise _connection_error("sandbox creation", exc) from exc
 
         sandbox_id = _sandbox_id(sandbox)
+        self._created_for_initialization = True
         if self._persistent:
             _store_sandbox_record(self._task_id, sandbox_id, self._template)
         logger.info("E2B: created sandbox %s for task %s", sandbox_id, self._task_id)
@@ -203,6 +224,8 @@ class E2BEnvironment(BaseEnvironment):
         _ensure_e2b_sdk()
         from e2b import Sandbox
         from e2b.exceptions import SandboxNotFoundException
+
+        self._created_for_initialization = False
 
         record = (
             _load_sandbox_record(self._task_id, self._template)
@@ -232,13 +255,76 @@ class E2BEnvironment(BaseEnvironment):
 
         return self._create_sandbox()
 
-    def _ensure_sandbox_ready(self) -> None:
+    def _initialize_remote_state(self) -> None:
+        """Create the state root and require one successful sync cycle."""
+        self._ensure_remote_hermes_dir()
+        try:
+            sync_succeeded = self._sync_manager.sync(force=True)
+        except Exception as exc:
+            raise _connection_error("initial state sync", exc) from exc
+        if not sync_succeeded:
+            raise _connection_error(
+                "initial state sync",
+                RuntimeError("Hermes state could not be uploaded to the sandbox"),
+            )
+
+    def _initialize_replacement_sandbox(self) -> None:
+        """Bootstrap a newly-created replacement before exposing it to tools."""
+        self._sync_manager.reset_remote_state()
+        try:
+            self._initialize_remote_state()
+            self._snapshot_ready = False
+            self.init_session()
+        except Exception:
+            self._abort_initialization()
+            raise
+
+    def _abort_initialization(self) -> None:
+        """Best-effort rollback for a sandbox that never became usable."""
+        sandbox = self._sandbox
+        sandbox_id = self._sandbox_id
+        if sandbox is None:
+            return
+
+        try:
+            if self._persistent and not self._created_for_initialization:
+                # A resumed sandbox may contain state from an earlier session;
+                # preserve its filesystem and pointer when this startup fails.
+                sandbox.pause(keep_memory=False, api_key=self._api_key)
+            else:
+                killed = sandbox.kill(api_key=self._api_key)
+                if killed is False:
+                    logger.info(
+                        "E2B: sandbox %s was already gone during initialization rollback",
+                        sandbox_id,
+                    )
+                if self._persistent and sandbox_id:
+                    _delete_sandbox_record(
+                        self._task_id,
+                        self._template,
+                        sandbox_id,
+                    )
+        except Exception as exc:
+            logger.warning(
+                "E2B: failed to roll back sandbox %s after initialization error: %s",
+                sandbox_id,
+                exc,
+            )
+        finally:
+            self._sandbox = None
+            self._sandbox_id = None
+
+    def _ensure_sandbox_ready(self, *, create_if_missing: bool = True) -> bool:
         from e2b.exceptions import SandboxNotFoundException
 
         if self._sandbox is None or not self._sandbox_id:
+            if not create_if_missing:
+                return False
             self._sandbox = self._connect_or_create()
             self._sandbox_id = _sandbox_id(self._sandbox)
-            return
+            if self._created_for_initialization:
+                self._initialize_replacement_sandbox()
+            return True
 
         try:
             # Explicitly reconnect so an E2B lifecycle timeout that paused the
@@ -250,10 +336,16 @@ class E2BEnvironment(BaseEnvironment):
         except SandboxNotFoundException:
             stale_id = self._sandbox_id
             _delete_sandbox_record(self._task_id, self._template, stale_id)
+            if not create_if_missing:
+                self._sandbox = None
+                self._sandbox_id = None
+                return False
             self._sandbox = self._create_sandbox()
             self._sandbox_id = _sandbox_id(self._sandbox)
+            self._initialize_replacement_sandbox()
         except Exception as exc:
             raise _connection_error(f"sandbox reconnect ({self._sandbox_id})", exc) from exc
+        return True
 
     def _require_sandbox(self):
         sandbox = self._sandbox
@@ -263,10 +355,15 @@ class E2BEnvironment(BaseEnvironment):
 
     def _ensure_remote_hermes_dir(self) -> None:
         """Create the synced Hermes state directory in a fresh template."""
-        remote_hermes = f"{DEFAULT_E2B_CWD}/.hermes"
+        self._run_remote_mkdir([_E2B_HERMES_HOME])
+
+    def _run_remote_mkdir(self, directories: list[str]) -> None:
+        """Create remote directories and surface command failures uniformly."""
+        if not directories:
+            return
         try:
             result = self._require_sandbox().commands.run(
-                f"mkdir -p {shlex.quote(remote_hermes)}",
+                quoted_mkdir_command(directories),
                 cwd=DEFAULT_E2B_CWD,
                 timeout=max(self.timeout, 60),
             )
@@ -280,11 +377,17 @@ class E2BEnvironment(BaseEnvironment):
             )
 
     def _e2b_upload(self, host_path: str, remote_path: str) -> None:
+        parent = posixpath.dirname(remote_path)
+        if parent:
+            self._run_remote_mkdir([parent])
         self._require_sandbox().files.write(remote_path, Path(host_path).read_bytes())
 
     def _e2b_bulk_upload(self, files: list[tuple[str, str]]) -> None:
         if not files:
             return
+        parents = unique_parent_dirs(files)
+        if parents:
+            self._run_remote_mkdir(parents)
         payload = [
             {"path": remote_path, "data": Path(host_path).read_bytes()}
             for host_path, remote_path in files
@@ -416,7 +519,13 @@ class E2BEnvironment(BaseEnvironment):
                     # E2B may have auto-paused the sandbox after its timeout
                     # while Hermes was idle. Reconnect before pulling remote
                     # state so sync_back can read a filesystem-only snapshot.
-                    self._ensure_sandbox_ready()
+                    if not self._ensure_sandbox_ready(create_if_missing=False):
+                        logger.info(
+                            "E2B: sandbox %s for task %s no longer exists",
+                            sandbox_id,
+                            self._task_id,
+                        )
+                        return
                     sandbox = self._require_sandbox()
                     sandbox_id = self._sandbox_id
                 except Exception as exc:
@@ -425,31 +534,45 @@ class E2BEnvironment(BaseEnvironment):
                         self._task_id,
                         exc,
                     )
+                    self._sandbox = None
+                    self._sandbox_id = None
+                    return
 
             try:
                 self._sync_manager.sync_back()
             except Exception as exc:
                 logger.warning("E2B: sync_back failed for task %s: %s", self._task_id, exc)
 
+            cleanup_succeeded = False
             try:
                 if self._persistent:
-                    sandbox.pause(keep_memory=False, api_key=self._api_key)
-                    logger.info(
-                        "E2B: paused sandbox %s for task %s (filesystem preserved)",
-                        sandbox_id,
-                        self._task_id,
-                    )
+                    paused = sandbox.pause(keep_memory=False, api_key=self._api_key)
+                    if paused:
+                        logger.info(
+                            "E2B: paused sandbox %s for task %s (filesystem preserved)",
+                            sandbox_id,
+                            self._task_id,
+                        )
+                    else:
+                        logger.info(
+                            "E2B: sandbox %s for task %s was already paused",
+                            sandbox_id,
+                            self._task_id,
+                        )
                 else:
-                    sandbox.kill(api_key=self._api_key)
-                    logger.info("E2B: killed ephemeral sandbox %s", sandbox_id)
+                    killed = sandbox.kill(api_key=self._api_key)
+                    if killed:
+                        logger.info("E2B: killed ephemeral sandbox %s", sandbox_id)
+                    else:
+                        logger.info("E2B: ephemeral sandbox %s was already gone", sandbox_id)
+                cleanup_succeeded = True
             except Exception as exc:
                 # Preserve the pointer after a failed pause: the configured
                 # on-timeout lifecycle still pauses it, and a later retry can
-                # reconnect. An ephemeral kill failure is likewise observable
-                # without pretending cleanup succeeded.
+                # reconnect. Keep an ephemeral sandbox attached after a failed
+                # kill so explicit cleanup or the destructor can retry it.
                 logger.warning("E2B: cleanup failed for sandbox %s: %s", sandbox_id, exc)
             finally:
-                self._sandbox = None
-                self._sandbox_id = None
-                if not self._persistent and sandbox_id:
-                    _delete_sandbox_record(self._task_id, self._template, sandbox_id)
+                if self._persistent or cleanup_succeeded:
+                    self._sandbox = None
+                    self._sandbox_id = None

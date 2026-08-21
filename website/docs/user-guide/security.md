@@ -190,7 +190,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `podman --remote`/`-r`/`--url`/`--connection`/`--identity`, `CONTAINER_HOST=` | Podman remote daemon redirect |
 
 :::info
-**Container bypass**: When running in `docker`, `singularity`, `modal`, `daytona`, `e2b`, or `vercel_sandbox` backends, dangerous command checks are **skipped** because the sandbox itself is the security boundary. Destructive commands inside a sandbox can't harm the host.
+**Container bypass**: When running in `docker`, `singularity`, `modal`, `daytona`, `e2b`, or `vercel_sandbox` backends, dangerous command checks are **skipped** because the sandbox itself is the command-execution boundary. Commands cannot execute directly on the host, but backend-managed mounts and state sync can still expose explicitly shared paths.
 :::
 
 ### Approval Flow (CLI)
@@ -495,7 +495,7 @@ terminal:
 - **Ephemeral mode** (`container_persistent: false`): Uses tmpfs for workspace — everything is lost on cleanup
 
 :::tip
-For production gateway deployments, use `docker`, `modal`, `daytona`, `e2b`, or `vercel_sandbox` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
+For production gateway deployments, use the `docker`, `modal`, `daytona`, `e2b`, or `vercel_sandbox` backend to isolate agent command execution from your host system. Dangerous command checks are skipped for these backends, so explicitly shared mounts and backend-managed sync paths remain the host write boundary to review.
 :::
 
 :::warning

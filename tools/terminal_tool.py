@@ -1707,8 +1707,8 @@ def _get_env_config() -> Dict[str, Any]:
             os.getenv("TERMINAL_PERSISTENT_SHELL", "true"),
         ).lower() in {"true", "1", "yes"},
         "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
-        # Container resource config (applies to docker, singularity, modal,
-        # daytona, e2b, and vercel_sandbox -- ignored for local/ssh)
+        # Container settings. E2B consumes persistence only; its template
+        # defines CPU, memory, and disk resources.
         "container_cpu": container_cpu,
         "container_memory": container_memory,     # MB (default 5GB)
         "container_disk": container_disk,        # MB (default 50GB)
@@ -2264,23 +2264,22 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     # Remove from tracking dicts while holding the lock, but defer the
     # actual (potentially slow) env.cleanup() call to outside the lock
     # so other tool calls aren't blocked.
-    env = None
+    envs: list[Any] = []
     # Preserve the established exact-key cleanup behavior for existing
     # backends. E2B is the one backend whose runtime key is intentionally
     # profile-scoped, so callers holding the public task ID need resolution.
+    _ensure_terminal_env_bridged()
     resolved_task_id = (
         _resolve_container_task_id(task_id)
         if os.getenv("TERMINAL_ENV", "local").strip().lower() == "e2b"
         else task_id
     )
     with _env_lock:
-        env = _active_environments.pop(resolved_task_id, None)
-        _last_activity.pop(resolved_task_id, None)
-        if resolved_task_id != task_id:
-            raw_env = _active_environments.pop(task_id, None)
-            _last_activity.pop(task_id, None)
-            if env is None:
-                env = raw_env
+        for key in dict.fromkeys((resolved_task_id, task_id)):
+            env = _active_environments.pop(key, None)
+            _last_activity.pop(key, None)
+            if env is not None and all(existing is not env for existing in envs):
+                envs.append(env)
 
     # Clean up per-task creation lock
     with _creation_locks_lock:
@@ -2294,32 +2293,33 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     except ImportError:
         pass
 
-    if env is None:
+    if not envs:
         return
 
-    try:
-        if hasattr(env, 'cleanup'):
-            # Pass force_remove only if the env's cleanup() accepts it
-            # (DockerEnvironment after issue #20561; other backends don't).
-            import inspect
-            sig = inspect.signature(env.cleanup)
-            if "force_remove" in sig.parameters:
-                env.cleanup(force_remove=force_remove)
+    for env in envs:
+        try:
+            if hasattr(env, 'cleanup'):
+                # Pass force_remove only if the env's cleanup() accepts it
+                # (DockerEnvironment after issue #20561; other backends don't).
+                import inspect
+                sig = inspect.signature(env.cleanup)
+                if "force_remove" in sig.parameters:
+                    env.cleanup(force_remove=force_remove)
+                else:
+                    env.cleanup()
+            elif hasattr(env, 'stop'):
+                env.stop()
+            elif hasattr(env, 'terminate'):
+                env.terminate()
+
+            logger.info("Manually cleaned up environment for task: %s", task_id)
+
+        except Exception as e:
+            error_str = str(e)
+            if "404" in error_str or "not found" in error_str.lower():
+                logger.info("Environment for task %s already cleaned up", task_id)
             else:
-                env.cleanup()
-        elif hasattr(env, 'stop'):
-            env.stop()
-        elif hasattr(env, 'terminate'):
-            env.terminate()
-
-        logger.info("Manually cleaned up environment for task: %s", task_id)
-
-    except Exception as e:
-        error_str = str(e)
-        if "404" in error_str or "not found" in error_str.lower():
-            logger.info("Environment for task %s already cleaned up", task_id)
-        else:
-            logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
+                logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
 
 
 def _atexit_cleanup():

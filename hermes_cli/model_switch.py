@@ -2625,7 +2625,7 @@ def list_authenticated_providers(
         fetch_models_dev,
         get_provider_info as _mdev_pinfo,
     )
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.auth import PROVIDER_REGISTRY, provider_credential_format_ok
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
@@ -2665,6 +2665,20 @@ def list_authenticated_providers(
 
     def _norm_url(url: str) -> str:
         return str(url or "").strip().rstrip("/").lower()
+
+    def _has_env_creds(provider_id: str, env_vars) -> bool:
+        """Whether any of ``env_vars`` holds a credential worth listing.
+
+        A bare "the variable is non-empty" test advertised providers that
+        cannot possibly work — GITHUB_TOKEN is routinely a classic ghp_ PAT
+        set for git, which the Copilot API rejects, so /model listed Copilot
+        and the first request failed (#8826). Providers that declare no
+        format rule are unaffected.
+        """
+        return any(
+            provider_credential_format_ok(provider_id, os.environ.get(ev, ""))
+            for ev in env_vars
+        )
 
     def _record_builtin_endpoint(slug: str) -> None:
         """Record the effective base URL for a built-in provider row.
@@ -2865,8 +2879,8 @@ def list_authenticated_providers(
             if not isinstance(env_vars, list):
                 continue
 
-        # Check if any env var is set
-        has_creds = any(os.environ.get(ev) for ev in env_vars)
+        # Check if any env var holds a plausibly usable credential
+        has_creds = _has_env_creds(hermes_id, env_vars)
         if not has_creds:
             try:
                 from hermes_cli.auth import _load_auth_store
@@ -2965,13 +2979,13 @@ def list_authenticated_providers(
             except Exception as exc:
                 logger.debug("Vertex credential check failed: %s", exc)
         elif overlay.extra_env_vars:
-            has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
+            has_creds = _has_env_creds(hermes_slug, overlay.extra_env_vars)
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
         if not has_creds and overlay.auth_type == "api_key":
             for _key in (pid, hermes_slug):
                 pcfg = _auth_registry.get(_key)
                 if pcfg and pcfg.api_key_env_vars:
-                    if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
+                    if _has_env_creds(_key, pcfg.api_key_env_vars):
                         has_creds = True
                         break
         # Check auth store and credential pool for non-env-var credentials.
@@ -3135,7 +3149,7 @@ def list_authenticated_providers(
         _cp_config = _auth_registry.get(_cp.slug)
         _cp_has_creds = False
         if _cp_config and _cp_config.api_key_env_vars:
-            _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
+            _cp_has_creds = _has_env_creds(_cp.slug, _cp_config.api_key_env_vars)
         # Also check auth store and credential pool
         if not _cp_has_creds:
             try:

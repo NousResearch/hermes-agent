@@ -244,6 +244,46 @@ class ProviderConfig:
     api_key_env_vars: tuple = ()
     # Optional env var for base URL override
     base_url_env_var: str = ""
+    # Optional offline format check for a credential, returning (usable, reason).
+    # Declare one only where the provider documents its token shapes precisely
+    # enough that a mismatch cannot possibly work: rejecting a credential that
+    # does work hides the provider from every picker, which is worse than
+    # listing one that later fails. Consumed via provider_credential_format_ok().
+    token_format_validator: Optional[Callable[[str], Tuple[bool, str]]] = None
+
+
+def _validate_copilot_token_format(token: str) -> Tuple[bool, str]:
+    """Adapter so the registry can point at copilot_auth without importing it
+    at module load (copilot_auth pulls in the subprocess/OAuth machinery)."""
+    from hermes_cli.copilot_auth import validate_copilot_token
+
+    return validate_copilot_token(token)
+
+
+def provider_credential_format_ok(provider_id: str, token: str) -> bool:
+    """Return False only when ``token`` cannot be a credential for ``provider_id``.
+
+    Offline, format-only: no network, no auth store. Providers that declare no
+    ``token_format_validator`` always pass, so a provider we have no rule for
+    keeps whatever behaviour the caller had before. Errors inside a validator
+    fail open for the same reason.
+    """
+    token = str(token or "").strip()
+    if not token:
+        return False
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    validator = pconfig.token_format_validator if pconfig else None
+    if validator is None:
+        return True
+    try:
+        usable, _reason = validator(token)
+    except Exception:
+        logger.debug(
+            "Credential format check failed for %s; treating as usable",
+            provider_id, exc_info=True,
+        )
+        return True
+    return bool(usable)
 
 
 PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
@@ -297,6 +337,9 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url=DEFAULT_GITHUB_MODELS_BASE_URL,
         api_key_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"),
         base_url_env_var="COPILOT_API_BASE_URL",
+        # GITHUB_TOKEN is commonly a classic ghp_ PAT set for git/gh, which the
+        # Copilot API rejects outright — don't advertise Copilot on one (#8826).
+        token_format_validator=_validate_copilot_token_format,
     ),
     "copilot-acp": ProviderConfig(
         id="copilot-acp",

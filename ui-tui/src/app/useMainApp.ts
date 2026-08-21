@@ -54,6 +54,7 @@ import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfa
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
+import { shouldRecoverStaleBusy } from './staleBusyRecovery.js'
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
@@ -590,7 +591,10 @@ export function useMainApp(gw: GatewayClient) {
     let stopped = false
 
     const refresh = () => {
-      gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: getUiState().sid })
+      const requestedSessionId = getUiState().sid
+      const requestedCompletion = turnController.completionSnapshot()
+
+      gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: requestedSessionId })
         .then(raw => {
           const result = asRpcResult<SessionActiveListResponse>(raw)
 
@@ -601,15 +605,41 @@ export function useMainApp(gw: GatewayClient) {
             // titlebar. The active_list poll already carries it, so no extra
             // round-trip is needed.
             const currentSid = getUiState().sid
+            const currentCompletion = turnController.completionSnapshot()
 
             const sessionTitle = result.sessions.find(s => s.current || s.id === currentSid)?.title?.trim() ?? ''
+
+            const prev = getUiState()
+
+            // message.complete normally clears busy before the gateway reports this
+            // session idle. If the backend is already idle while the frontend still
+            // believes the turn is live, the terminal frame was lost or skipped.
+            // Finalize from the buffered turn state so partial output survives instead
+            // of merely flipping busy=false and discarding it.
+            if (
+              shouldRecoverStaleBusy({
+                busy: prev.busy,
+                currentCompletion,
+                currentSessionId: currentSid,
+                requestedCompletion,
+                requestedSessionId,
+                sessions: result.sessions
+              })
+            ) {
+              const { finalMessages, wasInterrupted } = turnController.recordMessageComplete({})
+
+              if (!wasInterrupted) {
+                finalMessages.forEach(appendMessage)
+                sys('response ended without a completion event — input unlocked')
+              }
+
+              patchUiState({ status: 'ready' })
+            }
 
             // Only patch when something actually changed. patchUiState always
             // produces a new state object, which notifies every $uiState
             // subscriber; patching unconditionally on each 1.5s poll re-renders
             // the whole TUI and causes idle flicker.
-            const prev = getUiState()
-
             if (prev.liveSessionCount !== liveSessionCount || prev.sessionTitle !== sessionTitle) {
               patchUiState({ liveSessionCount, sessionTitle })
             }
@@ -625,7 +655,7 @@ export function useMainApp(gw: GatewayClient) {
       stopped = true
       clearInterval(timer)
     }
-  }, [gw, ui.sid])
+  }, [appendMessage, gw, sys, ui.sid])
 
   // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
   // Format: `<marker> <session name> · <model> · <cwd>` — name/cwd omitted when absent.

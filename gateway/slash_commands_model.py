@@ -386,7 +386,7 @@ class GatewayModelCommandsMixin:
             # `/model X --reasoning <level>`: same applier as /reasoning, same scope as the pick.
             # The record step already evicted the cached agent, so the pin lands on the rebuild.
             from gateway.run import _platform_config_key
-            reply += "\n" + self._apply_reasoning_selection(
+            reply += "\n" + await self._apply_reasoning_selection(
                 ctx.session_key, _platform_config_key(source.platform), ctx.reasoning_effort,
                 persist_global=ctx.persist_global and global_error is None)
         return reply
@@ -644,7 +644,23 @@ class GatewayModelCommandsMixin:
         self._set_session_reasoning_override(session_key, value)
         self._evict_cached_agent(session_key)
 
-    def _apply_reasoning_selection(
+    async def _persist_session_reasoning_override(
+        self, session_key: str, reasoning_config: Optional[dict]
+    ) -> None:
+        """Write through via AsyncSessionStore when the runner owns a store."""
+        if getattr(self, "session_store", None) is None:
+            return
+        try:
+            await self.async_session_store.set_reasoning_override(
+                session_key, reasoning_config
+            )
+        except Exception:
+            logger.debug(
+                "Failed to persist session reasoning override",
+                exc_info=True,
+            )
+
+    async def _apply_reasoning_selection(
         self, session_key: str, platform_key: str, value: str, persist_global: bool = False,
     ) -> str:
         """Apply a /reasoning argument (typed or picked) and return the reply."""
@@ -661,6 +677,7 @@ class GatewayModelCommandsMixin:
             if persist_global:
                 return t("gateway.reasoning.reset_global_unsupported")
             self._set_session_reasoning_override(session_key, None)
+            await self._persist_session_reasoning_override(session_key, None)
             self._reasoning_config = self._load_reasoning_config()
             self._evict_cached_agent(session_key)
             return t("gateway.reasoning.reset_done")
@@ -672,10 +689,13 @@ class GatewayModelCommandsMixin:
         if persist_global:
             if self._save_gateway_config_key("agent.reasoning_effort", value):
                 self._set_reasoning_override(session_key, None)
+                await self._persist_session_reasoning_override(session_key, None)
                 return t("gateway.reasoning.set_global", effort=value)
             self._set_reasoning_override(session_key, parsed)
+            await self._persist_session_reasoning_override(session_key, parsed)
             return t("gateway.reasoning.set_global_save_failed", effort=value)
         self._set_reasoning_override(session_key, parsed)
+        await self._persist_session_reasoning_override(session_key, parsed)
         return t("gateway.reasoning.set_session", effort=value)
 
     async def _try_send_choice_picker(
@@ -717,7 +737,7 @@ class GatewayModelCommandsMixin:
         )
         platform_key = _platform_config_key(event.source.platform)
         if raw_args:  # typed path — same applier the picker uses
-            return self._apply_reasoning_selection(session_key, platform_key, args, persist_global=persist_global)
+            return await self._apply_reasoning_selection(session_key, platform_key, args, persist_global=persist_global)
         rc = self._reasoning_config
         # Labels tell the truth about the route: a Hermes-internal step (``ultra``) that the wire
         # clamps is shown as "ultra (sends max on this route)" instead of a distinct level (#61634).
@@ -743,7 +763,7 @@ class GatewayModelCommandsMixin:
         scope = t("gateway.reasoning.scope_session") if has_session_override else t("gateway.reasoning.scope_global")
 
         async def _on_reasoning_choice(_chat_id: str, value: str) -> str:
-            return self._apply_reasoning_selection(session_key, platform_key, value)
+            return await self._apply_reasoning_selection(session_key, platform_key, value)
 
         picker_sent = await self._try_send_choice_picker(
             event,

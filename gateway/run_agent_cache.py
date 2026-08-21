@@ -193,6 +193,16 @@ class GatewayAgentCacheMixin:
             session_key, override.get("model"), provider or "",
         )
 
+    def _rehydrate_session_reasoning_override(self, session_entry) -> None:
+        """Copy a durable override from an already-loaded routing entry."""
+        session_key = str(getattr(session_entry, "session_key", "") or "")
+        persisted = getattr(session_entry, "reasoning_override", None)
+        if not session_key or persisted is None:
+            return
+        state = self._session_state(session_key)
+        if state.conversation.reasoning_override is None:
+            state.conversation.reasoning_override = dict(persisted)
+
     def _apply_session_model_override(self, session_key: str, model: str, runtime_kwargs: dict) -> tuple:
         """Apply /model session overrides (precedence over config.yaml defaults; ``None`` fields skipped
         so partial overrides don't clobber defaults), returning (model, runtime_kwargs)."""

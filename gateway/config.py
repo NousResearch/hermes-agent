@@ -2249,7 +2249,21 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if webhook_enabled:
         if Platform.WEBHOOK not in config.platforms:
             config.platforms[Platform.WEBHOOK] = PlatformConfig()
-        config.platforms[Platform.WEBHOOK].enabled = True
+        # Honor an explicit ``enabled: false`` in config.yaml (flagged by
+        # ``_enabled_explicit``). In multiplex mode a secondary profile's
+        # config.yaml pins ``platforms.webhook.enabled: false`` so it shares
+        # the default profile's listener instead of binding its own port. That
+        # profile still inherits the process-level env (including
+        # ``WEBHOOK_ENABLED`` via get_secret()'s fallback to the default
+        # profile's .env); without this guard the env var would force-enable
+        # the listener and trip the MultiplexConfigError check. Pop (don't
+        # read) the marker — the webhook branch is terminal (no later registry
+        # pass re-enables it), matching the api_server branch above.
+        webhook_explicit = config.platforms[Platform.WEBHOOK].extra.pop(
+            "_enabled_explicit", False
+        )
+        if not webhook_explicit or config.platforms[Platform.WEBHOOK].enabled:
+            config.platforms[Platform.WEBHOOK].enabled = True
         if webhook_port:
             try:
                 config.platforms[Platform.WEBHOOK].extra["port"] = int(webhook_port)

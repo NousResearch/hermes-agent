@@ -565,17 +565,47 @@ def _extract_docx(path: str) -> str:
         raise ExtractionError(str(exc)) from exc
 
     w = f"{{{_NS_W}}}"
+    p_tag, t_tag, tab_tag = f"{w}p", f"{w}t", f"{w}tab"
+    break_tags = {f"{w}br", f"{w}cr"}
+
+    # Paragraphs can nest: a text box (<w:txbxContent>) or block-level content
+    # control holds its own <w:p> elements, and a plain root.iter() would see
+    # that text both inline (via the ancestor paragraph) and again as its own
+    # paragraph — duplicating it. Walk the tree once in document order, treating
+    # every <w:p> as a line boundary: a nested paragraph flushes the line it
+    # interrupts, emits its own line(s), then the enclosing paragraph resumes.
+    # Each run is emitted exactly once and stays in reading order
+    # (e.g. "Before" -> box text -> "After").
     lines: list[str] = []
-    for para in root.iter(f"{w}p"):
-        buf: list[str] = []
-        for node in para.iter():
-            if node.tag == f"{w}t":
-                buf.append(node.text or "")
-            elif node.tag == f"{w}tab":
+    buf: list[str] = []
+
+    def _flush() -> bool:
+        if buf:
+            lines.extend("".join(buf).split("\n"))
+            buf.clear()
+            return True
+        return False
+
+    def _walk(node: ET.Element) -> None:
+        for child in node:
+            tag = child.tag
+            if tag == p_tag:
+                _flush()
+                marker = len(lines)
+                _walk(child)
+                if not _flush() and len(lines) == marker:
+                    lines.append("")  # preserve an empty paragraph as a blank line
+            elif tag == t_tag:
+                buf.append(child.text or "")
+            elif tag == tab_tag:
                 buf.append("\t")
-            elif node.tag in {f"{w}br", f"{w}cr"}:
+            elif tag in break_tags:
                 buf.append("\n")
-        lines.extend("".join(buf).split("\n"))
+            else:
+                _walk(child)
+
+    _walk(root)
+    _flush()
     if not any(line.strip() for line in lines):
         raise ExtractionError("DOCX contains no extractable text")
     return "\n".join(lines).rstrip("\n") + "\n"

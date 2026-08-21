@@ -569,6 +569,16 @@ DEFAULT_CONFIG = {
             "rewrite_loopback_urls": False,
             "loopback_host_alias": "host.docker.internal",
         },
+        # Authenticated browser-extension controller lane. When enabled, an
+        # extension that registers through the gateway can become the exact
+        # controller for a session's browser_* tools (fail-closed once bound).
+        # Local API registration additionally requires the API server bearer
+        # key. developer_mode gates the privileged capabilities
+        # (browser_cdp / browser_evaluate) — never negotiable without it.
+        "extension_control": {
+            "enabled": False,
+            "developer_mode": False,
+        },
     },
 
     # Filesystem checkpoints — automatic snapshots before destructive file ops.

@@ -12,6 +12,7 @@ Covers:
 import asyncio
 import threading
 import time
+import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -262,6 +263,101 @@ class TestStartRun:
 
 
 # ---------------------------------------------------------------------------
+# POST /v1/runs — Idempotency-Key admission (retry safety)
+# ---------------------------------------------------------------------------
+
+
+class TestStartRunIdempotency:
+    @pytest.mark.asyncio
+    async def test_retry_with_same_idempotency_key_does_not_start_second_run(self, adapter):
+        """A client retrying a timed-out POST /v1/runs with the same
+        Idempotency-Key must get back the original run_id, not a second run.
+        Without admission dedup this doubles the underlying agent (LLM) work.
+        """
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                headers = {"Idempotency-Key": "client-retry-1"}
+                resp1 = await cli.post("/v1/runs", json={"input": "hello"}, headers=headers)
+                assert resp1.status == 202
+                data1 = await resp1.json()
+
+                resp2 = await cli.post("/v1/runs", json={"input": "hello"}, headers=headers)
+                assert resp2.status == 202
+                data2 = await resp2.json()
+
+                assert data1["run_id"] == data2["run_id"]
+                mock_create.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_same_idempotency_key_different_body_returns_409(self, adapter):
+        """Reusing a key with materially different admission inputs must be
+        rejected rather than silently returning the wrong cached run."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                headers = {"Idempotency-Key": "client-retry-2"}
+                resp1 = await cli.post("/v1/runs", json={"input": "hello"}, headers=headers)
+                assert resp1.status == 202
+
+                resp2 = await cli.post("/v1/runs", json={"input": "different"}, headers=headers)
+                assert resp2.status == 409
+
+    @pytest.mark.asyncio
+    async def test_empty_idempotency_key_header_returns_400(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs", json={"input": "hello"}, headers={"Idempotency-Key": "   "},
+            )
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_runs_meta_returns_server_generation(self, adapter):
+        # Register in the same order api_server does: the static "meta"
+        # route must precede the dynamic "/v1/runs/{run_id}" resource or
+        # aiohttp's UrlDispatcher swallows it as run_id="meta".
+        app = web.Application()
+        app["api_server_adapter"] = adapter
+        app.router.add_post("/v1/runs", adapter._handle_runs)
+        app.router.add_get("/v1/runs/meta", adapter._handle_runs_meta)
+        app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/runs/meta")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["server_generation"] == adapter._server_generation
+            assert data["idempotency_ttl_seconds"] == adapter._RUN_ADMISSION_TTL
+
+    @pytest.mark.asyncio
+    async def test_expected_generation_mismatch_returns_409(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs",
+                json={"input": "hello"},
+                headers={"X-Hermes-Expected-Generation": str(uuid.uuid4())},
+            )
+            assert resp.status == 409
+            data = await resp.json()
+            assert data["error"]["code"] == "server_generation_mismatch"
+
+
+# ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id} — poll run status
 # ---------------------------------------------------------------------------
 
@@ -403,6 +499,62 @@ class TestRunEvents:
                     approval_mod._gateway_queues.pop(victim_run, None)
                 victim_interrupted.set()
                 attacker_interrupted.set()
+
+    @pytest.mark.asyncio
+    async def test_retry_approval_with_same_idempotency_key_resolves_once(self, adapter):
+        """A retried POST .../approval with the same Idempotency-Key must
+        replay the original response instead of resolving the approval
+        queue a second time (which, without dedup, resolves whatever is
+        now at the head of the queue — silently mis-authorizing it, or
+        404s a retry that actually already succeeded).
+        """
+        app = _create_runs_app(adapter)
+        run_id = "run_idem_approval"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "waiting_for_approval"}
+        adapter._run_approval_sessions[run_id] = "session-idem"
+
+        async with TestClient(TestServer(app)) as cli:
+            # First call resolves 1 pending approval; if the retry reaches
+            # resolve_gateway_approval a second time it finds nothing left
+            # pending (0) — the smoking gun for missing idempotency.
+            with patch(
+                "tools.approval.resolve_gateway_approval", side_effect=[1, 0],
+            ) as mock_resolve:
+                headers = {"Idempotency-Key": "approve-retry-1"}
+                resp1 = await cli.post(
+                    f"/v1/runs/{run_id}/approval", json={"choice": "once"}, headers=headers,
+                )
+                assert resp1.status == 200
+                data1 = await resp1.json()
+
+                resp2 = await cli.post(
+                    f"/v1/runs/{run_id}/approval", json={"choice": "once"}, headers=headers,
+                )
+                assert resp2.status == 200
+                data2 = await resp2.json()
+
+        mock_resolve.assert_called_once()
+        assert data1 == data2
+
+    @pytest.mark.asyncio
+    async def test_approval_idempotency_key_different_choice_returns_409(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_idem_approval_conflict"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "waiting_for_approval"}
+        adapter._run_approval_sessions[run_id] = "session-idem-2"
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch("tools.approval.resolve_gateway_approval", return_value=1):
+                headers = {"Idempotency-Key": "approve-retry-2"}
+                resp1 = await cli.post(
+                    f"/v1/runs/{run_id}/approval", json={"choice": "once"}, headers=headers,
+                )
+                assert resp1.status == 200
+
+                resp2 = await cli.post(
+                    f"/v1/runs/{run_id}/approval", json={"choice": "deny"}, headers=headers,
+                )
+        assert resp2.status == 409
 
 
 # ---------------------------------------------------------------------------

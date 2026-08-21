@@ -113,7 +113,8 @@ class TestReconfigureWritesProvider:
 
         assert config["video_gen"]["provider"] == "xai_fake"
         assert config["video_gen"]["model"] == "xai_fake-video-v1"
-        assert config["video_gen"]["use_gateway"] is False
+        # Non-managed pick: no legacy use_gateway key is written.
+        assert "use_gateway" not in config["video_gen"]
 
 
 class TestPluginVideoProvidersRow:

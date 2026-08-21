@@ -352,6 +352,16 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             # send_message, which passes HERMES_SESSION_USER_ID to
             # gateway.mirror.mirror_to_session. Harmless for DMs/shared sessions.
             "user_id": get_session_env("HERMES_SESSION_USER_ID") or None,
+            # Workspace/server scope (Slack team, Discord guild, Matrix
+            # server). build_session_key embeds it in every Slack session key
+            # (dm/group/thread alike), so a continuable cron seed built
+            # WITHOUT it creates a row no scoped reply ever resolves to —
+            # the seeded key is agent:main:slack:dm:<chat>:<thread> while the
+            # reply keys agent:main:slack:dm:<team>:<chat>:<thread>. Captured
+            # here so the scheduler's seed helpers can reproduce the reply's
+            # exact key. Same session-context var async_delegation already
+            # snapshots; None for platforms without scope.
+            "scope_id": get_session_env("HERMES_SESSION_SCOPE_ID") or None,
         }
     return None
 
@@ -638,6 +648,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "last_run_at": job.get("last_run_at"),
         "last_status": job.get("last_status"),
         "last_delivery_error": job.get("last_delivery_error"),
+        "last_fire_error": job.get("last_fire_error"),
         "enabled": job.get("enabled", True),
         # Derive from enabled so half-paused records never render as paused.
         "state": effective_job_state(job),
@@ -646,6 +657,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     }
     if job.get("script"):
         result["script"] = job["script"]
+    if job.get("reasoning_effort"):
+        result["reasoning_effort"] = job["reasoning_effort"]
     if job.get("monitor_script"):
         result["monitor_script"] = job["monitor_script"]
     if job.get("monitor_url"):
@@ -1200,6 +1213,7 @@ def cronjob(
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
 ) -> str:
@@ -1300,6 +1314,12 @@ def cronjob(
                     attach_to_session=attach_to_session,
                     monitor_script=_normalize_optional_job_value(monitor_script),
                     monitor_url=_normalize_optional_job_value(monitor_url),
+                    # reasoning_effort reaches here from the CLI
+                    # (hermes cron create --reasoning-effort) ONLY — it is
+                    # deliberately absent from CRONJOB_SCHEMA and the model
+                    # dispatch below: models do not make model-config
+                    # decisions (standing policy).
+                    reasoning_effort=reasoning_effort,
                 )
             except CronSchedulerRegistrationError as exc:
                 _partial = exc.to_dict()
@@ -1482,6 +1502,10 @@ def cronjob(
                 updates["provider"] = _normalize_optional_job_value(provider)
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+            if reasoning_effort is not None:
+                # CLI-only lane (see create above): update_job validates
+                # against the canonical grammar; empty string clears the pin.
+                updates["reasoning_effort"] = reasoning_effort
             # Re-validate the EFFECTIVE provider/base_url on EVERY update, not
             # only when this update supplies provider/base_url. A job persisted
             # before this guard (or written directly to the jobs store) may

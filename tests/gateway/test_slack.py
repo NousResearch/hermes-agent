@@ -3005,6 +3005,12 @@ class TestAssistantThreadLifecycle:
         assert runner._thread_metadata_for_source(msg_event.source) == {
             "thread_id": "171.111",
             "slack_team_id": "T_OTHER",
+            # R3-5: per-turn egress identity stamped from THIS turn's source
+            # (not the relay adapter's mutable per-chat cache) so concurrent
+            # turns in one channel cannot cross recipient identities on the
+            # connector's chat.startStream recipient fields.
+            "scope_id": "T_OTHER",
+            "user_id": "U_USER",
         }
 
     @pytest.mark.asyncio

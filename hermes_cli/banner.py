@@ -406,7 +406,7 @@ def check_for_updates() -> Optional[int]:
     # (web_server.py); mirror that here so the banner/TUI surfaces agree.
     try:
         from hermes_cli.config import detect_install_method, get_project_root
-        if detect_install_method(get_project_root()) == "docker":
+        if detect_install_method(get_project_root()) in {"docker", "apt"}:
             return None
     except Exception:
         pass

@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { activitySignature, toolNarratesWait, TURN_QUIET_S } from '@/components/assistant-ui/thread/turn-activity'
 import { toolPresentVerb } from '@/components/assistant-ui/tool/run-summary'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
@@ -16,7 +17,6 @@ import { $backgroundResume } from '@/store/background-delegation'
 import { sessionCompacting } from '@/store/compaction'
 import { sessionAwaitingInput } from '@/store/prompts'
 import { sessionProviderWait } from '@/store/provider-wait'
-import { $turnStartedAt } from '@/store/session'
 import { type DraftingTool, sessionDraftingTool } from '@/store/tool-drafting'
 
 // A status line is scaffolding like any other — "Editing" while the model
@@ -55,8 +55,15 @@ const HintText: FC<{ children: ReactNode }> = ({ children }) => (
  *  session-scoped signal comes from that surface's view — a tile must never
  *  show the primary chat's compaction, prompt-wait, or turn timer. */
 function useThreadSessionStatus() {
-  const sessionId = useStore(useSessionView().$runtimeId)
-  const turnStartedAt = useStore($turnStartedAt)
+  const view = useSessionView()
+  const sessionId = useStore(view.$runtimeId)
+  // The same turn-busy the composer's arc border and Stop button read. The
+  // message-level `running` flag is a weaker signal: it goes false in the gaps
+  // between bubbles (a sealed interim row, a settled turn the backend hasn't
+  // finished with), which is exactly when the transcript used to fall silent
+  // while the app still said it was working.
+  const busy = useStore(view.$busy)
+  const turnStartedAt = useStore(view.$turnStartedAt)
   const compacting = useStore(useMemo(() => sessionCompacting(sessionId), [sessionId]))
   const drafting = useStore(useMemo(() => sessionDraftingTool(sessionId), [sessionId]))
   const providerWait = useStore(useMemo(() => sessionProviderWait(sessionId), [sessionId]))
@@ -67,10 +74,15 @@ function useThreadSessionStatus() {
 
   return {
     awaitingInput,
+    busy,
     compacting,
     drafting,
     providerWait,
-    turnTimerKey: sessionId && turnStartedAt ? `turn:${sessionId}:${turnStartedAt}` : undefined
+    // Epoch ms this surface's turn began, or undefined between turns. The
+    // origin for anything measuring the WHOLE turn rather than one phase of
+    // it — including the first seconds of a brand-new chat, where the value is
+    // seeded at submit and there is no runtime session to key off yet.
+    turnStartedAt: turnStartedAt ?? undefined
   }
 }
 
@@ -132,8 +144,8 @@ export const CenteredThreadSpinner: FC = () => {
 
 export const ResponseLoadingIndicator: FC = () => {
   const { t } = useI18n()
-  const { compacting, drafting, providerWait, turnTimerKey } = useThreadSessionStatus()
-  const elapsed = useElapsedSeconds(true, turnTimerKey)
+  const { compacting, drafting, providerWait, turnStartedAt } = useThreadSessionStatus()
+  const elapsed = useElapsedSeconds(true, undefined, turnStartedAt)
   const hint = useStatusHint(compacting, drafting, providerWait)
 
   return (
@@ -179,67 +191,65 @@ export const BackgroundResumeNotice: FC = () => {
   )
 }
 
-// Seconds of no visible output (text or part count) before a still-running turn
-// is treated as stalled and the thinking indicator returns at the tail.
-const STREAM_STALL_S = 2
-
-// Tail "still thinking" indicator: the pre-first-token spinner goes away once
-// text flows, but if the stream then goes quiet mid-turn (tool think-time,
-// provider stall) nothing signals that work continues. Watch a per-flush
-// activity signal; when it hasn't changed for STREAM_STALL_S, re-show the
-// dither + a timer counting from the last activity.
+// Tail activity row. The pre-first-token spinner goes away once content flows,
+// but a turn keeps working through gaps it produces nothing during — between
+// one tool result landing and the next call arriving, while the provider
+// thinks, while a sealed bubble waits on the next one. The composer's arc
+// border and Stop button are lit through all of it; the transcript used to be
+// silent for most of it, and those seconds went uncounted.
+//
+// So this row follows the SAME busy signal the composer does, and times every
+// gap from the moment the turn last showed something rather than from its own
+// mount. What it doesn't do is double-narrate: a tool call in flight already
+// carries its own row and timer.
 //
 // Subscribes to the activity signal ITSELF (rather than taking it as a prop)
 // so that per-token updates re-render only this leaf, not the whole
 // AssistantMessage subtree.
-export const StreamStallIndicator: FC = () => {
-  const activity = useAuiState(s => {
-    let textLength = 0
+export const TurnActivityIndicator: FC = () => {
+  const activity = useAuiState(s => activitySignature(s.message.content))
 
-    for (const part of s.message.content) {
-      const text = (part as { text?: unknown }).text
-
-      if (typeof text === 'string') {
-        textLength += text.length
-      }
-    }
-
-    return `${s.message.content.length}:${textLength}`
-  })
-
-  // Timestamp of the activity that preceded the current quiet spell, set once
-  // the spell qualifies as a stall. Holding the timestamp (not a boolean) is
-  // what lets the timer read "quiet for 12s" rather than the age of this
-  // component, which is the whole turn so far.
+  // Timestamp of the last visible progress, held from the moment the quiet
+  // spell qualifies. Holding the timestamp (not a boolean) is what lets the
+  // timer read "quiet for 12s" rather than the age of this component, which is
+  // the whole turn so far.
   const [quietSince, setQuietSince] = useState<number | undefined>(undefined)
-  const { awaitingInput, compacting, drafting, providerWait, turnTimerKey } = useThreadSessionStatus()
+  const { awaitingInput, busy, compacting, drafting, providerWait, turnStartedAt } = useThreadSessionStatus()
   const hint = useStatusHint(compacting, drafting, providerWait)
 
   // A tool run at the tail already narrates the wait — its summary counts the
   // calls, its ticker names the current one, and it carries its own timer. A
-  // second spinner under that adds a line and says nothing new.
-  const toolNarrating = useAuiState(s => s.message.content.at(-1)?.type === 'tool-call')
+  // second spinner under that adds a line and says nothing new. Silent tools
+  // (`todo`, reactions) render nothing, so they narrate nothing.
+  const toolNarrating = useAuiState(s => toolNarratesWait(s.message.content))
+
+  // Streaming counts as working too, and it leads busy by a flush on the first
+  // turn of a fresh chat — so the row can't wait for the store to catch up.
+  const messageRunning = useAuiState(s => s.message.status?.type === 'running')
 
   useEffect(() => {
     setQuietSince(undefined)
     const seenAt = Date.now()
-    const id = window.setTimeout(() => setQuietSince(seenAt), STREAM_STALL_S * 1000)
+    const id = window.setTimeout(() => setQuietSince(seenAt), TURN_QUIET_S * 1000)
 
     return () => window.clearTimeout(id)
   }, [activity])
 
-  // A named wait doesn't have to earn the stall threshold first — we already
-  // know what the turn is doing, so say it as soon as the label is ready rather
-  // than leaving the transcript silent for STREAM_STALL_S.
-  const active = (quietSince !== undefined || Boolean(hint)) && !awaitingInput && !toolNarrating
+  // Every second the app claims to be working belongs to something. A named
+  // wait says what it is straight away; an unnamed gap has to go quiet for
+  // TURN_QUIET_S first, or a run of quick calls would strobe a row between
+  // each one. The two exemptions are waits already accounted for elsewhere: a
+  // question the user is answering, and a tool call carrying its own timer.
+  const working = busy || messageRunning
+  const active = working && !awaitingInput && !toolNarrating && (Boolean(hint) || quietSince !== undefined)
 
   // Compaction owns the whole turn, so it keeps counting from the turn's start;
-  // anything else counts from the moment the stream went quiet — the stall's own
-  // mark, or the draft's, whichever named the wait first.
+  // anything else counts from the moment the turn last produced something — the
+  // gap's own mark, or the draft's, whichever named the wait first.
   const elapsed = useElapsedSeconds(
     active,
-    compacting ? turnTimerKey : undefined,
-    compacting ? undefined : (quietSince ?? drafting?.since)
+    undefined,
+    compacting ? turnStartedAt : (quietSince ?? drafting?.since ?? turnStartedAt)
   )
 
   if (!active) {
@@ -247,7 +257,7 @@ export const StreamStallIndicator: FC = () => {
   }
 
   return (
-    <StatusRow data-slot="aui_stream-stall" label={hint || 'Hermes is thinking'}>
+    <StatusRow data-slot="aui_turn-activity" label={hint || 'Hermes is working'}>
       <StatusPulse
         aria-hidden="true"
         className="dither inline-block size-3 rounded-[2px] text-midground/80"

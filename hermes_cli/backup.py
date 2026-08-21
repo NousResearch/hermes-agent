@@ -645,22 +645,30 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
     """Write a full backup while the cross-process backup slot is held."""
 
     # Determine output path
-    if args.output:
-        out_path = Path(args.output).expanduser().resolve()
-        # If user gave a directory, put the zip inside it
-        if out_path.is_dir():
+    out_path = None
+    try:
+        if args.output:
+            out_path = Path(args.output).expanduser().resolve()
+            # If user gave a directory, put the zip inside it
+            if out_path.is_dir():
+                stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+                out_path = out_path / f"hermes-backup-{stamp}.zip"
+        else:
             stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-            out_path = out_path / f"hermes-backup-{stamp}.zip"
-    else:
-        stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-        out_path = Path.home() / f"hermes-backup-{stamp}.zip"
+            out_path = Path.home() / f"hermes-backup-{stamp}.zip"
 
-    # Ensure the suffix is .zip
-    if out_path.suffix.lower() != ".zip":
-        out_path = out_path.with_suffix(out_path.suffix + ".zip")
+        # Ensure the suffix is .zip
+        if out_path.suffix.lower() != ".zip":
+            out_path = out_path.with_suffix(out_path.suffix + ".zip")
 
-    # Ensure parent directory exists
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+        # Ensure parent directory exists
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # A bad/unwritable output path (permission denied, unreadable parent,
+        # etc.) should give a clean one-line error, not a raw traceback
+        # (round-3 QA SUB-01). is_dir() and mkdir() both hit the filesystem.
+        print(f"Error: cannot write backup to {args.output or out_path}: {exc}")
+        raise SystemExit(1) from exc
 
     # Collect files
     scan_started = time.monotonic()

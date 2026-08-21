@@ -484,6 +484,16 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("OPENCODE_GO_API_KEY",),
         base_url_env_var="OPENCODE_GO_BASE_URL",
     ),
+    "opencode-free": ProviderConfig(
+        id="opencode-free",
+        name="OpenCode Free",
+        auth_type="api_key",
+        inference_base_url="https://opencode.ai/zen/v1",
+        # Deliberately NO api_key_env_vars: the free tier is served
+        # anonymously (any unrecognized bearer is a 401), so there is no
+        # secret to configure. Select via `hermes model` / `/model free`.
+        api_key_env_vars=(),
+    ),
     "kilocode": ProviderConfig(
         id="kilocode",
         name="Kilo Code",
@@ -2112,6 +2122,7 @@ def resolve_provider(
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
+        "free": "opencode-free", "opencode_free": "opencode-free",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
@@ -3383,8 +3394,10 @@ def _spotify_interactive_setup(redirect_uri_hint: str) -> str:
         except Exception:
             pass
 
+    from hermes_cli.cli_output import line_input
+
     try:
-        raw = input("Spotify Client ID: ").strip()
+        raw = line_input("Spotify Client ID: ").strip()
     except (EOFError, KeyboardInterrupt):
         print()
         raise SystemExit("Spotify setup cancelled.")
@@ -7083,6 +7096,25 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
 
+    # Keyless providers (opencode-free) are served anonymously: no credential
+    # exists, so every install counts as configured/logged in. Derived from
+    # the HermesOverlay keyless flag — the same source the provider catalog
+    # and GUI contract tests use.
+    try:
+        from hermes_cli.providers import HERMES_OVERLAYS
+        _overlay = HERMES_OVERLAYS.get(provider_id)
+    except Exception:
+        _overlay = None
+    if _overlay is not None and getattr(_overlay, "keyless", False):
+        return {
+            "configured": True,
+            "provider": provider_id,
+            "name": pconfig.name,
+            "key_source": "keyless",
+            "base_url": pconfig.inference_base_url,
+            "logged_in": True,
+        }
+
     api_key = ""
     key_source = ""
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
@@ -7578,6 +7610,7 @@ def _prompt_model_selection(
     If *unavailable_models* is provided, those models are shown grayed out
     and unselectable, with an upgrade link to *portal_url*.
     """
+    from hermes_cli.cli_output import line_input
     from hermes_cli.models import (
         _format_price_per_mtok,
         compute_sale_discount,
@@ -7794,7 +7827,7 @@ def _prompt_model_selection(
             return _confirmed_selection(ordered[idx])
         elif idx == len(ordered):
             try:
-                custom = input("Enter model name: ").strip()
+                custom = line_input("Enter model name: ").strip()
             except (EOFError, KeyboardInterrupt):
                 return None
             return _confirmed_selection(custom) if custom else None
@@ -7838,7 +7871,7 @@ def _prompt_model_selection(
             if 1 <= idx <= n:
                 return _confirmed_selection(ordered[idx - 1])
             elif idx == n + 1:
-                custom = input("Enter model name: ").strip()
+                custom = line_input("Enter model name: ").strip()
                 return _confirmed_selection(custom) if custom else None
             elif idx == n + 2:
                 return None

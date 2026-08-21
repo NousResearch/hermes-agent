@@ -134,6 +134,7 @@ def _make_hermes_provider_class() -> Optional[type]:
             *args: Any,
             server_name: str = "",
             preregistered: bool = False,
+            token_user_agent: "str | None" = None,
             **kwargs: Any,
         ):
             super().__init__(*args, **kwargs)
@@ -145,6 +146,15 @@ def _make_hermes_provider_class() -> Optional[type]:
             # registration can't help. Only auto-heal dynamically-registered
             # clients. See _maybe_flag_poisoned_client.
             self._hermes_preregistered = preregistered
+            # oauth.user_agent — stamped onto token-endpoint requests only;
+            # some authorization servers/WAFs reject httpx's default (#75576).
+            self._hermes_token_user_agent = token_user_agent
+
+        def _stamp_token_user_agent(self, request):
+            ua = getattr(self, "_hermes_token_user_agent", None)
+            if ua:
+                request.headers["User-Agent"] = ua
+            return request
 
         def _coerce_client_secret_post(self) -> None:
             """Use client_secret_post when dynamic registration returned a secret.
@@ -171,11 +181,13 @@ def _make_hermes_provider_class() -> Optional[type]:
 
         async def _exchange_token_authorization_code(self, *args: Any, **kwargs: Any):
             self._coerce_client_secret_post()
-            return await super()._exchange_token_authorization_code(*args, **kwargs)
+            request = await super()._exchange_token_authorization_code(*args, **kwargs)
+            return self._stamp_token_user_agent(request)
 
         async def _refresh_token(self):
             self._coerce_client_secret_post()
-            return await super()._refresh_token()
+            request = await super()._refresh_token()
+            return self._stamp_token_user_agent(request)
 
         async def _handle_token_response(self, response):
             """Accept any 2xx token response and avoid leaking token bodies in errors."""
@@ -457,6 +469,27 @@ def _make_hermes_provider_class() -> Optional[type]:
 
                 storage = self.context.storage
                 from tools.mcp_oauth import HermesTokenStorage
+
+                # When the rejected client_id was our Client ID Metadata
+                # Document URL, re-presenting it next flow would loop: the
+                # server has already fetched that document and refused it.
+                # Dropping the URL sends the retry down the DCR branch
+                # instead, and the marker on disk keeps the next process from
+                # walking back into the same refusal. `hermes mcp login`
+                # clears the marker, so a fixed document gets another chance.
+                cimd_url = getattr(self.context, "client_metadata_url", None)
+                rejected_id = getattr(self.context.client_info, "client_id", None)
+                if cimd_url and rejected_id == cimd_url:
+                    logger.warning(
+                        "MCP OAuth '%s': authorization server rejected our "
+                        "Client ID Metadata Document (%s) with invalid_client "
+                        "— falling back to dynamic client registration.",
+                        self._hermes_server_name, cimd_url,
+                    )
+                    self.context.client_metadata_url = None
+                    if isinstance(storage, HermesTokenStorage):
+                        storage.mark_cimd_rejected()
+
                 if isinstance(storage, HermesTokenStorage):
                     storage.poison_client_registration()
                 # Drop the in-memory client so the SDK re-registers next flow.
@@ -621,6 +654,8 @@ class MCPOAuthManager:
             _maybe_preregister_client,
             _make_callback_waiter,
             _make_redirect_handler,
+            cimd_provider_kwargs,
+            token_request_user_agent,
         )
 
         if not _OAUTH_AVAILABLE:
@@ -659,7 +694,7 @@ class MCPOAuthManager:
         # configured `oauth.timeout` now bounds the callback waiter's own poll
         # loop instead — that is where the browser round-trip is awaited.
         callback_handler = _make_callback_waiter(
-            resolved_port, timeout=float(cfg.get("timeout", 300))
+            resolved_port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))
         )
 
         return _HERMES_PROVIDER_CLS(
@@ -670,6 +705,8 @@ class MCPOAuthManager:
             storage=storage,
             redirect_handler=redirect_handler,
             callback_handler=callback_handler,
+            token_user_agent=token_request_user_agent(cfg),
+            **cimd_provider_kwargs(cfg),
         )
 
     def remove(

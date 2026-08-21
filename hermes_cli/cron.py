@@ -198,6 +198,13 @@ def cron_list(show_all: bool = False):
         if delivery_err:
             print(f"    {color('⚠ Delivery failed:', Colors.YELLOW)} {delivery_err}")
 
+        fire_err = job.get("last_fire_error")
+        if isinstance(fire_err, dict) and fire_err.get("detail"):
+            print(
+                f"    {color('⚠ Missed scheduled fire:', Colors.RED)} "
+                f"{fire_err.get('at', '?')}  {fire_err['detail']}"
+            )
+
         print()
 
     _warn_if_gateway_not_running()
@@ -389,6 +396,7 @@ def cron_create(args):
         monitor_script=getattr(args, "monitor_script", None),
         monitor_url=getattr(args, "monitor_url", None),
         continuity=getattr(args, "continuity", None),
+        reasoning_effort=getattr(args, "reasoning_effort", None),
     )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -463,6 +471,7 @@ def cron_edit(args):
         monitor_script=getattr(args, "monitor_script", None),
         monitor_url=getattr(args, "monitor_url", None),
         continuity=getattr(args, "continuity", None),
+        reasoning_effort=getattr(args, "reasoning_effort", None),
     )
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))

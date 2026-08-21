@@ -27,6 +27,13 @@ def _cache_scope_from_session_id(session_id: Optional[str]) -> str:
     match = _CRON_SESSION_ID_RE.match(sid)
     return match.group(1) if match else sid
 
+from agent.reasoning_effort import (
+    ACTUAL_RELAY_EFFORTS,
+    XAI_GROK46_EFFORTS,
+    XAI_LEGACY_EFFORTS,
+    clamp_effort,
+    codex_supported_efforts,
+)
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
 
@@ -51,6 +58,56 @@ def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
 # avoids that while still dispatching through Hermes's configured provider
 # (Firecrawl / Tavily / …). Mapped back to ``web_search`` in normalize_response.
 _XAI_CLIENT_WEB_SEARCH_ALIAS = "hermes_web_search"
+
+# OpenCode's /v1/responses endpoints (Zen and Go, including custom providers
+# pointing at opencode.ai) reserve certain function names server-side and
+# reject client tools that use them with HTTP 400 ("custom function name
+# 'X' is reserved"). Reported for grok-4.5 on Go with `search_files` and
+# `web_search` (#85589). Same treatment as the xAI web_search collision:
+# rename on the wire (hermes_<name>), map back in normalize_response so
+# Hermes dispatch is unaffected.
+_OPENCODE_RESERVED_TOOL_NAMES = ("web_search", "search_files")
+_RESERVED_TOOL_ALIAS_PREFIX = "hermes_"
+_RESERVED_ALIAS_TO_NAME = {
+    f"{_RESERVED_TOOL_ALIAS_PREFIX}{name}": name
+    for name in _OPENCODE_RESERVED_TOOL_NAMES
+}
+
+
+def _is_opencode_responses_backend(params: Dict[str, Any]) -> bool:
+    """True when this Responses request targets an OpenCode endpoint.
+
+    Matches the built-in opencode-zen/go providers, custom ``opencode-go-*`` /
+    ``opencode-zen-*`` family providers, and any base_url hosted on
+    opencode.ai (covers custom providers with arbitrary names pointing at
+    the OpenCode gateway).
+    """
+    try:
+        from hermes_cli.models import opencode_provider_family
+
+        if opencode_provider_family(params.get("provider")) is not None:
+            return True
+    except Exception:
+        pass
+    try:
+        from utils import base_url_hostname
+
+        return base_url_hostname(str(params.get("base_url") or "")).lower() == "opencode.ai"
+    except Exception:
+        return False
+
+
+def _rename_reserved_tools_for_opencode(response_tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Alias OpenCode-reserved client function names on the wire."""
+    rewritten: List[Dict[str, Any]] = []
+    for tool in response_tools:
+        if isinstance(tool, dict) and tool.get("name") in _OPENCODE_RESERVED_TOOL_NAMES:
+            aliased = dict(tool)
+            aliased["name"] = f"{_RESERVED_TOOL_ALIAS_PREFIX}{tool['name']}"
+            rewritten.append(aliased)
+        else:
+            rewritten.append(tool)
+    return rewritten
 
 
 def _xai_prefers_native_web_search() -> bool:
@@ -115,10 +172,16 @@ def _default_prompt_cache_retention_for_request(
     model: str,
     base_url: Any,
 ) -> Optional[str]:
-    """Return ``24h`` for supported models on Amazon Bedrock Mantle."""
+    """Return ``24h`` for supported hosts/models (Bedrock Mantle, Meta)."""
     from utils import base_url_hostname
 
-    hostname_parts = base_url_hostname(str(base_url or "")).split(".")
+    hostname = base_url_hostname(str(base_url or "")).lower()
+    # Meta Model API: prompt caching is opt-in via prompt_cache_retention.
+    # Measured 0% hits on /chat/completions vs 93-99% on /responses with 24h.
+    if hostname == "api.meta.ai":
+        return "24h"
+
+    hostname_parts = hostname.split(".")
     is_bedrock_mantle = (
         len(hostname_parts) == 4
         and hostname_parts[0] == "bedrock-mantle"
@@ -426,30 +489,31 @@ class ResponsesApiTransport(ProviderTransport):
             elif reasoning_config.get("effort"):
                 reasoning_effort = reasoning_config["effort"]
 
-        _effort_clamp = {"minimal": "low"}
-        if "gpt-5.6" in (model or "").lower():
-            # Ultra is the Codex product tier; the Responses API wire value is max.
-            _effort_clamp["ultra"] = "max"
+        # Wire vocabularies are declared in agent.reasoning_effort; the shared
+        # clamp policy (nearest weaker supported level, never escalate,
+        # never invert the ladder) replaces the per-backend hand maps that
+        # repeatedly leaked internal levels like "ultra" to the wire
+        # (#89503 class) or clamped one rung below a model's real ceiling
+        # (#87279).
         if params.get("is_xai_responses", False):
             from agent.model_metadata import is_grok_46_family
 
-            # Grok 4.6 accepts xhigh as a wire value; older Grok models top
-            # out at high. max/ultra are Hermes ladder aliases for "this
-            # model's ceiling", so they clamp to the strongest level the
-            # model actually accepts — xhigh on grok-4.6, high elsewhere —
-            # never one rung below it (#87279).
-            if is_grok_46_family(model):
-                _effort_clamp.update({"max": "xhigh", "ultra": "xhigh"})
-            else:
-                _effort_clamp["xhigh"] = "high"
-                _effort_clamp.update({"max": "high", "ultra": "high"})
-        if (params.get("provider") or "").strip().lower() == "actual":
-            # Actual Computer relays to SGLang/vLLM backends that accept only
-            # none/low/medium/high/max for reasoning effort — a forwarded
-            # xhigh/ultra fails with a wrapped HTTP 400 ("Expecting value:
-            # line 1 column 1"). Clamp Hermes' wider set to the supported one.
-            _effort_clamp.update({"xhigh": "high", "ultra": "max"})
-        reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
+            # Grok 4.6 accepts xhigh as a wire value; older Grok tops out
+            # at high.
+            _supported = (
+                XAI_GROK46_EFFORTS if is_grok_46_family(model)
+                else XAI_LEGACY_EFFORTS
+            )
+        elif (params.get("provider") or "").strip().lower() == "actual":
+            # Actual Computer relays to SGLang/vLLM backends:
+            # none/low/medium/high/max.
+            _supported = ACTUAL_RELAY_EFFORTS
+        else:
+            # OpenAI/Codex Responses backend — per-model vocabulary
+            # (live-verified: "max" is gpt-5.6-only, "minimal" always
+            # rejected). #68365 premise confirmed.
+            _supported = codex_supported_efforts(model)
+        reasoning_effort = clamp_effort(reasoning_effort, _supported)
 
         response_tools = _responses_tools(tools)
 
@@ -488,6 +552,12 @@ class ResponsesApiTransport(ProviderTransport):
                     response_tools = filtered
                 else:
                     response_tools = _rename_client_web_search_for_xai(response_tools)
+
+        # OpenCode Responses backends reserve web_search / search_files as
+        # function names (HTTP 400 "custom function name 'X' is reserved",
+        # #85589). Alias them on the wire; normalize_response maps them back.
+        if response_tools and _is_opencode_responses_backend(params):
+            response_tools = _rename_reserved_tools_for_opencode(response_tools)
 
         # ``tools`` MUST be omitted entirely when there are no functions to
         # expose: the openai SDK's ``responses.stream()`` / ``responses.parse()``
@@ -720,6 +790,10 @@ class ResponsesApiTransport(ProviderTransport):
                 # the real ``web_search`` tool (Firecrawl / etc.).
                 if name == _XAI_CLIENT_WEB_SEARCH_ALIAS:
                     name = "web_search"
+                # Undo the OpenCode reserved-name wire aliases the same way
+                # (hermes_web_search / hermes_search_files, #85589).
+                elif name in _RESERVED_ALIAS_TO_NAME:
+                    name = _RESERVED_ALIAS_TO_NAME[name]
                 tool_calls.append(ToolCall(
                     id=tc.id if hasattr(tc, "id") else (name or None),
                     name=name,

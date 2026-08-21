@@ -264,6 +264,12 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_VOICE",
     "HERMES_VOICE_TTS",
     "HERMES_YOLO_MODE",
+    # Injected into subprocess envs by the terminal tool (_make_run_env), so
+    # any test run launched FROM a Hermes agent session inherits them and
+    # hermes_constants home-resolution helpers prefer them over monkeypatched
+    # HOME (test_subprocess_home_isolation red locally, green on CI).
+    "HERMES_REAL_HOME",
+    "TERMINAL_HOME_MODE",
     "HERMES_INTERACTIVE",
     "HERMES_QUIET",
     "HERMES_TOOL_PROGRESS",

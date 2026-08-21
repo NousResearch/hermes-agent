@@ -142,7 +142,7 @@ gateway:
     no_goal_set:           "未設定目標。"
     paused:                "⏸ 目標已暫停：{goal}"
     no_resume:             "沒有可恢復的目標。"
-    resumed:               "▶ 目標已恢復：{goal}\n傳送任意訊息繼續，或等待 — 我會在下一輪繼續推進。"
+    resumed:               "▶ 目標已恢復：{goal}\n立即繼續 — 我馬上進行下一步。"
     invalid:               "無效目標：{error}"
     set:                   "⊙ 目標已設定（{budget} 輪預算）：{goal}\n我會持續工作直到目標完成、你暫停／清除目標，或預算耗盡。\n控制指令：/goal status · /goal pause · /goal resume · /goal clear"
 

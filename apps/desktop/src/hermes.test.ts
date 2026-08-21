@@ -24,6 +24,7 @@ import {
   listSidebarSessions,
   pluginSocket,
   resetSidebarBatchCapability,
+  setApiRequestConnection,
   setApiRequestProfile,
   speakText,
   transcribeAudio,
@@ -52,6 +53,7 @@ describe('Hermes REST helpers', () => {
   })
 
   afterEach(() => {
+    setApiRequestConnection(null)
     setApiRequestProfile(null)
     vi.restoreAllMocks()
     Reflect.deleteProperty(window, 'hermesDesktop')
@@ -99,6 +101,40 @@ describe('Hermes REST helpers', () => {
         timeoutMs: 60_000
       })
     )
+  })
+
+  it('routes session, profile, and model reads through the active registry source', async () => {
+    api.mockImplementation(async ({ path }: { path: string }) =>
+      path.startsWith('/api/profiles/sessions/sidebar')
+        ? { recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } }
+        : emptySessionsResponse
+    )
+    setApiRequestConnection('personal')
+
+    await listSessions()
+    await listAllProfileSessions()
+    await listSidebarSessions({
+      recentsProfile: 'default',
+      recentsLimit: 20,
+      recentsExclude: [],
+      cronLimit: 20,
+      messagingLimit: 20,
+      messagingExclude: []
+    })
+    await getProfiles()
+    await getGlobalModelInfo()
+
+    for (const call of api.mock.calls) {
+      expect(call[0]).toEqual(expect.objectContaining({ connectionId: 'personal' }))
+    }
+  })
+
+  it('keeps an explicit This device source on REST requests', async () => {
+    setApiRequestConnection('local')
+
+    await getProfiles()
+
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ connectionId: 'local', path: '/api/profiles' }))
   })
 
   it('defaults missing sidebar slices to empty session arrays', async () => {

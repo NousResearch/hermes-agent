@@ -1,6 +1,7 @@
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { deleteProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { retireLocalProfileGateways } from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey, selectProfile, setActiveProfile } from '@/store/profile'
 
 // Thin wrapper over ConfirmDialog: owns the deleteProfile call, inherits
@@ -48,6 +49,7 @@ export function DeleteProfileDialog({
         // onDeleted refresh so our reset is the last write — a refreshActiveProfile
         // racing the (still-dying) backend can't clobber the pill back to it.
         const wasActive = normalizeProfileKey(profile.name) === normalizeProfileKey($activeGatewayProfile.get())
+        retireLocalProfileGateways(profile.name)
         await deleteProfile(profile.name)
         await onDeleted?.()
 

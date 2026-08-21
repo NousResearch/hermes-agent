@@ -58,6 +58,17 @@ describe('host.state focused-session atoms', () => {
     expect(host.state.focusedUsage.get()).toBe(focused?.usage ?? null)
   })
 
+  it('exposes the registry source that owns the active gateway', async () => {
+    const { host, session } = await setup()
+
+    session.setConnection({ connectionId: 'work', mode: 'remote' } as never)
+    expect(host.state.connectionId.get()).toBe('work')
+
+    session.setConnection({ mode: 'local' } as never)
+    expect(host.state.connectionId.get()).toBe('local')
+    session.setConnection(null)
+  })
+
   it('follows the interacted tile while the primary-only atom stays put', async () => {
     const { host, session, states } = await setup()
     const tree = await import('@/components/pane-shell/tree/store')
@@ -115,6 +126,56 @@ describe('host.state focused-session atoms', () => {
     // Focusing back homes to the primary's selection, whatever it is.
     tree.noteActiveTreeGroup('grp-main')
     expect(host.state.focusedStoredSessionId.get()).toBe(primarySelection)
+  })
+})
+
+describe('host.state.focusedSessionProfile', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  async function setup() {
+    const { host } = await import('@/sdk/index')
+    const profile = await import('@/store/profile')
+    const session = await import('@/store/session')
+    const states = await import('@/store/session-states')
+
+    return { host, profile, session, states }
+  }
+
+  it('is a readonly atom that falls back to the gateway profile with no focused session', async () => {
+    const { host, profile } = await setup()
+
+    expect(typeof host.state.focusedSessionProfile.get).toBe('function')
+    expect(typeof host.state.focusedSessionProfile.listen).toBe('function')
+
+    profile.$activeGatewayProfile.set('newsanalyst')
+    expect(host.state.focusedSessionProfile.get()).toBe('newsanalyst')
+    profile.$activeGatewayProfile.set('default')
+  })
+
+  it('resolves the focused session to the owner stamped on its session row, not the socket home', async () => {
+    const { host, profile, session } = await setup()
+
+    // The gateway socket is homed on default (e.g. cold start), but the chat
+    // on screen belongs to newsanalyst — the readout must say newsanalyst.
+    profile.$activeGatewayProfile.set('default')
+    session.$sessions.set([{ id: 'news-1', profile: 'newsanalyst' } as never])
+    session.$selectedStoredSessionId.set('news-1')
+
+    expect(host.state.focusedSessionProfile.get()).toBe('newsanalyst')
+
+    // An uncached/unstamped id inherits the gateway profile (the old ladder).
+    session.$selectedStoredSessionId.set('unknown-id')
+    expect(host.state.focusedSessionProfile.get()).toBe('default')
+
+    session.$sessions.set([])
+    session.$selectedStoredSessionId.set(null)
   })
 })
 

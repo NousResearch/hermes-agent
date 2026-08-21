@@ -43,6 +43,9 @@ def test_tool_adapter_bypasses_relay_without_an_active_consumer(
     runtime = relay_runtime.get_runtime()
     assert runtime is not None
     runtime.release_managed_execution("test.relay_tools")
+    runtime.release_managed_execution(
+        relay_runtime.RELAY_PLUGINS_EXECUTION_CONSUMER
+    )
     args = {"command": "pwd"}
 
     monkeypatch.setattr(
@@ -132,7 +135,6 @@ def test_tool_error_is_preserved_from_relay_wrapper_suffix(relay_turn, monkeypat
         )
 
     assert caught.value is tool_error
-
 
 
 

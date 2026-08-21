@@ -43,3 +43,15 @@ const ComposerScopeContext = createContext<ComposerScope>(MAIN_COMPOSER_SCOPE)
 export const ComposerScopeProvider = ComposerScopeContext.Provider
 
 export const useComposerScope = (): ComposerScope => useContext(ComposerScopeContext)
+
+/**
+ * Unique identity for one mounted ChatView/composer pair. Session ids cannot
+ * fill this role: a fresh chat has no id yet, and the same stored session can
+ * be rendered in more than one layout pane. External submit requests pin this
+ * surface id at click time so exactly one composer can claim the task.
+ */
+const ComposerSurfaceContext = createContext<string | null>(null)
+
+export const ComposerSurfaceProvider = ComposerSurfaceContext.Provider
+
+export const useComposerSurfaceId = (): string | null => useContext(ComposerSurfaceContext)

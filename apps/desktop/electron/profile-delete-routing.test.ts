@@ -147,3 +147,7 @@ test('localProfilePoolKeys returns every local process scope for one profile', (
   assert.deepEqual(localProfilePoolKeys('Selena'), ['selena', 'conn:local::selena'])
   assert.deepEqual(localProfilePoolKeys(''), [])
 })
+
+test('resolveRouteProfile preserves a primary-backend route from another routing policy', () => {
+  assert.equal(resolveRouteProfile(null, null), null)
+})

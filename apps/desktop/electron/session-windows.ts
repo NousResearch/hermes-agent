@@ -77,6 +77,23 @@ function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath
   return `${pathToFileURL(rendererIndexPath).toString()}${query}${route}`
 }
 
+// Full peer windows render the ordinary app shell, so they deliberately do
+// not use the `win` query parameter that selects a specialized renderer. The
+// separate marker lets the renderer distinguish a peer from the one primary
+// app window: app-launch source restoration belongs to the primary only, while
+// a peer keeps the already-running backend it joined during boot.
+function buildInstanceWindowUrl({ devServer, rendererIndexPath }: any = {}) {
+  const query = '?peer=1'
+
+  if (devServer) {
+    const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer
+
+    return `${base}/${query}`
+  }
+
+  return `${pathToFileURL(rendererIndexPath).toString()}${query}`
+}
+
 // Full "instance" windows (⌘⇧N / the "New Window" command) open a complete app
 // peer, not a compact chat. Cascade each one off its source window's bounds so a
 // new window doesn't land exactly on top of the one it was spawned from. Pure so
@@ -160,6 +177,7 @@ function createSessionWindowRegistry() {
 }
 
 export {
+  buildInstanceWindowUrl,
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,

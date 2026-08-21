@@ -377,7 +377,7 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
     monkeypatch.setattr(
         server,
         "_run_prompt_submit",
-        lambda rid, sid, _session, text: inline_calls.append((rid, sid, text)),
+        lambda rid, sid, _session, text, **_kwargs: inline_calls.append((rid, sid, text)),
     )
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
 

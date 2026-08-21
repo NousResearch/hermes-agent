@@ -72,6 +72,61 @@ class TestResolveToken:
         mock_cli.assert_not_called()
 
 
+class TestGhCliTokenCache:
+    """The gh-CLI probe result is cached — a miss must not re-spawn gh.
+
+    Regression: /api/model/options ran `gh auth token` four times per build;
+    with no gh credential store each probe blocked its full 5s timeout, so the
+    Desktop Models/Providers settings pages took 20s per open and exceeded the
+    renderer's 15s IPC budget (Aug 2026 desktop audit).
+    """
+
+    def _reset(self):
+        from hermes_cli.copilot_auth import _invalidate_gh_cli_token_cache
+        _invalidate_gh_cli_token_cache()
+
+    def test_miss_is_cached_and_probe_runs_once(self):
+        from hermes_cli import copilot_auth
+        self._reset()
+        with patch.object(copilot_auth, "_probe_gh_cli_token", return_value=None) as probe:
+            assert copilot_auth._try_gh_cli_token() is None
+            assert copilot_auth._try_gh_cli_token() is None
+            assert copilot_auth._try_gh_cli_token() is None
+        assert probe.call_count == 1
+        self._reset()
+
+    def test_hit_is_cached(self):
+        from hermes_cli import copilot_auth
+        self._reset()
+        with patch.object(copilot_auth, "_probe_gh_cli_token", return_value="gho_cached") as probe:
+            assert copilot_auth._try_gh_cli_token() == "gho_cached"
+            assert copilot_auth._try_gh_cli_token() == "gho_cached"
+        assert probe.call_count == 1
+        self._reset()
+
+    def test_ttl_expiry_reprobes(self, monkeypatch):
+        from hermes_cli import copilot_auth
+        self._reset()
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(copilot_auth.time, "monotonic", lambda: clock["now"])
+        with patch.object(copilot_auth, "_probe_gh_cli_token", return_value=None) as probe:
+            copilot_auth._try_gh_cli_token()
+            clock["now"] += copilot_auth._GH_CLI_TOKEN_CACHE_TTL_SECONDS + 1
+            copilot_auth._try_gh_cli_token()
+        assert probe.call_count == 2
+        self._reset()
+
+    def test_invalidate_forces_reprobe(self):
+        from hermes_cli import copilot_auth
+        self._reset()
+        with patch.object(copilot_auth, "_probe_gh_cli_token", return_value=None) as probe:
+            copilot_auth._try_gh_cli_token()
+            copilot_auth._invalidate_gh_cli_token_cache()
+            copilot_auth._try_gh_cli_token()
+        assert probe.call_count == 2
+        self._reset()
+
+
 class TestRequestHeaders:
     """Copilot API header generation."""
 

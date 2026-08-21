@@ -232,3 +232,136 @@ class TestCommandCodeModelFiltering:
         assert "startswith(\"claude-\")" in source or '"claude-" in m' in source, (
             "CommandCodeAnthropicProfile.fetch_models should filter to claude-* models"
         )
+
+
+# ── Picker contract ──────────────────────────────────────────────────────────
+
+class TestCommandCodeFetchModelsPickerContract:
+    """``fetch_models`` must accept the kwargs the model picker passes.
+
+    Regression: the generic live-fetch path in ``hermes_cli/models.py``
+    (``provider_model_ids``) calls ``profile.fetch_models(api_key=...,
+    base_url=...)``. The original CommandCode overrides only accepted
+    ``api_key``/``timeout``, so every picker open raised TypeError, which
+    was swallowed, leaving the provider with zero models.
+    """
+
+    @pytest.mark.parametrize("profile_name", ["commandcode", "commandcode-anthropic"])
+    def test_accepts_base_url_kwarg(self, profile_name):
+        import inspect
+
+        import model_tools  # noqa: F401 — triggers discovery
+        import providers
+
+        profile = providers.get_provider_profile(profile_name)
+        assert profile is not None
+        assert "base_url" in inspect.signature(profile.fetch_models).parameters
+
+    def test_resolve_provider_full(self):
+        """Both profiles must resolve through the model-switch path.
+
+        Regression: ``resolve_provider_full`` only knew models.dev + overlay
+        providers, so plugin-only providers (commandcode) failed with
+        "Unknown provider" on /model switches even though the picker listed
+        them.
+        """
+        from hermes_cli.providers import resolve_provider_full
+
+        chat = resolve_provider_full("commandcode", {}, [])
+        assert chat is not None and chat.id == "commandcode"
+        assert chat.transport == "openai_chat"
+        assert "COMMANDCODE_API_KEY" in chat.api_key_env_vars
+
+        anth = resolve_provider_full("commandcode-anthropic", {}, [])
+        assert anth is not None and anth.id == "commandcode-anthropic"
+        assert anth.transport == "anthropic_messages"
+
+
+# ── base_url endpoint override ───────────────────────────────────────────────
+
+class TestCommandCodeBaseUrlOverride:
+    """A custom base_url must redirect the catalog fetch; the default must not.
+
+    The picker passes ``base_url`` unconditionally (profile default when the
+    user configured nothing), so only a value differing from the default
+    ``_COMMANDCODE_BASE`` counts as a customised endpoint.
+    """
+
+    def _serve(self, models):
+        import json
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from threading import Thread
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = json.dumps({"data": models}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, fmt, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), H)
+        Thread(target=server.serve_forever, daemon=True).start()
+        return server, server.server_address[1]
+
+    def test_custom_base_url_redirects_fetch(self, commandcode_profile):
+        server, port = self._serve([{"id": "proxied/model-x"}])
+        try:
+            result = commandcode_profile.fetch_models(
+                api_key="k", base_url=f"http://127.0.0.1:{port}"
+            )
+            assert result == ["proxied/model-x"]
+        finally:
+            server.shutdown()
+
+    def test_custom_base_url_redirects_anthropic_fetch(
+        self, commandcode_anthropic_profile
+    ):
+        server, port = self._serve(
+            [{"id": "claude-sonnet-4-6"}, {"id": "deepseek/deepseek-v4-pro"}]
+        )
+        try:
+            result = commandcode_anthropic_profile.fetch_models(
+                api_key="k", base_url=f"http://127.0.0.1:{port}"
+            )
+            assert result == ["claude-sonnet-4-6"]  # claude-* filter still applies
+        finally:
+            server.shutdown()
+
+    def test_default_base_url_hits_default_endpoint(self, commandcode_profile):
+        """Echoing the profile default back must NOT count as an override."""
+        import sys
+        from unittest.mock import patch as mock_patch
+
+        # The bundled plugin module is registered at discovery time under
+        # ``plugins.model_providers.commandcode`` — resolve via the profile's
+        # own __module__ so the test doesn't depend on discovery mechanics.
+        cc_mod = sys.modules[type(commandcode_profile).__module__]
+
+        captured = {}
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b'{"data": [{"id": "m1"}]}'
+
+        def fake_urlopen(req, timeout=0):
+            captured["url"] = req.full_url
+            return _FakeResp()
+
+        with mock_patch.object(
+            cc_mod.urllib.request, "urlopen", side_effect=fake_urlopen
+        ):
+            result = commandcode_profile.fetch_models(
+                api_key="k", base_url=cc_mod._COMMANDCODE_BASE + "/"
+            )
+        assert result == ["m1"]
+        assert captured["url"] == cc_mod._COMMANDCODE_MODELS_URL

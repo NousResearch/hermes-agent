@@ -20,7 +20,7 @@ import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '../lib/terminalModes.js'
-import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
+import { formatAbandonedClarify, formatAbandonedClarifyBatch, formatToolCall, stripAnsi } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus, Usage } from '../types.js'
@@ -454,7 +454,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     persistedAbandonedClarify.add(clarify.requestId)
     appendMessage({
       role: 'system',
-      text: formatAbandonedClarify(clarify.question, clarify.choices, 'timed out')
+      text: clarify.questions?.length
+        ? formatAbandonedClarifyBatch(clarify.questions, clarify.answers ?? {}, 'timed out')
+        : formatAbandonedClarify(clarify.question, clarify.choices, 'timed out')
     })
     patchOverlayState({ clarify: null })
   }
@@ -1213,13 +1215,36 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
-      case 'clarify.request':
+      case 'clarify.request': {
+        const batch = (ev.payload.questions ?? [])
+          .filter(q => typeof q?.qid === 'string' && q.qid && typeof q?.question === 'string' && q.question.trim())
+          .map(q => ({
+            choices: q.choices && q.choices.length > 0 ? q.choices : null,
+            multiSelect: q.multi_select === true,
+            qid: q.qid,
+            question: q.question.trim()
+          }))
+
         patchOverlayState({
-          clarify: { choices: ev.payload.choices, question: ev.payload.question, requestId: ev.payload.request_id }
+          clarify: batch.length
+            ? {
+                answers: ev.payload.answers ?? {},
+                choices: null,
+                question: '',
+                questions: batch,
+                requestId: ev.payload.request_id
+              }
+            : {
+                choices: ev.payload.choices ?? null,
+                question: ev.payload.question ?? '',
+                requestId: ev.payload.request_id
+              }
         })
         setStatus('waiting for input…')
 
         return
+      }
+
       case 'approval.request': {
         const description = String(ev.payload.description ?? 'dangerous command')
         // Only an explicit false (tirith warning) drops the permanent-allow option.

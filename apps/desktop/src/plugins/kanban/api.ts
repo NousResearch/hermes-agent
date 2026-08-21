@@ -9,8 +9,17 @@
  * desktop's selection never flips the server-wide current-board pointer.
  */
 
-import { atom, type PluginRestOptions, type PluginStorage, queryClient } from '@hermes/plugin-sdk'
+import {
+  atom,
+  type PluginOs,
+  type PluginRestOptions,
+  type PluginStorage,
+  type PluginTranslate,
+  queryClient
+} from '@hermes/plugin-sdk'
 
+// Native completion notification.
+import { bindCompletionNotify, type CompletionEvent, onKanbanEventsFrame } from './completion-notify'
 import type {
   BoardMeta,
   BoardsResponse,
@@ -52,7 +61,7 @@ const COLLAPSED_KEY = 'collapsedLanes'
  *  each touched task's detail. The polls (8s board / 4s drawer) stay as the
  *  fallback — the socket just makes the board feel instant. */
 function onEventsFrame(slug: string, data: unknown): void {
-  const events = (data as { events?: Array<{ task_id?: string }> })?.events
+  const events = (data as { events?: CompletionEvent[] })?.events
 
   if (!events?.length) {
     return
@@ -65,6 +74,10 @@ function onEventsFrame(slug: string, data: unknown): void {
   for (const taskId of new Set(events.map(event => event.task_id).filter(Boolean))) {
     void queryClient.invalidateQueries({ queryKey: taskKey(slug, taskId!) })
   }
+
+  // Completion notification (after invalidation so notify failure
+  // never interferes with cache invalidation).
+  void onKanbanEventsFrame(slug, events).catch(() => undefined)
 }
 
 // A persisted, subscribable atom (the structural slice we need — avoids
@@ -79,8 +92,14 @@ interface Persisted<T> {
  *  runs on unload/disable — so nothing (store sync, socket) survives a toggle
  *  or duplicates on re-enable. The events socket is pinned to a board at
  *  handshake, so a board switch closes + reopens it. */
-export function bindApi(r: Rest, storage: PluginStorage, socket: Socket): () => void {
+export function bindApi(
+  r: Rest,
+  storage: PluginStorage,
+  socket: Socket,
+  notifyDoors?: { os?: PluginOs; t?: PluginTranslate }
+): () => void {
   rest = r
+  bindCompletionNotify(r, notifyDoors?.t, notifyDoors?.os)
   const unsubs: Array<() => void> = []
 
   // Hydrate an atom from storage and keep storage in sync with it.

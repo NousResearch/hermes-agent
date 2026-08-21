@@ -134,6 +134,11 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     # providers.is_official_openai_host for the spoof-rejection contract.
     if is_official_openai_host(base_url):
         return "codex_responses"
+    # Meta Model API: prompt caching only on Responses API (0% on
+    # chat/completions vs 93-99% on /responses with retention). Exact
+    # hostname per #32243.
+    if hostname == "api.meta.ai":
+        return "codex_responses"
     if hostname == "api.actual.inc":
         return "codex_responses"
     # Direct native Anthropic host: realign with providers.determine_api_mode,
@@ -185,6 +190,7 @@ def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> 
     Responses path after upgrades or /reset.
     """
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+    # Note: api.meta.ai is handled by _detect_api_mode_for_url (returns codex_responses), so the suppression guard below does not fire for Meta.
     detected_mode = _detect_api_mode_for_url(base_url)
 
     if configured_mode == "codex_responses" and detected_mode != "codex_responses":
@@ -561,7 +567,8 @@ def _resolve_runtime_from_pool_entry(
             if cfg_base_url:
                 base_url = cfg_base_url
         configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-        if provider in {"opencode-zen", "opencode-go"}:
+        from hermes_cli.models import opencode_provider_family
+        if opencode_provider_family(provider) is not None:
             # Re-derive api_mode from the effective model rather than the
             # persisted api_mode: the opencode providers serve both
             # anthropic_messages and chat_completions models, so the previous
@@ -582,7 +589,8 @@ def _resolve_runtime_from_pool_entry(
     # symmetrically: strip /v1 for anthropic_messages, re-append it for
     # chat_completions / codex_responses (heals a stripped URL persisted to
     # model.base_url by an earlier switch into an anthropic-routed model).
-    if provider in {"opencode-zen", "opencode-go"}:
+    from hermes_cli.models import opencode_provider_family
+    if opencode_provider_family(provider) is not None:
         from hermes_cli.models import normalize_opencode_base_url
 
         base_url = normalize_opencode_base_url(provider, api_mode, base_url)
@@ -751,7 +759,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             if not is_provider_enabled(entry):
                 continue
             # Resolve the API key from the env var name stored in key_env
-            key_env = str(entry.get("key_env", "") or "").strip()
+            key_env = str(
+                entry.get("key_env") or entry.get("api_key_env") or ""
+            ).strip()
             resolved_api_key = _getenv(key_env, "").strip() if key_env else ""
             # Fall back to inline api_key when key_env is absent or unresolvable
             if not resolved_api_key:
@@ -1088,6 +1098,7 @@ def _resolve_named_custom_runtime(
     requested_provider: str,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     # Bare `provider="custom"` with an explicit base_url (e.g. propagated
     # from a `model_aliases:` direct-alias resolution) — build a runtime
@@ -1228,6 +1239,43 @@ def _resolve_named_custom_runtime(
     request_overrides = _custom_provider_request_overrides(custom_provider)
     if request_overrides:
         result["request_overrides"] = request_overrides
+
+    # Custom providers in the OpenCode family (name extends opencode-go/zen,
+    # or base_url hosted on opencode.ai) serve models behind different API
+    # surfaces per model — a static api_mode 503s for /v1/responses-only
+    # models like grok-4.5 (#85589). Re-derive api_mode from the effective
+    # model and normalize the /v1 suffix, exactly like the built-in
+    # opencode-zen/go paths do.
+    from hermes_cli.models import opencode_provider_family
+
+    _oc_family = opencode_provider_family(requested_provider)
+    if _oc_family is None:
+        try:
+            from utils import base_url_hostname
+
+            if base_url_hostname(base_url).lower() == "opencode.ai":
+                _oc_family = (
+                    "opencode-go" if "/zen/go" in base_url.lower() else "opencode-zen"
+                )
+        except Exception:
+            _oc_family = None
+    if _oc_family is not None and not custom_provider.get("api_mode"):
+        from hermes_cli.models import (
+            normalize_opencode_base_url,
+            opencode_model_api_mode,
+        )
+
+        _effective_model = str(
+            target_model
+            or custom_provider.get("model")
+            or _get_model_config().get("default")
+            or ""
+        ).strip()
+        if _effective_model:
+            result["api_mode"] = opencode_model_api_mode(_oc_family, _effective_model)
+        result["base_url"] = normalize_opencode_base_url(
+            _oc_family, result["api_mode"], result["base_url"]
+        )
     return result
 
 
@@ -1837,6 +1885,7 @@ def resolve_runtime_provider(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        target_model=target_model,
     )
     if custom_runtime:
         custom_runtime["requested_provider"] = requested_provider
@@ -1885,6 +1934,27 @@ def resolve_runtime_provider(
         explicit_base_url=explicit_base_url,
     )
     model_cfg = _get_model_config()
+
+    # OpenCode Zen free tier (*-free slugs, e.g. x-preview-f-free /
+    # "Ox Alpha"): served ANONYMOUSLY on the Zen relay ONLY. Any bearer the
+    # relay doesn't recognize is a 401 — and the Go relay doesn't serve the
+    # free tier at all ("Model x is not supported"), so a valid OpenCode GO
+    # subscription key still fails. Route free slugs through the keyless Zen
+    # runtime BEFORE the credential-pool / explicit / api_key paths so they
+    # work with any OpenCode credential state, including none.
+    from hermes_cli.models import (
+        opencode_provider_family as _oc_family_fn,
+        opencode_zen_free_runtime as _oc_free_runtime_fn,
+    )
+    if _oc_family_fn(provider) is not None:
+        _oc_model = str(
+            target_model or model_cfg.get("default") or model_cfg.get("model") or ""
+        ).strip()
+        _free_runtime = _oc_free_runtime_fn(provider, _oc_model)
+        if _free_runtime is not None:
+            _free_runtime["requested_provider"] = requested_provider
+            return _free_runtime
+
     explicit_runtime = _resolve_explicit_runtime(
         provider=provider,
         requested_provider=requested_provider,
@@ -2297,7 +2367,8 @@ def resolve_runtime_provider(
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             # Only honor persisted api_mode when it belongs to the same provider family.
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            if provider in {"opencode-zen", "opencode-go"}:
+            from hermes_cli.models import opencode_provider_family
+            if opencode_provider_family(provider) is not None:
                 # opencode-zen/go must always re-derive api_mode from the
                 # target model (not the stale persisted api_mode), because
                 # the same provider serves both anthropic_messages
@@ -2319,7 +2390,8 @@ def resolve_runtime_provider(
                     provider, base_url, target_model or model_cfg.get("default", "")
                 )
         # Normalize the /v1 suffix for OpenCode by API mode (see comment above).
-        if provider in {"opencode-zen", "opencode-go"}:
+        from hermes_cli.models import opencode_provider_family
+        if opencode_provider_family(provider) is not None:
             from hermes_cli.models import normalize_opencode_base_url
             base_url = normalize_opencode_base_url(provider, api_mode, base_url)
         if provider == "lmstudio":

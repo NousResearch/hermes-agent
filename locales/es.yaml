@@ -142,7 +142,7 @@ gateway:
     no_goal_set:           "No hay objetivo establecido."
     paused:                "⏸ Objetivo pausado: {goal}"
     no_resume:             "No hay objetivo para reanudar."
-    resumed:               "▶ Objetivo reanudado: {goal}\nEnvía cualquier mensaje para continuar, o espera — daré el siguiente paso en el próximo turno."
+    resumed:               "▶ Objetivo reanudado: {goal}\nContinuando ahora — daré el siguiente paso de inmediato."
     invalid:               "Objetivo no válido: {error}"
     set:                   "⊙ Objetivo establecido (presupuesto de {budget} turnos): {goal}\nSeguiré trabajando hasta que el objetivo se complete, lo pauses/elimines o se agote el presupuesto.\nControles: /goal status · /goal pause · /goal resume · /goal clear"
 

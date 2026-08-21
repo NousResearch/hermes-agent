@@ -69,7 +69,7 @@ function writeReactStubs(root) {
       2
     )}\n`
   )
-  writeFileSync(join(packageRoot, 'index.js'), proxyModule(['useEffect', 'useRef', 'useState']))
+  writeFileSync(join(packageRoot, 'index.js'), proxyModule(['useEffect', 'useMemo', 'useRef', 'useState']))
   writeFileSync(join(packageRoot, 'jsx-runtime.js'), proxyModule(['jsx', 'jsxs']))
 }
 

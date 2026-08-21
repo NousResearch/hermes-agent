@@ -165,14 +165,34 @@ def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
             work.mkdir(parents=True, exist_ok=True)
             make_sandbox(work)
             atof = resdir / f"{run_id}.atof.jsonl"
+            relay_config = work / "relay-plugins.toml"
+            relay_config.write_text(
+                f"""
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config]
+version = 3
+
+[components.config.atof]
+enabled = true
+
+[[components.config.atof.sinks]]
+type = "file"
+output_directory = {json.dumps(str(atof.parent))}
+filename = {json.dumps(atof.name)}
+mode = "overwrite"
+""".strip(),
+                encoding="utf-8",
+            )
             env = dict(os.environ)
             env.update({
                 "PYTHONPATH": pythonpath,
                 "HERMES_HOME": str(HOME),
-                "HERMES_NEMO_RELAY_ATOF_ENABLED": "1",
-                "HERMES_NEMO_RELAY_ATOF_OUTPUT_DIRECTORY": str(atof.parent),
-                "HERMES_NEMO_RELAY_ATOF_FILENAME": atof.name,
-                "HERMES_NEMO_RELAY_ATOF_MODE": "overwrite",
+                "HERMES_NEMO_RELAY_PLUGINS_TOML": str(relay_config),
             })
             q = TASKS[name].replace("{WORK}", str(work))
             t0 = time.time()

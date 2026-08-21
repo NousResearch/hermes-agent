@@ -26,7 +26,15 @@ test('New Agent gains a Capabilities tab that materializes the profile first', (
   // …and opening it creates the profile through the same lazy door MCP setup uses.
   assert.match(source, /id === 'capabilities'/)
   assert.match(source, /ensureAgentCreated\(\)\s*\n?\s*\.then\(created => created && setCreatedForCaps\(created\)\)/)
-  assert.match(source, /jsx\(SkillsView, \{ embedded: true, fixedProfile: createdForCaps \}\)/)
+  assert.match(source, /jsx\(SkillsView, \{\s*embedded: true,\s*fixedProfile: createdForCaps,/)
+})
+
+test('remote-target drafts pin the live surface to the target connection', () => {
+  // Builds whose SkillsView routes fixedConnection get the live Capabilities
+  // tab for remote targets too — pinned to the target machine's backend.
+  assert.match(source, /skillsViewRoutesConnections = Boolean\(SkillsView && SkillsView\.supportsFixedConnection\)/)
+  assert.match(source, /SkillsView && \(!remoteTarget \|\| skillsViewRoutesConnections\)/)
+  assert.match(source, /\.\.\.\(remoteTarget \? \{ fixedConnection: targetConnection \} : \{\}\)/)
 })
 
 test('older-build fallback keeps the checklist UI intact', () => {

@@ -1,10 +1,11 @@
-import { act, type ReactNode } from 'react'
-import { createRoot, type Root } from 'react-dom/client'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { hiddenPaneProps, PANE_HIDDEN_ATTR } from '@/components/pane-shell/pane-visibility'
 import { $paneStates } from '@/store/panes'
+import { reactRoot } from '@/test/react-root'
 
+import { installWindowStateBridge, setDocumentHidden, type WindowStateBridge } from '../../../test/window-state'
 import { $terminalTakeover } from '../store'
 
 import { PersistentTerminal, TerminalSlot } from './persistent'
@@ -24,54 +25,8 @@ vi.mock('./workspace', () => ({
 let resizeObserverCallback: ResizeObserverCallback | null = null
 let mutationObserverCallback: MutationCallback | null = null
 let mutationObserveCalls: Array<{ options?: MutationObserverInit; target: Node }> = []
-let root: Root | null = null
-let container: HTMLDivElement | null = null
-let windowStateCallback: ((payload: { isMinimized?: boolean; isVisible?: boolean }) => void) | null = null
-
-function render(ui: ReactNode) {
-  container = document.createElement('div')
-  document.body.append(container)
-  root = createRoot(container)
-
-  act(() => {
-    root!.render(ui)
-  })
-}
-
-function cleanup() {
-  if (root) {
-    act(() => {
-      root!.unmount()
-    })
-  }
-
-  container?.remove()
-  root = null
-  container = null
-}
-
-function setVisibility(hidden: boolean) {
-  Object.defineProperty(document, 'hidden', { configurable: true, value: hidden })
-  Object.defineProperty(document, 'visibilityState', { configurable: true, value: hidden ? 'hidden' : 'visible' })
-}
-
-function installWindowStateBridge() {
-  windowStateCallback = null
-  Object.defineProperty(window, 'hermesDesktop', {
-    configurable: true,
-    value: {
-      onWindowStateChanged: vi.fn((callback: typeof windowStateCallback) => {
-        windowStateCallback = callback
-
-        return () => {
-          if (windowStateCallback === callback) {
-            windowStateCallback = null
-          }
-        }
-      })
-    }
-  })
-}
+const mount = reactRoot()
+let windowState: WindowStateBridge
 
 function rect(top: number, left: number, width: number, height: number): DOMRect {
   return {
@@ -146,9 +101,9 @@ function HiddenPaneHarness({ hidden }: { hidden: boolean }) {
 describe('PersistentTerminal rect tracking', () => {
   beforeEach(() => {
     ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
-    setVisibility(false)
+    setDocumentHidden(false)
     vi.spyOn(document, 'hasFocus').mockReturnValue(true)
-    installWindowStateBridge()
+    windowState = installWindowStateBridge()
     resizeObserverCallback = null
     mutationObserverCallback = null
     mutationObserveCalls = []
@@ -181,11 +136,11 @@ describe('PersistentTerminal rect tracking', () => {
   })
 
   afterEach(() => {
-    cleanup()
+    mount.unmount()
     $terminalTakeover.set(false)
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
-    setVisibility(false)
+    setDocumentHidden(false)
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
   })
 
@@ -194,7 +149,7 @@ describe('PersistentTerminal rect tracking', () => {
     let currentRect = rect(10, 20, 200, 100)
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => currentRect)
 
-    render(<Harness />)
+    mount.render(<Harness />)
 
     expect(raf.request).toHaveBeenCalledTimes(1)
 
@@ -231,7 +186,7 @@ describe('PersistentTerminal rect tracking', () => {
     let currentRect = rect(10, 20, 200, 100)
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => currentRect)
 
-    render(<Harness />)
+    mount.render(<Harness />)
 
     expect(mutationObserveCalls.length).toBeGreaterThan(0)
     expect(mutationObserveCalls.every(call => call.options?.subtree === false)).toBe(true)
@@ -240,7 +195,7 @@ describe('PersistentTerminal rect tracking', () => {
       raf.runNext()
     })
 
-    const overlay = container!.lastElementChild as HTMLElement
+    const overlay = mount.container!.lastElementChild as HTMLElement
     expect(overlay.style.top).toBe('10px')
     expect(overlay.style.left).toBe('20px')
     expect(raf.pending()).toBe(0)
@@ -271,7 +226,7 @@ describe('PersistentTerminal rect tracking', () => {
     const before = $paneStates.get()
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect(10, 20, 200, 100))
 
-    render(<Harness />)
+    mount.render(<Harness />)
     raf.runNext()
     expect(raf.pending()).toBe(0)
 
@@ -291,12 +246,12 @@ describe('PersistentTerminal rect tracking', () => {
     const raf = installRaf()
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect(10, 20, 200, 100))
 
-    render(<Harness />)
+    mount.render(<Harness />)
 
     expect(raf.request).toHaveBeenCalledTimes(1)
 
     act(() => {
-      windowStateCallback?.({ isMinimized: true, isVisible: false })
+      windowState.emit({ isMinimized: true, isVisible: false })
     })
 
     expect(raf.cancel).toHaveBeenCalledTimes(1)
@@ -309,7 +264,7 @@ describe('PersistentTerminal rect tracking', () => {
     expect(raf.request).toHaveBeenCalledTimes(1)
 
     act(() => {
-      windowStateCallback?.({ isMinimized: false, isVisible: true })
+      windowState.emit({ isMinimized: false, isVisible: true })
     })
 
     expect(raf.request).toHaveBeenCalledTimes(2)
@@ -319,7 +274,7 @@ describe('PersistentTerminal rect tracking', () => {
     const raf = installRaf()
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect(10, 20, 200, 100))
 
-    render(<Harness />)
+    mount.render(<Harness />)
     expect(raf.pending()).toBe(1)
 
     act(() => window.dispatchEvent(new Event('blur')))
@@ -328,7 +283,7 @@ describe('PersistentTerminal rect tracking', () => {
     act(() => window.dispatchEvent(new Event('focus')))
     expect(raf.pending()).toBe(1)
 
-    cleanup()
+    mount.unmount()
     expect(raf.pending()).toBe(0)
 
     act(() => {
@@ -344,7 +299,7 @@ describe('PersistentTerminal rect tracking', () => {
     vi.mocked(document.hasFocus).mockReturnValue(false)
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect(10, 20, 200, 100))
 
-    render(<Harness />)
+    mount.render(<Harness />)
 
     expect(raf.request).not.toHaveBeenCalled()
 
@@ -358,10 +313,10 @@ describe('PersistentTerminal rect tracking', () => {
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect(10, 20, 200, 100))
     $terminalTakeover.set(true)
 
-    render(<HiddenPaneHarness hidden={false} />)
+    mount.render(<HiddenPaneHarness hidden={false} />)
 
-    const overlay = container!.lastElementChild as HTMLElement
-    const workspace = container!.querySelector('[data-testid="terminal-workspace"]')
+    const overlay = mount.container!.lastElementChild as HTMLElement
+    const workspace = mount.container!.querySelector('[data-testid="terminal-workspace"]')
 
     expect(overlay.style.visibility).toBe('visible')
     expect(overlay.style.opacity).toBe('1')
@@ -377,7 +332,7 @@ describe('PersistentTerminal rect tracking', () => {
     expect(raf.pending()).toBe(0)
 
     act(() => {
-      root!.render(<HiddenPaneHarness hidden />)
+      mount.root!.render(<HiddenPaneHarness hidden />)
       mutationObserverCallback?.([], {} as MutationObserver)
     })
     expect(raf.pending()).toBe(1)
@@ -389,7 +344,7 @@ describe('PersistentTerminal rect tracking', () => {
     expect(overlay.style.visibility).toBe('hidden')
     expect(overlay.style.opacity).toBe('0')
     expect(overlay.style.pointerEvents).toBe('none')
-    expect(container!.querySelector('[data-testid="terminal-workspace"]')).toBe(workspace)
+    expect(mount.container!.querySelector('[data-testid="terminal-workspace"]')).toBe(workspace)
 
     act(() => {
       raf.runNext()
@@ -397,7 +352,7 @@ describe('PersistentTerminal rect tracking', () => {
     expect(raf.pending()).toBe(0)
 
     act(() => {
-      root!.render(<HiddenPaneHarness hidden={false} />)
+      mount.root!.render(<HiddenPaneHarness hidden={false} />)
       mutationObserverCallback?.([], {} as MutationObserver)
     })
 
@@ -408,6 +363,43 @@ describe('PersistentTerminal rect tracking', () => {
     expect(overlay.style.visibility).toBe('visible')
     expect(overlay.style.opacity).toBe('1')
     expect(overlay.style.pointerEvents).toBe('auto')
-    expect(container!.querySelector('[data-testid="terminal-workspace"]')).toBe(workspace)
+    expect(mount.container!.querySelector('[data-testid="terminal-workspace"]')).toBe(workspace)
+  })
+
+  it('hides the overlay on a tab switch that happens while the window is unfocused', () => {
+    // The trap: the terminal is a tab in the main zone and the user clicks
+    // another tab without the window being focused (or right as it blurs).
+    // The rect chase is paused then — but visibility is correctness, not perf,
+    // so the overlay must still stand down instead of covering the chat with
+    // an opaque, pointer-interactive surface until something refocuses.
+    installRaf()
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect(10, 20, 200, 100))
+    $terminalTakeover.set(true)
+
+    mount.render(<HiddenPaneHarness hidden={false} />)
+
+    const overlay = mount.container!.lastElementChild as HTMLElement
+
+    expect(overlay.style.visibility).toBe('visible')
+    expect(overlay.style.pointerEvents).toBe('auto')
+
+    act(() => {
+      vi.mocked(document.hasFocus).mockReturnValue(false)
+      window.dispatchEvent(new Event('blur'))
+    })
+
+    act(() => {
+      mount.root!.render(<HiddenPaneHarness hidden />)
+    })
+
+    act(() => {
+      mutationObserverCallback?.([], {} as MutationObserver)
+    })
+
+    expect(overlay.style.visibility).toBe('hidden')
+    expect(overlay.style.opacity).toBe('0')
+    expect(overlay.style.pointerEvents).toBe('none')
+    // The PTY survives — only the overlay stands down.
+    expect(mount.container!.querySelector('[data-testid="terminal-workspace"]')).not.toBeNull()
   })
 })

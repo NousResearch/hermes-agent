@@ -207,11 +207,17 @@ class ProviderProfile:
         the provider does not support live model listing.
 
         Resolution order for the endpoint URL:
-          1. self.models_url  (explicit override — use when the models
+          1. base_url + "/models", but ONLY when the caller passed a base_url
+             that differs from this profile's default (a user-configured
+             model.base_url pointing at a proxy/custom endpoint). Callers
+             pass base_url unconditionally — falling back to the profile
+             default when the user configured nothing — so equality with
+             self.base_url means "not customised" and must not shadow
+             models_url.
+          2. self.models_url  (explicit override — use when the models
              endpoint differs from the inference base URL, e.g. OpenRouter
              exposes a public catalog at /api/v1/models while inference is
              at /api/v1)
-          2. base_url (caller override — user-configured model.base_url)
           3. self.base_url + "/models"  (standard OpenAI-compat fallback)
 
         The default implementation sends Bearer auth when api_key is given
@@ -221,12 +227,19 @@ class ProviderProfile:
         Callers must always fall back to the static _PROVIDER_MODELS list
         when this returns None.
         """
-        effective_base = base_url or self.base_url
-        url = (self.models_url or "").strip()
-        if not url:
-            if not effective_base:
-                return None
-            url = effective_base.rstrip("/") + "/models"
+        caller_base = (base_url or "").strip()
+        effective_base = caller_base or self.base_url
+        custom_base = bool(caller_base) and (
+            caller_base.rstrip("/") != (self.base_url or "").rstrip("/")
+        )
+        if custom_base:
+            url = caller_base.rstrip("/") + "/models"
+        else:
+            url = (self.models_url or "").strip()
+            if not url:
+                if not effective_base:
+                    return None
+                url = effective_base.rstrip("/") + "/models"
 
         import json
         import urllib.request

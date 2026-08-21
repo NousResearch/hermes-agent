@@ -191,6 +191,21 @@ MEMORY_GUIDANCE = (
     "workflows belong in skills, not memory."
 )
 
+USER_PROFILE_GUIDANCE = (
+    "You have a persistent user profile across sessions. Save durable facts about "
+    "the user with the memory tool (target='user'): name, role, preferences, "
+    "corrections, and communication style. The profile is injected into every turn, "
+    "so keep it compact and focused on facts that will still matter later.\n"
+    "The built-in memory notes store is disabled — write only to the user profile "
+    "(target='user'), never target='memory'.\n"
+    "Prioritize what reduces future user steering — the most valuable entry is one "
+    "that prevents the user from having to correct or remind you again.\n"
+    "Write entries as declarative facts, not instructions to yourself. "
+    "'User prefers concise responses' ✓ — 'Always respond concisely' ✗. "
+    "Imperative phrasing gets re-read as a directive in later sessions and can "
+    "cause repeated work or override the user's current request."
+)
+
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
     "relevant cross-session context exists, use session_search to recall it before "
@@ -358,6 +373,25 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 # Add new patterns here when a model family needs explicit steering.
 TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek")
 
+# Model name substrings whose sessions receive OPENAI_MODEL_EXECUTION_GUIDANCE
+# (execution discipline: tool persistence, mandatory tool use for arithmetic,
+# external-write read-back, count reconciliation, literal preservation,
+# verification-gated completion) when agent.execution_guidance is "auto".
+#
+# gpt/codex/grok are the historical set; deepseek/kimi/qwen/glm/minimax/
+# mimo/mistral were added after Composio agentic-eval traces showed the same
+# failure modes on those families (financial math in prose, no read-back after
+# external writes, identifier "repair", completeness claims despite count
+# mismatches). GLM's tool-calls-as-plain-text stall (#53847) and MiMo (#41874)
+# are covered here too. Gemini/Gemma are excluded — they get the more specific
+# GOOGLE_MODEL_OPERATIONAL_GUIDANCE block instead. Claude is excluded because
+# it does not exhibit these failure modes; users can opt any model in via
+# config.yaml `agent.execution_guidance: true` or a substring list.
+EXECUTION_GUIDANCE_MODELS = (
+    "gpt", "codex", "grok",
+    "deepseek", "kimi", "qwen", "glm", "minimax", "mimo", "mistral",
+)
+
 # Universal "finish the job" guidance — applied to ALL models, not gated
 # by model family.  Addresses two cross-model failure modes:
 #   1. Stopping after a stub: writing a tiny file or running one command
@@ -438,13 +472,22 @@ PARALLEL_TOOL_CALL_GUIDANCE = (
 # without tool calls, suggests workarounds instead of using existing tools,
 # replies with plans/suggestions instead of executing). The body is
 # family-agnostic; the OPENAI_ prefix reflects origin, not exclusivity.
+#
+# As of the Composio agentic-eval follow-up, the block is no longer fenced to
+# gpt/codex/grok: eval traces showed DeepSeek/Kimi doing financial math in
+# prose, skipping read-back verification after external writes, "repairing"
+# malformed identifiers, and claiming completeness despite count mismatches —
+# exactly the failure modes this block targets. The injection gate lives in
+# agent/system_prompt.py and is controlled by config.yaml
+# ``agent.execution_guidance`` (auto/true/false/list); "auto" matches the
+# EXECUTION_GUIDANCE_MODELS substring tuple below.
 OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "# Execution discipline\n"
     "<tool_persistence>\n"
     "- Use tools whenever they improve correctness, completeness, or grounding.\n"
     "- Do not stop early when another tool call would materially improve the result.\n"
-    "- If a tool returns empty or partial results, retry with a different query or "
-    "strategy before giving up.\n"
+    "- If a tool returns empty, partial, or suspiciously narrow results, retry "
+    "with a broader or different query or strategy before concluding.\n"
     "- Keep calling tools until: (1) the task is complete, AND (2) you have verified "
     "the result.\n"
     "</tool_persistence>\n"
@@ -487,7 +530,29 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "- Formatting: does the output match the requested format or schema?\n"
     "- Safety: if the next step has side effects (file writes, commands, API calls), "
     "confirm scope before executing.\n"
+    "- Completion: 'done' means every named acceptance criterion is verified — "
+    "never a plausible subset. Completing your plan is not itself the answer; "
+    "the requested output must appear in your response.\n"
     "</verification>\n"
+    "\n"
+    "<external_state_verification>\n"
+    "- After any state-changing write to an external system (API call, message "
+    "post, record update), verify the effect by reading back the exact target "
+    "before claiming success — a successful tool call is not a successful task. "
+    "Do NOT re-verify internal file edits a tool already confirmed.\n"
+    "- Declared totals in responses (total, reply_count, has_more, '...N more') "
+    "are hard assertions. If your enumerated count disagrees, re-fetch or parse "
+    "programmatically — never finalize on 'go with what I have'.\n"
+    "- When building write payloads, set fields explicitly rather than relying "
+    "on provider defaults that could contradict intent.\n"
+    "</external_state_verification>\n"
+    "\n"
+    "<literal_preservation>\n"
+    "- Preserve identifiers, commands, and values exactly as given — never "
+    "'repair' or normalize a token that fails a stated format. A successful "
+    "lookup does not validate a malformed source token; validate format first, "
+    "then look up.\n"
+    "</literal_preservation>\n"
     "\n"
     "<missing_context>\n"
     "- If required context is missing, do NOT guess or hallucinate an answer.\n"
@@ -927,6 +992,24 @@ PLATFORM_HINTS = {
         "video play inline, and other files arrive as download links. You can "
         "also include image URLs in markdown format ![alt](url) and they "
         "render inline as photos. "
+        "To show an HTML file you wrote as a LIVE inline page right in your "
+        "message, put ::preview{file=\"path/to/file.html\"} alone on its own "
+        "line — desktop plugins can register more ::name{...} directives like "
+        "it. When the user asks for an inline widget, chart, or visualization "
+        "(anything living IN the chat rather than a standalone page), design "
+        "it as a native piece of the app by default: transparent background, "
+        "colors from the provided theme tokens — var(--foreground), "
+        "var(--muted-foreground), var(--accent), var(--border), var(--card) — "
+        "the inherited app font, no body padding or margin, content flush "
+        "left and filling the viewport width, no centering wrappers, decorative "
+        "backdrops, or page chrome. The frame auto-sizes to the content. "
+        "Widgets can talk back: window.hermes.send(\"prompt\") — or a "
+        "data-hermes-send=\"prompt\" attribute on any clickable element — sends "
+        "that prompt to you as a hidden user turn (no chat bubble), so give "
+        "interactive widgets buttons whose clicks mean something and answer "
+        "them by updating the widget's file, not with prose. Only "
+        "a standalone PAGE (a mockup, a poster, a game) should bring its own "
+        "background and layout. "
         "When the user asks to add, enable, or authorize an MCP server (or a "
         "task clearly needs one that is missing), use the setup_mcp tool if "
         "it is available — it shows an inline consent card right in the chat; "
@@ -1783,8 +1866,14 @@ def build_skills_system_prompt(
         _home_token = None
     try:
         external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
+        # Trusted project-local dirs (./.hermes/skills, ./.agents/skills at
+        # the git root) — highest-precedence tier, scanned before local.
+        # Resolved once here; cwd and trust are stable for the session, so
+        # the index (and the system prompt) stays byte-stable.
+        from agent.skill_utils import get_project_skills_dirs
+        project_dirs = get_project_skills_dirs()
 
-        if not skills_dir.exists() and not external_dirs:
+        if not skills_dir.exists() and not external_dirs and not project_dirs:
             return ""
 
         return _build_skills_system_prompt_inner(
@@ -1793,6 +1882,7 @@ def build_skills_system_prompt(
             available_tools,
             available_toolsets,
             compact_categories,
+            project_dirs=project_dirs,
         )
     finally:
         if _home_token is not None:
@@ -1805,14 +1895,17 @@ def _build_skills_system_prompt_inner(
     available_tools: "set[str] | None",
     available_toolsets: "set[str] | None",
     compact_categories: "frozenset[str] | None",
+    project_dirs: "list[Path] | None" = None,
 ) -> str:
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
+    project_dirs = project_dirs or []
     cache_key = (
         str(skills_dir),
         tuple(str(d) for d in external_dirs),
+        tuple(str(d) for d in project_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
@@ -1876,6 +1969,53 @@ def _build_skills_system_prompt_inner(
             ):
                 continue
             visible_entries.append(entry)
+
+    # ── Project-local skills (highest precedence) ──────────────────────
+    # Scanned before the local/org pass; names claimed here shadow same-named
+    # profile-local skills below (that's the feature — vendored repo skills
+    # win inside their repo). Each entry is tagged so the model and the user
+    # can see where it came from.
+    project_names: set[str] = set()
+    if project_dirs:
+        from agent.skill_utils import iter_project_skill_files
+
+        for proj_dir in project_dirs:
+            if not proj_dir.exists():
+                continue
+            for skill_file in iter_project_skill_files(proj_dir):
+                try:
+                    is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
+                    if not is_compatible:
+                        continue
+                    entry = _build_snapshot_entry(skill_file, proj_dir, frontmatter, desc)
+                    fm_name = entry["frontmatter_name"]
+                    if fm_name in project_names:
+                        continue
+                    if fm_name in disabled or entry["skill_name"] in disabled:
+                        continue
+                    if not _skill_should_show(
+                        extract_skill_conditions(frontmatter),
+                        available_tools,
+                        available_toolsets,
+                    ):
+                        continue
+                    project_names.add(fm_name)
+                    skills_by_category.setdefault(entry["category"], []).append(
+                        (fm_name, f"[project] {entry['description']}".strip())
+                    )
+                except Exception as e:
+                    logger.debug("Error reading project skill %s: %s", skill_file, e)
+
+    if project_names:
+        # Drop profile-local entries shadowed by a project skill BEFORE the
+        # org-labeling pass so collision flags don't fire on intentional
+        # project-over-local overrides.
+        visible_entries = [
+            e
+            for e in visible_entries
+            if (e.get("frontmatter_name") or e.get("skill_name") or "")
+            not in project_names
+        ]
 
     # ── M2 org labeling + FAIL-LOUD collisions ─────────────────────────
     # An org skill lists with an explicit provenance tag. When a personal and

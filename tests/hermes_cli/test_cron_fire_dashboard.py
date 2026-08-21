@@ -438,3 +438,106 @@ def test_intentionally_stopped_false_when_profile_resolution_fails(monkeypatch):
 
     monkeypatch.setattr(web_server, "_cron_profile_home", boom)
     assert web_server._gateway_intentionally_stopped("ghost") is False
+
+
+# ── last_fire_error stamp on forward failure (missed-fire visibility) ─────
+
+
+def test_forward_failure_stamps_last_fire_error(monkeypatch):
+    """Gateway unreachable -> the job record gets a durable last_fire_error
+    stamp (via note_fire_forward_failure) so the miss is visible in
+    `cronjob list` / the dashboard instead of only in gui.log."""
+    stamped = []
+
+    async def fake_forward(profile, job_id, authorization):
+        return None  # unreachable
+
+    def fake_call_cron(profile, func_name, *args, **kwargs):
+        stamped.append((profile, func_name, args))
+        return True
+
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+    monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda jid: "default")
+    monkeypatch.setattr(web_server, "_forward_cron_fire_to_gateway", fake_forward)
+    monkeypatch.setattr(web_server, "_gateway_intentionally_stopped", lambda p: False)
+    monkeypatch.setattr(web_server, "_call_cron_for_profile", fake_call_cron)
+
+    client, pa, ph = _client(auth_required=False)
+    try:
+        resp = client.post("/api/cron/fire",
+                           headers={"Authorization": "Bearer nas-jwt"},
+                           json={"job_id": "j8"})
+        assert resp.status_code == 503  # retry contract unchanged
+        assert len(stamped) == 1
+        profile, func_name, args = stamped[0]
+        assert profile == "default"
+        assert func_name == "note_fire_forward_failure"
+        assert args[0] == "j8"
+        assert "api_server" in args[1]  # detail names the dead hop
+    finally:
+        _restore(pa, ph)
+        client.close()
+
+
+def test_forward_failure_stamp_error_never_breaks_retry_contract(monkeypatch):
+    """Stamping is best-effort observability: if the jobs store write blows
+    up, the webhook still returns the retryable 503 + Retry-After."""
+
+    async def fake_forward(profile, job_id, authorization):
+        return None
+
+    def boom(profile, func_name, *args, **kwargs):
+        raise RuntimeError("jobs.json locked")
+
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+    monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda jid: "default")
+    monkeypatch.setattr(web_server, "_forward_cron_fire_to_gateway", fake_forward)
+    monkeypatch.setattr(web_server, "_gateway_intentionally_stopped", lambda p: False)
+    monkeypatch.setattr(web_server, "_call_cron_for_profile", boom)
+
+    client, pa, ph = _client(auth_required=False)
+    try:
+        resp = client.post("/api/cron/fire",
+                           headers={"Authorization": "Bearer nas-jwt"},
+                           json={"job_id": "j9"})
+        assert resp.status_code == 503
+        assert resp.headers.get("Retry-After") == "60"
+    finally:
+        _restore(pa, ph)
+        client.close()
+
+
+def test_reachable_gateway_does_not_stamp(monkeypatch):
+    """A successful forward must not touch the job record."""
+    stamped = []
+
+    async def fake_forward(profile, job_id, authorization):
+        return 202, {"status": "accepted", "job_id": job_id}
+
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+    monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda jid: "default")
+    monkeypatch.setattr(web_server, "_forward_cron_fire_to_gateway", fake_forward)
+    monkeypatch.setattr(
+        web_server, "_call_cron_for_profile",
+        lambda *a, **k: stamped.append(a),
+    )
+
+    client, pa, ph = _client(auth_required=False)
+    try:
+        resp = client.post("/api/cron/fire",
+                           headers={"Authorization": "Bearer nas-jwt"},
+                           json={"job_id": "j10"})
+        assert resp.status_code == 202
+        assert stamped == []
+    finally:
+        _restore(pa, ph)
+        client.close()

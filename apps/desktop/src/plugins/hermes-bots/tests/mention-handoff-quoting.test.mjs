@@ -15,7 +15,12 @@ import vm from 'node:vm'
 
 const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 
-function load({ activeProfile = 'research', profiles = ['research', 'ops'], title = null } = {}) {
+function load({
+  activeProfile = 'research',
+  focusedProfile = activeProfile,
+  profiles = ['research', 'ops'],
+  title = null
+} = {}) {
   const values = new Map()
   const atom = initial => {
     const slot = { get: () => values.get(slot), set: value => values.set(slot, value) }
@@ -30,11 +35,19 @@ function load({ activeProfile = 'research', profiles = ['research', 'ops'], titl
     host: {
       request: async method => {
         if (method === 'profiles.list') {
-          return { profiles: profiles.map(name => ({ name })) }
+          return {
+            profiles: profiles.map(profile =>
+              typeof profile === 'string' ? { name: profile } : profile
+            )
+          }
         }
         return {}
       },
-      state: { profile: { get: () => activeProfile, listen: () => undefined }, gateway: { listen: () => undefined } }
+      state: {
+        profile: { get: () => activeProfile, listen: () => undefined },
+        focusedSessionProfile: { get: () => focusedProfile, listen: () => undefined },
+        gateway: { listen: () => undefined }
+      }
     }
   }
   const source = pluginSource
@@ -109,4 +122,83 @@ test('regression: the handoff command quotes the recipient argument', async () =
   const { handler } = load()
   const result = await handler({ text: 'ping @ops please' })
   assert.match(result.text, /`hermes -p 'ops' chat --in ~/)
+})
+
+test('behavior: a renamed default profile routes from another focused Bot Chat', async () => {
+  const { handler } = load({
+    activeProfile: 'default',
+    focusedProfile: 'renametest',
+    profiles: [
+      { name: 'default', display_name: 'Lucy' },
+      { name: 'renametest' }
+    ]
+  })
+
+  const result = await handler({ text: 'ask @lucy for a status update' })
+
+  assert.match(result.text, /`hermes -p 'default' chat --in ~/)
+  assert.match(result.text, /Message from 🤖 Renametest \(@renametest\)/)
+})
+
+test('behavior: @dixie on a Connections bot stays in this chat and does not hermes -p', async () => {
+  const values = new Map()
+  const atom = initial => {
+    const slot = { get: () => values.get(slot), set: value => values.set(slot, value) }
+    values.set(slot, initial)
+    return slot
+  }
+  const delivered = []
+  const context = {
+    atom,
+    PALETTE_AREA: 'palette',
+    COMPOSER_AREAS: { middleware: 'middleware' },
+    queryClient: {
+      getQueryData: () => ({
+        profiles: [
+          { name: 'default', connectionId: 'local' },
+          {
+            name: 'dixie',
+            connectionId: 'mac-mini',
+            connectionLabel: 'Mac Mini',
+            handle: 'dixie',
+            remoteSource: true
+          }
+        ]
+      })
+    },
+    document: { getElementById: () => null, createElement: () => ({}), head: { appendChild: () => undefined } },
+    host: {
+      request: async () => ({ profiles: [{ name: 'default' }] }),
+      requestProfile: async (route, method) => {
+        delivered.push([route.connectionId, route.profile, method])
+        return { session_id: 'remote-1' }
+      },
+      state: {
+        profile: { get: () => 'default', listen: () => undefined },
+        connectionId: { get: () => 'local', listen: () => undefined },
+        gateway: { listen: () => undefined }
+      }
+    }
+  }
+  const source = pluginSource
+    .replace(/^import\s+\*\s+as\s+sdk\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\{[\s\S]*?\}\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
+    .replace(/^const \{ McpTab, ToolsetConfigPanel \} = sdk\r?\n/m, '')
+    .replace(/^import .* from 'react'\r?\n/m, '')
+    .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
+    .replace('export default {', 'globalThis.plugin = {')
+    .concat('\nglobalThis.__mention = { $botMeta };\n')
+  vm.runInNewContext(source, context, { filename: 'plugin.js' })
+  context.__mention.$botMeta.set({})
+
+  const registered = []
+  context.plugin.register({ storage: { get: () => null }, register: entry => registered.push(entry) })
+  const middleware = registered.find(entry => entry.id === 'mention-middleware')
+  const result = await middleware.data.handler({ text: '@dixie what is the disk space?' })
+
+  assert.match(result.text, /stay on this device/i)
+  assert.doesNotMatch(result.text, /hermes -p 'dixie'/)
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(delivered[0][0], 'mac-mini')
+  assert.equal(delivered[0][1], 'dixie')
 })

@@ -28,6 +28,20 @@ from agent.tool_dispatch_helpers import (
 )
 from agent.prompt_builder import STEER_MARKER_OPEN
 from tools.budget_config import BudgetConfig
+from tools.tool_result_storage import PERSISTED_OUTPUT_TAG
+
+
+def _assert_budget_replaced(content: str) -> None:
+    """The oversized result must have been replaced by budget enforcement.
+
+    With an active sandbox env (or host-side spillover) the replacement is a
+    ``<persisted-output>`` preview+path block; when persistence is impossible
+    it falls back to inline truncation. Either way the raw oversized payload
+    must be gone — that is the behavior these tests pin, not which
+    replacement shape was used.
+    """
+    assert PERSISTED_OUTPUT_TAG in content or "Truncated:" in content, content[:200]
+    assert "L" * 1_000 not in content
 
 
 def _tc(name="web_search", arguments="{}", call_id=None):
@@ -594,7 +608,7 @@ class TestSegmentedDispatchIntegration:
             agent._execute_tool_calls(msg, messages, "task-1")
 
         large_result_index = next(i for i, call in enumerate(calls) if call.id.endswith("large"))
-        assert "Truncated:" in messages[large_result_index]["content"]
+        _assert_budget_replaced(messages[large_result_index]["content"])
         steer_messages = [m for m in messages if STEER_MARKER_OPEN in m["content"]]
         assert steer_messages == [messages[-1]]
         assert "preserve this steer after budget enforcement" in steer_messages[0]["content"]
@@ -622,7 +636,7 @@ class TestSegmentedDispatchIntegration:
             agent._execute_tool_calls(msg, messages, "task-1")
 
         assert len(messages) == 1
-        assert "Truncated:" in messages[0]["content"]
+        _assert_budget_replaced(messages[0]["content"])
         assert messages[0]["content"].count(STEER_MARKER_OPEN) == 1
         assert "preserve malformed-call steer after budget enforcement" in messages[0]["content"]
 

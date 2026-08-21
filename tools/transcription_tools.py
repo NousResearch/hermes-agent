@@ -1025,6 +1025,28 @@ def _get_provider(stt_config: dict) -> str:
     explicit = "provider" in stt_config
     provider = stt_config.get("provider", DEFAULT_PROVIDER)
 
+    # The managed "Nous Subscription" selection (stt.provider: nous) is
+    # serviced by the OpenAI provider implementation, routed through the
+    # managed openai-audio gateway by _resolve_openai_audio_client_config.
+    if isinstance(provider, str) and provider.strip().lower() == "nous":
+        provider = "openai"
+
+    if explicit and provider == "local":
+        # Legacy DEFAULT_CONFIG seeded ``stt.provider: local`` on every
+        # install, so a merged-config "local" is not proof of a user pick.
+        # ``read_selection`` reads the raw config.yaml: when the raw file
+        # holds an stt selection (picker- or hand-written ``local``) it is
+        # honored; when the merged "local" came only from a legacy default
+        # merge, take the autodetect branch (which prefers local first
+        # anyway, so a genuine local user is unaffected when it's available).
+        try:
+            from tools.tool_backend_helpers import read_selection
+
+            if read_selection("stt") is None:
+                explicit = False
+        except Exception:  # pragma: no cover — helpers are in-repo
+            pass
+
     # --- Explicit provider: respect the user's choice ----------------------
 
     if explicit:
@@ -3260,11 +3282,61 @@ def transcribe_audio_local_fallback(
 
 
 def _resolve_openai_audio_client_config() -> tuple[str, str]:
-    """Return direct OpenAI audio config or a managed gateway fallback."""
+    """Return ``(api_key, base_url)`` for the OpenAI STT client.
+
+    Strict selection semantics (switch on the stored ``stt`` provider
+    string; previously this resolver never read the stored gateway intent):
+    - ``"nous"`` (or legacy ``use_gateway: true``) → managed gateway ONLY;
+      unentitled/unreachable is a selection-naming error (a direct
+      OPENAI_API_KEY must NOT override it).
+    - any other stored stt provider → direct credentials ONLY; missing
+      credentials is a selection-naming error — no silent managed fallback.
+    - never-configured stt section → legacy ladder: config key → local
+      base_url → env key → managed gateway.
+    """
+    from tools.tool_backend_helpers import (
+        NOUS_MANAGED_PROVIDER,
+        read_selection,
+        selection_error,
+    )
+
     stt_config = _load_stt_config()
     openai_cfg = stt_config.get("openai") or {}
     cfg_api_key = openai_cfg.get("api_key", "")
     cfg_base_url = openai_cfg.get("base_url", "")
+
+    selected = read_selection("stt")
+
+    if selected == NOUS_MANAGED_PROVIDER:
+        managed_gateway = resolve_managed_tool_gateway("openai-audio")
+        if managed_gateway is None:
+            raise ValueError(selection_error(
+                "stt",
+                NOUS_MANAGED_PROVIDER,
+                "the Nous Tool Gateway is not available (not entitled or "
+                "unreachable)",
+            ))
+        return managed_gateway.nous_user_token, urljoin(
+            f"{managed_gateway.gateway_origin.rstrip('/')}/", "v1"
+        )
+
+    if selected is not None:
+        # Stored vendor selection: direct credentials only.
+        if cfg_api_key:
+            return cfg_api_key, (cfg_base_url or OPENAI_BASE_URL)
+        if cfg_base_url and _is_local_or_private_url(cfg_base_url):
+            return "not-needed", cfg_base_url
+        direct_api_key = resolve_openai_audio_api_key()
+        if direct_api_key:
+            return direct_api_key, OPENAI_BASE_URL
+        raise ValueError(selection_error(
+            "stt",
+            selected,
+            "neither stt.openai.api_key in config nor "
+            "VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY is set",
+        ))
+
+    # Never-configured stt section: legacy credential ladder.
     if cfg_api_key:
         return cfg_api_key, (cfg_base_url or OPENAI_BASE_URL)
 

@@ -126,6 +126,22 @@ class WebSearchProvider(abc.ABC):
         """Return True if this provider implements :meth:`search`."""
         return True
 
+    def is_keyless_available(self) -> bool:
+        """Return True when this provider can serve calls WITHOUT credentials.
+
+        A separate, weaker tier than :meth:`is_available`: providers with a
+        public anonymous free tier (Exa / Parallel MCP endpoints) return
+        True here so the registry can fall back to them when NO provider is
+        configured or keyed — and only then. Keyless availability must never
+        make :meth:`is_available` return True, or the legacy preference walk
+        would route users with real credentials for a lower-priority backend
+        onto the free tier of a higher-priority one.
+
+        Like :meth:`is_available`, this must be cheap and must NOT make
+        network calls. Default: False.
+        """
+        return False
+
     def supports_extract(self) -> bool:
         """Return True if this provider implements :meth:`extract`.
 

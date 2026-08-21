@@ -121,6 +121,41 @@ from tools.ansi_strip import strip_unicode_tags
 
 logger = logging.getLogger(__name__)
 
+
+# Hard allocation ceiling for a single MCP text payload (chars). This is the
+# FIRST line of defense against a buggy or malicious MCP server returning
+# multi-megabyte text: without it the full payload is allocated, JSON-encoded
+# and handed downstream before the budget/spillover layer ever sees it
+# (#56059). It deliberately sits far ABOVE the budget layer's 50K MCP
+# spillover threshold (tools/budget_config.py) so ordinary large results
+# reach spillover INTACT — spilled to disk in full, preview in context —
+# while only pathological multi-MB floods are lossy-truncated here.
+#
+# Distilled from #56060 (Stoltemberg), #56072 (AlexFucuson9) and #56511
+# (Tranquil-Flow), which capped at get_max_bytes() (50K) — correct
+# protection, but at that level it would truncate before spillover could
+# preserve the data. The 40% head / 60% tail split is #56511's shape.
+_MCP_HARD_RESULT_CAP_CHARS = 2_000_000
+
+
+def _truncate_mcp_text_result(text: str, max_chars: int = _MCP_HARD_RESULT_CAP_CHARS) -> str:
+    """Bound pathological MCP text before it propagates (#56059).
+
+    Results at or under ``max_chars`` pass through unchanged; oversized text
+    keeps a 40% head / 60% tail split with an omission notice in between.
+    """
+    if len(text) <= max_chars:
+        return text
+    head_chars = int(max_chars * 0.4)
+    tail_chars = max_chars - head_chars
+    omitted = len(text) - head_chars - tail_chars
+    return (
+        text[:head_chars]
+        + f"\n\n... [MCP RESULT TRUNCATED - {omitted:,} chars omitted "
+          f"out of {len(text):,} total] ...\n\n"
+        + text[-tail_chars:]
+    )
+
 # Upper bound for the OSV malware preflight during stdio MCP startup. The
 # check makes a blocking urllib HTTPS call whose own timeout can fail to
 # interrupt a stalled SSL handshake, which froze the asyncio event loop and
@@ -5816,7 +5851,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     if res_text:
                         error_text += str(res_text)
                 return tool_error(_sanitize_error(
-                    error_text or "MCP tool returned an error"
+                    _truncate_mcp_text_result(
+                        error_text or "MCP tool returned an error"
+                    )
                 ))
 
             # Collect text from content blocks. MCP tool results can also
@@ -5868,6 +5905,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     )
             text_result = "\n".join(parts) if parts else ""
 
+            # Hard-cap pathological payloads before they propagate (#56059);
+            # ordinary large results pass untouched to the spillover layer.
+            text_result = _truncate_mcp_text_result(text_result)
+
             # Combine content + structuredContent when both are present.
             # MCP spec: content is model-oriented (text), structuredContent
             # is machine-oriented (JSON metadata).  For an AI agent, content
@@ -5885,6 +5926,18 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # vendor-namespaced keys (`com.example.mcp/...`) pass through —
             # their semantics belong to the server.
             structured = mcp_field(result, "structured_content", "structuredContent")
+            # Cap structuredContent too — a malicious server could flood
+            # context via a multi-MB JSON payload (#56059). When the
+            # serialized form exceeds the hard cap, replace it with the
+            # truncated string (head + tail preserved) so it degrades
+            # gracefully instead of flooding downstream.
+            if structured is not None:
+                try:
+                    _structured_json = json.dumps(structured, ensure_ascii=False, default=str)
+                except (TypeError, ValueError):
+                    _structured_json = None
+                if _structured_json is not None and len(_structured_json) > _MCP_HARD_RESULT_CAP_CHARS:
+                    structured = _truncate_mcp_text_result(_structured_json)
             meta = _strip_reserved_meta_keys(mcp_field(result, "meta", "meta"))
             if structured is not None or meta is not None:
                 payload: Dict[str, Any] = {}

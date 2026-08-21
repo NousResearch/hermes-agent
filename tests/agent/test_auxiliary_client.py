@@ -2939,6 +2939,14 @@ class TestCodexAdapterPromptCacheKey:
         ])
         assert captured["prompt_cache_retention"] == "24h"
 
+    def test_meta_endpoint_includes_prompt_cache_retention(self):
+        adapter, captured = self._build_adapter(base_url="https://api.meta.ai/v1", model="muse-spark-1.2")
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert captured["prompt_cache_retention"] == "24h"
+
     def test_prompt_cache_retention_skipped_for_codex_backend(self):
         adapter, captured = self._build_adapter()
         adapter.create(messages=[

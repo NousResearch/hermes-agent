@@ -142,7 +142,7 @@ gateway:
     no_goal_set:           "Nessun obiettivo impostato."
     paused:                "⏸ Obiettivo in pausa: {goal}"
     no_resume:             "Nessun obiettivo da riprendere."
-    resumed:               "▶ Obiettivo ripreso: {goal}\nInvia un messaggio per continuare, oppure aspetta — farò il prossimo passo al turno successivo."
+    resumed:               "▶ Obiettivo ripreso: {goal}\nContinuo subito — farò immediatamente il prossimo passo."
     invalid:               "Obiettivo non valido: {error}"
     set:                   "⊙ Obiettivo impostato (budget di {budget} turni): {goal}\nContinuerò a lavorare finché l'obiettivo non sarà completato, lo metterai in pausa/lo cancellerai, oppure il budget sarà esaurito.\nControlli: /goal status · /goal pause · /goal resume · /goal clear"
 

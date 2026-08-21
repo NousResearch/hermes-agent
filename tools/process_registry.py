@@ -629,6 +629,7 @@ class ProcessRegistry:
         notification = {
             "session_id": session.id,
             "session_key": session.session_key,
+            "task_id": session.task_id,
             "command": session.command,
             "type": "watch_match",
             "pattern": matched_pattern,
@@ -1574,6 +1575,7 @@ class ProcessRegistry:
                 "type": "completion",
                 "session_id": session.id,
                 "session_key": session.session_key,
+                "task_id": session.task_id,
                 "command": session.command,
                 "exit_code": session.exit_code,
                 "completion_reason": session.completion_reason,
@@ -2872,6 +2874,45 @@ def _format_async_delegation(evt: dict) -> str:
     return "\n".join(lines)
 
 
+def _delegation_attribution_line(evt: dict) -> "str | None":
+    """One-line delegation attribution for a child-originated process event.
+
+    Subagents run their terminal sessions under ``task_id == subagent_id``
+    (delegate_tool._run_single_child). When a background process they started
+    completes, its notification is routed to the PARENT conversation by
+    design (children consume their own waits via process(wait); anything
+    that outlives the child must land where a durable consumer exists).
+    Without attribution the parent-facing user sees an anonymous raw output
+    wall mid-conversation with no hint it came from a delegation. Resolve
+    the task_id against the live + recently-finished subagent registry and
+    return a short provenance line, or None for parent-owned processes.
+    """
+    task_id = str(evt.get("task_id") or "")
+    if not task_id.startswith("sa-"):
+        return None
+    try:
+        from tools.delegate_tool import get_subagent_attribution
+
+        info = get_subagent_attribution(task_id)
+    except Exception:
+        info = None
+    if not info:
+        # The task_id shape says "subagent" even when the registry entry has
+        # aged out — still attribute generically rather than anonymously.
+        return f"Started by subagent {task_id} (delegate_task)."
+    goal = str(info.get("goal") or "").strip()
+    if len(goal) > 120:
+        goal = goal[:117] + "..."
+    deleg = info.get("delegation_id")
+    parts = [f"Started by subagent {task_id}"]
+    if deleg:
+        parts.append(f"of delegation {deleg}")
+    line = " ".join(parts) + "."
+    if goal:
+        line += f' Task: "{goal}"'
+    return line
+
+
 def format_process_notification(evt: dict) -> "str | None":
     """Format a process notification event into a [IMPORTANT: ...] message.
 
@@ -2881,6 +2922,7 @@ def format_process_notification(evt: dict) -> "str | None":
     evt_type = evt.get("type", "completion")
     _sid = evt.get("session_id", "unknown")
     _cmd = evt.get("command", "unknown")
+    _attribution = _delegation_attribution_line(evt)
 
     if evt_type == "watch_disabled":
         return f"[IMPORTANT: {evt.get('message', '')}]"
@@ -2898,6 +2940,10 @@ def format_process_notification(evt: dict) -> "str | None":
         text = (
             f"[IMPORTANT: Background process {_sid} matched "
             f"watch pattern \"{_pat}\".\n"
+        )
+        if _attribution:
+            text += f"{_attribution}\n"
+        text += (
             f"Command: {_cmd}\n"
             f"Matched output:\n{_out}"
         )
@@ -2926,12 +2972,26 @@ def format_process_notification(evt: dict) -> "str | None":
         _status = "completed normally"
     else:
         _status = "exited"
-    return (
+    text = (
         f"[IMPORTANT: Background process {_sid} {_status} "
         f"(exit code {_exit}{_signal}).\n"
+    )
+    if _attribution:
+        text += f"{_attribution}\n"
+        # A subagent-owned process's full output belongs in the child's
+        # transcript/summary, not as a raw wall in the parent conversation —
+        # trim the tail hard while keeping enough to recognise failures.
+        if isinstance(_out, str) and len(_out) > 600:
+            _out = (
+                "...(output trimmed — subagent-owned process; see the "
+                "delegation's live transcript for full output)\n"
+                + _out[-600:]
+            )
+    text += (
         f"Command: {_cmd}\n"
         f"Output:\n{_out}]"
     )
+    return text
 
 
 # ---------------------------------------------------------------------------

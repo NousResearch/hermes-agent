@@ -44,3 +44,19 @@ test('regression: navigation retries after the kickoff persists a new canonical 
   assert.equal(await runtime.createCanonicalChat('ops'), 'stored-1')
   assert.deepEqual(events, ['open:stored-1', 'kickoff:persisted', 'open:stored-1'])
 })
+
+test('regression: a failed intro keeps the pin', async () => {
+  const runtime = loadCanonicalCreation({
+    openSession: async () => undefined,
+    request: async method => {
+      if (method === 'session.create') return { stored_session_id: 'new-bot-chat', session_id: 'rt-1' }
+      if (method === 'prompt.submit') throw new Error('gateway timeout')
+      return {}
+    }
+  })
+
+  assert.equal(await runtime.createCanonicalChat('newbie'), 'new-bot-chat')
+  assert.deepEqual(JSON.parse(JSON.stringify(runtime.saved)), [
+    { name: 'newbie', patch: { chat: 'new-bot-chat' } }
+  ])
+})

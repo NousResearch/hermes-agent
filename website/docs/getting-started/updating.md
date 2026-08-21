@@ -42,6 +42,12 @@ hermes update --check --branch experimental   # preview behindness only
 
 If your local checkout is on a different branch, Hermes auto-stashes any uncommitted work, switches HEAD to the target branch, and then pulls. Branches that don't exist locally are auto-tracked from `origin/<name>` (`git checkout -B <name> origin/<name>`). Branches that don't exist anywhere fail cleanly — your stashed changes are restored before exit so you're never stranded in a weird state. The `main`-only fork-upstream sync logic is automatically skipped on non-`main` branches.
 
+### Checkout parked on a feature branch
+
+If the source checkout was left sitting on a feature branch (by tooling, a worktree experiment, or a manual checkout), `hermes update` only switches it back to the update target automatically when that is provably safe: the working tree is clean **and** every commit on the parked branch is already contained in `origin/main` (`git cherry` reports nothing unmerged). In that case the update says so — `Checkout was parked on '<branch>' (fully merged) — switched back to main` — and stays on `main` afterwards.
+
+When the parked branch has uncommitted changes or unmerged commits, Hermes does **not** touch it. The code update is marked **SKIPPED** with a loud warning naming the branch, how far behind `origin/main` it is, and the exact commands to resolve — instead of pretending the update succeeded. The completion line always shows the actual branch and HEAD (`✓ Update complete! [main @ 30fcf9580]`) so drift is visible at a glance. Set `updates.auto_switch_parked_branch: false` in `config.yaml` to disable the auto-switch entirely (the skip warning still fires).
+
 ### Local changes on non-interactive updates
 
 When you run `hermes update` in a terminal, Hermes stashes any uncommitted source-tree changes, pulls, then **asks** whether to restore them — exactly as it always has. Nothing changes for interactive updates.
@@ -60,9 +66,29 @@ updates:
 
 In the desktop app this is **Settings → Advanced → In-App Update Local Changes**.
 
+**Desktop updates never auto-restore.** The desktop updater invokes `hermes update --keep-stash`: local source edits are still stashed so the update can proceed, but they are **not** re-applied afterward — they stay parked in `git stash` and the update log prints the exact `git stash apply <ref>` command to bring them back. This prevents local edits from silently riding along across desktop updates and breaking the freshly updated install. (`non_interactive_local_changes: discard` still wins if you've opted into discarding.) To restore parked changes manually:
+
+```bash
+cd ~/.hermes/hermes-agent   # or your install root
+git stash list --format='%gd %H %s'   # find the hermes-update-autostash entry
+git stash apply stash@{0}
+```
+
+You can pass `--keep-stash` to a terminal `hermes update` too if you want the same never-reapply behavior interactively.
+
 ### Preview-only: `hermes update --check`
 
 Want to know if an update is available before pulling? Run `hermes update --check` — it fetches and compares commits against `origin/main`. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
+
+### Fleet preview: `hermes update --plan`
+
+Before updating a machine that runs several profiles or services, `hermes update --plan` prints the full update plan without changing anything: the install kind (git checkout, Docker image, Nix/apt managed), every running Hermes service across all profiles with its supervisor (systemd, launchd, manual) and the code version it is actually serving, and the restart mechanism each one will get. On image- or package-managed installs the plan reports that the install is not updatable in place and names the right update command instead. Read-only and safe on a live fleet.
+
+The same inventory is embedded in every real update's receipt (`~/.hermes/logs/update_receipts/`), so after an update you can compare what the updater saw against what it did.
+
+### Update receipts and the fleet version check
+
+Every `hermes update` run writes a machine-readable receipt to `~/.hermes/logs/update_receipts/` (last 20 kept, `latest.json` always points at the most recent): the pre-update fleet plan, each step taken, anything skipped and why, the gateway restart outcome, and the final fleet version matrix. After the restart phase the updater compares each live gateway's running code against the freshly updated checkout and prints a per-profile matrix — a gateway still serving pre-update code is reported loudly with the exact restart command, and the update exits non-zero so automation never treats a mixed-version fleet as healthy.
 
 ### Full pre-update backup: `--backup`
 
@@ -164,7 +190,7 @@ You no longer need to wrap `hermes update` in `screen` or `tmux` to survive a te
 ### Checking your current version
 
 ```bash
-hermes version
+hermes --version
 ```
 
 Compare against the latest release at the [GitHub releases page](https://github.com/NousResearch/hermes-agent/releases).

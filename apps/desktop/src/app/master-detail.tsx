@@ -449,7 +449,11 @@ export function CapRow({
   return (
     <div
       className={cn(
-        'group/row row-hover flex w-full shrink-0 items-center rounded-md hover:text-foreground',
+        // content-visibility:auto lets the browser skip layout/paint for
+        // offscreen rows — the Capabilities lists routinely hold 80+ entries.
+        // Row height is already fixed (h-8/h-11), so skipped rows keep their
+        // exact size and scrollbar geometry never jumps.
+        'group/row row-hover flex w-full shrink-0 items-center rounded-md [content-visibility:auto] hover:text-foreground',
         subtitle ? 'h-11' : 'h-8',
         active ? 'bg-(--ui-row-active-background) text-foreground' : 'text-(--ui-text-secondary)'
       )}

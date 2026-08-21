@@ -142,7 +142,7 @@ gateway:
     no_goal_set:           "Hedef ayarlanmadı."
     paused:                "⏸ Hedef duraklatıldı: {goal}"
     no_resume:             "Devam ettirilecek hedef yok."
-    resumed:               "▶ Hedef devam ettirildi: {goal}\nDevam etmek için herhangi bir mesaj gönderin veya bekleyin — bir sonraki turda adımı atacağım."
+    resumed:               "▶ Hedef devam ettirildi: {goal}\nHemen devam ediyorum — bir sonraki adımı derhal atacağım."
     invalid:               "Geçersiz hedef: {error}"
     set:                   "⊙ Hedef ayarlandı ({budget} turluk bütçe): {goal}\nHedef tamamlanana, siz duraklatana/temizleyene veya bütçe tükenene kadar çalışmaya devam edeceğim.\nKontroller: /goal status · /goal pause · /goal resume · /goal clear"
 

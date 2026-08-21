@@ -141,6 +141,32 @@ class TestDraftStreamingHappyPath:
         assert "expect_edits" not in final_metadata
 
     @pytest.mark.asyncio
+    async def test_stream_is_message_preserves_cumulative_text_across_tool_boundaries(self):
+        """Slack native streams accept cumulative frames. A tool boundary must
+        not clear the consumer accumulator, otherwise every next segment is a
+        non-prefix snapshot and the connector appends the whole answer again."""
+        adapter = _make_draft_capable_adapter()
+        adapter.draft_stream_is_message = True
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=1, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "C1", cfg)
+
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("first segment")
+        await asyncio.sleep(0.05)
+        consumer.on_segment_break()
+        await asyncio.sleep(0.05)
+        consumer.on_delta(" second segment")
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        contents = [call["content"] for call in adapter.draft_calls]
+        assert contents[-1] == "first segment second segment"
+
+    @pytest.mark.asyncio
     async def test_edit_preview_still_marks_expect_edits(self):
         adapter = _make_draft_capable_adapter(supports_draft=False)
         cfg = StreamConsumerConfig(transport="edit", chat_type="dm", cursor="")

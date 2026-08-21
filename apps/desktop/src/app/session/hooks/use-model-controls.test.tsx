@@ -16,20 +16,12 @@ import {
 } from '@/store/session'
 import type * as SessionStates from '@/store/session-states'
 
+import { deferred } from '../../../test/deferred'
+
 import { useModelControls } from './use-model-controls'
 
 const setGlobalModel = vi.fn()
 const notifyError = vi.fn()
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void
-
-  const promise = new Promise<T>(done => {
-    resolve = done
-  })
-
-  return { promise, resolve }
-}
 
 vi.mock('@/hermes', () => ({
   getGlobalModelInfo: vi.fn(),

@@ -5,21 +5,13 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { StatusbarControls } from '@/app/shell/statusbar-controls'
 import { I18nProvider } from '@/i18n'
 import { $approvalModes } from '@/store/approval-mode'
+import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
 import { useApprovalModeStatusbarItem } from './approval-mode-menu'
 
-class TestResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-
 beforeAll(() => {
-  vi.stubGlobal('ResizeObserver', TestResizeObserver)
-  Element.prototype.hasPointerCapture ??= () => false
-  Element.prototype.setPointerCapture ??= () => undefined
-  Element.prototype.releasePointerCapture ??= () => undefined
-  HTMLElement.prototype.scrollIntoView ??= () => undefined
+  stubResizeObserver()
+  stubMenuDomApis()
 })
 
 afterEach(() => {

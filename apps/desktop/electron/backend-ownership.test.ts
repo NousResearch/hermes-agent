@@ -284,3 +284,72 @@ test('shutdown coordinator returns one promise and awaits teardown exactly once'
   assert.equal(finished, true)
   assert.equal(coordinator.run(), first)
 })
+
+// #89298: a corrupt ownership file must never be silently rewritten as [] —
+// that permanently erases the only record of still-running backends. The reap
+// sweep quarantines the file and skips; a later healthy write recreates it.
+test('reapOrphans on a corrupt file quarantines and does not rewrite', async () => {
+  let contents = '{ this is not json'
+  let quarantined = 0
+  const writes: string[] = []
+  const stopped: number[] = []
+
+  const store = {
+    read: () => contents,
+    value: () => contents,
+    write: (next: string) => {
+      writes.push(next)
+      contents = next
+    },
+    quarantine: () => {
+      quarantined += 1
+    }
+  }
+
+  const ownership = createOwnership(store, {
+    stop: identityArg => {
+      stopped.push(identityArg.pid)
+    }
+  })
+
+  assert.deepEqual(await ownership.reapOrphans(), [])
+  assert.equal(quarantined, 1)
+  assert.deepEqual(writes, [])
+  assert.deepEqual(stopped, [])
+})
+
+test('reapOrphans on a corrupt file without a quarantine hook still skips the rewrite', async () => {
+  const writes: string[] = []
+
+  const store = {
+    read: () => 'garbage{{{',
+    value: () => 'garbage{{{',
+    write: (next: string) => {
+      writes.push(next)
+    }
+  }
+
+  const ownership = createOwnership(store)
+
+  assert.deepEqual(await ownership.reapOrphans(), [])
+  assert.deepEqual(writes, [])
+})
+
+test('an empty or missing ownership file is NOT corrupt — reap sweeps normally', async () => {
+  const writes: string[] = []
+
+  const store = {
+    read: () => '',
+    value: () => '',
+    write: (next: string) => {
+      writes.push(next)
+    },
+    quarantine: () => assert.fail('empty file must not be quarantined')
+  }
+
+  const ownership = createOwnership(store)
+
+  assert.deepEqual(await ownership.reapOrphans(), [])
+  // Empty roster: rewriting [] is harmless and keeps the legacy behavior.
+  assert.equal(writes.length, 1)
+})

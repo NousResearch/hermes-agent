@@ -13,6 +13,15 @@ import json
 from typing import Any, Dict
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
+from agent.reasoning_effort import (
+    KIMI_K3_EFFORTS,
+    KIMI_K3_OVERRIDES,
+    OPENAI_COMPAT_WIRE_EFFORTS,
+    TOKENHUB_EFFORTS,
+    clamp_effort,
+    kimi_supported_efforts,
+    requested_effort,
+)
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
@@ -84,15 +93,25 @@ def _add_prompt_cache_key(
 
 
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
-    """Return the model's wire-compatible reasoning config."""
+    """Return the model's wire-compatible reasoning config.
+
+    Hermes' internal effort set extends the wire vocabulary with ``ultra``
+    (the /reasoning command documents none..xhigh|max|ultra). OpenAI-
+    compatible wires — OpenRouter chief among them — accept exactly
+    max|xhigh|high|medium|low|minimal|none and reject the extension with
+    HTTP 400 (#89503). Clamp against the declared wire vocabulary via the
+    shared policy in ``agent.reasoning_effort``; provider profiles with
+    narrower sets clamp again downstream.
+    """
     if not isinstance(reasoning_config, dict):
         return reasoning_config
-    if (
-        "gpt-5.6" in (model or "").lower()
-        and str(reasoning_config.get("effort") or "").strip().lower() == "ultra"
-    ):
+    effort = str(reasoning_config.get("effort") or "").strip().lower()
+    if not effort:
+        return reasoning_config
+    clamped = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
+    if clamped != effort:
         normalized = dict(reasoning_config)
-        normalized["effort"] = "max"
+        normalized["effort"] = clamped
         return normalized
     return reasoning_config
 
@@ -559,11 +578,22 @@ class ChatCompletionsTransport(ProviderTransport):
                 and reasoning_config.get("enabled") is False
             )
             if not _kimi_thinking_off:
-                _kimi_effort = "medium"
-                if reasoning_config and isinstance(reasoning_config, dict):
-                    _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in {"low", "medium", "high"}:
-                        _kimi_effort = _e
+                # Kimi vocabularies are declared in agent.reasoning_effort:
+                # K3 = low/high/max (with the vendor-documented medium→high,
+                # xhigh→max rounding), K2-era = low/medium/high. Default when
+                # no effort was requested: K3's server default is high,
+                # K2-era's is medium.
+                _supported = kimi_supported_efforts(model)
+                _overrides = (
+                    KIMI_K3_OVERRIDES if _supported is KIMI_K3_EFFORTS else None
+                )
+                _e = requested_effort(reasoning_config)
+                if _e is None:
+                    _kimi_effort = (
+                        "high" if _supported is KIMI_K3_EFFORTS else "medium"
+                    )
+                else:
+                    _kimi_effort = clamp_effort(_e, _supported, _overrides)
                 api_kwargs["reasoning_effort"] = _kimi_effort
 
         # Tencent TokenHub: top-level reasoning_effort (unless thinking disabled)
@@ -574,11 +604,13 @@ class ChatCompletionsTransport(ProviderTransport):
                 and reasoning_config.get("enabled") is False
             )
             if not _tokenhub_thinking_off:
-                _tokenhub_effort = "high"
-                if reasoning_config and isinstance(reasoning_config, dict):
-                    _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in {"low", "medium", "high"}:
-                        _tokenhub_effort = _e
+                # TokenHub accepts low/medium/high (declared in
+                # agent.reasoning_effort); default high when no effort was
+                # requested.
+                _e = requested_effort(reasoning_config)
+                _tokenhub_effort = (
+                    "high" if _e is None else clamp_effort(_e, TOKENHUB_EFFORTS)
+                )
                 api_kwargs["reasoning_effort"] = _tokenhub_effort
 
         # LM Studio: top-level reasoning_effort. Only emit when the model
@@ -854,17 +886,25 @@ class ChatCompletionsTransport(ProviderTransport):
         preserved for downstream replay.
         """
         choice = response.choices[0]
-        msg = choice.message
+        msg = getattr(choice, "message", None)
         # Poolside returns integer finish_reason (e.g. 24) instead of string
-        _fr = choice.finish_reason
+        _fr = getattr(choice, "finish_reason", None)
         if isinstance(_fr, int):
             _fr = str(_fr)
         finish_reason = _fr or "stop"
 
         tool_calls = None
-        if msg.tool_calls:
+        message_tool_calls = getattr(msg, "tool_calls", None)
+        if message_tool_calls:
             tool_calls = []
-            for tc in msg.tool_calls:
+            for tc in message_tool_calls:
+                tc_function = getattr(tc, "function", None)
+                function_name = getattr(tc_function, "name", None)
+                # Match Relay's codec: skip absent function/name fields, but
+                # preserve an explicit blank name for Hermes's recovery path.
+                if tc_function is None or function_name is None:
+                    continue
+                function_arguments = getattr(tc_function, "arguments", None)
                 # Preserve provider-specific extras on the tool call.
                 # Gemini 3 thinking models attach extra_content with
                 # thought_signature — without replay on the next turn the API
@@ -887,9 +927,13 @@ class ChatCompletionsTransport(ProviderTransport):
                     tc_provider_data["extra_content"] = extra
                 tool_calls.append(
                     ToolCall(
-                        id=tc.id,
-                        name=tc.function.name,
-                        arguments=tc.function.arguments,
+                        id=getattr(tc, "id", None),
+                        name=function_name,
+                        arguments=(
+                            function_arguments
+                            if function_arguments is not None
+                            else "{}"
+                        ),
                         provider_data=tc_provider_data or None,
                     )
                 )
@@ -932,7 +976,7 @@ class ChatCompletionsTransport(ProviderTransport):
         # Promote it to content + a ``content_filter`` finish reason so the
         # loop's refusal handler surfaces it clearly and stops. ``refusal`` is
         # ``None`` for normal responses, so this is a no-op in the common case.
-        content = msg.content
+        content = getattr(msg, "content", None)
         refusal = getattr(msg, "refusal", None)
         if refusal is None and hasattr(msg, "model_extra"):
             _msg_extra = getattr(msg, "model_extra", None) or {}

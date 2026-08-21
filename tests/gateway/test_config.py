@@ -665,6 +665,140 @@ class TestLoadGatewayConfig:
         assert config.default_reset_policy.mode != "idle"
 
 
+    def test_present_empty_top_level_quick_commands_blocks_nested_fallback(self, tmp_path, monkeypatch):
+        """Key-presence precedence for quick_commands: a present (even empty)
+        top-level quick_commands must NOT be replaced by gateway.quick_commands
+        — the fallback fires only when the top-level key is absent. Mirrors the
+        session_reset/stt precedence contract from #73543744b."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "quick_commands: null\n"
+            "gateway:\n"
+            "  quick_commands:\n"
+            "    limits:\n"
+            "      type: exec\n"
+            "      command: echo nested\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        # The nested gateway.quick_commands must NOT leak through the present
+        # (null) top-level key — quick_commands stays at its default (empty).
+        assert "limits" not in (config.quick_commands or {})
+
+    def test_absent_top_level_quick_commands_falls_back_to_nested(self, tmp_path, monkeypatch):
+        """Sanity: when quick_commands is genuinely absent at the top level,
+        the nested gateway.quick_commands fallback still applies (regression
+        guard so the precedence fix doesn't over-correct and break the
+        legitimate nested path)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  quick_commands:\n"
+            "    limits:\n"
+            "      type: exec\n"
+            "      command: echo nested\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        # Absent top-level key → nested fallback fires normally.
+        assert config.quick_commands.get("limits", {}).get("command") == "echo nested"
+
+    def test_present_empty_top_level_profile_routes_blocks_nested_fallback(self, tmp_path, monkeypatch):
+        """Key-presence precedence for profile_routes: a present (even empty)
+        top-level profile_routes must NOT be replaced by gateway.profile_routes
+        — the fallback fires only when the top-level key is absent. Mirrors the
+        session_reset/stt/quick_commands precedence contract."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "profile_routes: null\n"
+            "gateway:\n"
+            "  profile_routes:\n"
+            "    - name: work\n"
+            "      platform: telegram\n"
+            "      profile: work\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        # The nested gateway.profile_routes must NOT leak through the present
+        # (null) top-level key — profile_routes stays at its default (empty).
+        assert config.profile_routes == []
+
+    def test_absent_top_level_profile_routes_falls_back_to_nested(self, tmp_path, monkeypatch):
+        """Sanity: when profile_routes is genuinely absent at the top level,
+        the nested gateway.profile_routes fallback still applies."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  profile_routes:\n"
+            "    - name: work\n"
+            "      platform: telegram\n"
+            "      profile: work\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert any(r.name == "work" for r in config.profile_routes)
+
+    def test_present_empty_top_level_streaming_blocks_nested_fallback(self, tmp_path, monkeypatch):
+        """Key-presence precedence for streaming: a present (even empty)
+        top-level streaming must NOT be replaced by gateway.streaming — the
+        fallback fires only when the top-level key is absent. Mirrors the
+        session_reset/stt/quick_commands precedence contract."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "streaming: null\n"
+            "gateway:\n"
+            "  streaming:\n"
+            "    transport: websocket\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        # The nested gateway.streaming must NOT leak through the present (null)
+        # top-level key — streaming stays at its default.
+        assert config.streaming.transport == "auto"
+
+    def test_absent_top_level_streaming_falls_back_to_nested(self, tmp_path, monkeypatch):
+        """Sanity: when streaming is genuinely absent at the top level,
+        the nested gateway.streaming fallback still applies."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  streaming:\n"
+            "    transport: websocket\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.streaming.transport == "websocket"
+
     def test_relay_platform_enabled_from_env_url(self, tmp_path, monkeypatch):
         """GATEWAY_RELAY_URL must enable Platform.RELAY in config.platforms so
         start_gateway()'s connect loop actually dials the connector. Registering

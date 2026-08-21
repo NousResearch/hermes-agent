@@ -453,6 +453,9 @@ class ProcessRegistry:
         # gateway drain this after each agent turn to auto-trigger new turns.
         import queue as _queue_mod
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
+        # Shared reservation seam for atomic child-event publication and later
+        # consumer routing. Publication is non-blocking and holds it briefly.
+        self.completion_routing_lock = threading.RLock()
         # Rehydrate durable delegation completions only at registry startup.
         # Consumers still inject them as fresh turns through this existing rail.
         try:

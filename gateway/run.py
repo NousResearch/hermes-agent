@@ -16367,6 +16367,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 reply_to_author_id=event.reply_to_author_id,
                 reply_to_author_name=event.reply_to_author_name,
                 reply_to_is_own_message=event.reply_to_is_own_message,
+                reply_to_is_partial_quote=event.reply_to_is_partial_quote,
                 auto_skill=event.auto_skill,
                 channel_prompt=event.channel_prompt,
                 channel_context=event.channel_context,
@@ -18375,7 +18376,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
             reply_snippet = event.reply_to_text[:500]
-            if getattr(event, "reply_to_is_own_message", False):
+            is_partial_quote = getattr(event, "reply_to_is_partial_quote", False)
+            if is_partial_quote and getattr(event, "reply_to_is_own_message", False):
+                message_text = (
+                    f'[Quoting selected text from your previous message: "{reply_snippet}"]\n\n'
+                    f"{message_text}"
+                )
+            elif is_partial_quote and getattr(event, "reply_to_author_name", None):
+                message_text = (
+                    f'[Quoting selected text from message by {event.reply_to_author_name}: '
+                    f'"{reply_snippet}"]\n\n{message_text}'
+                )
+            elif is_partial_quote:
+                message_text = (
+                    f'[Quoting selected text: "{reply_snippet}"]\n\n{message_text}'
+                )
+            elif getattr(event, "reply_to_is_own_message", False):
                 message_text = (
                     f'[Replying to your previous message: "{reply_snippet}"]\n\n'
                     f"{message_text}"

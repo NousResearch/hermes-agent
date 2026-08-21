@@ -2343,6 +2343,7 @@ class MessageEvent:
     reply_to_author_id: Optional[str] = None
     reply_to_author_name: Optional[str] = None
     reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
+    reply_to_is_partial_quote: bool = False
 
     # Structured interactive-prompt reply (relay Phase 3). Present when this
     # event is the user answering a native interactive prompt rendered by the

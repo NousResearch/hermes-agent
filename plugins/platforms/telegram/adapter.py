@@ -10506,12 +10506,30 @@ class TelegramAdapter(BasePlatformAdapter):
         # / caption when no native quote is present.
         reply_to_id = None
         reply_to_text = None
+        reply_to_author_id = None
+        reply_to_author_name = None
+        reply_to_is_own_message = False
+        reply_to_is_partial_quote = False
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
+            reply_author = getattr(message.reply_to_message, "from_user", None)
+            if reply_author is not None:
+                author_id = getattr(reply_author, "id", None)
+                if author_id is not None:
+                    reply_to_author_id = str(author_id)
+                reply_to_author_name = (
+                    getattr(reply_author, "full_name", None)
+                    or getattr(reply_author, "username", None)
+                    or None
+                )
+                reply_to_is_own_message = self._is_own_message(
+                    message.reply_to_message
+                )
             quote = getattr(message, "quote", None)
             quote_text = getattr(quote, "text", None) if quote is not None else None
             if quote_text:
                 reply_to_text = quote_text
+                reply_to_is_partial_quote = True
             else:
                 reply_to_text = (
                     message.reply_to_message.text
@@ -10550,6 +10568,10 @@ class TelegramAdapter(BasePlatformAdapter):
             platform_update_id=update_id,
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
+            reply_to_author_id=reply_to_author_id,
+            reply_to_author_name=reply_to_author_name,
+            reply_to_is_own_message=reply_to_is_own_message,
+            reply_to_is_partial_quote=reply_to_is_partial_quote,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
             timestamp=message.date,

@@ -99,3 +99,52 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result.endswith("What's the best time to go?")
 
 
+@pytest.mark.asyncio
+async def test_partial_quote_from_assistant_is_labeled_as_selected_text():
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="Only address this point.",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text="Item B: rotate keys",
+        reply_to_is_own_message=True,
+        reply_to_is_partial_quote=True,
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert result.startswith(
+        '[Quoting selected text from your previous message: "Item B: rotate keys"]'
+    )
+
+
+@pytest.mark.asyncio
+async def test_partial_quote_from_participant_includes_quoted_author():
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="Continue from here.",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text="deployment is blocked",
+        reply_to_author_name="Alice",
+        reply_to_is_partial_quote=True,
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert result.startswith(
+        '[Quoting selected text from message by Alice: "deployment is blocked"]'
+    )
+

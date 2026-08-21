@@ -1052,7 +1052,14 @@ class ShellFileOperations(FileOperations):
             # sample carries the replacement char as binary (read-only) so the
             # agent can't corrupt it. Legitimate UTF-8 text effectively never
             # contains U+FFFD.
-            if "\ufffd" in content_sample[:1000]:
+            # U+FFFD on a head -c boundary is an artifact of UTF-8 truncation,
+            # not binary content. When the 1000-byte cut lands mid-multibyte
+            # character (Cyrillic, CJK), the terminal's errors="replace"
+            # decoding emits U+FFFD for the trailing half-character. Legitimate
+            # UTF-8 text effectively never contains U+FFFD elsewhere, so strip
+            # only the trailing artifact and treat remaining U+FFFD as binary.
+            core = content_sample[:1000].rstrip("\ufffd")
+            if "\ufffd" in core:
                 return True
             non_printable = sum(1 for c in content_sample[:1000]
                                if ord(c) < 32 and c not in '\n\r\t')

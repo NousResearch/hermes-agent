@@ -891,12 +891,18 @@ class TestRewindExclusion:
         ))
         assert result_compact["count"] >= 1
 
-        # Rewound content should NOT be discoverable
+        # Rewound content should NOT be discoverable. (The OR-relaxed
+        # zero-result retry may surface OTHER active rows sharing a common
+        # term like "content" — that's fine; the invariant is that the
+        # rewound row itself never comes back.)
         result_rewind = json.loads(session_search(
             query="rewound content gamma", db=db,
             current_session_id="s_mixed",
         ))
-        assert result_rewind["count"] == 0
+        for m in result_rewind.get("matches", []):
+            snippet = (m.get("snippet") or "").lower()
+            assert "rewound" not in snippet
+            assert "gamma" not in snippet
 
 
 class TestCompressionEndedHelper:

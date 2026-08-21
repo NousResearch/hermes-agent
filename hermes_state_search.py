@@ -1317,6 +1317,42 @@ class SessionSearchMixin:
         return run == 1
 
     @staticmethod
+    def _or_relaxed_query(query: str) -> Optional[str]:
+        """Rewrite an implicit-AND FTS query into a ranked any-term OR query.
+
+        FTS5's implicit AND requires EVERY term to appear, so a paraphrased
+        recall query ("when does Sarah like her standup scheduled") returns
+        nothing against a stored "Sarah prefers the standup meeting scheduled
+        early on Thursday mornings" purely because the stored text lacks
+        "like" / "when" / "does". Ported from nearai/ironclaw#7553
+        (``Filter::FtsRanked``): on a zero-result miss, retry matching ANY
+        content term and let bm25 rank order the hits — rows containing more
+        of the terms naturally rank first.
+
+        Returns the OR-joined query, or ``None`` when relaxation does not
+        apply:
+        - fewer than two searchable units (single-term queries can't relax),
+        - the query already uses explicit boolean operators (``OR`` / ``NOT``)
+          — the caller expressed exact semantics; respect them.
+
+        Quoted phrases are preserved as units, so ``"docker networking" tls``
+        relaxes to ``"docker networking" OR tls`` rather than splitting the
+        phrase. Input is the already-sanitized query (see
+        :meth:`_sanitize_fts5_query`).
+        """
+        units: list[str] = []
+        for raw_token in re.findall(r'"[^"]+"|\S+', query):
+            upper = raw_token.upper()
+            if upper in {"OR", "NOT"}:
+                return None
+            if upper == "AND":
+                continue
+            units.append(raw_token)
+        if len(units) < 2:
+            return None
+        return " OR ".join(units)
+
+    @staticmethod
     def _trigram_eligible_tokens(query: str) -> bool:
         """True when every non-operator token is long enough for the trigram
         tokenizer to match (>=3 chars).
@@ -2210,6 +2246,40 @@ class SessionSearchMixin:
                 )
                 if tri_matches:
                     matches = tri_matches
+
+        # OR-relaxed retry (ported from nearai/ironclaw#7553): the implicit
+        # AND between terms means a paraphrased multi-word query misses a
+        # stored sentence that lacks even ONE of the words ("when does Sarah
+        # like her standup scheduled" vs "Sarah prefers the standup meeting
+        # scheduled ... Thursday mornings"). When the exact query and the
+        # substring fallbacks all return nothing, retry the same unicode61
+        # FTS index matching ANY term, ranked by bm25 so rows covering more
+        # terms surface first. Strictly additive: gated on a zero-result
+        # miss, so successful searches keep their exact-match semantics and
+        # ordering. Queries with explicit OR/NOT, single-term queries, and
+        # CJK-routed queries are left alone (_or_relaxed_query returns None;
+        # CJK routes have their own substring semantics above).
+        if not matches and not is_cjk:
+            relaxed = self._or_relaxed_query(query)
+            if relaxed is not None:
+                relaxed_params = [relaxed] + list(params[1:])
+                try:
+                    with self._read_ctx() as conn:
+                        cursor = conn.execute(sql, relaxed_params)
+                        matches = [dict(row) for row in cursor.fetchall()]
+                except sqlite3.OperationalError:
+                    logger.debug(
+                        "OR-relaxed FTS retry failed; keeping empty result",
+                        exc_info=True,
+                    )
+                except sqlite3.DatabaseError as exc:
+                    # Same corruption class as the exact-match read above; it
+                    # already attempted a rebuild on this call if needed, so
+                    # just give up quietly here.
+                    logger.debug(
+                        "OR-relaxed FTS retry hit a database error (%s); "
+                        "keeping empty result", exc,
+                    )
 
         return self._finalize_search_matches(matches, result_fields=result_fields)
 

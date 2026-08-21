@@ -16,8 +16,9 @@ The fix (this PR):
   * on a retryable connect failure calls ``_reset_fallback`` which pops the
     poisoned pool out of ``self._fallbacks`` and ``aclose()``s it, so its dead
     sockets are released instead of accumulating;
-  * bounds every pool at ``Limits(max_connections=8)`` as a *default* via
-    ``setdefault`` — a caller-supplied ``limits`` kwarg still wins.
+  * treats ``Limits(max_connections=8, max_keepalive_connections=4)`` as a
+    transport-wide default budget and divides it among the primary and lazy
+    fallback pools; a caller-supplied ``limits`` kwarg still wins.
 
 Contract asserted here (mutation-survivable)
 ---------------------------------------------
@@ -28,6 +29,8 @@ Contract asserted here (mutation-survivable)
    fails (the pool is retained and never closed).
 2. A caller-supplied ``limits`` kwarg wins over the ``_POOL_LIMITS`` default.
 """
+
+import asyncio
 
 import httpx
 import pytest
@@ -181,9 +184,12 @@ def test_caller_limits_win_over_pool_default(monkeypatch):
     assert custom_limits is not tnet.TelegramFallbackTransport._POOL_LIMITS
 
 
-def test_pool_default_limits_applied_when_caller_omits(monkeypatch):
-    """When the caller supplies no ``limits``, the bounded ``_POOL_LIMITS``
-    default (max_connections=8) is applied via setdefault (#71593)."""
+def test_pool_default_limits_are_shared_across_default_pools(monkeypatch):
+    """Without explicit limits, ``_POOL_LIMITS`` is a transport-wide budget.
+
+    A primary plus one lazy fallback pool must split the default instead of each
+    getting the full eight-connection ceiling.
+    """
     kwargs_log: list = []
     for key in (
         "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy",
@@ -195,7 +201,14 @@ def test_pool_default_limits_applied_when_caller_omits(monkeypatch):
     )
 
     transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+    asyncio.run(transport._get_fallback("149.154.167.220"))
+
+    assert len(kwargs_log) == 2
     limits = kwargs_log[0]["limits"]
     assert isinstance(limits, httpx.Limits)
-    assert limits.max_connections == 8
-    assert limits is transport._POOL_LIMITS
+    assert limits.max_connections == 4
+    assert limits.max_keepalive_connections == 2
+    assert all(kw["limits"] is limits for kw in kwargs_log)
+    assert limits.max_connections * len(kwargs_log) <= 8
+    assert limits.max_keepalive_connections * len(kwargs_log) <= 4
+    assert limits is not transport._POOL_LIMITS

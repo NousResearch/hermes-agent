@@ -155,6 +155,7 @@ def test_fallback_branch_forwards_tuned_limits_to_inner_transports(monkeypatch):
     )
 
     assert len(instances) >= 2
+    expected = int(512 / (2 * (1 + 1)))
     for instance in instances:
         transport = instance.kwargs["httpx_kwargs"]["transport"]
         assert isinstance(transport, tg_adapter.TelegramFallbackTransport)
@@ -162,7 +163,7 @@ def test_fallback_branch_forwards_tuned_limits_to_inner_transports(monkeypatch):
         assert isinstance(limits, httpx.Limits)
         assert limits.keepalive_expiry is not None
         assert limits.keepalive_expiry < 5.0
-        assert limits.max_connections == 512
+        assert limits.max_connections == expected
 
     for instance in instances:
         asyncio.run(instance.kwargs["httpx_kwargs"]["transport"].aclose())

@@ -95,6 +95,45 @@ class TestNormalizeFallbackIps:
         assert tnet._normalize_fallback_ips(raw) == ["149.154.167.220", "149.154.167.220"]
 
 
+class TestCapFallbackIps:
+    def test_under_cap_is_unchanged(self):
+        ips = ["149.154.167.220", "149.154.167.221"]
+        assert tnet.cap_fallback_ips(ips, max_ips=3) is ips
+
+    def test_over_cap_is_truncated_and_logged(self, caplog):
+        ips = ["1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4"]
+        capped = tnet.cap_fallback_ips(ips, max_ips=3)
+        assert capped == ["1.1.1.1", "2.2.2.2", "3.3.3.3"]
+        assert "exceeds the safety cap" in caplog.text
+
+
+class TestSafeFallbackPoolLimits:
+    def test_derates_by_total_pool_count(self):
+        """2 PTB clients * (1 primary + 2 fallback) = 6 pools."""
+        base = httpx.Limits(
+            max_connections=512,
+            max_keepalive_connections=100,
+            keepalive_expiry=20.0,
+        )
+        derated = tnet.safe_fallback_pool_limits(base, fallback_ip_count=2, num_ptb_clients=2)
+        assert derated.max_connections == 512 // 6
+        assert derated.max_connections * 6 <= 512
+        assert derated.max_keepalive_connections == 100 // 6
+        assert derated.max_keepalive_connections * 6 <= 100
+        assert derated.keepalive_expiry == 20.0
+
+    def test_never_derates_below_one_connection(self):
+        base = httpx.Limits(max_connections=4, max_keepalive_connections=4)
+        derated = tnet.safe_fallback_pool_limits(base, fallback_ip_count=10, num_ptb_clients=2)
+        assert derated.max_connections >= 1
+        assert derated.max_keepalive_connections >= 1
+
+    def test_no_fallback_still_accounts_for_both_ptb_clients(self):
+        base = httpx.Limits(max_connections=100, max_keepalive_connections=100)
+        derated = tnet.safe_fallback_pool_limits(base, fallback_ip_count=0, num_ptb_clients=2)
+        assert derated.max_connections == 50
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Request rewriting
 # ═══════════════════════════════════════════════════════════════════════════
@@ -354,6 +393,36 @@ class TestFallbackTransportInit:
             # Caller-supplied limits must win over the setdefault default.
             assert kw["limits"] is custom_limits
 
+    def test_default_budget_is_shared_by_all_direct_transport_pools(self, monkeypatch):
+        seen_kwargs = []
+
+        def factory(**kwargs):
+            seen_kwargs.append(kwargs.copy())
+            return FakeTransport([], {})
+
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+        transport = tnet.TelegramFallbackTransport(
+            ["149.154.167.220", "149.154.167.221", "149.154.167.222", "149.154.167.223"]
+        )
+        assert transport._fallback_ips == [
+            "149.154.167.220",
+            "149.154.167.221",
+            "149.154.167.222",
+        ]
+
+        import asyncio
+
+        for ip in transport._fallback_ips:
+            asyncio.run(transport._get_fallback(ip))
+
+        # One primary + the capped three fallback pools use one default budget.
+        assert len(seen_kwargs) == 4
+        limits = [kwargs["limits"] for kwargs in seen_kwargs]
+        assert all(limit.max_connections == 2 for limit in limits)
+        assert sum(limit.max_connections for limit in limits) <= 8
+        assert all(limit.max_keepalive_connections == 1 for limit in limits)
+        assert sum(limit.max_keepalive_connections for limit in limits) <= 4
+
 
 class TestFallbackTransportClose:
     @pytest.mark.asyncio
@@ -566,4 +635,3 @@ class TestDiscoverFallbackIps:
 
         assert ips == ["149.154.167.220"]
         assert elapsed < 1.4, f"discovery gated on hung system DNS ({elapsed:.2f}s)"
-

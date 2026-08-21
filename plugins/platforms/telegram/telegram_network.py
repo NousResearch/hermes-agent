@@ -44,6 +44,7 @@ _DOH_PROVIDERS: list[dict] = [
 # cannot pin initialize() (#87015).
 SEED_FALLBACK_IPS: list[str] = ["149.154.166.110", "149.154.167.220"]
 _UNSET = object()
+DEFAULT_MAX_FALLBACK_IPS = 3
 
 
 def _resolve_proxy_url(target_hosts=None) -> str | None:
@@ -62,17 +63,28 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     is last resort for IPv6-only networks.
     """
 
-    # Bound every pool. httpx defaults to 100 connections per pool, so a wedged
-    # endpoint plus the seed IPs can outgrow the process file-descriptor limit
-    # on its own (#63311).
+    # Default connection budget for one transport. It is divided among the
+    # primary pool and every lazy fallback pool when the caller has not supplied
+    # explicit limits; this prevents the default from multiplying per IP.
     _POOL_LIMITS = httpx.Limits(max_connections=8, max_keepalive_connections=4)
 
     def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
-        self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
+        # Each literal can materialize a separate lazy httpx pool. Cap here as
+        # well as in the adapter so direct users of this public transport cannot
+        # bypass the finite fan-out guarantee.
+        normalized_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
+        self._fallback_ips = cap_fallback_ips(normalized_ips)
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
-        transport_kwargs.setdefault("limits", self._POOL_LIMITS)
+        if "limits" not in transport_kwargs:
+            # The class default is a budget for this whole transport, not for
+            # each lazy fallback pool. Explicit caller limits still win.
+            transport_kwargs["limits"] = safe_fallback_pool_limits(
+                self._POOL_LIMITS,
+                len(self._fallback_ips),
+                num_ptb_clients=1,
+            )
         self._transport_kwargs = transport_kwargs
         self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
         self._primary_lock = asyncio.Lock()
@@ -233,6 +245,46 @@ def parse_fallback_ip_env(value: str | None) -> list[str]:
         return []
     parts = [part.strip() for part in value.split(",")]
     return _normalize_fallback_ips(parts)
+
+
+def cap_fallback_ips(
+    ips: list[str], max_ips: int = DEFAULT_MAX_FALLBACK_IPS
+) -> list[str]:
+    """Bound fallback-IP fan-out so client + fallback pool construction stays bounded."""
+    if len(ips) <= max_ips:
+        return ips
+    logger.warning(
+        "Telegram fallback IP count %d exceeds the safety cap of %d; using only the first %d",
+        len(ips),
+        max_ips,
+        max_ips,
+    )
+    return ips[:max_ips]
+
+
+def safe_fallback_pool_limits(
+    base_limits: httpx.Limits, fallback_ip_count: int, num_ptb_clients: int = 2
+) -> httpx.Limits:
+    """Divide a total connection/keepalive budget across all possible pools.
+
+    The fallback transport has one primary pool plus one lazy pool per allowed
+    IPv4 literal. Telegram's request and polling clients each build that
+    transport, so the per-pool limit must account for both clients. The caller
+    is responsible for capping ``fallback_ip_count`` before using a configured
+    budget too small to allocate one connection per possible pool.
+    """
+    if base_limits.max_connections is None:
+        return base_limits
+    num_pools = num_ptb_clients * (1 + fallback_ip_count)
+    max_connections = max(1, base_limits.max_connections // num_pools)
+    max_keepalive = base_limits.max_keepalive_connections
+    if max_keepalive is not None:
+        max_keepalive = max(1, min(max_connections, max_keepalive // num_pools))
+    return httpx.Limits(
+        max_connections=max_connections,
+        max_keepalive_connections=max_keepalive,
+        keepalive_expiry=base_limits.keepalive_expiry,
+    )
 
 
 def _resolve_system_dns() -> set[str]:

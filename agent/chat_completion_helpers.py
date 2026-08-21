@@ -332,7 +332,15 @@ def _provider_stream_error_from_json_decode_error(
 def _iter_provider_stream_chunks(stream, *, response: Any = None):
     """Yield SDK chunks while translating SDK-level SSE decode failures."""
     try:
-        yield from stream
+        for chunk in stream:
+            # Some OpenAI-compatible relays emit a bare ``data: null`` SSE
+            # frame, which the SDK deserializes into ``None`` and yields like
+            # any other chunk. Consumers dereference ``chunk.choices``, so the
+            # frame would kill the turn with an AttributeError even though
+            # every other frame was valid. It carries no payload — drop it.
+            if chunk is None:
+                continue
+            yield chunk
     except json.JSONDecodeError as error:
         stream_response = response() if callable(response) else response
         if stream_response is None:

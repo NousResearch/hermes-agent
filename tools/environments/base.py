@@ -209,9 +209,16 @@ class BaseEnvironment(ABC):
         retaining the exclusion keeps that old value from leaking to a later profile."""
         if not self._profile_scoped_passthrough:
             return ()
+        _multiplex_active = False
         try:
-            from agent.secret_scope import is_multiplex_active
-            if is_multiplex_active():
+            from agent.secret_scope import (
+                build_profile_env_boundary,
+                get_profile_owned_secret_names,
+                is_multiplex_active,
+            )
+
+            _multiplex_active = is_multiplex_active()
+            if _multiplex_active:
                 from tools.env_passthrough import get_all_passthrough
                 names = (*get_all_passthrough(), *self._additional_profile_scoped_passthrough_names())
                 self._snapshot_passthrough_names.update(

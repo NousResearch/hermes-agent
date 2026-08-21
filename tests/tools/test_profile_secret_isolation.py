@@ -17,7 +17,11 @@ from agent.secret_scope import (
 )
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tools.environments.base import BaseEnvironment
-from tools.environments.local import _make_run_env, build_subprocess_env
+from tools.environments.local import (
+    LocalEnvironment,
+    _make_run_env,
+    build_subprocess_env,
+)
 
 
 _SOURCE_ONLY = "ACME_LOGIN"
@@ -241,6 +245,58 @@ def test_snapshot_exclusions_include_profile_owned_names(tmp_path, multiplex_mod
     names = obj._snapshot_excluded_passthrough_names()
 
     assert _SOURCE_ONLY in names
+
+
+def test_snapshot_exclusion_refresh_fails_closed(monkeypatch, tmp_path, multiplex_mode):
+    import agent.secret_scope as secret_scope
+
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    _write_profile(source, {})
+    _write_profile(target, {})
+    obj = _dummy_with_boundary(build_profile_env_boundary(source, target))
+
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("ownership unavailable")
+
+    monkeypatch.setattr(secret_scope, "get_profile_owned_secret_names", _raise)
+    with pytest.raises(RuntimeError, match="snapshot exclusions"):
+        obj._snapshot_excluded_passthrough_names()
+
+
+def test_snapshot_refreshes_ownership_added_after_construction(
+    tmp_path, monkeypatch, multiplex_mode
+):
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    _write_profile(source, {})
+    _write_profile(target, {})
+    monkeypatch.setenv("HERMES_HOME", str(source))
+
+    environment = LocalEnvironment(cwd=str(tmp_path))
+    try:
+        # Ownership appears only after the long-lived environment and its first
+        # snapshot already exist (dotenv/external-source hot reload shape).
+        _write_profile(source, {_SOURCE_ONLY: "alpha"})
+        monkeypatch.setenv(_SOURCE_ONLY, "alpha")
+
+        source_result = environment.execute(
+            'printf "A:%s" "${' + _SOURCE_ONLY + '-UNSET}"'
+        )
+        assert "A:alpha" in source_result["output"]
+
+        token = set_hermes_home_override(target)
+        try:
+            target_result = environment.execute(
+                'printf "B:%s" "${' + _SOURCE_ONLY + '-UNSET}"'
+            )
+        finally:
+            reset_hermes_home_override(token)
+
+        assert "B:UNSET" in target_result["output"]
+        assert "alpha" not in target_result["output"]
+    finally:
+        environment.cleanup()
 
 
 def test_snapshot_restore_cannot_reintroduce_foreign_value(tmp_path, multiplex_mode):

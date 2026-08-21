@@ -11,7 +11,7 @@ Checks (each is independent and fail-safe — any internal error is swallowed
 and simply yields no finding):
 
 1. Running as root (POSIX uid 0).
-2. SSH daemon present with password authentication enabled.
+2. Active SSH daemon with password authentication enabled.
 3. Running inside a container with no persistent volume mount over the
    HERMES_HOME data dir (state is ephemeral — lost on container restart).
 4. A network-accessible gateway listener (dashboard / API server) with no
@@ -25,6 +25,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -84,13 +86,47 @@ def _iter_sshd_config_lines() -> list[str]:
     return lines
 
 
+def _macos_sshd_service_active() -> Optional[bool]:
+    """Return whether macOS Remote Login's launchd service is active.
+
+    ``sshd_config`` exists on every macOS installation, including hosts where
+    Remote Login is disabled.  Treat an absent launchd service as explicitly
+    inactive so that the config's permissive default does not produce a false
+    exposure warning.  ``None`` preserves the conservative warning when the
+    service state cannot be inspected or on non-macOS platforms.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        result = subprocess.run(
+            ["/bin/launchctl", "print", "system/com.openssh.sshd"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode == 0:
+        return True
+    if result.returncode == 113:
+        # launchctl's stable status for an unknown service target. Other
+        # failures are inspection errors, not evidence that SSH is disabled.
+        return False
+    return None
+
+
 def _ssh_password_auth_enabled() -> Optional[str]:
     """Warn when an SSH daemon has password authentication enabled.
 
     Password auth on a public SSH daemon is the classic brute-force surface
     and pairs badly with a root-capable agent box. POSIX-only; returns None
-    when there's no sshd config to read (e.g. Windows, or SSH not installed).
+    when there's no sshd config to read (e.g. Windows, or SSH not installed),
+    or when macOS Remote Login is disabled.
     """
+    if _macos_sshd_service_active() is False:
+        return None
+
     lines = _iter_sshd_config_lines()
     if not lines:
         return None

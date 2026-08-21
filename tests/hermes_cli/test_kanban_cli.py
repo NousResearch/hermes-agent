@@ -179,3 +179,54 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+
+
+# ---------------------------------------------------------------------------
+# archive / --rm CLI active-run refusal
+# ---------------------------------------------------------------------------
+
+
+def test_kanban_cli_archive_refuses_while_run_active(kanban_home, capsys):
+    """`hermes kanban archive` exits non-zero and prints the run id when
+    a worker run is still active. Regression for RV2 cleanup deleting
+    running cards mid-run."""
+    parser = kc.build_parser(_top_subparsers())
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="running", assignee="worker")
+        kb.claim_task(conn, tid, claimer="test:worker")
+        run_id = kb.get_task(conn, tid).current_run_id
+
+        args = parser.parse_args(["archive", tid])
+        rc = kc._cmd_archive(args)
+        captured = capsys.readouterr()
+        assert rc == 1, "archive must exit non-zero when refusing"
+        assert f"run (id={run_id})" in captured.err
+        assert "complete or block" in captured.err
+        # Card untouched.
+        assert kb.get_task(conn, tid).status == "running"
+
+
+def test_kanban_cli_archive_force_reclaims_run(kanban_home, capsys):
+    """`hermes kanban archive --force` reclaims the run and archives anyway."""
+    parser = kc.build_parser(_top_subparsers())
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="stuck", assignee="worker")
+        kb.claim_task(conn, tid, claimer="test:stuck")
+        run_id = kb.get_task(conn, tid).current_run_id
+
+        args = parser.parse_args(["archive", tid, "--force"])
+        rc = kc._cmd_archive(args)
+        capsys.readouterr()
+        assert rc == 0
+        assert kb.get_task(conn, tid).status == "archived"
+        run = conn.execute(
+            "SELECT status, outcome FROM task_runs WHERE id = ?", (run_id,),
+        ).fetchone()
+        assert run["status"] == "reclaimed"
+
+
+def _top_subparsers():
+    """Return a parent subparsers action for ``build_parser``."""
+    top = argparse.ArgumentParser()
+    sub = top.add_subparsers()
+    return sub

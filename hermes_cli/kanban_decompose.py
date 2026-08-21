@@ -56,7 +56,7 @@ into a small graph of concrete child tasks and route each one to the best-
 matching profile from the available roster.
 
 You will be given:
-  - The original task title and body
+  - The original task title, body, and priority (with its band label)
   - The list of available profiles (each with name + description)
   - The fallback "default_assignee" used when no profile fits
 
@@ -70,7 +70,9 @@ Output a single JSON object with this exact shape:
         "title": "<concrete task title, imperative voice, <= 80 chars>",
         "body":  "<detailed spec for the worker on this child task>",
         "assignee": "<profile name from the roster, or null for default>",
-        "parents": [<int>, ...]
+        "parents": [<int>, ...],
+        "priority": <int>,
+        "priority_reason": "<string>"
       },
       ...
     ]
@@ -89,6 +91,17 @@ Rules:
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
+  - PRIORITY is an integer on the same scale as the parent's priority
+    (higher = more urgent, 0 = lowest). Rules:
+      * Omit "priority" (or set null) to inherit the parent's priority.
+        This is the default — do NOT invent a lower number.
+      * Set a HIGHER priority than the parent only when a child genuinely
+        needs to run ahead of the parent's band (e.g. an urgent blocker).
+      * Set a LOWER priority than the parent ONLY when you also give a
+        concrete "priority_reason" (one sentence). A lower priority with
+        no reason is rejected and clamped back up to the parent's.
+      * Never emit priority 0 for a child of a higher-priority parent —
+        that silently buries work the parent was triaged for.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:
@@ -111,6 +124,7 @@ No preamble, no closing remarks, no code fences. Output only the JSON object.
 
 _USER_TEMPLATE = """Task id: {task_id}
 Title: {title}
+Priority: {priority} ({priority_band})
 Body:
 {body}
 
@@ -140,6 +154,40 @@ def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1] + "…"
+
+
+def _priority_band(priority: int) -> str:
+    """Human label for a board priority (higher = more urgent)."""
+    if priority >= 10:
+        return "critical"
+    if priority >= 7:
+        return "high"
+    if priority >= 4:
+        return "normal"
+    if priority >= 1:
+        return "low"
+    return "lowest"
+
+
+def _resolve_child_priority(parent_priority: int, entry: dict) -> int:
+    """Resolve a child's priority from the decomposer spec.
+
+    Rules (deterministic — never model judgment):
+      * No "priority" key or a non-integer value -> inherit the parent's.
+      * Explicit int higher than the parent -> override wins (run ahead).
+      * Explicit int lower than the parent -> allowed ONLY when the spec
+        also gives a non-empty "priority_reason"; otherwise clamped back
+        to the parent's priority so work never silently buries itself.
+    """
+    raw = entry.get("priority")
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return parent_priority
+    if raw >= parent_priority:
+        return raw
+    reason = entry.get("priority_reason")
+    if isinstance(reason, str) and reason.strip():
+        return raw
+    return parent_priority
 
 
 def _extract_json_blob(raw: str) -> Optional[dict]:
@@ -273,6 +321,7 @@ def decompose_task(
     *,
     author: Optional[str] = None,
     timeout: Optional[int] = None,
+    child_priority: Optional[int] = None,
 ) -> DecomposeOutcome:
     """Decompose a triage task into a graph of child tasks.
 
@@ -280,6 +329,11 @@ def decompose_task(
     expected failure modes (task not in triage, no aux client
     configured, API error, malformed response, decomposer returned
     fanout=true with empty task list) — those surface via ``ok=False``.
+
+    ``child_priority`` is the value stored on every created child when no
+    per-child ``priority`` override is supplied. Pass ``None`` (the
+    default) and children inherit the root task's stored priority so
+    a p10 parent fans out into p10 children rather than dropping to 0.
     """
     with kb.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
@@ -303,9 +357,13 @@ def decompose_task(
         logger.debug("decompose: auxiliary client import failed: %s", exc)
         return DecomposeOutcome(task_id, False, "auxiliary client unavailable")
 
+    parent_priority = task.priority if isinstance(task.priority, int) else 0
+
     user_msg = _USER_TEMPLATE.format(
         task_id=task.id,
         title=_truncate(task.title or "", 400),
+        priority=parent_priority,
+        priority_band=_priority_band(parent_priority),
         body=_truncate(task.body or "(no body)", 4000),
         roster=_format_roster(roster),
         default_assignee=default_assignee,
@@ -427,6 +485,7 @@ def decompose_task(
             "body": body.strip(),
             "assignee": chosen,
             "parents": clean_parents,
+            "priority": _resolve_child_priority(parent_priority, entry),
         })
 
     try:
@@ -438,6 +497,7 @@ def decompose_task(
                 children=children,
                 author=audit_author,
                 auto_promote=auto_promote,
+                child_priority=child_priority,
             )
     except ValueError as exc:
         return DecomposeOutcome(task_id, False, f"DB rejected graph: {exc}")

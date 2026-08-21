@@ -5349,6 +5349,43 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class TaskHasActiveRunError(RuntimeError):
+    """Raised when delete/archive is attempted while a worker run is still active.
+
+    Carries ``task_id`` and ``run_id`` so callers can surface the live run
+    identifier and an actionable next step (complete/block the run first, or
+    pass ``force=True`` to archive and reclaim the run). Workers always need a
+    way to complete or comment on their own card; deleting or archiving the
+    card mid-run orphans the worker session.
+    """
+
+    def __init__(self, task_id: str, run_id: int):
+        self.task_id = task_id
+        self.run_id = run_id
+        super().__init__(
+            f"task {task_id} has an active worker run (id={run_id}); "
+            f"complete or block the run first "
+            f"(or pass force=True to archive and reclaim the run)"
+        )
+
+
+def _has_active_run(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
+    """Return the active run id for ``task_id`` or ``None``.
+
+    "Active" = ``task_runs.status='running'`` AND ``ended_at IS NULL``. This
+    matches what the dispatcher treats as in-flight; stale claim rows whose
+    ``ended_at`` is set are excluded so the refusal does not fire on
+    long-completed work.
+    """
+    row = conn.execute(
+        "SELECT id FROM task_runs "
+        "WHERE task_id = ? AND status = 'running' AND ended_at IS NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -7510,7 +7547,20 @@ def decompose_triage_task(
     return child_ids
 
 
-def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def archive_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    force: bool = False,
+) -> bool:
+    """Archive a task.
+
+    Refuses with :class:`TaskHasActiveRunError` when a worker run is still
+    in flight, unless ``force=True``. Force reclaims the active run (closes
+    it with ``outcome='reclaimed'``) so cleanup can still race past a stuck
+    worker; without ``force`` we want a worker to always finish or block
+    on its own card before the card is removed.
+    """
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
@@ -7520,13 +7570,19 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
-        # If archive happened while a run was still in flight (e.g. user
-        # archived a running task from the dashboard), close that run with
-        # outcome='reclaimed' so attempt history isn't orphaned.
+        active_run = _has_active_run(conn, task_id)
+        if active_run is not None and not force:
+            # Roll back the archive we just did — refuse, don't silently
+            # orphan a worker. Force-mode keeps the archive and reclaims
+            # the run below.
+            raise TaskHasActiveRunError(task_id, active_run)
+        # If archive happened while a run was still in flight (force path,
+        # or the user archived a long-running task from the dashboard), close
+        # that run with outcome='reclaimed' so attempt history isn't orphaned.
         run_id = _end_run(
             conn, task_id,
             outcome="reclaimed", status="reclaimed",
-            summary="task archived with run still active",
+            summary="task archived with run still active" if force else None,
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
     # ``archived`` parents no longer block children, same as ``done``.
@@ -7542,9 +7598,14 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
 def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """Permanently remove an already-archived task and its related rows.
 
-    Safety guard: only archived tasks can be deleted. Active / blocked / done
-    tasks must be explicitly archived first so accidental data loss requires a
-    second deliberate action.
+    Safety guards:
+      1. Only archived tasks can be deleted. Active / blocked / done
+         tasks must be explicitly archived first so accidental data loss
+         requires a second deliberate action.
+      2. Refuses with :class:`TaskHasActiveRunError` if a worker run is
+         still in flight. Same stranded-worker guard as :func:`delete_task`
+         — cleanup flows (``archive --rm``, post-verification purge) must
+         SKIP such cards and retry later, never delete mid-run.
     """
     with write_txn(conn):
         row = conn.execute(
@@ -7553,6 +7614,9 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
         ).fetchone()
         if not row or row["status"] != "archived":
             return False
+        active_run = _has_active_run(conn, task_id)
+        if active_run is not None:
+            raise TaskHasActiveRunError(task_id, active_run)
         conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? OR child_id = ?",
             (task_id, task_id),
@@ -7572,10 +7636,18 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     we explicitly delete from child tables first, then the task row.
     This keeps the operation atomic (single ``write_txn``).
 
+    Refuses with :class:`TaskHasActiveRunError` if a worker run is still
+    in flight. Delete has no force-mode escape hatch — there is no
+    graceful close path; the operator must ``kanban_block`` (kind=capability)
+    the card first so the run lands cleanly before the row goes away.
+
     Returns ``True`` if the task existed and was deleted, ``False``
     if the task was not found.
     """
     with write_txn(conn):
+        active_run = _has_active_run(conn, task_id)
+        if active_run is not None:
+            raise TaskHasActiveRunError(task_id, active_run)
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
             return False

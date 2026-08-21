@@ -742,6 +742,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         default=None,
         help="Permanently delete already-archived task ids from the board",
     )
+    p_archive.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Archive even when a worker run is still active: the run is "
+            "closed with outcome='reclaimed'. Use only for stuck workers "
+            "that will not respond to a kanban_block; without --force the "
+            "command refuses so a running worker can always finish or "
+            "comment on its own card."
+        ),
+    )
 
     # --- tail ---
     p_tail = sub.add_parser("tail", help="Follow a task's event stream")
@@ -2579,23 +2590,48 @@ def _cmd_archive(args: argparse.Namespace) -> int:
     if not ids and not purge_ids:
         print("at least one task_id is required", file=sys.stderr)
         return 1
+    force = bool(getattr(args, "force", False))
     failed: list[str] = []
+    refused: list[tuple[str, int]] = []
     with kb.connect_closing() as conn:
         if purge_ids:
             for tid in purge_ids:
-                if not kb.delete_archived_task(conn, tid):
-                    failed.append(tid)
-                    print(f"cannot delete {tid} (must already be archived)", file=sys.stderr)
-                else:
-                    print(f"Deleted {tid}")
-            return 0 if not failed else 1
+                try:
+                    if not kb.delete_archived_task(conn, tid):
+                        failed.append(tid)
+                        print(f"cannot delete {tid} (must already be archived)", file=sys.stderr)
+                    else:
+                        print(f"Deleted {tid}")
+                except kb.TaskHasActiveRunError as exc:
+                    refused.append((exc.task_id, exc.run_id))
+                    print(str(exc), file=sys.stderr)
+            if refused:
+                print(
+                    "delete refused: one or more tasks still have a worker "
+                    "run in flight; kanban_block the card first to land "
+                    "the run cleanly before removing the row.",
+                    file=sys.stderr,
+                )
+            return 0 if not failed and not refused else 1
         for tid in ids:
-            if not kb.archive_task(conn, tid):
-                failed.append(tid)
-                print(f"cannot archive {tid}", file=sys.stderr)
-            else:
-                print(f"Archived {tid}")
-    return 0 if not failed else 1
+            try:
+                if not kb.archive_task(conn, tid, force=force):
+                    failed.append(tid)
+                    print(f"cannot archive {tid}", file=sys.stderr)
+                else:
+                    print(f"Archived {tid}")
+            except kb.TaskHasActiveRunError as exc:
+                refused.append((exc.task_id, exc.run_id))
+                print(str(exc), file=sys.stderr)
+        if refused and not force:
+            print(
+                "archive refused: one or more tasks still have a worker "
+                "run in flight. Re-run with --force to reclaim the run "
+                "and archive anyway, or kanban_block the card so the "
+                "worker can land its own result first.",
+                file=sys.stderr,
+            )
+    return 0 if not failed and not refused else 1
 
 
 def _cmd_tail(args: argparse.Namespace) -> int:

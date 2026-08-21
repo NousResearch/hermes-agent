@@ -88,5 +88,30 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
     assert any(ev.kind == "decomposed" for ev in events)
 
 
+def test_decompose_child_priority_inherits_root_and_honors_override(kanban_home):
+    with kb.connect() as conn:
+        tid = _create_triage(conn, title="p10 triage")
+        conn.execute("UPDATE tasks SET priority = 10 WHERE id = ?", (tid,))
 
+    children = [
+        {"title": "inherit", "assignee": "researcher", "parents": []},
+        {"title": "override", "assignee": "researcher", "parents": [], "priority": 15},
+        {"title": "garbage", "assignee": "researcher", "parents": [], "priority": "10"},
+    ]
+    with kb.connect() as conn:
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orchestrator",
+            children=children,
+            author="decomposer",
+        )
+    assert child_ids is not None and len(child_ids) == 3
 
+    with kb.connect() as conn:
+        c0 = kb.get_task(conn, child_ids[0])
+        c1 = kb.get_task(conn, child_ids[1])
+        c2 = kb.get_task(conn, child_ids[2])
+    assert c0.priority == 10   # absent -> root priority
+    assert c1.priority == 15   # explicit int stored
+    assert c2.priority == 10   # non-int -> root priority

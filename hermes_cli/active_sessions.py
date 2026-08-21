@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -19,6 +20,8 @@ from typing import Any, Optional
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
+
+_STALE_TEMP_FILE_AGE_SECONDS = 300
 
 
 def coerce_max_concurrent_sessions(value: Any, key: str = "max_concurrent_sessions") -> Optional[int]:
@@ -194,12 +197,46 @@ def _read_entries(path: Path) -> list[dict[str, Any]]:
     return [entry for entry in entries if isinstance(entry, dict)]
 
 
+def _cleanup_stale_temp_files(path: Path) -> int:
+    """Remove abandoned atomic-write files created for *path*."""
+    pattern = re.compile(
+        rf"^{re.escape(path.name)}\.[0-9]+\.[0-9a-f]{{32}}\.tmp$",
+        re.IGNORECASE,
+    )
+    cutoff = time.time() - _STALE_TEMP_FILE_AGE_SECONDS
+    removed = 0
+    for candidate in path.parent.glob(f"{path.name}.*.tmp"):
+        if not pattern.fullmatch(candidate.name):
+            continue
+        try:
+            if candidate.stat().st_mtime > cutoff:
+                continue
+            candidate.unlink()
+            removed += 1
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            logger.debug("Could not remove stale active-session temp file %s: %s", candidate, exc)
+    return removed
+
+
 def _write_entries(path: Path, entries: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    removed = _cleanup_stale_temp_files(path)
+    if removed:
+        logger.info("Removed %d stale active-session temp file(s)", removed)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump({"entries": entries}, fh, sort_keys=True)
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"entries": entries}, fh, sort_keys=True)
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.debug("Could not remove active-session temp file %s: %s", tmp, exc)
 
 
 def _process_start_time(pid: int) -> Optional[float]:

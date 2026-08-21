@@ -6,7 +6,58 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
 from hermes_cli import active_sessions
+
+
+def test_write_entries_removes_only_stale_owned_temp_files(tmp_path):
+    state_path = tmp_path / "active_sessions.json"
+    stale = tmp_path / f"{state_path.name}.123.{'a' * 32}.tmp"
+    fresh = tmp_path / f"{state_path.name}.456.{'b' * 32}.tmp"
+    unrelated = tmp_path / f"{state_path.name}.１２３.{'c' * 32}.tmp"
+    stale.write_text("stale", encoding="utf-8")
+    fresh.write_text("fresh", encoding="utf-8")
+    unrelated.write_text("keep", encoding="utf-8")
+    old = time.time() - active_sessions._STALE_TEMP_FILE_AGE_SECONDS - 1
+    os.utime(stale, (old, old))
+
+    active_sessions._write_entries(state_path, [])
+
+    assert not stale.exists()
+    assert fresh.read_text(encoding="utf-8") == "fresh"
+    assert unrelated.read_text(encoding="utf-8") == "keep"
+
+
+def test_write_entries_removes_current_temp_after_replace_failure(tmp_path, monkeypatch):
+    state_path = tmp_path / "active_sessions.json"
+
+    def fail_replace(_src, _dst):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(active_sessions.os, "replace", fail_replace)
+
+    try:
+        active_sessions._write_entries(state_path, [])
+    except OSError as exc:
+        assert str(exc) == "replace failed"
+    else:
+        raise AssertionError("expected os.replace failure")
+
+    assert list(tmp_path.glob(f"{state_path.name}.*.tmp")) == []
+
+
+def test_write_entries_removes_current_temp_after_dump_failure(tmp_path, monkeypatch):
+    state_path = tmp_path / "active_sessions.json"
+
+    def fail_dump(*_args, **_kwargs):
+        raise OSError("dump failed")
+
+    monkeypatch.setattr(active_sessions.json, "dump", fail_dump)
+    with pytest.raises(OSError, match="dump failed"):
+        active_sessions._write_entries(state_path, [])
+
+    assert list(tmp_path.glob(f"{state_path.name}.*.tmp")) == []
 
 
 def test_resolve_max_concurrent_sessions_values(caplog):

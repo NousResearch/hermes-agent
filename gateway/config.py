@@ -1961,16 +1961,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # WhatsApp (typically uses different auth mechanism)
     whatsapp_enabled = is_truthy_value(getenv("WHATSAPP_ENABLED", ""))
     whatsapp_disabled_explicitly = getenv("WHATSAPP_ENABLED", "").lower() in {"false", "0", "no"}
-    if Platform.WHATSAPP in config.platforms:
-        # YAML config exists — respect explicit disable
-        wa_cfg = config.platforms[Platform.WHATSAPP]
-        if whatsapp_disabled_explicitly:
-            wa_cfg.enabled = False
-        elif whatsapp_enabled:
-            wa_cfg.enabled = True
-        # else: keep whatever the YAML set
+    if whatsapp_disabled_explicitly and Platform.WHATSAPP in config.platforms:
+        config.platforms[Platform.WHATSAPP].enabled = False
     elif whatsapp_enabled:
-        config.platforms[Platform.WHATSAPP] = PlatformConfig(enabled=True)
+        _enable_from_env(Platform.WHATSAPP)
     whatsapp_home = getenv("WHATSAPP_HOME_CHANNEL")
     if whatsapp_home and Platform.WHATSAPP in config.platforms:
         config.platforms[Platform.WHATSAPP].home_channel = HomeChannel(
@@ -1987,45 +1981,43 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     whatsapp_cloud_phone_id = getenv("WHATSAPP_CLOUD_PHONE_NUMBER_ID")
     whatsapp_cloud_token = getenv("WHATSAPP_CLOUD_ACCESS_TOKEN")
     if whatsapp_cloud_phone_id and whatsapp_cloud_token:
-        if Platform.WHATSAPP_CLOUD not in config.platforms:
-            config.platforms[Platform.WHATSAPP_CLOUD] = PlatformConfig()
-        config.platforms[Platform.WHATSAPP_CLOUD].enabled = True
-        config.platforms[Platform.WHATSAPP_CLOUD].extra.update({
+        whatsapp_cloud_config = _enable_from_env(Platform.WHATSAPP_CLOUD)
+        whatsapp_cloud_config.extra.update({
             "phone_number_id": whatsapp_cloud_phone_id,
             "access_token": whatsapp_cloud_token,
         })
         # Optional: app_id / app_secret (signature verification)
         wa_cloud_app_id = getenv("WHATSAPP_CLOUD_APP_ID")
         if wa_cloud_app_id:
-            config.platforms[Platform.WHATSAPP_CLOUD].extra["app_id"] = wa_cloud_app_id
+            whatsapp_cloud_config.extra["app_id"] = wa_cloud_app_id
         wa_cloud_app_secret = getenv("WHATSAPP_CLOUD_APP_SECRET")
         if wa_cloud_app_secret:
-            config.platforms[Platform.WHATSAPP_CLOUD].extra["app_secret"] = wa_cloud_app_secret
+            whatsapp_cloud_config.extra["app_secret"] = wa_cloud_app_secret
         # Optional: WABA id (analytics, future use)
         wa_cloud_waba_id = getenv("WHATSAPP_CLOUD_WABA_ID")
         if wa_cloud_waba_id:
-            config.platforms[Platform.WHATSAPP_CLOUD].extra["waba_id"] = wa_cloud_waba_id
+            whatsapp_cloud_config.extra["waba_id"] = wa_cloud_waba_id
         # Webhook verify token — Meta hub.verify_token shared secret
         wa_cloud_verify_token = getenv("WHATSAPP_CLOUD_VERIFY_TOKEN")
         if wa_cloud_verify_token:
-            config.platforms[Platform.WHATSAPP_CLOUD].extra["verify_token"] = wa_cloud_verify_token
+            whatsapp_cloud_config.extra["verify_token"] = wa_cloud_verify_token
         # Webhook server bind config (defaults baked into the adapter)
         wa_cloud_host = getenv("WHATSAPP_CLOUD_WEBHOOK_HOST")
         if wa_cloud_host:
-            config.platforms[Platform.WHATSAPP_CLOUD].extra["webhook_host"] = wa_cloud_host
+            whatsapp_cloud_config.extra["webhook_host"] = wa_cloud_host
         wa_cloud_port = getenv("WHATSAPP_CLOUD_WEBHOOK_PORT")
         if wa_cloud_port:
             try:
-                config.platforms[Platform.WHATSAPP_CLOUD].extra["webhook_port"] = int(wa_cloud_port)
+                whatsapp_cloud_config.extra["webhook_port"] = int(wa_cloud_port)
             except ValueError:
                 pass
         wa_cloud_path = getenv("WHATSAPP_CLOUD_WEBHOOK_PATH")
         if wa_cloud_path:
-            config.platforms[Platform.WHATSAPP_CLOUD].extra["webhook_path"] = wa_cloud_path
+            whatsapp_cloud_config.extra["webhook_path"] = wa_cloud_path
         # Graph API version override (rarely needed)
         wa_cloud_api_version = getenv("WHATSAPP_CLOUD_API_VERSION")
         if wa_cloud_api_version:
-            config.platforms[Platform.WHATSAPP_CLOUD].extra["api_version"] = wa_cloud_api_version
+            whatsapp_cloud_config.extra["api_version"] = wa_cloud_api_version
     whatsapp_cloud_home = getenv("WHATSAPP_CLOUD_HOME_CHANNEL")
     if whatsapp_cloud_home and Platform.WHATSAPP_CLOUD in config.platforms:
         config.platforms[Platform.WHATSAPP_CLOUD].home_channel = HomeChannel(
@@ -2038,27 +2030,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # Slack
     slack_token = getenv("SLACK_BOT_TOKEN")
     if slack_token:
-        if Platform.SLACK not in config.platforms:
-            # No yaml config for Slack — env-only setup, enable it
-            config.platforms[Platform.SLACK] = PlatformConfig()
-            config.platforms[Platform.SLACK].enabled = True
-        else:
-            slack_config = config.platforms[Platform.SLACK]
-            # Read (don't pop) the explicit-enable marker: the registry-driven
-            # plugin-enable pass below also needs it to avoid re-enabling a
-            # platform the user explicitly disabled (Slack is now a plugin
-            # entry — #41112). The flag is cleared once for all platforms in
-            # the final cleanup at the end of _apply_env_overrides.
-            enabled_was_explicit = bool(slack_config.extra.get("_enabled_explicit", False))
-            if not slack_config.enabled and not enabled_was_explicit:
-                # Top-level Slack settings such as channel prompts should not
-                # turn an env-token setup into a disabled platform. Only an
-                # explicit slack.enabled/platforms.slack.enabled false should.
-                slack_config.enabled = True
-        # If yaml config exists, respect its enabled flag (don't override
-        # explicit enabled: false). Token is still stored so skills that
-        # send Slack messages can use it without activating the gateway adapter.
-        config.platforms[Platform.SLACK].token = slack_token
+        # Keep the token available to skills even when the gateway adapter was
+        # explicitly disabled in YAML.
+        slack_config = _enable_from_env(Platform.SLACK)
+        slack_config.token = slack_token
     slack_home = getenv("SLACK_HOME_CHANNEL")
     if slack_home:
         slack_config = config.platforms.setdefault(
@@ -2152,13 +2127,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # Home Assistant
     hass_token = getenv("HASS_TOKEN")
     if hass_token:
-        if Platform.HOMEASSISTANT not in config.platforms:
-            config.platforms[Platform.HOMEASSISTANT] = PlatformConfig()
-        config.platforms[Platform.HOMEASSISTANT].enabled = True
-        config.platforms[Platform.HOMEASSISTANT].token = hass_token
+        homeassistant_config = _enable_from_env(Platform.HOMEASSISTANT)
+        homeassistant_config.token = hass_token
         hass_url = getenv("HASS_URL")
         if hass_url:
-            config.platforms[Platform.HOMEASSISTANT].extra["url"] = hass_url
+            homeassistant_config.extra["url"] = hass_url
 
     # Email
     email_addr = getenv("EMAIL_ADDRESS")
@@ -2166,10 +2139,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     email_imap = getenv("EMAIL_IMAP_HOST")
     email_smtp = getenv("EMAIL_SMTP_HOST")
     if all([email_addr, email_pwd, email_imap, email_smtp]):
-        if Platform.EMAIL not in config.platforms:
-            config.platforms[Platform.EMAIL] = PlatformConfig()
-        config.platforms[Platform.EMAIL].enabled = True
-        config.platforms[Platform.EMAIL].extra.update({
+        email_config = _enable_from_env(Platform.EMAIL)
+        email_config.extra.update({
             "address": email_addr,
             "imap_host": email_imap,
             "smtp_host": email_smtp,
@@ -2186,10 +2157,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # SMS (Twilio)
     twilio_sid = getenv("TWILIO_ACCOUNT_SID")
     if twilio_sid:
-        if Platform.SMS not in config.platforms:
-            config.platforms[Platform.SMS] = PlatformConfig()
-        config.platforms[Platform.SMS].enabled = True
-        config.platforms[Platform.SMS].api_key = getenv("TWILIO_AUTH_TOKEN", "")
+        sms_config = _enable_from_env(Platform.SMS)
+        sms_config.api_key = getenv("TWILIO_AUTH_TOKEN", "")
     sms_home = getenv("SMS_HOME_CHANNEL")
     if sms_home and Platform.SMS in config.platforms:
         config.platforms[Platform.SMS].home_channel = HomeChannel(
@@ -2210,53 +2179,37 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # reconnect watcher spinning and logging errors forever. Same strength
     # bar as the startup guard (has_usable_secret, min_length=16).
     if _has_usable_api_server_key(api_server_key):
-        if Platform.API_SERVER not in config.platforms:
-            config.platforms[Platform.API_SERVER] = PlatformConfig()
-        # Respect an explicit ``enabled: false`` in config.yaml (flagged by
-        # ``_enabled_explicit``). In multiplex mode a secondary profile's
-        # config.yaml pins ``platforms.api_server.enabled: false`` so it shares
-        # the default profile's listener instead of binding its own port. That
-        # profile still inherits the process-level env (including
-        # ``API_SERVER_KEY``); without this guard the env-var presence would
-        # force-enable the listener and trip the MultiplexConfigError check.
-        # Pop (don't read) the marker — the api_server branch is terminal (no
-        # later registry pass re-enables it), so this both consumes the flag and
-        # avoids reading it twice, matching the pop convention used elsewhere.
-        api_server_explicit = config.platforms[Platform.API_SERVER].extra.pop("_enabled_explicit", False)
-        if not api_server_explicit or config.platforms[Platform.API_SERVER].enabled:
-            config.platforms[Platform.API_SERVER].enabled = True
+        api_server_config = _enable_from_env(Platform.API_SERVER)
         if api_server_key:
-            config.platforms[Platform.API_SERVER].extra["key"] = api_server_key
+            api_server_config.extra["key"] = api_server_key
         if api_server_cors_origins:
             origins = [origin.strip() for origin in api_server_cors_origins.split(",") if origin.strip()]
             if origins:
-                config.platforms[Platform.API_SERVER].extra["cors_origins"] = origins
+                api_server_config.extra["cors_origins"] = origins
         if api_server_port:
             try:
-                config.platforms[Platform.API_SERVER].extra["port"] = int(api_server_port)
+                api_server_config.extra["port"] = int(api_server_port)
             except ValueError:
                 pass
         if api_server_host:
-            config.platforms[Platform.API_SERVER].extra["host"] = api_server_host
+            api_server_config.extra["host"] = api_server_host
         api_server_model_name = getenv("API_SERVER_MODEL_NAME", "")
         if api_server_model_name:
-            config.platforms[Platform.API_SERVER].extra["model_name"] = api_server_model_name
+            api_server_config.extra["model_name"] = api_server_model_name
 
     # Webhook platform
     webhook_enabled = is_truthy_value(getenv("WEBHOOK_ENABLED", ""))
     webhook_port = getenv("WEBHOOK_PORT")
     webhook_secret = getenv("WEBHOOK_SECRET", "")
     if webhook_enabled:
-        if Platform.WEBHOOK not in config.platforms:
-            config.platforms[Platform.WEBHOOK] = PlatformConfig()
-        config.platforms[Platform.WEBHOOK].enabled = True
+        webhook_config = _enable_from_env(Platform.WEBHOOK)
         if webhook_port:
             try:
-                config.platforms[Platform.WEBHOOK].extra["port"] = int(webhook_port)
+                webhook_config.extra["port"] = int(webhook_port)
             except ValueError:
                 pass
         if webhook_secret:
-            config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
+            webhook_config.extra["secret"] = webhook_secret
 
     # Microsoft Graph webhook platform
     msgraph_webhook_enabled = is_truthy_value(getenv("MSGRAPH_WEBHOOK_ENABLED", ""))
@@ -2274,19 +2227,21 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         or msgraph_webhook_resources
         or msgraph_webhook_allowed_cidrs
     ):
-        if Platform.MSGRAPH_WEBHOOK not in config.platforms:
-            config.platforms[Platform.MSGRAPH_WEBHOOK] = PlatformConfig()
         if msgraph_webhook_enabled:
-            config.platforms[Platform.MSGRAPH_WEBHOOK].enabled = True
+            msgraph_webhook_config = _enable_from_env(Platform.MSGRAPH_WEBHOOK)
+        else:
+            msgraph_webhook_config = config.platforms.setdefault(
+                Platform.MSGRAPH_WEBHOOK, PlatformConfig()
+            )
         if msgraph_webhook_port:
             try:
-                config.platforms[Platform.MSGRAPH_WEBHOOK].extra["port"] = int(
+                msgraph_webhook_config.extra["port"] = int(
                     msgraph_webhook_port
                 )
             except ValueError:
                 pass
         if msgraph_webhook_client_state:
-            config.platforms[Platform.MSGRAPH_WEBHOOK].extra["client_state"] = (
+            msgraph_webhook_config.extra["client_state"] = (
                 msgraph_webhook_client_state
             )
         if msgraph_webhook_resources:
@@ -2296,9 +2251,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 if resource.strip()
             ]
             if resources:
-                config.platforms[Platform.MSGRAPH_WEBHOOK].extra[
-                    "accepted_resources"
-                ] = resources
+                msgraph_webhook_config.extra["accepted_resources"] = resources
         if msgraph_webhook_allowed_cidrs:
             cidrs = [
                 cidr.strip()
@@ -2306,17 +2259,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 if cidr.strip()
             ]
             if cidrs:
-                config.platforms[Platform.MSGRAPH_WEBHOOK].extra[
-                    "allowed_source_cidrs"
-                ] = cidrs
+                msgraph_webhook_config.extra["allowed_source_cidrs"] = cidrs
 
     # DingTalk
     dingtalk_client_id = getenv("DINGTALK_CLIENT_ID")
     dingtalk_client_secret = getenv("DINGTALK_CLIENT_SECRET")
     if dingtalk_client_id and dingtalk_client_secret:
-        if Platform.DINGTALK not in config.platforms:
-            config.platforms[Platform.DINGTALK] = PlatformConfig()
-        config.platforms[Platform.DINGTALK].enabled = True
+        _enable_from_env(Platform.DINGTALK)
         config.platforms[Platform.DINGTALK].extra.update({
             "client_id": dingtalk_client_id,
             "client_secret": dingtalk_client_secret,
@@ -2334,9 +2283,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     feishu_app_id = getenv("FEISHU_APP_ID")
     feishu_app_secret = getenv("FEISHU_APP_SECRET")
     if feishu_app_id and feishu_app_secret:
-        if Platform.FEISHU not in config.platforms:
-            config.platforms[Platform.FEISHU] = PlatformConfig()
-        config.platforms[Platform.FEISHU].enabled = True
+        _enable_from_env(Platform.FEISHU)
         config.platforms[Platform.FEISHU].extra.update({
             "app_id": feishu_app_id,
             "app_secret": feishu_app_secret,
@@ -2362,9 +2309,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     wecom_bot_id = getenv("WECOM_BOT_ID")
     wecom_secret = getenv("WECOM_SECRET")
     if wecom_bot_id and wecom_secret:
-        if Platform.WECOM not in config.platforms:
-            config.platforms[Platform.WECOM] = PlatformConfig()
-        config.platforms[Platform.WECOM].enabled = True
+        _enable_from_env(Platform.WECOM)
         config.platforms[Platform.WECOM].extra.update({
             "bot_id": wecom_bot_id,
             "secret": wecom_secret,
@@ -2385,9 +2330,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     wecom_callback_corp_id = getenv("WECOM_CALLBACK_CORP_ID")
     wecom_callback_corp_secret = getenv("WECOM_CALLBACK_CORP_SECRET")
     if wecom_callback_corp_id and wecom_callback_corp_secret:
-        if Platform.WECOM_CALLBACK not in config.platforms:
-            config.platforms[Platform.WECOM_CALLBACK] = PlatformConfig()
-        config.platforms[Platform.WECOM_CALLBACK].enabled = True
+        _enable_from_env(Platform.WECOM_CALLBACK)
         config.platforms[Platform.WECOM_CALLBACK].extra.update({
             "corp_id": wecom_callback_corp_id,
             "corp_secret": wecom_callback_corp_secret,
@@ -2405,9 +2348,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     weixin_token = getenv("WEIXIN_TOKEN")
     weixin_account_id = getenv("WEIXIN_ACCOUNT_ID")
     if weixin_token or weixin_account_id:
-        if Platform.WEIXIN not in config.platforms:
-            config.platforms[Platform.WEIXIN] = PlatformConfig()
-        config.platforms[Platform.WEIXIN].enabled = True
+        _enable_from_env(Platform.WEIXIN)
         if weixin_token:
             config.platforms[Platform.WEIXIN].token = weixin_token
         extra = config.platforms[Platform.WEIXIN].extra
@@ -2447,9 +2388,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     bluebubbles_server_url = getenv("BLUEBUBBLES_SERVER_URL")
     bluebubbles_password = getenv("BLUEBUBBLES_PASSWORD")
     if bluebubbles_server_url and bluebubbles_password:
-        if Platform.BLUEBUBBLES not in config.platforms:
-            config.platforms[Platform.BLUEBUBBLES] = PlatformConfig()
-        config.platforms[Platform.BLUEBUBBLES].enabled = True
+        _enable_from_env(Platform.BLUEBUBBLES)
         config.platforms[Platform.BLUEBUBBLES].extra.update({
             "server_url": bluebubbles_server_url.rstrip("/"),
             "password": bluebubbles_password,
@@ -2487,9 +2426,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     qq_app_id = getenv("QQ_APP_ID")
     qq_client_secret = getenv("QQ_CLIENT_SECRET")
     if qq_app_id or qq_client_secret:
-        if Platform.QQBOT not in config.platforms:
-            config.platforms[Platform.QQBOT] = PlatformConfig()
-        config.platforms[Platform.QQBOT].enabled = True
+        _enable_from_env(Platform.QQBOT)
         extra = config.platforms[Platform.QQBOT].extra
         if qq_app_id:
             extra["app_id"] = qq_app_id
@@ -2529,9 +2466,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     yuanbao_app_id = getenv("YUANBAO_APP_ID") or getenv("YUANBAO_APP_KEY")
     yuanbao_app_secret = getenv("YUANBAO_APP_SECRET")
     if yuanbao_app_id and yuanbao_app_secret:
-        if Platform.YUANBAO not in config.platforms:
-            config.platforms[Platform.YUANBAO] = PlatformConfig()
-        config.platforms[Platform.YUANBAO].enabled = True
+        _enable_from_env(Platform.YUANBAO)
         extra = config.platforms[Platform.YUANBAO].extra
         extra["app_id"] = yuanbao_app_id
         extra["app_secret"] = yuanbao_app_secret

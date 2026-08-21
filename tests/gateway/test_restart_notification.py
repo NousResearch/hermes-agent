@@ -387,7 +387,8 @@ async def test_shutdown_notifications_use_cached_live_thread_source_when_origin_
 
     adapter.send.assert_awaited_once_with(
         "parent-42",
-        "⚠️ Gateway shutting down — Your current task will be interrupted.",
+        "⚠️ Gateway shutting down — Your current task will be interrupted. "
+        "Send any message once the gateway is back and I'll try to resume where you left off.",
         metadata={"thread_id": "topic-7"},
     )
 
@@ -413,3 +414,161 @@ async def test_shutdown_notifications_are_fully_muted_when_flag_disabled():
     adapter.send.assert_not_awaited()
 
 
+# ── per-session recovery notifications (#89396) ─────────────────────────
+#
+# Shutdown is announced per active session (into each chat/thread); recovery
+# must mirror that scope instead of only reaching home channels.
+
+
+@pytest.mark.asyncio
+async def test_shutdown_persists_recovery_marker_for_active_session_thread(
+    tmp_path, monkeypatch
+):
+    """The shutdown ping into a non-home thread is recorded for the next boot."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="parent-42", chat_type="group", thread_id="topic-7")
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = object()
+    runner.session_store._entries[session_key] = MagicMock(origin=source)
+    runner._cache_session_source(session_key, source)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="shutdown"))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    marker = tmp_path / ".session_recovery_notify.json"
+    assert marker.exists()
+    data = json.loads(marker.read_text())
+    assert data["targets"] == [
+        {
+            "platform": "telegram",
+            "chat_id": "parent-42",
+            "thread_id": "topic-7",
+            "chat_type": "group",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_recovery_mirrors_shutdown_scope_for_non_home_threads(tmp_path, monkeypatch):
+    """Every chat/thread told 'shutting down' is told 'back online' on next boot."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m"))
+
+    thread_source = make_restart_source(chat_id="parent-42", chat_type="group", thread_id="topic-7")
+    home_source = make_restart_source(chat_id="home-42", chat_type="dm")
+    for src in (thread_source, home_source):
+        key = build_session_key(src)
+        runner._running_agents[key] = object()
+        runner.session_store._entries[key] = MagicMock(origin=src)
+        runner._cache_session_source(key, src)
+
+    await runner._notify_active_sessions_of_shutdown()
+    shutdown_chats = {call.args[0] for call in adapter.send.await_args_list}
+    assert shutdown_chats == {"parent-42", "home-42"}
+
+    # Next boot: recovery reaches the same chats (thread included). The home
+    # channel is reached too here because no planned-restart broadcast marker
+    # exists — the plain-stop scenario the issue calls out.
+    adapter.send.reset_mock()
+    delivered = await runner._send_session_recovery_notifications()
+
+    assert delivered == {
+        ("telegram", "parent-42", "topic-7"),
+        ("telegram", "home-42", None),
+    }
+    thread_sends = [
+        call for call in adapter.send.await_args_list if call.args[0] == "parent-42"
+    ]
+    assert len(thread_sends) == 1
+    assert thread_sends[0].args[1] == "♻️ Gateway online — Hermes is back and ready."
+    assert thread_sends[0].kwargs["metadata"] == {"thread_id": "topic-7"}
+    assert not (tmp_path / ".session_recovery_notify.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_session_recovery_skips_home_channel_and_restart_initiator(tmp_path, monkeypatch):
+    """Recovery must not double-deliver to targets answered by other notifications."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="back"))
+    marker = tmp_path / ".session_recovery_notify.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "targets": [
+                    # Home channel that was also an active session: the
+                    # planned-restart broadcast answers it.
+                    {"platform": "telegram", "chat_id": "home-42", "thread_id": None},
+                    # /restart initiator: _send_restart_notification answers it.
+                    {
+                        "platform": "telegram",
+                        "chat_id": "restart-chat",
+                        "thread_id": "topic-9",
+                    },
+                    # Plain thread: only recovery reaches it.
+                    {
+                        "platform": "telegram",
+                        "chat_id": "plain-thread",
+                        "thread_id": "topic-1",
+                    },
+                ]
+            }
+        )
+    )
+    (tmp_path / ".restart_notify.json").write_text(
+        json.dumps({"platform": "telegram", "chat_id": "restart-chat", "thread_id": "topic-9"})
+    )
+    (tmp_path / ".restart_pending.json").write_text("{}")
+
+    delivered = await runner._send_session_recovery_notifications()
+
+    assert delivered == {("telegram", "plain-thread", "topic-1")}
+    adapter.send.assert_awaited_once()
+    assert adapter.send.await_args.args[:2] == (
+        "plain-thread",
+        "♻️ Gateway online — Hermes is back and ready.",
+    )
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_session_recovery_respects_gateway_restart_notification_flag(
+    tmp_path, monkeypatch
+):
+    """A platform with gateway_restart_notification=false gets no recovery pings."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = False
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="back"))
+    marker = tmp_path / ".session_recovery_notify.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "targets": [
+                    {"platform": "telegram", "chat_id": "parent-42", "thread_id": "topic-7"},
+                ]
+            }
+        )
+    )
+
+    delivered = await runner._send_session_recovery_notifications()
+
+    assert delivered == set()
+    adapter.send.assert_not_awaited()
+    assert not marker.exists()

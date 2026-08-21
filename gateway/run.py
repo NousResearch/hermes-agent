@@ -2059,6 +2059,18 @@ def _clear_planned_restart_notification() -> None:
     _planned_restart_notification_path().unlink(missing_ok=True)
 
 
+def _session_recovery_notification_path() -> Path:
+    """Marker listing chats/threads that were told the gateway was going down.
+
+    Written by ``_notify_active_sessions_of_shutdown`` (per active session,
+    including threads that are not home channels) and consumed on the next
+    boot by ``_send_session_recovery_notifications`` so every chat/thread
+    that received the shutdown announcement also receives the 'gateway is
+    back' announcement in the same chat/thread (#89396).
+    """
+    return _hermes_home / ".session_recovery_notify.json"
+
+
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
 # knows not to clobber TERMINAL_CWD if lazily imported.
 os.environ["_HERMES_GATEWAY"] = "1"
@@ -10790,15 +10802,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         restart_source = self._restart_command_source if self._restart_requested else None
 
         action = "restarting" if self._restart_requested else "shutting down"
+        # The resume instruction is NOT conditional on the restart branch:
+        # a drain-timeout force-restart (launchd/systemd) or a plain stop
+        # followed by a service-manager restart both land in the
+        # non-restart branch, and the resume machinery runs on the next
+        # boot for both — so the user must know a follow-up message will
+        # resume the interrupted task either way. Previously the
+        # non-restart hint read as terminal, giving the user no reason to
+        # send that follow-up message (#89396).
         hint = (
             "Your current task will be interrupted. "
             "Send any message after restart and I'll try to resume where you left off."
             if self._restart_requested
-            else "Your current task will be interrupted."
+            else (
+                "Your current task will be interrupted. "
+                "Send any message once the gateway is back and I'll try to resume where you left off."
+            )
         )
         msg = f"⚠️ Gateway {action} — {hint}"
 
         notified: set[tuple[str, str, Optional[str]]] = set()
+        # Targets delivered into active sessions' own chats/threads — the
+        # recovery scope for the next boot (#89396).
+        session_notified: set[tuple[str, str, Optional[str]]] = set()
+        session_chat_types: Dict[tuple[str, str, Optional[str]], Optional[str]] = {}
         for session_key in active:
             source = None
             try:
@@ -10862,11 +10889,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception:
                         pass
 
+                session_chat_type = (
+                    getattr(source, "chat_type", None) if source is not None else None
+                )
                 metadata = self._thread_metadata_for_target(
                     platform,
                     chat_id,
                     thread_id,
-                    chat_type=getattr(source, "chat_type", None) if source is not None else None,
+                    chat_type=session_chat_type,
                     reply_to_message_id=reply_to_message_id,
                     adapter=adapter,
                 )
@@ -10882,6 +10912,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     continue
 
                 notified.add(dedup_key)
+                session_notified.add(dedup_key)
+                session_chat_types[dedup_key] = session_chat_type
                 logger.info(
                     "Sent shutdown notification to active chat %s:%s",
                     platform_str, chat_id,
@@ -10891,6 +10923,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Failed to send shutdown notification to %s:%s: %s",
                     platform_str, chat_id, e,
                 )
+
+        # Persist the per-session targets so the next boot tells the SAME
+        # chats/threads the gateway is back (#89396). Written before the
+        # early returns below so every shutdown flavor (in-chat restart,
+        # drain-suppressed, forced restart) records what was announced.
+        # Best-effort: a lost marker only means a thread isn't told it's
+        # back, and it must never block the shutdown sequence.
+        if session_notified:
+            try:
+                atomic_json_write(
+                    _session_recovery_notification_path(),
+                    {
+                        "shutdown_at": time.time(),
+                        "action": action,
+                        "targets": [
+                            {
+                                "platform": p,
+                                "chat_id": c,
+                                "thread_id": t,
+                                "chat_type": session_chat_types.get((p, c, t)),
+                            }
+                            for (p, c, t) in sorted(session_notified)
+                        ],
+                    },
+                    indent=None,
+                )
+                logger.info(
+                    "Persisted %d session recovery target(s) for next boot",
+                    len(session_notified),
+                )
+            except Exception as e:
+                logger.debug("Failed to persist session recovery marker: %s", e)
 
         if self._restart_requested and restart_source is not None:
             logger.debug("Skipping home-channel shutdown notifications for in-chat restart")
@@ -13219,6 +13283,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             finally:
                 _clear_planned_restart_notification()
+
+        # Tell every session that was told the gateway was going down that it
+        # is back — mirrors the per-session scope of the shutdown announcement
+        # (#89396). Threads that are not home channels never see the
+        # home-channel broadcast; the marker written at shutdown lists exactly
+        # the chats/threads that received the shutdown ping.
+        await self._send_session_recovery_notifications()
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
@@ -24323,6 +24394,124 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     exc,
                 )
 
+        return delivered
+
+    async def _send_session_recovery_notifications(self) -> set[tuple[str, str, Optional[str]]]:
+        """Tell every shutdown-notified session that the gateway is back.
+
+        Mirrors the per-session scope of ``_notify_active_sessions_of_shutdown``
+        (#89396): the shutdown announcement went into each active session's own
+        chat/thread, so the recovery announcement must too — a thread that is
+        not the platform home channel would otherwise never hear that the
+        gateway came back. The marker written at shutdown lists exactly the
+        chats/threads that received the shutdown ping.
+
+        Targets answered by a more specific delivery on this boot are skipped
+        so no chat gets the same news twice:
+        - the chat that initiated /restart (``.restart_notify.json``) — it
+          gets a precise reply from ``_send_restart_notification``;
+        - home channels on a planned restart — they get the broadcast from
+          ``_send_home_channel_startup_notifications``.
+
+        Best-effort like the shutdown side: send failures are logged and
+        swallowed; the marker is consumed regardless.
+        """
+        marker_path = _session_recovery_notification_path()
+        if not marker_path.exists():
+            return set()
+        try:
+            data = json.loads(marker_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning(
+                "Failed to read session recovery marker %s: %s", marker_path, e
+            )
+            marker_path.unlink(missing_ok=True)
+            return set()
+
+        message = "♻️ Gateway online — Hermes is back and ready."
+        delivered: set[tuple[str, str, Optional[str]]] = set()
+        skipped: set[tuple[str, str, Optional[str]]] = set()
+
+        try:
+            # The /restart initiator is answered by _send_restart_notification.
+            restart_path = _hermes_home / ".restart_notify.json"
+            if restart_path.exists():
+                restart_data = json.loads(restart_path.read_text(encoding="utf-8"))
+                if restart_data.get("platform") and restart_data.get("chat_id"):
+                    skipped.add(
+                        (
+                            restart_data["platform"],
+                            str(restart_data["chat_id"]),
+                            str(restart_data["thread_id"])
+                            if restart_data.get("thread_id")
+                            else None,
+                        )
+                    )
+            # Home channels get the planned-restart broadcast.
+            if _planned_restart_notification_pending():
+                for platform, platform_cfg in self.config.platforms.items():
+                    home = platform_cfg.home_channel
+                    if home and home.chat_id:
+                        skipped.add(
+                            (
+                                platform.value,
+                                str(home.chat_id),
+                                str(home.thread_id) if home.thread_id else None,
+                            )
+                        )
+        except Exception:
+            # Dedup is best-effort; the worst case is a duplicate message.
+            logger.debug("Session recovery dedup scan failed", exc_info=True)
+
+        for entry in data.get("targets") or []:
+            platform_str = entry.get("platform")
+            chat_id = entry.get("chat_id")
+            if not platform_str or not chat_id:
+                continue
+            thread_id = entry.get("thread_id")
+            target = (platform_str, str(chat_id), str(thread_id) if thread_id else None)
+            if target in skipped or target in delivered:
+                continue
+            try:
+                platform = Platform(platform_str)
+                adapter = self.adapters.get(platform)
+                if not adapter:
+                    continue
+                platform_cfg = self.config.platforms.get(platform)
+                if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+                    logger.info(
+                        "Session recovery notification suppressed: %s has gateway_restart_notification=false",
+                        platform_str,
+                    )
+                    continue
+                metadata = self._thread_metadata_for_target(
+                    platform,
+                    chat_id,
+                    thread_id,
+                    chat_type=entry.get("chat_type"),
+                    adapter=adapter,
+                )
+                result = await adapter.send(chat_id, message, metadata=metadata)
+                if result is not None and getattr(result, "success", True) is False:
+                    logger.warning(
+                        "Session recovery notification to %s:%s was not delivered: %s",
+                        platform_str,
+                        chat_id,
+                        getattr(result, "error", "send returned success=False"),
+                    )
+                    continue
+                delivered.add(target)
+                logger.info(
+                    "Sent session recovery notification to %s:%s",
+                    platform_str, chat_id,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Session recovery notification to %s:%s failed: %s",
+                    platform_str, chat_id, e,
+                )
+
+        marker_path.unlink(missing_ok=True)
         return delivered
 
     async def _send_session_db_warning_notifications(self) -> None:

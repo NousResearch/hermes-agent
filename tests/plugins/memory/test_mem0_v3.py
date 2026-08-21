@@ -146,6 +146,98 @@ class TestMem0V3Internal:
         assert call[2]["infer"] is True
 
 
+class TestMem0Shutdown:
+    def test_shutdown_drains_inflight_sync_before_closing_backend(self):
+        add_started = threading.Event()
+        release_add = threading.Event()
+        add_finished = threading.Event()
+        backend_closed = threading.Event()
+        events = []
+
+        class BlockingBackend(FakeBackend):
+            def add(self, messages, **kwargs):
+                add_started.set()
+                assert release_add.wait(30), "test did not release blocked Mem0 sync"
+                events.append("add_finished")
+                add_finished.set()
+                return {"status": "PENDING"}
+
+            def close(self):
+                events.append("backend_closed")
+                backend_closed.set()
+
+        provider = Mem0MemoryProvider()
+        provider._backend = BlockingBackend()
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        provider.sync_turn("user said", "assistant replied", session_id="s1")
+        assert add_started.wait(30), "Mem0 sync never reached the backend"
+
+        shutdown_done = threading.Event()
+
+        def run_shutdown():
+            provider.shutdown()
+            shutdown_done.set()
+
+        shutdown_thread = threading.Thread(target=run_shutdown)
+        shutdown_thread.start()
+        assert provider._shutdown_started.wait(30)
+        assert shutdown_thread.is_alive()
+        assert not backend_closed.is_set()
+
+        release_add.set()
+        assert shutdown_done.wait(30)
+        shutdown_thread.join(timeout=30)
+
+        assert add_finished.is_set()
+        assert backend_closed.is_set()
+        assert events == ["add_finished", "backend_closed"]
+
+    def test_shutdown_rejects_new_background_work(self):
+        backend = FakeBackend(search_results=[{"memory": "stale"}])
+        provider = Mem0MemoryProvider()
+        provider._backend = backend
+
+        provider.shutdown()
+        provider.sync_turn("user", "assistant")
+        provider._start_prefetch("query")
+
+        assert backend.captured == []
+
+    def test_atexit_does_not_close_backend_under_active_worker(self):
+        backend_closed = threading.Event()
+
+        class Backend(FakeBackend):
+            def close(self):
+                backend_closed.set()
+
+        class ActiveWorker:
+            def is_alive(self):
+                return True
+
+        provider = Mem0MemoryProvider()
+        provider._backend = Backend()
+        provider._sync_thread = ActiveWorker()
+
+        provider._shutdown_at_exit()
+
+        assert provider._shutdown_started.is_set()
+        assert not backend_closed.is_set()
+
+    def test_initialize_registers_safe_shutdown_at_exit(self, monkeypatch):
+        callbacks = []
+        provider = Mem0MemoryProvider()
+        backend = FakeBackend()
+
+        monkeypatch.setattr(mem0_plugin, "_load_config", lambda: {"api_key": "test"})
+        monkeypatch.setattr(provider, "_create_backend", lambda: backend)
+        monkeypatch.setattr(mem0_plugin.atexit, "register", callbacks.append)
+
+        provider.initialize("test-session")
+
+        assert callbacks == [provider._shutdown_at_exit]
+
+
 class TestMem0Prefetch:
     """prefetch() must recall on the CURRENT question, synchronously.
 
@@ -407,5 +499,3 @@ class TestSelfHostedConfig:
     def test_load_config_reads_mem0_host_env(self, monkeypatch):
         monkeypatch.setenv("MEM0_HOST", "http://localhost:8888")
         assert mem0_plugin._load_config()["host"] == "http://localhost:8888"
-
-

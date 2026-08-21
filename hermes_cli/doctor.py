@@ -1235,7 +1235,14 @@ def run_doctor(args):
             __import__(module)
             check_ok(name, "(optional)")
         except ImportError:
-            check_warn(name, "(optional, not installed)")
+            # Point at the install command so the warning is actionable —
+            # "not installed" alone leaves the user guessing (#89121). Mirrors
+            # the required-packages hint above.
+            check_warn(
+                name,
+                f"(optional, not installed) — install with: "
+                f"{_python_install_cmd()} {module}",
+            )
     
     _section("Configuration Files")
     # Managed scope (administrator-pinned config/env), when present.

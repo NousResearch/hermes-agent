@@ -784,6 +784,8 @@ def run_codex_app_server_turn(
             "completed": False,
             "partial": True,
             "interrupted": _user_interrupted,
+            # Same #15561/#90436 contract as the turn-error return below.
+            "failed": not _user_interrupted,
             **(
                 {"interrupt_message": _interrupt_message}
                 if _interrupt_message
@@ -921,6 +923,7 @@ def run_codex_app_server_turn(
         except Exception:
             logger.debug("background review spawn raised", exc_info=True)
 
+    _turn_failed = turn.error is not None and not turn.interrupted
     return {
         "final_response": turn.final_text,
         "messages": messages,
@@ -928,6 +931,12 @@ def run_codex_app_server_turn(
         "completed": not turn.interrupted and turn.error is None,
         "partial": turn.interrupted or turn.error is not None,
         "interrupted": _user_interrupted,
+        # #15561 contract: a non-retryable turn error must carry failed=True so
+        # downstream consumers (api_server _handle_runs) emit run.failed
+        # instead of a green run.completed with empty output and zero usage
+        # (#90436). conversation_loop already sets this on its error returns;
+        # the app-server early-return path bypassed it.
+        "failed": _turn_failed,
         **(
             {"interrupt_message": _interrupt_message}
             if _interrupt_message

@@ -7783,7 +7783,28 @@ class APIServerAdapter(BasePlatformAdapter):
                 # Check for structured failure (non-retryable client errors like
                 # 401/400 return failed=True instead of raising, so the except
                 # block below never fires — issue #15561).
-                elif isinstance(result, dict) and result.get("failed"):
+                #
+                # A terminal status that downstream automation trusts must not
+                # depend on every runtime remembering to set one optional key:
+                # treat error/completed=False as failure too, so a producer
+                # that misses the flag still fails red instead of emitting a
+                # green run.completed with empty output and zero usage (#90436
+                # — codex_app_server reintroduced #15561 through a second
+                # producer). Interrupted returns are handled above.
+                #
+                # Contract invariant, deliberate: ANY truthy ``error`` marks
+                # the run failed — including a result that also carries
+                # ``completed: True`` with a ``final_response`` (a
+                # "finished with warnings" shape). Runtimes that recover
+                # fully must clear ``error``; if a future producer wants
+                # recovery-with-output to stay green, that is a contract
+                # change to decide explicitly, not a shape this consumer
+                # should silently guess (review on #90436).
+                elif isinstance(result, dict) and (
+                    result.get("failed")
+                    or result.get("error")
+                    or result.get("completed") is False
+                ):
                     error_msg = _redact_api_error_text(result.get("error") or "agent run failed")
                     _put_event_if_active({
                         "event": "run.failed",

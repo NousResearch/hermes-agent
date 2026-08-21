@@ -5626,7 +5626,17 @@ class DiscordAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
             finally:
-                self._typing_tasks.pop(chat_id, None)
+                # Only clear the registry entry if it still points at THIS
+                # loop. A concurrent send_typing() can re-register a fresh
+                # loop after stop_typing() popped this one (the tool-progress
+                # path in gateway/run.py and the base _keep_typing refresh both
+                # call send_typing during a turn). Popping unconditionally
+                # would orphan that newer loop — it would run forever, hitting
+                # the typing endpoint every 12s, and stop_typing() could never
+                # cancel it because it is no longer in the dict. Result: the
+                # Discord "is typing…" indicator stays on permanently.
+                if self._typing_tasks.get(chat_id) is asyncio.current_task():
+                    self._typing_tasks.pop(chat_id, None)
 
         self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
 

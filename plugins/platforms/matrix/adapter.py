@@ -606,6 +606,8 @@ _STARTUP_GRACE_SECONDS = 5
 _OUTBOUND_MENTION_RE = re.compile(
     r"(?<![\w/])(@[0-9A-Za-z._=/-]+:[0-9A-Za-z.-]+(?::\d+)?)"
 )
+_MATRIX_TO_URL_RE = re.compile(r"https?://matrix\.to/#/\S+", re.IGNORECASE)
+_MATRIX_MXID_RE = re.compile(r"(?<![\w@])@[^\s:]+:[^\s]+")
 
 _E2EE_INSTALL_HINT = (
     "Install with: pip install 'mautrix[encryption]' asyncpg aiosqlite  "
@@ -1261,6 +1263,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Mention/thread gating — parsed once from config.extra or env vars.
         self._require_mention: bool = self._parse_require_mention(config)
+        self._mention_mode: str = self._parse_mention_mode(config)
         self._thread_require_mention: bool = self._parse_thread_require_mention(config)
         free_rooms_raw = config.extra.get("free_response_rooms")
         if free_rooms_raw is None:
@@ -1411,6 +1414,19 @@ class MatrixAdapter(BasePlatformAdapter):
         return os.getenv(
             "MATRIX_REQUIRE_MENTION", "true"
         ).lower() not in {"false", "0", "no", "off"}
+
+    @staticmethod
+    def _parse_mention_mode(config) -> str:
+        """Parse the Matrix mention detector mode from config.yaml."""
+        configured = config.extra.get("mention_mode", "loose")
+        mode = str(configured).strip().lower()
+        if mode not in {"loose", "strict"}:
+            logger.warning(
+                "Matrix: invalid mention_mode %r; using loose",
+                configured,
+            )
+            return "loose"
+        return mode
 
     @staticmethod
     def _parse_thread_require_mention(config) -> bool:
@@ -2295,6 +2311,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 "allowed_room_count": len(self._allowed_room_ids),
                 "ignored_user_pattern_count": len(self._ignored_user_patterns),
                 "require_mention": self._require_mention,
+                "mention_mode": self._mention_mode,
                 "free_response_room_count": len(self._free_rooms),
                 "allow_room_mentions": self._allow_room_mentions,
                 "process_notices": self._process_notices,
@@ -4921,12 +4938,11 @@ class MatrixAdapter(BasePlatformAdapter):
     ) -> bool:
         """Return True if the bot is mentioned in the message.
 
-        Per MSC3952, ``m.mentions.user_ids`` is the authoritative mention
-        signal in the Matrix spec.  When the sender's client populates that
-        field with the bot's user-id, we trust it — even when the visible
-        body text does not contain an explicit ``@bot`` string (some clients
-        only render mention "pills" in ``formatted_body`` or use display
-        names).
+        Structured mentions, the full bot MXID, and a bot pill are always
+        accepted. Strict mode additionally accepts an explicit ``@localpart``
+        token; loose mode retains the legacy bare-localpart fallback after
+        removing Matrix identifiers that can contain the localpart without
+        addressing the bot.
         """
         # m.mentions.user_ids — authoritative per MSC3952 / Matrix v1.7.
         if mention_user_ids and self._user_id and self._user_id in mention_user_ids:
@@ -4935,16 +4951,44 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
         if self._user_id and self._user_id in body:
             return True
-        if self._user_id and ":" in self._user_id:
-            localpart = self._user_id.split(":")[0].lstrip("@")
-            if localpart and re.search(
-                r"\b" + re.escape(localpart) + r"\b", body, re.IGNORECASE
-            ):
-                return True
         if formatted_body and self._user_id:
             if f"matrix.to/#/{self._user_id}" in formatted_body:
                 return True
+        if self._user_id and ":" in self._user_id:
+            localpart = self._user_id.split(":")[0].lstrip("@")
+            fallback_body = self._mention_fallback_body(body)
+            if localpart and re.search(
+                r"(?<![\w@])@" + re.escape(localpart) + r"\b",
+                fallback_body,
+                re.IGNORECASE,
+            ):
+                return True
+            if (
+                self._mention_mode == "loose"
+                and localpart
+                and re.search(
+                    r"\b" + re.escape(localpart) + r"\b",
+                    fallback_body,
+                    re.IGNORECASE,
+                )
+            ):
+                return True
         return False
+
+    def _mention_fallback_body(self, body: str) -> str:
+        """Remove Matrix identifiers before localpart fallback matching."""
+        fallback_body = _MATRIX_TO_URL_RE.sub(" ", body)
+        fallback_body = _MATRIX_MXID_RE.sub(" ", fallback_body)
+        if self._user_id and ":" in self._user_id:
+            homeserver = self._user_id.split(":", 1)[1]
+            if homeserver:
+                fallback_body = re.sub(
+                    re.escape(homeserver),
+                    " ",
+                    fallback_body,
+                    flags=re.IGNORECASE,
+                )
+        return fallback_body
 
     def _strip_mention(self, body: str) -> str:
         """Remove explicit bot mentions from message body.
@@ -5375,9 +5419,13 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
     """Translate config.yaml matrix: keys into MATRIX_* env vars.
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
-    matrix_cfg block from gateway/config.py::load_gateway_config(). Env vars
-    take precedence over YAML. Returns None — everything flows through env.
+    matrix_cfg block from gateway/config.py::load_gateway_config(). Existing
+    env-backed settings keep their precedence; config-only settings are seeded
+    into ``PlatformConfig.extra``.
     """
+    seeded: dict = {}
+    if "mention_mode" in matrix_cfg:
+        seeded["mention_mode"] = matrix_cfg["mention_mode"]
     if "require_mention" in matrix_cfg and not os.getenv("MATRIX_REQUIRE_MENTION"):
         os.environ["MATRIX_REQUIRE_MENTION"] = str(matrix_cfg["require_mention"]).lower()
     au = matrix_cfg.get("allowed_users")
@@ -5410,7 +5458,7 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
         os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
     if "max_message_length" in matrix_cfg and not os.getenv("MATRIX_MAX_MESSAGE_LENGTH"):
         os.environ["MATRIX_MAX_MESSAGE_LENGTH"] = str(matrix_cfg["max_message_length"])
-    return None
+    return seeded or None
 
 
 def _is_connected(config) -> bool:

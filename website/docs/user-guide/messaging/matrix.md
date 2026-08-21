@@ -84,6 +84,7 @@ You can configure mention and auto-threading behavior via environment variables 
 ```yaml
 matrix:
   require_mention: true           # Require @mention in rooms (default: true)
+  mention_mode: loose             # loose accepts bare bot names; strict requires an explicit mention
   allowed_users:                  # Matrix users allowed to trigger agent turns
     - "@alice:matrix.org"
   allowed_rooms:                  # Matrix rooms allowed to trigger agent turns
@@ -115,6 +116,12 @@ MATRIX_DM_MENTION_THREADS=false
 MATRIX_REACTIONS=true          # default: true — emoji reactions during processing
 MATRIX_ALLOW_ROOM_MENTIONS=false
 ```
+
+`mention_mode` is intentionally config-only. The backward-compatible `loose`
+mode accepts a bare bot localpart such as `hermes`, while filtering Matrix URLs,
+other users' MXIDs, and the bot homeserver from that fallback. Set it to
+`strict` to accept only `m.mentions`, the bot's Matrix pill or full MXID, and an
+explicit `@localpart` token.
 
 :::tip Disabling reactions
 `MATRIX_REACTIONS=false` turns off the processing-lifecycle emoji reactions (👀/✅/❌) the bot posts on inbound messages. Useful for rooms where reaction events are noisy or aren't supported by all participating clients.

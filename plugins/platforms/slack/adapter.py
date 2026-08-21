@@ -2638,9 +2638,10 @@ class SlackAdapter(BasePlatformAdapter):
                 append_payload: Dict[str, Any] = {
                     "channel": chat_id,
                     "ts": stream.stream_ts,
-                    "chunks": chunks,
                 }
-                if fallback_text:
+                if chunks:
+                    append_payload["chunks"] = chunks
+                elif fallback_text:
                     append_payload["markdown_text"] = fallback_text
                 await client.api_call("chat.appendStream", json=append_payload)
                 return SendResult(success=True, message_id=stream.stream_ts)

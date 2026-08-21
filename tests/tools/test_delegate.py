@@ -786,6 +786,48 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["api_mode"])
         self.assertIsNone(creds["model"])
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    @patch("hermes_cli.runtime_provider.canonical_custom_identity")
+    def test_no_override_resolves_switched_named_custom_runtime(
+        self, mock_canonical, mock_resolve
+    ):
+        mock_canonical.return_value = "custom:provider-b"
+        mock_resolve.return_value = {
+            "provider": "custom",
+            "model": "model-b-default",
+            "base_url": "https://shared.invalid/v1",
+            "api_key": "provider-b-key",
+            "api_mode": "chat_completions",
+            "request_overrides": {"extra_body": {"group": "provider-b"}},
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.model = "model-b-current"
+        parent.provider = "custom:provider-a"
+        parent.requested_provider = "custom:provider-a"
+        parent.base_url = "https://shared.invalid/v1"
+        parent.api_key = "provider-a-key"
+
+        creds = _resolve_delegation_credentials(
+            {"model": "", "provider": ""}, parent
+        )
+
+        self.assertEqual(creds["model"], "model-b-current")
+        self.assertEqual(creds["provider"], "custom:provider-b")
+        self.assertEqual(creds["api_key"], "provider-b-key")
+        self.assertNotEqual(creds["api_key"], parent.api_key)
+        self.assertEqual(
+            creds["request_overrides"],
+            {"extra_body": {"group": "provider-b"}},
+        )
+        mock_canonical.assert_called_once_with(
+            base_url="https://shared.invalid/v1",
+            config_provider="custom:provider-a",
+            model="model-b-current",
+        )
+        mock_resolve.assert_called_once_with(
+            requested="custom:provider-b", target_model="model-b-current"
+        )
+
     def test_direct_endpoint_uses_configured_base_url_and_api_key(self):
         parent = _make_mock_parent(depth=0)
         cfg = {

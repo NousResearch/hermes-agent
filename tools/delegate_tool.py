@@ -4430,8 +4430,10 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     provider system — the same path used by CLI/gateway startup. This lets
     subagents run on a completely different provider:model pair.
 
-    If neither base_url nor provider is configured, returns None values so the
-    child inherits everything from the parent agent.
+    If neither base_url nor provider is configured, built-in providers inherit
+    directly. Named custom providers are first checked against the active model
+    catalog so a stale/generic parent identity cannot select the first entry at
+    an otherwise identical gateway URL.
 
     Raises ValueError with a user-friendly message on credential failure.
     """
@@ -4498,7 +4500,66 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         }
 
     if not configured_provider:
-        # No provider override — child inherits everything from parent
+        parent_model = str(getattr(parent_agent, "model", "") or "").strip()
+        parent_provider = str(getattr(parent_agent, "provider", "") or "").strip()
+        parent_requested_provider = str(
+            getattr(parent_agent, "requested_provider", "") or ""
+        ).strip()
+        parent_base_url = str(
+            getattr(parent_agent, "base_url", "") or ""
+        ).strip()
+        route_identity = parent_requested_provider or parent_provider
+        is_custom_parent = (
+            parent_provider.lower() == "custom"
+            or parent_provider.lower().startswith("custom:")
+            or route_identity.lower().startswith("custom:")
+        )
+        if is_custom_parent:
+            try:
+                from hermes_cli.runtime_provider import (
+                    canonical_custom_identity,
+                    resolve_runtime_provider,
+                )
+
+                custom_identity = canonical_custom_identity(
+                    base_url=parent_base_url,
+                    config_provider=route_identity,
+                    model=configured_model or parent_model,
+                )
+                if custom_identity and custom_identity.lower() != parent_provider.lower():
+                    target_model = configured_model or parent_model or None
+                    runtime = resolve_runtime_provider(
+                        requested=custom_identity,
+                        target_model=target_model,
+                    )
+                    api_key = runtime.get("api_key", "")
+                    if not api_key:
+                        raise ValueError(
+                            f"Inherited custom provider '{custom_identity}' resolved "
+                            "but has no API key."
+                        )
+                    return {
+                        "model": target_model or runtime.get("model") or None,
+                        "provider": custom_identity,
+                        "base_url": runtime.get("base_url"),
+                        "api_key": api_key,
+                        "api_mode": runtime.get("api_mode"),
+                        "request_overrides": dict(
+                            runtime.get("request_overrides") or {}
+                        ),
+                        "max_output_tokens": runtime.get("max_output_tokens"),
+                        "command": runtime.get("command"),
+                        "args": list(runtime.get("args") or []),
+                    }
+            except ValueError:
+                raise
+            except Exception as exc:
+                logger.debug(
+                    "Could not canonicalize inherited custom provider: %s", exc
+                )
+
+        # The parent identity is already complete, or this is a built-in/ad-hoc
+        # runtime. None overrides preserve its live credentials and pool.
         return {
             "model": configured_model,
             "provider": None,

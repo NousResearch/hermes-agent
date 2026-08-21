@@ -98,3 +98,45 @@ def test_legacy_unkeyed_entry_keeps_its_name_identity(monkeypatch):
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
 
     assert rp.canonical_custom_identity(config_provider="Legacy Endpoint") == "custom:legacy-endpoint"
+
+
+def test_model_disambiguates_named_providers_sharing_one_url(monkeypatch):
+    shared_url = "https://shared.invalid/v1"
+    config = {
+        "custom_providers": [
+            {
+                "name": "provider-a",
+                "base_url": shared_url,
+                "api_key": "provider-a-key",
+                "model": "model-a-default",
+                "models": {"model-a-default": {}},
+            },
+            {
+                "name": "provider-b",
+                "base_url": shared_url,
+                "api_key": "provider-b-key",
+                "model": "model-b-default",
+                "models": {
+                    "model-b-current": {},
+                    "model-b-default": {},
+                },
+            },
+        ]
+    }
+    monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "custom:provider-a"},
+    )
+
+    assert rp.find_custom_provider_identity(shared_url) == "custom:provider-a"
+    assert (
+        rp.canonical_custom_identity(
+            base_url=shared_url,
+            config_provider="custom:provider-a",
+            model="model-b-current",
+        )
+        == "custom:provider-b"
+    )

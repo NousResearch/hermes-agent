@@ -2684,6 +2684,10 @@ class ClawHubSource(SkillSource):
             else:
                 # Some ClawHub payloads wrap the cursor; json.dumps keeps the walk
                 # going instead of treating a non-string as exhaustion (~1 page / 199 skills).
+                logger.debug(
+                    "ClawHub nextCursor is %s rather than str; coercing via json.dumps",
+                    type(raw_cursor).__name__,
+                )
                 cursor = json.dumps(raw_cursor, separators=(',', ':'), default=str)
             if not cursor:
                 break

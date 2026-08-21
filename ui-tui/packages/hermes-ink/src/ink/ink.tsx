@@ -2340,6 +2340,14 @@ export default class Ink {
       return
     }
 
+    // Drain bytes buffered during suspension BEFORE re-attaching listeners.
+    // Without this, keystrokes that arrived while the external process owned
+    // stdin (e.g. the Enter that submitted /prompt, or keys typed while VS Code
+    // was open) replay through the re-attached 'readable' listener and
+    // re-trigger handlers, causing the editor to open N times and the prompt
+    // to send N times. Same drain unmount() does at line ~2481.
+    this.drainStdin()
+
     // Re-attach all the stored listeners
     if (this.stdinListeners.length === 0 && !this.wasRawMode) {
       logForDebugging('[stdin] resumeStdin: called with no stored listeners and wasRawMode=false (possible desync)', {

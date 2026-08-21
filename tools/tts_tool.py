@@ -3139,6 +3139,28 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 # ===========================================================================
 # Main tool function
 # ===========================================================================
+def _warn_ignored_tts_provider_override(requested: str, configured: str) -> None:
+    """Once-per-process (per distinct requested value) warning for ignored
+    per-call provider overrides — a stale session whose cached tool schema
+    still advertises the param would otherwise repeat it every call; and
+    callers with no tts config at all are silent (nothing to disagree
+    WITH — default resolution just runs). See #90109."""
+    if not configured:
+        return
+    key = ("tts_provider_override", requested)
+    if key in _once_warnings:
+        return
+    _once_warnings.add(key)
+    logger.warning(
+        "Ignoring per-call TTS provider override %r; tts.provider is %r",
+        requested,
+        configured,
+    )
+
+
+_once_warnings: set = set()
+
+
 def _text_to_speech_single(
     text: str,
     output_path: Optional[str] = None,
@@ -3171,11 +3193,20 @@ def _text_to_speech_single(
         tts_config = dict(tts_config)  # shallow copy to avoid mutating the cache
         tts_config["speed"] = clamped
 
-    # Allow per-call provider override; fall back to the configured default.
+    # tts.provider in config.yaml is the authoritative backend selector
+    # (#90109). The per-call argument stays for internal/test callers, but a
+    # value that disagrees with the configured provider is ignored — the
+    # model-facing schema no longer advertises the override, and a leaked
+    # platform hint passing one anyway must not reroute speech to another
+    # vendor behind the operator's back.
+    configured_provider = _get_provider(tts_config)
     if provider:
-        provider = provider.lower().strip()
+        requested = provider.lower().strip()
+        if requested and requested != configured_provider:
+            _warn_ignored_tts_provider_override(requested, configured_provider)
+        provider = configured_provider
     else:
-        provider = _get_provider(tts_config)
+        provider = configured_provider
 
     # User-declared command provider (type: command under tts.providers.<name>)
     # resolves BEFORE the built-in dispatch. Built-in names short-circuit here
@@ -3521,7 +3552,9 @@ def text_to_speech_tool(
         output_path: Optional custom save path.
         speed: Optional playback speed multiplier (0.25-4.0).
         instructions: Optional voice-design guidance (tone, emotion, pacing).
-        provider: Optional TTS provider override.
+        provider: Kept for internal/test callers. When it disagrees with the
+            configured ``tts.provider`` it is ignored with a warning — config
+            is the only backend selector (#90109).
 
     Returns:
         str: JSON result with success, file_path, file_paths, and MEDIA tag.
@@ -3548,11 +3581,20 @@ def text_to_speech_tool(
         tts_config = dict(tts_config)  # shallow copy to avoid mutating the cache
         tts_config["speed"] = clamped
 
-    # Allow per-call provider override; fall back to the configured default.
+    # tts.provider in config.yaml is the authoritative backend selector
+    # (#90109). The per-call argument stays for internal/test callers, but a
+    # value that disagrees with the configured provider is ignored — the
+    # model-facing schema no longer advertises the override, and a leaked
+    # platform hint passing one anyway must not reroute speech to another
+    # vendor behind the operator's back.
+    configured_provider = _get_provider(tts_config)
     if provider:
-        provider = provider.lower().strip()
+        requested = provider.lower().strip()
+        if requested and requested != configured_provider:
+            _warn_ignored_tts_provider_override(requested, configured_provider)
+        provider = configured_provider
     else:
-        provider = _get_provider(tts_config)
+        provider = configured_provider
 
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
     max_len = _resolve_max_text_length(provider, tts_config)
@@ -4521,16 +4563,6 @@ TTS_SCHEMA = {
                     "Forwarded to the OpenAI backend (gpt-4o-mini-tts and OpenAI-compatible "
                     "voice-design servers). Silently ignored by backends that don't support it."
                 )
-            },
-            "provider": {
-                "type": "string",
-                "description": (
-                    "Optional TTS provider override. Accepts built-in names "
-                    "(edge, openai, elevenlabs, minimax, xai, mistral, gemini, "
-                    "neutts, kittentts, piper), user-declared command provider "
-                    "names from tts.providers.<name>, or plugin-registered names. "
-                    "When omitted, the configured tts.provider from config.yaml is used."
-                )
             }
         },
         "required": ["text"]
@@ -4545,8 +4577,7 @@ registry.register(
         text=args.get("text", ""),
         output_path=args.get("output_path"),
         speed=args.get("speed"),
-        instructions=args.get("instructions"),
-        provider=args.get("provider")),
+        instructions=args.get("instructions")),
     check_fn=check_tts_requirements,
     emoji="🔊",
 )

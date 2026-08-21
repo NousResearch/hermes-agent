@@ -95,6 +95,13 @@ KIMI_K3_EFFORTS: tuple[str, ...] = ("low", "high", "max")
 #: Moonshot/Kimi K2-era models: low/medium/high.
 KIMI_K2_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 
+#: OpenCode "Ox Alpha" stealth model (x-preview-f-free): thinking is always
+#: on and the wire accepts exactly low/high/max — medium/none/xhigh 400 with
+#: "This model always engages in thinking and cannot be disabled; please use
+#: low, high, or max" (verified live 2026-08-21). xhigh rounds up to max.
+OX_ALPHA_EFFORTS: tuple[str, ...] = ("low", "high", "max")
+OX_ALPHA_OVERRIDES: dict[str, str] = {"xhigh": "max"}
+
 #: Tencent TokenHub: low/medium/high.
 TOKENHUB_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 

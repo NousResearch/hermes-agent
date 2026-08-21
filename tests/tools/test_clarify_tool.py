@@ -110,6 +110,16 @@ class TestClarifyDictChoices:
     def test_flatten_unwraps_label_first(self):
         assert _flatten_choice({"label": "Short", "description": "Long"}) == "Short"
 
+    def test_flatten_unwraps_value_when_no_display_key(self):
+        """GLM-family providers (zai, 2026-08) emit [{"value": "..."}] with no
+        display key at all — dropping ``value`` would empty the whole choice
+        set and make clarify a no-op for those providers."""
+        assert _flatten_choice({"value": "Option A"}) == "Option A"
+        # display keys still win when both are present
+        assert _flatten_choice({"label": "Short", "value": "opt-a"}) == "Short"
+        # ``name`` remains excluded (component-shaped field)
+        assert _flatten_choice({"name": "modelid"}) == ""
+
 
     def test_dict_choices_reach_callback_as_clean_text(self):
         """The whole point: the UI callback never sees a dict repr."""
@@ -124,7 +134,7 @@ class TestClarifyDictChoices:
             choices=[
                 {"choice": "Tight", "description": "Tight, covers all 3 points"},
                 {"description": "Loose layout"},
-                {"name": "modelid", "value": "abc"},  # dropped, not leaked
+                {"name": "modelid", "value": "abc"},  # value unwrapped ("abc")
                 "A plain string choice",
             ],
             callback=cb,
@@ -132,6 +142,7 @@ class TestClarifyDictChoices:
         assert seen == [
             "Tight, covers all 3 points (Recommended)",
             "Loose layout",
+            "abc",
             "A plain string choice",
         ]
         # and the resolved answer is clean text, not a dict repr

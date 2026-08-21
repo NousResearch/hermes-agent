@@ -233,6 +233,12 @@ _DEFAULT_WEBHOOK_PATH = "/feishu/webhook"
 # ---------------------------------------------------------------------------
 
 _FEISHU_DEDUP_TTL_SECONDS = 24 * 60 * 60          # 24 hours — matches openclaw
+# Grace window for stale-event filtering (#90833): an inbound event is stale
+# when its Feishu server create_time predates the current connection's
+# watermark by more than this many seconds. The grace covers clock skew
+# between the Feishu server and the local host, plus events created moments
+# before the WS handshake completed that are part of the live conversation.
+_STALE_EVENT_GRACE_S = 120.0
 _FEISHU_SENDER_NAME_TTL_SECONDS = 10 * 60          # 10 minutes sender-name cache
 _FEISHU_WEBHOOK_MAX_BODY_BYTES = 1 * 1024 * 1024   # 1 MB body limit
 _FEISHU_WEBHOOK_RATE_WINDOW_SECONDS = 60            # sliding window for rate limiter
@@ -1523,7 +1529,13 @@ class FeishuAdapter(BasePlatformAdapter):
         self._webhook_site: Optional[Any] = None
         self._event_handler: Optional[Any] = None
         self._seen_message_ids: Dict[str, float] = {}  # message_id → seen_at (time.time())
-        self._seen_message_order: List[str] = []
+        self._seen_message_order: List[str] = []  # message_id eviction order
+        # Monotonic wall-clock watermark established when the current
+        # connection starts accepting events. Inbound events whose Feishu
+        # server ``create_time`` predates it are stale replays (delayed
+        # redelivery after an unclean restart — see #21651 / #90833) and
+        # must not surface as brand-new messages.
+        self._inbound_watermark_s: Optional[float] = None
         self._dedup_state_path = get_hermes_home() / "feishu_seen_message_ids.json"
         self._dedup_lock = threading.Lock()
         self._sender_name_cache: Dict[str, tuple[str, float]] = {}  # sender_id → (name, expire_at)
@@ -1814,6 +1826,11 @@ class FeishuAdapter(BasePlatformAdapter):
 
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
+            # Establish the stale-event watermark only after the transport is
+            # live: events created on the Feishu server before this moment are
+            # pre-connection history. _mark_connected() flips _running, after
+            # which inbound callbacks are accepted.
+            self._inbound_watermark_s = time.time()
             self._mark_connected()
             logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
             return True
@@ -2612,6 +2629,11 @@ class FeishuAdapter(BasePlatformAdapter):
         message_id = getattr(message, "message_id", None)
         if not message_id or self._is_duplicate(message_id):
             logger.debug("[Feishu] Dropping duplicate/missing message_id: %s", message_id)
+            return
+
+        stale_reason = self._reject_stale_event(message, message_id)
+        if stale_reason:
+            logger.info("[Feishu] %s", stale_reason)
             return
 
         reason = self._admit(sender, message)
@@ -4617,6 +4639,79 @@ class FeishuAdapter(BasePlatformAdapter):
             atomic_json_write(self._dedup_state_path, payload, indent=None)
         except OSError:
             logger.warning("[Feishu] Failed to persist dedup state to %s", self._dedup_state_path, exc_info=True)
+
+    def _reject_stale_event(self, message: Any, message_id: str) -> Optional[str]:
+        """Return a drop reason when an inbound event is a stale replay.
+
+        Feishu's server can redeliver events created long before the current
+        connection was established — observed hours after an unclean restart
+        even while the reconnect stayed healthy (#90833, variant of #21651).
+        An event whose server-side ``create_time`` predates the current
+        connection's watermark is pre-connection history, not a new message.
+
+        Returns ``None`` when the event is fresh (or its create_time is
+        missing/unparseable, in which case the event is given the benefit
+        of the doubt — admission is still subject to dedup and policy).
+        """
+        return None  # SABOTAGE
+        watermark = self._inbound_watermark_s
+        if watermark is None:
+            # No connection lifecycle yet (tests, webhook-only setups before
+            # connect) — nothing to compare against.
+            return None
+        create_time = getattr(message, "create_time", None)
+        if create_time in (None, "", 0, "0"):
+            return None
+        try:
+            created_s = float(create_time)
+        except (TypeError, ValueError):
+            return None
+        if created_s <= 0:
+            return None
+        if created_s >= watermark - _STALE_EVENT_GRACE_S:
+            return None
+        age_s = max(0.0, watermark - created_s)
+        return (
+            f"Dropping stale inbound event {message_id}: create_time "
+            f"{int(created_s)} predates connection watermark {int(watermark)} "
+            f"(age {int(age_s)}s > {_STALE_EVENT_GRACE_S}s grace)"
+        )
+
+    def _reject_stale_event(self, message: Any, message_id: str) -> Optional[str]:
+        """Return a drop reason when an inbound event is a stale replay.
+
+        Feishu's server can redeliver events created long before the current
+        connection was established — observed hours after an unclean restart
+        even while the reconnect stayed healthy (#90833, variant of #21651).
+        An event whose server-side ``create_time`` predates the current
+        connection's watermark is pre-connection history, not a new message.
+
+        Returns ``None`` when the event is fresh (or its create_time is
+        missing/unparseable, in which case the event is given the benefit
+        of the doubt — admission is still subject to dedup and policy).
+        """
+        watermark = self._inbound_watermark_s
+        if watermark is None:
+            # No connection lifecycle yet (tests, webhook-only setups before
+            # connect) — nothing to compare against.
+            return None
+        create_time = getattr(message, "create_time", None)
+        if create_time in (None, "", 0, "0"):
+            return None
+        try:
+            created_s = float(create_time)
+        except (TypeError, ValueError):
+            return None
+        if created_s <= 0:
+            return None
+        if created_s >= watermark - _STALE_EVENT_GRACE_S:
+            return None
+        age_s = max(0.0, watermark - created_s)
+        return (
+            f"Dropping stale inbound event {message_id}: create_time "
+            f"{int(created_s)} predates connection watermark {int(watermark)} "
+            f"(age {int(age_s)}s > {_STALE_EVENT_GRACE_S}s grace)"
+        )
 
     def _is_duplicate(self, message_id: str) -> bool:
         now = time.time()

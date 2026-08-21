@@ -2467,3 +2467,106 @@ class TestChatLockEviction(unittest.TestCase):
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
 
 
+
+
+class TestStaleEventFiltering(unittest.TestCase):
+    """Regression tests for #90833: inbound events whose Feishu server
+    create_time predates the current connection watermark are dropped.
+
+    Observed in the wild: a DM created at 11:41 was delivered at 18:46,
+    ~5h after a healthy reconnect, surfacing as a brand-new message.
+    """
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        return FeishuAdapter(PlatformConfig())
+
+    def _message(self, create_time):
+        return SimpleNamespace(
+            message_id="om_stale_1",
+            chat_id="oc_demo",
+            chat_type="p2p",
+            create_time=create_time,
+        )
+
+    def test_stale_create_time_is_rejected(self):
+        adapter = self._make_adapter()
+        adapter._inbound_watermark_s = 1_000_000.0
+        # Created 3 hours before the connection watermark.
+        reason = adapter._reject_stale_event(self._message(1_000_000.0 - 3 * 3600), "om_stale_1")
+        self.assertIsNotNone(reason)
+        self.assertIn("stale", reason)
+
+    def test_fresh_create_time_is_admitted(self):
+        adapter = self._make_adapter()
+        adapter._inbound_watermark_s = 1_000_000.0
+        # Created after the watermark — live conversation.
+        self.assertIsNone(adapter._reject_stale_event(self._message(1_000_000.0 + 5), "om_stale_1"))
+
+    def test_boundary_within_grace_is_admitted(self):
+        from plugins.platforms.feishu.adapter import _STALE_EVENT_GRACE_S
+
+        adapter = self._make_adapter()
+        adapter._inbound_watermark_s = 1_000_000.0
+        # Created just inside the grace window (clock skew / pre-handshake
+        # messages that belong to the live conversation).
+        created = 1_000_000.0 - (_STALE_EVENT_GRACE_S / 2)
+        self.assertIsNone(adapter._reject_stale_event(self._message(created), "om_stale_1"))
+        # Created just outside the grace window — stale.
+        created = 1_000_000.0 - (_STALE_EVENT_GRACE_S * 10)
+        self.assertIsNotNone(adapter._reject_stale_event(self._message(created), "om_stale_1"))
+
+    def test_missing_or_malformed_create_time_is_admitted(self):
+        adapter = self._make_adapter()
+        adapter._inbound_watermark_s = 1_000_000.0
+        for bad in (None, "", 0, "0", "not-a-number"):
+            self.assertIsNone(adapter._reject_stale_event(self._message(bad), "om_stale_1"))
+
+    def test_no_watermark_means_no_filtering(self):
+        adapter = self._make_adapter()
+        adapter._inbound_watermark_s = None
+        self.assertIsNone(adapter._reject_stale_event(self._message(1.0), "om_stale_1"))
+
+    def test_string_create_time_seconds_is_parsed(self):
+        adapter = self._make_adapter()
+        adapter._inbound_watermark_s = 1_000_000.0
+        # lark-oapi delivers create_time as a string of epoch seconds.
+        reason = adapter._reject_stale_event(self._message(str(1_000_000.0 - 7200)), "om_stale_1")
+        self.assertIsNotNone(reason)
+
+    def test_handle_message_event_data_drops_stale_before_admission(self):
+        """End-to-end: a stale event must not reach _admit/_process_inbound_message."""
+        adapter = self._make_adapter()
+        adapter._inbound_watermark_s = 1_000_000.0
+
+        admitted = []
+        adapter._admit = lambda sender, message: admitted.append("admit") or None
+        adapter._process_inbound_message = AsyncMock()
+
+        data = SimpleNamespace(
+            event=SimpleNamespace(
+                message=self._message(1_000_000.0 - 3 * 3600),
+                sender=SimpleNamespace(sender_id=SimpleNamespace(open_id="ou_alice")),
+            )
+        )
+        asyncio.run(adapter._handle_message_event_data(data))
+        self.assertEqual(admitted, [])
+        adapter._process_inbound_message.assert_not_called()
+
+    def test_handle_message_event_data_admits_fresh(self):
+        adapter = self._make_adapter()
+        adapter._inbound_watermark_s = 1_000_000.0
+
+        adapter._admit = lambda sender, message: None
+        adapter._process_inbound_message = AsyncMock()
+
+        data = SimpleNamespace(
+            event=SimpleNamespace(
+                message=self._message(1_000_000.0 + 1),
+                sender=SimpleNamespace(sender_id=SimpleNamespace(open_id="ou_alice")),
+            )
+        )
+        asyncio.run(adapter._handle_message_event_data(data))
+        adapter._process_inbound_message.assert_called_once()

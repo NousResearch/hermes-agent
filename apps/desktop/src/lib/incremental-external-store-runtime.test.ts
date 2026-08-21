@@ -141,4 +141,35 @@ describe('syncRepositoryIncrementally', () => {
 
     expect(result.map(item => item.id)).toEqual(['a'])
   })
+
+  it('rebuilds instead of diffing when ids keep their length but reorder', () => {
+    const a = message('a', 'one')
+    const b = message('b', 'two')
+    const runtime = runtimeWith(chain([a, b]))
+    const repository = (runtime as unknown as { repository: MessageRepository }).repository
+    const addOrUpdate = vi.spyOn(repository, 'addOrUpdateMessage')
+
+    // Same length, same ids — but the store swapped the order. An in-place
+    // diff would silently leave the tree in the OLD order (stale thread);
+    // the order check forces the full rebuild so the swap is reflected.
+    const result = syncRepositoryIncrementally(runtime, exported(chain([b, a])))
+
+    expect(result.map(item => item.id)).toEqual(['b', 'a'])
+    expect(addOrUpdate).toHaveBeenCalled()
+  })
+
+  it('rebuilds instead of diffing when the incoming export contains a duplicated id', () => {
+    const a = message('a', 'one')
+    const runtime = runtimeWith(chain([a]))
+    const repository = (runtime as unknown as { repository: MessageRepository }).repository
+    const addOrUpdate = vi.spyOn(repository, 'addOrUpdateMessage')
+
+    // A doubled id in the store export (upstream transcript bug) must not
+    // reach the repository tree: the tree holds one node per id, and a
+    // silent diff would render the same turn twice.
+    const result = syncRepositoryIncrementally(runtime, exported(chain([a, a])))
+
+    expect(result.map(item => item.id)).toEqual(['a'])
+    expect(addOrUpdate).toHaveBeenCalledTimes(1)
+  })
 })

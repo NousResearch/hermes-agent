@@ -441,6 +441,7 @@ async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegra
         chat_id="-1001234567890",
         chat_type="group",
         thread_id="42",
+        prospective_thread_id=None,
         user_id="user-1",
         user_id_alt=None,
         chat_id_alt=None,

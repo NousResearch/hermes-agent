@@ -451,7 +451,9 @@ class TestBuzzAdapterLifecycle:
         import gateway.status as gateway_status
 
         monkeypatch.setattr(
-            gateway_status, "acquire_scoped_lock", lambda platform, key: False
+            gateway_status,
+            "acquire_scoped_lock",
+            lambda platform, key: (False, None),
         )
         adapter = _make_adapter()
         adapter.cli_path = "/fake/buzz"
@@ -536,5 +538,4 @@ class TestStandaloneSend:
         assert captured["input_text"] == "cron says hi"
         # The private key must never be part of argv
         assert all("nsec1x" not in str(a) for a in captured["args"])
-
 

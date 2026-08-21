@@ -7189,7 +7189,38 @@ class AIAgent:
             cfg = load_config()
             provider = (getattr(self, "provider", "") or "").strip()
             model = (getattr(self, "model", "") or "").strip()
-            return _lookup_supports_vision(provider, model, cfg) is True
+            requested_provider = (getattr(self, "requested_provider", "") or "").strip()
+            return _lookup_supports_vision(
+                provider,
+                model,
+                cfg,
+                requested_provider=requested_provider,
+            ) is True
+        except Exception:
+            return False
+
+    def _should_preserve_native_image_parts(self) -> bool:
+        """Return True when explicit ``image_input_mode: native`` is active.
+
+        User-attached image preprocessing must honor the routing policy even
+        when capability metadata is unknown (``None``). Provider rejection
+        and retry/fallback remain the recovery path for models that truly
+        lack vision support.
+        """
+        try:
+            from hermes_cli.config import load_config
+            from agent.image_routing import decide_image_input_mode
+
+            cfg = load_config()
+            provider = (getattr(self, "provider", "") or "").strip()
+            model = (getattr(self, "model", "") or "").strip()
+            requested_provider = (getattr(self, "requested_provider", "") or "").strip()
+            return decide_image_input_mode(
+                provider,
+                model,
+                cfg,
+                requested_provider=requested_provider,
+            ) == "native"
         except Exception:
             return False
 
@@ -7285,7 +7316,7 @@ class AIAgent:
         # native Anthropic ``{"type": "image", "source": ...}`` blocks. When
         # the active model supports vision we let the adapter do its job and
         # skip this legacy text-fallback preprocessor entirely.
-        if self._model_supports_vision():
+        if self._model_supports_vision() or self._should_preserve_native_image_parts():
             return api_messages
 
         # Non-vision Anthropic model (rare today, but keep the fallback for
@@ -7315,7 +7346,7 @@ class AIAgent:
         ):
             return api_messages
 
-        if self._model_supports_vision():
+        if self._model_supports_vision() or self._should_preserve_native_image_parts():
             return api_messages
 
         transformed = copy.deepcopy(api_messages)

@@ -188,3 +188,84 @@ class TestModelSupportsVision:
              patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert agent._model_supports_vision() is True
 
+
+class TestNativeImageInputModePreservation:
+    """Explicit ``image_input_mode: native`` must not preflight-strip images."""
+
+    _NATIVE_UNKNOWN_CFG = {
+        "model": {"provider": "custom:private", "default": "private-vlm"},
+        "agent": {"image_input_mode": "native"},
+    }
+
+    def test_native_unknown_model_preserves_images_non_vision_path(self):
+        agent = _make_agent()
+        agent.provider = "custom"
+        agent.requested_provider = "custom:private"
+        agent.model = "private-vlm"
+        with patch("hermes_cli.config.load_config", return_value=self._NATIVE_UNKNOWN_CFG), \
+             patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch.object(
+                 agent,
+                 "_describe_image_for_anthropic_fallback",
+                 return_value="[fallback description]",
+             ) as describe:
+            out = agent._prepare_messages_for_non_vision_model([IMG_PARTS_USER_MSG])
+        assert out[0]["content"][1]["type"] == "image_url"
+        describe.assert_not_called()
+
+    def test_native_unknown_model_preserves_images_anthropic_path(self):
+        agent = _make_agent()
+        agent.provider = "custom"
+        agent.requested_provider = "custom:private"
+        agent.model = "private-vlm"
+        with patch("hermes_cli.config.load_config", return_value=self._NATIVE_UNKNOWN_CFG), \
+             patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch.object(
+                 agent,
+                 "_describe_image_for_anthropic_fallback",
+                 return_value="[fallback description]",
+             ) as describe:
+            out = agent._prepare_anthropic_messages_for_api([IMG_PARTS_USER_MSG])
+        assert out[0]["content"][1]["type"] == "image_url"
+        describe.assert_not_called()
+
+    def test_auto_unknown_model_still_strips_images(self):
+        agent = _make_agent()
+        agent.provider = "custom"
+        agent.requested_provider = "custom:private"
+        agent.model = "private-vlm"
+        cfg = {
+            "model": {"provider": "custom:private", "default": "private-vlm"},
+            "agent": {"image_input_mode": "auto"},
+        }
+        with patch("hermes_cli.config.load_config", return_value=cfg), \
+             patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch.object(
+                 agent,
+                 "_describe_image_for_anthropic_fallback",
+                 return_value="[fallback description]",
+             ):
+            out = agent._prepare_messages_for_non_vision_model([IMG_PARTS_USER_MSG])
+        assert isinstance(out[0]["content"], str)
+        assert "image_url" not in out[0]["content"]
+
+    def test_text_mode_still_strips_images(self):
+        agent = _make_agent()
+        agent.provider = "custom"
+        agent.requested_provider = "custom:private"
+        agent.model = "private-vlm"
+        cfg = {
+            "model": {"provider": "custom:private", "default": "private-vlm"},
+            "agent": {"image_input_mode": "text"},
+        }
+        with patch("hermes_cli.config.load_config", return_value=cfg), \
+             patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch.object(
+                 agent,
+                 "_describe_image_for_anthropic_fallback",
+                 return_value="[text mode description]",
+             ):
+            out = agent._prepare_messages_for_non_vision_model([IMG_PARTS_USER_MSG])
+        assert isinstance(out[0]["content"], str)
+        assert "[text mode description]" in out[0]["content"]
+

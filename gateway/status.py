@@ -220,6 +220,11 @@ def terminate_pid(
     On POSIX an expectation is optional, but when the caller provides one and it no longer matches the live
     process, the kill is refused on every platform — a mismatched fingerprint always means the PID was
     recycled. See #89614.
+    On Windows, ``os.kill(SIGTERM)`` is ``TerminateProcess``, which returns ERROR_ACCESS_DENIED
+    when the target is an orphaned job-object child (the usual shape after a gateway crash: the
+    parent cmd.exe dies, leaving python.exe unreapable). On the ``force=False`` path that used to
+    bail out; it now escalates to ``taskkill /T /F`` so the restart manager can replace the dead
+    instance instead of leaving the orphan until an operator kills it by hand.
     """
     if force and (_IS_WINDOWS or expected_start_time is not None):
         if expected_start_time is None:
@@ -233,7 +238,32 @@ def terminate_pid(
         except (TypeError, ValueError) as exc:
             raise OSError(f"refusing to force-kill PID {pid}; malformed start time") from exc
     if not (force and _IS_WINDOWS):
-        os.kill(pid, signal.SIGTERM if not force else getattr(signal, "SIGKILL", signal.SIGTERM))
+        sig = signal.SIGTERM if not force else getattr(signal, "SIGKILL", signal.SIGTERM)
+        try:
+            os.kill(pid, sig)
+        except (PermissionError, OSError) as exc:
+            # Windows: TerminateProcess returns ERROR_ACCESS_DENIED when the target is an
+            # orphaned job-object child (typical after a gateway crash - the parent cmd.exe
+            # wrapper dies and leaves python.exe unreapable). Escalate to taskkill /T /F so
+            # the restart manager can replace the dead instance instead of bailing out at the
+            # `return False` in gateway/run.py start_gateway() that follows the PermissionError
+            # catch. On POSIX a PermissionError means we do not own the process - let the
+            # caller decide.
+            if not (_IS_WINDOWS and isinstance(exc, PermissionError)):
+                raise
+            from hermes_cli._subprocess_compat import windows_hide_flags
+
+            try:
+                result = subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=10, creationflags=windows_hide_flags(),
+                )
+            except FileNotFoundError:
+                raise exc from None
+            if result.returncode != 0:
+                details = (result.stderr or result.stdout or "").strip()
+                raise OSError(details or f"taskkill fallback failed for PID {pid}") from exc
         return
     # Hide flags: a bare taskkill spawn from windowless pythonw.exe would flash a conhost window.
     from hermes_cli._subprocess_compat import windows_hide_flags

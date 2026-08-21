@@ -64,12 +64,12 @@ interface PaneChrome extends PaneSizing {
   /** No Close in the tab menu — the one surface the app can't lose (the
    *  main workspace). Session tiles share `placement: 'main'` but close. */
   uncloseable?: boolean
-  /** Hide the hover ✕ while retaining explicit close behavior for this pane. */
-  showCloseButton?: boolean
-  /** Standing chrome tab (sessions / Bots) whose tab shows NO ✕ and no Close
-   *  verbs — it is shown/hidden instead (the zone menu's Show/Hide rows and a
-   *  ⌘K toggle, via `setStripTabHidden`). Close was too destructive for these:
-   *  an accidental ✕ removed Bot Mode until the next launch. */
+  /** Standing chrome tab (sessions / Bots) with NO close verb at all: no ✕,
+   *  no middle / ⌘-click, no Close menu rows. It is shown/hidden instead (the
+   *  zone menu's Show/Hide rows and a ⌘K toggle, via `setStripTabHidden`).
+   *  Close was too destructive for these: an accidental ✕ removed Bot Mode
+   *  until the next launch. The ✕ follows the verb (see `PaneTab.onClose`),
+   *  so dropping the verb here is what takes the chip off the tab. */
   hideOnly?: boolean
   /** Wrap this pane's TAB (e.g. in a domain context menu — a session tile's
    *  pin/branch/rename/archive/delete). The wrapper must render `tab` as its

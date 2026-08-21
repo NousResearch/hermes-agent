@@ -556,7 +556,6 @@ export function TreeGroup({
                   }}
                   role="tab"
                   selected={isSelected}
-                  showCloseButton={chrome.showCloseButton !== false}
                   style={{ cursor: 'grab' }}
                 >
                   {chrome.tabLead ? (

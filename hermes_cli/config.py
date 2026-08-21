@@ -5597,6 +5597,27 @@ def set_config_value(key: str, value: str, force: bool = False):
                     file=sys.stderr,
                 )
                 sys.exit(1)
+    # ── Per-platform display-setting redirect (#71047, Problem A) ─────────
+    # `platforms.<name>.<setting>` is silently ignored by the runtime: the
+    # connection config (gateway/config.py) reads only token/extra/overrides
+    # from the top-level `platforms.<name>` block, while per-platform *display*
+    # settings (streaming, show_reasoning, tool_progress, …) are resolved from
+    # `display.platforms.<name>.<setting>` (gateway/display_config.py). Without
+    # this redirect a write such as `hermes config set platforms.telegram.streaming
+    # false` lands on a key the gateway never reads, so the edit is invisible.
+    # Redirect ONLY known display settings (OVERRIDEABLE_KEYS), leaving real
+    # connection keys (token, extra, channel_overrides, …) untouched.
+    _plat_seg = key.split(".")
+    if len(_plat_seg) == 3 and _plat_seg[0] == "platforms":
+        try:
+            from gateway.display_config import OVERRIDEABLE_KEYS as _DISPLAY_KEYS
+        except Exception:
+            _DISPLAY_KEYS = frozenset()
+        if _plat_seg[2] in _DISPLAY_KEYS:
+            _display_key = f"display.platforms.{_plat_seg[1]}.{_plat_seg[2]}"
+            print(f"  (note: per-platform display setting — saved as {_display_key})")
+            key = _display_key
+
     _set_nested(user_config, key, value)
     # Normalize the api_base → base_url alias at set-time too (issue #8919),
     # so a fresh `hermes config set model.api_base ...` lands on the canonical

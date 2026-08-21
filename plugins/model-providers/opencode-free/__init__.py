@@ -59,7 +59,9 @@ opencode_free = OpenCodeFreeProfile(
     display_name="OpenCode Free",
     description="OpenCode free models — keyless, no account needed",
     default_headers=dict(_KEYLESS_HEADERS),
-    default_aux_model="big-pickle",
+    # laguna is the fastest non-UA-gated free model; big-pickle 429s every
+    # client except the opencode CLI's own User-Agent (verified 2026-08-21).
+    default_aux_model="laguna-s-2.1-free",
 )
 
 register_provider(opencode_free)

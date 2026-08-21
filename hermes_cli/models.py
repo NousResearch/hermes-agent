@@ -559,12 +559,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # OpenCode free tier — keyless (no OpenCode account needed). Synced
     # against live GET /zen/v1/models + anonymous probes (2026-08-21);
     # deepseek-v4-flash-free delisted (promo ended, now 401s).
+    # big-pickle + mimo-v2.5-free delisted (UA-gated: the relay 429s
+    # FreeUsageLimitError for every client except User-Agent
+    # "opencode/latest"; we send honest Hermes attribution and don't
+    # impersonate other clients — verified 2026-08-21).
     "opencode-free": [
         "x-preview-f-free",  # "Ox Alpha" stealth model — free, 1M ctx, ZDR
-        "big-pickle",
         "hy3-free",
         "laguna-s-2.1-free",
-        "mimo-v2.5-free",
         "nemotron-3-ultra-free",
         "nemotron-3.5-lightning-free",
         "muse-spark-1.2-contributor-free",

@@ -1185,6 +1185,7 @@ Any service with an OpenAI-compatible API works. Some popular options:
 | [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek models |
 | [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |
 | [GMI Cloud](https://www.gmicloud.ai/) | `https://api.gmi-serving.com/v1` | Managed OpenAI-compatible inference |
+| [Telnyx](https://developers.telnyx.com/docs/inference/getting-started) | `https://api.telnyx.com/v2/ai/openai` | GPU-hosted open models (Kimi, GLM, MiniMax, Qwen) + embeddings |
 | [Actual Computer](https://actual.inc) | `https://api.actual.inc/v1` | Private relay to your own cluster; local daemon at `http://127.0.0.1:8080/v1` |
 | [Cerebras](https://cerebras.ai) | `https://api.cerebras.ai/v1` | Wafer-scale chip inference |
 | [Mistral AI](https://mistral.ai) | `https://api.mistral.ai/v1` | Mistral models |
@@ -1202,6 +1203,30 @@ model:
   base_url: https://api.together.xyz/v1
   api_key: your-together-key
 ```
+
+#### Telnyx
+
+[Telnyx](https://telnyx.com/products/inference) serves OpenAI-compatible chat
+completions and embeddings from its own GPU cloud. Create an API key at
+[portal.telnyx.com → API Keys](https://portal.telnyx.com/#/app/api-keys) and
+set `TELNYX_API_KEY` in `~/.hermes/.env`.
+
+For first-class support (live model catalog in `hermes model`, automatic key
+injection), install the vendor-maintained provider plugin
+([team-telnyx/hermes-inference-provider](https://github.com/team-telnyx/hermes-inference-provider)):
+
+```bash
+hermes plugins install team-telnyx/hermes-inference-provider
+mv ~/.hermes/plugins/telnyx-provider ~/.hermes/plugins/model-providers/
+```
+
+```bash
+hermes chat --provider telnyx -m moonshotai/Kimi-K3
+```
+
+Telnyx also works as the
+[mem0 memory plugin's LLM + embedder](../user-guide/features/memory-providers.md#mem0)
+— one key covers inference, memory extraction, and embeddings.
 
 ---
 

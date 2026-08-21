@@ -1907,6 +1907,12 @@ DEFAULT_CONFIG = {
         # extras" without silently stripping MCP tools the parent already has.
         # Set to false for strict intersection.
         "inherit_mcp_toolsets": True,
+        # Opt-in model-facing selection for one child/task. Values are exact,
+        # operator-owned allowlists; provider, endpoint, credentials and ACP
+        # transport remain fixed by the delegation config above.
+        "allow_model_selection": False,
+        "allowed_models": [],
+        "allowed_reasoning_efforts": [],
         "max_iterations": 250,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
         # Subagent summaries return to the parent's context verbatim. A batch

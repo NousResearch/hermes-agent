@@ -1032,6 +1032,73 @@ def _get_inherit_mcp_toolsets() -> bool:
     return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
 
 
+def _selection_allowlists(cfg: dict) -> tuple[List[str], List[str]]:
+    """Return type-correct operator-controlled model and effort allowlists."""
+
+    def _string_list(value: Any) -> List[str]:
+        if not isinstance(value, (list, tuple)):
+            return []
+        return [item for item in value if isinstance(item, str) and item]
+
+    return (
+        _string_list(cfg.get("allowed_models")),
+        _string_list(cfg.get("allowed_reasoning_efforts")),
+    )
+
+
+_SELECTION_UNSET = object()
+
+
+def _resolve_task_execution_overrides(
+    model: Any,
+    reasoning_effort: Any,
+    cfg: dict,
+    base_creds: dict,
+    parent_api_mode: Optional[str] = None,
+) -> tuple[dict, Optional[dict]]:
+    """Resolve task-local compute without changing transport or credentials."""
+    model_provided = model is not _SELECTION_UNSET
+    effort_provided = reasoning_effort is not _SELECTION_UNSET
+    if model_provided and (not isinstance(model, str) or not model.strip()):
+        raise ValueError("model must be a non-empty string when provided")
+    if effort_provided and (
+        not isinstance(reasoning_effort, str) or not reasoning_effort.strip()
+    ):
+        raise ValueError(
+            "reasoning effort must be a non-empty string when provided"
+        )
+
+    requested_model = model if model_provided else ""
+    requested_effort = reasoning_effort if effort_provided else ""
+    if not model_provided and not effort_provided:
+        return base_creds, None
+    if not is_truthy_value(cfg.get("allow_model_selection"), default=False):
+        raise ValueError("per-task model selection is disabled")
+
+    allowed_models, allowed_efforts = _selection_allowlists(cfg)
+    creds = base_creds
+    if requested_model:
+        if requested_model not in allowed_models:
+            raise ValueError(f"model '{requested_model}' is not allowed")
+        creds = dict(base_creds)
+        creds["model"] = requested_model
+        if creds.get("api_mode") is None and parent_api_mode is not None:
+            creds["api_mode"] = parent_api_mode
+
+    reasoning = None
+    if requested_effort:
+        if requested_effort not in allowed_efforts:
+            raise ValueError(
+                f"reasoning effort '{requested_effort}' is not allowed"
+            )
+        from hermes_constants import parse_reasoning_effort
+
+        reasoning = parse_reasoning_effort(requested_effort)
+        if reasoning is None:
+            raise ValueError(f"reasoning effort '{requested_effort}' is invalid")
+    return creds, reasoning
+
+
 def _is_mcp_toolset_name(name: str) -> bool:
     """Return True for canonical MCP toolsets and their registered aliases."""
     if not name:
@@ -1591,6 +1658,7 @@ def _build_child_agent(
     override_api_mode: Optional[str] = None,
     override_request_overrides: Optional[Dict[str, Any]] = None,
     override_max_tokens: Optional[int] = None,
+    override_reasoning_config: Optional[dict] = None,
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
@@ -1821,13 +1889,19 @@ def _build_child_agent(
 
     # Resolve reasoning config: delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
-    child_reasoning = parent_reasoning
+    child_reasoning = (
+        override_reasoning_config
+        if override_reasoning_config is not None
+        else parent_reasoning
+    )
     try:
         # Keep the raw value — ``str(x or "")`` would coerce a YAML boolean
         # False (``reasoning_effort: false``) to "" and inherit the parent
         # instead of disabling thinking for children.
         delegation_effort = delegation_cfg.get("reasoning_effort")
-        if delegation_effort or delegation_effort is False:
+        if override_reasoning_config is None and (
+            delegation_effort or delegation_effort is False
+        ):
             from hermes_constants import parse_reasoning_effort
 
             parsed = parse_reasoning_effort(delegation_effort)
@@ -3602,6 +3676,8 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None,
+    model: Any = _SELECTION_UNSET,
+    reasoning_effort: Any = _SELECTION_UNSET,
     action: Optional[str] = None,
     subagent_id: Optional[str] = None,
     message: Optional[str] = None,
@@ -3730,7 +3806,15 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        single_task: Dict[str, Any] = {"goal": goal, "context": context, "role": top_role}
+        single_task: Dict[str, Any] = {
+            "goal": goal,
+            "context": context,
+            "role": top_role,
+        }
+        if model is not _SELECTION_UNSET:
+            single_task["model"] = model
+        if reasoning_effort is not _SELECTION_UNSET:
+            single_task["reasoning_effort"] = reasoning_effort
         if output_schema is not None:
             single_task["output_schema"] = output_schema
         task_list = [single_task]
@@ -3775,6 +3859,23 @@ def delegate_task(
         if schema_err:
             return tool_error(f"Task {i} output_schema invalid: {schema_err}")
         task_schemas.append(coerced_schema)
+
+    # Resolve every task's compute selection before creating transcripts or
+    # children. A malformed later item must fail the whole batch atomically.
+    task_execution: List[tuple[dict, Optional[dict]]] = []
+    for i, task in enumerate(task_list):
+        try:
+            task_execution.append(
+                _resolve_task_execution_overrides(
+                    task.get("model", _SELECTION_UNSET),
+                    task.get("reasoning_effort", _SELECTION_UNSET),
+                    cfg,
+                    creds,
+                    parent_api_mode=getattr(parent_agent, "api_mode", None),
+                )
+            )
+        except ValueError as exc:
+            return tool_error(f"Task {i}: {exc}")
 
     overall_start = time.monotonic()
     results = []
@@ -3829,6 +3930,7 @@ def delegate_task(
         # Per-task role beats top-level; normalise again so unknown
         # per-task values warn and degrade to leaf uniformly.
         effective_role = _normalize_role(t.get("role") or top_role)
+        task_creds, task_reasoning = task_execution[i]
         # T1-24: schema'd tasks get the contract appended to their context
         # so the child knows the expected output shape before it starts.
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
@@ -3845,18 +3947,19 @@ def delegate_task(
                 # Subagents always inherit the parent's toolsets; the model
                 # cannot choose or narrow them (no model-facing toolsets arg).
                 toolsets=None,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_request_overrides=creds.get("request_overrides"),
-                override_max_tokens=creds.get("max_output_tokens"),
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
+                override_request_overrides=task_creds.get("request_overrides"),
+                override_max_tokens=task_creds.get("max_output_tokens"),
+                override_reasoning_config=task_reasoning,
+                override_acp_command=task_creds.get("command"),
+                override_acp_args=task_creds.get("args"),
                 role=effective_role,
             )
         except ValueError as exc:
@@ -4721,6 +4824,37 @@ def _build_dynamic_schema_overrides() -> dict:
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
     overrides_params["properties"]["role"]["description"] = _build_role_param_description()
 
+    cfg = _load_config()
+    if is_truthy_value(cfg.get("allow_model_selection"), default=False):
+        import copy
+
+        models, efforts = _selection_allowlists(cfg)
+        model_prop = {
+            "type": "string",
+            "enum": models,
+            "description": (
+                "Operator-approved model for this child only. At top level this "
+                "applies only to the single-goal form; use tasks[].model for batches."
+            ),
+        }
+        effort_prop = {
+            "type": "string",
+            "enum": efforts,
+            "description": (
+                "Operator-approved reasoning effort for this child only. At top "
+                "level this applies only to the single-goal form; use "
+                "tasks[].reasoning_effort for batches."
+            ),
+        }
+        tasks_prop = copy.deepcopy(overrides_params["properties"]["tasks"])
+        if models:
+            overrides_params["properties"]["model"] = model_prop
+            tasks_prop["items"]["properties"]["model"] = dict(model_prop)
+        if efforts:
+            overrides_params["properties"]["reasoning_effort"] = effort_prop
+            tasks_prop["items"]["properties"]["reasoning_effort"] = dict(effort_prop)
+        overrides_params["properties"]["tasks"] = tasks_prop
+
     return {
         "description": _build_top_level_description(),
         "parameters": overrides_params,
@@ -4915,6 +5049,8 @@ registry.register(
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
         output_schema=args.get("output_schema"),
+        model=args.get("model"),
+        reasoning_effort=args.get("reasoning_effort"),
         action=args.get("action"),
         subagent_id=args.get("subagent_id"),
         message=args.get("message"),

@@ -2495,6 +2495,9 @@ delegation:
   # base_url: "http://localhost:1234/v1"    # Direct OpenAI-compatible endpoint (takes precedence over provider)
   # api_key: "local-key"                    # API key for base_url (falls back to OPENAI_API_KEY)
   # api_mode: ""                            # Wire protocol for base_url: "chat_completions", "codex_responses", or "anthropic_messages". Empty = auto-detect from URL (e.g. /anthropic suffix → anthropic_messages). Set explicitly for non-standard endpoints the heuristic can't detect.
+  allow_model_selection: false              # Opt in to model-facing per-task model/effort selection
+  allowed_models: []                        # Exact model allowlist used only when selection is enabled
+  allowed_reasoning_efforts: []             # Exact effort allowlist used only when selection is enabled
   max_concurrent_children: 3                # Parallel children per batch (floor 1, no ceiling). Also via DELEGATION_MAX_CONCURRENT_CHILDREN env var.
   worktree_isolation: false                 # Give each child its own git worktree branched from HEAD (local backend + git repos only; inspired by Muse Code). See Subagent Delegation → Worktree Isolation.
   max_spawn_depth: 1                        # Delegation tree depth cap (1-3, clamped). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
@@ -2502,6 +2505,15 @@ delegation:
 ```
 
 **Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
+
+**Per-task model and reasoning selection:** Set
+`delegation.allow_model_selection: true` and populate the exact
+`allowed_models` / `allowed_reasoning_efforts` lists to expose `model` and
+`reasoning_effort` on `delegate_task`. The fields are hidden while disabled.
+They select compute only: provider, endpoint, credentials, wire protocol, and
+ACP transport remain controlled by the operator's delegation configuration.
+Invalid values fail before children are spawned. In batch mode, put the fields
+on each `tasks[]` item; top-level fields apply only to the single-goal form.
 
 **Direct endpoint override:** If you want the obvious custom-endpoint path, set `delegation.base_url`, `delegation.api_key`, and `delegation.model`. That sends subagents directly to that OpenAI-compatible endpoint and takes precedence over `delegation.provider`. If `delegation.api_key` is omitted, Hermes falls back to `OPENAI_API_KEY` only.
 

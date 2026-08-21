@@ -1488,6 +1488,10 @@ delegation:
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  # allow_model_selection: false              # Opt in to model-facing per-task model/effort selection.
+  # allowed_models: []                        # Exact model allowlist; e.g. ["gpt-5.6-luna", "gpt-5.6-sol"].
+  # allowed_reasoning_efforts: []             # Exact effort allowlist; e.g. ["high", "xhigh"].
+  #                                           # These fields never change provider, endpoint, credentials, or transport.
   #                                           # Cost tip: keep the parent on a frontier model and pin
   #                                           # delegation.model to an inexpensive one — children carry the
   #                                           # vast majority of tokens, so this is where spend is cut while

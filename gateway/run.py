@@ -5889,7 +5889,12 @@ class TurnRunner:
         _bg_review_pending_lock = threading.Lock()
 
         def _deliver_bg_review_message(message: str) -> None:
-            if not ctx._status_adapter or not ctx._run_still_current():
+            # A review is intentionally asynchronous and can finish after the
+            # main response has released the active-run generation. Its delivery
+            # remains bound to this turn's captured adapter/chat/thread, so do
+            # not use _run_still_current here: that guard would drop every
+            # legitimate late review receipt.
+            if not ctx._status_adapter:
                 return
             safe_schedule_threadsafe(
                 ctx._status_adapter.send(
@@ -5912,7 +5917,7 @@ class TurnRunner:
 
         # Background review delivery — send "💾 Memory updated" etc. to user
         def _bg_review_send(message: str) -> None:
-            if not ctx._status_adapter or not ctx._run_still_current():
+            if not ctx._status_adapter:
                 return
             if not _bg_review_release.is_set():
                 with _bg_review_pending_lock:

@@ -325,37 +325,19 @@ def test_background_review_registers_on_active_children_for_interrupt(monkeypatc
     assert agent._active_children == []
 
 
-def test_new_live_turn_cancels_still_running_background_review(monkeypatch):
-    """conversation_loop.run_conversation() must proactively interrupt a
-    background review still in flight from a prior turn, rather than let the
-    two race concurrently against the same session_id/credentials. This is
-    the other half of the fix: registration alone only enables interrupt()
-    propagation, it doesn't by itself stop the race — something has to
-    actually call interrupt() at the start of the next turn.
+def test_new_live_turn_does_not_cancel_background_review():
+    """An ordinary follow-up must not discard the prior turn's review.
+
+    The review has its own agent and captured delivery callback. Explicit
+    interrupt/shutdown still reaches it through ``_active_children``; this
+    guard protects only the normal next-turn path.
     """
-    import agent.conversation_loop as conversation_loop_module
+    from pathlib import Path
 
-    calls = []
-
-    class FakeReviewAgent:
-        def interrupt(self, message=None):
-            calls.append(message)
-
-    agent = _bare_agent()
-    agent._background_review_agent = FakeReviewAgent()
-
-    # Invoke just the cancellation snippet in isolation via the same
-    # attribute contract run_conversation() reads, to avoid dragging in the
-    # rest of the turn machinery (network calls, tool setup, etc.) that
-    # isn't relevant to this regression.
-    _pending_review = getattr(agent, "_background_review_agent", None)
-    assert _pending_review is not None
-    _pending_review.interrupt("superseded by a new live turn")
-
-    assert calls == ["superseded by a new live turn"]
-
-
-
+    source = (
+        Path(__file__).resolve().parents[2] / "agent" / "conversation_loop.py"
+    ).read_text(encoding="utf-8")
+    assert 'interrupt("superseded by a new live turn")' not in source
 
 
 

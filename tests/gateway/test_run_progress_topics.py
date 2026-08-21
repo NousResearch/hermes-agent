@@ -970,6 +970,24 @@ class BackgroundReviewAgent:
         }
 
 
+class LateBackgroundReviewAgent:
+    """Captures the review callback to fire after the main delivery ends."""
+
+    callback = None
+
+    def __init__(self, **kwargs):
+        self.background_review_callback = kwargs.get("background_review_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        type(self).callback = self.background_review_callback
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class VerboseAgent:
     """Agent that emits a tool call with args whose JSON exceeds 200 chars."""
     LONG_CODE = "x" * 300
@@ -1006,6 +1024,8 @@ async def _run_with_agent(
     adapter_cls=ProgressCaptureAdapter,
     user_id=None,
     scope_id=None,
+    return_runner=False,
+    run_generation=None,
 ):
     if config_data:
         import yaml
@@ -1053,7 +1073,10 @@ async def _run_with_agent(
         source=source,
         session_id=session_id,
         session_key=session_key,
+        run_generation=run_generation,
     )
+    if return_runner:
+        return adapter, result, runner, session_key
     return adapter, result
 
 
@@ -1393,6 +1416,40 @@ async def test_run_agent_defers_background_review_notification_until_release(mon
 
     assert result["final_response"] == "done"
     assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_run_agent_delivers_late_background_review_to_originating_topic(monkeypatch, tmp_path):
+    LateBackgroundReviewAgent.callback = None
+    adapter, result, runner, session_key = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        LateBackgroundReviewAgent,
+        session_id="sess-bg-review-late",
+        chat_id="-1003939984762",
+        thread_id="1823",
+        return_runner=True,
+        run_generation=1,
+    )
+
+    assert result["final_response"] == "done"
+    assert callable(LateBackgroundReviewAgent.callback)
+    release = adapter.pop_post_delivery_callback(session_key, generation=1)
+    assert callable(release)
+    release()
+    monkeypatch.setattr(runner, "_is_session_run_current", lambda *_: False)
+
+    LateBackgroundReviewAgent.callback("💾 Self-improvement review: Memory updated")
+    await asyncio.sleep(0.05)
+
+    assert adapter.sent == [
+        {
+            "chat_id": "-1003939984762",
+            "content": "💾 Self-improvement review: Memory updated",
+            "reply_to": None,
+            "metadata": {"thread_id": "1823"},
+        }
+    ]
 
 
 @pytest.mark.asyncio

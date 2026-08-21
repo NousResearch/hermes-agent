@@ -147,7 +147,7 @@ class TestTirithAllowDangerous:
     def test_dangerous_only_cli_deny(self, mock_tirith):
         os.environ["HERMES_INTERACTIVE"] = "1"
         cb = MagicMock(return_value="deny")
-        result = check_all_command_guards("rm -rf /tmp", "local", approval_callback=cb)
+        result = check_all_command_guards("rm -rf ~/scratch-area/root", "local", approval_callback=cb)
         assert result["approved"] is False
         cb.assert_called_once()
         # allow_permanent should be True (no tirith warning)
@@ -247,7 +247,7 @@ class TestAlwaysVisibility:
     def test_dangerous_only_allows_permanent(self, mock_tirith):
         os.environ["HERMES_INTERACTIVE"] = "1"
         cb = MagicMock(return_value="always")
-        result = check_all_command_guards("rm -rf /tmp/test", "local",
+        result = check_all_command_guards("rm -rf ~/scratch-area/test", "local",
                                           approval_callback=cb)
         assert result["approved"] is True
         cb.assert_called_once()

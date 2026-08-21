@@ -144,7 +144,7 @@ class TestSingleQueryDenyMode:
 
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_single_query_approval_mode", return_value="deny"):
-            result = check_dangerous_command("rm -rf /tmp/stuff", "local")
+            result = check_dangerous_command("rm -rf ~/scratch-area/stuff", "local")
             assert not result["approved"]
             assert "BLOCKED" in result["message"]
             assert "single_query_mode" in result["message"]
@@ -170,7 +170,7 @@ class TestSingleQueryDenyMode:
 
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_single_query_approval_mode", return_value="deny"):
-            result = check_dangerous_command("rm -rf /tmp/stuff", "local")
+            result = check_dangerous_command("rm -rf ~/scratch-area/stuff", "local")
             assert not result["approved"]
             assert "dangerous" in result["message"].lower() or "delete" in result["message"].lower()
 
@@ -187,7 +187,7 @@ class TestSingleQueryApproveMode:
 
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_single_query_approval_mode", return_value="approve"):
-            result = check_dangerous_command("rm -rf /tmp/stuff", "local")
+            result = check_dangerous_command("rm -rf ~/scratch-area/stuff", "local")
             assert result["approved"]
 
 
@@ -207,7 +207,7 @@ class TestSingleQueryDenyModeAllGuards:
 
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_single_query_approval_mode", return_value="deny"):
-            result = check_all_command_guards("rm -rf /tmp/stuff", "local")
+            result = check_all_command_guards("rm -rf ~/scratch-area/stuff", "local")
             assert not result["approved"]
             assert "BLOCKED" in result["message"]
             assert "single_query_mode" in result["message"]
@@ -233,7 +233,7 @@ class TestSingleQueryDenyModeAllGuards:
 
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_single_query_approval_mode", return_value="approve"):
-            result = check_all_command_guards("rm -rf /tmp/stuff", "local")
+            result = check_all_command_guards("rm -rf ~/scratch-area/stuff", "local")
             assert result["approved"]
 
     def test_tirith_content_threat_blocked_in_single_query_deny(self, monkeypatch):
@@ -348,7 +348,7 @@ class TestSingleQueryModeInteractions:
             mock_patch.object(approval_module, "_YOLO_MODE_FROZEN", True),
             mock_patch("tools.approval._get_single_query_approval_mode", return_value="deny"),
         ):
-            result = check_dangerous_command("rm -rf /tmp/stuff", "local")
+            result = check_dangerous_command("rm -rf ~/scratch-area/stuff", "local")
             assert result["approved"]
 
     def test_hardline_block_still_fires(self, monkeypatch):

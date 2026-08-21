@@ -607,11 +607,29 @@ def detect_hardline_command(command: str) -> tuple:
         (is_hardline, description) or (False, None)
     """
     if _command_parser_limit_exceeded(command):
-        return (True, _PARSER_LIMIT_DESCRIPTION)
+        # the separator-free size ceiling
+        # exists to stop one giant regex token from starving every legacy
+        # pattern. A long payload whose QUOTED spans are inert data (a
+        # multi-line python -c program, a long grep pattern) parses in
+        # bounded pieces; only the unquoted skeleton can blow up the
+        # matchers. Measure the skeleton (quotes masked to single spaces)
+        # instead of the raw length, so legitimate one-liners up to the
+        # overall command ceiling are inspected rather than blocked.
+        if _unquoted_skeleton_within_limit(command):
+            pass  # fall through to pattern inspection
+        else:
+            return (True, _PARSER_LIMIT_DESCRIPTION)
     normalized = _normalize_command_for_detection(command)
     _, malformed_grep = _grep_safe_detection_variant(normalized)
     if malformed_grep:
-        return (True, _MALFORMED_EXEC_DESCRIPTION)
+        # the malformed verdict is only trusted when
+        # the RAW command (author-written escapes intact) is also unlexable.
+        # Normalization's global backslash-strip flips quote parity on legal
+        # grep/sed patterns ([^\"]*, a\|b) and manufactured this verdict on
+        # 30+ read-only diagnostic commands (Aug 2026 incidents). Genuinely
+        # malformed authoring still fails both probes and stays blocked.
+        if not _raw_command_lexes_cleanly(command):
+            return (True, _MALFORMED_EXEC_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
         variant_lower = command_variant.lower()
         for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
@@ -1416,6 +1434,145 @@ def _command_parser_limit_exceeded(command: str) -> bool:
     return False
 
 
+# skeleton-size probe for the separator-free
+# ceiling. A `python3 -c "<4KB program>"` with zero ;&|\n outside quotes is a
+# legitimate one-liner, not a regex-starvation bomb — its QUOTED payload is
+# inert data. Replace every quoted span with a single space and re-measure:
+# only the unquoted skeleton counts against the ceiling.
+def _unquoted_skeleton_within_limit(command: str) -> bool:
+    """Return True when the separator-free command's unquoted part is small.
+
+    Masks every quoted span (single- and double-quoted, backslash-escape
+    aware) down to one space, then applies the same separator-free ceiling
+    to the result. The absolute command-size and segment-count ceilings in
+    _command_parser_limit_exceeded still apply unchanged to the raw text.
+    """
+    if len(command) <= _MAX_SEPARATOR_FREE_COMMAND_CHARS:
+        return True
+    out: list[str] = []
+    quote: str | None = None
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(command):
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            out.append(" ")
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(command):
+            out.append(command[i:i + 2])
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    skeleton = "".join(out)
+    return len(skeleton) <= _MAX_SEPARATOR_FREE_COMMAND_CHARS
+
+
+# heredoc data-span locator. Stream-write rules
+# (`tee`, `>`/`>>` redirection) use `.*` under re.DOTALL, which walks across
+# heredoc bodies: `tee /safe/report.md << 'EOF'` … `report text mentioning
+# config.yaml` … `EOF` matched the "overwrite project env/config via tee"
+# pattern 131 chars past the actual tee target — the trigger lived in the
+# heredoc DATA. This locator returns (start, end) spans of heredoc bodies so
+# the detection can inspect the command with its data lines blanked.
+_HEREDOC_MARKER_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+def _heredoc_data_spans(command: str) -> list[tuple[int, int]]:
+    """Return (start, end) spans of heredoc body lines in *command*.
+
+    A heredoc body starts on the line AFTER the `<< TAG` marker and ends at
+    the first line whose content (after optional tabs for `<<-`) is exactly
+    TAG. The marker itself may sit inside a quoted argument, so quote state
+    is tracked: a `<<` inside single quotes never starts a heredoc. Spans
+    cover the body text between those lines (exclusive of the terminator).
+    Unclosed heredocs run to end-of-string (their body is still data).
+    """
+    spans: list[tuple[int, int]] = []
+    quote: str | None = None
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < n:
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == "<" and command.startswith("<<", i):
+            m = _HEREDOC_MARKER_RE.match(command, i)
+            if m:
+                tag = m.group(2)
+                dash = m.group(0).startswith("<<-")
+                body_start = command.find("\n", m.end())
+                if body_start == -1:
+                    return spans
+                body_start += 1
+                pos = body_start
+                end = n
+                while pos <= n:
+                    line_end = command.find("\n", pos)
+                    if line_end == -1:
+                        line = command[pos:]
+                        next_pos = n + 1
+                    else:
+                        line = command[pos:line_end]
+                        next_pos = line_end + 1
+                    stripped = line.lstrip("\t") if dash else line
+                    if stripped == tag:
+                        end = pos
+                        break
+                    if line_end == -1:
+                        end = n
+                        break
+                    pos = next_pos
+                spans.append((body_start, end))
+                i = end
+                continue
+        i += 1
+    return spans
+
+
+def _mask_heredoc_data(command: str) -> str:
+    """Blank out heredoc body text, preserving length and offsets.
+
+    Detection-only rewrite used for the stream-write rules: the `tee`/`>>`
+    patterns then match only against the real command line, never against
+    report prose inside a heredoc. Each body byte becomes a space so span
+    offsets in other detectors remain valid.
+    """
+    spans = _heredoc_data_spans(command)
+    if not spans:
+        return command
+    parts: list[str] = []
+    prev = 0
+    for start, end in spans:
+        parts.append(command[prev:start])
+        parts.append(" " * (end - start))
+        prev = end
+    parts.append(command[prev:])
+    return "".join(parts)
+
+
 def _shell_tokens_with_spans(segment: str, start: int):
     """Return shell words as ``(value, start, end, quoted)`` or ``None``.
 
@@ -1457,6 +1614,10 @@ def _shell_tokens_with_spans(segment: str, start: int):
                 value.append(char)
                 i += 1
         if quote:
+            # an unterminated quote can be a genuine
+            # authoring error OR an artifact of detection-side rewrites. The
+            # caller decides via _raw_segment_lexes_cleanly(); this function
+            # keeps its original contract (None = malformed).
             return None
         raw = segment[token_start:i]
         # Only a wholly single-quoted operand is inert shell data. Double
@@ -1467,6 +1628,75 @@ def _shell_tokens_with_spans(segment: str, start: int):
         )
         tokens.append(("".join(value), token_start, i, inert_single_quoted))
     return tokens
+
+
+# pure-lexer probe that ignores detection rewrites.
+# _normalize_command_for_detection strips backslash-escapes GLOBALLY
+# (\X -> X) to defeat r\m-style obfuscation, which flips quote parity in
+# ordinary shell text: `grep "a\|b"` (a legal BRE alternation inside double
+# quotes) becomes `grep "a|b"`, where the internal `\"` escapes of JSON-ish
+# patterns like [^\"]* collapse and the trailing quote lands in the wrong
+# parity class. The quote-aware lexers then see an unterminated quote that
+# does not exist in the real command and fail closed at the HARDLINE floor
+# ("command parser limit or malformed executable payload") — 30+ live
+# incident blocks (read-only grep/sed/strings diagnostics across
+# unattended agent sessions over five days of live use). This probe lexes the segment
+# as the AUTHOR wrote it: a trailing backslash or a genuinely unterminated
+# quote still fails; escapes the author actually wrote (\| \d \" inside
+# double quotes) parse cleanly.
+def _raw_segment_lexes_cleanly(segment: str, start: int) -> bool:
+    """Return True if the segment lexes with author-written escapes intact.
+
+    Mirrors _shell_tokens_with_spans' quote state machine but treats every
+    backslash as an escape (never stripping it), so the only failure modes
+    are a genuinely unterminated quote or a trailing dangling backslash.
+    """
+    i = start
+    while i < len(segment):
+        while i < len(segment) and segment[i].isspace():
+            i += 1
+        if i >= len(segment):
+            return True
+        quote = None
+        while i < len(segment) and (quote or not segment[i].isspace()):
+            char = segment[i]
+            if quote:
+                if char == "\\" and quote == '"':
+                    if i + 1 >= len(segment):
+                        return False
+                    i += 2
+                    continue
+                if char == quote:
+                    quote = None
+                i += 1
+            elif char in {"'", '"'}:
+                quote = char
+                i += 1
+            elif char == "\\":
+                if i + 1 >= len(segment):
+                    return False
+                i += 2
+            else:
+                i += 1
+        if quote:
+            return False
+    return True
+
+
+def _raw_command_lexes_cleanly(command: str) -> bool:
+    """Return True when every top-level segment of the RAW command lexes.
+
+    Runs on the original text (only quoted-newline masking applied, which
+    mirrors shell semantics and cannot introduce a quote). Used by
+    detect_hardline_command / detect_dangerous_command to distinguish
+    "the author's text is genuinely malformed" (fail closed) from "our
+    normalization corrupted the quote parity" (detection artifact).
+    """
+    raw = _mask_quoted_newlines(command)
+    for segment in _iter_top_level_shell_segments(raw):
+        if not _raw_segment_lexes_cleanly(segment, 0):
+            return False
+    return True
 
 
 _GREP_OPTIONS_WITH_ARG = {
@@ -2318,6 +2548,217 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     return re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
 
 
+# scratch-space cleanup classifier. The `delete in
+# root path` / `recursive delete` patterns fire on ANY absolute path, so
+# `rm -f /tmp/a.md /tmp/b.md` (13+ incident blocks over five days of live
+# use — scratch-dir cleanup after test runs) demanded interactive approval
+# in headless worker sessions, where approval == permanent block. This
+# classifier tokenizes the command and returns True only when EVERY rm
+# operand (across every rm invocation in the command) resolves under a
+# scratch root: the OS temp dir ($TMPDIR or /tmp) or a Hermes kanban
+# workspace directory. Fail-closed by construction: any substitution
+# ($VAR, ${...}, `...`), any path-traversal component (`..`), any operand
+# outside the scratch roots, or an unparseable command returns False and the
+# original approval flow applies unchanged.
+_SCRATCH_CLEANUP_RM_DESCRIPTIONS = frozenset({
+    "delete in root path",
+    "recursive delete",
+    "recursive delete (long flag)",
+    "recursive delete (flags after operands)",
+})
+
+
+def _is_scratch_cleanup(command: str) -> bool:
+    """Return True when every rm in *command* only targets scratch space.
+
+    Policy:
+    - ``hermes-verify-*`` / ``hermes-ad-hoc-*`` artifacts keep their NARROW
+      legacy exemption (``_is_verification_artifact_cleanup``); this broader
+      classifier deliberately declines them so upstream's tighter tests hold.
+    - rm plus a companion allowlist may appear: read-only tools (ls/echo/
+      printf/grep/head/tail/wc/cat/cd/sort/uniq/cut/date/test/true/false)
+      and scratch-space recreate tools (mkdir/cp) whose every path operand
+      also stays under the scratch roots — the common rm-then-recreate
+      test-fixture pattern; any other executable fails closed.
+    - rm operands: absolute literal-prefix under the OS temp dir or the
+      Hermes kanban workspaces dir, or relative after a ``cd`` into one of
+      them; globs, substitutions ($, backtick), ``..`` traversal, other
+      roots, and the scratch roots THEMSELVES all fail closed.
+    - Redirection tokens (``2>/dev/null``, ``2>&1``) are skipped, not
+      treated as operands.
+    """
+    # hermes-verify/ad-hoc artifacts: defer to the narrow legacy exemption.
+    if re.search(r"hermes-(?:verify|ad-hoc)-", command):
+        return False
+    try:
+        segments = list(_iter_command_segments_for_scratch(command))
+    except Exception:
+        return False
+    if not segments:
+        return False
+
+    temp_root = os.path.realpath(tempfile.gettempdir())
+    workspace_root = os.path.realpath(
+        os.path.expanduser("~/.hermes/kanban/workspaces")
+    )
+    scratch_roots = (temp_root, workspace_root)
+    companions = {
+        "ls", "echo", "printf", "grep", "egrep", "fgrep", "head", "tail",
+        "wc", "cat", "cd", "sort", "uniq", "cut", "date", "test", "[",
+        "true", "false",
+    }
+    # Recreate tools: allowed only when every path operand stays in scratch.
+    recreate_tools = {"mkdir", "cp"}
+
+    def _redirection(token: str) -> bool:
+        return bool(re.match(r"^\d*[<>]", token)) or token.startswith((">", "<"))
+
+    def _path_operand(token: str) -> bool:
+        # an operand that names a filesystem location (not an option/value)
+        return not token.startswith("-") or token in ("-",)
+
+    def _literal_scratch(path: str, cwd: str | None) -> bool:
+        if not os.path.isabs(path):
+            if cwd is None:
+                return False
+            path = os.path.join(cwd, path)
+        path = os.path.normpath(path)
+        if path in scratch_roots:
+            return False  # the scratch root itself is not deletable
+        return path.startswith(temp_root + os.sep) or path.startswith(workspace_root + os.sep)
+
+    def _operand_in_scratch(operand: str, cwd: str | None, allow_root: bool) -> bool:
+        if "$" in operand or "`" in operand:
+            return False
+        if ".." in operand.split("/"):
+            return False
+        expanded = os.path.expanduser(operand)
+        if allow_root and (os.path.isabs(expanded) is False and cwd is None):
+            return False
+        if not os.path.isabs(expanded):
+            if cwd is None:
+                return False
+            expanded = os.path.normpath(os.path.join(cwd, expanded))
+        else:
+            expanded = os.path.normpath(expanded)
+        if allow_root and expanded in scratch_roots:
+            return True
+        return expanded.startswith(temp_root + os.sep) or expanded.startswith(workspace_root + os.sep)
+
+    cwd: str | None = None
+    saw_rm = False
+    for argv in segments:
+        idx = 0
+        while idx < len(argv) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[idx]):
+            idx += 1
+        if idx >= len(argv):
+            continue
+        executable = os.path.basename(argv[idx])
+        if executable == "sudo" and idx + 1 < len(argv):
+            idx += 1
+            executable = os.path.basename(argv[idx])
+        if executable == "rm":
+            saw_rm = True
+            operands: list[str] = []
+            no_more_flags = False
+            for token in argv[idx + 1:]:
+                if token == "--":
+                    no_more_flags = True
+                    continue
+                if _redirection(token):
+                    continue
+                if not no_more_flags and token.startswith("-"):
+                    continue
+                operands.append(token)
+            if not operands:
+                return False
+            for operand in operands:
+                if "$" in operand or "`" in operand:
+                    return False
+                if ".." in operand.split("/"):
+                    return False
+                if any(ch in operand for ch in "*?["):
+                    return False
+                if not _literal_scratch(os.path.expanduser(operand), cwd):
+                    return False
+        elif executable in recreate_tools:
+            # mkdir/cp allowed when their DESTINATION stays in scratch; a cp
+            # SOURCE may be any readable path (copying INTO scratch never
+            # writes outside it). mkdir -p operands are all destinations.
+            if executable == "mkdir":
+                for token in argv[idx + 1:]:
+                    if token == "--" or _redirection(token) or not _path_operand(token):
+                        continue
+                    if not _operand_in_scratch(token, cwd, allow_root=True):
+                        return False
+            else:  # cp — last path operand is the destination
+                path_ops = [t for t in argv[idx + 1:]
+                            if t != "--" and not _redirection(t) and _path_operand(t)]
+                if not path_ops:
+                    return False
+                dest = path_ops[-1]
+                if "$" in dest or "`" in dest or ".." in dest.split("/"):
+                    return False
+                if not _operand_in_scratch(dest, cwd, allow_root=True):
+                    return False
+        elif executable == "cd":
+            dest = None
+            for token in argv[idx + 1:]:
+                if _redirection(token):
+                    continue
+                if token.startswith("-"):
+                    continue
+                dest = token
+                break
+            if dest is None or "$" in dest or "`" in dest:
+                return False
+            expanded = os.path.expanduser(dest)
+            if not _literal_scratch(expanded, cwd) and expanded not in scratch_roots:
+                return False
+            resolved = expanded if os.path.isabs(expanded) else (
+                os.path.normpath(os.path.join(cwd, expanded)) if cwd else None
+            )
+            if resolved is None:
+                cwd = None
+            else:
+                cwd = os.path.normpath(resolved)
+        elif executable in companions:
+            continue
+        else:
+            # Any non-allowlisted executable fails closed.
+            return False
+    return saw_rm
+
+
+def _iter_command_segments_for_scratch(command: str):
+    """Yield argv lists per command segment, skipping heredoc body lines."""
+    masked = _mask_heredoc_data(command)
+    for line in masked.splitlines() or [masked]:
+        line = _strip_line_comment(line)
+        if not line.strip():
+            continue
+        try:
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
+            lexer.whitespace_split = True
+            lexer.commenters = "#"
+            tokens = list(lexer)
+        except ValueError:
+            # An unlexable line fails closed: propagate by yielding a marker
+            # that _is_scratch_cleanup treats as non-scratch.
+            yield ["<<unlexable>>"]
+            continue
+        segment: list[str] = []
+        for token in tokens:
+            if token and set(token) <= {";", "&", "|", "(", ")"}:
+                if segment:
+                    yield segment
+                    segment = []
+                continue
+            segment.append(token)
+        if segment:
+            yield segment
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
@@ -2325,18 +2766,43 @@ def detect_dangerous_command(command: str) -> tuple:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
     if _command_parser_limit_exceeded(command):
-        return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
+        # same skeleton probe as the hardline
+        # floor — quoted payload bulk is inert data, only the unquoted
+        # skeleton counts against the separator-free ceiling.
+        if not _unquoted_skeleton_within_limit(command):
+            return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
+    # scratch-space rm cleanup skips only the four
+    # rm-shape dangerous patterns (approval-tier). The hardline floor above
+    # still blocks any rm touching protected roots regardless of this flag.
+    scratch_cleanup = _is_scratch_cleanup(command)
 
     for command_variant in _command_detection_variants(command):
         command_lower = command_variant.lower()
+        # heredoc bodies are DATA. The stream-write
+        # rules (tee / >> into env/config) use DOTALL `.*` that walked 100+
+        # chars into report prose and matched a config.yaml mention that was
+        # never a redirection target (heredoc report-prose incidents:
+        # stream-write rules matched a config.yaml mention inside heredoc
+        # data). Mask heredoc bodies for the pattern scan so those rules see
+        # only the real command line. Other patterns are unaffected because
+        # the masking preserves every non-heredoc byte.
+        masked_variant = _mask_heredoc_data(command_variant)
+        command_lower = masked_variant.lower()
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
             if pattern_re.search(command_lower):
+                if scratch_cleanup and description in _SCRATCH_CLEANUP_RM_DESCRIPTIONS:
+                    continue
                 pattern_key = description
                 return (True, pattern_key, description)
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
+        # a malformed verdict manufactured by
+        # normalization's backslash-strip (quote-parity flip) is not trusted
+        # when the raw command lexes cleanly. See _raw_command_lexes_cleanly.
+        if description == _MALFORMED_EXEC_DESCRIPTION and _raw_command_lexes_cleanly(command):
+            continue
         return (True, description, description)
     return (False, None, None)
 

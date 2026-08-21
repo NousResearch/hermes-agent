@@ -599,7 +599,11 @@ def test_recoverable_dangerous_commands_still_pass_yolo(clean_session, monkeypat
     monkeypatch.setenv("HERMES_YOLO_MODE", "1")
 
     # These are dangerous but NOT hardline — yolo should still pass them.
-    for cmd in ["rm -rf /tmp/x", "chmod -R 777 .", "git reset --hard", "git push --force"]:
+    # (`rm -rf /tmp/scratch-dir` is used instead of a bare /tmp path because
+    # literal absolute /tmp rm targets are now classified as scratch cleanup
+    # and skip the dangerous tier entirely — that exemption is what
+    # test_scratch_cleanup_skips_dangerous_rm_patterns pins.)
+    for cmd in ["rm -rf ~/scratch/nonexistent", "chmod -R 777 .", "git reset --hard", "git push --force"]:
         # Sanity: still flagged as dangerous
         is_dangerous, _, _ = detect_dangerous_command(cmd)
         assert is_dangerous, f"precondition: {cmd!r} should be in DANGEROUS_PATTERNS"

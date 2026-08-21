@@ -495,6 +495,81 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
+_GFM_FENCE_OPEN_RE = re.compile(
+    r"^(?P<indent> {0,3})(?P<fence>`{3,}|~{3,})(?P<info>[^\r\n]*)$"
+)
+_TELEGRAM_CODE_LANGUAGE_RE = re.compile(r"^[A-Za-z0-9_+.-]+$")
+
+
+def _protect_gfm_fenced_blocks(
+    text: str,
+    stash: Callable[[str], str],
+) -> str:
+    """Normalize GFM fences to balanced Telegram MarkdownV2 pre blocks.
+
+    GFM permits backtick or tilde fences of length three or greater, and a
+    closing fence may be longer than its opener. Telegram only understands
+    triple backticks. Parse line-by-line so a four-backtick block may safely
+    contain triple-backtick text, then normalize the complete block. An
+    unclosed opener and its remainder are stashed as escaped literal text so
+    Telegram never receives a malformed pre entity.
+    """
+    lines = text.splitlines(keepends=True)
+    output: list[str] = []
+    index = 0
+
+    while index < len(lines):
+        opening_line = lines[index].rstrip("\r\n")
+        opening_match = _GFM_FENCE_OPEN_RE.match(opening_line)
+        if opening_match is None:
+            output.append(lines[index])
+            index += 1
+            continue
+
+        fence = opening_match.group("fence")
+        info = opening_match.group("info").strip()
+        if fence.startswith("`") and "`" in info:
+            output.append(lines[index])
+            index += 1
+            continue
+
+        closing_index = None
+        for candidate_index in range(index + 1, len(lines)):
+            candidate = lines[candidate_index].rstrip("\r\n")
+            stripped = candidate.lstrip(" ")
+            indent_width = len(candidate) - len(stripped)
+            if indent_width > 3 or not stripped:
+                continue
+            closing_run = stripped.rstrip(" \t")
+            trailing = stripped[len(closing_run):]
+            if trailing and not trailing.isspace():
+                continue
+            if (
+                closing_run
+                and set(closing_run) == {fence[0]}
+                and len(closing_run) >= len(fence)
+            ):
+                closing_index = candidate_index
+                break
+
+        if closing_index is None:
+            output.append(stash(_escape_mdv2("".join(lines[index:]))))
+            break
+
+        language = info.split()[0] if info else ""
+        if not _TELEGRAM_CODE_LANGUAGE_RE.fullmatch(language):
+            language = ""
+        body = "".join(lines[index + 1:closing_index])
+        body = body.replace("\\", "\\\\").replace("`", "\\`")
+        opening = f"```{language}\n"
+        output.append(stash(opening + body + "```"))
+        closing_line = lines[closing_index]
+        output.append(closing_line[len(closing_line.rstrip("\r\n")):])
+        index = closing_index + 1
+
+    return "".join(output)
+
+
 _CHUNK_INDICATOR_ON_FENCE_RE = re.compile(
     r'(?m)^``` (?P<indicator>(?:\\)?\(\d+/\d+(?:\\)?\))$'
 )
@@ -8346,23 +8421,9 @@ class TelegramAdapter(BasePlatformAdapter):
         #    before the normal MarkdownV2 conversions run.
         text = _wrap_markdown_tables(text)
 
-        # 1) Protect fenced code blocks (``` ... ```)
-        #    Per MarkdownV2 spec, \ and ` inside pre/code must be escaped.
-        def _protect_fenced(m):
-            raw = m.group(0)
-            # Split off opening ``` (with optional language) and closing ```
-            open_end = raw.index('\n') + 1 if '\n' in raw[3:] else 3
-            opening = raw[:open_end]
-            body_and_close = raw[open_end:]
-            body = body_and_close[:-3]
-            body = body.replace('\\', '\\\\').replace('`', '\\`')
-            return _ph(opening + body + '```')
-
-        text = re.sub(
-            r'(```(?:[^\n]*\n)?[\s\S]*?```)',
-            _protect_fenced,
-            text,
-        )
+        # 1) Protect and normalize complete GFM fenced blocks. Telegram only
+        #    accepts triple-backtick pre entities while GFM allows 3+.
+        text = _protect_gfm_fenced_blocks(text, _ph)
 
         # 2) Protect inline code (`...`)
         #    Escape \ inside inline code per MarkdownV2 spec.

@@ -20,9 +20,11 @@ from gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import (  # noqa: E402
     TelegramAdapter,
     _escape_mdv2,
+    _separate_chunk_indicator_from_fence,
     _strip_mdv2,
     _wrap_markdown_tables,
 )
+from gateway.platforms.base import utf16_len  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +114,65 @@ class TestFormatMessageCodeBlocks:
         text = "```\necho `hostname`\n```"
         result = adapter.format_message(text)
         assert r"echo \`hostname\`" in result
+
+    def test_four_backtick_fence_with_triple_backticks_is_normalized(self, adapter):
+        text = "````text\nouter\n```\ninner\n```\nend\n````"
+        result = adapter.format_message(text)
+
+        assert result.startswith("```text\n")
+        assert result.endswith("```")
+        assert "\\`\\`\\`\ninner\n\\`\\`\\`" in result
+        assert "````" not in result
+
+    def test_inline_triple_backticks_are_escaped_as_literal_text(self, adapter):
+        result = adapter.format_message("the syntax is ```like this``` inline")
+
+        assert "like this" in result
+        assert "```" not in result
+
+    def test_tilde_fence_and_longer_closing_fence_are_normalized(self, adapter):
+        result = adapter.format_message("~~~python\nprint('ok')\n~~~~~   \nnext")
+
+        assert result.startswith("```python\nprint('ok')\n```\n")
+        assert result.endswith("next")
+        assert "~~~" not in result
+
+    def test_fence_preserves_newline_after_closing_line(self, adapter):
+        result = adapter.format_message("```sh\nmake deploy\n```\n\nAfter")
+
+        assert "```sh\nmake deploy\n```\n\nAfter" in result
+
+    def test_unclosed_gfm_fence_becomes_escaped_literal_text(self, adapter):
+        result = adapter.format_message("````text\nunclosed *body*")
+
+        assert result.startswith(r"\`\`\`\`text")
+        assert r"\*body\*" in result
+        assert "```text\n" not in result
+
+    def test_long_four_backtick_block_chunks_as_balanced_markdownv2(self, adapter):
+        body = ("línea 😀 con ``` interno y C:\\tmp\n" * 220)
+        formatted = adapter.format_message(f"````text\n{body}````\n")
+        chunks = adapter.truncate_message(
+            formatted,
+            adapter.MAX_MESSAGE_LENGTH,
+            len_fn=utf16_len,
+        )
+        chunks = [
+            _separate_chunk_indicator_from_fence(
+                re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
+            )
+            for chunk in chunks
+        ]
+
+        assert len(chunks) > 1
+        assert all(utf16_len(chunk) <= adapter.MAX_MESSAGE_LENGTH for chunk in chunks)
+        assert all(chunk.count("```") == 2 for chunk in chunks)
+        assert all(chunk.startswith("```text\n") for chunk in chunks)
+        without_indicators = [
+            re.sub(r"\n ?\\\(\d+/\d+\\\)$", "", chunk)
+            for chunk in chunks
+        ]
+        assert all(chunk.endswith("\n```") for chunk in without_indicators)
 
     def test_inline_code_no_double_escape(self, adapter):
         r"""Already-escaped backslashes should not be quadruple-escaped."""

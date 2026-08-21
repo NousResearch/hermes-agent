@@ -1076,6 +1076,38 @@ export async function addProjectFolder(
   reconcileProjects()
 }
 
+// Symmetric to addProjectFolder: optimistically drops the folder from the
+// cached project, reassigning primary to the first remaining folder if the
+// removed one held it, then persists via projects.remove_folder (a failure
+// rolls the cache back). A project always needs at least one folder (see
+// project-dialog.tsx's create-mode requirement), so this refuses client-side
+// rather than letting the backend reject an empty-folder project.
+export async function removeProjectFolder(id: string, path: string): Promise<void> {
+  const snap = snapshotProjects()
+  const trimmed = path.trim()
+  const project = snap.projects.find(proj => proj.id === id)
+
+  if (!project || (project.folders?.length ?? 0) <= 1) {
+    return
+  }
+
+  const wasPrimary = project.folders.find(f => f.path === trimmed)?.is_primary ?? false
+  const remaining = project.folders.filter(f => f.path !== trimmed)
+
+  if (wasPrimary && remaining.length && !remaining.some(f => f.is_primary)) {
+    remaining[0] = { ...remaining[0], is_primary: true }
+  }
+
+  $projects.set(snap.projects.map(proj => (proj.id === id ? { ...proj, folders: remaining } : proj)))
+
+  if (wasPrimary && remaining.length) {
+    $projectTree.set(snap.tree.map(node => (node.id === id ? { ...node, path: remaining[0].path } : node)))
+  }
+
+  await persistOrRollback(snap, () => gatewayRequest('projects.remove_folder', { id, path: trimmed }))
+  reconcileProjects()
+}
+
 // True when the session currently open in the main pane belongs to `projectId`.
 // Used so deleting a project you have a session open from kicks you back to the
 // intro draft instead of stranding you in a now-orphaned view.
@@ -1129,7 +1161,7 @@ export async function setActiveProject(id: null | string): Promise<void> {
 // menu can open create / rename / add-folder flows without prop threading
 // (mirrors $profileCreateRequest).
 export interface ProjectDialogState {
-  mode: 'add-folder' | 'create' | 'rename'
+  mode: 'add-folder' | 'create' | 'manage-folders' | 'rename'
   projectId?: string
   name?: string
 }
@@ -1155,6 +1187,10 @@ export function openProjectRename(project: { id: string; name: string }): void {
 
 export function openProjectAddFolder(project: { id: string; name: string }): void {
   $projectDialog.set({ mode: 'add-folder', name: project.name, projectId: project.id })
+}
+
+export function openProjectManageFolders(project: { id: string; name: string }): void {
+  $projectDialog.set({ mode: 'manage-folders', name: project.name, projectId: project.id })
 }
 
 export function closeProjectDialog(): void {

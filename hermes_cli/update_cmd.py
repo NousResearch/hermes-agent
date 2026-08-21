@@ -3684,7 +3684,27 @@ def _detect_venv_python_processes(
     skip: set[int] = set(exclude_pids or set())
     skip.add(os.getpid())
     try:
+        from gateway.status import looks_like_gateway_command_line as _is_gw
+    except Exception:
+        _is_gw = None
+    try:
         for anc in psutil.Process().parents():
+            # #87594: do NOT blanket-exclude ancestors. When `/update` runs
+            # from a messaging platform the updater is a CHILD of the gateway
+            # — excluding all ancestors hides the gateway from the scan, so
+            # the pause machinery downstream never sees the one process it
+            # exists to stop, and the update dead-ends on `venv-blocked`.
+            # A GATEWAY ancestor stays visible (the pause path stops it
+            # gracefully; a detached child updater survives its parent's
+            # stop on Windows). Every other ancestor (shells, terminals,
+            # this CLI's own venv python chain) stays excluded — an updater
+            # must never nominate its own interactive ancestry as blockers.
+            try:
+                anc_cmdline = " ".join(anc.cmdline() or [])
+            except Exception:
+                anc_cmdline = ""
+            if _is_gw is not None and anc_cmdline and _is_gw(anc_cmdline):
+                continue
             skip.add(int(anc.pid))
     except Exception:
         pass
@@ -3915,18 +3935,71 @@ def _defer_update_for_self_lock(loaded: list[str]) -> None:
     _m()._write_update_incomplete_marker()
 
 
+def _hermes_holder_subcommand(cmdline: str) -> str | None:
+    """The actual Hermes SUBCOMMAND a venv-holder argv runs, or None.
+
+    Token-based, never substring (#90778: ``kanban --preserve-cache``
+    contained \"serve\" and got labeled as the Desktop backend). Finds the
+    ``hermes_cli.main`` / ``hermes(.exe)`` entry token, then returns the
+    first following token that is not a flag or a flag's value. Profile
+    selectors (``--profile X``, ``-p X``) are skipped like the canonical
+    gateway matcher does. Returns None when no subcommand can be
+    determined — callers must NOT guess a label in that case.
+    """
+    try:
+        import shlex
+
+        tokens = shlex.split(cmdline, posix=False)
+    except Exception:
+        tokens = cmdline.split()
+
+    entry_idx: int | None = None
+    for i, token in enumerate(tokens):
+        low = token.lower().strip('"')
+        if low.endswith("hermes_cli.main") and i > 0 and tokens[i - 1] == "-m":
+            entry_idx = i
+            break
+        base = low.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+        if base in ("hermes", "hermes.exe"):
+            entry_idx = i
+            break
+    if entry_idx is None:
+        return None
+
+    value_flags = {"--profile", "-p", "--config", "--model", "--provider"}
+    i = entry_idx + 1
+    while i < len(tokens):
+        token = tokens[i]
+        if token in value_flags:
+            i += 2
+            continue
+        if token.startswith("-"):
+            i += 1
+            continue
+        return token.lower()
+    return None
+
+
 def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> str:
-    """Explain which venv processes block the update and how to clear them."""
+    """Explain which venv processes block the update and how to clear them.
+
+    Holder labels come from the parsed SUBCOMMAND, never substring matching
+    (#90778): a standalone ``hermes dashboard`` must not be labeled as the
+    Desktop backend (advice to close an app that isn't running), and flags
+    like ``--preserve-cache`` must not match \"serve\". Unknown argv gets no
+    hint rather than a wrong one.
+    """
     lines = [
         "✗ Other Hermes processes are running from this install's venv:",
     ]
+    hint_by_subcommand = {
+        "serve": "  ← Hermes backend (if the Desktop app is open, close it)",
+        "dashboard": "  ← hermes dashboard (stop it: hermes dashboard stop, or close that terminal)",
+        "gateway": "  ← gateway",
+    }
     for pid, name, cmdline in matches[:6]:
-        hint = ""
-        low = cmdline.lower()
-        if "serve" in low or "dashboard" in low:
-            hint = "  ← Hermes Desktop backend (close the desktop app)"
-        elif "gateway" in low:
-            hint = "  ← gateway"
+        sub = _hermes_holder_subcommand(cmdline)
+        hint = hint_by_subcommand.get(sub or "", "")
         lines.append(f"  PID {pid}  {name}  {cmdline[:120]}{hint}")
     if len(matches) > 6:
         lines.append(f"  ... and {len(matches) - 6} more")
@@ -3983,9 +4056,23 @@ def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
 
     # Never return ourselves or our own ancestry: a CLI ``hermes update``
     # runs from the venv python and would otherwise nominate itself.
+    # Same #87594 carve-out as _detect_venv_python_processes: a GATEWAY
+    # ancestor is not "our own ancestry" in the interactive sense — it is
+    # the process the pause machinery must see (the /update-from-gateway
+    # topology makes the updater the gateway's child).
+    try:
+        from gateway.status import looks_like_gateway_command_line as _is_gw
+    except Exception:
+        _is_gw = None
     skip: set[int] = {os.getpid()}
     try:
         for anc in psutil.Process().parents():
+            try:
+                anc_cmdline = " ".join(anc.cmdline() or [])
+            except Exception:
+                anc_cmdline = ""
+            if _is_gw is not None and anc_cmdline and _is_gw(anc_cmdline):
+                continue
             skip.add(int(anc.pid))
     except Exception:
         pass

@@ -306,6 +306,10 @@ _MULTIMODAL_TOOL_CONTENT_PATTERNS = [
     "expected string, got array",
     # Alibaba/DashScope variant
     "tool_call.content must be string",
+    # DeepInfra (pydantic v2 on ChatCompletionToolMessage.content)
+    "input should be a valid string",
+    # Morph — untagged-enum deserialize failure
+    "chatcompletionrequesttoolmessagecontent",
 ]
 
 # Context overflow patterns
@@ -1429,6 +1433,23 @@ def _classify_by_status(
     # aborts a 400 Bad Request.
     if status_code == 408:
         return result_fn(FailoverReason.timeout, retryable=True)
+
+    # 422 Unprocessable Entity — schema-validation rejection.  Providers
+    # like DeepInfra and Morph return 422 for content-type mismatches
+    # (e.g. list-type tool content on a model that requires string).
+    # Check multimodal-tool-content patterns before the generic 4xx
+    # fallthrough so the existing recovery path fires.
+    if status_code == 422:
+        if any(p in error_msg for p in _MULTIMODAL_TOOL_CONTENT_PATTERNS):
+            return result_fn(
+                FailoverReason.multimodal_tool_content_unsupported,
+                retryable=True,
+            )
+        return result_fn(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=True,
+        )
 
     # Other 4xx — non-retryable
     if 400 <= status_code < 500:

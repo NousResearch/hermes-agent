@@ -1144,6 +1144,35 @@ class TestInlineRawMediaRoundTrip:
             document_bytes,
         ]
 
+    def test_audio_takes_precedence_in_mixed_inline_files(self, monkeypatch):
+        """Mixed audio remains agent-visible while documents keep their own path."""
+        audio_bytes = b"ID3\x04\x00\x00\x00\x00\x00\x00inline A2A audio"
+        document_bytes = b"inline A2A document"
+        event = _round_trip_parts(
+            monkeypatch,
+            [
+                protocol.text_part("Compare these files"),
+                {
+                    "raw": base64.b64encode(audio_bytes).decode("ascii"),
+                    "filename": "sample.mp3",
+                    "mediaType": "audio/mpeg",
+                },
+                {
+                    "raw": base64.b64encode(document_bytes).decode("ascii"),
+                    "filename": "notes.txt",
+                    "mediaType": "text/plain",
+                },
+            ],
+            "ctx-mixed-audio-document",
+        )
+
+        assert event.message_type is MessageType.AUDIO
+        assert event.media_types == ["audio/mpeg", "text/plain"]
+        assert [Path(path).read_bytes() for path in event.media_urls] == [
+            audio_bytes,
+            document_bytes,
+        ]
+
     def test_malformed_inline_base64_is_skipped(self, monkeypatch):
         """Malformed base64 never becomes a cached attachment or fails the task."""
         event = _round_trip_parts(

@@ -142,14 +142,14 @@ def _cache_inline_raw_media(parts: list[dict]) -> list[CachedMedia]:
 def _message_type_for_media(cached_media: list[CachedMedia]) -> MessageType:
     """Match the shared gateway precedence for mixed attachments."""
     kinds = {item.kind for item in cached_media}
+    if "audio" in kinds:
+        return MessageType.AUDIO
     if "document" in kinds:
         return MessageType.DOCUMENT
     if "image" in kinds:
         return MessageType.PHOTO
     if "video" in kinds:
         return MessageType.VIDEO
-    if "audio" in kinds:
-        return MessageType.AUDIO
     return MessageType.TEXT
 
 

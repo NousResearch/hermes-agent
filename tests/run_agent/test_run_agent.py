@@ -4248,6 +4248,31 @@ class TestRunConversation:
         assert "/thinkon" in result["final_response"]
 
 
+    def test_length_structured_reasoning_exhausted_skips_continuation(self, agent):
+        """Separate reasoning_content with no visible text must skip retries."""
+        self._setup_agent(agent)
+        resp = _mock_response(
+            content="",
+            reasoning_content="internal reasoning returned out of band",
+            finish_reason="length",
+        )
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is False
+        assert result["api_calls"] == 1
+        assert "reasoning" in result["error"].lower()
+        assert "output tokens" in result["error"].lower()
+        assert result["final_response"] is not None
+        assert "Thinking Budget Exhausted" in result["final_response"]
+        assert "/thinkon" in result["final_response"]
+
     def test_length_with_tool_calls_returns_partial_without_executing_tools(self, agent):
         self._setup_agent(agent)
         bad_tc = _mock_tool_call(

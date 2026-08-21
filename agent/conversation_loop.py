@@ -3638,6 +3638,10 @@ def run_conversation(
 
                     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
                     _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
+                    _trunc_reasoning = (
+                        getattr(_trunc_msg, "reasoning_content", None)
+                        or getattr(_trunc_msg, "reasoning", None)
+                    ) if _trunc_msg else None
 
                     # ── Detect thinking-budget exhaustion ──────────────
                     # When the model spends ALL output tokens on reasoning
@@ -3658,13 +3662,20 @@ def run_conversation(
                             re.IGNORECASE,
                         )
                     )
-                    _thinking_exhausted = (
-                        not _trunc_has_tool_calls
-                        and _has_think_tags
+                    _inline_thinking_exhausted = (
+                        _has_think_tags
                         and (
                             (_trunc_content is not None and not agent._has_content_after_think_block(_trunc_content))
                             or _trunc_content is None
                         )
+                    )
+                    _structured_thinking_exhausted = (
+                        bool(_trunc_reasoning)
+                        and not str(_trunc_content or "").strip()
+                    )
+                    _thinking_exhausted = (
+                        not _trunc_has_tool_calls
+                        and (_inline_thinking_exhausted or _structured_thinking_exhausted)
                     )
 
                     if _thinking_exhausted:

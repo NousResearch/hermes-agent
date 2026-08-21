@@ -240,6 +240,44 @@ class TestTelegramApprovalCallback:
 
 
     @pytest.mark.asyncio
+    async def test_approval_callback_edits_message_when_ack_times_out(self):
+        """A Telegram callback ACK timeout must not leave stale buttons visible.
+
+        The approval has already been resolved before ``query.answer()`` runs.
+        If Telegram times out on that short ACK, the handler must still edit the
+        original approval message to show the decision and remove the keyboard.
+        """
+        adapter = _make_adapter()
+        adapter._approval_state[7] = "agent:main:telegram:group:12345:99"
+        adapter.pause_typing_for_chat("12345")
+
+        query = AsyncMock()
+        query.data = "ea:session:7"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Ivan"
+        query.from_user.id = "12345"
+        query.answer = AsyncMock(side_effect=TimeoutError("callback ack timeout"))
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=1):
+                await adapter._handle_callback_query(update, context)
+
+        query.answer.assert_called_once()
+        query.edit_message_text.assert_called_once()
+        edit_kwargs = query.edit_message_text.call_args[1]
+        assert "Approved for session" in edit_kwargs["text"]
+        assert edit_kwargs["reply_markup"] is None
+        assert "12345" not in adapter._typing_paused
+
+
+    @pytest.mark.asyncio
     async def test_update_prompt_callback_not_affected(self, tmp_path):
         """Ensure update prompt callbacks still work."""
         adapter = _make_adapter()

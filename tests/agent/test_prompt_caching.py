@@ -168,6 +168,25 @@ class TestPromptCachePlan:
         assert "cache_control" in tools[-1]
         assert "cache_control" not in stripped[-1]
 
+    def test_direct_tool_cache_with_no_tools_falls_back_safely(self):
+        """direct_native_tool_cache=True with an empty tools list must fall
+        back to the message-only layout: exactly one marker per message here
+        (system + user + assistant), none on tools.
+        """
+        messages = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "Question"},
+            {"role": "assistant", "content": "Answer"},
+        ]
+        plan = build_prompt_cache_plan(
+            messages,
+            [],
+            native_anthropic=True,
+            direct_native_tool_cache=True,
+        )
+        assert plan.marker_count == 3
+        assert len(plan.tools) == 0
+
 
 class TestApplyCacheMarker:
     def test_tool_message_gets_top_level_marker_on_native_anthropic(self):
@@ -583,25 +602,6 @@ class TestApplyIdempotency:
 
         assert caller_history == snapshot
         assert _count_cache_markers(result, []) <= 4
-
-    def test_direct_tool_cache_with_no_tools_falls_back_safely(self):
-        """direct_native_tool_cache=True with an empty tools list must fall
-        back to the message-only layout: exactly one marker per message here
-        (system + user + assistant), none on tools.
-        """
-        messages = [
-            {"role": "system", "content": "System prompt"},
-            {"role": "user", "content": "Question"},
-            {"role": "assistant", "content": "Answer"},
-        ]
-        plan = build_prompt_cache_plan(
-            messages,
-            [],
-            native_anthropic=True,
-            direct_native_tool_cache=True,
-        )
-        assert plan.marker_count == 3
-        assert len(plan.tools) == 0
 
 
 

@@ -100,7 +100,10 @@ export const MessageLine = memo(function MessageLine({
 
   if (msg.kind === 'trail' && (msg.tools?.length || tools.length || thinking)) {
     return shouldShowThinkingTrail(msg, thinkingMode, toolsMode, activityMode) ? (
-      <Box flexDirection="column" marginTop={leadGap ? 1 : 0}>
+      // maxWidth caps the trail at the pet/rail-aware body width (cols) so long
+      // tool/progress lines wrap clear of the floating pet instead of running
+      // under it — the pet overlay would otherwise cover the line tail.
+      <Box flexDirection="column" marginTop={leadGap ? 1 : 0} maxWidth={cols}>
         <ToolTrail
           commandOverride={detailsModeCommandOverride}
           detailsMode={detailsMode}
@@ -270,6 +273,7 @@ export const MessageLine = memo(function MessageLine({
       flexDirection="column"
       marginBottom={msg.role === 'user' || isDiffSegment ? 1 : 0}
       marginTop={msg.role === 'user' || msg.kind === 'slash' || isDiffSegment || leadGap ? 1 : 0}
+      maxWidth={cols}
     >
       {showDetails && (
         <Box flexDirection="column" marginBottom={1}>

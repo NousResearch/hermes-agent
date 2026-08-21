@@ -228,7 +228,7 @@ def set_session_vars(
     session_id: str = "",
     message_id: str = "",
     profile: str = "",
-    cwd: str = "",
+    cwd: str | None = "",
     async_delivery: bool = True,
     ui_session_id: str = "",
     cron_session: Any = _UNSET,
@@ -241,7 +241,9 @@ def set_session_vars(
     helpers are not nestable/stack-safe, and the returned tokens are accepted
     only for API compatibility.
 
-    ``cwd`` pins the logical working directory for this context.
+    ``cwd`` pins the logical working directory for this context. ``None``
+    explicitly masks a process-global ``TERMINAL_CWD`` for a routed profile
+    that has not configured its own workspace.
 
     ``async_delivery`` declares whether this session's channel can route a
     background completion back to the agent after the turn ends (see

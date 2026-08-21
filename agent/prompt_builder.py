@@ -2545,45 +2545,59 @@ def build_context_files_prompt(
     When *skip_soul* is True, SOUL.md is not included here (it was already
     loaded via ``load_soul_md()`` for the identity slot).
     """
+    cwd_is_masked = False
     if cwd is None:
-        cwd = os.getcwd()
-        cwd_is_fallback = True
+        from agent.runtime_cwd import context_cwd_is_masked
+
+        cwd_is_masked = context_cwd_is_masked()
+        if cwd_is_masked:
+            logger.debug(
+                "skipping project-context discovery: session cwd is explicitly masked"
+            )
+            cwd_is_fallback = False
+        else:
+            cwd = os.getcwd()
+            cwd_is_fallback = True
     else:
         cwd_is_fallback = False
 
-    cwd_path = Path(cwd).resolve()
     sections = []
 
-    # Never let a FALLBACK-picked directory inside the Hermes install/source
-    # tree gain system-prompt authority. A backend that self-spawns into that
-    # tree (the desktop app default) would otherwise load this repo's
-    # contributor AGENTS.md as authoritative project context (#64590). An
-    # explicitly configured cwd is honored verbatim — the Hermes tree is a
-    # legitimate workspace when the user deliberately points a session at it —
-    # and CLI-style surfaces pass allow_install_tree_fallback=True because
-    # their launch dir IS the user's shell cwd (developing Hermes in-tree).
-    from agent.runtime_cwd import _is_install_tree
-
-    if (
-        cwd_is_fallback
-        and not allow_install_tree_fallback
-        and _is_install_tree(cwd_path)
-    ):
-        logger.warning(
-            "skipping project-context discovery: working-directory resolution "
-            "fell back to the Hermes install tree (%s) — set terminal.cwd to "
-            "your project directory",
-            cwd_path,
-        )
+    if cwd_is_masked:
         project_context = ""
     else:
-        # Priority-based project context: first match wins
-        project_context = (
-            _load_hermes_md(cwd_path, context_length)
-            or _load_agents_md(cwd_path, context_length)
-            or _load_claude_md(cwd_path, context_length)
-            or _load_cursorrules(cwd_path, context_length)
-        )
+        cwd_path = Path(cwd).resolve()
+
+        # Never let a FALLBACK-picked directory inside the Hermes install/source
+        # tree gain system-prompt authority. A backend that self-spawns into that
+        # tree (the desktop app default) would otherwise load this repo's
+        # contributor AGENTS.md as authoritative project context (#64590). An
+        # explicitly configured cwd is honored verbatim — the Hermes tree is a
+        # legitimate workspace when the user deliberately points a session at it —
+        # and CLI-style surfaces pass allow_install_tree_fallback=True because
+        # their launch dir IS the user's shell cwd (developing Hermes in-tree).
+        from agent.runtime_cwd import _is_install_tree
+
+        if (
+            cwd_is_fallback
+            and not allow_install_tree_fallback
+            and _is_install_tree(cwd_path)
+        ):
+            logger.warning(
+                "skipping project-context discovery: working-directory resolution "
+                "fell back to the Hermes install tree (%s) — set terminal.cwd to "
+                "your project directory",
+                cwd_path,
+            )
+            project_context = ""
+        else:
+            # Priority-based project context: first match wins
+            project_context = (
+                _load_hermes_md(cwd_path, context_length)
+                or _load_agents_md(cwd_path, context_length)
+                or _load_claude_md(cwd_path, context_length)
+                or _load_cursorrules(cwd_path, context_length)
+            )
     if project_context:
         sections.append(project_context)
 

@@ -19,6 +19,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _UNSET: Any = object()
+_MASK_PROCESS_CWD: Any = object()
 
 _SESSION_CWD: ContextVar = ContextVar("HERMES_SESSION_CWD", default=_UNSET)
 
@@ -43,27 +44,43 @@ def _is_install_tree(p: Path) -> bool:
 
 def set_session_cwd(cwd: str | None) -> Token:
     """Pin the logical cwd for the current context."""
-    return _SESSION_CWD.set((cwd or "").strip())
+    return _SESSION_CWD.set(_MASK_PROCESS_CWD if cwd is None else cwd.strip())
 
 
 def clear_session_cwd() -> None:
     _SESSION_CWD.set("")
 
 
-def _session_cwd_override() -> str:
+def _session_cwd_override() -> tuple[bool, str]:
     value = _SESSION_CWD.get()
-    if value is _UNSET:
-        return ""
-    return str(value).strip()
+    if value is _MASK_PROCESS_CWD:
+        return True, ""
+    if value is _UNSET or not str(value).strip():
+        return False, ""
+    return True, str(value).strip()
+
+
+def context_cwd_is_masked() -> bool:
+    """Return whether context discovery must not use the process cwd.
+
+    A multiplexed profile with no configured workspace intentionally resolves
+    to ``None`` for compatibility with callers that expect an optional Path.
+    This separate predicate preserves the distinction between that explicit
+    mask and the ordinary unset state used by local CLI fallback.
+    """
+    pinned, override = _session_cwd_override()
+    return pinned and not override
 
 
 def resolve_agent_cwd() -> Path:
-    override = _session_cwd_override()
-    if override:
-        p = Path(override).expanduser()
-        if p.is_dir():
-            return p
-        logger.warning("configured working directory does not exist: %s", override)
+    pinned, override = _session_cwd_override()
+    if pinned:
+        if override:
+            p = Path(override).expanduser()
+            if p.is_dir():
+                return p
+            logger.warning("configured working directory does not exist: %s", override)
+        return Path(os.getcwd())
     raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
         p = Path(raw).expanduser()
@@ -82,13 +99,14 @@ def resolve_context_cwd() -> Path | None:
     # source tree itself, which is a legitimate workspace when the user is
     # developing Hermes (per-surface policy for fallback-picked directories
     # lives in build_context_files_prompt; see #64590).
-    override = _session_cwd_override()
-    if override:
-        p = Path(override).expanduser()
-        if not p.is_dir():
-            logger.warning("configured working directory does not exist: %s", override)
-        else:
-            return p
+    pinned, override = _session_cwd_override()
+    if pinned:
+        if override:
+            p = Path(override).expanduser()
+            if not p.is_dir():
+                logger.warning("configured working directory does not exist: %s", override)
+            else:
+                return p
         return None
     raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:

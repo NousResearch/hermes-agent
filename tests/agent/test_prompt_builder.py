@@ -552,6 +552,21 @@ class TestBuildContextFilesPrompt:
         assert "Never give up" not in result
         assert result == ""
 
+    def test_masked_session_cwd_never_falls_back_to_process_agents(self, monkeypatch, tmp_path):
+        import agent.runtime_cwd as rt
+        from agent.runtime_cwd import set_session_cwd
+
+        (tmp_path / "AGENTS.md").write_text(
+            "Process cwd must not become profile context.", encoding="utf-8"
+        )
+        monkeypatch.chdir(tmp_path)
+        token = set_session_cwd(None)
+        try:
+            result = build_context_files_prompt(cwd=None, skip_soul=True)
+        finally:
+            rt._SESSION_CWD.reset(token)
+        assert result == ""
+
 
 
 
@@ -1056,5 +1071,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

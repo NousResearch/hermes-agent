@@ -1,10 +1,12 @@
 import asyncio
 import os
+from types import SimpleNamespace
 
 import pytest
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner
+from gateway.run import _profile_runtime_scope
 from gateway.session import SessionContext, SessionSource
 from gateway.session_context import (
     get_session_env,
@@ -74,6 +76,107 @@ def test_set_session_env_sets_contextvars(monkeypatch):
 
     # Clean up
     runner._clear_session_env(tokens)
+
+
+def test_multiplex_session_env_pins_routed_profile_cwd(monkeypatch, tmp_path):
+    """Concurrent profiles must not discover one another's AGENTS workspace."""
+    from agent.runtime_cwd import resolve_context_cwd
+    from agent.prompt_builder import build_context_files_prompt
+
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path / "stale-default"))
+    runner = object.__new__(GatewayRunner)
+    runner.config = SimpleNamespace(multiplex_profiles=True)
+    runner.adapters = {}
+
+    homes = []
+    for profile in ("eve", "grace"):
+        home = tmp_path / profile / "home"
+        workspace = tmp_path / profile / "workspace"
+        home.mkdir(parents=True)
+        workspace.mkdir(parents=True)
+        (workspace / "AGENTS.md").write_text(
+            f"# {profile} operating manual\n", encoding="utf-8"
+        )
+        (home / "config.yaml").write_text(
+            f"terminal:\n  cwd: {workspace}\n", encoding="utf-8"
+        )
+        homes.append((profile, home, workspace))
+
+    async def bind(profile, home, workspace):
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id=profile,
+            chat_type="channel",
+            user_id=f"{profile}-user",
+            profile=profile,
+        )
+        context = SessionContext(source=source, connected_platforms=[], home_channels={})
+        with _profile_runtime_scope(home):
+            tokens = runner._set_session_env(context)
+            try:
+                await asyncio.sleep(0)
+                cwd = resolve_context_cwd()
+                return (
+                    cwd,
+                    get_session_env("HERMES_SESSION_PROFILE"),
+                    build_context_files_prompt(cwd=cwd, skip_soul=True),
+                )
+            finally:
+                runner._clear_session_env(tokens)
+
+    async def run():
+        return await asyncio.gather(*(bind(*item) for item in homes))
+
+    assert asyncio.run(run()) == [
+        (
+            homes[0][2],
+            "eve",
+            "# Project Context\n\nThe following project context files have "
+            "been loaded and should be followed:\n\n## AGENTS.md\n\n"
+            "# eve operating manual",
+        ),
+        (
+            homes[1][2],
+            "grace",
+            "# Project Context\n\nThe following project context files have "
+            "been loaded and should be followed:\n\n## AGENTS.md\n\n"
+            "# grace operating manual",
+        ),
+    ]
+
+
+def test_multiplex_profile_without_config_masks_process_default_cwd(monkeypatch, tmp_path):
+    """A fresh routed profile must not inherit the launch profile workspace."""
+    from agent.runtime_cwd import resolve_context_cwd
+    from agent.prompt_builder import build_context_files_prompt
+
+    stale = tmp_path / "default-workspace"
+    stale.mkdir()
+    (stale / "AGENTS.md").write_text("# wrong default profile\n", encoding="utf-8")
+    monkeypatch.setenv("TERMINAL_CWD", str(stale))
+    runner = object.__new__(GatewayRunner)
+    runner.config = SimpleNamespace(multiplex_profiles=True)
+    runner.adapters = {}
+    home = tmp_path / "fresh-profile" / "home"
+    home.mkdir(parents=True)
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="fresh",
+        chat_type="channel",
+        user_id="fresh-user",
+        profile="fresh",
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+
+    with _profile_runtime_scope(home):
+        tokens = runner._set_session_env(context)
+        try:
+            assert resolve_context_cwd() is None
+            assert "wrong default profile" not in build_context_files_prompt(
+                cwd=resolve_context_cwd(), skip_soul=True
+            )
+        finally:
+            runner._clear_session_env(tokens)
 
 
 def test_clear_session_env_restores_previous_state(monkeypatch):
@@ -272,4 +375,3 @@ def test_cron_session_set_clear_and_reset_tristate(monkeypatch):
 
     reset_session_vars()
     assert get_session_env("HERMES_CRON_SESSION") == "1"
-

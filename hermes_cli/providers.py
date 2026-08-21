@@ -714,6 +714,7 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
       1. Host-mandated mode (special endpoints that only accept one protocol).
       2. Nous Portal dual-wire (model-derived; overlay alone is openai_chat).
       3. Known provider → transport → TRANSPORT_TO_API_MODE.
+         Plugin-profile transports apply only on their declared endpoint.
       4. Direct provider checks (bedrock).
       5. Default: 'chat_completions'.
 
@@ -734,6 +735,18 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
 
     pdef = get_provider(provider)
     if pdef is not None:
+        # ``get_provider`` bridges ProviderProfile-only plugins into a
+        # ProviderDef. Honor that declaration on the profile's own endpoint,
+        # but do not force it onto a user-supplied override. An override to a
+        # different, non-self-describing endpoint is the stronger signal; for
+        # example, MiniMax's /v1 route opts out of its /anthropic default.
+        # Host-mandated overrides have already returned above.
+        if (
+            pdef.source == "plugin-profile"
+            and base_url
+            and base_url.rstrip("/") != pdef.base_url.rstrip("/")
+        ):
+            return "chat_completions"
         return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")
 
     # Direct provider checks for providers not in HERMES_OVERLAYS

@@ -3714,6 +3714,45 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
     return env_type in ("singularity", "modal", "daytona", "vercel_sandbox")
 
 
+def _log_approval_event(pattern_key, description, command, result, surface=""):
+    """Append a JSONL record of an approval decision (observability only).
+
+    Never raises: approval is safety-critical, logging is not. The command is
+    redacted before writing (it may contain secrets). Feeds the approval-mining
+    loop (`hermes approvals suggest` + future allowlist proposals).
+    """
+    import json
+
+    try:
+        from agent.redact import redact_sensitive_text
+
+        command_safe = redact_sensitive_text(command, force=True)
+    except Exception:
+        command_safe = command[:200]
+    try:
+        approved = bool(result.get("approved", False)) if isinstance(result, dict) else False
+        outcome = (result.get("outcome") if isinstance(result, dict) else None) or (
+            "approved" if approved else "unknown"
+        )
+        record = {
+            "ts": time.time(),
+            "pattern_key": pattern_key,
+            "description": description,
+            "command": command_safe,
+            "approved": approved,
+            "outcome": outcome,
+            "surface": surface,
+            "session_key": get_current_session_key(default=""),
+        }
+        home = os.path.expanduser(os.getenv("HERMES_HOME", "~"))
+        log_path = os.path.join(home, "logs", "approvals.jsonl")
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as exc:  # noqa: BLE001 — observability must never break approval
+        logger.debug("approval log write failed: %s", exc)
+
+
 def check_dangerous_command(command: str, env_type: str,
                             approval_callback=None,
                             has_host_access: bool = False) -> dict:
@@ -3766,7 +3805,7 @@ def check_dangerous_command(command: str, env_type: str,
     if not is_dangerous:
         return {"approved": True, "message": None}
 
-    return _run_approval_gate(
+    result = _run_approval_gate(
         pattern_key=pattern_key,
         description=description,
         display_target=command,
@@ -3789,6 +3828,14 @@ def check_dangerous_command(command: str, env_type: str,
             "AUTO-APPROVED dangerous command in non-interactive non-gateway context"
         ),
     )
+    _log_approval_event(
+        pattern_key=pattern_key,
+        description=description,
+        command=command,
+        result=result,
+        surface="command",
+    )
+    return result
 
 
 def request_tool_approval(

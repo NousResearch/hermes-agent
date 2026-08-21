@@ -1405,6 +1405,15 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(
             f"skills must be a list of skill names, got {type(skills).__name__}"
         )
+    required_completion_metadata = args.get("required_completion_metadata")
+    if isinstance(required_completion_metadata, str):
+        required_completion_metadata = [required_completion_metadata]
+    if required_completion_metadata is not None and not isinstance(
+        required_completion_metadata, (list, tuple)
+    ):
+        return tool_error(
+            "required_completion_metadata must be a list of top-level metadata keys"
+        )
     goal_mode, goal_bool_error = _parse_bool_arg(args, "goal_mode")
     if goal_bool_error:
         return tool_error(goal_bool_error)
@@ -1452,6 +1461,7 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                required_completion_metadata=required_completion_metadata,
                 model_override=model_override,
                 provider_override=provider_override,
                 goal_mode=goal_mode,
@@ -2258,6 +2268,15 @@ KANBAN_CREATE_SCHEMA = {
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
                     "assignee's profile."
+                ),
+            },
+            "required_completion_metadata": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Top-level keys that must be present in the worker's "
+                    "kanban_complete metadata. Values may be null, but omitted "
+                    "keys reject completion without changing task state."
                 ),
             },
             "goal_mode": {

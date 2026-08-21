@@ -153,11 +153,16 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
                 "SELECT name FROM sqlite_master WHERE type = 'index'"
             )
         }
+        legacy = kb.get_task(migrated, "legacy")
+        assert legacy is not None
+        assert legacy.required_completion_metadata is None
+        assert kb.complete_task(migrated, "legacy", metadata=None) is True
 
     # Additive columns added by migration:
     assert "session_id" in task_columns
     assert "tenant" in task_columns
     assert "idempotency_key" in task_columns
+    assert "required_completion_metadata" in task_columns
     assert "run_id" in event_columns
     # And their indexes — the regression scope of this test:
     assert "idx_tasks_session_id" in indexes
@@ -1614,3 +1619,51 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+def test_required_completion_metadata_blocks_missing_key_and_accepts_null(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="emit reusable lesson",
+            required_completion_metadata=["reusable_lesson_proposal"],
+        )
+
+        with pytest.raises(kb.MissingCompletionMetadataError) as exc_info:
+            kb.complete_task(conn, task_id, summary="done", metadata={})
+
+        assert exc_info.value.missing == ["reusable_lesson_proposal"]
+        assert kb.get_task(conn, task_id).status == "ready"
+        context = kb.build_worker_context(conn, task_id)
+        assert "Required completion metadata: reusable_lesson_proposal" in context
+        assert "Use null when the explicit answer is none" in context
+
+        assert kb.complete_task(
+            conn,
+            task_id,
+            summary="done",
+            metadata={"reusable_lesson_proposal": None},
+        ) is True
+        assert kb.get_task(conn, task_id).status == "done"
+
+        blocked_before = len([
+            event for event in kb.list_events(conn, task_id)
+            if event.kind == "completion_blocked_missing_metadata"
+        ])
+        assert kb.complete_task(conn, task_id, metadata={}) is False
+        blocked_after = len([
+            event for event in kb.list_events(conn, task_id)
+            if event.kind == "completion_blocked_missing_metadata"
+        ])
+        assert blocked_after == blocked_before
+
+
+@pytest.mark.parametrize("keys", [[""], [None], "lesson"])
+def test_required_completion_metadata_rejects_invalid_keys(kanban_home, keys):
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="non-empty strings"):
+            kb.create_task(
+                conn,
+                title="invalid contract",
+                required_completion_metadata=keys,
+            )

@@ -132,6 +132,21 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_create_accepts_required_completion_metadata(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_create({
+        "title": "contract child",
+        "assignee": "test-worker",
+        "required_completion_metadata": ["lesson"],
+    }))
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, out["task_id"])
+    assert task.required_completion_metadata == ["lesson"]
+
+
 def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     """After a phantom rejection, retrying kanban_complete with
     created_cards=[] (the documented escape hatch) must complete the

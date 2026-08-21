@@ -75,6 +75,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "completed_at": t.completed_at,
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
+        "required_completion_metadata": list(t.required_completion_metadata or []),
         "max_retries": t.max_retries,
         "model_override": t.model_override,
         "provider_override": t.provider_override,
@@ -361,6 +362,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "(repeatable). The kanban lifecycle is already "
                                "injected automatically. Example: "
                                "--skill translation --skill github-code-review")
+    p_create.add_argument(
+        "--require-completion-metadata",
+        action="append",
+        default=[],
+        metavar="KEY",
+        help="Require a top-level metadata key on completion (repeatable). "
+             "The key may have a null value but must be present.",
+    )
     p_create.add_argument("--max-retries", type=int, default=None,
                           metavar="N",
                           help="Per-task override for the consecutive-failure "
@@ -1580,6 +1589,9 @@ def _cmd_create(args: argparse.Namespace) -> int:
             idempotency_key=getattr(args, "idempotency_key", None),
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
+            required_completion_metadata=(
+                getattr(args, "require_completion_metadata", None) or None
+            ),
             max_retries=max_retries,
             model_override=getattr(args, "model_override", None),
             provider_override=getattr(args, "provider_override", None),
@@ -2292,13 +2304,19 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 failed.append(tid)
                 continue
 
-            if not kb.complete_task(
-                conn, tid,
-                result=args.result,
-                summary=summary,
-                metadata=metadata,
-                expected_run_id=_worker_run_id_for(tid),
-            ):
+            try:
+                completed = kb.complete_task(
+                    conn, tid,
+                    result=args.result,
+                    summary=summary,
+                    metadata=metadata,
+                    expected_run_id=_worker_run_id_for(tid),
+                )
+            except kb.MissingCompletionMetadataError as exc:
+                failed.append(tid)
+                print(f"kanban: {exc}", file=sys.stderr)
+                continue
+            if not completed:
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
             else:

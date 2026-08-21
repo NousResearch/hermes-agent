@@ -57,6 +57,32 @@ def test_kanban_list_json_includes_session_id(kanban_home):
     )
 
 
+def test_kanban_create_accepts_required_completion_metadata(kanban_home):
+    raw = kc.run_slash(
+        "create contract --require-completion-metadata lesson --json"
+    )
+    payload = json.loads(raw)
+
+    assert payload["required_completion_metadata"] == ["lesson"]
+
+
+def test_kanban_complete_reports_missing_required_metadata(kanban_home):
+    created = json.loads(kc.run_slash(
+        "create contract --require-completion-metadata lesson --json"
+    ))
+
+    output = kc.run_slash(
+        f"complete {created['id']} --summary done --metadata '{{}}'"
+    )
+    assert "missing required metadata key(s): lesson" in output
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, created["id"])
+        assert task is not None
+        assert task.status == "ready"
+        assert task.completed_at is None
+
+
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     with kb.connect_closing() as conn:
         parent_id = kb.create_task(conn, title="parent task")

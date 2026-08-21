@@ -81,6 +81,39 @@ def test_board_empty(client):
     assert data["latest_event_id"] == 0
 
 
+def test_completion_contract_errors_are_client_facing(client):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="contract",
+            required_completion_metadata=["lesson"],
+        )
+
+    single = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"status": "done", "metadata": {}},
+    )
+    assert single.status_code == 409
+    assert "missing required metadata key(s): lesson" in single.json()["detail"]
+
+    bulk = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [task_id], "status": "done", "metadata": {}},
+    )
+    assert bulk.status_code == 200
+    assert bulk.json()["results"] == [{
+        "id": task_id,
+        "ok": False,
+        "error": "completion blocked: missing required metadata key(s): lesson",
+    }]
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "ready"
+        assert task.completed_at is None
+
+
 # ---------------------------------------------------------------------------
 # POST /tasks then GET /board sees it
 # ---------------------------------------------------------------------------

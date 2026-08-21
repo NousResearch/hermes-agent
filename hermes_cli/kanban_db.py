@@ -1093,6 +1093,10 @@ class Task:
     # --skills). Stored as a JSON array of skill names. None = use only
     # the defaults; empty list = explicitly no extra skills.
     skills: Optional[list] = None
+    # Top-level keys that must be present in completion metadata. Values may
+    # be null so workers can explicitly report that an optional finding did
+    # not occur. None keeps the legacy unrestricted completion behavior.
+    required_completion_metadata: Optional[list] = None
     model_override: Optional[str] = None
     # Provider that ``model_override`` belongs to. When set, the dispatcher
     # passes ``--provider <name>`` alongside ``-m <model>`` so the worker
@@ -1154,6 +1158,14 @@ class Task:
                     skills_value = [str(s) for s in parsed if s]
             except Exception:
                 skills_value = None
+        required_completion_metadata: Optional[list] = None
+        if "required_completion_metadata" in keys and row["required_completion_metadata"]:
+            try:
+                parsed = json.loads(row["required_completion_metadata"])
+                if isinstance(parsed, list):
+                    required_completion_metadata = [str(key) for key in parsed if key]
+            except Exception:
+                required_completion_metadata = None
         return cls(
             id=row["id"],
             title=row["title"],
@@ -1204,6 +1216,7 @@ class Task:
                 row["current_step_key"] if "current_step_key" in keys else None
             ),
             skills=skills_value,
+            required_completion_metadata=required_completion_metadata,
             model_override=row["model_override"] if "model_override" in keys and row["model_override"] else None,
             provider_override=(
                 row["provider_override"]
@@ -1374,6 +1387,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Force-loaded skills for the worker on this task, stored as JSON.
     -- Passed to the worker via `--skills`. NULL or empty array = no extras.
     skills               TEXT,
+    -- Optional JSON array of top-level keys that must be present in the
+    -- completing run's metadata. NULL = unrestricted legacy behavior.
+    required_completion_metadata TEXT,
     -- Per-task model override. When set, the dispatcher passes -m <model>
     -- to the worker, overriding the profile's default model. NULL = use
     -- the profile default.
@@ -2615,6 +2631,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # worker via --skills. NULL is fine for existing rows.
         _add_column_if_missing(conn, "tasks", "skills", "skills TEXT")
 
+    if "required_completion_metadata" not in cols:
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "required_completion_metadata",
+            "required_completion_metadata TEXT",
+        )
+
     if "max_retries" not in cols:
         # Per-task override for the consecutive-failure circuit breaker.
         # NULL = fall through to the dispatcher-level ``kanban.failure_limit``
@@ -3172,6 +3196,7 @@ def create_task(
     idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
+    required_completion_metadata: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
     model_override: Optional[str] = None,
     provider_override: Optional[str] = None,
@@ -3206,6 +3231,10 @@ def create_task(
     each name to ``hermes --skills ...``. Use this to pin a task to a
     specialist skill (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
+
+    ``required_completion_metadata`` is an optional list of top-level keys
+    that must be present in the completing run's metadata. A key with a null
+    value counts as present, which supports explicit "none found" handoffs.
 
     ``model_override`` / ``provider_override`` pin the worker to a specific
     model (and optionally its provider) without touching the profile's
@@ -3393,6 +3422,26 @@ def create_task(
             )
         skills_list = cleaned
 
+    required_metadata_list: Optional[list[str]] = None
+    if required_completion_metadata is not None:
+        if isinstance(required_completion_metadata, (str, bytes)):
+            raise ValueError(
+                "required_completion_metadata must contain non-empty strings"
+            )
+        cleaned_keys: list[str] = []
+        seen_keys: set[str] = set()
+        for raw_key in required_completion_metadata:
+            if not isinstance(raw_key, str) or not raw_key.strip():
+                raise ValueError(
+                    "required_completion_metadata must contain non-empty strings"
+                )
+            key = raw_key.strip()
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            cleaned_keys.append(key)
+        required_metadata_list = cleaned_keys or None
+
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
     # and to avoid holding a write lock during the lookup. Race is
@@ -3495,10 +3544,11 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, model_override, provider_override,
+                        skills, required_completion_metadata,
+                        max_retries, model_override, provider_override,
                         reasoning_effort,
                         goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3517,6 +3567,7 @@ def create_task(
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
                         json.dumps(skills_list) if skills_list is not None else None,
+                        json.dumps(required_metadata_list) if required_metadata_list else None,
                         int(max_retries) if max_retries is not None else None,
                         model_override,
                         provider_override,
@@ -3549,6 +3600,7 @@ def create_task(
                         "branch_name": branch_name,
                         "project_id": project_id,
                         "skills": list(skills_list) if skills_list else None,
+                        "required_completion_metadata": required_metadata_list,
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
@@ -5345,6 +5397,17 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+class MissingCompletionMetadataError(ValueError):
+    """Raised when an opt-in task completion omits required metadata keys."""
+
+    def __init__(self, missing: list[str]):
+        self.missing = list(missing)
+        super().__init__(
+            "completion blocked: missing required metadata key(s): "
+            + ", ".join(self.missing)
+        )
+
+
 class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
@@ -5376,6 +5439,8 @@ def complete_task(
     callers do not have to pass both. ``metadata`` is a free-form dict
     (e.g. ``{"changed_files": [...], "tests_run": [...]}``) — workers
     are encouraged to use it for structured handoff facts.
+    Tasks created with ``required_completion_metadata`` reject completion
+    before changing task state when any configured top-level key is absent.
 
     ``created_cards`` is an optional list of task ids the completing
     worker claims to have created. Each id is verified against
@@ -5397,6 +5462,25 @@ def complete_task(
     # final write transaction below to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
+
+    task = get_task(conn, task_id)
+    if task is None or task.status not in {"running", "ready", "blocked", "review"}:
+        return False
+    if expected_run_id is not None and task.current_run_id != int(expected_run_id):
+        return False
+    required_metadata = task.required_completion_metadata if task else None
+    if required_metadata:
+        supplied = metadata if isinstance(metadata, dict) else {}
+        missing_metadata = [key for key in required_metadata if key not in supplied]
+        if missing_metadata:
+            with write_txn(conn):
+                _append_event(
+                    conn,
+                    task_id,
+                    "completion_blocked_missing_metadata",
+                    {"missing": missing_metadata},
+                )
+            raise MissingCompletionMetadataError(missing_metadata)
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
@@ -11050,6 +11134,13 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     if task.tenant:
         lines.append(f"Tenant:   {task.tenant}")
     lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")
+    if task.required_completion_metadata:
+        keys = ", ".join(task.required_completion_metadata)
+        lines.append(f"Required completion metadata: {keys}")
+        lines.append(
+            "Completion is rejected unless each key is present in "
+            "kanban_complete(metadata=...). Use null when the explicit answer is none."
+        )
     if task.max_runtime_seconds is not None:
         terminal_timeout = _worker_terminal_timeout_env(
             task.max_runtime_seconds,

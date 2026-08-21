@@ -102,19 +102,24 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     synthetic/resumed sends that have no reply anchor fall back to Telegram's
     ``direct_messages_topic_id`` when the Bot API supports it.
     """
+    platform_name = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
     metadata = {"thread_id": thread_id} if thread_id is not None else {}
+    if platform_name == "wecom":
+        anchor = reply_to_message_id or getattr(source, "message_id", None)
+        if anchor is not None:
+            metadata["wecom_reply_to_message_id"] = str(anchor)
     # Slack workspace identity is durable routing state, not ephemeral event
     # metadata. Carry it on every outbound path (including unthreaded sends)
     # so a multi-workspace Socket Mode gateway never falls back to its primary
     # WebClient after an async, stream, or recovery boundary.
-    if _platform_name(getattr(source, "platform", None)) == "slack":
+    if platform_name == "slack":
         scope_id = getattr(source, "scope_id", None)
         if scope_id:
             metadata["slack_team_id"] = str(scope_id)
     if not metadata:
         return None
-    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
+    if platform_name == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
         tid = str(thread_id)
         if tid and tid not in {"", "1"}:
@@ -2950,6 +2955,13 @@ class BasePlatformAdapter(ABC):
     # set this to False to stay correct-by-default.
     supports_async_delivery: bool = True
 
+    # Most platform typing indicators are ephemeral status signals and can
+    # safely start as soon as background dispatch begins.  A platform whose
+    # indicator creates a persistent user-visible message can opt into the
+    # later agent boundary instead, so auth, pairing, commands, and other
+    # pre-agent short-circuits never leave behind a fake model turn.
+    typing_starts_at_agent_boundary: bool = False
+
     # Whether this adapter's ``send()`` splits long content into multiple
     # messages via ``truncate_message()``.  When True, the delivery router
     # (gateway/delivery.py) skips gateway-level truncation and lets the
@@ -5416,6 +5428,13 @@ class BasePlatformAdapter(ABC):
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
 
+    async def on_agent_turn_start(
+        self,
+        event: MessageEvent,
+        session_key: str,
+    ) -> None:
+        """Hook called after pre-agent gates and immediately before Agent work."""
+
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Hook called when background processing completes.
 
@@ -6311,8 +6330,14 @@ class BasePlatformAdapter(ABC):
         # never spawned, so no "typing…" / "is thinking…" status is shown.
         # typing_task stays None; _stop_typing_refresh already no-ops on None.
         _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+        if _platform_name(event.source.platform) == "wecom":
+            _thread_metadata = dict(_thread_metadata or {})
+            _thread_metadata["wecom_session_key"] = session_key
         typing_task: Optional[asyncio.Task] = None
-        if getattr(self.config, "typing_indicator", True):
+        if (
+            getattr(self.config, "typing_indicator", True)
+            and not getattr(self, "typing_starts_at_agent_boundary", False)
+        ):
             _keep_typing_kwargs: Dict[str, Any] = {"metadata": _thread_metadata}
             try:
                 _keep_typing_sig = inspect.signature(self._keep_typing)
@@ -6885,7 +6910,7 @@ class BasePlatformAdapter(ABC):
                         f"{error_detail}\n"
                         "Try again or use /reset to start a fresh session."
                     ),
-                    metadata=_thread_metadata,
+                    metadata=_mark_notify_metadata(_thread_metadata),
                 )
             except Exception as notify_err:
                 logger.error(

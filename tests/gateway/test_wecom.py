@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import SendResult
+from gateway.platforms.base import MessageEvent, ProcessingOutcome, SendResult
 
 
 class TestWeComRequirements:
@@ -137,6 +137,344 @@ class TestWeComReplyMode:
         args = adapter._send_reply_request.await_args.args
         assert args[0] == "req-1"
         assert args[1] == {"msgtype": "image", "image": {"media_id": "media-1"}}
+
+
+class TestWeComNativeStream:
+    @staticmethod
+    def _adapter():
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_first_agent_text_finishes_stream_and_later_text_is_separate(self):
+        adapter = self._adapter()
+        metadata = {
+            "wecom_reply_to_message_id": "msg-1",
+            "wecom_session_key": "session-1",
+        }
+
+        await adapter.send_typing("chat-1", metadata=metadata)
+        await adapter.send_typing("chat-1", metadata=metadata)
+        first_interim = await adapter.send(
+            "chat-1",
+            "先查一下资料。",
+            metadata={**metadata, "wecom_interim_assistant": True},
+        )
+        second_interim = await adapter.send(
+            "chat-1",
+            "再交叉验证。",
+            metadata={**metadata, "wecom_interim_assistant": True},
+        )
+        final = await adapter.send(
+            "chat-1",
+            "查询完成。",
+            reply_to="msg-1",
+            metadata={**metadata, "notify": True},
+        )
+
+        assert first_interim.success is True
+        assert second_interim.success is True
+        assert final.success is True
+        assert adapter._send_reply_request.await_count == 4
+
+        calls = adapter._send_reply_request.await_args_list
+        bodies = [call.args[1] for call in calls]
+        assert [body["msgtype"] for body in bodies] == [
+            "stream",
+            "stream",
+            "markdown",
+            "markdown",
+        ]
+        assert [body["stream"]["finish"] for body in bodies[:2]] == [False, True]
+        assert [body["stream"]["content"] for body in bodies[:2]] == [
+            "正在思考中…",
+            "先查一下资料。",
+        ]
+        assert len({body["stream"]["id"] for body in bodies[:2]}) == 1
+        assert bodies[2]["markdown"]["content"] == "再交叉验证。"
+        assert bodies[3]["markdown"]["content"] == "查询完成。"
+
+    @pytest.mark.asyncio
+    async def test_pairing_reply_does_not_open_a_native_stream(self):
+        adapter = self._adapter()
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        event = MessageEvent(
+            text="1",
+            message_id="msg-1",
+            source=adapter.build_source(
+                chat_id="chat-1",
+                user_id="unpaired-user",
+                message_id="msg-1",
+            ),
+        )
+
+        async def pairing_handler(_event):
+            await adapter.send("chat-1", "Here's your pairing code: `ABC12345`")
+            return None
+
+        adapter._message_handler = pairing_handler
+        adapter._active_sessions["session-1"] = asyncio.Event()
+
+        await adapter._process_message_background(event, "session-1")
+
+        bodies = [call.args[1] for call in adapter._send_reply_request.await_args_list]
+        assert bodies == [
+            {
+                "msgtype": "markdown",
+                "markdown": {"content": "Here's your pairing code: `ABC12345`"},
+            }
+        ]
+        assert adapter._native_streams == {}
+
+    @pytest.mark.asyncio
+    async def test_agent_turn_start_opens_native_stream(self):
+        adapter = self._adapter()
+        event = MessageEvent(
+            text="开始调查",
+            message_id="msg-1",
+            source=adapter.build_source(
+                chat_id="chat-1",
+                user_id="paired-user",
+                message_id="msg-1",
+            ),
+        )
+
+        await adapter.on_agent_turn_start(event, "session-1")
+
+        body = adapter._send_reply_request.await_args.args[1]
+        assert body["msgtype"] == "stream"
+        assert body["stream"]["finish"] is False
+        assert body["stream"]["content"] == "正在思考中…"
+        assert adapter._native_streams["msg-1"].session_key == "session-1"
+
+    @pytest.mark.asyncio
+    async def test_native_stream_frames_are_serialized_for_shared_req_id(self):
+        adapter = self._adapter()
+        metadata = {"wecom_reply_to_message_id": "msg-1"}
+        in_flight = 0
+        max_in_flight = 0
+
+        async def slow_reply(_req_id, _body):
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            await asyncio.sleep(0)
+            in_flight -= 1
+            return {"headers": {"req_id": "req-1"}, "errcode": 0}
+
+        adapter._send_reply_request = AsyncMock(side_effect=slow_reply)
+        await adapter.send_typing("chat-1", metadata=metadata)
+
+        interim_task = asyncio.create_task(
+            adapter.send(
+                "chat-1",
+                "中间状态",
+                metadata={**metadata, "wecom_interim_assistant": True},
+            )
+        )
+        await asyncio.sleep(0)
+        final_task = asyncio.create_task(
+            adapter.send(
+                "chat-1",
+                "最终结果",
+                metadata={**metadata, "notify": True},
+            )
+        )
+        await asyncio.gather(interim_task, final_task)
+
+        assert max_in_flight == 1
+        bodies = [call.args[1] for call in adapter._send_reply_request.await_args_list]
+        assert [body["msgtype"] for body in bodies].count("stream") == 2
+        assert [body["msgtype"] for body in bodies].count("markdown") == 1
+
+    @pytest.mark.asyncio
+    async def test_typing_timeout_does_not_cancel_or_duplicate_stream_start(self):
+        adapter = self._adapter()
+        metadata = {"wecom_reply_to_message_id": "msg-1"}
+        release = asyncio.Event()
+
+        async def slow_reply(_req_id, _body):
+            await release.wait()
+            return {"headers": {"req_id": "req-1"}, "errcode": 0}
+
+        adapter._send_reply_request = AsyncMock(side_effect=slow_reply)
+        first = asyncio.create_task(adapter.send_typing("chat-1", metadata=metadata))
+        await asyncio.sleep(0)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+        second = asyncio.create_task(adapter.send_typing("chat-1", metadata=metadata))
+        await asyncio.sleep(0)
+        release.set()
+        await second
+
+        assert adapter._send_reply_request.await_count == 1
+        assert adapter._native_streams["msg-1"].started is True
+
+    @pytest.mark.asyncio
+    async def test_native_stream_failure_falls_back_to_markdown(self):
+        adapter = self._adapter()
+        adapter._send_reply_request = AsyncMock(
+            side_effect=[
+                {"headers": {"req_id": "req-1"}, "errcode": 0},
+                RuntimeError("stream unavailable"),
+                {"headers": {"req_id": "req-1"}, "errcode": 0},
+            ]
+        )
+        metadata = {"wecom_reply_to_message_id": "msg-1"}
+        await adapter.send_typing("chat-1", metadata=metadata)
+
+        result = await adapter.send(
+            "chat-1",
+            "最终结果",
+            reply_to="msg-1",
+            metadata={**metadata, "notify": True},
+        )
+
+        assert result.success is True
+        assert adapter._send_reply_request.await_count == 3
+        failed_body = adapter._send_reply_request.await_args_list[1].args[1]
+        fallback_body = adapter._send_reply_request.await_args_list[2].args[1]
+        assert failed_body["msgtype"] == "stream"
+        assert failed_body["stream"]["finish"] is True
+        assert fallback_body == {
+            "msgtype": "markdown",
+            "markdown": {"content": "最终结果"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_non_agent_message_does_not_consume_placeholder(self):
+        adapter = self._adapter()
+        metadata = {"wecom_reply_to_message_id": "msg-1"}
+        await adapter.send_typing("chat-1", metadata=metadata)
+
+        await adapter.send("chat-1", "工具状态", metadata=metadata)
+        await adapter.send(
+            "chat-1",
+            "第一条 Agent 文本",
+            metadata={**metadata, "wecom_interim_assistant": True},
+        )
+
+        bodies = [call.args[1] for call in adapter._send_reply_request.await_args_list]
+        assert [body["msgtype"] for body in bodies] == ["stream", "markdown", "stream"]
+        assert bodies[-1]["stream"]["finish"] is True
+        assert bodies[-1]["stream"]["content"] == "第一条 Agent 文本"
+
+    @pytest.mark.asyncio
+    async def test_steer_finishes_placeholder_and_next_turn_opens_a_new_one(self):
+        adapter = self._adapter()
+        first_metadata = {
+            "wecom_reply_to_message_id": "msg-1",
+            "wecom_session_key": "session-1",
+        }
+        await adapter.send_typing("chat-1", metadata=first_metadata)
+
+        await adapter.finish_pending_stream_for_busy_input("session-1")
+        await adapter.send(
+            "chat-1",
+            "steer 后的中间话术",
+            metadata={**first_metadata, "wecom_interim_assistant": True},
+        )
+
+        first_bodies = [call.args[1] for call in adapter._send_reply_request.await_args_list]
+        assert [body["msgtype"] for body in first_bodies] == [
+            "stream",
+            "stream",
+            "markdown",
+        ]
+        assert first_bodies[1]["stream"]["finish"] is True
+
+        first_event = MessageEvent(
+            text="第一轮",
+            message_id="msg-1",
+            source=adapter.build_source(
+                chat_id="chat-1",
+                user_id="user-1",
+                message_id="msg-1",
+            ),
+        )
+        await adapter.on_processing_complete(first_event, ProcessingOutcome.SUCCESS)
+        assert "session-1" not in adapter._native_streams_by_session
+
+        adapter._reply_req_ids["msg-2"] = "req-2"
+        second_metadata = {
+            "wecom_reply_to_message_id": "msg-2",
+            "wecom_session_key": "session-1",
+        }
+        await adapter.send_typing("chat-1", metadata=second_metadata)
+
+        second_start = adapter._send_reply_request.await_args_list[-1].args[1]
+        assert second_start["msgtype"] == "stream"
+        assert second_start["stream"]["finish"] is False
+        assert second_start["stream"]["content"] == "正在思考中…"
+        assert second_start["stream"]["id"] != first_bodies[0]["stream"]["id"]
+
+    @pytest.mark.asyncio
+    async def test_final_without_typing_placeholder_is_regular_markdown(self):
+        adapter = self._adapter()
+
+        result = await adapter.send(
+            "chat-1",
+            "直接结论",
+            reply_to="msg-1",
+            metadata={"wecom_reply_to_message_id": "msg-1", "notify": True},
+        )
+
+        assert result.success is True
+        body = adapter._send_reply_request.await_args.args[1]
+        assert body == {
+            "msgtype": "markdown",
+            "markdown": {"content": "直接结论"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_processing_complete_closes_an_unfinished_placeholder(self):
+        adapter = self._adapter()
+        metadata = {"wecom_reply_to_message_id": "msg-1"}
+        await adapter.send_typing("chat-1", metadata=metadata)
+        event = MessageEvent(
+            text="停止",
+            message_id="msg-1",
+            source=adapter.build_source(
+                chat_id="chat-1",
+                user_id="user-1",
+                message_id="msg-1",
+            ),
+        )
+
+        await adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
+
+        final_body = adapter._send_reply_request.await_args_list[-1].args[1]
+        assert final_body["stream"]["finish"] is True
+        assert final_body["stream"]["content"] == "已停止当前任务。"
+
+    def test_unthreaded_wecom_metadata_keeps_exact_reply_anchor(self):
+        from gateway.config import Platform
+        from gateway.platforms.base import _thread_metadata_for_source
+        from gateway.run import GatewayRunner
+
+        adapter = self._adapter()
+        source = adapter.build_source(
+            chat_id="chat-1",
+            user_id="user-1",
+            message_id="msg-1",
+        )
+
+        assert source.platform == Platform.WECOM
+        assert _thread_metadata_for_source(source) == {
+            "wecom_reply_to_message_id": "msg-1"
+        }
+        runner = object.__new__(GatewayRunner)
+        assert runner._thread_metadata_for_source(source) == {
+            "wecom_reply_to_message_id": "msg-1"
+        }
 
 
 class TestExtractText:
@@ -348,6 +686,7 @@ class TestInboundMessages:
         assert event.text == "hello"
         assert event.source.chat_id == "group-1"
         assert event.source.user_id == "user-1"
+        assert event.source.message_id == "msg-1"
         assert event.media_urls == ["/tmp/test.png"]
         assert event.media_types == ["image/png"]
 

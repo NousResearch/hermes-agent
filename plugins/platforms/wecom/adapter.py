@@ -7,6 +7,7 @@ The adapter focuses on the core gateway path:
 - authenticate via ``aibot_subscribe``
 - receive inbound ``aibot_msg_callback`` events
 - send outbound markdown messages via ``aibot_send_msg``
+- stream per-turn thinking, interim, and final text via ``aibot_respond_msg``
 - upload outbound media via ``aibot_upload_media_*`` and send native attachments
 - best-effort download of inbound image/file attachments for agent context
 
@@ -39,6 +40,7 @@ import os
 import re
 import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -64,6 +66,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     cache_document_from_bytes,
     cache_image_from_bytes,
@@ -113,6 +116,8 @@ CALLBACK_COMMANDS = {APP_CMD_CALLBACK, APP_CMD_LEGACY_CALLBACK}
 NON_RESPONSE_COMMANDS = CALLBACK_COMMANDS | {APP_CMD_EVENT_CALLBACK}
 
 MAX_MESSAGE_LENGTH = 4000
+STREAM_MAX_BYTES = 20 * 1024
+STREAM_THINKING_CONTENT = "正在思考中…"
 CONNECT_TIMEOUT_SECONDS = 20.0
 REQUEST_TIMEOUT_SECONDS = 15.0
 HEARTBEAT_INTERVAL_SECONDS = 30.0
@@ -164,10 +169,35 @@ def _entry_matches(entries: List[str], target: str) -> bool:
     return False
 
 
+@dataclass
+class _NativeStreamState:
+    """One WeCom native stream bound to one triggering inbound message."""
+
+    chat_id: str
+    message_id: str
+    reply_req_id: str
+    stream_id: str
+    session_key: Optional[str] = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    content: str = ""
+    started: bool = False
+    finished: bool = False
+    failed: bool = False
+    start_task: Optional[asyncio.Task] = field(default=None, repr=False)
+
+
 class WeComAdapter(BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
+    # Native stream frames are persistent chat cards, not an ephemeral typing
+    # signal. Start them only at the real Agent boundary so pairing and other
+    # Hermes-owned short-circuit replies do not create a false thinking card.
+    typing_starts_at_agent_boundary = True
+
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    # WeCom streams can only update the reply bound to one inbound req_id;
+    # they are not arbitrary message edits and must not enter the generic
+    # edit-based GatewayStreamConsumer path.
     SUPPORTS_MESSAGE_EDITING = False
     # Threshold for detecting WeCom client-side message splits.
     # When a chunk is near the 4000-char limit, a continuation is almost certain.
@@ -208,6 +238,8 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE)
         self._reply_req_ids: Dict[str, str] = {}
+        self._native_streams: Dict[str, _NativeStreamState] = {}
+        self._native_streams_by_session: Dict[str, str] = {}
 
         # Text batching: merge rapid successive messages (Telegram-style).
         # WeCom clients split long messages around 4000 chars.
@@ -297,6 +329,8 @@ class WeComAdapter(BasePlatformAdapter):
             self._http_client = None
 
         self._dedup.clear()
+        self._native_streams.clear()
+        self._native_streams_by_session.clear()
         logger.info("[%s] Disconnected", self.name)
 
     async def _cleanup_ws(self) -> None:
@@ -575,6 +609,7 @@ class WeComAdapter(BasePlatformAdapter):
             chat_type="group" if is_group else "dm",
             user_id=sender_id or None,
             user_name=sender_id or None,
+            message_id=msg_id,
         )
 
         event = MessageEvent(
@@ -977,6 +1012,125 @@ class WeComAdapter(BasePlatformAdapter):
         if not normalized or normalized.startswith("quote:"):
             return None
         return self._reply_req_ids.get(normalized)
+
+    @staticmethod
+    def _stream_anchor(
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Resolve the inbound message that owns a native reply stream."""
+        candidates = []
+        if isinstance(metadata, dict):
+            candidates.append(metadata.get("wecom_reply_to_message_id"))
+        candidates.append(reply_to)
+        for candidate in candidates:
+            normalized = str(candidate or "").strip()
+            if normalized and not normalized.startswith("quote:"):
+                return normalized
+        return None
+
+    def _native_stream_state(
+        self,
+        chat_id: str,
+        message_id: Optional[str],
+        *,
+        create: bool,
+        session_key: Optional[str] = None,
+    ) -> Optional[_NativeStreamState]:
+        normalized_message_id = str(message_id or "").strip()
+        normalized_session_key = str(session_key or "").strip() or None
+        if not normalized_message_id:
+            return None
+
+        existing = self._native_streams.get(normalized_message_id)
+        if existing is not None:
+            if normalized_session_key and not existing.session_key:
+                existing.session_key = normalized_session_key
+                self._native_streams_by_session[normalized_session_key] = normalized_message_id
+            return existing
+        if not create:
+            return None
+
+        reply_req_id = self._reply_req_id_for_message(normalized_message_id)
+        if not reply_req_id:
+            return None
+
+        state = _NativeStreamState(
+            chat_id=str(chat_id),
+            message_id=normalized_message_id,
+            reply_req_id=reply_req_id,
+            stream_id=uuid.uuid4().hex,
+            session_key=normalized_session_key,
+        )
+        self._native_streams[normalized_message_id] = state
+        if normalized_session_key:
+            self._native_streams_by_session[normalized_session_key] = normalized_message_id
+        while len(self._native_streams) > DEDUP_MAX_SIZE:
+            evicted_message_id = next(iter(self._native_streams))
+            evicted = self._native_streams.pop(evicted_message_id)
+            if (
+                evicted.session_key
+                and self._native_streams_by_session.get(evicted.session_key) == evicted_message_id
+            ):
+                self._native_streams_by_session.pop(evicted.session_key, None)
+        return state
+
+    @staticmethod
+    def _stream_session_key(metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not isinstance(metadata, dict):
+            return None
+        return str(metadata.get("wecom_session_key") or "").strip() or None
+
+    def _release_native_stream_session(self, state: _NativeStreamState) -> None:
+        session_key = state.session_key
+        if (
+            session_key
+            and self._native_streams_by_session.get(session_key) == state.message_id
+        ):
+            self._native_streams_by_session.pop(session_key, None)
+
+    @staticmethod
+    def _stream_content(content: str) -> str:
+        """Fit stream content to WeCom's 20 KiB UTF-8 payload limit."""
+        normalized = str(content or "")
+        encoded = normalized.encode("utf-8")
+        if len(encoded) <= STREAM_MAX_BYTES:
+            return normalized
+        return encoded[:STREAM_MAX_BYTES].decode("utf-8", errors="ignore")
+
+    async def _send_native_stream_frame(
+        self,
+        state: _NativeStreamState,
+        content: str,
+        *,
+        finish: bool,
+    ) -> Dict[str, Any]:
+        """Send one serialized full-content update for a native WeCom stream."""
+        async with state.lock:
+            if state.finished:
+                return {"hermes_stream_finished": True}
+            if state.failed:
+                raise RuntimeError("WeCom native stream is disabled for this turn")
+
+            stream_content = self._stream_content(content)
+            if state.started and not finish and state.content == stream_content:
+                return {"hermes_stream_unchanged": True}
+            response = await self._send_reply_request(
+                state.reply_req_id,
+                {
+                    "msgtype": "stream",
+                    "stream": {
+                        "id": state.stream_id,
+                        "finish": finish,
+                        "content": stream_content,
+                    },
+                },
+            )
+            self._raise_for_wecom_error(response, "send native stream")
+            state.content = stream_content
+            state.started = True
+            state.finished = finish
+            return response
 
     # ------------------------------------------------------------------
     # Outbound messaging
@@ -1426,14 +1580,61 @@ class WeComAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send markdown to a WeCom chat via proactive ``aibot_send_msg``."""
-        del metadata
+        """Send a native turn stream or a regular WeCom markdown message."""
 
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
 
+        stream_anchor = self._stream_anchor(reply_to, metadata)
+        first_agent_content = bool(
+            isinstance(metadata, dict)
+            and metadata.get("wecom_reply_to_message_id")
+            and stream_anchor
+            and (
+                metadata.get("wecom_interim_assistant")
+                or metadata.get("notify")
+            )
+        )
+        if first_agent_content:
+            state = self._native_stream_state(
+                chat_id,
+                stream_anchor,
+                create=False,
+                session_key=self._stream_session_key(metadata),
+            )
+            if state is not None and not state.failed and not state.finished:
+                try:
+                    response = await self._send_native_stream_frame(
+                        state,
+                        content,
+                        finish=True,
+                    )
+                    # Another assistant send may have won the per-stream lock
+                    # and finished the placeholder while this coroutine was
+                    # waiting. That later message must remain visible as an
+                    # ordinary message rather than being silently swallowed.
+                    if not response.get("hermes_stream_finished"):
+                        return SendResult(
+                            success=True,
+                            message_id=state.stream_id,
+                            raw_response=response,
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    state.failed = True
+                    logger.warning(
+                        "[%s] Native stream send failed for %s; falling back to markdown: %s",
+                        self.name,
+                        stream_anchor,
+                        exc,
+                    )
+
         try:
             reply_req_id = self._reply_req_id_for_message(reply_to)
+
+            if not reply_req_id and stream_anchor:
+                reply_req_id = self._reply_req_id_for_message(stream_anchor)
 
             if not reply_req_id and chat_id in self._last_chat_req_ids:
                 reply_req_id = self._last_chat_req_ids[chat_id]
@@ -1555,8 +1756,145 @@ class WeComAdapter(BasePlatformAdapter):
         )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """WeCom does not expose typing indicators in this adapter."""
-        del chat_id, metadata
+        """Open one native stream placeholder for the current inbound turn."""
+        stream_anchor = self._stream_anchor(None, metadata)
+        state = self._native_stream_state(
+            chat_id,
+            stream_anchor,
+            create=True,
+            session_key=self._stream_session_key(metadata),
+        )
+        if state is None or state.started or state.finished or state.failed:
+            return
+        if state.start_task is None or state.start_task.done():
+            async def _start_stream() -> None:
+                try:
+                    await self._send_native_stream_frame(
+                        state,
+                        STREAM_THINKING_CONTENT,
+                        finish=False,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    state.failed = True
+                    logger.warning(
+                        "[%s] Failed to start native stream for %s: %s",
+                        self.name,
+                        stream_anchor,
+                        exc,
+                    )
+                finally:
+                    if state.start_task is asyncio.current_task():
+                        state.start_task = None
+
+            state.start_task = asyncio.create_task(_start_stream())
+
+        # BasePlatformAdapter bounds typing calls to 1.5s. Shield the actual
+        # request so a slow ACK cannot leave a late response racing a retry
+        # that reuses the same inbound req_id.
+        await asyncio.shield(state.start_task)
+
+    async def on_agent_turn_start(
+        self,
+        event: MessageEvent,
+        session_key: str,
+    ) -> None:
+        """Open the native placeholder only after dispatch reaches the Agent."""
+        if not getattr(self.config, "typing_indicator", True):
+            return
+
+        source = event.source
+        message_id = getattr(event, "message_id", None) or getattr(
+            source,
+            "message_id",
+            None,
+        )
+        metadata = {
+            "wecom_reply_to_message_id": str(message_id or ""),
+            "wecom_session_key": str(session_key or ""),
+        }
+        try:
+            # Match the base refresh loop's bounded typing call. send_typing
+            # shields the underlying request, so a slow WeCom ACK can finish
+            # in the background without delaying the model invocation.
+            await asyncio.wait_for(
+                self.send_typing(source.chat_id, metadata=metadata),
+                timeout=1.5,
+            )
+        except asyncio.TimeoutError:
+            pass
+
+    async def finish_pending_stream_for_busy_input(self, session_key: str) -> None:
+        """Finish this turn's placeholder before acknowledging a successful steer."""
+        normalized_session_key = str(session_key or "").strip()
+        message_id = self._native_streams_by_session.get(normalized_session_key)
+        state = self._native_streams.get(message_id or "")
+        if state is None or state.finished or state.failed:
+            return
+        if not state.started and state.start_task is None:
+            return
+
+        try:
+            await self._send_native_stream_frame(
+                state,
+                state.content or STREAM_THINKING_CONTENT,
+                finish=True,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            state.failed = True
+            logger.warning(
+                "[%s] Failed to finish native stream before steer for %s: %s",
+                self.name,
+                normalized_session_key,
+                exc,
+            )
+
+    async def on_processing_complete(
+        self,
+        event: MessageEvent,
+        outcome: ProcessingOutcome,
+    ) -> None:
+        """Close a native stream left open by an empty or interrupted turn."""
+        state = self._native_stream_state(
+            event.source.chat_id,
+            event.message_id,
+            create=False,
+        )
+        if state is None:
+            return
+        try:
+            if (
+                not state.started
+                or state.finished
+                or state.failed
+                or outcome == ProcessingOutcome.FAILURE
+            ):
+                return
+
+            content = state.content
+            if content == STREAM_THINKING_CONTENT:
+                content = (
+                    "已停止当前任务。"
+                    if outcome == ProcessingOutcome.CANCELLED
+                    else "处理已结束。"
+                )
+            try:
+                await self._send_native_stream_frame(state, content, finish=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                state.failed = True
+                logger.warning(
+                    "[%s] Failed to finalize native stream for %s: %s",
+                    self.name,
+                    event.message_id,
+                    exc,
+                )
+        finally:
+            self._release_native_stream_session(state)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return minimal chat info."""

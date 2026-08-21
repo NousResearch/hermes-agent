@@ -5416,11 +5416,15 @@ class TurnRunner:
                 return
             if already_streamed or not ctx._status_adapter or not str(display_text or "").strip():
                 return
+            interim_metadata = ctx._status_thread_metadata
+            if ctx.source.platform == Platform.WECOM:
+                interim_metadata = dict(interim_metadata or {})
+                interim_metadata["wecom_interim_assistant"] = True
             safe_schedule_threadsafe(
                 ctx._status_adapter.send(
                     ctx._status_chat_id,
                     display_text,
-                    metadata=ctx._status_thread_metadata,
+                    metadata=interim_metadata,
                 ),
                 ctx._loop_for_step,
                 logger=logger,
@@ -10318,6 +10322,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
         is_redirect_mode = effective_mode == "interrupt" and redirected
+
+        # WeCom's native stream is a one-turn placeholder, not the steering
+        # acknowledgment itself. If steering succeeds before the first agent
+        # text, finish that placeholder in place so the ack and every later
+        # assistant message are delivered as ordinary, chronologically stable
+        # messages. Adapter hooks are optional and failures must not block steer.
+        if is_steer_mode and event.source.platform == Platform.WECOM:
+            finish_pending_stream = getattr(
+                adapter,
+                "finish_pending_stream_for_busy_input",
+                None,
+            )
+            if callable(finish_pending_stream):
+                try:
+                    await finish_pending_stream(session_key)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to finish busy-turn placeholder for session %s: %s",
+                        session_key,
+                        exc,
+                    )
 
         # If not in queue/steer mode, interrupt the running agent immediately.
         # This aborts in-flight tool calls and causes the agent loop to exit
@@ -20051,6 +20078,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         try:
+            # Persistent, user-visible working indicators must begin only once
+            # this message has survived auth, pairing, command, and preprocessing
+            # gates. Ephemeral platform typing continues to start in the base
+            # adapter at dispatch time; adapters opt into this later boundary.
+            _agent_adapter = self._adapter_for_source(source)
+            _agent_hook_runner = getattr(
+                _agent_adapter,
+                "_run_processing_hook",
+                None,
+            )
+            if (
+                _agent_adapter is not None
+                and getattr(
+                    _agent_adapter,
+                    "typing_starts_at_agent_boundary",
+                    False,
+                )
+                and callable(_agent_hook_runner)
+            ):
+                await _agent_hook_runner(
+                    "on_agent_turn_start",
+                    event,
+                    session_key,
+                )
+
             # Emit agent:start hook
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",
@@ -23603,9 +23655,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter: Optional[Any] = None,
     ) -> Optional[Dict[str, Any]]:
         """Build thread metadata for synthetic sends that only have routing state."""
-        if thread_id is None:
+        metadata: Dict[str, Any] = {}
+        if thread_id is not None:
+            metadata["thread_id"] = thread_id
+        if platform == Platform.WECOM and reply_to_message_id is not None:
+            metadata["wecom_reply_to_message_id"] = str(reply_to_message_id)
+        if not metadata:
             return None
-        metadata: Dict[str, Any] = {"thread_id": thread_id}
         if self._is_telegram_dm_topic_target(
             platform,
             chat_id,
@@ -28360,12 +28416,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 chat_type=getattr(source, "chat_type", None),
                 reply_to_message_id=event_message_id,
             )
-        ) if _progress_thread_id else None
+        ) if (_progress_thread_id or source.platform == Platform.WECOM) else None
         if _progress_metadata is None and _relay_prospective_thread_id:
             # No real thread yet, but the connector will auto-thread on the
             # reply anchor; carry it so progress joins that thread.
             _progress_metadata = {"reply_to_message_id": event_message_id}
         _progress_metadata = _non_conversational_metadata(_progress_metadata, platform=source.platform)
+        if source.platform == Platform.WECOM:
+            _progress_metadata = dict(_progress_metadata or {})
+            _progress_metadata["wecom_session_key"] = session_key
         if _native_slack_task_cards:
             # chat.startStream in channels requires the recipient team/user
             # pair; harmless extras elsewhere, so stamp them whenever known.
@@ -28502,7 +28561,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     chat_type=getattr(source, "chat_type", None),
                     reply_to_message_id=event_message_id,
                 )
-            ) if _progress_thread_id else None
+            ) if (_progress_thread_id or source.platform == Platform.WECOM) else None
             if _status_thread_metadata is None and _relay_prospective_thread_id:
                 # Relay Discord auto-thread lane (see _progress_metadata above):
                 # carry the reply anchor so status/interim bubbles route into
@@ -28510,6 +28569,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _status_thread_metadata = {
                     "reply_to_message_id": event_message_id
                 }
+        if source.platform == Platform.WECOM:
+            _status_thread_metadata = dict(_status_thread_metadata or {})
+            _status_thread_metadata["wecom_session_key"] = session_key
 
         # Bridge extracted to TurnRunner._status_callback_sync; publish the
         # status wiring computed above onto the shared TurnContext at the

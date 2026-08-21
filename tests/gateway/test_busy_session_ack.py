@@ -226,6 +226,32 @@ class TestBusySessionAck:
         assert "Interrupting" not in content
 
     @pytest.mark.asyncio
+    async def test_wecom_steer_finishes_turn_placeholder_before_ack(self, monkeypatch):
+        """A successful WeCom steer closes only the active turn's placeholder."""
+        import gateway.run as _gr
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter(platform_val="wecom")
+        adapter.finish_pending_stream_for_busy_input = AsyncMock()
+
+        event = _make_event(text="继续查", platform_val="wecom")
+        event.source.platform = Platform.WECOM
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        adapter.finish_pending_stream_for_busy_input.assert_awaited_once_with(sk)
+        adapter._send_with_retry.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_steer_mode_transcribes_voice_before_injection(self, monkeypatch):
         """A busy voice follow-up is transcribed and steered, never queued."""
         import gateway.run as _gr

@@ -1003,6 +1003,7 @@ async def _run_with_agent(
     chat_id="-1001",
     chat_type="group",
     thread_id="17585",
+    event_message_id=None,
     adapter_cls=ProgressCaptureAdapter,
     user_id=None,
     scope_id=None,
@@ -1032,6 +1033,7 @@ async def _run_with_agent(
         chat_id=chat_id,
         chat_type=chat_type,
         thread_id=thread_id,
+        message_id=event_message_id,
         user_id=user_id,
         scope_id=scope_id,
     )
@@ -1053,6 +1055,7 @@ async def _run_with_agent(
         source=source,
         session_id=session_id,
         session_key=session_key,
+        event_message_id=event_message_id,
     )
     return adapter, result
 
@@ -1181,6 +1184,44 @@ async def test_display_streaming_does_not_enable_gateway_streaming(monkeypatch, 
     assert result.get("already_sent") is not True
     assert adapter.edits == []
     assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
+
+
+@pytest.mark.asyncio
+async def test_unthreaded_wecom_interim_keeps_inbound_reply_anchor(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-wecom-interim-anchor",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "interim_assistant_messages": True,
+            },
+            "streaming": {"enabled": False},
+        },
+        platform=Platform.WECOM,
+        chat_id="wecom-chat-1",
+        chat_type="dm",
+        thread_id=None,
+        event_message_id="wecom-msg-1",
+        adapter_cls=NonEditingProgressCaptureAdapter,
+    )
+
+    assert result.get("already_sent") is not True
+    assert adapter.edits == []
+    assert adapter.sent == [
+        {
+            "chat_id": "wecom-chat-1",
+            "content": "I'll inspect the repo first.",
+            "reply_to": None,
+            "metadata": {
+                "wecom_reply_to_message_id": "wecom-msg-1",
+                "wecom_session_key": "agent:main:wecom:dm:wecom-chat-1",
+                "wecom_interim_assistant": True,
+            },
+        }
+    ]
 
 
 class TransformedStreamAgent:

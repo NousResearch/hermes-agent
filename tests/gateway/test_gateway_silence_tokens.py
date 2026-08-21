@@ -166,6 +166,42 @@ async def test_prose_mentioning_silence_token_is_delivered(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_agent_turn_lifecycle_hook_runs_at_agent_boundary(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    adapter = MagicMock()
+    adapter.send = AsyncMock()
+    adapter._run_processing_hook = AsyncMock()
+    adapter.typing_starts_at_agent_boundary = True
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "done",
+        "messages": [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "done"},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+    })
+    event = _event()
+
+    await runner._handle_message_with_agent(
+        event,
+        _source(),
+        "agent:main:telegram:group:-1001:12345",
+        1,
+    )
+
+    adapter._run_processing_hook.assert_awaited_once_with(
+        "on_agent_turn_start",
+        event,
+        "agent:main:telegram:group:-1001:12345",
+    )
+
+
+@pytest.mark.asyncio
 async def test_agent_end_hook_includes_model_and_provider(monkeypatch, tmp_path):
     """Gateway hooks receive the actual model/provider for post-turn routing."""
     runner = _runner(monkeypatch, tmp_path)

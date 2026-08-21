@@ -25,18 +25,22 @@ export function buildProfileGroups(
   for (const session of sessions) {
     const key = normalizeProfileKey(session.profile)
 
-    const group = groups.get(key) ?? {
-      color: resolveProfileColor(key, profileColors),
-      id: key,
-      label: key,
-      mode: 'profile',
-      path: null,
-      sessions: []
+    let group = groups.get(key)
+
+    if (!group) {
+      group = {
+        color: resolveProfileColor(key, profileColors),
+        id: key,
+        label: key,
+        mode: 'profile',
+        path: null,
+        sessions: []
+      }
+
+      groups.set(key, group)
     }
 
     group.sessions.push(session)
-
-    groups.set(key, group)
   }
 
   const focused = focusedProfile ? normalizeProfileKey(focusedProfile) : null

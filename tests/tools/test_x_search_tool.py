@@ -432,3 +432,222 @@ def test_x_search_bearer_requests_prefer_api_key_from_shared_resolver(monkeypatc
     assert captured.get("prefer_api_key") is True
     assert source == "xai"
 
+
+# ---------------------------------------------------------------------------
+# New tests for #88284: 429 retry, Retry-After, x_search_calls, degraded logic
+# ---------------------------------------------------------------------------
+
+
+def test_x_search_retries_on_429_then_succeeds(monkeypatch):
+    """HTTP 429 should trigger retry with exponential backoff, then succeed on next attempt."""
+    from tools.x_search_tool import x_search_tool
+
+    call_count = {"n": 0}
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # First call: 429
+            resp = _FakeResponse({"error": "rate limited"}, status_code=429)
+            return resp
+        # Second call: success
+        return _FakeResponse(
+            {
+                "output_text": "Success after retry",
+                "citations": [{"url": "https://x.com/example/status/1"}],
+            }
+        )
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr("requests.post", _fake_post)
+
+    result = json.loads(x_search_tool(query="test query"))
+
+    assert result["success"] is True
+    assert result["answer"] == "Success after retry"
+    assert call_count["n"] == 2
+
+
+def test_x_search_retries_on_429_honors_retry_after(monkeypatch):
+    """HTTP 429 with Retry-After header should honor the header value."""
+    from tools.x_search_tool import x_search_tool
+
+    call_count = {"n": 0}
+    sleep_times = []
+
+    def _fake_sleep(seconds):
+        sleep_times.append(seconds)
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # First call: 429 with Retry-After: 2.5
+            resp = _FakeResponse({"error": "rate limited"}, status_code=429)
+            resp.headers = {"Retry-After": "2.5"}
+            return resp
+        # Second call: success
+        return _FakeResponse({"output_text": "Success after retry"})
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr("requests.post", _fake_post)
+    monkeypatch.setattr("time.sleep", _fake_sleep)
+
+    result = json.loads(x_search_tool(query="test query"))
+
+    assert result["success"] is True
+    assert call_count["n"] == 2
+    # Should honor Retry-After: 2.5 (not the exponential backoff)
+    assert sleep_times == [2.5]
+
+
+def test_x_search_surfaces_x_search_calls_in_result(monkeypatch):
+    """x_search_calls from usage.server_side_tool_usage_details should be in result JSON."""
+    from tools.x_search_tool import x_search_tool
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        return _FakeResponse(
+            {
+                "output_text": "Found some posts",
+                "citations": [{"url": "https://x.com/example/status/1"}],
+                "usage": {
+                    "server_side_tool_usage_details": {"x_search_calls": 3}
+                },
+            }
+        )
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr("requests.post", _fake_post)
+
+    result = json.loads(x_search_tool(query="test query"))
+
+    assert result["success"] is True
+    assert result["x_search_calls"] == 3
+
+
+def test_x_search_degraded_when_x_search_calls_zero(monkeypatch):
+    """degraded=true when x_search_calls==0 (index never ran) and usage present."""
+    from tools.x_search_tool import x_search_tool
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        return _FakeResponse(
+            {
+                "output_text": "Synthesized answer from model memory",
+                "citations": [],
+                "usage": {
+                    "server_side_tool_usage_details": {"x_search_calls": 0}
+                },
+            }
+        )
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr("requests.post", _fake_post)
+
+    result = json.loads(x_search_tool(query="test query"))
+
+    assert result["success"] is True
+    assert result["x_search_calls"] == 0
+    assert result["degraded"] is True
+    assert result["degraded_reason"] == "x_search index returned no results (x_search_calls=0)"
+
+
+def test_x_search_degraded_when_x_search_calls_positive_but_no_citations(monkeypatch):
+    """degraded=true when x_search_calls>0 but both citation channels empty."""
+    from tools.x_search_tool import x_search_tool
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        return _FakeResponse(
+            {
+                "output_text": "No posts found matching filters",
+                "citations": [],
+                "usage": {
+                    "server_side_tool_usage_details": {"x_search_calls": 2}
+                },
+            }
+        )
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr("requests.post", _fake_post)
+
+    result = json.loads(x_search_tool(query="from:nonexistent_handle latest"))
+
+    assert result["success"] is True
+    assert result["x_search_calls"] == 2
+    assert result["degraded"] is True
+    assert "x_search_calls=2" in result["degraded_reason"]
+
+
+def test_x_search_not_degraded_when_x_search_calls_positive_with_citations(monkeypatch):
+    """degraded=false when x_search_calls>0 and citations exist."""
+    from tools.x_search_tool import x_search_tool
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        return _FakeResponse(
+            {
+                "output_text": "Found posts",
+                "citations": [{"url": "https://x.com/example/status/1"}],
+                "usage": {
+                    "server_side_tool_usage_details": {"x_search_calls": 1}
+                },
+            }
+        )
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr("requests.post", _fake_post)
+
+    result = json.loads(x_search_tool(query="test query"))
+
+    assert result["success"] is True
+    assert result["x_search_calls"] == 1
+    assert result["degraded"] is False
+    assert result["degraded_reason"] is None
+
+
+def test_x_search_retries_on_408_425_502_503_504(monkeypatch):
+    """Other retryable codes (408, 425, 502, 503, 504) should also trigger retry."""
+    from tools.x_search_tool import x_search_tool
+
+    for code in (408, 425, 502, 503, 504):
+        call_count = {"n": 0}
+
+        def _make_fake_post(code):
+            def _fake_post(url, headers=None, json=None, timeout=None):
+                call_count["n"] += 1
+                if call_count["n"] == 1:
+                    resp = _FakeResponse({"error": f"{code} error"}, status_code=code)
+                    return resp
+                return _FakeResponse({"output_text": "Success after retry"})
+
+            return _fake_post
+
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+        monkeypatch.setattr("requests.post", _make_fake_post(code))
+
+        result = json.loads(x_search_tool(query="test query"))
+
+        assert result["success"] is True, f"Failed for code {code}"
+        assert call_count["n"] == 2, f"Did not retry for code {code}"
+
+
+def test_x_search_no_retry_on_400_401_403_404(monkeypatch):
+    """Client errors (400, 401, 403, 404) should NOT trigger retry."""
+    from tools.x_search_tool import x_search_tool
+
+    for code in (400, 401, 403, 404):
+        call_count = {"n": 0}
+
+        def _make_fake_post(code):
+            def _fake_post(url, headers=None, json=None, timeout=None):
+                call_count["n"] += 1
+                resp = _FakeResponse({"error": f"{code} error"}, status_code=code)
+                return resp
+
+            return _fake_post
+
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+        monkeypatch.setattr("requests.post", _make_fake_post(code))
+
+        result = json.loads(x_search_tool(query="test query"))
+
+        assert result["success"] is False, f"Should fail for code {code}"
+        assert call_count["n"] == 1, f"Should not retry for code {code}"
+

@@ -7010,11 +7010,22 @@ class DiscordAdapter(BasePlatformAdapter):
                     or _looks_like_nonconversational_history_message(_content)
                 ):
                     continue
-                # Stop at our own (conversational) message — this is the
-                # partition point.  Everything before this is already in the
-                # session transcript.  (Redundant when _after_obj is set, but
-                # needed for cold start.)
+                # In regular channels: stop at our own (conversational)
+                # message — this is the partition point.  Everything before
+                # this is already in the session transcript.  (Redundant when
+                # _after_obj is set, but needed for cold start.)
+                #
+                # In threads: skip our own messages instead of breaking.
+                # Threads with thread_require_mention=false process every
+                # message, so bot responses sit between user messages.  A new
+                # trigger after a bot response would scan backwards and
+                # immediately break at the bot's last reply, collecting zero
+                # user messages.  After a gateway restart the session
+                # transcript may also be fresh, so the partition rule cannot
+                # assume prior context already exists.
                 if msg.author == self._client.user:
+                    if isinstance(channel, discord.Thread):
+                        continue
                     break
                 line = _keep(msg)
                 if line is None:

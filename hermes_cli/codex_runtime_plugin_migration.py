@@ -381,6 +381,50 @@ def _strip_unmanaged_plugin_tables(toml_text: str) -> str:
     return "".join(out)
 
 
+def _strip_unmanaged_mcp_tables(
+    toml_text: str, server_names: set[str]
+) -> str:
+    """Remove ``[mcp_servers.<name>]`` tables that live OUTSIDE the managed
+    block *and* whose name is about to be re-emitted by the migration.
+
+    This prevents duplicate TOML table headers when a server name exists
+    both in the user's hand-edited codex config and in Hermes' mcp_servers
+    config.  Without this strip, the migration writes the name inside the
+    managed block while the user-owned copy survives outside it — Codex's
+    strict TOML parser then refuses to load the file.
+
+    Only names in *server_names* are stripped; user-owned
+    ``[mcp_servers.*]`` entries that Hermes does NOT know about are
+    preserved so manual additions are not lost.
+    """
+    if not server_names:
+        return toml_text
+    lines = toml_text.splitlines(keepends=True)
+    out: list[str] = []
+    in_mcp_table = False
+    for line in lines:
+        stripped = line.lstrip()
+        if _looks_like_table_header(stripped):
+            # Check if this is a [mcp_servers.<name>] header where <name>
+            # is in the set of servers we're about to re-emit.
+            if stripped.startswith("[mcp_servers."):
+                # Extract the server name: [mcp_servers.foo] → foo
+                # Handle quoted keys: [mcp_servers."foo bar"] → foo bar
+                inner = stripped[1:stripped.index("]")]  # mcp_servers.foo
+                name_part = inner[len("mcp_servers."):]
+                # Unquote if quoted
+                if name_part.startswith('"') and name_part.endswith('"'):
+                    name_part = name_part[1:-1]
+                if name_part in server_names:
+                    in_mcp_table = True
+                    continue
+            in_mcp_table = False
+        if in_mcp_table:
+            continue
+        out.append(line)
+    return "".join(out)
+
+
 def _looks_like_table_header(stripped_line: str) -> bool:
     """Return True if ``stripped_line`` is a TOML table header.
 
@@ -721,6 +765,12 @@ def migrate(
         # those pre-existing tables since plugin/list is the source of truth.
         if plugin_query_succeeded:
             without_managed = _strip_unmanaged_plugin_tables(without_managed)
+        # Strip user-owned [mcp_servers.*] tables for names we're about to
+        # re-emit inside the managed block, preventing duplicate TOML headers.
+        if translated:
+            without_managed = _strip_unmanaged_mcp_tables(
+                without_managed, set(translated.keys())
+            )
         new_text = _insert_managed_block_at_top_level(without_managed, managed_block)
     else:
         new_text = managed_block

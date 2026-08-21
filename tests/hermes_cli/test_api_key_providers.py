@@ -31,6 +31,7 @@ class TestProviderRegistry:
 
     @pytest.mark.parametrize("provider_id,name,auth_type", [
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
+        ("cursor-acp", "Cursor ACP", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
@@ -106,6 +107,7 @@ class TestProviderRegistry:
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
+        assert PROVIDER_REGISTRY["cursor-acp"].inference_base_url == "acp://cursor"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["stepfun"].inference_base_url == STEPFUN_STEP_PLAN_INTL_BASE_URL
@@ -227,6 +229,11 @@ class TestResolveProvider:
     def test_alias_github_copilot_acp(self):
         assert resolve_provider("github-copilot-acp") == "copilot-acp"
         assert resolve_provider("copilot-acp-agent") == "copilot-acp"
+
+    def test_alias_cursor_acp(self):
+        assert resolve_provider("cursor-acp") == "cursor-acp"
+        assert resolve_provider("cursor-acp-agent") == "cursor-acp"
+        assert resolve_provider("cursor-agent-acp") == "cursor-acp"
 
     def test_explicit_huggingface(self):
         assert resolve_provider("huggingface") == "huggingface"
@@ -503,6 +510,23 @@ class TestRuntimeProviderResolution:
         assert result["base_url"] == "acp://copilot"
         assert result["command"] == "/usr/local/bin/copilot"
         assert result["args"] == ["--acp", "--stdio", "--debug"]
+
+    def test_runtime_cursor_acp_uses_process_runtime(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.auth.shutil.which",
+            lambda command: f"/usr/local/bin/{command}",
+        )
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="cursor-acp")
+
+        assert result["provider"] == "cursor-acp"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "cursor-acp"
+        assert result["base_url"] == "acp://cursor"
+        assert result["command"] == "/usr/local/bin/cursor-agent"
+        assert result["args"] == ["acp"]
 
 
 # =============================================================================

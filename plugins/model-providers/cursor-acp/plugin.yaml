@@ -1,0 +1,5 @@
+name: cursor-acp-provider
+kind: model-provider
+version: 1.0.0
+description: Cursor via ACP subprocess (cursor-agent acp)
+author: Nous Research

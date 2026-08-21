@@ -39,6 +39,7 @@ def test_proxy_env_rejects_malformed_port(monkeypatch, key):
     "https://api.example.com/v1",
     "http://127.0.0.1:6153/v1",
     "acp://copilot",
+    "acp://cursor",
     "",
     None,
 ])

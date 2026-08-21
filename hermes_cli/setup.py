@@ -74,6 +74,10 @@ _DEFAULT_PROVIDER_MODELS = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    "cursor-acp": [
+        "gpt-5.6-sol-high",
+        "gemini-3.7-flash-high",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",

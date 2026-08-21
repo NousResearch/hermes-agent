@@ -506,6 +506,11 @@ class TestNormalizeAuxProvider:
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
 
+    def test_maps_cursor_acp_aliases(self):
+        assert _normalize_aux_provider("cursor-acp") == "cursor-acp"
+        assert _normalize_aux_provider("cursor-acp-agent") == "cursor-acp"
+        assert _normalize_aux_provider("cursor-agent-acp") == "cursor-acp"
+
 
 class TestReadCodexAccessToken:
     def test_valid_auth_store(self, tmp_path, monkeypatch):

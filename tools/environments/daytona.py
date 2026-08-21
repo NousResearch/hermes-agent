@@ -47,6 +47,7 @@ class DaytonaEnvironment(BaseEnvironment):
         disk: int = 10240,
         persistent_filesystem: bool = True,
         task_id: str = "default",
+        auto_archive_interval: int = 60,
     ):
         requested_cwd = cwd
         super().__init__(cwd=cwd, timeout=timeout)
@@ -123,6 +124,14 @@ class DaytonaEnvironment(BaseEnvironment):
                     name=sandbox_name,
                     labels=labels,
                     auto_stop_interval=0,
+                    # Quota safety: a stopped Daytona sandbox still counts against
+                    # the org disk quota; only an archived one stops counting.
+                    # Without an archive interval, a crashed or interrupted run can
+                    # leak sandboxes at a few GiB each until the quota fills and
+                    # blocks all workers. Resume already handles ARCHIVED state in
+                    # _ensure_sandbox_ready, so archiving is transparent here.
+                    # See paperclipai/paperclip#8561.
+                    auto_archive_interval=auto_archive_interval,
                     resources=resources,
                 )
             )

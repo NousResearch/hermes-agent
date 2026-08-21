@@ -7062,7 +7062,13 @@ def run_conversation(
                         )
                         agent._invalid_json_retries = 0
                         agent._cleanup_task_resources(effective_task_id)
-                        _final_response = "Response truncated due to output length limit"
+                        if finish_reason == "length":
+                            _final_response = "Response truncated due to output length limit"
+                        else:
+                            _final_response = (
+                                "Tool call arguments were truncated or malformed and could not "
+                                "be repaired after retries. The tool was not executed."
+                            )
                         # Same tool-tail close as interrupt / invalid-tool
                         # exhaustion — this path never reaches finalize_turn.
                         close_interrupted_tool_sequence(messages, _final_response)

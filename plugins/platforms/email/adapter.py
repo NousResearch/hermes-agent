@@ -13,6 +13,11 @@ Environment variables:
     EMAIL_PASSWORD      — Email password or app-specific password
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
     EMAIL_ALLOWED_USERS — Comma-separated list of allowed sender addresses
+
+Behavioral toggles live in config.yaml under ``platforms.email`` (not env):
+    process_existing    — When true, process UNSEEN mail already in INBOX at
+                          startup instead of skipping it. Default false
+                          (skip existing, matches historical behaviour).
 """
 
 import asyncio
@@ -558,10 +563,11 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
 
-        # Skip attachments — configured via config.yaml:
+        # Behavioral toggles — configured via config.yaml:
         #   platforms:
         #     email:
         #       skip_attachments: true
+        #       process_existing: true
         self._skip_attachments = extra.get("skip_attachments", False)
 
         # Require the sender's From: domain to be authenticated (SPF/DKIM/DMARC)
@@ -591,6 +597,13 @@ class EmailAdapter(BasePlatformAdapter):
         self._authserv_id = (
             extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")
         ).strip().lower()
+
+        # When True, skip the connect()-time pre-fill so existing UNSEEN mail
+        # is picked up on the first poll.  Default False = upstream behaviour.
+        # Parsed via the shared truthy helper rather than bool(): a plain
+        # bool() turns a string-typed "false" (any non-YAML config source)
+        # into True, silently enabling the backlog burst.
+        self._process_existing = is_truthy_value(extra.get("process_existing"), default=False)
 
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
@@ -721,7 +734,9 @@ class EmailAdapter(BasePlatformAdapter):
                     # adapter's seen-UID baseline instead of re-marking the whole
                     # mailbox. Mail that arrived during the outage stays UNSEEN
                     # relative to the baseline and is dispatched by the next poll
-                    # instead of being silently skipped.
+                    # instead of being silently skipped. Orthogonal to
+                    # process_existing below: that knob is about the STARTUP
+                    # backlog, this branch is about a mid-session outage.
                     self._seen_uids = set(snapshot)
                     self._trim_seen_uids()
                     logger.info(
@@ -729,7 +744,7 @@ class EmailAdapter(BasePlatformAdapter):
                         "messages received during the outage will be processed.",
                         len(self._seen_uids),
                     )
-                else:
+                elif not self._process_existing:
                     # First connect (or no snapshot): mark all existing messages as
                     # seen so we only process new ones.
                     status, data = imap.uid("search", None, "ALL")
@@ -739,6 +754,20 @@ class EmailAdapter(BasePlatformAdapter):
                     # Keep only the most recent UIDs to prevent unbounded growth
                     self._trim_seen_uids()
                     logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+                else:
+                    # Pre-fill skipped on purpose. Count the backlog first: the
+                    # first poll turns every one of these into a full agent turn
+                    # (and a reply), so the operator should see the size of that
+                    # burst in the log before it happens rather than after.
+                    pending = 0
+                    status, data = imap.uid("search", None, "UNSEEN")
+                    if status == "OK" and data and data[0]:
+                        pending = len(data[0].split())
+                    logger.info(
+                        "[Email] IMAP connection test passed. process_existing is enabled — "
+                        "%d pre-existing UNSEEN message(s) will be processed on the first poll.",
+                        pending,
+                    )
             finally:
                 if imap is not None:
                     _close_imap(imap)

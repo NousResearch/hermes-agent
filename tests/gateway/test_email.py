@@ -1122,5 +1122,145 @@ class TestSenderAuthentication(unittest.TestCase):
         self.assertFalse(ok, reason)
 
 
+class TestProcessExistingFlag(unittest.TestCase):
+    """Test the ``platforms.email.process_existing`` config toggle inside connect()."""
+
+    _BASE_ENV = {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_IMAP_PORT": "993",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_SMTP_PORT": "587",
+    }
+
+    def _make_adapter(self, extra=None):
+        """Build an EmailAdapter; ``extra`` maps to config.yaml ``platforms.email``."""
+        from gateway.config import PlatformConfig
+        # clear=True so a stray EMAIL_* in the real env can't leak in; connection
+        # vars come from _BASE_ENV, the behavioral flag from config.extra.
+        with patch.dict(os.environ, self._BASE_ENV, clear=True):
+            from plugins.platforms.email.adapter import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True, extra=extra or {}))
+        return adapter
+
+    def _connect_with_uids(self, adapter, uid_bytes=b"1 2 3"):
+        """Run adapter.connect() with mocked IMAP returning uid_bytes and a mock SMTP.
+
+        The poll task is cancelled immediately after connect() returns so it
+        cannot add unexpected entries to _seen_uids before the caller checks.
+        """
+        import asyncio
+
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [uid_bytes])
+
+        async def _run():
+            with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+                 patch("smtplib.SMTP") as mock_smtp:
+                mock_smtp.return_value = MagicMock()
+                result = await adapter.connect()
+                # Cancel the background poll task before it can touch _seen_uids
+                adapter._running = False
+                if adapter._poll_task:
+                    adapter._poll_task.cancel()
+                    try:
+                        await adapter._poll_task
+                    except asyncio.CancelledError:
+                        pass
+                    adapter._poll_task = None
+            return result
+
+        result = asyncio.run(_run())
+        return result, mock_imap
+
+    @staticmethod
+    def _search_criteria(mock_imap):
+        """Return the criteria of every ``uid('search', None, <criteria>)`` call."""
+        return [c.args[2] for c in mock_imap.uid.call_args_list if c.args[0] == "search"]
+
+    # ------------------------------------------------------------------
+    # Default behaviour — process_existing unset
+    # ------------------------------------------------------------------
+    def test_default_skips_existing(self):
+        """Without process_existing, UIDs are pre-filled (upstream behaviour)."""
+        adapter = self._make_adapter()
+        self.assertFalse(adapter._process_existing)
+
+        result, mock_imap = self._connect_with_uids(adapter, b"10 20 30")
+
+        self.assertTrue(result)
+        self.assertGreater(len(adapter._seen_uids), 0)
+        # The ALL search must have been issued
+        self.assertIn("ALL", self._search_criteria(mock_imap))
+
+    # ------------------------------------------------------------------
+    # Explicit process_existing: false — same as default
+    # ------------------------------------------------------------------
+    def test_set_false_skips_existing(self):
+        """process_existing: false must behave identically to default (UIDs pre-filled)."""
+        adapter = self._make_adapter({"process_existing": False})
+        self.assertFalse(adapter._process_existing)
+
+        result, mock_imap = self._connect_with_uids(adapter, b"4 5 6")
+
+        self.assertTrue(result)
+        self.assertGreater(len(adapter._seen_uids), 0)
+        self.assertIn("ALL", self._search_criteria(mock_imap))
+
+    # ------------------------------------------------------------------
+    # process_existing: true — skip pre-fill so first poll picks them up
+    # ------------------------------------------------------------------
+    def test_set_true_processes_existing(self):
+        """process_existing: true leaves _seen_uids empty and skips the ALL pre-fill."""
+        adapter = self._make_adapter({"process_existing": True})
+        self.assertTrue(adapter._process_existing)
+
+        result, mock_imap = self._connect_with_uids(adapter, b"7 8 9")
+
+        self.assertTrue(result)
+        self.assertEqual(len(adapter._seen_uids), 0)
+        # The ALL search must NOT be issued — that is the pre-fill we are skipping
+        self.assertNotIn("ALL", self._search_criteria(mock_imap))
+
+    def test_set_true_counts_backlog(self):
+        """process_existing: true counts the UNSEEN backlog so the burst is logged."""
+        adapter = self._make_adapter({"process_existing": True})
+
+        with self.assertLogs("plugins.platforms.email.adapter", level="INFO") as logs:
+            result, mock_imap = self._connect_with_uids(adapter, b"7 8 9")
+
+        self.assertTrue(result)
+        # UNSEEN, not ALL: the count is reported, the UIDs are not marked seen
+        self.assertIn("UNSEEN", self._search_criteria(mock_imap))
+        self.assertEqual(len(adapter._seen_uids), 0)
+        self.assertTrue(
+            any("3 pre-existing UNSEEN message(s)" in line for line in logs.output),
+            f"backlog count missing from log output: {logs.output}",
+        )
+
+    # ------------------------------------------------------------------
+    # Value coercion — the shared truthy helper, not bool()
+    # ------------------------------------------------------------------
+    def test_bool_values(self):
+        """True/False config values enable/disable the flag; absence defaults to False."""
+        self.assertTrue(self._make_adapter({"process_existing": True})._process_existing)
+        self.assertFalse(self._make_adapter({"process_existing": False})._process_existing)
+        self.assertFalse(self._make_adapter({})._process_existing)
+
+    def test_string_values_are_not_blindly_truthy(self):
+        """A string-typed value is parsed, not coerced: "false"/"no"/"" stay off."""
+        for value in ("false", "False", "no", "off", "0", ""):
+            with self.subTest(value=value):
+                self.assertFalse(self._make_adapter({"process_existing": value})._process_existing)
+        for value in ("true", "TRUE", "yes", "on", "1"):
+            with self.subTest(value=value):
+                self.assertTrue(self._make_adapter({"process_existing": value})._process_existing)
+
+    def test_none_value_defaults_off(self):
+        """An explicit ``process_existing:`` with no value (YAML null) stays off."""
+        self.assertFalse(self._make_adapter({"process_existing": None})._process_existing)
+
+
 if __name__ == "__main__":
     unittest.main()

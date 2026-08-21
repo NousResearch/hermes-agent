@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 _SESSIONS_DIR = get_hermes_home() / "sessions"
 _SESSIONS_INDEX = _SESSIONS_DIR / "sessions.json"
 
+#: ``display_kind`` stamped on every mirrored row. Presentation-only metadata
+#: never reaches the provider payload, so this records provenance without
+#: touching the role/content replay contract described in mirror_to_session.
+MIRROR_DISPLAY_KIND = "delivery_mirror"
+
 
 def mirror_to_session(
     platform: str,
@@ -53,12 +58,19 @@ def mirror_to_session(
     ``send_message`` mirror, where the mirrored text is the agent's own
     outgoing reply (a genuine assistant turn). Callers mirroring text that is
     NOT the agent speaking — e.g. a cron brief delivered out-of-band — must
-    pass ``role="user"``: the ``mirror``/``mirror_source`` metadata is dropped
-    at the SQLite boundary (only role+content persist), so on replay an
-    assistant-role mirror is indistinguishable from a real assistant turn and
-    produces ``assistant → assistant`` pairs that break strict-alternation
-    providers (issue #2221). A user-role mirror collapses safely via
+    pass ``role="user"``: on replay an assistant-role mirror produces
+    ``assistant → assistant`` pairs that break strict-alternation providers
+    (issue #2221), while a user-role mirror collapses safely via
     ``repair_message_sequence``'s consecutive-user merge on every provider.
+
+    Because the role must stay replay-compatible, the mirror provenance is
+    persisted out-of-band instead: every mirrored row carries
+    ``display_kind="delivery_mirror"`` plus the ``mirror``/``mirror_source``
+    metadata. Display metadata never enters the provider payload, so replay is
+    unchanged, but readers (notably the MCP ``messages_read`` tool) can now
+    tell a relayed message from genuine model output instead of trusting the
+    assistant role — which an external sender would otherwise be able to
+    borrow to inject instructions.
 
     Returns True if mirrored successfully, False if no matching session or error.
     All errors are caught -- this is never fatal.
@@ -88,6 +100,14 @@ def mirror_to_session(
             "timestamp": datetime.now().isoformat(),
             "mirror": True,
             "mirror_source": source_label,
+            "display_kind": MIRROR_DISPLAY_KIND,
+            "display_metadata": {
+                "mirror": True,
+                "mirror_source": source_label,
+                "platform": platform,
+                "chat_id": str(chat_id),
+                "thread_id": str(thread_id) if thread_id is not None else None,
+            },
         }
 
         _append_to_sqlite(session_id, mirror_msg)
@@ -208,7 +228,11 @@ def _find_session_id(
 
 
 def _append_to_sqlite(session_id: str, message: dict) -> None:
-    """Append a message to the SQLite session database."""
+    """Append a message to the SQLite session database.
+
+    ``display_kind``/``display_metadata`` carry the mirror provenance. They are
+    presentation-only columns, so the replayed role/content is untouched.
+    """
     db = None
     try:
         from hermes_state import SessionDB
@@ -217,6 +241,8 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
             session_id=session_id,
             role=message.get("role", "assistant"),
             content=message.get("content"),
+            display_kind=message.get("display_kind"),
+            display_metadata=message.get("display_metadata"),
         )
     except Exception as e:
         logger.debug("Mirror SQLite write failed: %s", e)

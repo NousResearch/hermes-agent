@@ -52,6 +52,7 @@ If `web.backend` is not set, the backend is auto-detected from whichever API key
 
 Hermes includes full browser automation with multiple backend options for navigating websites, filling forms, and extracting information:
 
+- **[Browserless](/user-guide/features/mcp#browserless-browser-automation)** — Hosted browser automation, scraping, search, crawl, and export tools through the Browserless MCP server
 - **Browserbase** — Managed cloud browsers with anti-bot tooling, CAPTCHA solving, and residential proxies
 - **Browser Use** — Alternative cloud browser provider
 - **Local Chromium-family CDP** — Connect to your running Chrome, Brave, Chromium, or Edge browser using `/browser connect`

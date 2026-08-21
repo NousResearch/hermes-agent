@@ -400,6 +400,18 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
+    p_create.add_argument("--notify-chat", default=None, dest="notify_chat",
+                          help="Subscribe this chat to the new card's "
+                               "terminal events (completed/blocked/etc). The "
+                               "in-gateway `kanban` tool auto-subscribes the "
+                               "calling session; a bare CLI/subprocess create "
+                               "has no session channel, so pass the target "
+                               "explicitly here. Requires --notify-platform.")
+    p_create.add_argument("--notify-platform", default=None, dest="notify_platform",
+                          help="Platform for --notify-chat (e.g. discord, "
+                               "telegram, slack). Requires --notify-chat.")
+    p_create.add_argument("--notify-thread", default=None, dest="notify_thread",
+                          help="Optional thread id for --notify-chat.")
 
     # --- swarm ---
     p_swarm = sub.add_parser(
@@ -1562,6 +1574,18 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    # --notify-chat and --notify-platform are a pair: half a target can't
+    # deliver, and silently ignoring it would recreate the exact
+    # hand-back-goes-unseen failure the flag exists to prevent.
+    _nchat = getattr(args, "notify_chat", None)
+    _nplat = getattr(args, "notify_platform", None)
+    if bool(_nchat) != bool(_nplat):
+        print(
+            "kanban: --notify-chat and --notify-platform must be given "
+            "together (a partial notify target can't deliver).",
+            file=sys.stderr,
+        )
+        return 2
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
@@ -1588,6 +1612,21 @@ def _cmd_create(args: argparse.Namespace) -> int:
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
+        # Explicit notify subscription for CLI/subprocess creates. The
+        # in-gateway `kanban` tool auto-subscribes the calling session off
+        # its ContextVars (HERMES_SESSION_PLATFORM/CHAT_ID); a bare CLI or
+        # subprocess create has no session channel, so the auto path no-ops
+        # and the card would hand back silently. --notify-chat closes that
+        # gap by writing the same notify-sub row explicitly.
+        notify_chat = getattr(args, "notify_chat", None)
+        notify_platform = getattr(args, "notify_platform", None)
+        if notify_chat and notify_platform:
+            kb.add_notify_sub(
+                conn, task_id=task_id,
+                platform=notify_platform, chat_id=notify_chat,
+                thread_id=getattr(args, "notify_thread", None),
+                notifier_profile=_profile_author(),
+            )
     if getattr(args, "json", False):
         print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
     else:

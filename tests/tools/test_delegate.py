@@ -1037,6 +1037,163 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
         )
 
 
+class TestDefaultChildToolsets(unittest.TestCase):
+    """delegation.enabled_toolsets is the default requested child list."""
+
+    def _build(self, parent, toolsets=None):
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Default child toolsets",
+                context=None,
+                toolsets=toolsets,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+        return MockAgent.call_args[1]["enabled_toolsets"]
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_unset_config_inherits_parent_toolsets(self, _mock_cfg):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["web", "file", "terminal", "mcp-jcodemunch"]
+        self.assertEqual(
+            self._build(parent),
+            ["web", "file", "terminal", "mcp-jcodemunch"],
+        )
+
+    @patch("tools.delegate_tool._load_config", return_value={"enabled_toolsets": []})
+    def test_empty_list_inherits_parent_toolsets(self, _mock_cfg):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["web", "file", "terminal", "mcp-jcodemunch"]
+        self.assertEqual(
+            self._build(parent),
+            ["web", "file", "terminal", "mcp-jcodemunch"],
+        )
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={
+            "enabled_toolsets": ["file", "terminal"],
+            "inherit_mcp_toolsets": False,
+        },
+    )
+    def test_config_narrows_when_caller_omits_toolsets(self, _mock_cfg):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = [
+            "web",
+            "browser",
+            "file",
+            "terminal",
+            "mcp-jcodemunch",
+        ]
+        self.assertEqual(self._build(parent), ["file", "terminal"])
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={
+            "enabled_toolsets": ["file", "terminal"],
+            "inherit_mcp_toolsets": True,
+        },
+    )
+    def test_config_narrow_then_inherit_mcp_when_enabled(self, _mock_cfg):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["file", "terminal", "mcp-jcodemunch"]
+        self.assertEqual(
+            self._build(parent),
+            ["file", "terminal", "mcp-jcodemunch"],
+        )
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={
+            "enabled_toolsets": ["file", "terminal"],
+            "inherit_mcp_toolsets": False,
+        },
+    )
+    def test_explicit_toolsets_win_over_config(self, _mock_cfg):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["web", "file", "terminal"]
+        self.assertEqual(self._build(parent, toolsets=["web"]), ["web"])
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={
+            "enabled_toolsets": ["file", "terminal"],
+            "inherit_mcp_toolsets": False,
+        },
+    )
+    def test_config_cannot_grant_parent_missing_toolsets(self, _mock_cfg):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["terminal"]
+        self.assertEqual(self._build(parent), ["terminal"])
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={
+            "enabled_toolsets": ["file", "terminal"],
+            "inherit_mcp_toolsets": False,
+        },
+    )
+    def test_config_kept_when_parent_has_the_tools_under_other_names(self, _mock_cfg):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["desktop_ui", "jcodemunch"]
+        parent.valid_tool_names = {
+            "terminal",
+            "process",
+            "read_file",
+            "write_file",
+            "patch",
+            "search_files",
+        }
+        child_sets = self._build(parent)
+        self.assertIn("file", child_sets)
+        self.assertIn("terminal", child_sets)
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={
+            "enabled_toolsets": ["file", "terminal"],
+            "inherit_mcp_toolsets": False,
+        },
+    )
+    def test_restores_terminal_schema_if_child_init_drops_it(self, _mock_cfg):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["file", "terminal"]
+        parent.valid_tool_names = {"terminal", "process", "read_file"}
+        parent.tools = [
+            {"type": "function", "function": {"name": "terminal", "parameters": {}}},
+            {"type": "function", "function": {"name": "process", "parameters": {}}},
+            {"type": "function", "function": {"name": "read_file", "parameters": {}}},
+        ]
+
+        child = MagicMock()
+        child.valid_tool_names = {"process"}
+        child.tools = [
+            {"type": "function", "function": {"name": "process", "parameters": {}}},
+        ]
+
+        with patch("run_agent.AIAgent", return_value=child):
+            _build_child_agent(
+                task_index=0,
+                goal="Restore terminal",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        self.assertIn("terminal", child.valid_tool_names)
+        self.assertIn(
+            "terminal",
+            {t["function"]["name"] for t in child.tools},
+        )
+
+
 class TestChildCredentialLeasing(unittest.TestCase):
     def test_run_single_child_acquires_and_releases_lease(self):
         from tools.delegate_tool import _run_single_child

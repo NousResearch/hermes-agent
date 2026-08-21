@@ -1917,6 +1917,12 @@ DEFAULT_CONFIG = {
         # extras" without silently stripping MCP tools the parent already has.
         # Set to false for strict intersection.
         "inherit_mcp_toolsets": True,
+        # Default child toolsets when the caller does not pass an explicit
+        # list (delegate_task never exposes toolsets to the model). Empty
+        # keeps current inherit-everything behavior. A non-empty list is
+        # treated as the child's requested toolsets: intersected with the
+        # parent, then inherit_mcp_toolsets is applied.
+        "enabled_toolsets": [],
         "max_iterations": 250,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
         # Subagent summaries return to the parent's context verbatim. A batch

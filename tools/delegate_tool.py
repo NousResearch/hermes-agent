@@ -1032,6 +1032,102 @@ def _get_inherit_mcp_toolsets() -> bool:
     return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
 
 
+def _get_default_child_toolsets() -> List[str]:
+    """Return ``delegation.enabled_toolsets`` when set, else ``[]``.
+
+    Empty means no default narrowing — children inherit the parent's full
+    enabled set. A non-empty list is the child's requested toolsets
+    (intersected with the parent, then ``inherit_mcp_toolsets``).
+    """
+    raw = _load_config().get("enabled_toolsets")
+    if isinstance(raw, str):
+        items = raw.split(",")
+    elif isinstance(raw, (list, tuple)):
+        items = raw
+    else:
+        return []
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
+def _toolset_static_tools(name: str) -> List[str]:
+    """Return a toolset's static tool names (no registry overlays)."""
+    try:
+        from toolsets import resolve_toolset
+
+        return list(resolve_toolset(name, include_registry=False) or [])
+    except Exception:
+        ts_def = TOOLSETS.get(name) or {}
+        return list(ts_def.get("tools") or [])
+
+
+def _requested_toolsets_present_on_parent(
+    requested: List[str],
+    expanded_parent: set,
+    parent_valid_names,
+) -> List[str]:
+    """Keep requested toolsets the parent actually has.
+
+    Name intersection is the default. If the parent's enabled list uses
+    composites or raw tool names that ``_expand_parent_toolsets`` missed,
+    keep a requested toolset when any of its static tools appear in the
+    parent's already-resolved ``valid_tool_names``.
+    """
+    if isinstance(parent_valid_names, (set, frozenset, list, tuple)):
+        parent_valid = {str(name) for name in parent_valid_names}
+    else:
+        parent_valid = set()
+    kept: List[str] = []
+    for ts in requested:
+        if ts in expanded_parent:
+            kept.append(ts)
+            continue
+        tools = set(_toolset_static_tools(ts))
+        if tools and tools & parent_valid:
+            kept.append(ts)
+    return kept
+
+
+def _restore_requested_tools_from_parent(child, parent, requested_toolsets: List[str]) -> None:
+    """Copy requested tools from the parent if child init dropped them.
+
+    Desktop children have been observed to end up with only ``process``
+    even when ``terminal`` was requested and the parent still has it.
+    Re-attach the parent's already-validated schemas so the leaf can
+    actually run a shell.
+    """
+    if not requested_toolsets or child is None or parent is None:
+        return
+    wanted: set[str] = set()
+    for ts in requested_toolsets:
+        wanted.update(_toolset_static_tools(ts))
+    if not wanted:
+        return
+    parent_by_name = {}
+    for schema in getattr(parent, "tools", None) or []:
+        if not isinstance(schema, dict):
+            continue
+        name = (schema.get("function") or {}).get("name")
+        if name:
+            parent_by_name[str(name)] = schema
+    child_names = {str(n) for n in (getattr(child, "valid_tool_names", None) or [])}
+    missing = [name for name in wanted if name in parent_by_name and name not in child_names]
+    if not missing:
+        return
+    child.tools = list(getattr(child, "tools", None) or [])
+    valid = getattr(child, "valid_tool_names", None)
+    if not isinstance(valid, set):
+        valid = set(valid or [])
+        child.valid_tool_names = valid
+    for name in missing:
+        child.tools.append(parent_by_name[name])
+        valid.add(name)
+    logger.warning(
+        "Restored %s on delegated child from parent (requested toolsets %s)",
+        missing,
+        requested_toolsets,
+    )
+
+
 def _is_mcp_toolset_name(name: str) -> bool:
     """Return True for canonical MCP toolsets and their registered aliases."""
     if not name:
@@ -1652,12 +1748,19 @@ def _build_child_agent(
     else:
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
+    if not toolsets:
+        toolsets = _get_default_child_toolsets()
+
     if toolsets:
         # Intersect with parent — subagent must not gain tools the parent lacks.
         # Expand composite toolsets (e.g. hermes-cli) so that individual
         # toolset names (e.g. web, terminal) are recognised during intersection.
         expanded_parent = _expand_parent_toolsets(parent_toolsets)
-        child_toolsets = [t for t in toolsets if t in expanded_parent]
+        child_toolsets = _requested_toolsets_present_on_parent(
+            toolsets,
+            expanded_parent,
+            getattr(parent_agent, "valid_tool_names", None),
+        )
         if _get_inherit_mcp_toolsets():
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets
@@ -1985,6 +2088,7 @@ def _build_child_agent(
                 except Exception:
                     pass
             raise
+    _restore_requested_tools_from_parent(child, parent_agent, toolsets or [])
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Ownership transfer for the dedicated handle: the child's close() must
     # release it (nothing else holds a reference), and no parent teardown can

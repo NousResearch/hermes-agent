@@ -746,6 +746,31 @@ class TestLoadGatewayConfig:
         assert config.platforms[Platform.TELEGRAM].enabled is True
 
 
+    def test_relay_env_url_opt_out_keeps_direct_platforms(self, tmp_path, monkeypatch):
+        """GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true opts a deployment out of
+        the relay-exclusive sweep: direct adapters stay enabled beside the
+        relay even with the GATEWAY_RELAY_URL env stamp present."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      enabled: true\n"
+            "      bot_token: '123:abc'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("GATEWAY_RELAY_URL", "https://connector.example/relay")
+        monkeypatch.setenv("GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS", "true")
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.RELAY].enabled is True
+        assert config.platforms[Platform.TELEGRAM].enabled is True
+
+
     def test_thread_require_mention_yaml_does_not_overwrite_env(self, tmp_path, monkeypatch):
         """Explicit env var should win over config.yaml (env > yaml precedence)."""
         hermes_home = tmp_path / ".hermes"

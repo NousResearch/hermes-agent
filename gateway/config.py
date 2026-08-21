@@ -2772,7 +2772,15 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # Deployments that configure relay only via gateway.relay_url in
     # config.yaml keep the old additive behavior (relay beside direct
     # adapters).
-    if relay_url_env:
+    #
+    # Opt-out: GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true keeps direct
+    # adapters running beside the relay for deployments that intentionally
+    # mix both ingress paths. Like the trigger, it is a deploy-stamp env var,
+    # not a config.yaml setting.
+    allow_direct = os.getenv(
+        "GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS", ""
+    ).strip().lower() in ("1", "true", "yes", "on")
+    if relay_url_env and not allow_direct:
         non_messaging = {Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK}
         for platform, platform_config in config.platforms.items():
             if platform is Platform.RELAY or platform in non_messaging:

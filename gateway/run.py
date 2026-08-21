@@ -147,6 +147,12 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
     r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
+    # Fallback-chain switches are plumbing: the recovered reply itself is
+    # the user-visible outcome; the switch notice belongs in logs.
+    r"|switched\s+to\s+fallback\s+model"
+    r"|fallback\s+activated"
+    r"|switching\s+to\s+fallback\s+provider"
+    r"|activating\s+fallback\s+provider"
     r")",
     re.IGNORECASE | re.DOTALL,
 )

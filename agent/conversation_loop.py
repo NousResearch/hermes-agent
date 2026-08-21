@@ -3882,6 +3882,37 @@ def run_conversation(
                                 _retry.restart_with_length_continuation = True
                                 break
 
+                            # ── Truncation exhaustion → fallback (mirror of
+                            # the content-filter escalation above): a primary
+                            # that hit finish_reason=length on 4 straight
+                            # continuation attempts is in runaway generation —
+                            # further attempts on the same backend re-hit the
+                            # same loop. Consult the fallback chain and let a
+                            # different model compose the final response from
+                            # the transcript before giving up.
+                            if agent._fallback_index < len(agent._fallback_chain):
+                                agent._vprint(
+                                    f"{agent.log_prefix}↻ Response still truncated "
+                                    f"after 4 continuations — activating fallback "
+                                    f"provider...",
+                                    force=True,
+                                )
+                                agent._emit_status(
+                                    "Response still truncated after 4 continuation "
+                                    "attempts; switching to fallback provider..."
+                                )
+                                if agent._try_activate_fallback():
+                                    if truncated_response_parts:
+                                        messages = agent._get_messages_up_to_last_assistant(messages)
+                                    agent._session_messages = messages
+                                    length_continue_retries = 0
+                                    truncated_response_parts = []
+                                    retry_count = 0
+                                    compression_attempts = 0
+                                    _retry.primary_recovery_attempted = False
+                                    _retry.restart_with_rebuilt_messages = True
+                                    break
+
                             partial_response = agent._strip_think_blocks(_join_truncated_parts(truncated_response_parts)).strip()
                             if partial_response:
                                 agent._vprint(

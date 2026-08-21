@@ -120,6 +120,32 @@ def test_telegram_status_suppresses_auxiliary_and_retry_noise():
         assert _prepare_gateway_status_message(Platform.TELEGRAM, "warn", message) is None
 
 
+def test_telegram_status_suppresses_fallback_chain_switch_noise():
+    """Fallback-chain switch notices are plumbing, not the user-visible outcome.
+
+    The recovered reply itself is what the user needs to see; the "we
+    switched providers to get you that reply" notice belongs in logs only.
+    Regression guard alongside #87992 (continuation-exhaustion fallback):
+    the switch notice must be filtered on chat surfaces while the ordinary
+    "Working — N min" heartbeat is still delivered.
+    """
+    noisy_messages = [
+        "⚠ Switched to fallback model 'local/qwen3.8' after repeated failures.",
+        "⚠ Fallback activated for this turn.",
+        "⚠ Switching to fallback provider 'openrouter'.",
+        "⚠ Activating fallback provider after continuation attempts were exhausted.",
+    ]
+
+    for message in noisy_messages:
+        assert _prepare_gateway_status_message(Platform.TELEGRAM, "warn", message) is None
+
+    # The heartbeat carve-out must survive alongside the new suppression.
+    assert (
+        _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", "⏳ Working — 3 min")
+        == "⏳ Working — 3 min"
+    )
+
+
 def test_programmatic_surfaces_keep_raw_status():
     """Programmatic surfaces (local/api/webhook) must keep raw diagnostics.
 

@@ -18,7 +18,10 @@ from urllib.parse import urlsplit
 
 from utils import safe_json_loads
 from agent.redact import redact_sensitive_text
-from agent.tool_result_classification import file_mutation_result_landed
+from agent.tool_result_classification import (
+    classify_memory_result,
+    file_mutation_result_landed,
+)
 
 # ANSI escape codes for coloring tool failure indicators
 _RED = "\033[31m"
@@ -1358,11 +1361,13 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
                 return True, f" [exit {exit_code}]"
         return False, ""
 
-    # Memory: distinguish "store full" from real errors.
+    # Memory: settled payloads and "store full" are decided by the shared
+    # classifier; anything it does not decide falls through to the generic
+    # rules below, as before.
     if tool_name == "memory":
-        if isinstance(data, dict):
-            if data.get("success") is False and "exceed the limit" in data.get("error", ""):
-                return True, " [full]"
+        verdict = classify_memory_result(data)
+        if verdict is not None:
+            return verdict
 
     # Structured error in JSON result (any tool that surfaces {"error": ...}).
     if isinstance(data, dict):

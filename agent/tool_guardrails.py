@@ -14,7 +14,10 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from utils import safe_json_loads
-from agent.tool_result_classification import file_mutation_result_landed
+from agent.tool_result_classification import (
+    classify_memory_result,
+    file_mutation_result_landed,
+)
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset(
@@ -299,8 +302,13 @@ def canonical_tool_args(args: Mapping[str, Any]) -> str:
 def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
     """Safety-fallback classifier used only when callers don't pass ``failed``.
 
-    Mirrors ``agent.display._detect_tool_failure`` exactly so the guardrail
-    never disagrees with the CLI's user-visible ``[error]`` tag. Production
+    Tracks ``agent.display._detect_tool_failure`` so the guardrail never
+    disagrees with the CLI's user-visible ``[error]`` tag. The memory verdict
+    is literally shared (``classify_memory_result``); the rest only tracks it
+    — today the display side additionally trims a terminal ``error`` message
+    into the suffix, tags any structured ``{"error": ...}`` payload, and
+    short-circuits non-string (multimodal) results, none of which happen here.
+    Production
     callers in ``run_agent.py`` always pass an explicit ``failed=`` derived
     from ``_detect_tool_failure``; this function exists so standalone callers
     (tests, tooling) still get consistent behavior.
@@ -319,10 +327,9 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
         return False, ""
 
     if tool_name == "memory":
-        data = safe_json_loads(result)
-        if isinstance(data, dict):
-            if data.get("success") is False and "exceed the limit" in data.get("error", ""):
-                return True, " [full]"
+        verdict = classify_memory_result(safe_json_loads(result))
+        if verdict is not None:
+            return verdict
 
     lower = result[:500].lower()
     if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):

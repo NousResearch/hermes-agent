@@ -76,6 +76,24 @@ class TestDetectToolFailureMemory:
         assert "invalid action" in suffix
 
 
+    def test_memory_terminal_degradation_is_not_a_failure(self):
+        # done=True is the memory tool's terminal graceful-degradation result
+        # (#42405): it already instructs the model to stop retrying. Rendering
+        # it as a failure also feeds the same-tool halt counter, which aborts
+        # the turn and suppresses the user's reply. Keep in lockstep with
+        # agent/tool_guardrails.py:classify_tool_failure.
+        result = json.dumps({
+            "success": False,
+            "done": True,
+            "error": (
+                "Memory consolidation failed 4 times this turn. Stop retrying "
+                "memory calls - leave memory unchanged for now and continue "
+                "with your reply to the user."
+            ),
+        })
+        assert _detect_tool_failure("memory", result) == (False, "")
+
+
 class TestDetectToolFailureStructured:
     """Generic path: any tool that returns {"error": ...} JSON."""
 

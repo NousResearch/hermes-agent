@@ -119,6 +119,75 @@ def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution()
 
 
 
+def test_memory_terminal_degradation_is_not_a_tool_failure():
+    # The memory tool's terminal graceful-degradation result (#42405) carries
+    # done=True and already tells the model to stop retrying. Counting it as a
+    # failure feeds the same-tool halt counter, which aborts the turn and eats
+    # the user-facing reply - the exact outcome #42405 exists to prevent.
+    # The verdict is shared with agent/display.py:_detect_tool_failure through
+    # agent.tool_result_classification.classify_memory_result.
+    terminal = json.dumps({
+        "success": False,
+        "done": True,
+        "error": (
+            "Memory consolidation failed 4 times this turn. Stop retrying "
+            "memory calls - leave memory unchanged for now and continue with "
+            "your reply to the user."
+        ),
+    })
+    full = json.dumps({
+        "success": False,
+        "error": "Memory at 3,990/4,000 chars. Adding this entry would exceed the limit.",
+    })
+
+    assert classify_tool_failure("memory", terminal) == (False, "")
+    # A genuine at-capacity error is still a failure.
+    assert classify_tool_failure("memory", full) == (True, " [full]")
+    # And a memory error that is neither settled nor at-capacity still falls
+    # through to the generic rules — the shared classifier returns "no verdict"
+    # for it rather than swallowing it as a success.
+    other = json.dumps({"success": False, "error": "target 'USER' not found"})
+    assert classify_tool_failure("memory", other) == (True, " [error]")
+
+
+def test_repeated_terminal_degradation_never_halts_the_turn():
+    """The consequence, not just the classification.
+
+    The #42405 symptom is the halt controller aborting the turn after enough
+    same-tool failures. Feeding the terminal payload straight through the
+    controller — past the halt threshold — is what proves the reply survives;
+    a classifier assertion alone would not notice a consumer that stopped
+    honouring it.
+    """
+    terminal = json.dumps({
+        "success": False,
+        "done": True,
+        "error": "Memory consolidation failed 4 times this turn. Stop retrying memory calls.",
+    })
+    args = {"action": "add", "content": "Adrien prefers HT amounts"}
+
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, same_tool_failure_halt_after=3)
+    )
+    for _ in range(6):  # twice the halt threshold
+        decision = controller.after_call("memory", args, terminal)
+        assert decision.code != "same_tool_failure_halt"
+        assert decision.should_halt is False
+
+
+def test_repeated_real_memory_failure_still_halts_the_turn():
+    """Control for the test above: the halt itself is not what got broken."""
+    failing = json.dumps({"success": False, "error": "target 'USER' not found"})
+    args = {"action": "add", "content": "Adrien prefers HT amounts"}
+
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, same_tool_failure_halt_after=3)
+    )
+    decisions = [controller.after_call("memory", args, failing) for _ in range(3)]
+    assert decisions[-1].code == "same_tool_failure_halt"
+    assert decisions[-1].should_halt is True
+
+
 def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)

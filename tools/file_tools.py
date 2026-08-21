@@ -677,6 +677,38 @@ def _get_hermes_config_resolved() -> str | None:
     return _hermes_config_resolved
 
 
+_profiles_root_resolved: str | None = None
+_profiles_root_resolved_loaded = False
+
+
+def _get_profiles_root_resolved() -> str | None:
+    """Return the resolved absolute ``~/.hermes/profiles`` root (cached)."""
+    global _profiles_root_resolved, _profiles_root_resolved_loaded
+    if _profiles_root_resolved_loaded:
+        return _profiles_root_resolved
+    _profiles_root_resolved_loaded = True
+    try:
+        _profiles_root_resolved = str(Path(_expand_tilde("~/.hermes/profiles")).resolve())
+    except Exception:
+        _profiles_root_resolved = None
+    return _profiles_root_resolved
+
+
+def _is_profile_security_file(path: str) -> bool:
+    """Return True when *path* is a ``config.yaml`` / ``.env`` directly inside
+    a Hermes profile directory (``~/.hermes/profiles/<name>/``).
+
+    Every profile's config carries the same security policy as the global
+    config (approvals.mode, yolo, model keys), so the resource-class deny
+    must not depend on which profile happens to be active (#79030).
+    """
+    root = _get_profiles_root_resolved()
+    if not root or not path.startswith(root + os.sep):
+        return False
+    parts = path[len(root) + 1:].split(os.sep)
+    return len(parts) == 2 and parts[1] in ("config.yaml", ".env")
+
+
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
@@ -703,6 +735,16 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead."
+        )
+    # Any profile's config.yaml / .env is the same security policy as the
+    # active profile's config, which is caught above via get_config_path().
+    # Deny the rest of the profiles/ tree too so the resource-class deny does
+    # not depend on which profile is active (#79030).
+    if _is_profile_security_file(resolved) or _is_profile_security_file(normalized):
+        return (
+            f"Refusing to write to Hermes profile security file: {filepath}\n"
+            "Agent cannot modify security-sensitive configuration. "
+            "Edit the profile's config.yaml directly or use 'hermes config' instead."
         )
     return None
 

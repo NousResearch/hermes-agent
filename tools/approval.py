@@ -355,6 +355,7 @@ _HERMES_ENV_PATH = (
     r'(?:~\/\.hermes/|'
     r'(?:\$home|\$\{home\})/\.hermes/|'
     r'(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'(?:profiles/[^/\s"\'`]+/)?'
     r'\.env\b'
 )
 # ~/.hermes/config.yaml IS the security policy: approvals.mode, yolo, and the
@@ -365,10 +366,20 @@ _HERMES_ENV_PATH = (
 # `cp`, etc. targeting it are gated too — otherwise the deny is unpaired
 # theater. Mirrors _HERMES_ENV_PATH; matches the HERMES_HOME override form as
 # well as ~/.hermes/.
+#
+# The optional ``profiles/<name>/`` segment covers profile-mode configs
+# (~/.hermes/profiles/<profile>/config.yaml): they carry the same security
+# policy as the global file, and in profile mode the active config realpath
+# (denied by file_tools) lives there. Before this segment, `sed -i` on the
+# profile config slipped past the terminal guard while patch/write_file were
+# denied — the per-tool bypass of incident E16 (#79030). Only ONE nesting
+# level is matched: ``config.yaml`` deeper inside a profile (e.g. a service's
+# own config under the profile dir) is out of scope.
 _HERMES_CONFIG_PATH = (
     r'(?:~\/\.hermes/|'
     r'(?:\$home|\$\{home\})/\.hermes/|'
     r'(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'(?:profiles/[^/\s"\'`]+/)?'
     r'config\.yaml\b'
 )
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'

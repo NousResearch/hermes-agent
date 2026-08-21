@@ -1,0 +1,56 @@
+# Proposed Nous MCP catalog entry. Presence in the catalog requires PR review.
+manifest_version: 1
+
+name: airprompter
+description: Save, discover, author, and run reusable AI prompts and workflows.
+source: https://airprompter.com
+
+# AirPrompter is a hosted Streamable HTTP MCP server. There is no local
+# package, child process, listening port, or bootstrap command to install.
+transport:
+  type: http
+  url: https://mcp.airprompter.com/mcp
+
+# Hermes stores this value in the active profile's private .env file and
+# writes only an interpolation reference into config.yaml.
+auth:
+  type: api_key
+  env:
+    - name: MCP_AIRPROMPTER_API_KEY
+      prompt: "AirPrompter API key (create under Account > API keys)"
+      required: true
+      secret: true
+
+# AirPrompter currently exposes 33 tools. This subset covers connection
+# diagnosis, workflow discovery/execution, continuation, and stepwise
+# authoring while reducing the measured tool-schema payload by 35.7%.
+tools:
+  default_enabled:
+    - diagnose_connection
+    - find_workflows
+    - list_workflows
+    - get_workflow
+    - execute_workflow
+    - execute_prompt
+    - start_workflow_run
+    - advance_workflow_run
+    - get_workflow_run
+    - cancel_workflow_run
+    - get_run_context
+    - plan_draft
+    - generate_draft
+    - save_workflow
+    - update_prompt
+    - update_workflow
+
+post_install: |
+  Create and manage keys in AirPrompter under Account > API keys. A read &
+  write key is required for workflow execution and authoring; key capability
+  follows the access shown when the key is created.
+
+  Start a new Hermes session after installation so the selected AirPrompter
+  tools load. Re-run the tool checklist at any time with:
+    hermes mcp configure airprompter
+
+  Skill guidance is installed separately through Hermes Skills Hub. Installing
+  this MCP catalog entry does not install or update the AirPrompter skill.

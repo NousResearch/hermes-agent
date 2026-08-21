@@ -14,6 +14,7 @@ import hermes_cli.doctor as doctor
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import doctor as doctor_mod
 from hermes_cli.doctor import _has_provider_env_config
+from hermes_cli.gateway_windows import WindowsGatewayHealth
 
 
 class TestDoctorPlatformHints:
@@ -1517,3 +1518,44 @@ class TestDoctorDeprecatedConfigAndEnv:
         assert "Deprecated: delegation.max_async_children" in out
         assert "Deprecated: HERMES_TOOL_PROGRESS_MODE" in out
         assert "⚠" in out or "Deprecated" in out
+
+
+def _gateway_health(**overrides):
+    fields = dict(
+        task_registered=False,
+        startup_vbs=False,
+        startup_legacy_cmd=False,
+        running_pids=(),
+        task_vbs_missing=False,
+        pythonw_in_launchers=False,
+    )
+    fields.update(overrides)
+    return WindowsGatewayHealth(**fields)
+
+
+class TestDoctorWindowsGatewayHealth:
+    def test_warns_when_installed_but_not_running(self, capsys):
+        issues = []
+        doctor_mod._report_windows_gateway_health(
+            _gateway_health(task_registered=True), issues
+        )
+        out = capsys.readouterr().out
+        assert "Gateway Service" in out
+        assert "installed but not running" in out
+        assert "hermes gateway start" in issues[0]
+
+    def test_fix_refreshes_stale_launchers(self, monkeypatch, capsys):
+        called = []
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows.refresh_windows_gateway_launchers",
+            lambda: called.append(True),
+        )
+        issues = []
+        doctor_mod._report_windows_gateway_health(
+            _gateway_health(startup_legacy_cmd=True, running_pids=(9,)),
+            issues,
+            should_fix=True,
+        )
+        assert called == [True]
+        assert "Refreshed Windows gateway launcher scripts" in capsys.readouterr().out
+        assert issues == []

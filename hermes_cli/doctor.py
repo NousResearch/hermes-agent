@@ -910,6 +910,50 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
         check_warn("Could not verify systemd linger", f"({linger_detail})")
 
 
+def _report_windows_gateway_health(health, issues: list[str], should_fix: bool = False) -> None:
+    """Print Windows gateway doctor lines from a canned health snapshot."""
+    _section("Gateway Service")
+    if health.installed and health.running_pids and not health.stale_launchers:
+        pids = ", ".join(str(pid) for pid in health.running_pids)
+        check_ok("Windows gateway installed and running", f"(PID {pids})")
+        return
+    if health.installed_but_not_running:
+        check_warn("Gateway is installed but not running")
+        check_info("Run: hermes gateway start")
+        issues.append("Start the Windows gateway: hermes gateway start")
+    if not health.stale_launchers:
+        return
+    if should_fix:
+        try:
+            from hermes_cli.gateway_windows import refresh_windows_gateway_launchers
+
+            refresh_windows_gateway_launchers()
+            check_ok("Refreshed Windows gateway launcher scripts")
+        except Exception as exc:
+            check_fail("Could not refresh gateway launchers", str(exc))
+            issues.append("Refresh Windows gateway launchers: hermes gateway install")
+        return
+    check_warn("Gateway launcher scripts are stale")
+    check_info("Run: hermes doctor --fix")
+    issues.append("Refresh Windows gateway launchers: hermes doctor --fix")
+
+
+def _check_windows_gateway_service(issues: list[str], should_fix: bool = False) -> None:
+    """Warn when a Windows gateway is installed but dead, or launchers are stale."""
+    if sys.platform != "win32":
+        return
+    try:
+        from hermes_cli.gateway_windows import inspect_windows_gateway
+
+        health = inspect_windows_gateway()
+    except Exception as exc:
+        check_warn("Windows gateway", f"(could not inspect: {exc})")
+        return
+    if not health.installed:
+        return
+    _report_windows_gateway_health(health, issues, should_fix=should_fix)
+
+
 _APIKEY_PROVIDERS_CACHE: list | None = None
 
 
@@ -1980,6 +2024,7 @@ def run_doctor(args):
             pass
 
     _check_gateway_service_linger(issues)
+    _check_windows_gateway_service(issues, should_fix=should_fix)
     _check_s6_supervision(issues)
 
     if sys.platform != "win32":

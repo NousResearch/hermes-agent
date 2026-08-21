@@ -37,6 +37,7 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -1309,6 +1310,74 @@ def _gateway_pids() -> list[int]:
     return list(find_gateway_pids())
 
 
+@dataclass(frozen=True)
+class WindowsGatewayHealth:
+    """Snapshot of Windows gateway install + process + launcher health."""
+
+    task_registered: bool
+    startup_vbs: bool
+    startup_legacy_cmd: bool
+    running_pids: tuple[int, ...]
+    task_vbs_missing: bool
+    pythonw_in_launchers: bool
+
+    @property
+    def installed(self) -> bool:
+        return self.task_registered or self.startup_vbs or self.startup_legacy_cmd
+
+    @property
+    def installed_but_not_running(self) -> bool:
+        return self.installed and not self.running_pids
+
+    @property
+    def stale_launchers(self) -> bool:
+        return self.startup_legacy_cmd or self.task_vbs_missing or self.pythonw_in_launchers
+
+
+def _task_cmd_path() -> Path:
+    """Task ``.cmd`` path without creating ``gateway-service/``."""
+    from hermes_cli.config import get_hermes_home
+
+    return Path(get_hermes_home()) / "gateway-service" / f"{_sanitize_filename(get_task_name())}.cmd"
+
+
+def _launcher_mentions_pythonw(*paths: Path) -> bool:
+    for path in paths:
+        try:
+            if path.is_file() and "pythonw" in path.read_text(encoding="utf-8", errors="replace").lower():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def inspect_windows_gateway() -> WindowsGatewayHealth:
+    """Read task / Startup / process / launcher state. Does not mutate disk."""
+    _assert_windows()
+    cmd_path = _task_cmd_path()
+    vbs_path = cmd_path.with_suffix(".vbs")
+    startup_vbs = get_startup_entry_path()
+    legacy_cmd = _legacy_startup_entry_path()
+    return WindowsGatewayHealth(
+        task_registered=is_task_registered(),
+        startup_vbs=startup_vbs.exists(),
+        startup_legacy_cmd=legacy_cmd.exists(),
+        running_pids=tuple(_gateway_pids()),
+        task_vbs_missing=cmd_path.exists() and not vbs_path.exists(),
+        pythonw_in_launchers=_launcher_mentions_pythonw(
+            cmd_path, vbs_path, startup_vbs, legacy_cmd
+        ),
+    )
+
+
+def refresh_windows_gateway_launchers() -> None:
+    """Rewrite task scripts; migrate a leftover Startup ``.cmd`` to ``.vbs``."""
+    _assert_windows()
+    script_path = _write_task_script()
+    if get_startup_entry_path().exists() or _legacy_startup_entry_path().exists():
+        _install_startup_entry(script_path)
+
+
 def _print_deep_probes() -> None:
     """Print PASS/FAIL per individual probe of gateway liveness.
 
@@ -1445,30 +1514,33 @@ def _print_deep_probes() -> None:
 def status(deep: bool = False) -> None:
     """Print a status report for the Windows gateway service."""
     _assert_windows()
+    health = inspect_windows_gateway()
     task_name = get_task_name()
-    task_installed = is_task_registered()
-    startup_installed = is_startup_entry_installed()
-    pids = _gateway_pids()
 
-    if task_installed:
+    if health.task_registered:
         print(f"✓ Scheduled Task registered: {task_name}")
         info = query_task_status()
         if info:
             for key in ("status", "last run time", "last run result"):
                 if key in info:
                     print(f"  {key.title()}: {info[key]}")
-    elif startup_installed:
-        entry = get_startup_entry_path()
-        if not entry.exists():
-            entry = _legacy_startup_entry_path()
+    elif health.startup_vbs or health.startup_legacy_cmd:
+        entry = get_startup_entry_path() if health.startup_vbs else _legacy_startup_entry_path()
         print(f"✓ Windows login item installed: {entry}")
     else:
         print("✗ Gateway service not installed")
 
-    if pids:
-        print(f"✓ Gateway process running (PID: {', '.join(map(str, pids))})")
+    if health.running_pids:
+        print(f"✓ Gateway process running (PID: {', '.join(map(str, health.running_pids))})")
     else:
         print("✗ No gateway process detected")
+
+    if health.installed_but_not_running:
+        print("⚠ Gateway is installed but not running")
+        print("  Start it with: hermes gateway start")
+    if health.stale_launchers:
+        print("⚠ Gateway launcher scripts are stale")
+        print("  Refresh with: hermes doctor --fix")
 
     if deep:
         print()
@@ -1479,7 +1551,7 @@ def status(deep: bool = False) -> None:
         # is lying when the high-level summary disagrees with reality.
         _print_deep_probes()
 
-    if not task_installed and not startup_installed and not pids:
+    if not health.installed and not health.running_pids:
         print()
         print("To install:")
         print("  hermes gateway install")

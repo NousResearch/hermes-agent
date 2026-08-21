@@ -10,6 +10,7 @@ import pytest
 import hermes_cli.gateway as gateway
 import hermes_cli.gateway_windows as gateway_windows
 import hermes_cli.setup as setup
+from hermes_cli.gateway_windows import WindowsGatewayHealth
 
 
 _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
@@ -338,6 +339,53 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
         assert var in content
     assert "--profile" in content and "work" in content
     assert content.endswith("\r\n")
+
+
+def _health(**overrides):
+    fields = dict(
+        task_registered=False,
+        startup_vbs=False,
+        startup_legacy_cmd=False,
+        running_pids=(),
+        task_vbs_missing=False,
+        pythonw_in_launchers=False,
+    )
+    fields.update(overrides)
+    return WindowsGatewayHealth(**fields)
+
+
+def test_windows_gateway_health_installed_but_not_running():
+    dead = _health(task_registered=True)
+    assert dead.installed
+    assert dead.installed_but_not_running
+    assert not dead.stale_launchers
+
+    live = _health(task_registered=True, running_pids=(1234,))
+    assert live.installed
+    assert not live.installed_but_not_running
+
+
+def test_windows_gateway_health_stale_launchers():
+    assert _health(startup_legacy_cmd=True).stale_launchers
+    assert _health(task_vbs_missing=True).stale_launchers
+    assert _health(pythonw_in_launchers=True).stale_launchers
+    assert not _health(task_registered=True, running_pids=(1,)).stale_launchers
+
+
+def test_launcher_mentions_pythonw(tmp_path):
+    stale = tmp_path / "Hermes_Gateway.vbs"
+    stale.write_text(
+        'sh.Run "C:\\venv\\pythonw.exe -m hermes_cli.main gateway run", 0, False\r\n',
+        encoding="utf-8",
+    )
+    clean = tmp_path / "ok.vbs"
+    clean.write_text(
+        'sh.Run "C:\\venv\\python.exe -m hermes_cli.main gateway run", 0, False\r\n',
+        encoding="utf-8",
+    )
+    missing = tmp_path / "nope.vbs"
+    assert gateway_windows._launcher_mentions_pythonw(stale, missing) is True
+    assert gateway_windows._launcher_mentions_pythonw(clean, missing) is False
 
 
 

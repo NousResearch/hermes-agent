@@ -1618,3 +1618,37 @@ print('fake reply')
         title = con.execute("SELECT title FROM sessions WHERE id='sess-1'").fetchone()[0]
         con.close()
         assert title == "a2a-dev-ctx-unsafe-value"
+
+    def test_title_forward_session_stamps_title_clock(self, monkeypatch, tmp_path):
+        import sqlite3
+
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+
+        profile_home = tmp_path / "profile"
+        profile_home.mkdir()
+        db = profile_home / "state.db"
+        with sqlite3.connect(db) as con:
+            con.execute(
+                "CREATE TABLE sessions ("
+                "id TEXT PRIMARY KEY, title TEXT, title_changed_at REAL)"
+            )
+            con.execute(
+                "INSERT INTO sessions (id, title) VALUES (?, ?)",
+                ("sess-1", None),
+            )
+
+        monkeypatch.setattr(
+            "plugins.platforms.a2a.adapter._profile_home",
+            lambda profile: str(profile_home),
+        )
+        adapter = A2AAdapter(PlatformConfig(enabled=True))
+        adapter._title_forward_session("dev", "sess-1", "Forwarded")
+
+        with sqlite3.connect(db) as con:
+            title, title_changed_at = con.execute(
+                "SELECT title, title_changed_at FROM sessions WHERE id = ?",
+                ("sess-1",),
+            ).fetchone()
+        assert title == "Forwarded"
+        assert title_changed_at is not None

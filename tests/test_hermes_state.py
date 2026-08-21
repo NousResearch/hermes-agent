@@ -1499,6 +1499,63 @@ class TestSessionTitle:
         session = db.get_session("s1")
         assert session["title"] == "My Session"
 
+    def test_title_mutations_use_a_dedicated_write_clock(self, db):
+        db.create_session(session_id="s1", source="cli")
+
+        with mock.patch.object(hermes_state.time, "time", return_value=100.0):
+            assert db.set_session_title("s1", "My Session") is True
+
+        session = db.get_session("s1")
+        assert session["title_changed_at"] == 100.0
+        assert session["last_activity_at"] is None
+
+        db.touch_session_activity("s1", ts=150.0)
+        session = db.get_session("s1")
+        assert session["title_changed_at"] == 100.0
+        assert session["last_activity_at"] == 150.0
+
+        with mock.patch.object(hermes_state.time, "time", return_value=200.0):
+            assert db.set_session_title("s1", "") is True
+
+        session = db.get_session("s1")
+        assert session["title"] is None
+        assert session["title_changed_at"] == 200.0
+
+    def test_auto_title_clocks_only_an_accepted_write(self, db):
+        db.create_session(session_id="s1", source="cli")
+
+        with mock.patch.object(hermes_state.time, "time", return_value=100.0):
+            assert db.set_auto_title_if_empty("s1", "Generated") is True
+
+        with mock.patch.object(hermes_state.time, "time", return_value=200.0):
+            assert db.set_auto_title_if_empty("s1", "Ignored") is False
+
+        session = db.get_session("s1")
+        assert session["title"] == "Generated"
+        assert session["title_changed_at"] == 100.0
+
+    def test_legacy_title_clock_is_null_until_the_next_title_write(self, tmp_path):
+        db_path = tmp_path / "legacy-title-clock.db"
+        with sqlite3.connect(db_path) as conn:
+            legacy_schema = SCHEMA_SQL.replace("    title_changed_at REAL,\n", "")
+            assert legacy_schema != SCHEMA_SQL
+            conn.executescript(legacy_schema)
+            conn.execute(
+                "INSERT INTO sessions "
+                "(id, source, started_at, title, title_source) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("legacy", "cli", 1.0, "Legacy title", "user"),
+            )
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened.get_session("legacy")["title_changed_at"] is None
+            with mock.patch.object(hermes_state.time, "time", return_value=300.0):
+                assert reopened.set_session_title("legacy", "Fresh title") is True
+            assert reopened.get_session("legacy")["title_changed_at"] == 300.0
+        finally:
+            reopened.close()
+
 
 
 
@@ -1603,10 +1660,13 @@ class TestSessionTitleLineage:
         db.set_session_title("tip", "fingerprint-scanner #2")
 
         # User renames the visible tip back to the base name — must succeed.
-        assert db.set_session_title("tip", "fingerprint-scanner") is True
+        with mock.patch.object(hermes_state.time, "time", return_value=500.0):
+            assert db.set_session_title("tip", "fingerprint-scanner") is True
         assert db.get_session("tip")["title"] == "fingerprint-scanner"
+        assert db.get_session("tip")["title_changed_at"] == 500.0
         # Title transferred off the hidden ancestor — no duplicate titles.
         assert db.get_session("root")["title"] is None
+        assert db.get_session("root")["title_changed_at"] == 500.0
 
 
     def test_unrelated_session_still_conflicts(self, db):

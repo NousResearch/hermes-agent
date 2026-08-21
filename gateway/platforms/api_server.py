@@ -3338,7 +3338,8 @@ class APIServerAdapter(BasePlatformAdapter):
     def _session_response(session: Dict[str, Any]) -> Dict[str, Any]:
         """Return a stable, client-safe session representation."""
         safe_keys = (
-            "id", "source", "user_id", "model", "title", "started_at", "ended_at",
+            "id", "source", "user_id", "model", "title", "title_changed_at",
+            "started_at", "ended_at",
             "end_reason", "message_count", "tool_call_count", "input_tokens",
             "output_tokens", "cache_read_tokens", "cache_write_tokens",
             "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd",
@@ -3534,8 +3535,9 @@ class APIServerAdapter(BasePlatformAdapter):
                             )
                             return None, f"title:Title already in use by session {conflict['id']}"
                     conn.execute(
-                        "UPDATE sessions SET title = ? WHERE id = ?",
-                        (clean_title, session_id),
+                        "UPDATE sessions SET title = ?, title_changed_at = ? "
+                        "WHERE id = ?",
+                        (clean_title, _time.time(), session_id),
                     )
                 session_row = conn.execute(
                     "SELECT * FROM sessions WHERE id = ?", (session_id,)

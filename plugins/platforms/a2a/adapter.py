@@ -840,7 +840,19 @@ class A2AAdapter(BasePlatformAdapter):
             return
         try:
             con = sqlite3.connect(db, timeout=5)
-            con.execute("UPDATE sessions SET title = ? WHERE id = ?", (title, session_id))
+            columns = {
+                row[1] for row in con.execute("PRAGMA table_info(sessions)").fetchall()
+            }
+            if "title_changed_at" in columns:
+                con.execute(
+                    "UPDATE sessions SET title = ?, title_changed_at = ? WHERE id = ?",
+                    (title, time.time(), session_id),
+                )
+            else:
+                con.execute(
+                    "UPDATE sessions SET title = ? WHERE id = ?",
+                    (title, session_id),
+                )
             con.commit()
             con.close()
         except Exception:

@@ -17,6 +17,8 @@ const { getLatestSessionMessages } = await import('@/hermes')
 
 const sharedId = 'shared-session'
 
+type TestSessionState = ReturnType<typeof createClientSessionState>
+
 function transcript(answer: string) {
   return {
     messages: [
@@ -25,6 +27,34 @@ function transcript(answer: string) {
     ],
     session_id: sharedId
   }
+}
+
+function ownerTools(states: Map<string, TestSessionState>) {
+  const sessionStateHasOwner = vi.fn((runtimeId: string, owner: { profile: string; storedSessionId: string }) => {
+    const state = states.get(runtimeId)
+
+    return state?.profile === owner.profile && state.storedSessionId === owner.storedSessionId
+  })
+
+  const updateOwnedSessionState = vi.fn(
+    (
+      runtimeId: string,
+      owner: { profile: string; storedSessionId: string },
+      updater: (state: TestSessionState) => TestSessionState
+    ) => {
+      const previous = states.get(runtimeId)
+
+      if (previous?.profile !== owner.profile || previous.storedSessionId !== owner.storedSessionId) {
+        return false
+      }
+
+      states.set(runtimeId, updater(previous))
+
+      return sessionStateHasOwner(runtimeId, owner)
+    }
+  )
+
+  return { sessionStateHasOwner, updateOwnedSessionState }
 }
 
 afterEach(() => {
@@ -46,15 +76,10 @@ describe('useStoredSessionHydration profile ownership', () => {
     const activeSessionIdRef = { current: 'runtime-meta' as string | null }
     const selectedStoredSessionIdRef = { current: sharedId as string | null }
     const selectedStoredSessionProfileRef = { current: 'meta' as string | null }
-    const states = new Map([['runtime-meta', createClientSessionState(sharedId)]])
-
-    const updateSessionState = vi.fn((runtimeId, updater, storedSessionId) => {
-      const previous = states.get(runtimeId) ?? createClientSessionState(storedSessionId)
-      const next = updater(previous)
-      states.set(runtimeId, next)
-
-      return next
-    })
+    const initialState = createClientSessionState(sharedId)
+    initialState.profile = 'meta'
+    const states = new Map([['runtime-meta', initialState]])
+    const { sessionStateHasOwner, updateOwnedSessionState } = ownerTools(states)
 
     vi.mocked(getLatestSessionMessages).mockImplementation(async (_storedId, profile) =>
       profile === 'meta' ? (transcript('meta answer') as never) : (transcript('wrong default answer') as never)
@@ -65,14 +90,19 @@ describe('useStoredSessionHydration profile ownership', () => {
         activeSessionIdRef,
         selectedStoredSessionIdRef,
         selectedStoredSessionProfileRef,
-        updateSessionState
+        sessionStateHasOwner,
+        updateOwnedSessionState
       })
     )
 
     await result.current()
 
     expect(getLatestSessionMessages).toHaveBeenCalledWith(sharedId, 'meta')
-    expect(updateSessionState).toHaveBeenCalledWith('runtime-meta', expect.any(Function), sharedId)
+    expect(updateOwnedSessionState).toHaveBeenCalledWith(
+      'runtime-meta',
+      { profile: 'meta', storedSessionId: sharedId },
+      expect.any(Function)
+    )
     expect(states.get('runtime-meta')?.messages.at(-1)?.parts[0]).toMatchObject({ text: 'meta answer' })
   })
 
@@ -98,15 +128,7 @@ describe('useStoredSessionHydration profile ownership', () => {
       }
     ]
     const states = new Map([['runtime-shared', initialState]])
-
-    const updateSessionState = vi.fn((runtimeId, updater) => {
-      const previous = states.get(runtimeId)!
-      const next = updater(previous)
-      states.set(runtimeId, next)
-
-      return next
-    })
-
+    const { sessionStateHasOwner, updateOwnedSessionState } = ownerTools(states)
     const metaTodos = [{ content: 'meta task', id: 'meta-todo', status: 'in_progress' as const }]
     setSessionTodos('runtime-shared', metaTodos)
 
@@ -115,14 +137,12 @@ describe('useStoredSessionHydration profile ownership', () => {
         activeSessionIdRef,
         selectedStoredSessionIdRef,
         selectedStoredSessionProfileRef,
-        updateSessionState
+        sessionStateHasOwner,
+        updateOwnedSessionState
       })
     )
 
     const hydration = result.current()
-
-    // Same durable and runtime ids, different profile owner: neither id alone
-    // can distinguish the request that is now stale.
     selectedStoredSessionProfileRef.current = 'meta'
     $activeGatewayProfile.set('meta')
 
@@ -132,30 +152,84 @@ describe('useStoredSessionHydration profile ownership', () => {
     })
 
     expect(getLatestSessionMessages).toHaveBeenCalledWith(sharedId, 'default')
-    expect(updateSessionState).not.toHaveBeenCalled()
+    expect(updateOwnedSessionState).not.toHaveBeenCalled()
     expect(states.get('runtime-shared')?.messages.at(-1)?.parts[0]).toMatchObject({ text: 'meta existing answer' })
     expect($todosBySession.get()['runtime-shared']).toEqual(metaTodos)
   })
 
-  it('revalidates ownership again before publishing hydrated todos', async () => {
+  it('drops a delayed ABA response when the cache runtime is reclaimed by another profile', async () => {
+    let resolveRequest: ((value: ReturnType<typeof transcript>) => void) | undefined
+
+    const request = new Promise<ReturnType<typeof transcript>>(resolve => {
+      resolveRequest = resolve
+    })
+
+    vi.mocked(getLatestSessionMessages).mockReturnValue(request as never)
+
+    const activeSessionIdRef = { current: 'runtime-shared' as string | null }
+    const selectedStoredSessionIdRef = { current: sharedId as string | null }
+    const selectedStoredSessionProfileRef = { current: 'default' as string | null }
+    const initialState = createClientSessionState(sharedId)
+    initialState.profile = 'default'
+    const states = new Map([['runtime-shared', initialState]])
+    const { sessionStateHasOwner, updateOwnedSessionState } = ownerTools(states)
+
+    const { result } = renderHook(() =>
+      useStoredSessionHydration({
+        activeSessionIdRef,
+        selectedStoredSessionIdRef,
+        selectedStoredSessionProfileRef,
+        sessionStateHasOwner,
+        updateOwnedSessionState
+      })
+    )
+
+    const hydration = result.current()
+    const reclaimedState = createClientSessionState(sharedId)
+    reclaimedState.profile = 'meta'
+    reclaimedState.messages = [
+      {
+        id: 'meta-existing',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'meta existing answer' }]
+      }
+    ]
+    states.set('runtime-shared', reclaimedState)
+    const metaTodos = [{ content: 'meta task', id: 'meta-todo', status: 'in_progress' as const }]
+    setSessionTodos('runtime-shared', metaTodos)
+
+    // Selection refs ABA back to their captured values, but the cache slot is
+    // now owned by another profile with the same runtime and stored ids.
+    await act(async () => {
+      resolveRequest?.(transcript('stale default answer'))
+      await hydration
+    })
+
+    expect(states.get('runtime-shared')).toBe(reclaimedState)
+    expect(states.get('runtime-shared')?.messages.at(-1)?.parts[0]).toMatchObject({ text: 'meta existing answer' })
+    expect($todosBySession.get()['runtime-shared']).toEqual(metaTodos)
+  })
+
+  it('revalidates cache ownership again before publishing hydrated todos', async () => {
     vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('default answer') as never)
 
     const activeSessionIdRef = { current: 'runtime-shared' as string | null }
     const selectedStoredSessionIdRef = { current: sharedId as string | null }
     const selectedStoredSessionProfileRef = { current: 'default' as string | null }
     const state = createClientSessionState(sharedId)
+    state.profile = 'default'
     const metaTodos = [{ content: 'meta task', id: 'meta-todo', status: 'in_progress' as const }]
+    const sessionStateHasOwner = vi.fn(() => false)
 
-    const updateSessionState = vi.fn((_runtimeId, updater) => {
+    const updateOwnedSessionState = vi.fn((_runtimeId, _owner, updater) => {
       const next = updater(state)
 
-      // Model a synchronous profile-switch subscriber firing while the message
+      // Model a synchronous cache-reclaim subscriber firing while the message
       // publication notifies stores. The sibling todo publication must recheck.
-      selectedStoredSessionProfileRef.current = 'meta'
-      $activeGatewayProfile.set('meta')
+      void next
       setSessionTodos('runtime-shared', metaTodos)
 
-      return next
+      return true
     })
 
     const { result } = renderHook(() =>
@@ -163,13 +237,15 @@ describe('useStoredSessionHydration profile ownership', () => {
         activeSessionIdRef,
         selectedStoredSessionIdRef,
         selectedStoredSessionProfileRef,
-        updateSessionState
+        sessionStateHasOwner,
+        updateOwnedSessionState
       })
     )
 
     await act(async () => result.current())
 
-    expect(updateSessionState).toHaveBeenCalledOnce()
+    expect(updateOwnedSessionState).toHaveBeenCalledOnce()
+    expect(sessionStateHasOwner).toHaveBeenCalledOnce()
     expect($todosBySession.get()['runtime-shared']).toEqual(metaTodos)
   })
 })

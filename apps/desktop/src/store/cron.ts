@@ -87,6 +87,20 @@ export const updateCronJobs = (fn: (jobs: CronJob[]) => CronJob[]) => {
   $cronJobs.set(fn($cronJobs.get()))
 }
 
+/** Sidebar mutation projections kept pure so duplicate-id behavior stays
+ * deterministic under the aggregated all-profile list. */
+export function replaceCronJobForOwner(jobs: CronJob[], target: CronJob, replacement: CronJob): CronJob[] {
+  const targetIdentity = cronJobIdentity(target)
+
+  return jobs.map(job => (cronJobIdentity(job) === targetIdentity ? replacement : job))
+}
+
+export function removeCronJobForOwner(jobs: CronJob[], target: CronJob): CronJob[] {
+  const targetIdentity = cronJobIdentity(target)
+
+  return jobs.filter(job => cronJobIdentity(job) !== targetIdentity)
+}
+
 // One-shot focus target: clicking "Manage" on a job sets this, then opens the
 // cron overlay, which reads it once to select + scroll to that job. Cleared
 // after consumption so re-opening cron normally doesn't re-focus a stale job.

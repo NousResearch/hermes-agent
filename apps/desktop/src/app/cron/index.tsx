@@ -448,36 +448,39 @@ export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGrou
 
   const totalCount = jobs.length
 
-  function beginJobBusy(jobId: string): symbol {
-    const token = Symbol(jobId)
+  function beginJobBusy(job: CronJob): symbol {
+    const jobKey = cronJobIdentity(job)
+    const token = Symbol(jobKey)
 
-    setBusyJobTokens(current => new Map(current).set(jobId, token))
+    setBusyJobTokens(current => new Map(current).set(jobKey, token))
 
     return token
   }
 
-  function endJobBusy(jobId: string, token: symbol): void {
+  function endJobBusy(job: CronJob, token: symbol): void {
+    const jobKey = cronJobIdentity(job)
+
     setBusyJobTokens(current => {
-      if (current.get(jobId) !== token) {
+      if (current.get(jobKey) !== token) {
         return current
       }
 
       const next = new Map(current)
 
-      next.delete(jobId)
+      next.delete(jobKey)
 
       return next
     })
   }
 
   async function handlePauseResume(job: CronJob) {
-    const busyToken = beginJobBusy(job.id)
+    const busyToken = beginJobBusy(job)
 
     try {
       const isPaused = jobState(job) === 'paused'
 
       const { refreshError, stale } = await mutateAndRefreshCronJobs(profile, () =>
-        isPaused ? resumeCronJob(job.id) : pauseCronJob(job.id)
+        isPaused ? resumeCronJob(job.id, job.profile) : pauseCronJob(job.id, job.profile)
       )
 
       if (stale) {
@@ -496,13 +499,13 @@ export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGrou
     } catch (err) {
       notifyError(err, c.failedUpdate)
     } finally {
-      endJobBusy(job.id, busyToken)
+      endJobBusy(job, busyToken)
     }
   }
 
   async function handleTrigger(job: CronJob) {
     const viewProfile = profile
-    const key = `${viewProfile}:${job.id}`
+    const key = cronJobIdentity(job)
     const controller = triggerControllerRef.current
 
     if (!controller) {
@@ -512,7 +515,7 @@ export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGrou
     try {
       const run = await controller.run(
         key,
-        () => triggerAndRefreshCronJobs(job.id, viewProfile),
+        () => triggerAndRefreshCronJobs(job.id, viewProfile, job.profile),
         () => notify({ kind: 'info', title: c.triggerNow, message: truncate(jobTitle(job), 60) })
       )
 
@@ -549,7 +552,9 @@ export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGrou
       return
     }
 
-    const { refreshError, stale } = await mutateAndRefreshCronJobs(profile, () => deleteCronJob(pendingDelete.id))
+    const { refreshError, stale } = await mutateAndRefreshCronJobs(profile, () =>
+      deleteCronJob(pendingDelete.id, pendingDelete.profile)
+    )
 
     if (stale) {
       return
@@ -569,13 +574,18 @@ export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGrou
         refreshError,
         stale
       } = await mutateAndRefreshCronJobs(profile, () =>
-        createCronJob({
-          prompt: values.prompt,
-          schedule: values.schedule,
-          name: values.name || undefined,
-          deliver: values.deliver || DEFAULT_DELIVER,
-          ...(values.model.trim() ? { model: values.model.trim(), provider: values.provider.trim() || undefined } : {})
-        })
+        createCronJob(
+          {
+            prompt: values.prompt,
+            schedule: values.schedule,
+            name: values.name || undefined,
+            deliver: values.deliver || DEFAULT_DELIVER,
+            ...(values.model.trim()
+              ? { model: values.model.trim(), provider: values.provider.trim() || undefined }
+              : {})
+          },
+          profileScope === ALL_PROFILES ? 'default' : profileScope
+        )
       )
 
       if (stale || !created) {
@@ -595,7 +605,7 @@ export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGrou
         refreshError,
         stale
       } = await mutateAndRefreshCronJobs(profile, () =>
-        updateCronJob(editor.job.id, cronEditorUpdates(values, { scriptOnlyJob }))
+        updateCronJob(editor.job.id, cronEditorUpdates(values, { scriptOnlyJob }), editor.job.profile)
       )
 
       if (stale || !updated) {
@@ -708,7 +718,9 @@ export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGrou
 
           {selectedJob ? (
             <CronJobDetail
-              busy={busyJobTokens.has(selectedJob.id) || triggeringJobKeys.has(`${profile}:${selectedJob.id}`)}
+              busy={
+                busyJobTokens.has(cronJobIdentity(selectedJob)) || triggeringJobKeys.has(cronJobIdentity(selectedJob))
+              }
               c={c}
               job={selectedJob}
               onPauseResume={() => void handlePauseResume(selectedJob)}

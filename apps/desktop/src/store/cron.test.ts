@@ -1,6 +1,15 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { $cronJobs, beginCronJobsRequest, commitCronJobsRequest, cronJobIdentity, setCronJobs, updateCronJobs } from './cron'
+import {
+  $cronJobs,
+  beginCronJobsRequest,
+  commitCronJobsRequest,
+  cronJobIdentity,
+  removeCronJobForOwner,
+  replaceCronJobForOwner,
+  setCronJobs,
+  updateCronJobs
+} from './cron'
 
 const oldJob = { id: 'old' } as never
 const newJob = { id: 'new' } as never
@@ -43,5 +52,23 @@ describe('cron job owner identity', () => {
     expect(cronJobIdentity({ id: 'shared-job', profile: 'worker_alpha' })).not.toBe(
       cronJobIdentity({ id: 'shared-job', profile: 'worker_beta' })
     )
+  })
+
+  it('replaces only the matching profile when duplicate ids coexist', () => {
+    const alpha = { id: 'shared-job', profile: 'worker_alpha', state: 'scheduled' }
+    const beta = { id: 'shared-job', profile: 'worker_beta', state: 'scheduled' }
+    const pausedAlpha = { ...alpha, state: 'paused' }
+
+    expect(replaceCronJobForOwner([alpha, beta] as never, alpha as never, pausedAlpha as never)).toEqual([
+      pausedAlpha,
+      beta
+    ])
+  })
+
+  it('deletes only the matching profile when duplicate ids coexist', () => {
+    const alpha = { id: 'shared-job', profile: 'worker_alpha' }
+    const beta = { id: 'shared-job', profile: 'worker_beta' }
+
+    expect(removeCronJobForOwner([alpha, beta] as never, alpha as never)).toEqual([beta])
   })
 })

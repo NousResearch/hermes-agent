@@ -7,19 +7,21 @@ import { latestSessionTodos } from '@/lib/todos'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 
+import type { SessionStateOwner } from '../../session/session-state-cache'
 import type { ClientSessionState } from '../../types'
 
-type UpdateSessionState = (
+type UpdateOwnedSessionState = (
   sessionId: string,
-  updater: (state: ClientSessionState) => ClientSessionState,
-  storedSessionId?: string | null
-) => ClientSessionState
+  owner: SessionStateOwner,
+  updater: (state: ClientSessionState) => ClientSessionState
+) => boolean
 
 interface StoredSessionHydrationOptions {
   activeSessionIdRef: MutableRefObject<string | null>
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   selectedStoredSessionProfileRef: MutableRefObject<string | null>
-  updateSessionState: UpdateSessionState
+  sessionStateHasOwner: (sessionId: string, owner: SessionStateOwner) => boolean
+  updateOwnedSessionState: UpdateOwnedSessionState
 }
 
 export type StoredSessionHydrator = (
@@ -34,7 +36,8 @@ export function useStoredSessionHydration({
   activeSessionIdRef,
   selectedStoredSessionIdRef,
   selectedStoredSessionProfileRef,
-  updateSessionState
+  sessionStateHasOwner,
+  updateOwnedSessionState
 }: StoredSessionHydrationOptions): StoredSessionHydrator {
   return useCallback(
     async (
@@ -51,6 +54,7 @@ export function useStoredSessionHydration({
       // are profile-local, so looking the owner up by bare id can read a same-id
       // transcript from another profile and graft it onto this runtime.
       const ownerProfile = normalizeProfileKey(storedSessionProfile)
+      const owner = { profile: ownerProfile, storedSessionId }
 
       const isCurrentOwner = () =>
         selectedStoredSessionIdRef.current === storedSessionId &&
@@ -69,26 +73,26 @@ export function useStoredSessionHydration({
             return
           }
 
-          updateSessionState(
-            runtimeSessionId,
-            state => ({
-              ...state,
-              // Post-turn rehydrate reads only the newest tail page — graft it
-              // onto any backfilled older pages instead of dropping them.
-              messages: preserveLocalAssistantErrors(
-                graftRefreshedTailOntoBackfill(messages, state.messages),
-                state.messages
-              )
-            }),
-            storedSessionId
-          )
+          const published = updateOwnedSessionState(runtimeSessionId, owner, state => ({
+            ...state,
+            // Post-turn rehydrate reads only the newest tail page — graft it
+            // onto any backfilled older pages instead of dropping them.
+            messages: preserveLocalAssistantErrors(
+              graftRefreshedTailOntoBackfill(messages, state.messages),
+              state.messages
+            )
+          }))
+
+          if (!published) {
+            return
+          }
 
           const restored = todosForHydration(latestSessionTodos(messages))
 
-          // updateSessionState can synchronously notify subscribers. Revalidate
-          // again before publishing the sibling todo projection so a switch in
-          // that notification cannot graft this owner's tasks onto the next one.
-          if (!isCurrentOwner()) {
+          // Session publication can synchronously notify subscribers. Revalidate
+          // both mutable selection and the installed cache owner before writing
+          // the sibling todo projection.
+          if (!isCurrentOwner() || !sessionStateHasOwner(runtimeSessionId, owner)) {
             return
           }
 
@@ -108,6 +112,12 @@ export function useStoredSessionHydration({
         }
       }
     },
-    [activeSessionIdRef, selectedStoredSessionIdRef, selectedStoredSessionProfileRef, updateSessionState]
+    [
+      activeSessionIdRef,
+      selectedStoredSessionIdRef,
+      selectedStoredSessionProfileRef,
+      sessionStateHasOwner,
+      updateOwnedSessionState
+    ]
   )
 }

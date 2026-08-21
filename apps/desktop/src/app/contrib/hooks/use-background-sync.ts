@@ -26,6 +26,7 @@ import {
   setSessionStalled
 } from '@/store/session-states'
 
+import type { SessionStateOwner } from '../../session/session-state-cache'
 import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
 
@@ -54,12 +55,13 @@ export interface ActiveTranscriptRefreshDeps {
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   selectedStoredSessionProfileRef: MutableRefObject<string | null>
   resolveSession: (storedSessionId: string, ownerProfile: string) => ActiveTranscriptSession | null | undefined
+  sessionStateHasOwner: (sessionId: string, owner: SessionStateOwner) => boolean
   signatureRef: MutableRefObject<Map<string, string>>
-  updateSessionState: (
+  updateOwnedSessionState: (
     sessionId: string,
-    updater: (state: ClientSessionState) => ClientSessionState,
-    storedSessionId?: string | null
-  ) => ClientSessionState
+    owner: SessionStateOwner,
+    updater: (state: ClientSessionState) => ClientSessionState
+  ) => boolean
 }
 
 /** Reconcile one persisted transcript snapshot into the currently viewed session. */
@@ -70,8 +72,9 @@ export async function reconcileActiveTranscript({
   resolveSession,
   selectedStoredSessionIdRef,
   selectedStoredSessionProfileRef,
+  sessionStateHasOwner,
   signatureRef,
-  updateSessionState
+  updateOwnedSessionState
 }: ActiveTranscriptRefreshDeps): Promise<void> {
   const storedSessionId = selectedStoredSessionIdRef.current
   const storedSessionProfile = selectedStoredSessionProfileRef.current
@@ -110,20 +113,25 @@ export async function reconcileActiveTranscript({
       return
     }
 
-    signatureRef.current.set(signatureKey, signature)
     const messages = toChatMessages(latest.messages)
+    const owner = { profile: storedSessionProfile, storedSessionId }
 
-    updateSessionState(
-      runtimeSessionId,
-      state => ({
+    if (
+      !updateOwnedSessionState(runtimeSessionId, owner, state => ({
         ...state,
         // The refresh re-reads only the newest tail page; graft it onto any
         // older pages "Show earlier" already backfilled instead of clobbering
         // them (see transcript-backfill).
         messages: preserveLocalAssistantErrors(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages)
-      }),
-      storedSessionId
-    )
+      })) ||
+      !sessionStateHasOwner(runtimeSessionId, owner)
+    ) {
+      return
+    }
+
+    // Only suppress a future refresh after this snapshot was actually accepted
+    // by the captured composite cache owner.
+    signatureRef.current.set(signatureKey, signature)
   } catch {
     // Non-fatal: the next change event or manual resume can hydrate the view.
   }

@@ -52,14 +52,32 @@ function makeRefresh(
   const requestSequenceRef = { current: 0 }
   const signatureRef = { current: new Map<string, string>() }
   const state = createClientSessionState(ACTIVE_STORED_ID)
+  state.profile = selectedProfile
   const states = new Map([[ACTIVE_RUNTIME_ID, state]])
 
-  const updateSessionState = vi.fn((sessionId: string, updater: (value: typeof state) => typeof state) => {
-    const next = updater(states.get(sessionId) ?? createClientSessionState(ACTIVE_STORED_ID))
-    states.set(sessionId, next)
+  const sessionStateHasOwner = vi.fn((sessionId: string, owner: { profile: string; storedSessionId: string }) => {
+    const current = states.get(sessionId)
 
-    return next
+    return current?.profile === owner.profile && current.storedSessionId === owner.storedSessionId
   })
+
+  const updateOwnedSessionState = vi.fn(
+    (
+      sessionId: string,
+      owner: { profile: string; storedSessionId: string },
+      updater: (value: typeof state) => typeof state
+    ) => {
+      const current = states.get(sessionId)
+
+      if (!current || !sessionStateHasOwner(sessionId, owner)) {
+        return false
+      }
+
+      states.set(sessionId, updater(current))
+
+      return sessionStateHasOwner(sessionId, owner)
+    }
+  )
 
   const refresh = () =>
     reconcileActiveTranscript({
@@ -69,8 +87,9 @@ function makeRefresh(
       resolveSession,
       selectedStoredSessionIdRef,
       selectedStoredSessionProfileRef,
+      sessionStateHasOwner,
       signatureRef,
-      updateSessionState
+      updateOwnedSessionState
     })
 
   return {
@@ -81,7 +100,7 @@ function makeRefresh(
     selectedStoredSessionProfileRef,
     state,
     states,
-    updateSessionState
+    updateSessionState: updateOwnedSessionState
   }
 }
 
@@ -356,6 +375,34 @@ describe('reconcileActiveTranscript', () => {
     await request
 
     expect(fixture.updateSessionState).not.toHaveBeenCalled()
+  })
+
+  it('drops a delayed ABA response when the cache runtime is reclaimed by another profile', async () => {
+    const fixture = makeRefresh()
+    let resolve: ((value: unknown) => void) | undefined
+    vi.mocked(getLatestSessionMessages).mockReturnValueOnce(
+      new Promise(currentResolve => {
+        resolve = currentResolve
+      }) as never
+    )
+
+    const request = fixture.refresh()
+    const reclaimedState = createClientSessionState(ACTIVE_STORED_ID)
+    reclaimedState.profile = 'meta'
+    reclaimedState.messages = [
+      { id: 'meta-existing', parts: [{ text: 'meta existing answer', type: 'text' }], role: 'assistant' }
+    ]
+    fixture.states.set(ACTIVE_RUNTIME_ID, reclaimedState)
+
+    // The mutable selection refs end at their captured values (ABA), while the
+    // cache slot with the same ids now belongs to a different profile.
+    resolve?.(transcript('stale default answer'))
+    await request
+
+    expect(fixture.states.get(ACTIVE_RUNTIME_ID)).toBe(reclaimedState)
+    expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.at(-1)?.parts[0]).toMatchObject({
+      text: 'meta existing answer'
+    })
   })
 })
 

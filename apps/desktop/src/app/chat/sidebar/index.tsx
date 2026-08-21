@@ -305,7 +305,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onNewSessionSplit: (dir: SplitDir) => void
   onManageCronJob: (jobId: string, profile?: string) => void
   onOpenCronRun: (jobId: string, outputId: string, profile?: string) => void
-  onTriggerCronJob: (jobId: string) => Promise<void>
+  onTriggerCronJob: (jobId: string, profile?: string) => Promise<void>
 }
 
 export function ChatSidebar({

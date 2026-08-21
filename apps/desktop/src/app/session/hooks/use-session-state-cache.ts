@@ -23,7 +23,7 @@ import {
 import { $sessionTiles, publishSessionState, releaseSessionTranscript } from '@/store/session-states'
 
 import type { ClientSessionState } from '../../types'
-import { SessionStateCache } from '../session-state-cache'
+import { SessionStateCache, sessionStateMatchesOwner, type SessionStateOwner } from '../session-state-cache'
 
 import { chatMessageArraysEquivalent } from './use-session-actions/utils'
 
@@ -312,6 +312,32 @@ export function useSessionStateCache({
     []
   )
 
+  const commitSessionState = useCallback(
+    (sessionId: string, previous: ClientSessionState, next: ClientSessionState) => {
+      // If the updater returned the same reference, nothing changed for this
+      // session — skip the store write, publishSessionState, and view sync.
+      // The cache entry was already updated by ensureSessionState (if
+      // storedSessionId rotated); the caller gets its return value from the
+      // cache, so stale reads don't regress.
+      if (next === previous) {
+        return
+      }
+
+      sessionStateCache.set(sessionId, next)
+      // Crash-survivable turn progress: journal the running turn's visible
+      // tail (throttled localStorage write; cleared the moment the turn
+      // settles) so a renderer/app death mid-turn can be recovered on resume.
+      persistInFlightTurnState(next)
+      // Publishing to $sessionStates automatically fires transition side-effects
+      // (watchdog, settle grace, unread marker, compression id rotation) inside
+      // publishSessionState — no manual transition call needed.
+      publishSessionState(sessionId, next)
+      sessionStateCache.prune()
+      syncSessionStateToView(sessionId, next)
+    },
+    [sessionStateCache, syncSessionStateToView]
+  )
+
   const updateSessionState = useCallback(
     (
       sessionId: string,
@@ -326,30 +352,50 @@ export function useSessionStateCache({
       // $sessionStates and its computed atoms on every tick.
       const next = updater(previous)
 
-      // If the updater returned the same reference, nothing changed for this
-      // session — skip the store write, publishSessionState, and view sync.
-      // The cache entry was already updated by ensureSessionState (if
-      // storedSessionId rotated); the caller gets its return value from the
-      // cache, so stale reads don't regress.
-      if (next === previous) {
-        return previous
+      commitSessionState(sessionId, previous, next)
+
+      return next === previous ? previous : next
+    },
+    [commitSessionState, ensureSessionState]
+  )
+
+  const sessionStateHasOwner = useCallback(
+    (sessionId: string, owner: SessionStateOwner): boolean =>
+      sessionStateMatchesOwner(sessionStateCache.get(sessionId), owner),
+    [sessionStateCache]
+  )
+
+  const updateOwnedSessionState = useCallback(
+    (
+      sessionId: string,
+      owner: SessionStateOwner,
+      updater: (state: ClientSessionState) => ClientSessionState
+    ): boolean => {
+      // Do not call ensureSessionState here: a stale async completion must not
+      // create a cache entry or rotate/graft a stored id before ownership is
+      // proven against the currently installed runtime state.
+      const previous = sessionStateCache.get(sessionId)
+
+      if (!sessionStateMatchesOwner(previous, owner)) {
+        return false
       }
 
-      sessionStateCache.set(sessionId, next)
-      // Crash-survivable turn progress: journal the running turn's visible
-      // tail (throttled localStorage write; cleared the moment the turn
-      // settles) so a renderer/app death mid-turn can be recovered on resume.
-      persistInFlightTurnState(next)
-      // Publishing to $sessionStates automatically fires transition side-effects
-      // (watchdog, settle grace, unread marker, compression id rotation) inside
-      // publishSessionState — no manual transition call needed.
-      publishSessionState(sessionId, next)
-      sessionStateCache.prune()
-      syncSessionStateToView(sessionId, next)
+      const next = updater(previous)
 
-      return next
+      // Ownership is immutable for this publication primitive. A caller that
+      // needs to transfer ownership must use the explicit resume/setup path.
+      if (!sessionStateMatchesOwner(next, owner)) {
+        return false
+      }
+
+      commitSessionState(sessionId, previous, next)
+
+      // publishSessionState notifies synchronously. A subscriber may reclaim
+      // the same runtime id before this call returns, so report success only if
+      // the exact composite owner is still installed.
+      return sessionStateHasOwner(sessionId, owner)
     },
-    [ensureSessionState, sessionStateCache, syncSessionStateToView]
+    [commitSessionState, sessionStateCache, sessionStateHasOwner]
   )
 
   useEffect(() => {
@@ -379,8 +425,10 @@ export function useSessionStateCache({
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
     selectedStoredSessionProfileRef,
+    sessionStateHasOwner,
     sessionStateByRuntimeIdRef: sessionStateByRuntimeIdRef as MutableRefObject<Map<string, ClientSessionState>>,
     syncSessionStateToView,
+    updateOwnedSessionState,
     updateSessionState
   }
 }

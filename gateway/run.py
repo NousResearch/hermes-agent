@@ -2536,6 +2536,9 @@ if _config_path.exists():
             _redact = _security_cfg.get("redact_secrets")
             if _redact is not None:
                 os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
+            _pat = _security_cfg.get("redact_patterns")
+            if isinstance(_pat, str) and _pat.strip():
+                os.environ["HERMES_REDACT_PATTERNS"] = _pat.strip()
         # Gateway settings (media delivery allowlist + recency trust + strict mode)
         # Delegated to the shared bridge so standalone delivery entrypoints
         # (manual `hermes cron run`, ticks without the gateway) apply the SAME

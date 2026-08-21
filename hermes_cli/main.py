@@ -710,11 +710,13 @@ load_hermes_dotenv(
     load_external_secrets=sys.argv[1:2] != ["update"],
 )
 
-# Bridge security.redact_secrets from config.yaml → HERMES_REDACT_SECRETS env
-# var BEFORE hermes_logging imports agent.redact (which snapshots the flag at
-# module-import time). Without this, config.yaml's toggle is ignored because
-# the setup_logging() call below imports agent.redact, which reads the env var
-# exactly once. Env var in .env still wins — this is config.yaml fallback only.
+# Bridge security.redact_secrets / security.redact_patterns from config.yaml →
+# HERMES_REDACT_SECRETS / HERMES_REDACT_PATTERNS env vars BEFORE
+# hermes_logging imports agent.redact (which snapshots the flag at module-import
+# time; the patterns path is read per call). Without this, config.yaml's
+# settings are ignored because the setup_logging() call below imports
+# agent.redact, which reads the env vars. Env var in .env still wins — this is
+# config.yaml fallback only.
 #
 # We also read network.force_ipv4 from the same yaml load to avoid two
 # separate config.yaml reads (saves ~17ms on every CLI startup — the second
@@ -746,6 +748,12 @@ try:
                 _early_redact = _early_sec_cfg.get("redact_secrets")
                 if _early_redact is not None:
                     os.environ["HERMES_REDACT_SECRETS"] = str(_early_redact).lower()
+        if "HERMES_REDACT_PATTERNS" not in os.environ:
+            _early_sec_cfg = _early_cfg_raw.get("security", {})
+            if isinstance(_early_sec_cfg, dict):
+                _early_pat = _early_sec_cfg.get("redact_patterns")
+                if isinstance(_early_pat, str) and _early_pat.strip():
+                    os.environ["HERMES_REDACT_PATTERNS"] = _early_pat.strip()
         _early_net_cfg = _early_cfg_raw.get("network", {})
         if isinstance(_early_net_cfg, dict) and _early_net_cfg.get("force_ipv4"):
             _FORCE_IPV4_EARLY = True

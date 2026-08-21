@@ -772,6 +772,9 @@ def load_cli_config() -> Dict[str, Any]:
         redact = security_config.get("redact_secrets")
         if redact is not None:
             os.environ["HERMES_REDACT_SECRETS"] = str(redact).lower()
+        pat = security_config.get("redact_patterns")
+        if isinstance(pat, str) and pat.strip():
+            os.environ["HERMES_REDACT_PATTERNS"] = pat.strip()
 
     # Session-search index knobs (hermes_state reads the env carriers).
     sessions_config = defaults.get("sessions", {})

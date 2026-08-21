@@ -3775,12 +3775,16 @@ _SECURITY_COMMENT = """
 # tokens, and passwords are masked in tool output, logs, and chat
 # responses before the model or user ever sees them. Set redact_secrets
 # to false to disable (e.g. when developing the redactor itself).
+# Optional: security.redact_patterns points at a JSON file of exact values
+# and key patterns to mask (the registry-fed pass in agent/redact.py); the
+# value is bridged to the HERMES_REDACT_PATTERNS env var at startup.
 # tirith pre-exec scanning is enabled by default when the tirith binary
 # is available. Configure via security.tirith_* keys or env vars
 # (TIRITH_ENABLED, TIRITH_BIN, TIRITH_TIMEOUT, TIRITH_FAIL_OPEN).
 #
 # security:
 #   redact_secrets: true
+#   redact_patterns: "~/.hermes/state/redaction/redact_patterns.json"
 #   tirith_enabled: true
 #   tirith_path: "tirith"
 #   tirith_timeout: 5
@@ -3819,6 +3823,7 @@ _COMMENTED_SECTIONS = """
 #
 # security:
 #   redact_secrets: true
+#   redact_patterns: "~/.hermes/state/redaction/redact_patterns.json"
 
 # ── Fallback Model ────────────────────────────────────────────────────
 # Automatic provider failover when primary is unavailable.

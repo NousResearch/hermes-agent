@@ -1,5 +1,5 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { providerDisplayNames } from '../domain/providers.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
@@ -7,6 +7,7 @@ import type { GatewayClient } from '../gatewayClient.js'
 import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
 import { fuzzyRank } from '../lib/fuzzy.js'
 import { modelSearchText } from '../lib/model-search-text.js'
+import { runModelAuthHandoff } from '../lib/modelAuthHandoff.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -53,6 +54,8 @@ export function ModelPicker({
   const [keyInput, setKeyInput] = useState('')
   const [keySaving, setKeySaving] = useState(false)
   const [keyError, setKeyError] = useState('')
+  const [authRunning, setAuthRunning] = useState(false)
+  const [authError, setAuthError] = useState('')
   // Type-to-filter query, scoped per stage (cleared on stage change).
   const [filter, setFilter] = useState('')
 
@@ -65,45 +68,48 @@ export function ModelPicker({
   const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
   const width = clampOverlayWidth(preferredWidth, maxWidth)
 
-  useEffect(() => {
-    gw.request<ModelOptionsResponse>('model.options', {
-      ...(sessionId ? { session_id: sessionId } : {}),
-      ...(initialRefresh ? { refresh: true } : {}),
-      // The TUI picker shows the full provider universe with setup
-      // affordances ("paste KEY to activate"), so opt into unconfigured
-      // rows — the backend now defaults to the configured subset for
-      // desktop chat pickers (#56974).
-      include_unconfigured: true
-    })
-      .then(raw => {
-        const r = asRpcResult<ModelOptionsResponse>(raw)
-
-        if (!r) {
-          setErr('invalid response: model.options')
-          setLoading(false)
-
-          return
-        }
-
-        const next = r.providers ?? []
-        setProviders(next)
-        setCurrentModel(String(r.model ?? ''))
-        setProviderIdx(
-          Math.max(
-            0,
-            next.findIndex(p => p.is_current)
-          )
-        )
-        setModelIdx(0)
-        setStage('provider')
-        setErr('')
-        setLoading(false)
+  const loadOptions = useCallback(
+    async (refresh: boolean) => {
+      const raw = await gw.request<ModelOptionsResponse>('model.options', {
+        ...(sessionId ? { session_id: sessionId } : {}),
+        ...(refresh ? { refresh: true } : {}),
+        // The TUI picker shows the full provider universe with setup
+        // affordances ("paste KEY to activate"), so opt into unconfigured
+        // rows — the backend now defaults to the configured subset for
+        // desktop chat pickers (#56974).
+        include_unconfigured: true
       })
+
+      const r = asRpcResult<ModelOptionsResponse>(raw)
+
+      if (!r) {
+        throw new Error('invalid response: model.options')
+      }
+
+      const next = r.providers ?? []
+      setProviders(next)
+      setCurrentModel(String(r.model ?? ''))
+      setProviderIdx(
+        Math.max(
+          0,
+          next.findIndex(p => p.is_current)
+        )
+      )
+      setModelIdx(0)
+      setStage('provider')
+      setErr('')
+    },
+    [gw, sessionId]
+  )
+
+  useEffect(() => {
+    setLoading(true)
+    void loadOptions(initialRefresh)
       .catch((e: unknown) => {
         setErr(rpcErrorMessage(e))
-        setLoading(false)
       })
-  }, [gw, initialRefresh, sessionId])
+      .finally(() => setLoading(false))
+  }, [initialRefresh, loadOptions])
 
   const names = useMemo(() => providerDisplayNames(providers), [providers])
 
@@ -196,6 +202,10 @@ export function ModelPicker({
   useOverlayKeys({ disabled: listStage, onBack: back, onClose: onCancel })
 
   useInput((ch, key) => {
+    if (authRunning) {
+      return
+    }
+
     // Key entry stage handles its own input
     if (stage === 'key') {
       if (keySaving) {
@@ -362,9 +372,31 @@ export function ModelPicker({
             setKeyInput('')
             setKeyError('')
             setFilter('')
+
+            return
           }
 
-          // Other auth types: no-op (warning shown tells them to run hermes model)
+          // OAuth and other interactive auth flows already live in the
+          // canonical model wizard. Suspend Ink while it owns the terminal,
+          // then refresh this picker so the newly authenticated provider is
+          // selectable without leaving the session.
+          setAuthRunning(true)
+          setAuthError('')
+          void runModelAuthHandoff()
+            .then(result => {
+              if (result.error) {
+                throw new Error(result.error)
+              }
+
+              if (result.code !== 0) {
+                throw new Error(`hermes model exited with code ${String(result.code)}`)
+              }
+
+              return loadOptions(true)
+            })
+            .catch((e: unknown) => setAuthError(rpcErrorMessage(e)))
+            .finally(() => setAuthRunning(false))
+
           return
         }
 
@@ -551,6 +583,16 @@ export function ModelPicker({
 
   // ── Provider selection stage ─────────────────────────────────────────
   if (stage === 'provider') {
+    let providerNotice = provider?.warning ? `warning: ${provider.warning}` : ' '
+
+    if (authError) {
+      providerNotice = `error: ${authError}`
+    }
+
+    if (authRunning) {
+      providerNotice = 'authentication running…'
+    }
+
     const rows = filteredProviderRows.map(({ provider: p, name }) => {
       const authMark = p.authenticated === false ? '○' : p.is_current ? '*' : '●'
       const modelCount = p.total_models ?? p.models?.length ?? 0
@@ -581,7 +623,7 @@ export function ModelPicker({
           {filter ? `filter: ${filter}▎` : 'type to filter · ↑/↓ select'}
         </Text>
         <Text color={t.color.label} wrap="truncate-end">
-          {provider?.warning ? `warning: ${provider.warning}` : ' '}
+          {providerNotice}
         </Text>
         <Text color={t.color.muted} wrap="truncate-end">
           {offset > 0 ? ` ↑ ${offset} more` : ' '}

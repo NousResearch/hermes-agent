@@ -36,6 +36,7 @@ import {
 import { setApprovalRequest } from '@/store/prompts'
 import {
   $activeSessionStoredIdRotation,
+  $cronSessions,
   $currentCwd,
   $currentFastMode,
   $currentModel,
@@ -1721,7 +1722,7 @@ export function useSessionActions({
   )
 
   const removeSession = useCallback(
-    async (storedSessionId: string) => {
+    async (storedSessionId: string, explicitProfile?: string): Promise<boolean> => {
       clearNotifications()
 
       // The row may live in the main list OR the archived view's own store
@@ -1730,8 +1731,13 @@ export function useSessionActions({
       // leaving a ghost that resumes into a dead id (infinite spinner).
       const removedFromMain = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
 
+      const previousCron = $cronSessions.get()
+      const removedFromCron = previousCron.find(session => sessionMatchesStoredId(session, storedSessionId))
+
       const removed =
-        removedFromMain ?? $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+        removedFromMain ??
+        $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ??
+        removedFromCron
 
       const wasSelected = selectedStoredSessionId === storedSessionId
       const closingRuntimeId = wasSelected ? activeSessionId : null
@@ -1745,6 +1751,7 @@ export function useSessionActions({
 
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
       $archivedSessions.set(previousArchived.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+      $cronSessions.set(previousCron.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
       // Evict from the project tree's optimistic layer too (the backend snapshot
       // still lists it until its next refresh), so grouped + flat views drop the
       // row in lockstep. Pin the tombstone against the projects.tree prune while
@@ -1764,12 +1771,15 @@ export function useSessionActions({
           await requestGateway('session.close', { session_id: closingRuntimeId }).catch(() => undefined)
         }
 
-        await deleteSession(storedSessionId, removed?.profile)
+        // Cron run-history rows are fetched outside $sessions, so their profile
+        // cannot be rediscovered here. Accept it explicitly from that row while
+        // preserving the existing loaded-row resolution for every other caller.
+        await deleteSession(storedSessionId, explicitProfile ?? removed?.profile)
         // A deleted session's cached tail must not resurrect on a recycled id.
         dropTranscriptTail(storedSessionId)
         // Only after the RPC lands — the optimistic eviction above can roll
         // back, and a rolled-back row must keep its watermark/marker.
-        forgetSessionUnread(removedIds, removed?.profile)
+        forgetSessionUnread(removedIds, explicitProfile ?? removed?.profile)
         clearQueuedPrompts(storedSessionId)
 
         if (closingRuntimeId) {
@@ -1787,6 +1797,8 @@ export function useSessionActions({
           sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
           dropSessionState(tiledRuntimeId)
         }
+
+        return true
       } catch (err) {
         if (removedFromMain) {
           setSessions(prev => [removedFromMain, ...prev])
@@ -1794,6 +1806,14 @@ export function useSessionActions({
 
         // Restore the archived-view row too (no-op when it wasn't archived).
         $archivedSessions.set(previousArchived)
+
+        if (removedFromCron) {
+          const currentCron = $cronSessions.get()
+
+          if (!currentCron.some(session => sessionMatchesStoredId(session, storedSessionId))) {
+            $cronSessions.set([removedFromCron, ...currentCron])
+          }
+        }
 
         untombstoneSessions(removedIds)
         $pinnedSessionIds.set(previousPinned)
@@ -1818,6 +1838,8 @@ export function useSessionActions({
         }
 
         notifyError(err, copy.deleteFailed)
+
+        return false
       } finally {
         // Release the tombstone to the normal projects.tree prune now the RPC has
         // settled (kept on success — the backend has deleted it; cleared on the

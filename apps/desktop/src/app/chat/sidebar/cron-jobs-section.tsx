@@ -20,6 +20,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { $selectedStoredSessionId } from '@/store/session'
 import type { CronJob } from '@/types/hermes'
 
+import { CronRunRow } from '../../cron/cron-run-row'
 import { jobState, jobTitle, STATE_DOT } from '../../cron/job-state'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 
@@ -70,6 +71,8 @@ interface SidebarCronJobsSectionProps {
   jobs: CronJob[]
   label: string
   max?: number
+  // Delete one run's stored session through the shared session action path.
+  onDeleteRun: (sessionId: string, profile?: string) => Promise<boolean>
   // Open a run session's chat (1 click to output).
   onOpenRun: (sessionId: string) => void
   // Open the full Cron page focused on this job (manage / full history).
@@ -84,6 +87,7 @@ export function SidebarCronJobsSection({
   jobs,
   label,
   max = 50,
+  onDeleteRun,
   onManageJob,
   onOpenRun,
   onTriggerJob,
@@ -200,6 +204,7 @@ export function SidebarCronJobsSection({
               job={job}
               key={job.id}
               nowMs={nowMs}
+              onDeleteRun={onDeleteRun}
               onManage={() => onManageJob(job.id)}
               onOpenRun={onOpenRun}
               onTogglePeek={() => setPeekJobId(prev => (prev === job.id ? null : job.id))}
@@ -223,6 +228,7 @@ function CronJobSidebarRow({
   expanded,
   job,
   nowMs,
+  onDeleteRun,
   onManage,
   onOpenRun,
   onTogglePeek,
@@ -232,6 +238,7 @@ function CronJobSidebarRow({
   expanded: boolean
   job: CronJob
   nowMs: number
+  onDeleteRun: (sessionId: string, profile?: string) => Promise<boolean>
   onManage: () => void
   onOpenRun: (sessionId: string) => void
   onTogglePeek: () => void
@@ -377,12 +384,20 @@ function CronJobSidebarRow({
           </Tip>
         </SidebarRowShell>
       </ActionsContextMenu>
-      {expanded && <CronJobSidebarRuns jobId={job.id} onOpenRun={onOpenRun} />}
+      {expanded && <CronJobSidebarRuns jobId={job.id} onDeleteRun={onDeleteRun} onOpenRun={onOpenRun} />}
     </div>
   )
 }
 
-function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (sessionId: string) => void }) {
+function CronJobSidebarRuns({
+  jobId,
+  onDeleteRun,
+  onOpenRun
+}: {
+  jobId: string
+  onDeleteRun: (sessionId: string, profile?: string) => Promise<boolean>
+  onOpenRun: (sessionId: string) => void
+}) {
   const { t } = useI18n()
   const c = t.cron
   const selectedSessionId = useStore($selectedStoredSessionId)
@@ -445,19 +460,16 @@ function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (s
       ) : (
         <>
           {runs.map(run => (
-            <button
-              className={cn(
-                'truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
-                run.id === selectedSessionId
-                  ? 'bg-(--ui-row-active-background) text-foreground'
-                  : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
-              )}
+            <CronRunRow
+              active={run.id === selectedSessionId}
               key={run.id}
-              onClick={() => onOpenRun(run.id)}
-              type="button"
-            >
-              {formatRunTime(run.last_active || run.started_at)}
-            </button>
+              onDelete={onDeleteRun}
+              onDeleted={sessionId => setRuns(current => current?.filter(item => item.id !== sessionId) ?? [])}
+              onOpen={onOpenRun}
+              run={run}
+              time={formatRunTime(run.last_active || run.started_at)}
+              variant="sidebar"
+            />
           ))}
         </>
       )}

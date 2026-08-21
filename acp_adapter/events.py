@@ -11,7 +11,7 @@ import asyncio
 import json
 import logging
 from collections import deque
-from typing import Any, Callable, Deque, Dict
+from typing import Any, Callable, Deque, Dict, Optional
 
 import acp
 from acp.schema import AgentPlanUpdate, PlanEntry
@@ -89,8 +89,33 @@ def _send_update(
     session_id: str,
     loop: asyncio.AbstractEventLoop,
     update: Any,
-) -> None:
-    """Fire-and-forget an ACP session update from a worker thread."""
+    *,
+    recovery: Optional[Callable[[], None]] = None,
+) -> bool:
+    """Schedule an ACP update and report whether the loop accepted ownership.
+
+    ``True`` means the coroutine was accepted by the event loop, not that it
+    already finished. Accepted futures are observed asynchronously and must
+    never be resubmitted directly: a bounded wait cannot distinguish a slow
+    delivery from a lost one and retrying an in-flight future can duplicate
+    completion updates (#33023). ``False`` is reserved for scheduler
+    rejection, where the coroutine was closed and therefore provably cannot
+    deliver.
+
+    ``recovery`` is an optional caller-supplied hook invoked ONLY when the
+    accepted future later fires with an exception (a definitive signal the
+    original attempt could not deliver). The hook is NOT invoked on a
+    successful observed completion (a successful accepted future is canonical
+    — retried would risk double-delivery) or on scheduler rejection (the
+    caller's existing scheduler-rejection retry already covers that case).
+
+    Non-canonical callers (``make_step_cb`` and the thinking/message callbacks)
+    keep the default ``recovery=None`` behavior. The canonical completion path
+    in ``make_tool_complete_cb`` passes a recovery closure that does one bounded
+    retry of the same update and, on retry exhaustion, retains a
+    ``failed_delivery`` marker in ``tool_call_meta`` so later reconciliation
+    can surface the lost completion.
+    """
     from agent.async_utils import safe_schedule_threadsafe
 
     future = safe_schedule_threadsafe(
@@ -100,15 +125,123 @@ def _send_update(
         log_message="Failed to send ACP update",
     )
     if future is None:
-        return
-    try:
-        future.result(timeout=5)
-    except Exception:
-        logger.debug("Failed to send ACP update", exc_info=True)
+        return False
+
+    def _observe_delivery(done) -> None:
+        try:
+            done.result()
+        except Exception:
+            logger.warning(
+                "Accepted ACP update later failed "
+                "(session=%s, update_type=%s)",
+                session_id,
+                type(update).__name__,
+                exc_info=True,
+            )
+            if recovery is not None:
+                try:
+                    recovery()
+                except Exception:
+                    logger.debug(
+                        "Recovery hook raised for ACP update "
+                        "(session=%s, update_type=%s)",
+                        session_id,
+                        type(update).__name__,
+                        exc_info=True,
+                    )
+
+    future.add_done_callback(_observe_delivery)
+    return True
 
 
 # ------------------------------------------------------------------
-# Tool progress callback
+# Tool start callbacks
+# ------------------------------------------------------------------
+
+def _emit_tool_start(
+    conn: acp.Client,
+    session_id: str,
+    loop: asyncio.AbstractEventLoop,
+    tool_call_ids: Dict[str, Deque[str]],
+    tool_call_meta: Dict[str, Dict[str, Any]],
+    tc_id: str,
+    name: str,
+    args: Any,
+    edit_approval_policy_getter: Callable[[], tuple[str, str | None]] | None,
+) -> None:
+    """Track and emit one ACP tool start using the supplied canonical ID."""
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except (json.JSONDecodeError, TypeError):
+            args = {"raw": args}
+    if not isinstance(args, dict):
+        args = {}
+
+    queue = tool_call_ids.get(name)
+    if queue is None:
+        queue = deque()
+        tool_call_ids[name] = queue
+    elif isinstance(queue, str):
+        queue = deque([queue])
+        tool_call_ids[name] = queue
+    queue.append(tc_id)
+
+    snapshot = None
+    if name in {"write_file", "patch", "skill_manage"}:
+        try:
+            from agent.display import capture_local_edit_snapshot
+
+            snapshot = capture_local_edit_snapshot(name, args)
+        except Exception:
+            logger.debug("Failed to capture ACP edit snapshot for %s", name, exc_info=True)
+    tool_call_meta[tc_id] = {"args": args, "snapshot": snapshot}
+
+    edit_diff = None
+    if name in {"write_file", "patch"} and edit_approval_policy_getter is not None:
+        try:
+            from acp_adapter.edit_approval import build_edit_proposal, should_auto_approve_edit
+
+            proposal = build_edit_proposal(name, args)
+            if proposal is not None:
+                policy, cwd = edit_approval_policy_getter()
+                if should_auto_approve_edit(proposal, policy, cwd):
+                    edit_diff = proposal
+        except Exception:
+            logger.debug("Failed to prepare auto-approved ACP edit diff for %s", name, exc_info=True)
+
+    update = build_tool_start(tc_id, name, args, edit_diff=edit_diff)
+    _send_update(conn, session_id, loop, update)
+
+
+def make_tool_start_cb(
+    conn: acp.Client,
+    session_id: str,
+    loop: asyncio.AbstractEventLoop,
+    tool_call_ids: Dict[str, Deque[str]],
+    tool_call_meta: Dict[str, Dict[str, Any]],
+    edit_approval_policy_getter: Callable[[], tuple[str, str | None]] | None = None,
+) -> Callable:
+    """Create a canonical-ID ``tool_start_callback`` for AIAgent."""
+
+    def _tool_start(tc_id: str, name: str, args: Any) -> None:
+        _emit_tool_start(
+            conn,
+            session_id,
+            loop,
+            tool_call_ids,
+            tool_call_meta,
+            tc_id,
+            name,
+            args,
+            edit_approval_policy_getter,
+        )
+
+    return _tool_start
+
+
+# ------------------------------------------------------------------
+# Tool progress callback (legacy)
 # ------------------------------------------------------------------
 
 def make_tool_progress_cb(
@@ -135,49 +268,17 @@ def make_tool_progress_cb(
         # Only emit ACP ToolCallStart for tool.started; ignore other event types
         if event_type != "tool.started":
             return
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except (json.JSONDecodeError, TypeError):
-                args = {"raw": args}
-        if not isinstance(args, dict):
-            args = {}
-
-        tc_id = make_tool_call_id()
-        queue = tool_call_ids.get(name)
-        if queue is None:
-            queue = deque()
-            tool_call_ids[name] = queue
-        elif isinstance(queue, str):
-            queue = deque([queue])
-            tool_call_ids[name] = queue
-        queue.append(tc_id)
-
-        snapshot = None
-        if name in {"write_file", "patch", "skill_manage"}:
-            try:
-                from agent.display import capture_local_edit_snapshot
-
-                snapshot = capture_local_edit_snapshot(name, args)
-            except Exception:
-                logger.debug("Failed to capture ACP edit snapshot for %s", name, exc_info=True)
-        tool_call_meta[tc_id] = {"args": args, "snapshot": snapshot}
-
-        edit_diff = None
-        if name in {"write_file", "patch"} and edit_approval_policy_getter is not None:
-            try:
-                from acp_adapter.edit_approval import build_edit_proposal, should_auto_approve_edit
-
-                proposal = build_edit_proposal(name, args)
-                if proposal is not None:
-                    policy, cwd = edit_approval_policy_getter()
-                    if should_auto_approve_edit(proposal, policy, cwd):
-                        edit_diff = proposal
-            except Exception:
-                logger.debug("Failed to prepare auto-approved ACP edit diff for %s", name, exc_info=True)
-
-        update = build_tool_start(tc_id, name, args, edit_diff=edit_diff)
-        _send_update(conn, session_id, loop, update)
+        _emit_tool_start(
+            conn,
+            session_id,
+            loop,
+            tool_call_ids,
+            tool_call_meta,
+            make_tool_call_id(),
+            name,
+            args,
+            edit_approval_policy_getter,
+        )
 
     return _tool_progress
 
@@ -203,7 +304,164 @@ def make_thinking_cb(
 
 
 # ------------------------------------------------------------------
-# Step callback
+# Canonical tool completion callback
+# ------------------------------------------------------------------
+
+def make_tool_complete_cb(
+    conn: acp.Client,
+    session_id: str,
+    loop: asyncio.AbstractEventLoop,
+    tool_call_ids: Dict[str, Deque[str]],
+    tool_call_meta: Dict[str, Dict[str, Any]],
+) -> Callable:
+    """Create a real-ID ``tool_complete_callback`` for AIAgent.
+
+    The executor supplies the canonical provider tool-call ID. This avoids the
+    FIFO/name correlation used by the legacy step callback and lets concurrent
+    same-name tools complete out of order without crossing results.
+    """
+
+    def _tool_complete(
+        tc_id: str,
+        tool_name: str,
+        function_args: Any,
+        result: Any,
+    ) -> None:
+        meta = tool_call_meta.get(tc_id, {})
+        args = function_args if function_args is not None else meta.get("args")
+        snapshot = meta.get("snapshot")
+        update = build_tool_complete(
+            tc_id,
+            tool_name,
+            result=str(result) if result is not None else None,
+            function_args=args,
+            snapshot=snapshot,
+        )
+
+        # Observed-future-failure recovery hook (adjudicated contract for
+        # #67062 §accepted-future-delivery-gap). The initial _send_update
+        # below passes this closure so that if the loop-owned Future later
+        # fires with an exception (a definitive "this completion did not
+        # deliver" signal), we retry the SAME canonical completion update
+        # exactly once. Retrying with the same update is safe — the result
+        # is immutable and the canonical tc_id already binds it to this
+        # tool call — and ACP clients idempotently accept a re-delivered
+        # completion update keyed on the canonical tc_id.
+        #
+        # The retry's own recovery hook records terminal failure without
+        # scheduling again. Bounded therefore means exactly one retry whether
+        # that retry is rejected immediately or its accepted Future fails
+        # later. In either terminal case, retain a ``failed_delivery`` marker
+        # so heartbeat/session-close reconciliation can surface the loss.
+        #
+        # ``_failed_delivery_marker`` captures a marker written synchronously,
+        # so the post-call cleanup below can preserve it across the canonical
+        # tool_call_meta.pop(). An asynchronous retry failure writes directly
+        # into tool_call_meta after cleanup.
+        _failed_delivery_marker: Optional[Dict[str, Any]] = None
+
+        def _mark_failed_delivery() -> None:
+            nonlocal _failed_delivery_marker
+            marker: Dict[str, Any] = {
+                "failed_delivery": True,
+                "session_id": session_id,
+                "tool_name": tool_name,
+                "tc_id": tc_id,
+            }
+            if result is not None:
+                marker["result"] = str(result)
+            if args is not None:
+                marker["args"] = args
+            if snapshot is not None:
+                marker["snapshot"] = snapshot
+            # Preserve any additional pre-existing meta fields so a
+            # reconciliation pass can replay the completion without
+            # consulting the executor again.
+            prior = tool_call_meta.get(tc_id)
+            if prior:
+                for k, v in prior.items():
+                    marker.setdefault(k, v)
+            # Publish the closure-visible marker before touching shared meta.
+            # Cleanup can race this callback; either it sees this marker and
+            # restores it after pop(), or it finishes first and this callback
+            # inserts the marker below.
+            _failed_delivery_marker = marker
+            current = tool_call_meta.get(tc_id)
+            if current is None:
+                tool_call_meta[tc_id] = dict(marker)
+            else:
+                current.clear()
+                current.update(marker)
+            logger.error(
+                "ACP tool completion permanently undelivered after retry "
+                "(session=%s, tool=%s, tc_id=%s); retained failed_delivery "
+                "marker for follow-up reconciliation.",
+                session_id,
+                tool_name,
+                tc_id,
+            )
+
+        def _recover_canonical_completion() -> None:
+            retry_accepted = _send_update(
+                conn,
+                session_id,
+                loop,
+                update,
+                recovery=_mark_failed_delivery,
+            )
+            if not retry_accepted:
+                _mark_failed_delivery()
+
+        # A scheduler rejection proves the first coroutine cannot deliver, so
+        # one bounded retry is safe. Once accepted, ownership belongs to the
+        # loop and _send_update observes the Future without resubmitting it.
+        accepted = _send_update(
+            conn, session_id, loop, update, recovery=_recover_canonical_completion
+        )
+        if not accepted:
+            accepted = _send_update(conn, session_id, loop, update, recovery=None)
+
+        if accepted and tool_name == "todo":
+            plan_update = _build_plan_update_from_todo_result(result)
+            if plan_update is not None:
+                _send_update(conn, session_id, loop, plan_update)
+        elif not accepted:
+            logger.error(
+                "ACP tool completion rejected by scheduler "
+                "(session=%s, tool=%s, tc_id=%s)",
+                session_id,
+                tool_name,
+                tc_id,
+            )
+
+        queue = tool_call_ids.get(tool_name)
+        if isinstance(queue, str):
+            if queue == tc_id:
+                tool_call_ids.pop(tool_name, None)
+        elif queue is not None:
+            try:
+                queue.remove(tc_id)
+            except ValueError:
+                pass
+            if not queue:
+                tool_call_ids.pop(tool_name, None)
+        # Canonical cleanup: pop the meta on a normal delivery. If the
+        # recovery hook fired synchronously and wrote a failed_delivery
+        # marker, restore it AFTER the pop so reconciliation can find it.
+        popped = tool_call_meta.pop(tc_id, None)
+        if _failed_delivery_marker is not None:
+            tool_call_meta[tc_id] = (
+                popped if popped is not None else _failed_delivery_marker
+            )
+            if popped is not None and popped is not _failed_delivery_marker:
+                # Recovery overwrote — re-apply the marker so it can't be lost.
+                tool_call_meta[tc_id].update(_failed_delivery_marker)
+
+    return _tool_complete
+
+
+# ------------------------------------------------------------------
+# Legacy step callback
 # ------------------------------------------------------------------
 
 def make_step_cb(
@@ -248,11 +506,30 @@ def make_step_cb(
                         function_args=function_args or meta.get("args"),
                         snapshot=meta.get("snapshot"),
                     )
-                    _send_update(conn, session_id, loop, update)
-                    if tool_name == "todo":
-                        plan_update = _build_plan_update_from_todo_result(result)
-                        if plan_update is not None:
-                            _send_update(conn, session_id, loop, plan_update)
+                    # Bounded retry of the SAME update (#33023). The update
+                    # already carries this call's result, so retrying it cannot
+                    # accidentally match a later tool call the way a queue
+                    # re-pop would. One extra attempt covers transient drops
+                    # (momentary timeout / busy loop); if delivery is still
+                    # impossible, surface the loss at ERROR instead of letting
+                    # the tool appear "running" in the ACP client forever.
+                    delivered = _send_update(conn, session_id, loop, update)
+                    if not delivered:
+                        delivered = _send_update(conn, session_id, loop, update)
+                    if delivered:
+                        if tool_name == "todo":
+                            plan_update = _build_plan_update_from_todo_result(result)
+                            if plan_update is not None:
+                                _send_update(conn, session_id, loop, plan_update)
+                    else:
+                        logger.error(
+                            "ACP tool completion permanently undelivered "
+                            "(session=%s, tool=%s, tc_id=%s); the ACP client "
+                            "may show this tool as still running.",
+                            session_id,
+                            tool_name,
+                            tc_id,
+                        )
                     if not queue:
                         tool_call_ids.pop(tool_name, None)
 

@@ -409,6 +409,11 @@ async function startSocket() {
     printQRInTerminal: false,
     browser: ['Hermes Agent', 'Chrome', '120.0'],
     syncFullHistory: false,
+    // Baileys 7.x: with syncFullHistory:false and NO shouldSyncHistoryMessage, ALL
+    // history sync is disabled (INITIAL_BOOTSTRAP/RECENT/ON_DEMAND), so LID mappings
+    // and group participation never arrive and group messages fail to decrypt (#11951).
+    // Allow every sync type except FULL (syncType 2).
+    shouldSyncHistoryMessage: (msg) => (msg && msg.syncType) !== 2,
     markOnlineOnConnect: false,
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)

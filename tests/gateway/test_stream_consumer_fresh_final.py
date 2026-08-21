@@ -59,6 +59,47 @@ class TestFreshFinalForLongLivedPreviews:
         assert adapter.send.call_count == 1  # only the initial send
         adapter.edit_message.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_short_lived_preview_edits_in_place(self):
+        """Finalizing a preview younger than the threshold → normal edit."""
+        adapter = _make_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(fresh_final_after_seconds=60.0),
+        )
+        await consumer._send_or_edit("hello")
+        # Preview is "new" — leave _message_created_ts at its real value.
+        await consumer._send_or_edit("hello world", finalize=True)
+        assert adapter.send.call_count == 1
+        adapter.edit_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_long_lived_preview_sends_fresh_final(self):
+        """Finalizing a preview older than the threshold → fresh send."""
+        adapter = _make_adapter()
+        adapter.send.side_effect = [
+            SimpleNamespace(success=True, message_id="initial_preview"),
+            SimpleNamespace(success=True, message_id="fresh_final"),
+        ]
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(fresh_final_after_seconds=60.0),
+        )
+        await consumer._send_or_edit("hello")
+        # Force the preview to look stale (visible for > 60s).
+        consumer._message_created_ts = 0.0  # zero = ~uptime seconds old
+        await consumer._send_or_edit("hello world", finalize=True)
+        # Fresh send happened; no edit of the old preview.
+        assert adapter.send.call_count == 2
+        adapter.edit_message.assert_not_called()
+        # The old preview was deleted as cleanup.
+        adapter.delete_message.assert_awaited_once_with("chat", "initial_preview")
+        # State was updated to the new message id.
+        assert consumer._message_id == "fresh_final"
+        assert consumer.message_ids == ("fresh_final",)
+        assert consumer._final_response_sent is True
 
     @pytest.mark.asyncio
     async def test_fresh_final_without_delete_support_is_best_effort(self):
@@ -181,6 +222,78 @@ class TestCancelledBestEffortDeliveryFinalizes:
     suppressed the gateway's formatted re-send.
     """
 
+    @pytest.mark.asyncio
+    async def test_cancel_best_effort_edit_is_finalized(self):
+        adapter = _make_adapter()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(
+                edit_interval=0.01, buffer_threshold=5, cursor=" ▉",
+            ),
+        )
+        consumer.on_delta("Reply with **bold** and `code` markers.")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)  # preview lands; message_id set
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        finalize_edits = [
+            c for c in adapter.edit_message.call_args_list
+            if c.kwargs.get("finalize")
+        ]
+        assert finalize_edits, (
+            "cancel best-effort delivery must use finalize=True so "
+            "REQUIRES_EDIT_FINALIZE platforms apply final formatting"
+        )
+        assert consumer.final_response_sent is True
+        assert consumer.final_content_delivered is True
+        assert consumer.message_ids == ("initial_preview",)
+
+    @pytest.mark.asyncio
+    async def test_cancel_best_effort_failure_keeps_gateway_resend_possible(self):
+        adapter = _make_adapter()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(
+                edit_interval=0.01, buffer_threshold=5, cursor=" ▉",
+            ),
+        )
+        consumer.on_delta("Reply with **bold** and `code` markers.")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        # Best-effort delivery at cancel time fails.
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=False, error="boom",
+        ))
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is False
+
+    @pytest.mark.asyncio
+    async def test_cancel_without_preview_makes_no_delivery_attempt(self):
+        adapter = _make_adapter()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(
+                edit_interval=0.01, buffer_threshold=5, cursor=" ▉",
+            ),
+        )
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.02)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        adapter.edit_message.assert_not_called()
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is False
 
     @pytest.mark.asyncio
     async def test_cancel_with_fresh_final_enabled_delivers_and_flags_via_handler(self):
@@ -240,6 +353,34 @@ class TestGotDoneOverflowSplitNotRefinalized:
             ),
         )
 
+    @pytest.mark.asyncio
+    async def test_split_finalize_edit_is_not_refinalized(self):
+        adapter = _make_adapter()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=True,
+            message_id="cont_2",
+            continuation_message_ids=("cont_2",),
+        ))
+        consumer = self._consumer(adapter)
+        consumer.on_delta("oversize **markdown** final reply")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)  # preview send lands; no interval edits
+        consumer.finish()
+        await task
+
+        finalize_edits = [
+            c for c in adapter.edit_message.call_args_list
+            if c.kwargs.get("finalize")
+        ]
+        assert len(finalize_edits) == 1, (
+            "split finalize edit must not be re-finalized; the redundant "
+            "edit re-splits the full text into the adopted continuation "
+            "and duplicates chunks on screen"
+        )
+        assert consumer.final_response_sent is True
+        assert consumer.final_content_delivered is True
+        assert set(consumer.message_ids) == {"initial_preview", "cont_2"}
 
     @pytest.mark.asyncio
     async def test_non_split_finalize_edit_still_gets_explicit_refinalize(self):

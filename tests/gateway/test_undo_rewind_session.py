@@ -54,3 +54,69 @@ def test_rewind_n_turns(store):
     assert len(store.load_transcript(sid)) == 2  # q1,a1
 
 
+def test_rewind_soft_deletes_rows_for_audit(store):
+    sid = _seed(store, "gw-3")
+    store.rewind_session(sid, 1)
+    all_rows = store._db.get_messages(sid, include_inactive=True)
+    assert len(all_rows) == 6  # nothing hard-deleted
+    assert sum(1 for r in all_rows if r["active"] == 1) == 4
+    assert store._db.get_session(sid)["rewind_count"] == 1
+
+
+def test_rewind_clamps_to_oldest_turn(store):
+    sid = _seed(store, "gw-4", turns=2)
+    res = store.rewind_session(sid, 99)
+    assert res["target_text"] == "q1"
+    assert len(store.load_transcript(sid)) == 0
+
+
+def test_rewind_empty_session_returns_none(store):
+    store._db.create_session("gw-5", source="discord")
+    assert store.rewind_session("gw-5") is None
+
+
+def test_rewind_clamps_negative_count_to_one(store):
+    sid = _seed(store, "gw-6")
+    res = store.rewind_session(sid, -5)
+    assert res["turns_undone"] == 1
+    assert res["target_text"] == "q3"
+
+
+def test_rewind_returns_platform_message_ids_for_gateway_cleanup(store):
+    sid = "gw-platform-ids"
+    store._db.create_session(sid, source="telegram")
+    store._db.append_message(sid, "user", "q1", platform_message_id="101")
+    store._db.append_message(sid, "assistant", "a1", platform_message_id="102")
+    store._db.append_message(sid, "user", "q2", platform_message_id="201")
+    store._db.append_message(
+        sid,
+        "assistant",
+        "a2",
+        platform_message_id='["202", "203"]',
+    )
+
+    res = store.rewind_session(sid, 1)
+
+    assert res["rewound_count"] == 2
+    assert res["rewound_messages"] == [
+        {"id": 3, "role": "user", "platform_message_id": "201"},
+        {"id": 4, "role": "assistant", "platform_message_id": '["202", "203"]'},
+    ]
+
+
+def test_set_latest_assistant_platform_message_ids_uses_scalar_or_json(store):
+    sid = "gw-delivery-ids"
+    store._db.create_session(sid, source="telegram")
+    store._db.append_message(sid, "user", "q1")
+    store._db.append_message(sid, "assistant", "a1")
+
+    assert store._db.set_latest_assistant_platform_message_ids(sid, ["301"])
+    rows = store._db.get_messages(sid)
+    assert rows[-1]["platform_message_id"] == "301"
+
+    assert store._db.set_latest_assistant_platform_message_ids(
+        sid,
+        ["301", "302", "302", None, "__no_edit__"],
+    )
+    rows = store._db.get_messages(sid)
+    assert rows[-1]["platform_message_id"] == '["301", "302"]'

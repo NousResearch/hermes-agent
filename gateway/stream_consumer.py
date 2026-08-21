@@ -402,6 +402,20 @@ class GatewayStreamConsumer:
         return self._message_id
 
     @property
+    def message_ids(self) -> tuple[str, ...]:
+        """All visible platform message ids that make up the streamed reply."""
+        ids: list[str] = []
+        for mid in self._preview_message_ids:
+            text = str(mid).strip()
+            if text and text != "__no_edit__" and text not in ids:
+                ids.append(text)
+        if self._message_id:
+            text = str(self._message_id).strip()
+            if text and text != "__no_edit__" and text not in ids:
+                ids.append(text)
+        return tuple(ids)
+
+    @property
     def final_content_delivered(self) -> bool:
         """True when the final response content reached the user, even if
         the subsequent cosmetic edit (cursor removal) failed."""
@@ -1677,6 +1691,11 @@ class GatewayStreamConsumer:
                     content=chunk,
                     metadata=self._metadata_for_send(final=True),
                 )
+                # Record before checking success: an overflow send can report
+                # success=False after one or more continuation messages already
+                # reached the platform. Those visible ids must still be removed
+                # by /undo and the next recovery path.
+                self._track_preview_ids_from_result(result)
                 if result.success:
                     break
                 retry_delay = self._fallback_flood_retry_delay(result)
@@ -2169,8 +2188,16 @@ class GatewayStreamConsumer:
             self._track_preview_id(mid)
         raw = getattr(result, "raw_response", None) or {}
         if isinstance(raw, dict):
-            for mid in (raw.get("message_ids") or ()):
-                self._track_preview_id(mid)
+            # Partial overflow failures and some adapter wrappers expose the
+            # continuation ids only inside raw_response.  They are still
+            # visible messages and must remain undo-deleteable.
+            for key in ("continuation_message_ids", "message_ids"):
+                values = raw.get(key) or ()
+                if isinstance(values, (str, bytes)):
+                    values = (values,)
+                for mid in values:
+                    self._track_preview_id(mid)
+            self._track_preview_id(raw.get("last_message_id"))
 
     def _adapter_prefers_fresh_final(self, text: str) -> bool:
         """Return True when the adapter would rather finalize a streamed reply

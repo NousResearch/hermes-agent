@@ -364,6 +364,7 @@ gateway:
     nothing:               "لا شيء للتراجع عنه."
     removed:               "↩️ تم التراجع عن {turns} دور ({count} رسالة).\nنُسخ احتياطيًا إلى: \"{preview}\"\nانسخ/عدّل النص أعلاه وأرسله لإعادة التوجيه من هنا."
     invalid_count:         "عدد غير صالح \"{arg}\" — استخدم /undo أو /undo N."
+    telegram_cleanup_partial: "حذف تنظيف Telegram عدد {deleted}/{attempted} من الرسائل المرئية. قد تكون بعض الرسائل قديمة جدًا أو تتطلب صلاحيات الحذف للبوت."
 
   update:
     platform_not_messaging:  "✗ /update متاح فقط من منصّات المراسلة. شغّل `hermes update` من الطرفية."

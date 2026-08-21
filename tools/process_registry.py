@@ -106,6 +106,7 @@ class ProcessSession:
     output_buffer: str = ""                     # Rolling output (last MAX_OUTPUT_CHARS)
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # True if recovered from crash (no pipe)
+    reader_lost: bool = False                   # True if the stdout reader died while the child is still alive
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
     # Watcher/notification metadata (persisted for crash recovery)
     watcher_platform: str = ""
@@ -441,7 +442,9 @@ class ProcessRegistry:
             return None
 
     @classmethod
-    def _host_pid_is_ours(cls, pid: Optional[int], expected_start: Optional[int]) -> bool:
+    def _host_pid_is_ours(
+        cls, pid: Optional[int], expected_start: Optional[int], *, strict: bool = False
+    ) -> bool:
         """True only if ``pid`` is alive AND still the process we spawned.
 
         The kernel recycles PID/PGID numbers once a process exits and is reaped,
@@ -454,12 +457,30 @@ class ProcessRegistry:
         When no baseline was captured (legacy checkpoints, or platforms without
         ``/proc``) we degrade to a bare liveness check rather than refusing to
         act, preserving prior best-effort behaviour.
+
+        Transient-read hardening (non-strict mode, the default): if the PID is
+        alive but the live start time cannot be read (``_safe_host_start_time``
+        returns None on any psutil / /proc error), we degrade to liveness
+        instead of declaring a mismatch. A failure to READ identity evidence
+        is not evidence of a recycled PID; treating it as one falsely reports
+        a live, still-running process as exited-with-null-exit-code (the
+        unite-daily-sync false-exit hazard).
+
+        ``strict=True`` is for signalling paths (``_terminate_host_pid``):
+        when the live start time is unreadable the answer is False, so a
+        transient psutil error can never redirect a signal to a stranger.
         """
         if not cls._is_host_pid_alive(pid):
             return False
         if expected_start is None:
             return True
-        return cls._safe_host_start_time(pid) == expected_start
+        live_start = cls._safe_host_start_time(pid)
+        if live_start is None:
+            # Alive, but identity unreadable right now: non-strict callers
+            # (liveness / exit detection) keep the process; strict callers
+            # (anything about to send a signal) refuse to act.
+            return not strict
+        return live_start == expected_start
 
     def _refresh_detached_session(self, session: Optional[ProcessSession]) -> Optional[ProcessSession]:
         """Update recovered host-PID sessions when the underlying process has exited."""
@@ -558,10 +579,11 @@ class ProcessRegistry:
         POSIX and a missing ``taskkill.exe`` on Windows (effectively
         unreachable on real Windows installs, but cheap insurance).
         """
-        if expected_start is not None and not cls._host_pid_is_ours(pid, expected_start):
-            # PID was recycled (start time changed) or is gone — never signal a
-            # stranger. A leaked orphan is strictly preferable to killing e.g.
-            # a browser whose session leader reused this dead session's PID.
+        if expected_start is not None and not cls._host_pid_is_ours(pid, expected_start, strict=True):
+            # PID was recycled (start time changed), is gone, or its identity
+            # is unreadable — never signal a stranger. A leaked orphan is
+            # strictly preferable to killing e.g. a browser whose session
+            # leader reused this dead session's PID.
             logger.warning(
                 "Refusing to terminate host pid %d: start-time mismatch — "
                 "PID was recycled onto an unrelated process.", pid,
@@ -902,6 +924,7 @@ class ProcessRegistry:
     def _reader_loop(self, session: ProcessSession):
         """Background thread: read stdout from a local Popen process."""
         first_chunk = True
+        reader_error: Optional[BaseException] = None
         try:
             while True:
                 chunk = session.process.stdout.read(4096)
@@ -916,6 +939,7 @@ class ProcessRegistry:
                         session.output_buffer = session.output_buffer[-session.max_output_chars:]
                 self._check_watch_patterns(session, chunk)
         except Exception as e:
+            reader_error = e
             logger.debug("Process stdout reader ended: %s", e)
         finally:
             # Always reap the child to prevent zombie processes.
@@ -923,9 +947,43 @@ class ProcessRegistry:
                 session.process.wait(timeout=5)
             except Exception as e:
                 logger.debug("Process wait timed out or failed: %s", e)
+
+            # Liveness re-verification gate: the read loop can end (exception,
+            # or an early pipe EOF when a long-lived descendant closes the
+            # inherited stdout fd) while the direct child — and its whole
+            # process tree — is still running. Declaring exit here would
+            # report "exited with null exit code" for a live process, which
+            # is a latent double-run / false-failure hazard (observed on
+            # unite-daily-sync runs 2026-07-31 and 2026-08-03: tracker said
+            # exited/null at minute ~4 while the sync ran for 14+ hours).
+            # A null/unknown exit code is NON-TERMINAL: if the child is still
+            # alive per the OS, keep the session running and let
+            # _reconcile_local_exit() (invoked on every poll()) own the
+            # eventual exit transition against the real child state.
+            try:
+                rc = session.process.poll() if session.process is not None else None
+            except Exception:
+                rc = None
+            if rc is None:
+                with session._lock:
+                    session.reader_lost = True
+                    note = (
+                        f"[reader-lost] stdout pipe ended"
+                        + (f" with {type(reader_error).__name__}: {reader_error}" if reader_error else " (EOF)")
+                        + " but the child process is still alive; tracking continues via Popen.poll()"
+                    )
+                    session.output_buffer += ("\n" if session.output_buffer else "") + note + "\n"
+                logger.warning(
+                    "Reader loop ended for %s but child pid %s is still alive "
+                    "(reader_error=%r). Refusing to declare exited with a null "
+                    "exit code; _reconcile_local_exit will track the real child.",
+                    session.id, session.pid, reader_error,
+                )
+                return
+
             session.exited = True
             if session.completion_reason != "killed":
-                session.exit_code = session.process.returncode
+                session.exit_code = rc
                 session.completion_reason = "exited"
             self._move_to_finished(session)
 
@@ -1246,6 +1304,12 @@ class ProcessRegistry:
         if session.detached:
             result["detached"] = True
             result["note"] = "Process recovered after restart -- output history unavailable"
+        if session.reader_lost:
+            result["reader_lost"] = True
+            result.setdefault("notes", []).append(
+                "stdout pipe lost while process still running; liveness now "
+                "tracked via Popen.poll() and output may be stale"
+            )
         return result
 
     def read_log(self, session_id: str, offset: int = 0, limit: int = 200) -> dict:
@@ -1409,8 +1473,9 @@ class ProcessRegistry:
             elif session.detached and session.pid_scope == "host" and session.pid:
                 # Identity check, not bare liveness: if the PID is gone OR was
                 # recycled onto an unrelated process, treat our process as
-                # exited and never tree-kill the stranger.
-                if not self._host_pid_is_ours(session.pid, session.host_start_time):
+                # exited and never tree-kill the stranger. strict=True so a
+                # transient start-time read failure also refuses to signal.
+                if not self._host_pid_is_ours(session.pid, session.host_start_time, strict=True):
                     with session._lock:
                         session.exited = True
                         session.exit_code = None

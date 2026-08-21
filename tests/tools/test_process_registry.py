@@ -237,6 +237,128 @@ class TestOrphanedPipeReconciliation:
         registry._reconcile_local_exit(s)
         assert s.exited is False
 
+    def test_reader_loop_exception_with_live_child_never_exits_null(self, registry):
+        """Regression: unite-daily-sync false null-exit (2026-07-31 / 2026-08-03).
+
+        If the stdout reader dies (EIO, fd race) while the direct child is
+        still running, the tracker must NOT report exited with a null exit
+        code — a retry policy keyed on that signal would launch a second
+        concurrent run. The session must stay running with reader_lost set.
+        """
+        proc = _spawn_python_sleep(30.0)
+        s = _make_session(sid="proc_reader_boom")
+        s.process = proc
+        s.pid = proc.pid
+        registry._running[s.id] = s
+
+        class _BoomStream:
+            def read(self, n=-1):
+                raise OSError(5, "Input/output error")
+
+        proc.stdout = _BoomStream()
+
+        t = threading.Thread(target=registry._reader_loop, args=(s,), daemon=True)
+        t.start()
+        t.join(timeout=10)
+        assert not t.is_alive(), "reader thread should have finished after the stream error"
+
+        # The defect shape was: exited=True, exit_code=None, child alive.
+        assert proc.poll() is None, "test premise: child must still be alive"
+        assert s.exited is False, "must not declare exit while the child is alive"
+        assert s.exit_code is None
+        assert s.reader_lost is True
+        assert "[reader-lost]" in s.output_buffer
+
+        # And poll() must keep reporting it as running, flagged reader_lost.
+        result = registry.poll(s.id)
+        assert result["status"] == "running"
+        assert result.get("reader_lost") is True
+
+        proc.kill()
+        proc.wait()
+
+    def test_reader_loop_eof_with_live_child_stays_running_then_reconciles(self, registry):
+        """Long-running-detached-child case: pipe EOF (e.g. a descendant closed
+        the inherited stdout fd) while the child shell is still alive must not
+        flip the session to exited; once the child really exits, poll() picks
+        it up via _reconcile_local_exit."""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(20.0)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        s = _make_session(sid="proc_eof_live")
+        s.process = proc
+        s.pid = proc.pid
+        registry._running[s.id] = s
+
+        # Close the read end from under the reader to force an immediate EOF/
+        # error shape while the child sleeps.
+        proc.stdout.close()
+
+        t = threading.Thread(target=registry._reader_loop, args=(s,), daemon=True)
+        t.start()
+        t.join(timeout=10)
+        assert not t.is_alive()
+
+        assert proc.poll() is None
+        assert s.exited is False
+        assert s.exit_code is None
+        assert s.reader_lost is True
+
+        # After the child really exits, a poll() reconciles to a real exit code.
+        proc.kill()
+        proc.wait(timeout=10)
+        result = registry.poll(s.id)
+        assert result["status"] == "exited"
+        assert result["exit_code"] == -signal.SIGKILL
+
+    def test_refresh_detached_tolerates_transient_start_time_read_failure(self, registry, monkeypatch):
+        """A live detached session must not be declared exited/null when the
+        kernel start-time read transiently fails (psutil error). Identity-read
+        failure is not evidence of PID recycling."""
+        proc = _spawn_python_sleep(30.0)
+        s = _make_session(sid="proc_detached_flaky")
+        s.pid = proc.pid
+        s.detached = True
+        s.pid_scope = "host"
+        s.host_start_time = 123456789  # any recorded baseline
+        registry._running[s.id] = s
+
+        # Simulate a transient psutil failure: live start time unreadable.
+        monkeypatch.setattr(
+            "tools.process_registry.ProcessRegistry._safe_host_start_time",
+            staticmethod(lambda pid: None),
+        )
+
+        refreshed = registry._refresh_detached_session(s)
+        assert proc.poll() is None, "test premise: child must still be alive"
+        assert refreshed.exited is False, "must not condemn a live process on missing identity evidence"
+        assert refreshed.exit_code is None
+        assert s.id in registry._running
+
+        proc.kill()
+        proc.wait()
+
+    def test_terminate_host_pid_refuses_when_start_time_unreadable(self, registry, monkeypatch):
+        """strict=True: the kill path must refuse to signal when the live
+        start time cannot be read — a transient psutil error must never
+        redirect a signal to a recycled-PID stranger."""
+        proc = _spawn_python_sleep(30.0)
+        try:
+            monkeypatch.setattr(
+                "tools.process_registry.ProcessRegistry._safe_host_start_time",
+                staticmethod(lambda pid: None),
+            )
+            # strict identity check fails closed -> terminate is refused.
+            registry._terminate_host_pid(proc.pid, expected_start=123456789)
+            assert proc.poll() is None, "kill must have been refused on unreadable identity"
+        finally:
+            proc.kill()
+            proc.wait()
+
+
     def test_wait_returns_when_reader_blocked(self, registry):
         """wait() must also reconcile — not just poll()."""
         proc = subprocess.Popen(

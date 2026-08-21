@@ -393,6 +393,17 @@ class TestFailureAttribution:
             json.dumps({"version": 1, "credential_pool": {"anthropic": entries}}),
             encoding="utf-8",
         )
+        # Keep this fixture independent from the developer machine's
+        # ~/.claude/.credentials.json.  These tests exercise only the explicit
+        # pool entries above; auto-discovered OAuth credentials would turn a
+        # one-entry rotation scenario into a two-entry pool.
+        import hermes_cli.auth as auth_mod
+
+        monkeypatch.setattr(
+            auth_mod,
+            "is_provider_explicitly_configured",
+            lambda _provider: False,
+        )
         from agent.credential_pool import load_pool
 
         pool = load_pool("anthropic")

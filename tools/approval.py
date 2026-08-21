@@ -912,7 +912,18 @@ DANGEROUS_PATTERNS = [
     # Code 2.1.113 tightened their equivalent find rule to stop auto-
     # approving -exec / -delete flags.
     (r'\bfind\b.*-exec(?:dir)?\s+(/\S*/)?rm\b', "find -exec/-execdir rm"),
+    # Runtime shell expansion can synthesize dangerous find flags from source
+    # text that never contains the literal token. Examples from
+    # openai/codex#39159: `find . -{delete,print}` and `find . -del*` can
+    # become `-delete` at execution time, bypassing the literal -delete rule.
+    (r'\bfind\b[^;|&\n]*-(?:\{[^}\s]*(?:delete|exec(?:dir)?)[^}\s]*\}|(?:del(?:ete?)?|exec(?:dir)?)[*?\[])',
+     "find dynamic shell word may expand to destructive flag"),
     (r'\bfind\b.*-delete\b', "find -delete"),
+    # Read-only tools with program-bearing flags are structurally parsed by
+    # _execution_flag_findings(), but dynamic shell words can hide the exact
+    # option spelling from that parser while the shell expands it at runtime.
+    (r'\b(?:rg|sort|ag|man)\b[^;|&\n]*--(?:pre|hostname-bin|compress-program|pager|html)(?:\{|[*?\[])',
+     "dynamic shell word may expand to arbitrary program execution flag"),
     # Gateway lifecycle protection: prevent the agent from killing its own
     # gateway process.  These commands trigger a gateway restart/stop that
     # terminates all running agents mid-work.  Allow global flags between

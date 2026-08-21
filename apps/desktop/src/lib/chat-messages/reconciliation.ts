@@ -162,6 +162,18 @@ export function preserveLocalAssistantErrors(
       continue
     }
 
+    // A failed turn that is NOT the tail of the live thread has been
+    // superseded: the user already sent a later turn. Re-appending this
+    // orphan error below the newer replies is the "stale 429 error sticks
+    // to the tail" bug — only the LAST turn's failure survives the merge.
+    const hasLaterVisibleUserTurn = currentMessages
+      .slice(index + 1)
+      .some(candidate => candidate.role === 'user' && !candidate.hidden)
+
+    if (hasLaterVisibleUserTurn) {
+      continue
+    }
+
     preserveIds.add(message.id)
 
     for (let probe = index - 1; probe >= 0; probe -= 1) {

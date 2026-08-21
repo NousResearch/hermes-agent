@@ -813,6 +813,7 @@ def _emit_skill_lifecycle(
     action: str,
     *,
     record: Optional[Dict[str, Any]] = None,
+    provenance: Optional[str] = None,
     task_id: Optional[str] = None,
     session_id: Optional[str] = None,
     use_count: Optional[int] = None,
@@ -829,7 +830,7 @@ def _emit_skill_lifecycle(
             "on_skill_lifecycle",
             action=action,
             skill_name=skill_name,
-            provenance=telemetry_provenance(skill_name, record),
+            provenance=provenance or telemetry_provenance(skill_name, record),
             task_id=task_id or "",
             session_id=session_id or "",
             use_count=use_count,
@@ -1050,18 +1051,82 @@ def is_sync_enabled(skill_name: str) -> bool:
     return get_record(skill_name).get("sync") is True
 
 
-def forget(skill_name: str) -> None:
-    """Drop a skill's usage entry entirely. Called when the skill is deleted."""
+def forget(
+    skill_name: str,
+    *,
+    lifecycle_action: Optional[str] = None,
+    provenance: Optional[str] = None,
+    task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> None:
+    """Drop a skill's usage entry and optionally report a successful removal.
+
+    Callers pass ``lifecycle_action`` only after the authoritative filesystem
+    operation succeeds. The observer is emitted even if sidecar cleanup fails:
+    a telemetry-file error cannot undo a deletion that already happened.
+
+    When the skill has no usage record, the lifecycle event is still emitted
+    with ``record=None`` (observer completeness) — hooks can distinguish this
+    via the absent ``prior_record`` payload.
+    """
     if not skill_name:
         return
+    prior_record: Optional[Dict[str, Any]] = None
     try:
         with _usage_file_lock():
             data = load_usage()
             if skill_name in data:
+                raw_record = data.get(skill_name)
+                if isinstance(raw_record, dict):
+                    prior_record = dict(raw_record)
                 del data[skill_name]
                 save_usage(data)
     except Exception as e:
         logger.debug("skill_usage.forget(%s) failed: %s", skill_name, e, exc_info=True)
+    if lifecycle_action:
+        _emit_skill_lifecycle(
+            skill_name,
+            lifecycle_action,
+            record=prior_record,
+            provenance=provenance,
+            task_id=task_id,
+            session_id=session_id,
+        )
+
+
+def forget_with_lifecycle(
+    skill_name: str,
+    *,
+    lifecycle_action: Optional[str] = None,
+    provenance: Optional[str] = None,
+    task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    caller_note: str = "",
+) -> None:
+    """Best-effort forget + lifecycle emit shared by removal paths.
+
+    Both ``skill_manage`` (hard delete) and ``skills_hub`` (uninstall) drop a
+    skill's usage record and report the lifecycle event; keeping the
+    try/except + debug-log wrapper in one place keeps the two removal paths
+    consistent (Copilot review #83316). Never raises.
+    """
+    try:
+        forget(
+            skill_name,
+            lifecycle_action=lifecycle_action,
+            provenance=provenance,
+            task_id=task_id,
+            session_id=session_id,
+        )
+    except Exception as e:
+        logger.debug(
+            "Unable to record %s lifecycle for %s%s: %s",
+            lifecycle_action or "skill",
+            skill_name,
+            f" ({caller_note})" if caller_note else "",
+            e,
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------

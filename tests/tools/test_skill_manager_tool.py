@@ -271,6 +271,64 @@ class TestDeleteSkill:
         assert "cannot equal" in result["error"]
         assert (tmp_path / "narrow").exists()
 
+    def test_successful_hard_delete_reports_lifecycle_event(self, tmp_path):
+        with _skill_dir(tmp_path), \
+             patch(
+                 "tools.skill_usage.telemetry_provenance",
+                 return_value="external",
+             ), \
+             patch("tools.skill_usage.forget") as forget:
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = json.loads(
+                skill_manage(
+                    action="delete",
+                    name="my-skill",
+                    task_id="task-1",
+                    session_id="session-1",
+                )
+            )
+
+        assert result["success"] is True
+        forget.assert_called_once_with(
+            "my-skill",
+            lifecycle_action="deleted",
+            provenance="external",
+            task_id="task-1",
+            session_id="session-1",
+        )
+
+    def test_failed_delete_does_not_report_lifecycle_event(self, tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_usage.forget") as forget:
+            result = json.loads(
+                skill_manage(action="delete", name="missing-skill")
+            )
+
+        assert result["success"] is False
+        forget.assert_not_called()
+
+    def test_curator_archive_does_not_report_deleted(self, tmp_path):
+        with _skill_dir(tmp_path), \
+             patch(
+                 "tools.skill_manager_tool._delete_skill",
+                 return_value={
+                     "success": True,
+                     "message": "Skill archived.",
+                     "_archived": True,
+                 },
+             ), \
+             patch("tools.skill_usage.forget") as forget:
+            result = json.loads(
+                skill_manage(
+                    action="delete",
+                    name="archived-skill",
+                    absorbed_into="umbrella",
+                )
+            )
+
+        assert result["success"] is True
+        forget.assert_not_called()
+
 # ---------------------------------------------------------------------------
 # write_file / remove_file
 # ---------------------------------------------------------------------------

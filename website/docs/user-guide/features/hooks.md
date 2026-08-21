@@ -458,7 +458,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_session_end` | Observer | Canonically at each turn finalization; CLI/TUI exits have additional reduced legacy shapes. Return ignored. | Canonical: `session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`; exit paths may add `reason`/`api_request_id` and omit fields. | IDs, model/platform, and outcome; canonical payload has no message body. |
 | `on_session_finalize` | Observer | CLI/TUI/gateway teardown through `finalize_session`; gateway shutdown or expiry may finalize without a reset. Return ignored. | Surface-dependent `session_id`, `platform`, optionally `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `on_session_reset` | Observer | CLI/TUI session boundary and gateway after the replacement session exists; return ignored. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: those plus `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
-| `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
+| `on_skill_lifecycle` | Observer | After an authoritative Hermes skill operation or usage-state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
 | `pre_gateway_dispatch` | Directive/control | Incoming non-internal message before auth/pairing/dispatch; first valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
@@ -1542,7 +1542,15 @@ Fires for a failed provider attempt with status/retry timing, an `error` object,
 
 ### `on_skill_lifecycle`
 
-Fires after an authoritative skill-usage state change. It is observer-only and exposes the local `skill_name`, provenance, correlation IDs, usage count, and reuse flags.
+Fires after an authoritative Hermes skill operation or usage-state change. It
+is observer-only and exposes the local `skill_name`, provenance, correlation
+IDs, usage count, and reuse flags. Actions currently include `loaded`,
+`created`, `installed`, `edited`, `patched`, `deleted`, `uninstalled`, `stale`,
+`archived`, and `restored`.
+
+This observer covers successful operations performed through Hermes. It does
+not watch the filesystem and does not promise to detect edits made directly by
+an editor, Git, a sync client, or another process.
 
 ### Kanban lifecycle observers
 

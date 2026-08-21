@@ -1289,6 +1289,42 @@ class TestInstallPathSafety:
         assert ok is False
         assert (isolated_skills_dir / "bystander" / "SKILL.md").read_text() == "safe"
 
+    def test_successful_uninstall_reports_lifecycle_event(
+        self,
+        tmp_path,
+        isolated_skills_dir,
+        patch_lock_file,
+    ):
+        from tools.skills_hub import uninstall_skill
+
+        skill_dir = isolated_skills_dir / "hub-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# Hub skill\n")
+        lock_path = tmp_path / "lock.json"
+        patch_lock_file(lock_path)
+        HubLockFile().record_install(
+            name="hub-skill",
+            source="github",
+            identifier="owner/repo/hub-skill",
+            trust_level="trusted",
+            scan_verdict="pass",
+            skill_hash="hash",
+            install_path="hub-skill",
+            files=["SKILL.md"],
+        )
+
+        with patch("tools.skill_usage.forget_with_lifecycle") as forget:
+            ok, _ = uninstall_skill("hub-skill")
+
+        assert ok is True
+        assert not skill_dir.exists()
+        forget.assert_called_once_with(
+            "hub-skill",
+            lifecycle_action="uninstalled",
+            provenance="github",
+            caller_note="hub uninstall",
+        )
+
 
     def test_install_from_quarantine_rejects_symlinks(self, tmp_path):
         """Skill install must not follow symlinks that leak file contents

@@ -3498,6 +3498,53 @@ class TestMessageSplitting:
 
 
     @pytest.mark.asyncio
+    async def test_send_passes_explicit_unfurl_options(self, adapter):
+        adapter.config.extra["unfurl_links"] = False
+        adapter.config.extra["unfurl_media"] = False
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["unfurl_links"] is False
+        assert kwargs["unfurl_media"] is False
+
+    @pytest.mark.asyncio
+    async def test_send_preserves_default_unfurl_behavior(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "unfurl_links" not in kwargs
+        assert "unfurl_media" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_send_passes_unfurl_options_to_every_chunk(self, adapter):
+        adapter.config.extra["unfurl_links"] = False
+        adapter.config.extra["unfurl_media"] = False
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com/" + "x" * 45000)
+
+        assert adapter._app.client.chat_postMessage.call_count >= 2
+        for call in adapter._app.client.chat_postMessage.call_args_list:
+            assert call.kwargs["unfurl_links"] is False
+            assert call.kwargs["unfurl_media"] is False
+
+    @pytest.mark.asyncio
+    async def test_send_ignores_non_boolean_unfurl_options(self, adapter):
+        adapter.config.extra["unfurl_links"] = "false"
+        adapter.config.extra["unfurl_media"] = 0
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "unfurl_links" not in kwargs
+        assert "unfurl_media" not in kwargs
+
+    @pytest.mark.asyncio
     async def test_send_does_not_double_escape_entities(self, adapter):
         """Pre-escaped &amp; in sent messages must not become &amp;amp;."""
         adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})

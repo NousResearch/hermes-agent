@@ -2920,6 +2920,16 @@ class MCPServerTask:
                 # tool-capable server that doesn't implement it answers -32601;
                 # in that case fall back to the pre-ping ``list_tools`` probe
                 # for the rest of this connection rather than reconnect-looping.
+                if self.session and self._rpc_lock.locked():
+                    # A real RPC is already exercising the session — stronger
+                    # proof of liveness than a probe, and firing one
+                    # concurrently races it: a server that processes
+                    # requests sequentially won't answer until the call
+                    # finishes, so the probe's 30s budget can time out well
+                    # before a longer tool timeout and tear down a healthy
+                    # connection out from under the still-running call
+                    # (#88661). Skip this cycle; the next one re-checks.
+                    continue
                 if self.session:
                     try:
                         await self._keepalive_probe()

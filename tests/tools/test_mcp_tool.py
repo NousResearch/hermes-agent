@@ -921,6 +921,42 @@ class TestMCPServerTask:
 
         asyncio.run(_test())
 
+    def test_keepalive_skips_probe_while_rpc_lock_held(self):
+        """A long-running tool call must not race the keepalive prober (#88661).
+
+        Firing ``ping`` while a real RPC already holds ``_rpc_lock`` risks a
+        server that processes requests sequentially never answering the probe
+        until the in-flight call finishes -- timing out the probe and tearing
+        down (and deregistering) a perfectly healthy connection out from under
+        that still-running call.
+        """
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            server = MCPServerTask("srv")
+            server._config = {"keepalive_interval": 0.02}
+            server.session = SimpleNamespace(
+                send_ping=AsyncMock(side_effect=RuntimeError("busy - no response"))
+            )
+
+            with patch("tools.mcp_tool._MIN_KEEPALIVE_INTERVAL", 0.01):
+                await server._rpc_lock.acquire()
+                task = asyncio.create_task(server._wait_for_lifecycle_event())
+                try:
+                    await asyncio.sleep(0.15)  # several keepalive intervals
+                    assert not task.done(), (
+                        "keepalive probe fired (and tore down the session) "
+                        "while a real RPC was still holding _rpc_lock"
+                    )
+                    assert server.session.send_ping.call_count == 0
+                finally:
+                    server._rpc_lock.release()
+                    server._shutdown_event.set()
+                    result = await asyncio.wait_for(task, timeout=2)
+                    assert result == "shutdown"
+
+        asyncio.run(_test())
+
 
 # ---------------------------------------------------------------------------
 # discover_mcp_tools toolset injection

@@ -550,6 +550,30 @@ def test_gui_launches_even_when_desktop_entry_install_fails(tmp_path, monkeypatc
     assert mock_run.call_args.args[0] == [str(packaged_exe)]
 
 
+@pytest.mark.linux_only
+def test_gui_build_only_repairs_chrome_sandbox(tmp_path, monkeypatch):
+    """--build-only must leave a launchable artifact, not just a built one.
+
+    A rebuild recreates chrome-sandbox without its root:root 4755 setuid
+    config (#58593); the launch path repairs it, but --build-only returns
+    before ever reaching that code. Headless update flows exec the artifact
+    directly and gate the relaunch on these exact perms, so the repair has
+    to happen here too.
+    """
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+
+    fixup_calls = []
+    with patch("hermes_cli.main._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup",
+               side_effect=lambda exe: fixup_calls.append(exe) or True):
+        cli_main.cmd_gui(_ns(build_only=True))
+
+    assert fixup_calls == [packaged_exe]
+
+
 @pytest.mark.macos_only
 def test_gui_skips_desktop_entry_off_linux(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)

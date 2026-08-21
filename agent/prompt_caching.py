@@ -446,10 +446,12 @@ def apply_anthropic_cache_control(
     is retained.
 
     Idempotent: pre-existing ``cache_control`` markers are stripped from a
-    deep copy before new ones are placed, so calling this twice (or handing
-    it messages a prior call already marked) can never accumulate past 4
-    markers. Only messages that already carry a marker pay the deep-copy
-    cost; the rest of the copy-on-write contract is unchanged (#90971).
+    per-message copy before new ones are placed, so calling this twice (or
+    handing it messages a prior call already marked) can never accumulate
+    past 4 markers. Only messages that already carry a marker pay the copy
+    cost — a shallow top-level copy suffices because
+    :func:`strip_anthropic_cache_control` is copy-on-write on content parts —
+    and the rest of the copy-on-write contract is unchanged (#90971).
 
     Returns:
         Shallow copy of message list with selective deep copies of modified messages.
@@ -469,7 +471,10 @@ def apply_anthropic_cache_control(
             and any(isinstance(part, dict) and "cache_control" in part for part in content)
         )
         if has_marker:
-            messages[i] = strip_anthropic_cache_control([copy.deepcopy(msg)])[0]
+            # Shallow top-level copy is enough: strip pops the top-level key
+            # and rebuilds content lists/part dicts copy-on-write, so the
+            # caller's message (and any aliased parts) are never mutated.
+            messages[i] = strip_anthropic_cache_control([dict(msg)])[0]
 
     breakpoints_used = 0
 

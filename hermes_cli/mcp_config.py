@@ -275,6 +275,64 @@ def _resolve_mcp_server_config(config: dict) -> dict:
     return _interpolate_env_vars(config)
 
 
+def _truncate_mcp_tool_desc(desc: str) -> str:
+    desc = desc or ""
+    return desc[:77] + "..." if len(desc) > 80 else desc
+
+
+def _snapshot_live_mcp_tools(name: str) -> Optional[List[Tuple[str, str]]]:
+    """Return tool names from an already-owned live MCP session, or None.
+
+    Desktop health checks and ``hermes mcp test`` must not open a *second*
+    HTTP session against hosts that invalidate the first (Slack MCP).
+    """
+    from tools.mcp_tool import _lock, _servers
+
+    with _lock:
+        server = _servers.get(name)
+        if server is None or getattr(server, "session", None) is None:
+            return None
+        tools = list(getattr(server, "_tools", None) or [])
+    if not tools:
+        return None
+    return [
+        (t.name, _truncate_mcp_tool_desc(getattr(t, "description", "") or ""))
+        for t in tools
+    ]
+
+
+def _mcp_server_owned_or_connecting(name: str) -> bool:
+    from tools.mcp_tool import _lock, _server_connecting, _servers
+
+    with _lock:
+        return name in _servers or name in _server_connecting
+
+
+def _wait_for_live_mcp_tools(
+    name: str, timeout: float, *, wait_for_claim: bool = False
+) -> Optional[List[Tuple[str, str]]]:
+    """Poll for a live session owned by this process. Never opens a new one.
+
+    ``wait_for_claim`` keeps waiting even before discovery has inserted the
+    name into ``_servers`` / ``_server_connecting`` — desktop's health sweep
+    races that by a few hundred milliseconds on gateway-open.
+    """
+    deadline = time.monotonic() + max(0.0, timeout)
+    saw_claim = False
+    while True:
+        snapshot = _snapshot_live_mcp_tools(name)
+        if snapshot is not None:
+            return snapshot
+        owned = _mcp_server_owned_or_connecting(name)
+        if owned:
+            saw_claim = True
+        elif saw_claim or not wait_for_claim:
+            return None
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.1)
+
+
 def _probe_single_server(
     name: str, config: dict, connect_timeout: Optional[float] = None, *, details: Optional[dict] = None
 ) -> List[Tuple[str, str]]:
@@ -307,6 +365,43 @@ def _probe_single_server(
         except (TypeError, ValueError):
             connect_timeout = 30.0
 
+    # Reuse (or wait for) the process-global session. A second Streamable HTTP
+    # connect to Slack MCP expires the live desktop session and is exactly
+    # what paints the Capabilities row red on every launch.
+    live = _wait_for_live_mcp_tools(name, connect_timeout)
+    if live is not None:
+        logger.info(
+            "MCP probe '%s': reusing live session (%d tool(s)); skip standalone connect",
+            name,
+            len(live),
+        )
+        return live
+    if _mcp_server_owned_or_connecting(name):
+        raise TimeoutError(
+            f"MCP server '{name}' is still connecting; not opening a second session"
+        )
+    # Gateway-open health sweep often beats discover_mcp_tools by a beat.
+    # Wait briefly for this process to claim the server before opening a
+    # second Streamable HTTP session that would evict Slack's live one.
+    if config.get("url"):
+        from tools.mcp_tool import _mcp_loop
+
+        loop = _mcp_loop
+        if loop is not None and loop.is_running():
+            grace = min(5.0, float(connect_timeout))
+            live = _wait_for_live_mcp_tools(name, grace, wait_for_claim=True)
+            if live is not None:
+                logger.info(
+                    "MCP probe '%s': reusing live session after claim grace (%d tool(s))",
+                    name,
+                    len(live),
+                )
+                return live
+            if _mcp_server_owned_or_connecting(name):
+                raise TimeoutError(
+                    f"MCP server '{name}' is still connecting; not opening a second session"
+                )
+
     _ensure_mcp_loop()
     tools_found: List[Tuple[str, str]] = []
 
@@ -316,11 +411,9 @@ def _probe_single_server(
         )
         try:
             for t in server._tools:
-                desc = getattr(t, "description", "") or ""
-                # Truncate long descriptions for display
-                if len(desc) > 80:
-                    desc = desc[:77] + "..."
-                tools_found.append((t.name, desc))
+                tools_found.append(
+                    (t.name, _truncate_mcp_tool_desc(getattr(t, "description", "") or ""))
+                )
             if details is not None:
                 # Per-tool registry-schema sizes so the desktop can estimate the
                 # per-call token cost a server adds. Uses the SAME converted

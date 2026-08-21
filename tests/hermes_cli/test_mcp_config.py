@@ -528,6 +528,61 @@ class TestProbeEnvResolution:
         assert tools == [("do_thing", "a tool")]
         assert seen["config"]["headers"]["Authorization"] == "Bearer jwt-token-xyz"
 
+    def test_probe_reuses_live_session_without_second_connect(self, monkeypatch):
+        """Desktop health checks must not open a second Slack-like HTTP session."""
+        import hermes_cli.mcp_config as mc
+        import tools.mcp_tool as mt
+
+        class _FakeTool:
+            name = "slack_search_users"
+            description = "find people"
+
+        class _Live:
+            session = object()
+            _tools = [_FakeTool()]
+
+        called = {"connect": 0}
+
+        async def _fake_connect(name, config):
+            called["connect"] += 1
+            raise AssertionError("standalone probe must not run when live")
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", _fake_connect)
+        mt._servers["slack"] = _Live()  # type: ignore[assignment]
+        try:
+            tools = mc._probe_single_server(
+                "slack",
+                {"url": "https://mcp.slack.com/mcp", "auth": "oauth"},
+            )
+        finally:
+            mt._servers.pop("slack", None)
+
+        assert tools == [("slack_search_users", "find people")]
+        assert called["connect"] == 0
+
+    def test_probe_does_not_second_connect_while_owned_session_is_down(self, monkeypatch):
+        import hermes_cli.mcp_config as mc
+        import tools.mcp_tool as mt
+
+        class _Parked:
+            session = None
+            _tools = []
+
+        async def _fake_connect(name, config):
+            raise AssertionError("must not second-connect a parked server")
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", _fake_connect)
+        mt._servers["slack"] = _Parked()  # type: ignore[assignment]
+        try:
+            with pytest.raises(TimeoutError, match="still connecting"):
+                mc._probe_single_server(
+                    "slack",
+                    {"url": "https://mcp.slack.com/mcp", "auth": "oauth"},
+                    connect_timeout=0.2,
+                )
+        finally:
+            mt._servers.pop("slack", None)
+
 
 class TestProbeCapabilityGating:
     """The ``details`` probe must not fire prompts/list or resources/list at

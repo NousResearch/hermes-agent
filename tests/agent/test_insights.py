@@ -636,6 +636,10 @@ class TestEdgeCases:
             "s1",
             input_tokens=10000,
             output_tokens=5000,
+            # Both halves supplied explicitly: a real API call carries the
+            # model AND the billing route. Relying on the session row to fill
+            # in the model would be mixing provenances (issue #75805).
+            model="anthropic/claude-sonnet-4-20250514",
             billing_provider="anthropic",
         )
         db.create_session(session_id="s2", source="cli", model="my-local-llama")

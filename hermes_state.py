@@ -7664,9 +7664,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         Runs inside the caller's write transaction (after the ``sessions``
         UPDATE) so the per-model rows stay consistent with the summary row.
-        When the caller omits the model/provider (some paths only pass token
-        deltas), fall back to the values already recorded on the session row —
-        the same COALESCE-from-session behaviour the summary update uses.
+        The (model, billing_provider) pair is resolved with **consistent
+        provenance** (issue #75805): when the call supplies both halves they
+        are used as-is; when it supplies neither (token-only delta) the pair
+        is inherited wholesale from the session row; when it supplies exactly
+        one half, the missing half is recorded as ``unknown``/empty rather
+        than borrowed from the session row — borrowing one half from the
+        last-write-wins session row can mint composite keys that never
+        served a request during provider fallback churn.
 
         ``task`` distinguishes what kind of work consumed the tokens:
         ``''`` (empty) is the main agent loop; auxiliary calls record their
@@ -7683,20 +7688,44 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         sess_base_url = row["billing_base_url"] if row is not None else None
         sess_billing_mode = row["billing_mode"] if row is not None else None
 
-        # Aux-task rows (task != '') must NOT inherit the session's main-loop
-        # route: an aux call may use a completely different provider/model
-        # (vision on gemini while the main loop runs anthropic). Missing info
-        # stays 'unknown'/empty rather than borrowing a misleading route.
+        # Consistent provenance for the (model, billing_provider) route pair
+        # (issue #75805): use the call's halves only when BOTH are present;
+        # inherit the session pair only when BOTH are absent; otherwise tag
+        # the missing half unknown/empty. Never mix a call half with the
+        # session's last-write-wins half — during provider fallback churn
+        # that mints composite keys that never served a request (e.g.
+        # ``gpt-5.5 @ api.deepseek.com`` after a retry storm), which
+        # misattributes spend across providers in the per-model breakdown.
+        # Aux-task rows (task != '') likewise must NOT inherit the session's
+        # main-loop route: an aux call may use a completely different
+        # provider/model (vision on gemini while the main loop runs
+        # anthropic). Missing info stays 'unknown'/empty rather than
+        # borrowing a misleading route.
         if task:
             eff_model = model or "unknown"
             eff_provider = billing_provider or ""
             eff_base_url = billing_base_url or ""
             eff_billing_mode = billing_mode or ""
+        elif model and billing_provider:
+            # Both halves supplied by the call — authoritative pair.
+            eff_model = model
+            eff_provider = billing_provider
+            eff_base_url = billing_base_url or ""
+            eff_billing_mode = billing_mode or ""
+        elif not model and not billing_provider:
+            # Neither half supplied (token-only delta) — inherit the whole
+            # session pair, same provenance for both halves.
+            eff_model = sess_model or "unknown"
+            eff_provider = sess_provider or ""
+            eff_base_url = sess_base_url or ""
+            eff_billing_mode = sess_billing_mode or ""
         else:
-            eff_model = model or sess_model or "unknown"
-            eff_provider = billing_provider or sess_provider or ""
-            eff_base_url = billing_base_url or sess_base_url or ""
-            eff_billing_mode = billing_mode or sess_billing_mode or ""
+            # Exactly one half supplied — tag the missing half
+            # unknown/empty instead of borrowing it from the session row.
+            eff_model = model or "unknown"
+            eff_provider = billing_provider or ""
+            eff_base_url = billing_base_url or ""
+            eff_billing_mode = billing_mode or ""
         now = time.time()
         conn.execute(
             """INSERT INTO session_model_usage (

@@ -61,6 +61,31 @@ class TestWriteAndRoundTrip:
             proc.kill()
             proc.wait()
 
+    @pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+    def test_pidfile_atomically_replaces_alias_without_touching_target(
+        self, tmp_path, alias_kind
+    ):
+        outside = tmp_path / "outside"
+        outside.write_text("preserve")
+        pid_file = tmp_path / "bridge.pid"
+        if alias_kind == "symlink":
+            pid_file.symlink_to(outside)
+        else:
+            os.link(outside, pid_file)
+
+        proc = _spawn_sleeper()
+        try:
+            _write_bridge_pidfile(tmp_path, proc.pid)
+            assert outside.read_text() == "preserve"
+            assert not pid_file.is_symlink()
+            assert pid_file.stat().st_ino != outside.stat().st_ino
+            if os.name == "posix":
+                assert (pid_file.stat().st_mode & 0o777) == 0o600
+            assert int(pid_file.read_text().split("\n")[0]) == proc.pid
+        finally:
+            proc.kill()
+            proc.wait()
+
 
 class TestIdentityGuard:
     def test_kills_when_start_time_matches(self, tmp_path):

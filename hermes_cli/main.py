@@ -3392,7 +3392,10 @@ def cmd_whatsapp(args):
             print("  ⚠ No allowlist — the agent will respond to ALL incoming messages")
 
     # ── Step 4: Install bridge dependencies ──────────────────────────────
-    from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+    from gateway.platforms.whatsapp_common import (
+        build_whatsapp_bridge_command,
+        resolve_whatsapp_bridge_dir,
+    )
     bridge_dir = resolve_whatsapp_bridge_dir()
     bridge_script = bridge_dir / "bridge.js"
 
@@ -3474,13 +3477,11 @@ def cmd_whatsapp(args):
 
     try:
         subprocess.run(
-            [
-                find_node_executable("node") or "node",
-                str(bridge_script),
-                "--pair-only",
-                "--session",
-                str(session_dir),
-            ],
+            build_whatsapp_bridge_command(
+                node=find_node_executable("node") or "node",
+                bridge_path=bridge_script,
+                bridge_args=["--pair-only", "--session", str(session_dir)],
+            ),
             cwd=str(bridge_dir),
             env=with_hermes_node_path(),
         )

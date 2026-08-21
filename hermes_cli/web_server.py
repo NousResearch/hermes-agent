@@ -9400,7 +9400,10 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
 
 
 def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess.Popen:
-    from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+    from gateway.platforms.whatsapp_common import (
+        build_whatsapp_bridge_command,
+        resolve_whatsapp_bridge_dir,
+    )
     from hermes_constants import find_node_executable, with_hermes_node_path
 
     bridge_dir = resolve_whatsapp_bridge_dir()
@@ -9424,14 +9427,16 @@ def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess
     env["WHATSAPP_MODE"] = mode
     env["WHATSAPP_DM_POLICY"] = "pairing"
     return subprocess.Popen(
-        [
-            node,
-            str(bridge_script),
-            "--pair-only",
-            "--pair-json",
-            "--session",
-            str(session_path),
-        ],
+        build_whatsapp_bridge_command(
+            node=node,
+            bridge_path=bridge_script,
+            bridge_args=[
+                "--pair-only",
+                "--pair-json",
+                "--session",
+                str(session_path),
+            ],
+        ),
         cwd=str(bridge_dir),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

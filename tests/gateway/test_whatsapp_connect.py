@@ -13,7 +13,10 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 """
 
 import asyncio
+import os
+import shutil
 import signal
+import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -103,6 +106,71 @@ def _connect_patches(mock_proc, mock_fh, mock_client_cls=None):
     if mock_client_cls is not None:
         base.append(patch("aiohttp.ClientSession", mock_client_cls))
     return base
+
+
+class TestBridgeCommand:
+    def test_owner_only_bootstrap_precedes_bridge_entry(self):
+        import gateway.platforms.whatsapp_common as whatsapp_common
+
+        build_command = getattr(
+            whatsapp_common, "build_whatsapp_bridge_command", None
+        )
+        assert build_command is not None
+        bridge_path = Path("/opt/hermes/whatsapp/bridge.js")
+        command = build_command(
+            node="/opt/hermes/node",
+            bridge_path=bridge_path,
+            bridge_args=[
+                "--port",
+                "3000",
+                "--session",
+                "/home/user/.hermes/whatsapp/session",
+                "--mode",
+                "self-chat",
+            ],
+        )
+
+        assert command[:3] == ["/opt/hermes/node", "--input-type=module", "--eval"]
+        assert "process.umask(0o077)" in command[3]
+        assert command[3].index("process.umask") < command[3].index("import(")
+        assert command[4:] == [
+            "/opt/hermes/whatsapp/bridge.js",
+            "--port",
+            "3000",
+            "--session",
+            "/home/user/.hermes/whatsapp/session",
+            "--mode",
+            "self-chat",
+        ]
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file modes only")
+    def test_bootstrap_applies_umask_before_static_esm_dependency(self, tmp_path):
+        from gateway.platforms.whatsapp_common import build_whatsapp_bridge_command
+
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("Node.js is unavailable")
+        module_dir = tmp_path / "path with spaces"
+        module_dir.mkdir()
+        output = module_dir / "created-during-import"
+        (module_dir / "dependency.mjs").write_text(
+            "import { writeFileSync } from 'node:fs';\n"
+            "writeFileSync(process.env.HERMES_UMASK_PROBE, 'secret');\n"
+        )
+        entry = module_dir / "entry.mjs"
+        entry.write_text("import './dependency.mjs';\n")
+        command = build_whatsapp_bridge_command(
+            node=node,
+            bridge_path=entry,
+            bridge_args=["--session", str(module_dir / "session path")],
+        )
+
+        env = os.environ.copy()
+        env["HERMES_UMASK_PROBE"] = str(output)
+        result = subprocess.run(command, env=env, capture_output=True, text=True)
+
+        assert result.returncode == 0, result.stderr
+        assert (output.stat().st_mode & 0o777) == 0o600
 
 
 # ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ import platform
 import re
 import signal
 import subprocess
+import tempfile
 
 _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
@@ -225,13 +226,34 @@ def _write_bridge_pidfile(session_path: Path, pid: int) -> None:
     exact process before signalling it, so a recycled PID can never be killed
     as a "stale bridge". Older single-line files remain readable.
     """
+    temp_path: Path | None = None
     try:
         from gateway.status import get_process_start_time
         start = get_process_start_time(pid)
         text = str(pid) if start is None else "{}\n{}".format(pid, start)
-        (session_path / "bridge.pid").write_text(text, encoding="utf-8")
+        fd, temp_name = tempfile.mkstemp(prefix=".bridge.pid.", dir=session_path)
+        temp_path = Path(temp_name)
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                fd = -1
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            if fd >= 0:
+                os.close(fd)
+        os.replace(temp_path, session_path / "bridge.pid")
+        temp_path = None
     except OSError:
         pass
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
 
 
 def _terminate_bridge_process(proc, *, force: bool = False) -> None:
@@ -280,11 +302,15 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
     except psutil.NoSuchProcess:
         return
 
+
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway.platforms.whatsapp_common import (
+    WhatsAppBehaviorMixin,
+    build_whatsapp_bridge_command,
+)
 from gateway.whatsapp_identity import to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -733,13 +759,18 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_env["HERMES_DOCUMENT_CACHE_DIR"] = str(_get_doc_dir())
 
             self._bridge_process = subprocess.Popen(
-                [
-                    find_node_executable("node") or "node",
-                    str(bridge_path),
-                    "--port", str(self._bridge_port),
-                    "--session", str(self._session_path),
-                    "--mode", whatsapp_mode,
-                ],
+                build_whatsapp_bridge_command(
+                    node=find_node_executable("node") or "node",
+                    bridge_path=bridge_path,
+                    bridge_args=[
+                        "--port",
+                        str(self._bridge_port),
+                        "--session",
+                        str(self._session_path),
+                        "--mode",
+                        whatsapp_mode,
+                    ],
+                ),
                 stdout=bridge_log_fh,
                 stderr=bridge_log_fh,
                 env=bridge_env,

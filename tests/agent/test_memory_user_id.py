@@ -101,6 +101,42 @@ class TestMemoryManagerUserIdThreading:
 
 
 # ---------------------------------------------------------------------------
+# MemoryManager cwd threading tests
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryManagerCwdThreading:
+    """Verify cwd reaches providers via initialize_all."""
+
+    def test_cwd_passed_to_provider(self):
+        """initialize_all should forward cwd to providers."""
+        mgr = MemoryManager()
+        p = RecordingProvider()
+        mgr.add_provider(p)
+
+        mgr.initialize_all(
+            session_id="sess-cwd-1",
+            platform="cli",
+            cwd="/projects/my-repo",
+        )
+
+        assert p._init_kwargs.get("cwd") == "/projects/my-repo"
+
+    def test_cwd_absent_when_not_provided(self):
+        """Without cwd in kwargs, providers should not receive it."""
+        mgr = MemoryManager()
+        p = RecordingProvider()
+        mgr.add_provider(p)
+
+        mgr.initialize_all(
+            session_id="sess-cwd-2",
+            platform="cli",
+        )
+
+        assert "cwd" not in p._init_kwargs
+
+
+# ---------------------------------------------------------------------------
 # Mem0 provider user_id tests
 # ---------------------------------------------------------------------------
 

@@ -1,5 +1,6 @@
 """Regression tests for memory provider selection during AIAgent init."""
 
+import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -126,6 +127,36 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     assert provider.init_kwargs["platform"] == "feishu"
     assert "warning_callback" not in provider.init_kwargs
     assert "status_callback" not in provider.init_kwargs
+
+
+def test_aiagent_forwards_cwd_to_memory_provider(tmp_path):
+    """AIAgent should pass resolve_agent_cwd() as cwd to memory providers (#76231)."""
+    provider = RecordingMemoryProvider()
+    cfg = {"memory": {"provider": "recording"}, "agent": {}}
+
+    with (
+        patch.dict(os.environ, {"TERMINAL_CWD": str(tmp_path)}),
+        patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+            session_id="sess-cwd",
+            platform="cli",
+        )
+
+    assert agent._memory_manager is not None
+    assert provider.init_kwargs["cwd"] == str(tmp_path)
 
 
 class CoreShadowProvider:

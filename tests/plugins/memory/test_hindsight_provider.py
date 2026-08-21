@@ -1159,8 +1159,8 @@ class TestUpdateModeAppendCapability:
         per-process unique doc_id and NOT pass update_mode."""
         self._clear_capability_cache()
         monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version",
-            lambda *a, **kw: None,
+            "plugins.memory.hindsight._fetch_hindsight_api_meta",
+            lambda *a, **kw: (None, None),
         )
         old_doc = provider._document_id
         provider.sync_turn("hello", "hi")
@@ -1173,11 +1173,12 @@ class TestUpdateModeAppendCapability:
         assert "update_mode" not in item
 
     def test_modern_api_uses_stable_doc_id_with_append(self, provider, monkeypatch):
-        """API on >=0.5.0 — retain uses stable session_id and sets update_mode='append'."""
+        """API on >=0.5.0 with text storage enabled — retain uses stable
+        session_id and sets update_mode='append'."""
         self._clear_capability_cache()
         monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version",
-            lambda *a, **kw: "0.5.6",
+            "plugins.memory.hindsight._fetch_hindsight_api_meta",
+            lambda *a, **kw: ("0.5.6", {"store_document_text": True}),
         )
         provider.sync_turn("hello", "hi")
         provider._retain_queue.join()
@@ -1188,6 +1189,26 @@ class TestUpdateModeAppendCapability:
         item = kw["items"][0]
         assert item["update_mode"] == "append"
 
+    def test_modern_api_with_text_storage_disabled_falls_back(self, provider, monkeypatch):
+        """API >=0.5.0 but reports features.store_document_text=false —
+        appends are rejected server-side, so sync_turn must fall back to the
+        per-process doc_id without update_mode (regression: version-only
+        capability gating broke retains against store_document_text=false
+        servers)."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_meta",
+            lambda *a, **kw: ("0.9.0", {"store_document_text": False}),
+        )
+        old_doc = provider._document_id
+        provider.sync_turn("hello", "hi")
+        provider._retain_queue.join()
+
+        kw = provider._client.aretain_batch.call_args.kwargs
+        assert kw["document_id"] == old_doc
+        assert kw["document_id"].startswith("test-session-")
+        item = kw["items"][0]
+        assert "update_mode" not in item
 
     def test_session_switch_flush_picks_capability_against_old_session(
         self, provider_with_config, monkeypatch
@@ -1196,8 +1217,8 @@ class TestUpdateModeAppendCapability:
         in the OLD session's stable document, not a per-process id."""
         self._clear_capability_cache()
         monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version",
-            lambda *a, **kw: "0.5.6",
+            "plugins.memory.hindsight._fetch_hindsight_api_meta",
+            lambda *a, **kw: ("0.5.6", {"store_document_text": True}),
         )
         p = provider_with_config(retain_every_n_turns=3, retain_async=False)
         p.sync_turn("turn1-user", "turn1-asst")

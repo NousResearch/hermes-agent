@@ -233,18 +233,19 @@ def _meets_minimum_version(actual: str | None, required: str) -> bool:
         return False
 
 
-def _fetch_hindsight_api_version(api_url: str, api_key: str | None = None,
-                                 timeout: float = 5.0) -> str | None:
-    """GET ``<api_url>/version`` and return the version string (or None on failure).
+def _fetch_hindsight_api_meta(api_url: str, api_key: str | None = None,
+                              timeout: float = 5.0) -> tuple[str | None, dict | None]:
+    """GET ``<api_url>/version`` and return (version, features) on success.
 
-    Hindsight's `/version` endpoint returns ``{"version": "0.5.6", ...}``.
-    Any failure (timeout, 404, malformed JSON, missing key) → None, which
-    the caller treats as "legacy API, no update_mode support".
+    Hindsight's `/version` endpoint returns ``{"version": "0.5.6",
+    "features": {"store_document_text": false, ...}, ...}``. Any failure
+    (timeout, 404, malformed JSON, missing key) → (None, None), which the
+    caller treats as "legacy API, no update_mode support".
     """
     import urllib.error
     import urllib.request
     if not api_url:
-        return None
+        return None, None
     url = api_url.rstrip("/") + "/version"
     req = urllib.request.Request(url)
     if api_key:
@@ -255,11 +256,26 @@ def _fetch_hindsight_api_version(api_url: str, api_key: str | None = None,
         data = json.loads(payload)
     except Exception as exc:
         logger.debug("Hindsight /version probe failed for %s: %s", url, exc)
-        return None
+        return None, None
     if not isinstance(data, dict):
-        return None
+        return None, None
     version = data.get("version") or data.get("api_version")
-    return str(version) if version else None
+    features = data.get("features")
+    if not isinstance(features, dict):
+        features = None
+    return (str(version) if version else None), features
+
+
+def _fetch_hindsight_api_version(api_url: str, api_key: str | None = None,
+                                 timeout: float = 5.0) -> str | None:
+    """GET ``<api_url>/version`` and return the version string (or None on failure).
+
+    Hindsight's `/version` endpoint returns ``{"version": "0.5.6", ...}``.
+    Any failure (timeout, 404, malformed JSON, missing key) → None, which
+    the caller treats as "legacy API, no update_mode support".
+    """
+    version, _ = _fetch_hindsight_api_meta(api_url, api_key, timeout)
+    return version
 
 
 def _check_api_supports_update_mode_append(api_url: str,
@@ -269,14 +285,25 @@ def _check_api_supports_update_mode_append(api_url: str,
     Probes once per URL per process. Returns False on any probe failure —
     that's the safe default: a per-process unique ``document_id`` and no
     ``update_mode`` keeps the resume-overwrite fix (#6654) intact.
+
+    ``update_mode='append'`` also requires the server to actually store
+    document text: when the API reports ``features.store_document_text ==
+    false``, appends are rejected even on recent versions, so we must fall
+    back to per-process document IDs there too (mirrors the original
+    feature-aware behavior before #932 version-only gating).
     """
     if not api_url:
         return False
     with _append_capability_lock:
         if api_url in _append_capability_cache:
             return _append_capability_cache[api_url]
-    version = _fetch_hindsight_api_version(api_url, api_key)
+    version, features = _fetch_hindsight_api_meta(api_url, api_key)
     supported = _meets_minimum_version(version, _MIN_VERSION_FOR_UPDATE_MODE_APPEND)
+    if supported and features is not None:
+        # A server that reports store_document_text=false rejects append
+        # retains regardless of version.
+        if features.get("store_document_text") is False:
+            supported = False
     with _append_capability_lock:
         # Re-check after acquiring the lock in case a concurrent probe filled it.
         cached = _append_capability_cache.get(api_url)
@@ -285,15 +312,26 @@ def _check_api_supports_update_mode_append(api_url: str,
         else:
             supported = cached
     if not supported:
-        logger.warning(
-            "Hindsight API at %s reports version %r, older than %s. "
-            "Falling back to per-process document_id — retains across "
-            "processes/sessions create separate documents instead of "
-            "appending to a session-scoped one. Upgrade Hindsight to "
-            "%s+ to enable update_mode='append' deduplication.",
-            api_url, version, _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
-            _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
-        )
+        if (version is not None
+                and _meets_minimum_version(version, _MIN_VERSION_FOR_UPDATE_MODE_APPEND)):
+            logger.warning(
+                "Hindsight API at %s (version %r) reports "
+                "features.store_document_text=false. Falling back to "
+                "per-process document_id without update_mode='append' — "
+                "Hindsight rejects append retains when document text storage "
+                "is disabled.",
+                api_url, version,
+            )
+        else:
+            logger.warning(
+                "Hindsight API at %s reports version %r, older than %s. "
+                "Falling back to per-process document_id — retains across "
+                "processes/sessions create separate documents instead of "
+                "appending to a session-scoped one. Upgrade Hindsight to "
+                "%s+ to enable update_mode='append' deduplication.",
+                api_url, version, _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
+                _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
+            )
     else:
         logger.debug("Hindsight API %s version %s supports update_mode='append'",
                      api_url, version)

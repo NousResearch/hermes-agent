@@ -695,3 +695,96 @@ class TestRootLevelProviderOverride:
 
 
 
+class TestProviderResolution:
+    def test_api_key_is_string_or_none(self):
+        cli = _make_cli()
+        assert cli.api_key is None or isinstance(cli.api_key, str)
+
+    def test_base_url_is_string(self):
+        cli = _make_cli()
+        assert isinstance(cli.base_url, str)
+        assert cli.base_url.startswith("http")
+
+    def test_model_is_string(self):
+        cli = _make_cli()
+        assert isinstance(cli.model, str)
+        assert isinstance(cli.model, str) and '/' in cli.model
+
+
+class TestStartupCwdRecovery:
+    def test_recover_startup_cwd_climbs_to_nearest_existing_pwd_ancestor(self, monkeypatch, tmp_path):
+        import cli as cli_mod
+
+        missing = tmp_path / "gone" / "deeper"
+
+        def _boom():
+            raise FileNotFoundError("cwd deleted")
+
+        monkeypatch.setattr(cli_mod.os, "getcwd", _boom)
+        monkeypatch.setenv("PWD", str(missing))
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+        entered = []
+        real_chdir = cli_mod.os.chdir
+
+        def _record_chdir(path):
+            entered.append(path)
+            real_chdir(path)
+
+        monkeypatch.setattr(cli_mod.os, "chdir", _record_chdir)
+
+        assert cli_mod._recover_startup_cwd() == str(tmp_path)
+        assert entered == [str(tmp_path)]
+
+    def test_recover_startup_cwd_retries_parent_after_candidate_disappears(self, monkeypatch, tmp_path):
+        import cli as cli_mod
+
+        missing = tmp_path / "gone" / "deeper"
+
+        def _boom():
+            raise FileNotFoundError("cwd deleted")
+
+        monkeypatch.setattr(cli_mod.os, "getcwd", _boom)
+        monkeypatch.setenv("PWD", str(missing))
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+        original_usable = cli_mod._startup_cwd_usable
+        original_chdir = cli_mod.os.chdir
+        attempted = []
+
+        def _usable(path):
+            if path == str(missing):
+                return True  # Simulate a deletion between stat/access and chdir.
+            return original_usable(path)
+
+        def _chdir(path):
+            attempted.append(path)
+            if path == str(missing):
+                raise FileNotFoundError("candidate disappeared")
+            return original_chdir(path)
+
+        monkeypatch.setattr(cli_mod, "_startup_cwd_usable", _usable)
+        monkeypatch.setattr(cli_mod.os, "chdir", _chdir)
+
+        assert cli_mod._recover_startup_cwd() == str(tmp_path)
+        assert attempted == [str(missing), str(tmp_path)]
+
+    def test_load_cli_config_uses_recovered_cwd_for_local_backend(self, monkeypatch, tmp_path):
+        import cli as cli_mod
+
+        missing = tmp_path / "gone" / "deeper"
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+
+        def _boom():
+            raise FileNotFoundError("cwd deleted")
+
+        monkeypatch.setattr(cli_mod.os, "getcwd", _boom)
+        monkeypatch.setenv("PWD", str(missing))
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        monkeypatch.setattr(cli_mod, "_hermes_home", hermes_home)
+
+        config = cli_mod.load_cli_config()
+
+        assert config["terminal"]["cwd"] == str(tmp_path)
+        assert os.environ["TERMINAL_CWD"] == str(tmp_path)

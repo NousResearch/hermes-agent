@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from typing import Any, Optional
 
 INCOMPLETE_TOOL_ARGUMENTS_KEY = "__hermes_incomplete_tool_arguments__"
+
+_WIRE_HISTORY_NOTE = (
+    "[A completed compressed historical tool call is omitted from this "
+    "request; its stored transcript is unchanged.]"
+)
 
 
 def contains_incomplete_tool_arguments(value: Any) -> bool:
@@ -17,6 +23,103 @@ def contains_incomplete_tool_arguments(value: Any) -> bool:
     if isinstance(value, list):
         return any(contains_incomplete_tool_arguments(item) for item in value)
     return False
+
+
+def _tool_call_has_incomplete_arguments(tool_call: Any) -> bool:
+    if not isinstance(tool_call, dict):
+        return False
+    function = tool_call.get("function")
+    if not isinstance(function, dict):
+        return False
+    arguments = function.get("arguments")
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except (json.JSONDecodeError, TypeError):
+            return False
+    return contains_incomplete_tool_arguments(arguments)
+
+
+def neutralize_completed_incomplete_tool_calls(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return a provider-safe request copy without completed marker calls.
+
+    Compression provenance belongs in Hermes' canonical transcript so the
+    execution guard can fail closed. Once such a call has a tool result,
+    replaying the pair on a later provider request makes the marker look like
+    fresh executable arguments. Remove both sides of only those completed
+    pairs and leave a plain assistant note. Unpaired calls remain untouched
+    for the execution guard, and ordinary calls in a mixed batch retain their
+    call/result pairing.
+    """
+    marker_ids: set[str] = set()
+    completed_ids: set[str] = set()
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "assistant":
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for tool_call in tool_calls:
+                    if not _tool_call_has_incomplete_arguments(tool_call):
+                        continue
+                    tool_call_id = tool_call.get("id")
+                    if isinstance(tool_call_id, str) and tool_call_id:
+                        marker_ids.add(tool_call_id)
+        elif message.get("role") == "tool":
+            tool_call_id = message.get("tool_call_id")
+            if isinstance(tool_call_id, str) and tool_call_id:
+                completed_ids.add(tool_call_id)
+
+    neutralized_ids = marker_ids & completed_ids
+    if not neutralized_ids:
+        return messages
+
+    sanitized: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            sanitized.append(message)
+            continue
+        if (
+            message.get("role") == "tool"
+            and message.get("tool_call_id") in neutralized_ids
+        ):
+            continue
+        if message.get("role") != "assistant":
+            sanitized.append(message)
+            continue
+
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            sanitized.append(message)
+            continue
+        kept_calls = [
+            call
+            for call in tool_calls
+            if not (
+                isinstance(call, dict) and call.get("id") in neutralized_ids
+            )
+        ]
+        if len(kept_calls) == len(tool_calls):
+            sanitized.append(message)
+            continue
+
+        copied = deepcopy(message)
+        if kept_calls:
+            copied["tool_calls"] = deepcopy(kept_calls)
+        else:
+            copied.pop("tool_calls", None)
+        copied.pop("codex_message_items", None)
+        content = copied.get("content")
+        if isinstance(content, list):
+            content.append({"type": "text", "text": _WIRE_HISTORY_NOTE})
+        elif isinstance(content, str) and content.strip():
+            copied["content"] = f"{content.rstrip()}\n{_WIRE_HISTORY_NOTE}"
+        else:
+            copied["content"] = _WIRE_HISTORY_NOTE
+        sanitized.append(copied)
+    return sanitized
 
 
 def incomplete_tool_arguments_block_message(value: Any) -> Optional[str]:

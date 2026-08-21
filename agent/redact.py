@@ -45,6 +45,26 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
     "x-amz-signature",
 })
 
+
+def is_sensitive_query_param(name: str) -> bool:
+    """True when a URL query parameter name is known to carry a credential.
+
+    The public way to ask that question, so callers outside this module —
+    ``hermes dump`` masks fallback-provider endpoints this way — follow the
+    set above instead of keeping a second list that drifts away from it.
+
+    Both spellings are consulted: the plain fold reaches the one hyphenated
+    entry (``x-amz-signature``), while the canonical form folds "-" to "_" so
+    ``access-token`` reaches the underscored entries.
+    """
+    if not isinstance(name, str):
+        return False
+    return (
+        name.casefold() in _SENSITIVE_QUERY_PARAMS
+        or _canonical_url_param_name(name) in _SENSITIVE_QUERY_PARAMS
+    )
+
+
 # Sensitive form-urlencoded / JSON body key names (case-insensitive exact match).
 # Exact match, NOT substring — "token_count" and "session_id" must NOT match.
 # Ported from nearai/ironclaw#2529.

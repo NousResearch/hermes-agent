@@ -223,9 +223,237 @@ def _get_model_and_provider(config: dict) -> tuple[str, str]:
     return model, provider
 
 
+# Substrings marking a fallback-provider field as carrying a secret VALUE.
+# Matched against the lowercased field name so siblings of ``api_key`` —
+# ``access_key``, ``auth_token``, ``client_secret`` — are covered too.
+_FALLBACK_SECRET_MARKERS = (
+    "key",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "credential",
+    "auth",
+)
+
+# Fields matching a marker above that are nonetheless safe to show. ``key_env``
+# and ``api_key_env`` NAME an environment variable rather than holding its
+# value, and operators need them to diagnose routing; the ``*_tokens`` limits
+# are numeric budgets. Anything not listed here fails closed: an unrecognized
+# field whose name matches a marker is masked, costing a diagnostic rather
+# than leaking a credential.
+_FALLBACK_SAFE_FIELDS = frozenset(
+    {
+        "key_env",
+        "api_key_env",
+        "max_tokens",
+        "max_output_tokens",
+        "max_completion_tokens",
+        "token_limit",
+    }
+)
+
+# Fields whose string values are URLs. Credentials hide in userinfo
+# (``https://user:KEY@host``) and in query parameters (``?api_key=KEY``), so
+# these are cleaned rather than shown verbatim.
+_FALLBACK_URL_MARKERS = ("url", "endpoint")
+
+# Stand-in for a value we cannot render safely. Handing an unknown object to
+# ``str()`` would run its ``__repr__``, which may print the very key we are
+# trying to hide.
+_FALLBACK_OMITTED = "<omitted>"
+
+# Bound on nested-container recursion, so a deep or self-referencing config
+# cannot turn the dump into a stack overflow.
+_FALLBACK_MAX_DEPTH = 6
+
+
+def _is_fallback_secret_field(name) -> bool:
+    """True when a field name marks its value as a credential."""
+    if not isinstance(name, str):
+        return False
+    lowered = name.lower()
+    if lowered in _FALLBACK_SAFE_FIELDS:
+        return False
+    return any(marker in lowered for marker in _FALLBACK_SECRET_MARKERS)
+
+
+def _is_fallback_url_field(name) -> bool:
+    """True when a field name marks its value as a URL."""
+    if not isinstance(name, str):
+        return False
+    lowered = name.lower()
+    return any(marker in lowered for marker in _FALLBACK_URL_MARKERS)
+
+
+def _fallback_placeholder(value) -> str:
+    """Describe a value by type instead of rendering it."""
+    return f"<omitted: {type(value).__name__}>"
+
+
+def _is_sensitive_query_param(name) -> bool:
+    """True when a URL query parameter name carries a credential.
+
+    The repository already owns this policy in ``agent.redact``, and it lists
+    names the field-name markers above cannot reach — ``signature``,
+    ``x-amz-signature``, ``code`` — so a pre-signed URL or an OAuth callback
+    would otherwise print its secret in full. Ask that policy first, so this
+    path stays in step with it as it grows, and fall back to the markers for
+    names it doesn't list (``access_key``, ``auth_token``, ``client_secret``).
+    """
+    if not isinstance(name, str):
+        return False
+
+    from agent.redact import is_sensitive_query_param
+
+    if is_sensitive_query_param(name):
+        return True
+    return _is_fallback_secret_field(name)
+
+
+def _mask_url_credentials(value: str) -> str:
+    """Strip userinfo and redact secret parameters from a URL.
+
+    Both parameter-bearing components are masked. A credential does not care
+    which separator introduced it: OAuth implicit-flow hands back its token
+    after ``#``, and ``agent/redact.py`` classifies query and fragment pairs
+    with the same set (``_STRICT_URL_PARAM_RE`` carries ``#`` among its
+    delimiters), so a policy that stopped at ``?`` would just be a hole with a
+    good excuse.
+    """
+    import re
+    from urllib.parse import unquote_plus, urlsplit, urlunsplit
+
+    try:
+        parts = urlsplit(value)
+        username = parts.username
+        password = parts.password
+        hostname = parts.hostname
+        port = parts.port
+    except ValueError:
+        # Unparseable (e.g. a bad port) — refuse rather than guess.
+        return _FALLBACK_OMITTED
+    # A scheme-relative reference (``//user:pass@host/v1``) has no scheme and
+    # still carries userinfo, so the authority — not the scheme — is what makes
+    # this a URL worth masking.
+    if not parts.netloc:
+        return value
+
+    def _mask_params(component: str) -> tuple[str, bool]:
+        """Redact credential-named pairs in one parameter component.
+
+        Split on ``&`` *and* ``;``. ``parse_qsl`` stopped honouring ``;`` in
+        CPython 3.9.2 (bpo-42967) because a *request parser* that accepts both
+        separators can be induced to disagree with the proxy in front of it.
+        A masker carries no such exposure — reading both can only mask more,
+        never less, and its output never re-enters request handling — and
+        ``agent/redact.py`` already calls ``;`` a separator
+        (``_STRICT_URL_PARAM_RE``). Left to ``parse_qsl``,
+        ``?region=eu;signature=<secret>`` is one pair named ``region`` and the
+        secret ships whole.
+
+        Separators and untouched pairs are copied through verbatim rather than
+        re-encoded, so the endpoint stays the URL the user typed.
+        """
+        if not component:
+            return component, False
+        out: list[str] = []
+        changed = False
+        for token in re.split(r"([&;])", component):
+            if token in ("&", ";"):
+                out.append(token)
+                continue
+            name, sep, val = token.partition("=")
+            if sep and val and _is_sensitive_query_param(unquote_plus(name)):
+                out.append(f"{name}={_redact(val)}")
+                changed = True
+            else:
+                out.append(token)
+        if not changed:
+            return component, False
+        return "".join(out), True
+
+    netloc = parts.netloc
+    changed = False
+    if username or password:
+        host = hostname or ""
+        if port:
+            host = f"{host}:{port}"
+        netloc = f"***@{host}" if host else "***"
+        changed = True
+
+    query, query_masked = _mask_params(parts.query)
+    fragment, fragment_masked = _mask_params(parts.fragment)
+    changed = changed or query_masked or fragment_masked
+
+    if not changed:
+        return value
+    return urlunsplit((parts.scheme, netloc, parts.path, query, fragment))
+
+
+def _mask_fallback_value(name, value, depth: int):
+    """Return a safely renderable copy of one fallback-provider field value."""
+    if depth > _FALLBACK_MAX_DEPTH:
+        return _FALLBACK_OMITTED
+
+    if _is_fallback_secret_field(name):
+        # Only a non-empty string can be shown in the dump's head/tail form.
+        # Bytes, numbers, nested containers and custom objects are dropped —
+        # each of them still stringifies to the credential in full.
+        if isinstance(value, str):
+            return _redact(value) if value else value
+        if value is None or isinstance(value, bool):
+            return value
+        return _FALLBACK_OMITTED
+
+    if isinstance(value, str):
+        return _mask_url_credentials(value) if _is_fallback_url_field(name) else value
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, dict):
+        return _mask_fallback_entry(value, depth + 1)
+    if isinstance(value, (list, tuple)):
+        return [_mask_fallback_value(name, item, depth + 1) for item in value]
+    return _fallback_placeholder(value)
+
+
+def _mask_fallback_entry(entry: dict, depth: int = 0):
+    """Copy one fallback-provider entry with credential values masked."""
+    if depth > _FALLBACK_MAX_DEPTH:
+        return _FALLBACK_OMITTED
+    return {
+        name: _mask_fallback_value(name, value, depth) for name, value in entry.items()
+    }
+
+
+def _mask_fallback_secrets(fallbacks):
+    """Copy the fallback-provider config with inline credential values masked.
+
+    ``hermes dump`` output is copy-pasted into public bug reports and uploaded
+    verbatim by ``hermes debug share``, so an inline ``api_key`` must never
+    appear in full. Secret values are masked through :func:`_redact` (head/tail
+    only), matching how the dump shows every other key.
+
+    Both container shapes ``fallback_config._iter_fallback_entries`` accepts are
+    handled: a list of entries, and a single entry given as a bare mapping.
+    Whatever is left cannot be shown safely — ``str()`` on an arbitrary object
+    runs its ``__repr__`` — so it is replaced by a type marker.
+    """
+    if isinstance(fallbacks, dict):
+        return _mask_fallback_entry(fallbacks)
+    if isinstance(fallbacks, (list, tuple)):
+        return [
+            _mask_fallback_entry(entry)
+            if isinstance(entry, dict)
+            else _fallback_placeholder(entry)
+            for entry in fallbacks
+        ]
+    return _fallback_placeholder(fallbacks)
+
+
 def _config_overrides(config: dict) -> dict[str, str]:
     """Find non-default config values worth reporting.
-    
+
     Returns a flat dict of dotpath -> value for interesting overrides.
     """
     from hermes_cli.config import DEFAULT_CONFIG
@@ -269,10 +497,11 @@ def _config_overrides(config: dict) -> dict[str, str]:
     if user_toolsets != default_toolsets:
         overrides["toolsets"] = str(user_toolsets)
 
-    # Fallback providers
+    # Fallback providers — mask inline credentials before serializing; this
+    # block is uploaded verbatim by ``hermes debug share``.
     fallbacks = config.get("fallback_providers", [])
     if fallbacks:
-        overrides["fallback_providers"] = str(fallbacks)
+        overrides["fallback_providers"] = str(_mask_fallback_secrets(fallbacks))
 
     return overrides
 

@@ -6708,6 +6708,15 @@ class APIServerAdapter(BasePlatformAdapter):
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
 
+        # Extract per-request metadata (e.g. external-system tokens) to
+        # propagate through to MCP tool calls via _request_meta ContextVar.
+        request_metadata = body.get("metadata")
+        if request_metadata is not None and not isinstance(request_metadata, dict):
+            return web.json_response(
+                _openai_error("'metadata' must be an object"),
+                status=400,
+            )
+
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
         conversation_history: List[Dict[str, str]] = []
@@ -6882,9 +6891,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         set_current_session_key,
                         unregister_gateway_notify,
                     )
+                    from tools.mcp_tool import _request_meta
 
                     effective_task_id = session_id or run_id
                     approval_token = None
+                    meta_token = None
                     session_tokens = []
                     with self._profile_scope(request_profile):
                         try:
@@ -6906,6 +6917,10 @@ class APIServerAdapter(BasePlatformAdapter):
                                 session_id=session_id or "",
                             )
                             register_gateway_notify(approval_session_key, _approval_notify)
+                            # Propagate per-request metadata (e.g. external tokens) into
+                            # the ContextVar so MCP tool calls can forward it as _meta.
+                            if request_metadata:
+                                meta_token = _request_meta.set(request_metadata)
                             # /v1/runs runs its own agent lifecycle (no
                             # TurnRunner, no _run_agent) — record turn process
                             # ownership so stop/cancel can reap only the
@@ -6926,6 +6941,11 @@ class APIServerAdapter(BasePlatformAdapter):
                             try:
                                 unregister_gateway_notify(approval_session_key)
                             finally:
+                                if meta_token is not None:
+                                    try:
+                                        _request_meta.reset(meta_token)
+                                    except Exception:
+                                        pass
                                 if approval_token is not None:
                                     try:
                                         reset_current_session_key(approval_token)

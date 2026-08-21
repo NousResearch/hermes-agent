@@ -4983,6 +4983,14 @@ _mcp_tool_server_names: Dict[str, str] = {}
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
 
+# Per-request metadata propagated from /v1/runs to MCP tool calls.
+# Set in the request handler's executor thread, then carried into the
+# MCP background event-loop task via _wrap_with_request_meta (same
+# propagation pattern as _wrap_with_home_override).
+_request_meta: contextvars.ContextVar = contextvars.ContextVar(
+    "_request_meta", default=None,
+)
+
 # Protects _mcp_loop, _mcp_thread, _servers, MCP connection status maps,
 # _parallel_safe_servers, _mcp_tool_server_names, and _stdio_pids.
 _lock = threading.Lock()
@@ -5295,6 +5303,29 @@ def _wrap_with_dashboard_oauth_flow(coro):
     return _scoped()
 
 
+def _wrap_with_request_meta(coro):
+    """Carry the caller's per-request metadata into ``coro``.
+
+    Tasks scheduled via run_coroutine_threadsafe copy the loop thread's
+    context, not the scheduling thread's.  This wrapper snapshots
+    _request_meta on the calling thread and re-sets it inside the
+    coroutine's task-local context on the MCP loop — same pattern as
+    _wrap_with_home_override.
+    """
+    meta = _request_meta.get()
+    if meta is None:
+        return coro
+
+    async def _scoped():
+        token = _request_meta.set(meta)
+        try:
+            return await coro
+        finally:
+            _request_meta.reset(token)
+
+    return _scoped()
+
+
 def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     """Schedule a coroutine on the MCP event loop and block until done.
 
@@ -5330,6 +5361,7 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     # scopes don't interfere). No-op when no override is active.
     coro = _wrap_with_home_override(coro)
     coro = _wrap_with_dashboard_oauth_flow(coro)
+    coro = _wrap_with_request_meta(coro)
 
     future = safe_schedule_threadsafe(
         coro, loop,
@@ -5827,7 +5859,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
                 try:
-                    result = await server.session.call_tool(tool_name, arguments=args)
+                    result = await server.session.call_tool(
+                        tool_name, arguments=args,
+                        meta=_request_meta.get(),
+                    )
                 finally:
                     server._pending_call_context = None
             # The RPC round-trip completed — the session is demonstrably

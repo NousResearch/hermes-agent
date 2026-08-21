@@ -2115,6 +2115,20 @@ class TestTruncateToolCallArgsJson:
         assert "...[truncated]" not in shrunk
         assert len(shrunk) < len(original)
 
+    def test_hashing_is_deterministic_for_non_bmp_and_lone_surrogates(self):
+        import hashlib
+        import json as _json
+
+        shrink = self._helper()
+        for text in ("😀" * 600, "\ud800" * 600):
+            original = _json.dumps({"content": text}, ensure_ascii=False)
+            provenance = _json.loads(shrink(original))[
+                "__hermes_incomplete_tool_arguments__"
+            ]
+            assert provenance["sha256"] == hashlib.sha256(
+                original.encode("utf-8", errors="surrogatepass")
+            ).hexdigest()
+
     def test_operation_shapes_are_never_partially_preserved(self):
         import json as _json
 

@@ -1592,7 +1592,9 @@ def _truncate_tool_call_args_json(args: str) -> str:
             "arguments_omitted": True,
             "replayable": False,
             "original_chars": len(args),
-            "sha256": hashlib.sha256(args.encode("utf-8")).hexdigest(),
+            "sha256": hashlib.sha256(
+                args.encode("utf-8", errors="surrogatepass")
+            ).hexdigest(),
         }
     }
     return json.dumps(provenance, ensure_ascii=False)

@@ -184,6 +184,46 @@ def test_interrupt_does_not_bypass_integrity_rejection(agent, monkeypatch, concu
     assert json.loads(messages[0]["content"])["error_type"] == "incomplete_historical_tool_arguments"
 
 
+@pytest.mark.parametrize("concurrent", [False, True])
+def test_interrupt_rejects_deferred_incomplete_arguments(agent, monkeypatch, concurrent):
+    from tools import tool_search
+    from tools.registry import registry
+
+    events = []
+    registry.register(
+        name="mcp__integrity_probe__run",
+        toolset="mcp-integrity-probe",
+        schema={
+            "name": "mcp__integrity_probe__run",
+            "description": "probe",
+            "parameters": {"type": "object", "properties": {}},
+        },
+        handler=lambda args, **kwargs: events.append("handler") or "handled",
+    )
+    agent._interrupt_requested = True
+    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+    monkeypatch.setattr(
+        "hermes_cli.lifecycle.invoke_hook",
+        lambda *args, **kwargs: events.append("hook") or [],
+    )
+    outer = {
+        "name": "mcp__integrity_probe__run",
+        "arguments": json.dumps(
+            {RESERVED: {"version": 1, "replayable": False}}
+        ),
+    }
+    call = _mock_tool_call(
+        name=tool_search.TOOL_CALL_NAME,
+        arguments=json.dumps(outer),
+        call_id="deferred-interrupted",
+    )
+    messages = []
+    with patch("run_agent.handle_function_call", side_effect=AssertionError("dispatch")):
+        _run(agent, concurrent, call, messages)
+    assert events == []
+    assert json.loads(messages[0]["content"])["error_type"] == "incomplete_historical_tool_arguments"
+
+
 def test_concurrent_spinner_counts_only_runnable_calls(agent, monkeypatch):
     spinner_texts = []
     completion_texts = []
@@ -228,7 +268,7 @@ def test_concurrent_spinner_counts_only_runnable_calls(agent, monkeypatch):
 
 
 @pytest.mark.parametrize("concurrent", [False, True])
-def test_clean_arguments_pass_schema_integrity_preview(
+def test_clean_arguments_skip_schema_integrity_preview(
     agent, monkeypatch, concurrent
 ):
     call = _mock_tool_call(
@@ -237,10 +277,11 @@ def test_clean_arguments_pass_schema_integrity_preview(
         call_id="clean",
     )
     messages = []
-    previews = []
     monkeypatch.setattr(
         "agent.tool_executor._schema_decoded_integrity_result",
-        lambda *_args, **_kwargs: previews.append(True) or None,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("schema preview should be skipped")
+        ),
     )
 
     with patch("run_agent.handle_function_call", return_value="ok"):
@@ -248,4 +289,3 @@ def test_clean_arguments_pass_schema_integrity_preview(
 
     assert len(messages) == 1
     assert messages[0]["content"] == "ok"
-    assert previews == [True]

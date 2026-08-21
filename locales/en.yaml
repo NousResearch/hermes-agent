@@ -445,6 +445,58 @@ gateway:
     help:                  "{toggle}\n\n**How /voice works**\n• `/voice on` — voice reply when you send a voice message\n• `/voice tts` — voice reply to *every* message\n• `/voice off` — back to text-only replies\n• `/voice status` — show the current mode\n• `/voice` (no argument) — quick toggle between on and off{channels}"
     help_channels:         "\n\n**Live voice channels (Discord)**\n• Join a voice channel first, then `/voice channel` — I'll join, listen, and speak my replies\n• `/voice leave` — disconnect from the voice channel"
 
+  media:
+    # Context notes prepended to user messages when an attachment arrives.
+    # These are translated so the LLM receives the note in the user's
+    # active language; before this PR they were always English, which biased
+    # the reply language and forced an out-of-place English system message
+    # above the user's actual content.
+    #
+    # Catalog parity is enforced by tests/agent/test_i18n.py -- every key here
+    # must exist in every other locale file with the same placeholders.
+    # Placeholder names ({name}, {path}, {description}, ...) must match the
+    # keys the Python code passes via str.format.
+    #
+    # ---- text/* and binary documents ----
+    # text/* documents have content inlined by the platform adapter -- the
+    # note just confirms that and records the path.
+    doc_text_note:        "[The user sent a text document: '{name}'. Its content has been included below. The file is also saved at: {path}]"
+    # binary documents (PDF, DOCX, XLSX, ...) can't be inlined as text. The
+    # note explicitly tells the agent to *extract* the text itself, which
+    # fixes the historical "attached PDF looks unreadable" failure mode
+    # where the model used to punt back to the user.
+    doc_binary_note:      "[The user sent a document: '{name}'. It is saved at: {path}. Its text is not inlined here (it's a binary format such as PDF or DOCX). To read it, extract the document's text yourself — for example with the terminal tool or the ocr-and-documents skill — before answering, instead of asking the user to paste the contents.]"
+    # ---- audio / video file attachments ----
+    audio_attachment_note: "[The user sent an audio file attachment: '{name}'. It is saved at: {path}. Its content is not inlined here. If the user's request involves what the audio contains, transcribe or process it yourself — for example by passing the path to a transcription or media tool — instead of asking the user to describe it. Only ask what to do with it if their intent is genuinely unclear.]"
+    video_attachment_note: "[The user sent a video attachment: '{name}'. It is saved at: {path}. Its content is not inlined here. If the user's request involves what the video contains, inspect or process it yourself — for example by passing the path to a video analysis or media tool — instead of asking the user to describe it. Only ask what to do with it if their intent is genuinely unclear.]"
+    # ---- image auto-vision ----
+    image_seen:           "[The user sent an image~ Here's what I can see:\n{description}]\n[If you need a closer look, use vision_analyze with image_url: {path} ~]"
+    image_blurry:         "[The user sent an image but I couldn't quite see it this time (>_<) You can try looking at it yourself with vision_analyze using image_url: {path}]"
+    image_error:          "[The user sent an image but something went wrong when I tried to look at it~ You can try examining it yourself with vision_analyze using image_url: {path}]"
+    # ---- voice (stt disabled) ----
+    # Split into two so the path can be either with or without the probed
+    # duration, without forcing two separate catalog keys per language.
+    voice_disabled_with_duration: "[The user sent a voice message: {path} (duration: {duration})]"
+    voice_disabled_no_duration:   "[The user sent a voice message: {path}]"
+    # ---- voice transcription results ----
+    # STT returned success=True with empty/whitespace transcript on silence
+    # or inaudible audio. The note tells the agent not to hallucinate.
+    voice_empty_transcript:       "[The user sent a voice message but it came through empty or inaudible — speech-to-text returned no words. Do not guess at the content; ask the user to resend or type it out.]"
+    # The transcription module couldn't even be imported (very rare).
+    voice_transcribe_unavailable: "[voice message could not be transcribed]"
+    # STT provider ran and failed (no provider, bad key, network error, ...).
+    # Keep the message neutral -- the cause is logged but not surfaced, to
+    # avoid the LLM volunteering stale setup advice on every later turn.
+    voice_transcribe_error:       "[voice message could not be transcribed automatically; the audio is available at: {path}]"
+    # ---- placeholder text from platforms that emit a no-caption sentinel ----
+    empty_placeholder:    "(The user sent a message with no text content)"
+    # ---- stickers (Telegram) ----
+    # {context} is pre-formatted in Python as " <emoji> from \"<set>\"",
+    # " <emoji>", or "" depending on what metadata the sticker carried.
+    sticker:              "[The user sent a sticker{context}~ It shows: \"{description}\" (=^.w.^=)]"
+    animated_sticker_emoji:   "[The user sent an animated sticker {emoji}~ I can't see animated ones yet, but the emoji suggests: {emoji}]"
+    animated_sticker_no_emoji: "[The user sent an animated sticker~ I can't see animated ones yet]"
+
   yolo:
     disabled:                   "⚠️ YOLO mode **OFF** for this session — dangerous commands will require approval."
     enabled:                    "⚡ YOLO mode **ON** for this session — all commands auto-approved. Use with caution."

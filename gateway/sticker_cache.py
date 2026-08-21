@@ -14,6 +14,7 @@ import tempfile
 import time
 from typing import Optional
 
+from agent.i18n import t
 from hermes_cli.config import get_hermes_home
 
 
@@ -100,8 +101,10 @@ def build_sticker_injection(
     """
     Build the warm-style injection text for a sticker description.
 
-    Returns a string like:
-      [The user sent a sticker 😀 from "MyPack"~ It shows: "A cat waving" (=^.w.^=)]
+    Returns a localized string rendered in the active i18n language
+    (see :mod:`agent.i18n`).  English example::
+
+        [The user sent a sticker 😀 from "MyPack"~ It shows: "A cat waving" (=^.w.^=)]
     """
     context = ""
     if set_name and emoji:
@@ -109,7 +112,11 @@ def build_sticker_injection(
     elif emoji:
         context = f" {emoji}"
 
-    return f"[The user sent a sticker{context}~ It shows: \"{description}\" (=^.w.^=)]"
+    return t(
+        "gateway.media.sticker",
+        context=context,
+        description=description,
+    )
 
 
 def build_animated_sticker_injection(emoji: str = "") -> str:
@@ -117,8 +124,5 @@ def build_animated_sticker_injection(emoji: str = "") -> str:
     Build injection text for animated/video stickers we can't analyze.
     """
     if emoji:
-        return (
-            f"[The user sent an animated sticker {emoji}~ "
-            f"I can't see animated ones yet, but the emoji suggests: {emoji}]"
-        )
-    return "[The user sent an animated sticker~ I can't see animated ones yet]"
+        return t("gateway.media.animated_sticker_emoji", emoji=emoji)
+    return t("gateway.media.animated_sticker_no_emoji")

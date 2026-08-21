@@ -48,6 +48,67 @@ def test_catalog_keys_match_english(lang: str):
     assert not extra, f"{lang}.yaml has keys not in en.yaml: {sorted(extra)}"
 
 
+# ---------------------------------------------------------------------------
+# gateway.media.* (i18n-ization of the hardcoded "user sent" injection notes
+# prepended to user messages when an attachment arrives).  These strings
+# reach the LLM verbatim, so if the user's active language is non-English
+# they MUST be in that language.  Reject the case where a translator
+# mistakenly left the English placeholder values in a locale.
+# ---------------------------------------------------------------------------
+
+# Keys where the English source is a self-contained system note
+# (no platform-specific data inside the string itself).  The placeholder
+# values, when substituted, still come from the platform adapter.
+MEDIA_L10N_KEYS = [
+    "gateway.media.doc_text_note",
+    "gateway.media.doc_binary_note",
+    "gateway.media.audio_attachment_note",
+    "gateway.media.video_attachment_note",
+    "gateway.media.image_seen",
+    "gateway.media.image_blurry",
+    "gateway.media.image_error",
+    "gateway.media.voice_empty_transcript",
+    "gateway.media.voice_transcribe_unavailable",
+    "gateway.media.voice_transcribe_error",
+    "gateway.media.empty_placeholder",
+    "gateway.media.sticker",
+    "gateway.media.animated_sticker_emoji",
+    "gateway.media.animated_sticker_no_emoji",
+]
+
+
+@pytest.mark.parametrize("key", MEDIA_L10N_KEYS)
+def test_zh_translation_is_actually_chinese(key):
+    """zh.yaml must carry real Chinese translation for every media note, not
+    a copy-paste of the English placeholder.  Catches translators who add
+    the key (so parity passes) but leave the value as English.
+    """
+    flat = _flatten(_load_raw("zh"))
+    value = flat.get(key, "")
+    # CJK Unified Ideographs + the U+FF1A fullwidth colon and other common
+    # Chinese punctuation cover the bulk of our translations.  A handful
+    # of bracketed punctuation like 【】、《》is also fine.
+    has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in value)
+    assert has_cjk, (
+        f"zh.yaml key={key!r} doesn't contain CJK characters -- "
+        f"value={value!r}"
+    )
+
+
+@pytest.mark.parametrize("key", MEDIA_L10N_KEYS)
+def test_zh_translation_differs_from_english(key):
+    """zh.yaml translation must actually differ from the English source --
+    guards against the 'added key but forgot to translate' failure mode
+    where a missing key would have been caught by the catalog parity test
+    but a same-as-English value would slip through.
+    """
+    en_value = _flatten(_load_raw("en")).get(key, "")
+    zh_value = _flatten(_load_raw("zh")).get(key, "")
+    assert en_value != zh_value, (
+        f"zh.yaml key={key!r} is identical to en.yaml -- looks untranslated"
+    )
+
+
 @pytest.mark.parametrize("lang", list(i18n.SUPPORTED_LANGUAGES))
 def test_catalog_placeholders_match_english(lang: str):
     """Every translated value must use the same {placeholder} tokens as English.

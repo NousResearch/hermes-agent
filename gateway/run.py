@@ -3170,19 +3170,20 @@ def _build_document_context_note(display_name: str, agent_path: str, mtype: str)
     wording ("Ask the user what they'd like you to do with it") steered the
     model into punting back to the user, which is why attached PDFs/DOCX looked
     "unreadable" to the agent even though it has the tools to read them.
+
+    The note is translated through :func:`agent.i18n.t` so the LLM receives
+    it in the user's active language instead of always-English.
     """
     if mtype.startswith("text/"):
-        return (
-            f"[The user sent a text document: '{display_name}'. "
-            f"Its content has been included below. "
-            f"The file is also saved at: {agent_path}]"
+        return t(
+            "gateway.media.doc_text_note",
+            name=display_name,
+            path=agent_path,
         )
-    return (
-        f"[The user sent a document: '{display_name}'. It is saved at: {agent_path}. "
-        f"Its text is not inlined here (it's a binary format such as PDF or DOCX). "
-        f"To read it, extract the document's text yourself — for example with the "
-        f"terminal tool or the ocr-and-documents skill — before answering, instead "
-        f"of asking the user to paste the contents.]"
+    return t(
+        "gateway.media.doc_binary_note",
+        name=display_name,
+        path=agent_path,
     )
 
 
@@ -18272,14 +18273,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _display = _parts[2] if len(_parts) >= 3 else _basename
                 _display = re.sub(r'[^\w.\- ]', '_', _display)
                 _agent_path = _to_agent_path(_apath)
-                _note = (
-                    f"[The user sent an audio file attachment: '{_display}'. "
-                    f"It is saved at: {_agent_path}. "
-                    f"Its content is not inlined here. If the user's request involves "
-                    f"what the audio contains, transcribe or process it yourself — for "
-                    f"example by passing the path to a transcription or media tool — "
-                    f"instead of asking the user to describe it. Only ask what to do "
-                    f"with it if their intent is genuinely unclear.]"
+                _note = t(
+                    "gateway.media.audio_attachment_note",
+                    name=_display,
+                    path=_agent_path,
                 )
                 message_text = f"{_note}\n\n{message_text}"
 
@@ -18291,14 +18288,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _display = _parts[2] if len(_parts) >= 3 else _basename
                 _display = re.sub(r'[^\w.\- ]', '_', _display)
                 _agent_path = _to_agent_path(_vpath)
-                _note = (
-                    f"[The user sent a video attachment: '{_display}'. "
-                    f"It is saved at: {_agent_path}. "
-                    f"Its content is not inlined here. If the user's request involves "
-                    f"what the video contains, inspect or process it yourself — for "
-                    f"example by passing the path to a video analysis or media tool — "
-                    f"instead of asking the user to describe it. Only ask what to do "
-                    f"with it if their intent is genuinely unclear.]"
+                _note = t(
+                    "gateway.media.video_attachment_note",
+                    name=_display,
+                    path=_agent_path,
                 )
                 message_text = f"{_note}\n\n{message_text}"
 
@@ -24623,22 +24616,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     description = result.get("analysis", "")
                     description = sanitize_context(description)
                     enriched_parts.append(
-                        f"[The user sent an image~ Here's what I can see:\n{description}]\n"
-                        f"[If you need a closer look, use vision_analyze with "
-                        f"image_url: {path} ~]"
+                        t(
+                            "gateway.media.image_seen",
+                            description=description,
+                            path=path,
+                        )
                     )
                 else:
                     enriched_parts.append(
-                        "[The user sent an image but I couldn't quite see it "
-                        "this time (>_<) You can try looking at it yourself "
-                        f"with vision_analyze using image_url: {path}]"
+                        t("gateway.media.image_blurry", path=path)
                     )
             except Exception as e:
                 logger.error("Vision auto-analysis error: %s", e)
                 enriched_parts.append(
-                    f"[The user sent an image but something went wrong when I "
-                    f"tried to look at it~ You can try examining it yourself "
-                    f"with vision_analyze using image_url: {path}]"
+                    t("gateway.media.image_error", path=path)
                 )
 
         # Combine: vision descriptions first, then the user's original text
@@ -24680,14 +24671,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 duration_str = await _probe_audio_duration(abs_path)
                 if duration_str:
                     notes.append(
-                        f"[The user sent a voice message: {abs_path} (duration: {duration_str})]"
+                        t(
+                            "gateway.media.voice_disabled_with_duration",
+                            path=abs_path,
+                            duration=duration_str,
+                        )
                     )
                 else:
-                    notes.append(f"[The user sent a voice message: {abs_path}]")
+                    notes.append(
+                        t("gateway.media.voice_disabled_no_duration", path=abs_path)
+                    )
             if not notes:
                 return user_text, []
             prefix = "\n\n".join(notes)
-            _placeholder = "(The user sent a message with no text content)"
+            _placeholder = t("gateway.media.empty_placeholder")
             if user_text and user_text.strip() == _placeholder:
                 return prefix, []
             if user_text:
@@ -24701,8 +24698,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         except ModuleNotFoundError as e:
             logger.error("Transcription module unavailable: %s", e)
-            unavailable_note = "[voice message could not be transcribed]"
-            _placeholder = "(The user sent a message with no text content)"
+            unavailable_note = t("gateway.media.voice_transcribe_unavailable")
+            _placeholder = t("gateway.media.empty_placeholder")
             if user_text and user_text.strip() == _placeholder:
                 return unavailable_note, []
             if user_text:
@@ -24737,10 +24734,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # clear sentinel note instead (#41603).
                     if not (transcript or "").strip():
                         enriched_parts.append(
-                            "[The user sent a voice message but it came through "
-                            "empty or inaudible — speech-to-text returned no "
-                            "words. Do not guess at the content; ask the user "
-                            "to resend or type it out.]"
+                            t("gateway.media.voice_empty_transcript")
                         )
                         continue
                     successful_transcripts.append(transcript)
@@ -24766,8 +24760,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                     agent_path = to_agent_visible_cache_path(os.path.abspath(path))
                     enriched_parts.append(
-                        "[voice message could not be transcribed automatically; "
-                        f"the audio is available at: {agent_path}]"
+                        t("gateway.media.voice_transcribe_error", path=agent_path)
                     )
             except Exception as e:
                 logger.error("Transcription error: %s", e)
@@ -24775,15 +24768,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 agent_path = to_agent_visible_cache_path(os.path.abspath(path))
                 enriched_parts.append(
-                    "[voice message could not be transcribed automatically; "
-                    f"the audio is available at: {agent_path}]"
+                    t("gateway.media.voice_transcribe_error", path=agent_path)
                 )
 
         if enriched_parts:
             prefix = "\n\n".join(enriched_parts)
             # Strip the empty-content placeholder from the Discord adapter
             # when we successfully transcribed the audio — it's redundant.
-            _placeholder = "(The user sent a message with no text content)"
+            _placeholder = t("gateway.media.empty_placeholder")
             if user_text and user_text.strip() == _placeholder:
                 return prefix, successful_transcripts
             if user_text:

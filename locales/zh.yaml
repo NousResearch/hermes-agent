@@ -432,6 +432,54 @@ Future messages in this room will use that transcript until `/reset` or another 
     help:                  "{toggle}\n\n**/voice 用法**\n• `/voice on` — 当你发送语音消息时用语音回复\n• `/voice tts` — 对*每条*消息都用语音回复\n• `/voice off` — 恢复为纯文本回复\n• `/voice status` — 显示当前模式\n• `/voice`（无参数）— 在开启和关闭之间快速切换{channels}"
     help_channels:         "\n\n**实时语音频道 (Discord)**\n• 先加入一个语音频道，然后 `/voice channel` — 我会加入、聆听并用语音回复\n• `/voice leave` — 断开语音频道"
 
+  media:
+    # 随附件注入到 user message 前的语境提示，按用户语言翻译。LLM 收到的就是
+    # 这段文字，因此中文化后 LLM 会用对应语言理解/回复。新增 key 必须同步加到
+    # 全部 17 个 locale 文件，否则 tests/agent/test_i18n.py 的 catalog parity
+    # 断言会失败。
+    #
+    # 占位符名称（{name}/{path}/{description} 等）必须与 Python 代码
+    # str.format 传入的键名一致——placeholder parity 测试会严格比对。
+    #
+    # ---- text/* 文档 + 二进制文档 ----
+    # text/* 文档（.txt .md .csv .json .xml .yaml .yml .toml .ini .cfg .log）
+    # 内容由平台适配器内联进消息体，提示只确认 + 给出保存路径。
+    doc_text_note:        "[用户发送了文本文件：'{name}'。内容已附在下方。文件保存路径：{path}]"
+    # 二进制文档（PDF、DOCX、XLSX …）无法以纯文本形式内联。提示明确要求
+    # 智能体**自己**提取文本——这能修复历史遗留的"PDF 像读不出来"的故障
+    # （旧版本会让模型把球踢回给用户）。
+    doc_binary_note:      "[用户发送了文件：'{name}'。文件保存路径：{path}。该二进制格式（如 PDF、DOCX）的文本未在此处内联。请先用工具（如 terminal 工具或 ocr-and-documents 技能）自行提取文本再回答，不要让用户粘贴内容。]"
+    # ---- 音频 / 视频附件 ----
+    audio_attachment_note: "[用户发送了一个音频文件附件：'{name}'。文件保存路径：{path}。其内容未在此处内联。如果用户的问题涉及音频内容，请自行转录或处理（例如把路径传给转录或媒体工具），不要让用户描述音频。只有当用户意图确实不明时才询问。"
+    video_attachment_note: "[用户发送了一个视频附件：'{name}'。文件保存路径：{path}。其内容未在此处内联。如果用户的问题涉及视频内容，请自行检视或处理（例如把路径传给视频分析或媒体工具），不要让用户描述视频。只有当用户意图确实不明时才询问。"
+    # ---- 图片自动视觉 ----
+    image_seen:           "[用户发送了图片～ 我看到的内容：\n{description}]\n[如需细看，请使用 vision_analyze 工具，image_url: {path} ～]"
+    image_blurry:         "[用户发送了图片，但这次没看清（>_<）你可以自己用 vision_analyze 工具再看一遍，image_url: {path}]"
+    image_error:          "[用户发送了图片，但我尝试查看时出错了～ 请你自己用 vision_analyze 工具检查一下，image_url: {path}]"
+    # ---- 语音（stt 关闭）----
+    # 拆成两条：是否探测到时长用不同键，避免每种语言都要为同一句话维护
+    # 两个变体。
+    voice_disabled_with_duration: "[用户发送了语音消息：{path}（时长：{duration}）]"
+    voice_disabled_no_duration:   "[用户发送了语音消息：{path}]"
+    # ---- 语音转录结果 ----
+    # STT 在静音或听不清时可能返回 success=True 但 transcript 为空。这里
+    # 明确告诉智能体不要瞎猜。
+    voice_empty_transcript:       "[用户发送了语音消息，但转出来是空的或听不清——语音转文本没返回任何内容。请不要猜测内容，让用户重发或打字。]"
+    # 转录模块连 import 都失败（极罕见）。
+    voice_transcribe_unavailable: "[语音消息无法转录]"
+    # STT 提供方跑了但失败（没配 provider、key 错、网络问题 …）。
+    # 文案保持中性——原因写日志但不出现在 LLM 面前，避免智能体在后续每一轮
+    # 都重复唠叨 STT 配置建议。
+    voice_transcribe_error:       "[语音消息无法自动转录；音频文件位于：{path}]"
+    # ---- 平台在无文字时填入的占位 ----
+    empty_placeholder:    "（用户发送了一条无文字内容的消息）"
+    # ---- Telegram 贴纸 ----
+    # {context} 在 Python 里已经按 metadata 预拼为 " <emoji> from \"<set>\""、
+    # " <emoji>" 或空串——这部分保持语言中性。
+    sticker:              "[用户发送了一张贴纸{context}～ 内容描述：\"{description}\" (=^.w.^=)]"
+    animated_sticker_emoji:   "[用户发送了一张动态贴纸 {emoji}～ 动态贴纸我还识别不了，但从 emoji 推测：{emoji}]"
+    animated_sticker_no_emoji: "[用户发送了一张动态贴纸～ 动态贴纸我还识别不了]"
+
   yolo:
     disabled:                   "⚠️ 本会话 YOLO 模式 **已关闭** — 危险命令将需要批准。"
     enabled:                    "⚡ 本会话 YOLO 模式 **已开启** — 所有命令自动批准。请谨慎使用。"

@@ -432,6 +432,27 @@ Future messages in this room will use that transcript until `/reset` or another 
     help:                  "{toggle}\n\n**/voice 用法**\n• `/voice on` — 當你傳送語音訊息時以語音回覆\n• `/voice tts` — 對*每則*訊息都以語音回覆\n• `/voice off` — 恢復為純文字回覆\n• `/voice status` — 顯示目前模式\n• `/voice`（無參數）— 在開啟和關閉之間快速切換{channels}"
     help_channels:         "\n\n**即時語音頻道 (Discord)**\n• 先加入一個語音頻道，然後 `/voice channel` — 我會加入、聆聽並以語音回覆\n• `/voice leave` — 中斷語音頻道"
 
+  media:
+    # Context notes prepended to user messages when an attachment arrives.
+    # These are translated so the LLM receives the note in the user's
+    # active language. Catalog parity is enforced by tests/agent/test_i18n.py.
+    doc_text_note:        "[The user sent a text document: '{name}'. Its content has been included below. The file is also saved at: {path}]"
+    doc_binary_note:      "[The user sent a document: '{name}'. It is saved at: {path}. Its text is not inlined here (it's a binary format such as PDF or DOCX). To read it, extract the document's text yourself — for example with the terminal tool or the ocr-and-documents skill — before answering, instead of asking the user to paste the contents.]"
+    audio_attachment_note: "[The user sent an audio file attachment: '{name}'. It is saved at: {path}. Its content is not inlined here. If the user's request involves what the audio contains, transcribe or process it yourself — for example by passing the path to a transcription or media tool — instead of asking the user to describe it. Only ask what to do with it if their intent is genuinely unclear.]"
+    video_attachment_note: "[The user sent a video attachment: '{name}'. It is saved at: {path}. Its content is not inlined here. If the user's request involves what the video contains, inspect or process it yourself — for example by passing the path to a video analysis or media tool — instead of asking the user to describe it. Only ask what to do with it if their intent is genuinely unclear.]"
+    image_seen:           "[The user sent an image~ Here's what I can see:\n{description}]\n[If you need a closer look, use vision_analyze with image_url: {path} ~]"
+    image_blurry:         "[The user sent an image but I couldn't quite see it this time (>_<) You can try looking at it yourself with vision_analyze using image_url: {path}]"
+    image_error:          "[The user sent an image but something went wrong when I tried to look at it~ You can try examining it yourself with vision_analyze using image_url: {path}]"
+    voice_disabled_with_duration: "[The user sent a voice message: {path} (duration: {duration})]"
+    voice_disabled_no_duration:   "[The user sent a voice message: {path}]"
+    voice_empty_transcript:       "[The user sent a voice message but it came through empty or inaudible — speech-to-text returned no words. Do not guess at the content; ask the user to resend or type it out.]"
+    voice_transcribe_unavailable: "[voice message could not be transcribed]"
+    voice_transcribe_error:       "[voice message could not be transcribed automatically; the audio is available at: {path}]"
+    empty_placeholder:    "(The user sent a message with no text content)"
+    sticker:              "[The user sent a sticker{context}~ It shows: \"{description}\" (=^.w.^=)]"
+    animated_sticker_emoji:   "[The user sent an animated sticker {emoji}~ I can't see animated ones yet, but the emoji suggests: {emoji}]"
+    animated_sticker_no_emoji: "[The user sent an animated sticker~ I can't see animated ones yet]"
+
   yolo:
     disabled:                   "⚠️ 本工作階段 YOLO 模式 **已關閉** — 危險指令將需要批准。"
     enabled:                    "⚡ 本工作階段 YOLO 模式 **已開啟** — 所有指令自動批准。請謹慎使用。"

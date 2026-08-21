@@ -432,6 +432,27 @@ Future messages in this room will use that transcript until `/reset` or another 
     help:                  "{toggle}\n\n**/voice 사용법**\n• `/voice on` — 음성 메시지를 보내면 음성으로 답변\n• `/voice tts` — *모든* 메시지에 음성으로 답변\n• `/voice off` — 텍스트 전용 답변으로 복귀\n• `/voice status` — 현재 모드 표시\n• `/voice` (인자 없음) — 켜기와 끄기를 빠르게 전환{channels}"
     help_channels:         "\n\n**라이브 음성 채널 (Discord)**\n• 먼저 음성 채널에 들어간 다음 `/voice channel` — 제가 참여해 듣고 음성으로 답변합니다\n• `/voice leave` — 음성 채널에서 연결 해제"
 
+  media:
+    # Context notes prepended to user messages when an attachment arrives.
+    # These are translated so the LLM receives the note in the user's
+    # active language. Catalog parity is enforced by tests/agent/test_i18n.py.
+    doc_text_note:        "[The user sent a text document: '{name}'. Its content has been included below. The file is also saved at: {path}]"
+    doc_binary_note:      "[The user sent a document: '{name}'. It is saved at: {path}. Its text is not inlined here (it's a binary format such as PDF or DOCX). To read it, extract the document's text yourself — for example with the terminal tool or the ocr-and-documents skill — before answering, instead of asking the user to paste the contents.]"
+    audio_attachment_note: "[The user sent an audio file attachment: '{name}'. It is saved at: {path}. Its content is not inlined here. If the user's request involves what the audio contains, transcribe or process it yourself — for example by passing the path to a transcription or media tool — instead of asking the user to describe it. Only ask what to do with it if their intent is genuinely unclear.]"
+    video_attachment_note: "[The user sent a video attachment: '{name}'. It is saved at: {path}. Its content is not inlined here. If the user's request involves what the video contains, inspect or process it yourself — for example by passing the path to a video analysis or media tool — instead of asking the user to describe it. Only ask what to do with it if their intent is genuinely unclear.]"
+    image_seen:           "[The user sent an image~ Here's what I can see:\n{description}]\n[If you need a closer look, use vision_analyze with image_url: {path} ~]"
+    image_blurry:         "[The user sent an image but I couldn't quite see it this time (>_<) You can try looking at it yourself with vision_analyze using image_url: {path}]"
+    image_error:          "[The user sent an image but something went wrong when I tried to look at it~ You can try examining it yourself with vision_analyze using image_url: {path}]"
+    voice_disabled_with_duration: "[The user sent a voice message: {path} (duration: {duration})]"
+    voice_disabled_no_duration:   "[The user sent a voice message: {path}]"
+    voice_empty_transcript:       "[The user sent a voice message but it came through empty or inaudible — speech-to-text returned no words. Do not guess at the content; ask the user to resend or type it out.]"
+    voice_transcribe_unavailable: "[voice message could not be transcribed]"
+    voice_transcribe_error:       "[voice message could not be transcribed automatically; the audio is available at: {path}]"
+    empty_placeholder:    "(The user sent a message with no text content)"
+    sticker:              "[The user sent a sticker{context}~ It shows: \"{description}\" (=^.w.^=)]"
+    animated_sticker_emoji:   "[The user sent an animated sticker {emoji}~ I can't see animated ones yet, but the emoji suggests: {emoji}]"
+    animated_sticker_no_emoji: "[The user sent an animated sticker~ I can't see animated ones yet]"
+
   yolo:
     disabled:                   "⚠️ 이 세션에서 YOLO 모드 **꺼짐** — 위험한 명령은 승인이 필요합니다."
     enabled:                    "⚡ 이 세션에서 YOLO 모드 **켜짐** — 모든 명령이 자동 승인됩니다. 주의해서 사용하세요."

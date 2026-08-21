@@ -8785,7 +8785,9 @@ def _validate_llm_response(
     except (AttributeError, TypeError, IndexError) as exc:
         recovered = _recover_aux_response_message(response)
         if recovered is not None:
-            _reject_router_timeout_shim(recovered)
+            # Classification above intentionally inspected the raw Responses
+            # payload. Reclassifying the normalized chat shape would discard
+            # sibling/cardinality/tool evidence and recreate the false shim.
             record_aux_usage(
                 recovered, task, provider=provider, base_url=base_url
             )
@@ -8847,40 +8849,99 @@ def _fail_relay_auxiliary_call() -> None:
 
 
 def _recover_aux_response_message(response: Any) -> Optional[Any]:
-    """Synthesize chat-completions shape from Responses-style text fields.
+    """Synthesize chat-completions choices from raw Responses output.
 
-    Auxiliary callers consume ``choices[0].message``.  Some compatible
-    endpoints return text outside ``choices`` (for example ``output_text`` or
-    ``output`` items).  Preserve that response before declaring it malformed.
+    Preserve message cardinality, raw text bytes, and function-call evidence.
+    Timeout-shim classification happens before this normalization because a
+    normalized first choice cannot represent non-text sibling items faithfully.
     """
-    text = _extract_aux_response_text(response)
-    if not text:
-        return None
+    output = _obj_get(response, "output")
+    choices: List[Any] = []
+    tool_calls: List[Any] = []
 
-    choice = SimpleNamespace(
-        message=SimpleNamespace(content=text),
-        finish_reason=_obj_get(response, "finish_reason") or "stop",
-    )
+    if isinstance(output, (list, tuple)):
+        for item in output:
+            item_type = _obj_get(item, "type")
+            if item_type == "function_call":
+                tool_calls.append(SimpleNamespace(
+                    id=_obj_get(item, "call_id", "") or _obj_get(item, "id", ""),
+                    type="function",
+                    function=SimpleNamespace(
+                        name=_obj_get(item, "name", ""),
+                        arguments=_obj_get(item, "arguments", "{}"),
+                    ),
+                ))
+                continue
+            if item_type and item_type != "message":
+                continue
+
+            text_parts: List[str] = []
+            content = _obj_get(item, "content")
+            if isinstance(content, (list, tuple)):
+                for part in content:
+                    if _obj_get(part, "type") in {"output_text", "text", None}:
+                        text = _obj_get(part, "text")
+                        if isinstance(text, str):
+                            text_parts.append(text)
+            choices.append(SimpleNamespace(
+                index=len(choices),
+                message=SimpleNamespace(
+                    role="assistant",
+                    content="".join(text_parts) if text_parts else None,
+                    tool_calls=None,
+                ),
+                finish_reason=_obj_get(item, "finish_reason") or "stop",
+            ))
+    else:
+        output_text = _obj_get(response, "output_text")
+        if isinstance(output_text, str):
+            choices.append(SimpleNamespace(
+                index=0,
+                message=SimpleNamespace(
+                    role="assistant",
+                    content=output_text,
+                    tool_calls=None,
+                ),
+                finish_reason=_obj_get(response, "finish_reason") or "stop",
+            ))
+
+    if tool_calls and not choices:
+        choices.append(SimpleNamespace(
+            index=0,
+            message=SimpleNamespace(
+                role="assistant",
+                content=None,
+                tool_calls=None,
+            ),
+            finish_reason="tool_calls",
+        ))
+    if not choices:
+        return None
+    if tool_calls:
+        choices[0].message.tool_calls = tool_calls
+        choices[0].finish_reason = "tool_calls"
+
     try:
-        response.choices = [choice]
+        response.choices = choices
         return response
     except Exception:
         return SimpleNamespace(
             id=_obj_get(response, "id", ""),
             model=_obj_get(response, "model", ""),
             object=_obj_get(response, "object", "chat.completion"),
-            choices=[choice],
+            choices=choices,
             usage=_obj_get(response, "usage"),
         )
 
 
 def _extract_aux_response_text(response: Any) -> str:
+    """Return Responses text without trimming or collapsing message items."""
     output_text = _obj_get(response, "output_text")
-    if isinstance(output_text, str) and output_text.strip():
-        return output_text.strip()
+    if isinstance(output_text, str):
+        return output_text
 
     output = _obj_get(response, "output")
-    if not isinstance(output, list):
+    if not isinstance(output, (list, tuple)):
         return ""
 
     parts: List[str] = []
@@ -8892,9 +8953,9 @@ def _extract_aux_response_text(response: Any) -> str:
             part_type = _obj_get(part, "type")
             if part_type in {"output_text", "text", None}:
                 text = _obj_get(part, "text")
-                if isinstance(text, str) and text.strip():
-                    parts.append(text.strip())
-    return "\n".join(parts).strip()
+                if isinstance(text, str):
+                    parts.append(text)
+    return "".join(parts)
 
 
 def _obj_get(obj: Any, key: str, default: Any = None) -> Any:
@@ -9104,10 +9165,8 @@ class _ChatStreamAccumulator:
     def __init__(self, model: str = "", total_ceiling: Optional[float] = None):
         self._started = time.monotonic()
         self._total_ceiling = total_ceiling
-        self.content_parts: List[str] = []
-        self.reasoning_parts: List[str] = []
-        self.tool_calls_acc: Dict[int, Dict[str, Any]] = {}
-        self.finish_reason = None
+        self._choices: Dict[int, Dict[str, Any]] = {}
+        self._choice_order: List[int] = []
         self.usage = None
         self.resp_id = ""
         self.resp_model = model or ""
@@ -9128,66 +9187,80 @@ class _ChatStreamAccumulator:
         if chunk_usage:
             self.usage = chunk_usage
         choices = getattr(chunk, "choices", None) or []
-        if not choices:
-            return
-        choice = choices[0]
-        self.finish_reason = getattr(choice, "finish_reason", None) or self.finish_reason
-        delta = getattr(choice, "delta", None)
-        if delta is None:
-            return
-        piece = getattr(delta, "content", None)
-        if piece:
-            self.content_parts.append(piece)
-        reasoning_piece = (
-            getattr(delta, "reasoning", None)
-            or getattr(delta, "reasoning_content", None)
-        )
-        if reasoning_piece and isinstance(reasoning_piece, str):
-            self.reasoning_parts.append(reasoning_piece)
-        for tc in (getattr(delta, "tool_calls", None) or []):
-            idx = getattr(tc, "index", 0) or 0
-            acc = self.tool_calls_acc.setdefault(
-                idx, {"id": "", "name": "", "arguments": []}
+        for position, choice in enumerate(choices):
+            raw_index = getattr(choice, "index", None)
+            index = raw_index if isinstance(raw_index, int) else position
+            if index not in self._choices:
+                self._choice_order.append(index)
+                self._choices[index] = {
+                    "content_parts": [],
+                    "reasoning_parts": [],
+                    "tool_calls": {},
+                    "finish_reason": None,
+                }
+            state = self._choices[index]
+            state["finish_reason"] = (
+                getattr(choice, "finish_reason", None) or state["finish_reason"]
             )
-            if getattr(tc, "id", None):
-                acc["id"] = tc.id
-            fn = getattr(tc, "function", None)
-            if fn is not None:
-                if getattr(fn, "name", None):
-                    acc["name"] = fn.name
-                if getattr(fn, "arguments", None):
-                    acc["arguments"].append(fn.arguments)
+            delta = getattr(choice, "delta", None)
+            if delta is None:
+                continue
+            piece = getattr(delta, "content", None)
+            if piece:
+                state["content_parts"].append(piece)
+            reasoning_piece = (
+                getattr(delta, "reasoning", None)
+                or getattr(delta, "reasoning_content", None)
+            )
+            if reasoning_piece and isinstance(reasoning_piece, str):
+                state["reasoning_parts"].append(reasoning_piece)
+            for tc in (getattr(delta, "tool_calls", None) or []):
+                tool_index = getattr(tc, "index", 0) or 0
+                acc = state["tool_calls"].setdefault(
+                    tool_index, {"id": "", "name": "", "arguments": []}
+                )
+                if getattr(tc, "id", None):
+                    acc["id"] = tc.id
+                fn = getattr(tc, "function", None)
+                if fn is not None:
+                    if getattr(fn, "name", None):
+                        acc["name"] = fn.name
+                    if getattr(fn, "arguments", None):
+                        acc["arguments"].append(fn.arguments)
 
     def finish(self) -> Any:
-        tool_calls = None
-        if self.tool_calls_acc:
-            tool_calls = [
-                SimpleNamespace(
-                    id=acc["id"],
-                    type="function",
-                    function=SimpleNamespace(
-                        name=acc["name"],
-                        arguments="".join(acc["arguments"]),
-                    ),
-                )
-                for _idx, acc in sorted(self.tool_calls_acc.items())
-            ]
-        message = SimpleNamespace(
-            role="assistant",
-            content="".join(self.content_parts),
-            tool_calls=tool_calls,
-            reasoning="".join(self.reasoning_parts) or None,
-        )
-        choice = SimpleNamespace(
-            index=0,
-            message=message,
-            finish_reason=self.finish_reason or "stop",
-        )
+        choices: List[Any] = []
+        for index in self._choice_order:
+            state = self._choices[index]
+            tool_calls = None
+            if state["tool_calls"]:
+                tool_calls = [
+                    SimpleNamespace(
+                        id=acc["id"],
+                        type="function",
+                        function=SimpleNamespace(
+                            name=acc["name"],
+                            arguments="".join(acc["arguments"]),
+                        ),
+                    )
+                    for _idx, acc in sorted(state["tool_calls"].items())
+                ]
+            message = SimpleNamespace(
+                role="assistant",
+                content="".join(state["content_parts"]),
+                tool_calls=tool_calls,
+                reasoning="".join(state["reasoning_parts"]) or None,
+            )
+            choices.append(SimpleNamespace(
+                index=index,
+                message=message,
+                finish_reason=state["finish_reason"] or "stop",
+            ))
         return SimpleNamespace(
             id=self.resp_id,
             model=self.resp_model,
             object="chat.completion",
-            choices=[choice],
+            choices=choices,
             usage=self.usage,
         )
 

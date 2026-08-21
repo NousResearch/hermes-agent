@@ -3898,6 +3898,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _conn_cap = min(_base_timeout, 60.0) if _provider_timeout_cfg is not None else 30.0
         content_parts: list = []
         tool_calls_acc: dict = {}
+        # Providers may stream ``n > 1`` alternatives. Keep every non-primary
+        # choice separate so raw cardinality/content/tool evidence survives
+        # aggregation and timeout-shim validation.
+        additional_choice_states: dict[int, dict[str, Any]] = {}
+        additional_choice_order: list[int] = []
+        primary_choice_index: int | None = None
         tool_gen_notified: set = set()
         # Ollama-compatible endpoints reuse index 0 for every tool call
         # in a parallel batch, distinguishing them only by id.  Track
@@ -3938,6 +3944,87 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 agent._fire_stream_delta("".join(pending_timeout_prefix))
                 deltas_were_sent["yes"] = True
             pending_timeout_prefix.clear()
+
+        def _accumulate_additional_choice(choice: Any, position: int) -> None:
+            raw_index = getattr(choice, "index", None)
+            index = raw_index if isinstance(raw_index, int) else position
+            if index not in additional_choice_states:
+                additional_choice_order.append(index)
+                additional_choice_states[index] = {
+                    "content": [],
+                    "reasoning": [],
+                    "tool_calls": {},
+                    "finish_reason": None,
+                }
+            state = additional_choice_states[index]
+            state["finish_reason"] = (
+                getattr(choice, "finish_reason", None) or state["finish_reason"]
+            )
+            delta = getattr(choice, "delta", None)
+            if delta is None:
+                return
+            text = getattr(delta, "content", None)
+            if isinstance(text, str) and text:
+                state["content"].append(text)
+                _fire_first_delta()
+                agent._fire_stream_delta(text)
+                deltas_were_sent["yes"] = True
+            reasoning_text = (
+                getattr(delta, "reasoning_content", None)
+                or getattr(delta, "reasoning", None)
+            )
+            if isinstance(reasoning_text, str) and reasoning_text:
+                state["reasoning"].append(reasoning_text)
+                _fire_first_delta()
+                agent._fire_reasoning_delta(reasoning_text)
+            for tc_delta in (getattr(delta, "tool_calls", None) or []):
+                tool_index = getattr(tc_delta, "index", 0) or 0
+                tool = state["tool_calls"].setdefault(
+                    tool_index,
+                    {"id": "", "type": "function", "name": "", "arguments": []},
+                )
+                tc_id = getattr(tc_delta, "id", None)
+                if tc_id is not None:
+                    tool["id"] = str(tc_id)
+                function = getattr(tc_delta, "function", None)
+                if function is not None:
+                    name = getattr(function, "name", None)
+                    if name:
+                        tool["name"] = name
+                        _fire_first_delta()
+                        agent._fire_tool_gen_started(name)
+                    arguments = getattr(function, "arguments", None)
+                    if arguments:
+                        tool["arguments"].append(arguments)
+
+        def _materialize_additional_choices() -> list[Any]:
+            materialized = []
+            for index in additional_choice_order:
+                state = additional_choice_states[index]
+                tool_calls = None
+                if state["tool_calls"]:
+                    tool_calls = [
+                        SimpleNamespace(
+                            id=tool["id"],
+                            type=tool["type"],
+                            function=SimpleNamespace(
+                                name=tool["name"],
+                                arguments="".join(tool["arguments"]),
+                            ),
+                        )
+                        for _tool_index, tool in sorted(state["tool_calls"].items())
+                    ]
+                materialized.append(SimpleNamespace(
+                    index=index,
+                    message=SimpleNamespace(
+                        role="assistant",
+                        content="".join(state["content"]) or None,
+                        tool_calls=tool_calls,
+                        reasoning_content="".join(state["reasoning"]) or None,
+                    ),
+                    finish_reason=state["finish_reason"] or "stop",
+                ))
+            return materialized
 
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
@@ -3986,9 +4073,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # misclassify the attempt as a partial text response. The chunk
             # itself is still rejected below and never reaches callbacks.
             try:
-                choices = getattr(_chunk, "choices", None)
-                delta = getattr(choices[0], "delta", None) if choices else None
-                if getattr(delta, "tool_calls", None):
+                choices = getattr(_chunk, "choices", None) or []
+                if any(
+                    getattr(getattr(choice, "delta", None), "tool_calls", None)
+                    for choice in choices
+                ):
                     provider_tool_in_flight["yes"] = True
             except Exception:
                 pass
@@ -4012,19 +4101,32 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
         def _relay_final_response() -> dict[str, Any]:
             tool_calls = [tool_calls_acc[index] for index in sorted(tool_calls_acc)]
+            choices = [
+                {
+                    "index": primary_choice_index if primary_choice_index is not None else 0,
+                    "message": {
+                        "role": role,
+                        "content": "".join(content_parts) or None,
+                        "reasoning_content": "".join(reasoning_parts) or None,
+                        "tool_calls": tool_calls or None,
+                    },
+                    "finish_reason": finish_reason or "stop",
+                }
+            ]
+            for extra in _materialize_additional_choices():
+                choices.append({
+                    "index": extra.index,
+                    "message": {
+                        "role": extra.message.role,
+                        "content": extra.message.content,
+                        "reasoning_content": extra.message.reasoning_content,
+                        "tool_calls": extra.message.tool_calls,
+                    },
+                    "finish_reason": extra.finish_reason,
+                })
             return {
                 "model": model_name,
-                "choices": [
-                    {
-                        "message": {
-                            "role": role,
-                            "content": "".join(content_parts) or None,
-                            "reasoning_content": "".join(reasoning_parts) or None,
-                            "tool_calls": tool_calls or None,
-                        },
-                        "finish_reason": finish_reason or "stop",
-                    }
-                ],
+                "choices": choices,
                 "usage": usage_obj,
             }
 
@@ -4164,7 +4266,26 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     )
                 continue
 
-            delta = chunk.choices[0].delta
+            primary_choice = None
+            for position, streamed_choice in enumerate(chunk.choices):
+                raw_index = getattr(streamed_choice, "index", None)
+                choice_index = raw_index if isinstance(raw_index, int) else position
+                if primary_choice_index is None:
+                    primary_choice_index = choice_index
+                if choice_index == primary_choice_index and primary_choice is None:
+                    primary_choice = streamed_choice
+                else:
+                    _accumulate_additional_choice(streamed_choice, position)
+
+            # Multi-choice providers may emit alternatives in separate chunks;
+            # a chunk carrying only a non-primary choice is still useful output.
+            if primary_choice is None:
+                if hasattr(chunk, "usage") and chunk.usage:
+                    usage_obj = chunk.usage
+                continue
+            delta = getattr(primary_choice, "delta", None)
+            if delta is None:
+                continue
             if hasattr(chunk, "model") and chunk.model:
                 model_name = chunk.model
 
@@ -4299,7 +4420,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         # discarding the attempted action.
                         result["partial_tool_names"].append(name)
 
-            chunk_finish_reason = getattr(chunk.choices[0], "finish_reason", None)
+            chunk_finish_reason = getattr(primary_choice, "finish_reason", None)
             if chunk_finish_reason:
                 finish_reason = chunk_finish_reason
 
@@ -4327,24 +4448,22 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             )
             agent._disable_streaming = True
             choices = final_response.choices
-            first_choice = (
-                choices[0]
-                if isinstance(choices, (list, tuple)) and choices
-                else None
-            )
-            message = getattr(first_choice, "message", None)
-            if message is not None and is_valid_chat_completion_response(final_response):
-                reasoning_text = (
-                    getattr(message, "reasoning_content", None)
-                    or getattr(message, "reasoning", None)
-                )
-                if isinstance(reasoning_text, str) and reasoning_text:
-                    _fire_first_delta()
-                    agent._fire_reasoning_delta(reasoning_text)
-                content = getattr(message, "content", None)
-                if isinstance(content, str) and content:
-                    _fire_first_delta()
-                    agent._fire_stream_delta(content)
+            if is_valid_chat_completion_response(final_response):
+                for choice in choices if isinstance(choices, (list, tuple)) else []:
+                    message = getattr(choice, "message", None)
+                    if message is None:
+                        continue
+                    reasoning_text = (
+                        getattr(message, "reasoning_content", None)
+                        or getattr(message, "reasoning", None)
+                    )
+                    if isinstance(reasoning_text, str) and reasoning_text:
+                        _fire_first_delta()
+                        agent._fire_reasoning_delta(reasoning_text)
+                    content = getattr(message, "content", None)
+                    if isinstance(content, str) and content:
+                        _fire_first_delta()
+                        agent._fire_stream_delta(content)
             return final_response
 
         # Build mock response matching non-streaming shape
@@ -4406,6 +4525,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             and not content_parts
             and not reasoning_parts
             and not tool_calls_acc
+            and not additional_choice_states
         ):
             raise EmptyStreamError(
                 "Provider returned an empty stream with no finish_reason "
@@ -4493,14 +4613,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             reasoning_content=full_reasoning,
         )
         mock_choice = SimpleNamespace(
-            index=0,
+            index=primary_choice_index if primary_choice_index is not None else 0,
             message=mock_message,
             finish_reason=effective_finish_reason,
         )
         response = SimpleNamespace(
             id="stream-" + str(uuid.uuid4()),
             model=model_name,
-            choices=[mock_choice],
+            choices=[mock_choice, *_materialize_additional_choices()],
             usage=usage_obj,
         )
         _flush_valid_timeout_prefix(response)

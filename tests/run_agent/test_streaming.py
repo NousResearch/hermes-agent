@@ -354,8 +354,7 @@ class TestStreamingCallbacks:
         "content_chunks",
         [
             ["Connect timeout, please ", "try again later."],
-            [" ", "Connect timeout, please ", "try again later."],
-            [" \nConnect timeout, please ", "try again later.", "\t"],
+            ["Connect ", "timeout, please try ", "again later."],
         ],
     )
     @patch("run_agent.AIAgent._create_request_openai_client")
@@ -392,10 +391,10 @@ class TestStreamingCallbacks:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_generated_whitespace_padded_timeout_text_is_emitted_after_validation(
+    def test_whitespace_padded_timeout_text_is_emitted_from_raw_stream(
         self, mock_close, mock_create
     ):
-        """Finite positive usage releases the entire held candidate unchanged."""
+        """Raw whitespace evidence releases the held candidate unchanged."""
         from run_agent import AIAgent
 
         content_chunks = [
@@ -404,7 +403,7 @@ class TestStreamingCallbacks:
         chunks = [_make_stream_chunk(content=part) for part in content_chunks]
         chunks[-1].choices[0].finish_reason = "stop"
         chunks.append(_make_empty_chunk(
-            usage=SimpleNamespace(completion_tokens=1)
+            usage=SimpleNamespace(completion_tokens=0)
         ))
         deltas = []
         mock_client = MagicMock()
@@ -424,6 +423,64 @@ class TestStreamingCallbacks:
         assert response.choices[0].message.content == expected
         assert agent._get_transport().validate_response(response) is True
         assert "".join(deltas) == expected
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_multiple_stream_choices_preserve_and_release_valid_output(
+        self, mock_close, mock_create
+    ):
+        """A sentinel alternative must not erase a second valid choice."""
+        from run_agent import AIAgent
+
+        def choice(index, content, finish_reason="stop"):
+            return SimpleNamespace(
+                index=index,
+                delta=SimpleNamespace(
+                    content=content,
+                    tool_calls=None,
+                    reasoning_content=None,
+                    reasoning=None,
+                ),
+                finish_reason=finish_reason,
+            )
+
+        chunks = [
+            SimpleNamespace(
+                choices=[choice(0, "Connect timeout, please try again later.")],
+                model="test/model",
+                usage=None,
+            ),
+            SimpleNamespace(
+                choices=[choice(1, "valid second choice")],
+                model="test/model",
+                usage=None,
+            ),
+            _make_empty_chunk(usage=SimpleNamespace(completion_tokens=0)),
+        ]
+        deltas = []
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=deltas.append,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert [choice.message.content for choice in response.choices] == [
+            "Connect timeout, please try again later.",
+            "valid second choice",
+        ]
+        assert agent._get_transport().validate_response(response) is True
+        assert "valid second choice" in "".join(deltas)
 
 
 

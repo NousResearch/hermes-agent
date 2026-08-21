@@ -522,6 +522,27 @@ class TestChatCompletionsValidate:
         assert transport.validate_response(response) is True
 
     @pytest.mark.parametrize(
+        "content",
+        [
+            " Connect timeout, please try again later.",
+            "Connect timeout, please try again later. ",
+            "\nConnect timeout, please try again later.\t",
+        ],
+    )
+    def test_accepts_whitespace_padded_timeout_text_as_raw_model_output(
+        self, transport, content
+    ):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content=content,
+                tool_calls=None,
+            ))],
+            usage=SimpleNamespace(completion_tokens=0),
+        )
+
+        assert transport.validate_response(response) is True
+
+    @pytest.mark.parametrize(
         "usage",
         [
             SimpleNamespace(completion_tokens=float("inf")),

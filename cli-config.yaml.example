@@ -868,6 +868,17 @@ session_reset:
 # local runtime lease registry cannot be read or locked.
 max_concurrent_sessions: null
 
+# Worker threads in the gateway's agent-turn executor. Each synchronous
+# messaging turn (Telegram, Discord, webhook routes, ...) occupies one worker
+# for its entire duration — model streaming and approval waits included — so
+# this bounds how many turns run concurrently. Raise it on high-traffic
+# installs where interactive chats queue behind long-running automated turns;
+# note that more workers means more simultaneous model API calls (provider
+# rate limits) and more concurrent session-store writes. Also settable as
+# gateway.agent_executor_workers; invalid or non-positive values fall back
+# to the default of 10.
+agent_executor_workers: 10
+
 # When true, group/channel chats use one session per participant when the platform
 # provides a user ID. This is the secure default and prevents users in the same
 # room from sharing context, interrupts, and token costs. Set false only if you

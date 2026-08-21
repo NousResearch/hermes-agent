@@ -24475,8 +24475,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 raise RuntimeError("Gateway is shutting down; executor unavailable")
             executor = getattr(self, "_executor", None)
             if executor is None or getattr(executor, "_shutdown", False):
+                # Sized from gateway.agent_executor_workers (#38909 planned a
+                # configurable size for this pool; the knob is wired here).
+                # Every synchronous messaging turn holds one worker for its
+                # whole duration, so this bounds turn concurrency gateway-wide.
+                max_workers = getattr(
+                    self.config, "agent_executor_workers", 10
+                ) or 10
+                logger.info(
+                    "Gateway agent executor starting with max_workers=%d",
+                    max_workers,
+                )
                 executor = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=10,
+                    max_workers=max_workers,
                     thread_name_prefix="hermes-gateway",
                 )
                 self._executor = executor

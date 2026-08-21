@@ -28,6 +28,40 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
+def _unwrap_cline_data(response: Any) -> Any:
+    """Recover usable choices from ClinePass's non-stream ``{"data": {...}}`` wrapper.
+
+    ClinePass (api.cline.bot), a Vercel aggregator, wraps every NON-streaming
+    chat-completions response in ``{"data": {"choices": [...]}, "success": true}``.
+    The OpenAI SDK parses that into a ``ChatCompletion`` whose top-level
+    ``choices`` is ``None`` — the real payload is stashed in ``model_extra`` as
+    ``{"data": {"choices": ...}}``. Streaming responses are standard OpenAI
+    shape and are unaffected.
+
+    This unwraps the raw body back into a proper ``ChatCompletion`` so
+    ``validate_response``/``normalize_response`` see real choices. It is a
+    strict no-op for standard OpenAI responses (``choices`` already present)
+    and for any response that lacks the ``data`` wrapper.
+    """
+    if response is None:
+        return response
+    # Standard path: choices present → nothing to do. Preserve the object.
+    if getattr(response, "choices", None):
+        return response
+    # ClinePass wrapper: SDK stashed raw body in model_extra as {"data": {...}}.
+    extra = getattr(response, "model_extra", None) or {}
+    data = extra.get("data") if isinstance(extra, dict) else None
+    if not (isinstance(data, dict) and data.get("choices")):
+        return response
+    try:
+        from openai.types.chat import ChatCompletion
+
+        return ChatCompletion.model_validate(data)
+    except Exception:
+        # Never mask the original response on a rebuild failure.
+        return response
+
+
 def _static_prompt_instructions(messages: list[dict[str, Any]]) -> str:
     """Return the stable system/developer prefix used for cache routing.
 
@@ -885,6 +919,8 @@ class ChatCompletionsTransport(ProviderTransport):
         unified format) and reasoning_content (DeepSeek/Moonshot) are also
         preserved for downstream replay.
         """
+        # ClinePass wraps non-stream responses — recover real choices first.
+        response = _unwrap_cline_data(response)
         choice = response.choices[0]
         msg = getattr(choice, "message", None)
         # Poolside returns integer finish_reason (e.g. 24) instead of string
@@ -1012,6 +1048,8 @@ class ChatCompletionsTransport(ProviderTransport):
         """Check that response has valid choices."""
         if response is None:
             return False
+        # ClinePass wraps non-stream responses — recover real choices first.
+        response = _unwrap_cline_data(response)
         if not hasattr(response, "choices") or response.choices is None:
             return False
         if not response.choices:

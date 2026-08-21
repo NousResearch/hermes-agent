@@ -45,7 +45,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from typing import Awaitable, Callable, Dict, Optional, Any, List, Tuple, Union, cast
+from typing import Awaitable, Callable, Dict, Optional, Any, List, Set, Tuple, Union, cast
 
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
 from agent.conversation_compression import (
@@ -2199,6 +2199,15 @@ class MultiplexConfigError(RuntimeError):
 
 class SecondaryPortBindingConfigError(MultiplexConfigError):
     """A secondary profile conflicts with the multiplexer's shared listener."""
+
+
+class ProfileConnectivityError(MultiplexConfigError):
+    """A served profile did not come online and the operator demanded it.
+
+    Only raised when ``gateway.require_all_profiles_connected`` is on: adapter
+    failures are otherwise logged and skipped, which is right for one profile
+    and wrong once one process serves several.
+    """
 
 
 def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
@@ -6865,6 +6874,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # sites are untouched when multiplexing is off (this dict is empty).
         # Populated by _start_secondary_profile_adapters().
         self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
+        # Per-profile startup failures, read only by
+        # _assert_all_profiles_connected(); empty unless something failed.
+        self._profile_startup_failures: Dict[str, List[str]] = {}
+        # Profiles served only through the shared Relay ingress, which end
+        # startup with zero adapters by design rather than by failure.
+        self._profile_relay_served: Set[str] = set()
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
@@ -15176,10 +15191,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if isinstance(retry_claim, tuple):
                     claimed[retry_claim] = active
 
+        self._profile_startup_failures = {}
         profile_homes = _multiplex_profile_homes(self.config)
+        served_secondaries: List[str] = []
         for profile_name, profile_home in profile_homes:
             if profile_name == active:
                 continue  # handled by the primary startup loop
+            served_secondaries.append(profile_name)
             try:
                 connected += await self._start_one_profile_adapters(
                     profile_name, profile_home, claimed
@@ -15190,6 +15208,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     profile_name,
                     e,
                 )
+                self._record_profile_startup_failure(
+                    profile_name, "*", f"port-binding config error: {e}"
+                )
             except MultiplexConfigError:
                 raise
             except Exception as e:
@@ -15197,6 +15218,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Failed to start adapters for profile '%s': %s",
                     profile_name, e, exc_info=True,
                 )
+                self._record_profile_startup_failure(
+                    profile_name, "*", f"profile startup raised {e}"
+                )
+
+        self._assert_all_profiles_connected(served_secondaries, active)
 
         # Record the authoritative served set in runtime status for `hermes status`.
         # "Served" means eligible for shared routing, HTTP prefixes, cron, and
@@ -15225,11 +15251,99 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return connected
 
+    def _assert_all_profiles_connected(
+        self, served_secondaries: List[str], active: str = ""
+    ) -> None:
+        """Refuse to finish startup with a served profile offline.
+
+        No-op unless ``gateway.require_all_profiles_connected`` is set; the
+        default log-and-continue behavior is kept for everyone else. A profile
+        fails the check when it recorded any adapter failure *or* ended startup
+        with zero connected adapters.
+
+        The *active* profile is covered too when its name is passed; its
+        adapters come up in the primary startup loop, so its state is read from
+        ``self.adapters`` and ``self._failed_platforms`` instead. Leaving it out
+        would let a multiplexed host pass this gate with the active profile
+        offline. A Relay-only profile is exempt from the zero-adapters rule:
+        multiplex mode skips its Relay adapter by design (see
+        ``_start_one_profile_adapters``), so an empty map is expected.
+        """
+        # Only a literal True arms this. Its effect is to ABORT startup, so it
+        # must not be armable by a config object whose attribute access returns
+        # a truthy sentinel rather than a stored value (duck-typed configs and
+        # MagicMock test runners both do). GatewayConfig stores a real bool
+        # here via _coerce_bool, so the strict check is free on that path.
+        if getattr(self.config, "require_all_profiles_connected", False) is not True:
+            return
+
+        recorded = getattr(self, "_profile_startup_failures", None) or {}
+        relay_served = getattr(self, "_profile_relay_served", None) or set()
+        no_adapter_reason = (
+            "no platform adapter connected (check that this profile's "
+            "config.yaml enables a platform and its credentials are present)"
+        )
+        offline: Dict[str, List[str]] = {}
+        for profile_name in served_secondaries:
+            reasons = list(recorded.get(profile_name, ()))
+            if (
+                not self._profile_adapters.get(profile_name)
+                and profile_name not in relay_served
+            ):
+                reasons.append(no_adapter_reason)
+            if reasons:
+                offline[profile_name] = reasons
+
+        checked = len(served_secondaries) + (1 if active else 0)
+        if active:
+            active_reasons = [
+                f"{platform.value}: queued for background reconnection"
+                for platform in getattr(self, "_failed_platforms", {})
+            ]
+            if not self.adapters and active not in relay_served:
+                active_reasons.append(no_adapter_reason)
+            if active_reasons:
+                offline[active] = active_reasons
+
+        if not offline:
+            logger.info(
+                "[MULTIPLEX] require_all_profiles_connected: all %d served "
+                "profile(s) connected",
+                checked,
+            )
+            return
+
+        detail = "; ".join(
+            f"{name} ({', '.join(reasons)})" for name, reasons in sorted(offline.items())
+        )
+        raise ProfileConnectivityError(
+            f"gateway.require_all_profiles_connected is on and "
+            f"{len(offline)} of {checked} served profile(s) did "
+            f"not come online: {detail}. Fix the profile(s) or turn the flag off."
+        )
+
+    def _record_profile_startup_failure(
+        self, profile_name: str, platform_value: str, reason: str
+    ) -> None:
+        """Note that one of *profile_name*'s platforms did not come online.
+
+        Recorded unconditionally so the log-and-continue path and the
+        assertion cannot drift apart; only consulted when the flag is on.
+        """
+        failures = getattr(self, "_profile_startup_failures", None)
+        if failures is None:
+            failures = {}
+            self._profile_startup_failures = failures
+        failures.setdefault(profile_name, []).append(f"{platform_value}: {reason}")
+
     async def _start_one_profile_adapters(
         self, profile_name: str, profile_home: "Path", claimed: Dict[tuple, str]
     ) -> int:
         """Create+connect one profile's adapters under its runtime scope."""
         from gateway.config import load_gateway_config
+
+        def _record_failure(platform_value: str, reason: str) -> None:
+            self._record_profile_startup_failure(profile_name, platform_value, reason)
 
         with _profile_runtime_scope(profile_home):
             profile_runtime_cfg = _load_gateway_runtime_config()
@@ -15276,6 +15390,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 getattr(self.config, "multiplex_profiles", False)
                 and platform is Platform.RELAY
             ):
+                # Note the skip: a Relay-only profile ends this loop with zero
+                # adapters by design, which the connectivity assertion must
+                # tell apart from "everything failed".
+                self._profile_relay_served = (
+                    getattr(self, "_profile_relay_served", None) or set()
+                )
+                self._profile_relay_served.add(profile_name)
                 continue
             try:
                 with _profile_runtime_scope(profile_home):
@@ -15288,6 +15409,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     e,
                     exc_info=True,
                 )
+                _record_failure(platform.value, f"adapter creation raised {e}")
                 continue
             if not adapter:
                 logger.warning(
@@ -15295,6 +15417,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     profile_name,
                     platform.value,
                 )
+                _record_failure(platform.value, "adapter creation returned None")
                 continue
 
             # Same-token conflict detection — refuse a duplicate poll.
@@ -15324,6 +15447,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # resources to clean up. Calling disconnect here can mutate
                     # the shared platform state and, for a same-credential Photon
                     # adapter, shut down the primary profile's live sidecar.
+                    _record_failure(
+                        platform.value,
+                        f"same credential already claimed by profile '{owner}'",
+                    )
                     continue
 
             listener_claim = self._adapter_listener_claim(platform, adapter)
@@ -15357,6 +15484,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     # Like credential conflicts, this adapter never connected
                     # and owns no resources that should be disconnected.
+                    _record_failure(
+                        platform.value,
+                        f"sidecar {bind}:{port} already claimed by profile '{owner}'",
+                    )
                     continue
 
             self._configure_profile_adapter(adapter, profile_name, platform)
@@ -15376,9 +15507,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
                 else:
                     logger.warning("✗ %s failed to connect (profile: %s)", platform.value, profile_name)
+                    _record_failure(platform.value, "failed to connect")
                     await self._safe_adapter_disconnect(adapter, platform)
             except Exception as e:
                 logger.error("✗ %s error (profile: %s): %s", platform.value, profile_name, e)
+                _record_failure(platform.value, f"connect raised {e}")
                 await self._safe_adapter_disconnect(adapter, platform)
         return connected
 

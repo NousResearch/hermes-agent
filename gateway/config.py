@@ -973,6 +973,11 @@ class GatewayConfig:
     # Optional named-profile allowlist for multiplex mode. None preserves the
     # historical serve-all behavior; [] serves only the default profile.
     multiplex_profile_allowlist: Optional[List[str]] = None
+    # Refuse to finish startup when a served profile has no adapter online.
+    # Off by default: one flaky token should not stop a single-profile gateway.
+    # Operators serving several profiles from one process turn it on because
+    # "gateway healthy, one profile unreachable" looks identical to working.
+    require_all_profiles_connected: bool = False
 
     # Opt-in systemd event-loop watchdog. Zero preserves Type=simple and
     # disables sd_notify at runtime.
@@ -1122,6 +1127,7 @@ class GatewayConfig:
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
             "multiplex_profile_allowlist": self.multiplex_profile_allowlist,
+            "require_all_profiles_connected": self.require_all_profiles_connected,
             "systemd_watchdog_seconds": self.systemd_watchdog_seconds,
             "loop_watchdog": self.loop_watchdog,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
@@ -1193,6 +1199,10 @@ class GatewayConfig:
             multiplex_profile_allowlist = nested_gateway.get(
                 "multiplex_profile_allowlist"
             )
+        if "require_all_profiles_connected" in data:
+            require_all_raw = data.get("require_all_profiles_connected")
+        else:
+            require_all_raw = nested_gateway.get("require_all_profiles_connected")
         if "systemd_watchdog_seconds" in data:
             systemd_watchdog_raw = data.get("systemd_watchdog_seconds")
             systemd_watchdog_key = "systemd_watchdog_seconds"
@@ -1267,6 +1277,7 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
             multiplex_profile_allowlist=multiplex_profile_allowlist,
+            require_all_profiles_connected=_coerce_bool(require_all_raw, False),
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             loop_watchdog=loop_watchdog,
             max_concurrent_sessions=max_concurrent_sessions,
@@ -1421,6 +1432,12 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["multiplex_profile_allowlist"] = gateway_section[
                     "multiplex_profile_allowlist"
                 ]
+
+            _rapc = yaml_cfg.get("require_all_profiles_connected")
+            if _rapc is None and isinstance(gateway_section, dict):
+                _rapc = gateway_section.get("require_all_profiles_connected")
+            if _rapc is not None:
+                gw_data["require_all_profiles_connected"] = _rapc
 
             # Profile-based routing rules: accept either top-level
             # ``profile_routes`` or the nested ``gateway.profile_routes`` form

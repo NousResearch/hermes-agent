@@ -3065,6 +3065,21 @@ def _read_proc_cmdline(pid: int) -> Optional[str]:
         return None
 
 
+_HERMES_CMDLINE_MARKERS = ("hermes_cli.main", "hermes_cli/main", "hermes serve",
+                           "hermes-agent", "hermes gateway", "hermes chat")
+
+
+def _looks_like_hermes(cmdline: str) -> bool:
+    """Heuristic: does this cmdline look like a Hermes process?
+
+    Used to decide whether an uninspectable process (fd table unreadable
+    due to different user) should be treated as a potential state.db holder.
+    We only flag processes that look like Hermes, not every system daemon.
+    """
+    lower = cmdline.lower()
+    return any(marker in lower for marker in _HERMES_CMDLINE_MARKERS)
+
+
 # Lifecycle statuses surfaced by session pickers. Classification looks ONLY at
 # a session's final message row — role, whether it carries tool_calls, and its
 # finish_reason — so it stays O(1) per session (see
@@ -4283,9 +4298,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         # Cannot read this process's fd table (different
                         # user, e.g. root gateway vs user desktop).
                         # /proc/<pid>/cmdline is world-readable by default,
-                        # so check whether this is a Hermes process.
+                        # so check whether this is a Hermes process —
+                        # only flag uninspectable holders that look like
+                        # another Hermes instance, not every system daemon.
                         cmdline = _read_proc_cmdline(pid)
-                        if cmdline is not None:
+                        if cmdline is not None and _looks_like_hermes(cmdline):
                             holders.append((pid, f"uninspectable holder: {cmdline[:80]}"))
                         continue
                     for fd in fds:

@@ -42,22 +42,18 @@ def _fmt_pending(pending: list) -> str:
 def _resolve_origin() -> Optional[Dict[str, Any]]:
     """Best-effort current-chat origin from session env (CLI and gateway both set it).
 
-    Mirrors cron's ``_origin_from_env`` so an accepted suggestion's job delivers
-    back to the chat where it was accepted. Returns None if unavailable, in
-    which case create_job falls back to a configured home channel.
+    Delegates to cron's canonical ``_origin_from_env`` (scope_id, user_id, the
+    Slack synthetic-per-message-thread guard — see its docstring) so an
+    accepted suggestion's job carries the exact same origin shape a job
+    created any other way does; a hand-rolled subset here previously baked a
+    scope_id-less / user_id-less origin into the job, breaking scoped Slack
+    workspace delivery. Returns None if unavailable, in which case create_job
+    falls back to a configured home channel.
     """
     try:
-        from gateway.session_context import get_session_env
+        from tools.cronjob_tools import _origin_from_env
 
-        platform = get_session_env("HERMES_SESSION_PLATFORM")
-        chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
-        if platform and chat_id:
-            return {
-                "platform": platform,
-                "chat_id": chat_id,
-                "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None,
-                "thread_id": get_session_env("HERMES_SESSION_THREAD_ID") or None,
-            }
+        return _origin_from_env()
     except Exception:
         pass
     return None

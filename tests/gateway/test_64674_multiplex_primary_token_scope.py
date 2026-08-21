@@ -11,6 +11,7 @@ this suite locks the complementary primary-path fixes:
 2. Primary startup skips token platforms that still have no credential under
    multiplex instead of connecting-and-failing forever.
 3. The reconnect watcher drops empty-token queued configs.
+4. Primary s...[truncated]
 """
 from __future__ import annotations
 
@@ -179,6 +180,88 @@ class TestPrimaryStartupSkipsEmptyTokenUnderMultiplex:
 
 class TestPrimaryMessageRuntimeScope:
     @pytest.mark.asyncio
+    async def test_shared_primary_route_uses_secondary_profile_allowlist(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import secret_scope
+        from gateway import run as run_mod
+        from gateway.config import Platform
+        from gateway.platforms.base import BasePlatformAdapter
+        from gateway.profile_routing import ProfileRoute
+        from gateway.run import GatewayRunner
+
+        default_home = tmp_path / "default"
+        secondary_home = default_home / "profiles" / "work"
+        default_home.mkdir()
+        secondary_home.mkdir(parents=True)
+        (default_home / ".env").write_text(
+            "DISCORD_ALLOWED_USERS=default-only\n", encoding="utf-8"
+        )
+        (secondary_home / ".env").write_text(
+            "DISCORD_ALLOWED_USERS=work-only\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(run_mod, "get_hermes_home", lambda: default_home)
+        secret_scope.set_multiplex_active(True)
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            multiplex_profiles=True,
+            profile_routes=[
+                ProfileRoute(
+                    name="work-chat",
+                    platform="discord",
+                    profile="work",
+                    chat_id="work-channel",
+                )
+            ],
+        )
+        runner.adapters = {}
+        runner._profile_adapters = {}
+        runner.pairing_store = None
+        runner.pairing_stores = {}
+
+        class _SharedDiscordAdapter(BasePlatformAdapter):
+            pass
+
+        _SharedDiscordAdapter.__abstractmethods__ = frozenset()
+        adapter = _SharedDiscordAdapter.__new__(_SharedDiscordAdapter)
+        adapter.platform = Platform.DISCORD
+        adapter.gateway_runner = runner
+        runner.adapters[Platform.DISCORD] = adapter
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda **_: [("default", default_home), ("work", secondary_home)],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir",
+            lambda name: secondary_home if name == "work" else default_home,
+        )
+        monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _name: True)
+        source = adapter.build_source(
+            chat_id="work-channel",
+            chat_type="group",
+            user_id="default-only",
+        )
+        allowed_source = adapter.build_source(
+            chat_id="work-channel",
+            chat_type="group",
+            user_id="work-only",
+        )
+
+        assert source.profile == "work"
+        assert allowed_source.profile == "work"
+
+        async def _handle_message(event):
+            return runner._is_user_authorized(event.source)
+
+        runner._handle_message = _handle_message  # type: ignore[method-assign]
+        handler = runner._primary_message_handler()
+
+        assert await handler(SimpleNamespace(source=source)) is False
+        assert await handler(SimpleNamespace(source=allowed_source)) is True
+
+    @pytest.mark.asyncio
     async def test_default_profile_prompt_gate_sees_its_scoped_token(
         self, tmp_path, monkeypatch
     ):
@@ -200,6 +283,7 @@ class TestPrimaryMessageRuntimeScope:
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._resolve_profile_home_for_source = lambda _source: home
 
         async def _handle_message(_event):
             from gateway.session import _discord_tools_loaded

@@ -994,7 +994,7 @@ class EmailAdapter(BasePlatformAdapter):
         truthy = {"true", "1", "yes"}
         return (
             _get_secret("EMAIL_ALLOW_ALL_USERS", "").strip().lower() in truthy
-            or os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in truthy
+            or _get_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in truthy
         )
 
     @staticmethod
@@ -1009,7 +1009,7 @@ class EmailAdapter(BasePlatformAdapter):
         """
         return bool(
             _get_secret("EMAIL_ALLOWED_USERS", "").strip()
-            or os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+            or _get_secret("GATEWAY_ALLOWED_USERS", "").strip()
         )
 
     async def _dispatch_message(self, msg_data: Dict[str, Any]) -> None:
@@ -1033,7 +1033,7 @@ class EmailAdapter(BasePlatformAdapter):
         allowed_raw = _get_secret("EMAIL_ALLOWED_USERS", "").strip()
         if not allowed_raw:
             if _get_secret("EMAIL_ALLOW_ALL_USERS", "").strip().lower() not in {"true", "1", "yes"} and (
-                os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() not in {"true", "1", "yes"}
+                _get_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() not in {"true", "1", "yes"}
             ):
                 logger.debug(
                     "[Email] Dropping sender at dispatch — EMAIL_ALLOWED_USERS is unset "

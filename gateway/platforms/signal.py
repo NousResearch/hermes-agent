@@ -57,8 +57,18 @@ from gateway.platforms.signal_rate_limit import (
     _signal_send_timeout,
     get_scheduler,
 )
+from agent.secret_scope import UnscopedSecretError, get_secret
 
 logger = logging.getLogger(__name__)
+
+
+def _startup_env_secret(name: str, default: str = "") -> str:
+    """Scope-aware Signal gate read with the default-profile startup fallback."""
+    try:
+        val = get_secret(name, default)
+        return ("" if val is None else str(val)).strip()
+    except UnscopedSecretError:
+        return os.getenv(name, default).strip()
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -268,7 +278,7 @@ class SignalAdapter(BasePlatformAdapter):
         self.ignore_stories = extra.get("ignore_stories", True)
 
         # Parse allowlists — group policy is derived from presence of group allowlist
-        group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
+        group_allowed_str = _startup_env_secret("SIGNAL_GROUP_ALLOWED_USERS", "")
         self.group_allow_from = set(_parse_comma_list(group_allowed_str))
 
         # Mention filter — only respond in groups when the bot account is @mentioned.
@@ -277,16 +287,32 @@ class SignalAdapter(BasePlatformAdapter):
         if _rm_cfg is not None:
             self.require_mention = bool(_rm_cfg)
         else:
-            self.require_mention = os.getenv("SIGNAL_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+            self.require_mention = _startup_env_secret("SIGNAL_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
 
         # DM allowlist — mirrors SIGNAL_ALLOWED_USERS checked by run.py.
         # Stored here so the reaction hooks can skip unauthorized senders
-        # (reactions fire before run.py's auth gate, so without this check
-        # every inbound DM from any contact gets a 👀 reaction).
-        # "*" means all users allowed (open mode); empty means no restriction
-        # recorded at adapter level (run.py still enforces auth separately).
-        dm_allowed_str = os.getenv("SIGNAL_ALLOWED_USERS", "*")
-        self.dm_allow_from = set(_parse_comma_list(dm_allowed_str))
+        # (reactions fire before run.py's auth gate). Scoped secret >
+        # YAML extra > unscoped process env. A scoped miss stays empty;
+        # "*" is only an explicit open-access opt-in.
+        try:
+            from agent.secret_scope import current_secret_scope, is_multiplex_active
+            if is_multiplex_active() and current_secret_scope() is not None:
+                scope = current_secret_scope()
+                if "SIGNAL_ALLOWED_USERS" in scope:
+                    dm_allowed_raw = scope.get("SIGNAL_ALLOWED_USERS") or ""
+                elif extra.get("allowed_users") is not None:
+                    dm_allowed_raw = extra.get("allowed_users")
+                else:
+                    dm_allowed_raw = ""
+            else:
+                dm_allowed_raw = extra.get("allowed_users")
+                if dm_allowed_raw is None:
+                    dm_allowed_raw = _startup_env_secret("SIGNAL_ALLOWED_USERS", "")
+        except Exception:
+            dm_allowed_raw = extra.get("allowed_users")
+            if dm_allowed_raw is None:
+                dm_allowed_raw = _startup_env_secret("SIGNAL_ALLOWED_USERS", "")
+        self.dm_allow_from = set(_parse_comma_list(str(dm_allowed_raw)))
 
         # HTTP client
         self.client: Optional[httpx.AsyncClient] = None
@@ -1635,16 +1661,17 @@ class SignalAdapter(BasePlatformAdapter):
 
         Two gates:
         1. SIGNAL_REACTIONS env var — set to false/0/no to disable globally.
-        2. DM allowlist — if SIGNAL_ALLOWED_USERS is set, only react to
-           messages from senders in that list.  This prevents unauthorized
-           contacts from seeing the 👀 reaction (which fires before run.py's
-           auth gate and would otherwise reveal that a bot is listening).
+        2. DM allowlist — react only to senders in SIGNAL_ALLOWED_USERS.
+           Empty (scoped miss / no allowlist) is closed: no pre-auth 👀.
+           Explicit "*" remains the open-access opt-in.
         """
-        if os.getenv("SIGNAL_REACTIONS", "true").lower() in {"false", "0", "no"}:
+        if _startup_env_secret("SIGNAL_REACTIONS", "true").lower() in {"false", "0", "no"}:
             return False
         if event is not None:
             sender = getattr(getattr(event, "source", None), "user_id", None)
-            if sender and "*" not in self.dm_allow_from and sender not in self.dm_allow_from:
+            if "*" in self.dm_allow_from:
+                return True
+            if not sender or sender not in self.dm_allow_from:
                 return False
         return True
 

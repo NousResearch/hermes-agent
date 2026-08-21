@@ -97,8 +97,19 @@ from gateway.platforms.yuanbao_proto import (
     next_seq_no,
 )
 from gateway.session import build_session_key
+from agent.secret_scope import UnscopedSecretError, get_secret
 
 logger = logging.getLogger(__name__)
+
+
+def _yb_secret(name: str, default: str = "") -> str:
+    """Scope-aware YUANBAO_* / GATEWAY_* read with unscoped startup fallback."""
+    try:
+        val = get_secret(name, default)
+    except UnscopedSecretError:
+        val = os.getenv(name)
+    return ("" if val is None else str(val))
+
 
 # ---------------------------------------------------------------------------
 # Version / platform constants (used in AUTH_BIND and sign-token headers)
@@ -1282,9 +1293,9 @@ class AccessPolicy:
         self._group_allow_from = group_allow_from
 
     def _open_dm_opted_in(self) -> bool:
-        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+        if _yb_secret("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
             return True
-        return os.getenv("YUANBAO_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+        return _yb_secret("YUANBAO_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
 
     def is_dm_allowed(self, sender_id: str) -> bool:
         """Strict DM authorization — pairing does not imply access."""

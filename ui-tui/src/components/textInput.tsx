@@ -48,7 +48,47 @@ const PRINTABLE = /^[ -~\u00a0-\uffff]+$/
 const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
 const FRAME_BATCH_MS = 16
 const MULTI_CLICK_MS = 500
+const RAPID_INPUT_WINDOW_MS = 32
+const RAPID_INPUT_THRESHOLD = 8
+const RAPID_INPUT_IDLE_RESET_MS = 50
+const OUTSTANDING_PARENT_ECHOES_MAX = 64
 type MinimalEnv = Record<string, string | undefined>
+
+export interface PrintableBurstState {
+  count: number
+  lastAt: number
+  rapid: boolean
+  startedAt: number
+}
+
+export function advancePrintableBurst(
+  previous: PrintableBurstState | null,
+  now: number
+): { rapid: boolean; state: PrintableBurstState } {
+  if (!previous || now - previous.lastAt > RAPID_INPUT_IDLE_RESET_MS) {
+    const state = { count: 1, lastAt: now, rapid: false, startedAt: now }
+
+    return { rapid: false, state }
+  }
+
+  if (previous.rapid) {
+    const state = { ...previous, lastAt: now }
+
+    return { rapid: true, state }
+  }
+
+  if (now - previous.startedAt > RAPID_INPUT_WINDOW_MS) {
+    const state = { count: 1, lastAt: now, rapid: false, startedAt: now }
+
+    return { rapid: false, state }
+  }
+
+  const count = previous.count + 1
+  const rapid = count >= RAPID_INPUT_THRESHOLD
+  const state = { count, lastAt: now, rapid, startedAt: previous.startedAt }
+
+  return { rapid, state }
+}
 
 const invert = (s: string) => INV + s + INV_OFF
 
@@ -799,8 +839,9 @@ export function TextInput({
   const curRef = useRef(cur)
   const selRef = useRef<null | { end: number; start: number }>(null)
   const vRef = useRef(value)
-  const self = useRef(false)
+  const outstandingParentEchoesRef = useRef<string[]>([])
   const keyBurstTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const printableBurstRef = useRef<PrintableBurstState | null>(null)
   const editVersionRef = useRef(0)
   const parentChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingParentValue = useRef<string | null>(null)
@@ -827,7 +868,9 @@ export function TextInput({
   cbSubmit.current = onSubmit
   cbPaste.current = onPaste
 
-  const raw = self.current ? vRef.current : value
+  const raw =
+    pendingParentValue.current !== null || outstandingParentEchoesRef.current.includes(value) ? vRef.current : value
+
   const display = mask ? raw.replace(/[^\n]/g, mask[0] ?? '*') : raw
 
   const selected = useMemo(
@@ -919,11 +962,46 @@ export function TextInput({
   }, [accentOpen, cur, display, focus, highlights, nativeCursor, placeholder, placeholderColor, selected])
 
   useEffect(() => {
-    const ownEcho = self.current && value === vRef.current
-    self.current = false
+    const echoes = outstandingParentEchoesRef.current
+    const echoIndex = echoes.indexOf(value)
 
-    if (ownEcho) {
+    if (echoIndex >= 0) {
+      const lastEchoIndex = echoes.lastIndexOf(value)
+
+      if (lastEchoIndex > echoIndex) {
+        // A → B → A followed by one coalesced A acknowledgement means the
+        // newer A superseded every emission before it; remove that whole
+        // prefix so stale B cannot later mask an intentional external reset.
+        echoes.splice(0, lastEchoIndex + 1)
+      } else {
+        // A unique occurrence may still arrive out of order (B before A), so
+        // consume only that exact expected echo and leave the others pending.
+        echoes.splice(echoIndex, 1)
+      }
+
       return
+    }
+
+    // A value not emitted by this TextInput is an external reset/update. It
+    // wins over any queued local frame: otherwise that timer fires after the
+    // reset and sends stale pre-reset text back to the parent.
+    outstandingParentEchoesRef.current = []
+    pendingParentValue.current = null
+    printableBurstRef.current = null
+
+    if (parentChangeTimer.current) {
+      clearTimeout(parentChangeTimer.current)
+      parentChangeTimer.current = null
+    }
+
+    if (keyBurstTimer.current) {
+      clearTimeout(keyBurstTimer.current)
+      keyBurstTimer.current = null
+    }
+
+    if (localRenderTimer.current) {
+      clearTimeout(localRenderTimer.current)
+      localRenderTimer.current = null
     }
 
     setCur(value.length)
@@ -1029,8 +1107,17 @@ export function TextInput({
     pendingParentValue.current = null
 
     if (next !== null) {
-      self.current = true
+      rememberParentEmission(next)
       cbChange.current(next)
+    }
+  }
+
+  const rememberParentEmission = (next: string) => {
+    const outstanding = outstandingParentEchoesRef.current
+    outstanding.push(next)
+
+    if (outstanding.length > OUTSTANDING_PARENT_ECHOES_MAX) {
+      outstanding.splice(0, outstanding.length - OUTSTANDING_PARENT_ECHOES_MAX)
     }
   }
 
@@ -1122,7 +1209,7 @@ export function TextInput({
     if (next !== prev) {
       if (syncParent) {
         flushParentChange()
-        self.current = true
+        rememberParentEmission(next)
         cbChange.current(next)
         // A full Ink repaint just happened. Mark it so any fast-echo backspace
         // later in this IME recompose burst is suppressed (it would write
@@ -1143,7 +1230,6 @@ export function TextInput({
           inkRepaintedRef.current = false
         }, 60)
       } else {
-        self.current = true
         scheduleParentChange(next)
       }
     }
@@ -1408,6 +1494,7 @@ export function TextInput({
       }
 
       if (k.return) {
+        printableBurstRef.current = null
         flushKeyBurst()
 
         const range = selRange()
@@ -1438,6 +1525,16 @@ export function TextInput({
 
       const isPrintableInput =
         (event.keypress.isPasted || inp.length > 0) && PRINTABLE.test(inp.replace(BRACKET_PASTE, ''))
+
+      let batchRapidPrintable = false
+
+      if (isPrintableInput && !event.keypress.isPasted && inp.length === 1) {
+        const sample = advancePrintableBurst(printableBurstRef.current, Date.now())
+        printableBurstRef.current = sample.state
+        batchRapidPrintable = sample.rapid
+      } else if (!isPrintableInput) {
+        printableBurstRef.current = null
+      }
 
       if (!isPrintableInput) {
         flushKeyBurst()
@@ -1642,7 +1739,7 @@ export function TextInput({
             v = inserted.value
             c = inserted.cursor
 
-            if (simpleAppend) {
+            if (simpleAppend && !batchRapidPrintable) {
               const effect = fastAppendEffect(preInsertValue, preInsertCursor, text)
               // Same explicit fg as the Ink render (see the <Text color>) —
               // the bypass cell must not flash the terminal-default color. A
@@ -1668,6 +1765,18 @@ export function TextInput({
               // too far right (#cursor-drift).
               noteCursorAdvance(effect.advanceDelta)
               commit(v, c, true, false, false, lineWidthRef.current + stringWidth(text))
+
+              return
+            }
+
+            if (batchRapidPrintable) {
+              // Speech-to-text/uinput tools can deliver hundreds of discrete
+              // key events per second. One direct stdout write per key outruns
+              // the terminal and Ink renderer until their output queues appear
+              // frozen. Reuse the existing frame-batched commit path once a
+              // sustained machine-speed burst is detected: refs still advance
+              // for every key, while screen + parent updates coalesce at 16ms.
+              scheduleKeyBurstCommit(v, c)
 
               return
             }

@@ -11,6 +11,17 @@ function parseOne(sequence: string) {
   return keys[0]!
 }
 
+describe('Alt+Backspace decode contract', () => {
+  it('keeps meta when ESC and backspace arrive in separate stdin reads', () => {
+    const [prefixKeys, pending] = parseMultipleKeypresses(INITIAL_STATE, '\x1b')
+    const [keys] = parseMultipleKeypresses(pending, '\x7f')
+
+    expect(prefixKeys).toEqual([])
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).toMatchObject({ kind: 'key', meta: true, name: 'backspace' })
+  })
+})
+
 // The web dashboard maps Ctrl+Delete to ESC d (see
 // web/src/lib/pty-keyboard-shortcuts.ts). hermes-ink decodes that bare
 // meta-letter form via META_KEY_CODE_RE. If this contract ever changes the

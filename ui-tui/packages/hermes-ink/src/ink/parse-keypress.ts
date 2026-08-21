@@ -284,6 +284,37 @@ function inputToString(input: Buffer | string): string {
   }
 }
 
+/**
+ * Preserve Alt/Option+Backspace when ESC and DEL/BS cross stdin read
+ * boundaries. The tokenizer buffers the trailing ESC, then emits the completed
+ * pair as one text token on the next feed; the generic text splitter would
+ * otherwise turn it into standalone Escape + unmodified Backspace keys.
+ */
+function parseTextWithMetaBackspace(text: string): ParsedKey[] {
+  const keys: ParsedKey[] = []
+  let plainStart = 0
+
+  for (let index = 0; index + 1 < text.length; index++) {
+    if (text[index] !== '\x1b' || (text[index + 1] !== '\x7f' && text[index + 1] !== '\b')) {
+      continue
+    }
+
+    if (index > plainStart) {
+      keys.push(...parseTextKeypresses(text.slice(plainStart, index)))
+    }
+
+    keys.push(parseKeypress(text.slice(index, index + 2)))
+    index += 1
+    plainStart = index + 1
+  }
+
+  if (plainStart < text.length) {
+    keys.push(...parseTextKeypresses(text.slice(plainStart)))
+  }
+
+  return keys
+}
+
 export function parseMultipleKeypresses(
   prevState: KeyParseState,
   input: Buffer | string | null = ''
@@ -346,7 +377,7 @@ export function parseMultipleKeypresses(
         const resynthesized = '\x1b' + token.value
         keys.push(parseKeypress(resynthesized))
       } else {
-        keys.push(...parseTextKeypresses(token.value))
+        keys.push(...parseTextWithMetaBackspace(token.value))
       }
     }
   }

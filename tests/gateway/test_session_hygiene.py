@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import types
+from contextvars import ContextVar
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock
@@ -650,6 +651,11 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
+    profile_scope: ContextVar[str | None] = ContextVar(
+        "test_hygiene_profile_scope", default=None
+    )
+    worker_values = []
+
     stored_system_prompt = (
         "You are Hermes.\n\n"
         "<memory_provider_context>\n"
@@ -689,6 +695,7 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
             type(self).last_instance = self
 
         def _compress_context(self, messages, *_args, **_kwargs):
+            worker_values.append(profile_scope.get())
             assert self.compression_in_place is True
             assert self._session_db is fake_db
             assert self.platform == "gateway_hygiene"
@@ -772,9 +779,14 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
         lambda gw, key: (reset_calls.append(key), _real_reset(gw, key))[1],
     )
 
-    result = await runner._handle_message(event)
+    token = profile_scope.set("profile-secret-scope")
+    try:
+        result = await runner._handle_message(event)
+    finally:
+        profile_scope.reset(token)
 
     assert result == "ok"
+    assert worker_values == ["profile-secret-scope"]
     agent = FakeInPlaceCompressAgent.last_instance
     assert agent is not None
     async_session_db.get_session.assert_awaited_once_with("sess-1")

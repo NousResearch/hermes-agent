@@ -19527,8 +19527,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                                     loop = asyncio.get_running_loop()
                                     _hyg_commit_fence = CompressionCommitFence()
+                                    _hyg_context = copy_context()
                                     _hyg_future = loop.run_in_executor(
                                         None,
+                                        _hyg_context.run,
                                         lambda: _hyg_agent._compress_context(
                                             _hyg_msgs, "",
                                             approx_tokens=_approx_tokens,

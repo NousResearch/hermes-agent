@@ -8137,11 +8137,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 from gateway.platforms.base import _ssrf_redirect_guard
                 from tools.url_safety import create_ssrf_safe_async_client
 
+                _dl_headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "image/*,*/*;q=0.8",
+                }
                 async with create_ssrf_safe_async_client(
                     timeout=30.0,
                     event_hooks={"response": [_ssrf_redirect_guard]},
                 ) as client:
-                    resp = await client.get(image_url)
+                    resp = await client.get(image_url, headers=_dl_headers)
                     resp.raise_for_status()
                     image_data = resp.content
 

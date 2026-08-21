@@ -701,6 +701,61 @@ class TestPruning:
         total = len(registry._running) + len(registry._finished)
         assert total <= MAX_PROCESSES
 
+    def test_prune_keeps_consumed_marker_while_event_queued(self, registry):
+        """A consumed completion must not replay after pruning (#88905).
+
+        wait() records consumption in _completion_consumed; pruning used to
+        discard that marker together with the finished session while the
+        matching completion event could still sit in completion_queue (the
+        TUI poller requeues it while the owning session is busy). After the
+        prune the stale event passed the consumed check and was delivered as
+        a fresh synthetic turn. The marker must survive until the event is
+        gone."""
+        sid = "proc_ttl_dedup_proof"
+        old_session = _make_session(
+            sid=sid,
+            exited=True,
+            started_at=time.time() - FINISHED_TTL_SECONDS - 100,
+        )
+        registry._finished[sid] = old_session
+        registry._completion_consumed.add(sid)
+
+        # Drain, then queue the stale completion event the way the poller does.
+        while not registry.completion_queue.empty():
+            registry.completion_queue.get_nowait()
+        registry.completion_queue.put({"type": "completion", "session_id": sid})
+
+        with registry._lock:
+            registry._prune_if_needed()
+
+        assert sid not in registry._finished  # session record is gone…
+        assert sid in registry._completion_consumed  # …but the marker holds
+
+        # Once the event is delivered/removed, a later prune drops the marker
+        # (no unbounded growth).
+        evt = registry.completion_queue.get_nowait()
+        assert evt["session_id"] == sid
+        with registry._lock:
+            registry._prune_if_needed()
+        assert sid not in registry._completion_consumed
+
+    def test_prune_keeps_consumed_marker_via_belt_and_suspenders(self, registry):
+        """The untracked-entry sweep must honour a queued event too — it runs
+        on lookup paths that never hit the dict prunes (#88905)."""
+        sid = "proc_belt_proof"
+        registry._completion_consumed.add(sid)  # session never tracked
+        registry.completion_queue.put({"type": "completion", "session_id": sid})
+
+        with registry._lock:
+            registry._prune_if_needed()
+
+        assert sid in registry._completion_consumed
+
+        registry.completion_queue.get_nowait()
+        with registry._lock:
+            registry._prune_if_needed()
+        assert sid not in registry._completion_consumed
+
 
 # =========================================================================
 # Spawn env sanitization

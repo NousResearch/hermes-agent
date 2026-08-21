@@ -2497,6 +2497,23 @@ class ProcessRegistry:
 
     # ----- Cleanup / Pruning -----
 
+    def _completion_event_pending(self, session_id: str) -> bool:
+        """True if a completion event for *session_id* still sits in the queue.
+
+        Must hold _lock. A consumed marker must outlive any queued completion
+        event for the same session: dropping the marker while the event is
+        still queued (e.g. the TUI poller requeuing it because the owning
+        session is busy) re-arms the stale event for delivery as a fresh
+        synthetic turn (#88905).
+        """
+        for evt in list(self.completion_queue.queue):
+            if (
+                evt.get("type") == "completion"
+                and evt.get("session_id") == session_id
+            ):
+                return True
+        return False
+
     def _prune_if_needed(self):
         """Remove oldest finished sessions if over MAX_PROCESSES. Must hold _lock."""
         # First prune expired finished sessions
@@ -2507,7 +2524,10 @@ class ProcessRegistry:
         ]
         for sid in expired:
             del self._finished[sid]
-            self._completion_consumed.discard(sid)
+            # Keep the consumed marker while a matching completion event is
+            # still queued — dropping it re-arms the stale event (#88905).
+            if not self._completion_event_pending(sid):
+                self._completion_consumed.discard(sid)
             self._poll_observed.discard(sid)
 
         # If still over limit, remove oldest finished
@@ -2515,15 +2535,21 @@ class ProcessRegistry:
         if total >= MAX_PROCESSES and self._finished:
             oldest_id = min(self._finished, key=lambda sid: self._finished[sid].started_at)
             del self._finished[oldest_id]
-            self._completion_consumed.discard(oldest_id)
+            if not self._completion_event_pending(oldest_id):
+                self._completion_consumed.discard(oldest_id)
             self._poll_observed.discard(oldest_id)
 
         # Drop any _completion_consumed / _poll_observed entries whose sessions
         # are no longer tracked at all — belt-and-suspenders against
         # module-lifetime growth on registry lookup paths that don't reach the
-        # dict prunes.
+        # dict prunes. Consumed markers additionally survive while a matching
+        # completion event remains queued (#88905); the next prune drops them
+        # once the event is delivered or skipped.
         tracked = self._running.keys() | self._finished.keys()
-        stale = self._completion_consumed - tracked
+        stale = {
+            sid for sid in (self._completion_consumed - tracked)
+            if not self._completion_event_pending(sid)
+        }
         if stale:
             self._completion_consumed -= stale
         stale_polls = self._poll_observed - tracked

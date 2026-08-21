@@ -1401,6 +1401,7 @@ def run_doctor(args):
             provider_policy_id = str(provider_for_policy or "").strip().lower()
             providers_accepting_vendor_slugs = {
                 "openrouter",
+                "merge-gateway",
                 "auto",
                 "ai-gateway",
                 "kilocode",

@@ -55,6 +55,14 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="OPENROUTER_BASE_URL",
     ),
+    "merge-gateway": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        extra_env_vars=("MERGE_GATEWAY_API_KEY",),
+        # models.dev publishes Merge's Vercel AI SDK shim. Hermes uses the
+        # OpenAI Python SDK, so route through the OpenAI-compatible endpoint.
+        base_url_override="https://api-gateway.merge.dev/v1/openai",
+    ),
     "nous": HermesOverlay(
         transport="openai_chat",
         auth_type="oauth_device_code",

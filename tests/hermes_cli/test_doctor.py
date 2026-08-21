@@ -290,7 +290,7 @@ class TestDoctorMemoryProviderSection:
         home.mkdir(parents=True, exist_ok=True)
         import yaml
         config = {"memory": {"provider": provider}} if provider else {"memory": {}}
-        (home / "config.yaml").write_text(yaml.dump(config))
+        (home / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
         return home
 
     def _run_doctor_and_capture(self, monkeypatch, tmp_path, provider=""):
@@ -555,6 +555,7 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
     ("provider", "default_model"),
     [
         ("ai-gateway", "anthropic/claude-sonnet-4.6"),
+        ("merge-gateway", "anthropic/claude-sonnet-4.6"),
         ("opencode-zen", "anthropic/claude-sonnet-4.6"),
         ("kilocode", "anthropic/claude-sonnet-4.6"),
         ("kimi-coding", "kimi-k2"),
@@ -600,7 +601,13 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
     out = buf.getvalue()
     assert f"model.provider '{provider}' is not a recognised provider" not in out
     assert f"model.provider '{provider}' is unknown" not in out
-    if provider in {"ai-gateway", "opencode-zen", "kilocode", "nvidia"}:
+    if provider in {
+        "ai-gateway",
+        "merge-gateway",
+        "opencode-zen",
+        "kilocode",
+        "nvidia",
+    }:
         assert (
             f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider}'"
             not in out

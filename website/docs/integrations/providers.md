@@ -20,6 +20,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
+| **Merge Gateway** | `MERGE_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `merge-gateway`) |
 | **Fireworks AI** | `FIREWORKS_API_KEY` in `~/.hermes/.env` (provider: `fireworks`; aliases: `fireworks-ai`, `fw`) |
 | **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 200+ models, Model API, Agent Sandbox, GPU Cloud) |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
@@ -107,6 +108,32 @@ Hermes has **two** model commands that serve different purposes:
 | **`/model`** | Inside a Hermes chat session | Quick switch between **already-configured** providers and models |
 
 If you're trying to switch to a provider you haven't set up yet (e.g. you only have OpenRouter configured and want to use Anthropic), you need `hermes model`, not `/model`. Exit your session first (`Ctrl+C` or `/quit`), run `hermes model`, complete the provider setup, then start a new session.
+
+### Merge Gateway
+
+[Merge Gateway](https://docs.merge.dev/merge-gateway/get-started) routes OpenAI, Anthropic, Google, AWS Bedrock, and other models through one API key with routing policies, cost controls, and request observability. Create a key in the [Merge Gateway dashboard](https://gateway.merge.dev/api-keys), then run:
+
+```bash
+# Add MERGE_GATEWAY_API_KEY to ~/.hermes/.env, then:
+hermes model
+# → pick "Merge Gateway"
+# → select a tool-capable model from the live Gateway catalog
+```
+
+You can also configure it directly:
+
+```yaml
+# ~/.hermes/config.yaml
+model:
+  provider: merge-gateway
+  default: default_routing
+```
+
+Use a fully qualified `provider/model` ID instead of `default_routing` when you want a specific model. Hermes connects to Gateway's OpenAI-compatible endpoint at `https://api-gateway.merge.dev/v1/openai`, discovers the paginated catalog from `GET /v1/models`, and only shows models with an available tool-calling route.
+
+:::tip Routing policies and tool use
+`default_routing` delegates model and vendor selection to the routing policy attached to your organization or project API key. For agent sessions, make sure that policy can select a route whose `capabilities.supports_tool_calling` value is `true`; choosing an explicit model from Hermes's filtered picker guarantees that the catalog advertised at least one such route.
+:::
 
 
 ### Subscription plans: what your plan pays for
@@ -1476,7 +1503,7 @@ model:
 | **Local models, easy setup** | Ollama |
 | **Production GPU serving** | vLLM or SGLang |
 | **Mac / no GPU** | Ollama or llama.cpp |
-| **Multi-provider routing** | LiteLLM Proxy or OpenRouter |
+| **Multi-provider routing** | Merge Gateway, LiteLLM Proxy, or OpenRouter |
 | **Cost optimization** | ClawRouter or OpenRouter with `sort: "price"` |
 | **Maximum privacy** | Ollama, vLLM, or llama.cpp (fully local) |
 | **Enterprise / Azure** | Azure OpenAI with custom endpoint |

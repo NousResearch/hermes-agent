@@ -14,7 +14,7 @@ import {
 } from '@/lib/storage'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
 import { $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
-import { setConnection } from '@/store/session'
+import { $connection, setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
@@ -505,7 +505,8 @@ export function selectProfile(name: string): void {
     requestFreshSession()
   }
 
-  void ensureGatewayProfile(target)
+  const connectionId = ($connection.get()?.connectionId ?? '').trim()
+  void (connectionId ? ensureGatewayAgent(connectionId, target) : ensureGatewayProfile(target))
 }
 
 // Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse
@@ -518,7 +519,8 @@ export function newSessionInProfile(name: string): void {
   const target = normalizeProfileKey(name)
   $newChatProfile.set(target)
   requestFreshSession()
-  void ensureGatewayProfile(target)
+  const connectionId = ($connection.get()?.connectionId ?? '').trim()
+  void (connectionId ? ensureGatewayAgent(connectionId, target) : ensureGatewayProfile(target))
 }
 
 export function setShowAllProfiles(value: boolean): void {

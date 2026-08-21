@@ -35,7 +35,7 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, ensureGatewayAgent, ensureGatewayProfile } = await import('./profile')
+const { $activeGatewayProfile, ensureGatewayAgent, ensureGatewayProfile, selectProfile } = await import('./profile')
 const { $connection } = await import('./session')
 
 const agentConn = (over: Partial<HermesConnection> = {}): HermesConnection =>
@@ -63,6 +63,18 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals()
   $connection.set(null)
+})
+
+describe('profile rail preserves the active registry source', () => {
+  it('switches profiles through the current registered gateway', async () => {
+    $connection.set(agentConn({ connectionId: 'homelab', profile: 'clientwhisp' }))
+    getConnectionFor.mockResolvedValue(agentConn({ connectionId: 'homelab', profile: 'sequenzy' }))
+
+    selectProfile('sequenzy')
+
+    await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledWith('homelab', 'sequenzy'))
+    expect(ensureGatewayForProfile).not.toHaveBeenCalled()
+  })
 })
 
 describe('ensureGatewayAgent → $connection / $activeGatewayProfile sync', () => {

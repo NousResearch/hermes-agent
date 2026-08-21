@@ -8159,7 +8159,20 @@ class DiscordAdapter(BasePlatformAdapter):
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels = self._get_no_thread_channels()
-            skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
+            auto_thread_free_response_raw = self._config_value(
+                "auto_thread_free_response",
+                False,
+                env_key="DISCORD_AUTO_THREAD_FREE_RESPONSE",
+            )
+            if isinstance(auto_thread_free_response_raw, str):
+                auto_thread_free_response = auto_thread_free_response_raw.lower() in {
+                    "true", "1", "yes",
+                }
+            else:
+                auto_thread_free_response = bool(auto_thread_free_response_raw)
+            skip_thread = bool(channel_keys & no_thread_channels) or (
+                is_free_channel and not auto_thread_free_response
+            )
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
@@ -10402,6 +10415,14 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
     if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
         os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+    if "auto_thread_free_response" in discord_cfg:
+        seeded_extra["auto_thread_free_response"] = discord_cfg[
+            "auto_thread_free_response"
+        ]
+        if not _skip_env_bridge and not os.getenv("DISCORD_AUTO_THREAD_FREE_RESPONSE"):
+            os.environ["DISCORD_AUTO_THREAD_FREE_RESPONSE"] = str(
+                discord_cfg["auto_thread_free_response"]
+            ).lower()
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
         os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
     backfill_cfg = discord_cfg.get("missed_message_backfill")

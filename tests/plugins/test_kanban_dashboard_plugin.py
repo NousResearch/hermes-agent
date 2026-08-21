@@ -1230,3 +1230,73 @@ def test_specify_happy_path(client, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Profile display names (#89957)
+# ---------------------------------------------------------------------------
+
+
+def test_profiles_payload_includes_display_name(client, kanban_home):
+    """GET /profiles exposes the presentation-only ``display_name`` alongside
+    the canonical profile id, so the orchestrator picker can render
+    ``display_name (canonical)`` labels (#89957).
+
+    Exercises the real ``list_profiles() -> read_profile_meta`` chain:
+    ``display_name`` is the profile.yaml field ``hermes profile rename``
+    writes; the canonical id is untouched.
+    """
+    # Default profile (canonical id "default") renamed to "Emma".
+    (kanban_home / "profile.yaml").write_text(
+        "display_name: Emma\n", encoding="utf-8"
+    )
+    # Named profile with a display name + description.
+    peter = kanban_home / "profiles" / "peter"
+    peter.mkdir(parents=True)
+    (peter / "profile.yaml").write_text(
+        "description: Handles backend work\n"
+        "display_name: Peter\n",
+        encoding="utf-8",
+    )
+    # Named profile without a display name (fallback-to-canonical case).
+    (kanban_home / "profiles" / "solo").mkdir(parents=True)
+
+    r = client.get("/api/plugins/kanban/profiles")
+    assert r.status_code == 200
+    profiles = {p["name"]: p for p in r.json()["profiles"]}
+
+    # Canonical id stays the routing key; display_name rides along.
+    assert profiles["default"]["display_name"] == "Emma"
+    assert profiles["default"]["is_default"] is True
+    assert profiles["peter"]["display_name"] == "Peter"
+    assert profiles["peter"]["description"] == "Handles backend work"
+    # Unset display name serialises as "" — the UI falls back to the bare id.
+    assert profiles["solo"]["display_name"] == ""
+
+
+def test_dashboard_profile_picker_renders_display_name():
+    """The orchestration picker and profile-description rows must render
+    ``display_name (canonical)`` labels (CLI convention, #89957), falling
+    back to the bare canonical id when ``display_name`` is unset."""
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    # Label helper mirrors hermes_cli.profiles.format_profile_label:
+    # "display_name (canonical)" when set and != canonical, else canonical.
+    assert "function profileLabel(p) {" in bundle
+    assert '(p.display_name || "").trim()' in bundle
+    assert 'dn + " (" + p.name + ")"' in bundle
+    assert "(dn && dn !== p.name)" in bundle
+
+    # Both orchestrator dropdowns (orchestrator profile + default assignee)
+    # and the description rows render through the helper.
+    assert (
+        "h(SelectOption, { key: p.name, value: p.name }, profileLabel(p))"
+        in bundle
+    )
+    assert 'h("span", { className: "font-medium" }, profileLabel(p))' in bundle
+
+    # The old bare-canonical rendering is gone.
+    assert "p.name + tag" not in bundle
+
+

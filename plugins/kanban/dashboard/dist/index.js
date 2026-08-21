@@ -1791,6 +1791,16 @@
   // auto-generate). Backed by /orchestration + /profiles endpoints.
   // ---------------------------------------------------------------------
 
+  // Render a profile for display: ``display_name (canonical)`` when a
+  // presentation-only display name is set (mirrors
+  // hermes_cli.profiles.format_profile_label), falling back to the bare
+  // canonical id. The canonical id stays the routing key — only the label
+  // changes.
+  function profileLabel(p) {
+    const dn = (p.display_name || "").trim();
+    return (dn && dn !== p.name) ? dn + " (" + p.name + ")" : p.name;
+  }
+
   function OrchestrationPanel() {
     const [expanded, setExpanded] = useState(false);
     const [settings, setSettings] = useState(null);
@@ -1922,8 +1932,7 @@
     }
 
     const profileOptions = profiles.map(function (p) {
-      const tag = p.is_default ? " (default)" : "";
-      return h(SelectOption, { key: p.name, value: p.name }, p.name + tag);
+      return h(SelectOption, { key: p.name, value: p.name }, profileLabel(p));
     });
 
     return h(Card, { className: "p-3" },
@@ -2033,8 +2042,7 @@
     return h("div", { className: "flex flex-col gap-1 border-l-2 pl-2",
       style: { borderColor: p.description ? "#888" : "#cc6" } },
       h("div", { className: "flex items-center gap-2 text-xs" },
-        h("span", { className: "font-medium" }, p.name),
-        p.is_default ? h("span", { className: "text-[10px] text-muted-foreground" }, "(default)") : null,
+        h("span", { className: "font-medium" }, profileLabel(p)),
         p.description_auto && p.description
           ? h("span", { className: "text-[10px] text-yellow-600" }, "auto — review")
           : null,

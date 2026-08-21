@@ -2627,12 +2627,17 @@ class DescribeAutoBody(BaseModel):
 
 @router.get("/profiles")
 def list_profile_roster():
-    """Return every installed profile with its description.
+    """Return every installed profile with its description and display name.
 
     Consumed by the dashboard's settings panel (orchestrator picker)
     and the profile-description editing UI. Profiles without a
     description still appear here — they're routable on name alone,
     just less precisely.
+
+    ``display_name`` is the presentation-only name from ``profile.yaml``
+    (set by ``hermes profile rename``, #89027); ``name`` stays the
+    canonical id. The UI renders ``display_name (name)`` when set,
+    mirroring ``hermes_cli.profiles.format_profile_label``.
     """
     try:
         from hermes_cli import profiles as profiles_mod
@@ -2643,6 +2648,7 @@ def list_profile_roster():
         "profiles": [
             {
                 "name": p.name,
+                "display_name": p.display_name or "",
                 "is_default": bool(p.is_default),
                 "model": p.model or "",
                 "provider": p.provider or "",

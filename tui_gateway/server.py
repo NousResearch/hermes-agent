@@ -7179,6 +7179,15 @@ def _make_agent(
         try:
             _tier_overrides = resolve_fast_mode_overrides(model)
         except Exception:
+            # Never let this fail agent construction — but say so, otherwise a
+            # broken resolver is indistinguishable from "no tier configured",
+            # which is the same silent-drop class this fix exists to close.
+            logger.debug(
+                "fast-mode override resolution failed for %s (tier=%s)",
+                model,
+                _effective_tier,
+                exc_info=True,
+            )
             _tier_overrides = None
     return AIAgent(
         model=model,
@@ -14230,10 +14239,38 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             return "\n".join(_lines)
         elif name == "fast" and agent:
             mode = arg.lower()
-            if mode in {"fast", "on"}:
-                agent.service_tier = "priority"
-            elif mode in {"normal", "off"}:
-                agent.service_tier = None
+            # Keep request_overrides in lock-step with service_tier. The
+            # transport emits the tier from the overrides, so setting only
+            # service_tier here would leave a session built with a configured
+            # tier still sending it after `/fast off` (reporting normal while
+            # billing the tier), and `/fast on` would relabel without sending.
+            # Popping both keys first also prevents a provider-mismatched pair
+            # (e.g. a stale service_tier alongside Anthropic's speed).
+            # Mirrors the `config.set key=fast` path.
+            if mode in {"fast", "on", "normal", "off"}:
+                _overrides = dict(getattr(agent, "request_overrides", {}) or {})
+                _overrides.pop("service_tier", None)
+                _overrides.pop("speed", None)
+                if mode in {"fast", "on"}:
+                    agent.service_tier = "priority"
+                    from hermes_cli.models import resolve_fast_mode_overrides
+
+                    try:
+                        _resolved = resolve_fast_mode_overrides(
+                            getattr(agent, "model", None)
+                        )
+                    except Exception:
+                        logger.debug(
+                            "fast-mode override resolution failed for %s",
+                            getattr(agent, "model", None),
+                            exc_info=True,
+                        )
+                        _resolved = None
+                    if _resolved:
+                        _overrides.update(_resolved)
+                else:
+                    agent.service_tier = None
+                agent.request_overrides = _overrides
             _emit("session.info", sid, _session_info(agent, session))
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
             agent.reload_mcp_tools()

@@ -19907,3 +19907,55 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert captured["row_update"] == (target, str(new_cwd))
     assert live["cwd"] == str(new_cwd)
     assert live.get("explicit_cwd") is True
+
+
+def test_profile_home_rejects_traversal_and_absolute_names(monkeypatch):
+    """#90699: the raw RPC ``profile`` param must never reach path math —
+    a "../x" traversal or an absolute path would escape the profiles root
+    and point session.* RPCs / the HERMES_HOME override at an arbitrary
+    directory. Invalid names fall back to the launch profile (None),
+    same as unknown ones."""
+    from pathlib import Path as _Path
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_profile_dir",
+        lambda n: calls.append(n) or _Path("/definitely/should-not-matter"),
+    )
+
+    assert server._profile_home("../../outside") is None
+    assert server._profile_home("/etc") is None
+    assert server._profile_home("..") is None
+    assert server._profile_home("a/b") is None
+    # Path resolution was never reached for any of the malicious names.
+    assert calls == []
+
+
+def test_profile_home_reserved_name_rejected_by_its_own_branch(monkeypatch):
+    """Reserved names (root/hermes) are rejected by validate_profile_name's
+    reserved-word branch, a different path than the regex — pin that both
+    rejection routes fall back to the launch profile (review on #90699)."""
+    from pathlib import Path as _Path
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_profile_dir",
+        lambda n: calls.append(n) or _Path("/definitely/should-not-matter"),
+    )
+
+    assert server._profile_home("root") is None
+    assert server._profile_home("hermes") is None
+    assert calls == []
+
+
+def test_profile_home_valid_name_reaches_path_resolution(monkeypatch, tmp_path):
+    """A valid profile name still goes through get_profile_dir; the
+    containment check happens before, not instead of, normal resolution."""
+    real_dir = tmp_path / "profiles" / "work"
+    real_dir.mkdir(parents=True)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_profile_dir", lambda n: real_dir
+    )
+    monkeypatch.setattr(server, "_hermes_home", str(tmp_path / "launch"))
+
+    assert server._profile_home("work") == real_dir

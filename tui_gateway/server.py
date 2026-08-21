@@ -1529,7 +1529,25 @@ def _profile_home(profile: str | None) -> Path | None:
     try:
         from hermes_cli import profiles as profiles_mod
 
-        home = Path(profiles_mod.get_profile_dir(name))
+        # Reject traversal/absolute/reserved names BEFORE any path math
+        # (#90699): get_profile_dir only strip()+lower()s, so an unvalidated
+        # "../x" escapes the profiles root and an absolute path replaces it
+        # entirely (pathlib join semantics) — pointing session.* RPCs and the
+        # HERMES_HOME override at an attacker-chosen directory. An invalid
+        # name falls through to the launch profile, same as an unknown one.
+        # Bind once: validate and resolve the SAME canonical value, so a
+        # future change to either helper's normalization cannot let the
+        # resolved name diverge from the validated one.
+        canonical = profiles_mod.normalize_profile_name(name)
+        try:
+            profiles_mod.validate_profile_name(canonical)
+        except ValueError:
+            # Distinguish a probing client from a mere typo in the logs —
+            # both fall back to the launch profile, but only one deserves
+            # attention (review finding on #90699).
+            logger.warning("Rejected invalid RPC profile param: %r", name)
+            return None
+        home = Path(profiles_mod.get_profile_dir(canonical))
     except Exception:
         return None
     # Already the launch profile? No override needed.

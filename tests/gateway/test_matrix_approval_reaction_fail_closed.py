@@ -111,6 +111,9 @@ def _run(adapter, event):
 
     fake_approval = types.ModuleType("tools.approval")
     fake_approval.resolve_gateway_approval = lambda session_key, choice: 1
+    fake_approval.consume_gateway_approval_outcome = (
+        lambda session_key, approval_id: None
+    )
     with patch.dict(sys.modules, {"tools.approval": fake_approval}):
         asyncio.run(adapter._on_reaction(event))
 
@@ -132,4 +135,24 @@ class TestApprovalReactionFailClosed:
         event = _make_event("@stranger:matrix.org", "$prompt-event-1")
         assert _run(adapter, event) is False
 
+    def test_no_allowlist_allow_all_permits(self, monkeypatch):
+        """No MATRIX_ALLOWED_USERS + GATEWAY_ALLOW_ALL_USERS=true → allow."""
+        monkeypatch.delenv("MATRIX_ALLOWED_USERS", raising=False)
+        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+        adapter = _make_adapter(allowed_user_ids=None)
+        event = _make_event("@anyone:matrix.org", "$prompt-event-1")
+        assert _run(adapter, event) is True
 
+    def test_listed_sender_permits(self, monkeypatch):
+        """Sender in MATRIX_ALLOWED_USERS → allow."""
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        adapter = _make_adapter(allowed_user_ids=["@alice:matrix.org"])
+        event = _make_event("@alice:matrix.org", "$prompt-event-1")
+        assert _run(adapter, event) is True
+
+    def test_unlisted_sender_denies(self, monkeypatch):
+        """Sender not in MATRIX_ALLOWED_USERS → deny."""
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        adapter = _make_adapter(allowed_user_ids=["@alice:matrix.org"])
+        event = _make_event("@mallory:matrix.org", "$prompt-event-1")
+        assert _run(adapter, event) is False

@@ -706,9 +706,15 @@ def _format_exec_approval_fallback(
     allow_permanent: bool = True,
     allow_session: bool = True,
     smart_denied: bool = False,
+    full_command: bool = False,
 ) -> str:
     """Render the text fallback from approval capabilities, not platform names."""
-    cmd_preview = command[:200] + "..." if len(command) > 200 else command
+    # Single-event transports (Matrix) must keep the full force-redacted command
+    # for audit completeness; multi-event chat can use a short preview.
+    if full_command or len(command) <= 200:
+        cmd_preview = command
+    else:
+        cmd_preview = command[:200] + "..."
     heading = "⚠️ **Dangerous command requires approval:**"
     if smart_denied:
         heading = "⚠️ **Smart DENY — owner override for one operation:**"
@@ -6146,7 +6152,10 @@ class TurnRunner:
                             command=cmd,
                             session_key=_approval_session_key,
                             description=desc,
-                            metadata=ctx._status_thread_metadata,
+                            metadata=_build_exec_approval_metadata(
+                                ctx._status_thread_metadata,
+                                approval_data,
+                            ),
                             allow_permanent=approval_data.get("allow_permanent", True),
                             allow_session=approval_data.get("allow_session", True),
                             smart_denied=approval_data.get("smart_denied", False),
@@ -6721,6 +6730,116 @@ class TurnRunner:
 # ``None`` cannot express both.  Mirrors ``gateway.session._DB_UNPINNED``.
 _SESSION_DB_UNPINNED = object()
 
+def _build_exec_approval_metadata(
+    base: "dict | None",
+    approval_data: dict,
+) -> dict:
+    """Preserve transport context and attach the pending approval identity."""
+    metadata = dict(base or {})
+    approval_id = str(approval_data.get("approval_id") or "")
+    if approval_id:
+        metadata["approval_id"] = approval_id
+    return metadata
+
+def _make_gateway_approval_notifier(
+    *,
+    adapter: Any,
+    chat_id: str,
+    session_key: str,
+    metadata: Optional[Dict[str, Any]],
+    requester_user_id: Optional[str],
+    loop: asyncio.AbstractEventLoop,
+    pause_typing: bool,
+) -> Callable[[dict], None]:
+    """Build the sync approval bridge shared by foreground and background turns."""
+    base_metadata = dict(metadata or {})
+    if requester_user_id:
+        base_metadata["requester_user_id"] = str(requester_user_id)
+
+    def _approval_notify_sync(approval_data: dict) -> None:
+        if pause_typing:
+            adapter.pause_typing_for_chat(chat_id)
+
+        command = _redact_approval_command(approval_data.get("command", ""))
+        description = approval_data.get("description", "dangerous command")
+
+        if getattr(type(adapter), "send_exec_approval", None) is not None:
+            try:
+                future = safe_schedule_threadsafe(
+                    adapter.send_exec_approval(
+                        chat_id=chat_id,
+                        command=command,
+                        session_key=session_key,
+                        description=description,
+                        metadata=_build_exec_approval_metadata(
+                            base_metadata,
+                            approval_data,
+                        ),
+                        allow_permanent=approval_data.get("allow_permanent", True),
+                        allow_session=approval_data.get("allow_session", True),
+                        smart_denied=approval_data.get("smart_denied", False),
+                    ),
+                    loop,
+                    logger=logger,
+                    log_message="send_exec_approval scheduling error",
+                )
+                if future is None:
+                    raise RuntimeError("send_exec_approval: loop unavailable")
+                result = future.result(timeout=15)
+                if result.success:
+                    return
+                logger.warning(
+                    "Button-based approval failed (send returned error), "
+                    "falling back to text: %s",
+                    result.error,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Button-based approval failed, falling back to text: %s",
+                    exc,
+                )
+
+        prefix = getattr(adapter, "typed_command_prefix", "/")
+        message = _format_exec_approval_fallback(
+            command,
+            description,
+            prefix,
+            allow_permanent=approval_data.get("allow_permanent", True),
+            allow_session=approval_data.get("allow_session", True),
+            smart_denied=approval_data.get("smart_denied", False),
+            full_command=bool(getattr(adapter, "approval_fallback_single_event", False)),
+        )
+        fallback_metadata = dict(base_metadata)
+        if getattr(adapter, "approval_fallback_single_event", False):
+            # Matrix approval fallbacks MUST remain one authoritative event.
+            # An explicit (empty) pre-rendered boundary disables chunking while
+            # retaining the adapter's normal escaped Markdown HTML.
+            fallback_metadata["matrix_formatted_body"] = ""
+        try:
+            future = safe_schedule_threadsafe(
+                adapter.send(
+                    chat_id,
+                    message,
+                    metadata=fallback_metadata,
+                ),
+                loop,
+                logger=logger,
+                log_message="Approval text-send scheduling error",
+            )
+            if future is None:
+                raise RuntimeError("approval fallback send: loop unavailable")
+            result = future.result(timeout=15)
+            if result is not None and getattr(result, "success", True) is False:
+                raise RuntimeError(
+                    str(getattr(result, "error", "") or "approval fallback send failed")
+                )
+        except Exception as exc:
+            logger.error("Failed to send approval request: %s", exc)
+            # The core approval guard catches notifier failures and denies the
+            # operation immediately instead of waiting on an invisible card.
+            raise
+
+    return _approval_notify_sync
 
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
     """
@@ -22541,7 +22660,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 finally:
                     self._cleanup_agent_resources(agent)
 
-            result = await self._run_in_executor_with_context(run_sync)
+            from tools.approval import (
+                register_gateway_notify,
+                reset_current_session_key,
+                set_current_session_key,
+                unregister_gateway_notify,
+            )
+
+            approval_session_key = task_id
+            command_session_key = self._session_key_for_source(source)
+            # Reuse source+event_message_id metadata so Telegram DM topic reply
+            # anchors and other platform thread fields survive completion sends.
+            approval_notify = _make_gateway_approval_notifier(
+                adapter=adapter,
+                chat_id=str(source.chat_id or ""),
+                session_key=approval_session_key,
+                metadata=_thread_metadata,
+                requester_user_id=getattr(source, "user_id", None),
+                loop=asyncio.get_running_loop(),
+                pause_typing=False,
+            )
+            approval_token = set_current_session_key(approval_session_key)
+            try:
+                register_gateway_notify(
+                    approval_session_key,
+                    approval_notify,
+                    command_session_key=command_session_key,
+                )
+                try:
+                    result = await self._run_in_executor_with_context(run_sync)
+                finally:
+                    unregister_gateway_notify(approval_session_key)
+            finally:
+                reset_current_session_key(approval_token)
 
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):

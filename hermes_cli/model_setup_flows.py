@@ -1061,6 +1061,39 @@ def _model_flow_custom(config):
             print(f"Invalid context length: {context_length_str} — will auto-detect.")
             context_length = None
 
+    # Auto-detect context length when the user left it blank (#2513). The
+    # resolver probes the endpoint (/models, local server, registries, ...)
+    # and falls back to DEFAULT_FALLBACK_CONTEXT; we distinguish a genuinely
+    # detected value from the hard fallback so the user knows which they got.
+    if context_length is None and model_name:
+        try:
+            from agent.model_metadata import (
+                DEFAULT_FALLBACK_CONTEXT,
+                get_model_context_length,
+            )
+            from hermes_cli.banner import _format_context_length
+
+            detected = get_model_context_length(
+                model_name,
+                base_url=effective_url,
+                api_key=effective_key or "",
+            )
+            if detected and detected != DEFAULT_FALLBACK_CONTEXT:
+                context_length = detected
+                print(
+                    f"  💡 Context length auto-detected: "
+                    f"{_format_context_length(context_length)} tokens"
+                )
+            else:
+                print(
+                    f"  📏 Context length: using default "
+                    f"{_format_context_length(DEFAULT_FALLBACK_CONTEXT)} tokens "
+                    f"(override with model.context_length in config.yaml)"
+                )
+        except Exception:
+            # Best-effort: a failing probe must never block saving.
+            pass
+
     # The key goes to .env and config.yaml only references it (#69449). Keyed
     # on host:port so two servers on one machine keep separate credentials.
     custom_key_env = ""

@@ -94,6 +94,12 @@ class TestModelPicker:
         assert set(STT_MODEL_CATALOG["openai"]) == OPENAI_MODELS
         assert set(STT_MODEL_CATALOG["groq"]) == GROQ_MODELS
 
+    def test_local_turbo_model_is_available_in_cli_and_dashboard(self):
+        from hermes_cli.web_server import _SCHEMA_OVERRIDES
+
+        assert "turbo" in STT_MODEL_CATALOG["local"]
+        assert "turbo" in _SCHEMA_OVERRIDES["stt.local.model"]["options"]
+
 
 
 

@@ -24,6 +24,7 @@ from hermes_constants import (
     node_tool_runnable,
     parse_reasoning_effort,
     reset_hermes_home_override,
+    resolve_reasoning_config,
     secure_parent_dir,
     set_hermes_home_override,
     with_hermes_node_path,
@@ -1099,3 +1100,76 @@ class TestHealAttemptFlagSemantics:
         # The flag is set, so the once-per-process budget is spent.
         assert heal_hermes_managed_node() is False
         assert calls["n"] == 1
+
+
+class TestResolveReasoningOverridesCoercion:
+    """resolve_reasoning_config must not silently ignore string-form overrides."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_warned_shapes(self, monkeypatch):
+        monkeypatch.setattr(
+            hermes_constants, "_reasoning_overrides_bad_shape_warned", set()
+        )
+
+    def test_json_string_form_is_parsed_and_applied(self):
+        cfg = {
+            "agent": {
+                "reasoning_effort": "medium",
+                "reasoning_overrides": '{"glm-5.3": "max", "kimi-k3": "low"}',
+            }
+        }
+        assert resolve_reasoning_config(cfg, "glm-5.3") == {
+            "enabled": True,
+            "effort": "max",
+        }
+        assert resolve_reasoning_config(cfg, "kimi-k3") == {
+            "enabled": True,
+            "effort": "low",
+        }
+
+    def test_unparseable_string_warns_and_falls_back_to_global(
+        self, caplog
+    ):
+        cfg = {
+            "agent": {
+                "reasoning_effort": "high",
+                "reasoning_overrides": "not-a-map",
+            }
+        }
+        with caplog.at_level("WARNING", logger="hermes_constants"):
+            assert resolve_reasoning_config(cfg, "glm-5.3") == {
+                "enabled": True,
+                "effort": "high",
+            }
+        assert any(
+            "agent.reasoning_overrides" in rec.message for rec in caplog.records
+        )
+
+    def test_yaml_map_form_still_wins_over_global(self):
+        cfg = {
+            "agent": {
+                "reasoning_effort": "medium",
+                "reasoning_overrides": {"gpt-5.6-terra": "max"},
+            }
+        }
+        assert resolve_reasoning_config(cfg, "gpt-5.6-terra") == {
+            "enabled": True,
+            "effort": "max",
+        }
+        assert resolve_reasoning_config(cfg, "uncovered-model") == {
+            "enabled": True,
+            "effort": "medium",
+        }
+
+    def test_warns_once_per_distinct_bad_value(self, caplog):
+        cfg = {"agent": {"reasoning_overrides": "still-not-a-map"}}
+        with caplog.at_level("WARNING", logger="hermes_constants"):
+            resolve_reasoning_config(cfg, "glm-5.3")
+            resolve_reasoning_config(cfg, "glm-5.3")
+            resolve_reasoning_config(cfg, "glm-5.3")
+        warnings = [
+            rec
+            for rec in caplog.records
+            if "agent.reasoning_overrides" in rec.message
+        ]
+        assert len(warnings) == 1

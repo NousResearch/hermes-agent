@@ -4,6 +4,7 @@ Import-safe module with no dependencies — can be imported from anywhere
 without risk of circular imports.
 """
 
+import json
 import os
 import shutil
 import stat
@@ -1309,6 +1310,51 @@ def resolve_per_model_reasoning_effort(model: str, overrides: dict | None) -> di
     return None
 
 
+_reasoning_overrides_bad_shape_warned: set[str] = set()
+
+
+def _coerce_reasoning_overrides(value: object) -> dict:
+    """Return ``agent.reasoning_overrides`` as a dict, accepting JSON-string form.
+
+    ``hermes config set`` persists scalar arguments verbatim, so setting this
+    map-shaped key through it lands in config.yaml as a quoted JSON string.
+    resolve_per_model_reasoning_effort only accepts dicts and silently ignored
+    that shape (observed in production: a glm-5.3 override never applied and
+    the model kept the global effort). Parse valid-JSON strings so the stored
+    override still works; warn once per distinct bad value so the operator
+    learns the config needs to become a real YAML map.
+    """
+    if isinstance(value, dict):
+        return value
+    raw = value.strip() if isinstance(value, str) else ""
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            if raw not in _reasoning_overrides_bad_shape_warned:
+                _reasoning_overrides_bad_shape_warned.add(raw)
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "agent.reasoning_overrides is a JSON string; parsed it, but "
+                    "edit config.yaml to a YAML map so per-model overrides are "
+                    "not silently shape-dependent",
+                )
+            return parsed
+    if value not in (None, "") and repr(value) not in _reasoning_overrides_bad_shape_warned:
+        _reasoning_overrides_bad_shape_warned.add(repr(value))
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "agent.reasoning_overrides must be a YAML map like "
+            '{"model-name": "effort"}; got %r — ignoring it',
+            value,
+        )
+    return {}
+
+
 def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     """Resolve the effective reasoning config for *model* from a config dict.
 
@@ -1352,7 +1398,7 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
         else:
             model = ""
 
-    overrides = agent_cfg.get("reasoning_overrides") or {}
+    overrides = _coerce_reasoning_overrides(agent_cfg.get("reasoning_overrides"))
     per_model = resolve_per_model_reasoning_effort(model, overrides)
     if per_model is not None:
         return per_model

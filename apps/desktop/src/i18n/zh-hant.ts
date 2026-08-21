@@ -2549,8 +2549,8 @@ export const zhHant = defineLocale({
   },
 
   zones: {
-    showHeader: '顯示標題列',
-    hideHeader: '隱藏標題列',
+    showTabStrip: '顯示分頁',
+    hideTabStrip: '隱藏分頁',
     showStripTab: title => `顯示 ${title}`,
     hideStripTab: title => `隱藏 ${title}`,
     lastTabKeptTitle: '保留最後一個分頁',

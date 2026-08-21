@@ -4,8 +4,15 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { registry } from '@/contrib/registry'
 
-import { group, split } from '../model'
-import { $layoutTree, markCollapsePane, registerPaneCloser } from '../store'
+import { group, type GroupNode, split } from '../model'
+import {
+  $layoutTree,
+  markCollapsePane,
+  registerPaneCloser,
+  setTreeGroupTabStrip,
+  tabStripVisibleForGroup,
+  toggleTargetZoneTabStrip
+} from '../store'
 
 import { TreeGroup } from './tree-group'
 
@@ -16,8 +23,9 @@ function LiveTreeGroup() {
   return <TreeGroup node={zoneAt(0)} parentAxis="column" />
 }
 
-// Pins the tab-strip hide grammar: the double-tap hide belongs to the STRIP
-// BACKGROUND alone — tabs are activate-only and must never hide the bar.
+// Pins the tab-strip hide grammar. Hiding is a COMMAND now, not a gesture: the
+// pointer can no longer take the strip away by accident, and whatever does take
+// it away leaves a way back that does not depend on the chrome it just removed.
 
 class TestResizeObserver {
   observe() {}
@@ -53,6 +61,8 @@ beforeEach(async () => {
 
   markCollapsePane('terminal')
   registerPaneCloser('terminal', () => undefined)
+
+  $layoutTree.set(split('column', [group(['workspace', 'terminal'], { active: 'terminal', id: 'grp-main' })]))
 })
 
 afterEach(() => {
@@ -69,13 +79,13 @@ const zoneAt = (index: number) => {
 const groupNode = () => {
   const node = $layoutTree.get()!
 
-  return (node.type === 'split' ? node.children[0] : node) as { headerHidden?: boolean; panes: string[] }
+  return (node.type === 'split' ? node.children[0] : node) as GroupNode
 }
 
 const tablist = () => globalThis.document.querySelector('[role="tablist"]')
 
 /** Two sub-threshold taps: pointerdown on the target, pointerup on window
- *  (drag-session listens there), twice — the synthesized double-tap path. */
+ *  (drag-session listens there), twice — the retired double-tap path. */
 const doubleTap = (target: Element) => {
   for (let i = 0; i < 2; i++) {
     fireEvent.pointerDown(target, { button: 0, clientX: 10, clientY: 10, pointerType: 'mouse' })
@@ -84,35 +94,33 @@ const doubleTap = (target: Element) => {
 }
 
 describe('tab strip hide grammar', () => {
-  it('double-clicking a tab does NOT hide the strip', () => {
-    // $layoutTree.set, not declareDefaultTree — the latter only adopts into an
-    // existing tree, and the store is module state that survives between tests.
-    $layoutTree.set(
-      split('column', [group(['workspace', 'terminal'], { active: 'terminal', id: 'grp-main' })])
-    )
+  it('no pointer gesture hides the strip', () => {
     render(<LiveTreeGroup />)
 
-    const tab = globalThis.document.querySelector<HTMLElement>('[data-tree-tab="terminal"]')
-    expect(tab).toBeTruthy()
+    // Both halves of the strip: the tab, which was always activate-only, and
+    // the background, which used to answer a double-tap nothing announced.
+    doubleTap(globalThis.document.querySelector('[data-tree-tab="terminal"]')!)
+    doubleTap(globalThis.document.querySelector('[data-zone-tabstrip="grp-main"]')!)
 
-    doubleTap(tab!)
-
-    // The strip is still there and the tree never recorded a hide.
     expect(tablist()).toBeTruthy()
-    expect(groupNode().headerHidden).not.toBe(true)
+    expect(groupNode().tabStrip).toBeUndefined()
   })
 
-  it('double-tapping the strip background still hides the header (documented gesture)', () => {
-    $layoutTree.set(
-      split('column', [group(['workspace', 'terminal'], { active: 'terminal', id: 'grp-main' })])
-    )
+  it('renders no strip at all for a zone set to never', () => {
+    setTreeGroupTabStrip('grp-main', 'never')
     render(<LiveTreeGroup />)
 
-    const strip = globalThis.document.querySelector<HTMLElement>('[data-zone-tabstrip="grp-main"]')
-    expect(strip).toBeTruthy()
+    expect(tablist()).toBeNull()
+  })
 
-    doubleTap(strip!)
+  // The state that had no way out. The command targets the zone by
+  // hover/focus/workspace fallback, so restoring the strip never depends on
+  // the strip — or on any other chrome the hide took away.
+  it('the toggle command reaches a zone that has no chrome left to click', () => {
+    setTreeGroupTabStrip('grp-main', 'never')
+    expect(tabStripVisibleForGroup(groupNode())).toBe(false)
 
-    expect(groupNode().headerHidden).toBe(true)
+    expect(toggleTargetZoneTabStrip()).toBe('always')
+    expect(tabStripVisibleForGroup(groupNode())).toBe(true)
   })
 })

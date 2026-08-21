@@ -52,6 +52,21 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     mcp_add_p.add_argument(
         "--command", dest="mcp_command", help="Stdio command (e.g. npx)"
     )
+    # ``--env`` is declared BEFORE ``--args`` so the ``--env KEY=VALUE``
+    # flag is parseable when placed before ``--args`` in argv.
+    # ``--args`` uses ``nargs=argparse.REMAINDER`` which greedily captures
+    # every following token as stdio argv, so ``--env`` placed AFTER
+    # ``--args`` is unreachable by argparse.  The handler in
+    # ``cmd_mcp_add`` rescues those misrouted ``--env KEY=VALUE`` tokens
+    # from ``cmd_args`` so the user's intent is preserved (see
+    # issue #68944).
+    mcp_add_p.add_argument(
+        "--env",
+        nargs="*",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Environment variables for stdio servers (KEY=VALUE)",
+    )
     mcp_add_p.add_argument(
         "--args",
         nargs=argparse.REMAINDER,
@@ -64,12 +79,6 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         "--connect-timeout",
         type=float,
         help="Timeout in seconds for initial connection and tool discovery",
-    )
-    mcp_add_p.add_argument(
-        "--env",
-        nargs="*",
-        default=[],
-        help="Environment variables for stdio servers (KEY=VALUE)",
     )
 
     mcp_rm_p = mcp_sub.add_parser("remove", aliases=["rm"], help="Remove an MCP server")

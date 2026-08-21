@@ -176,11 +176,11 @@ hermes gateway install
 
 What happens under the hood:
 
-1. `schtasks /Create /SC ONLOGON /RL LIMITED /TN HermesGateway` — registers a task that runs at your login with standard (non-elevated) permissions. No UAC prompt.
-2. If schtasks is blocked by group policy, falls back to writing a `start /min cmd.exe /d /c <wrapper>` shortcut into `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`. Same effect, slightly cruder.
-3. Spawns the gateway **detached via `pythonw.exe`** — not `python.exe`. `pythonw.exe` has no console attached, which immunizes it against `CTRL_C_EVENT` broadcasts from sibling processes (a real issue that used to kill the gateway when you Ctrl+C'd anything in the same process group).
+1. Registers a profile-scoped Scheduled Task that runs at login with standard (non-elevated) permissions. The default profile uses `Hermes_Gateway`; named profiles use `Hermes_Gateway_<profile>`.
+2. If you decline the UAC prompt or Scheduled Task setup is blocked, writes a `.vbs` login item into `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`. Windows launches it through `wscript.exe`, so no console window appears.
+3. Starts the gateway with the environment's `python.exe` under a hidden-console launcher. This gives the gateway and its console-subsystem children one invisible console instead of letting each child flash a new window.
 
-Flags used when spawning: `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`.
+Flags used when spawning: `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`.
 
 ### Manage
 
@@ -297,7 +297,7 @@ You hit a shebang-script invocation that bypassed the `.cmd` shim. Hermes resolv
 Your download of `install.ps1` picked up a UTF-8 BOM. The `irm | iex` form strips BOMs automatically; `[scriptblock]::Create((irm ...))` does not. Re-run with the simple `irm | iex` form, or download the script manually and save it without a BOM via `[IO.File]::WriteAllText($path, $text, (New-Object Text.UTF8Encoding $false))`.
 
 **Gateway won't stay running after restart.**
-Check `hermes gateway status` — it merges the schtasks entry, the Startup-folder shortcut (if used), and the live PID. If schtasks is registered but not running, group policy may be blocking `ONLOGON` triggers. Run `schtasks /Query /TN HermesGateway /V /FO LIST` to see the task's failure reason, or fall back to the Startup-folder path by uninstalling and reinstalling with `HERMES_GATEWAY_FORCE_STARTUP=1`.
+Check `hermes gateway status` — it merges the Scheduled Task, the Startup-folder login item (if used), and the live PID. If the default profile's task is registered but not running, run `schtasks /Query /TN Hermes_Gateway /V /FO LIST` to see its last result; for a named profile, query `Hermes_Gateway_<profile>` instead. If local policy prevents the task from starting, run `hermes gateway uninstall`, reinstall from a non-elevated PowerShell, and answer **No** when asked whether to open the UAC prompt. The installer will use the Startup-folder fallback instead.
 
 **`/edit` still does nothing after setting `$env:EDITOR`.**
 You set it in the current process only; close and reopen the shell, or set it at User scope in System Properties → Environment Variables. Verify with `echo $env:EDITOR` in a new PowerShell window.

@@ -176,11 +176,11 @@ hermes gateway install
 
 底层发生的事情：
 
-1. `schtasks /Create /SC ONLOGON /RL LIMITED /TN HermesGateway` — 注册一个在你登录时以标准（非提升）权限运行的任务。无 UAC 提示。
-2. 如果 schtasks 被组策略阻止，则回退到在 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup` 中写入 `start /min cmd.exe /d /c <wrapper>` 快捷方式。效果相同，稍显粗糙。
-3. 通过 **`pythonw.exe`** 以分离方式生成 gateway——而非 `python.exe`。`pythonw.exe` 没有附加控制台，可免疫来自同一进程组中兄弟进程的 `CTRL_C_EVENT` 广播（这是一个真实问题，曾导致在同一进程组中 Ctrl+C 任何进程时 gateway 被杀死）。
+1. 注册一个按 profile 区分的计划任务，以标准（非提升）权限在登录时运行。默认 profile 使用 `Hermes_Gateway`，命名 profile 使用 `Hermes_Gateway_<profile>`。
+2. 如果你拒绝 UAC 提示或计划任务设置被阻止，则在 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup` 中写入一个 `.vbs` 登录项。Windows 通过 `wscript.exe` 启动它，因此不会显示控制台窗口。
+3. 通过隐藏控制台启动器使用当前环境的 `python.exe` 启动 gateway。这样 gateway 及其控制台子进程会共享一个不可见的控制台，而不是让每个子进程都闪现新窗口。
 
-生成时使用的标志：`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`。
+生成时使用的标志：`CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`。
 
 ### 管理
 
@@ -296,7 +296,7 @@ Remove-Item -Recurse -Force "$env:LOCALAPPDATA\hermes"
 你下载的 `install.ps1` 携带了 UTF-8 BOM。`irm | iex` 形式会自动剥离 BOM；`[scriptblock]::Create((irm ...))` 不会。请改用简单的 `irm | iex` 形式，或手动下载脚本并通过 `[IO.File]::WriteAllText($path, $text, (New-Object Text.UTF8Encoding $false))` 保存为不带 BOM 的纯 UTF-8。
 
 **重启后 gateway 无法持续运行。**
-运行 `hermes gateway status`——它会合并 schtasks 条目、Startup 文件夹快捷方式（如有）和运行中的 PID。如果 schtasks 已注册但未运行，组策略可能阻止了 `ONLOGON` 触发器。运行 `schtasks /Query /TN HermesGateway /V /FO LIST` 查看任务失败原因，或通过卸载后使用 `HERMES_GATEWAY_FORCE_STARTUP=1` 重新安装来回退到 Startup 文件夹路径。
+运行 `hermes gateway status`——它会合并计划任务、Startup 文件夹登录项（如有）和运行中的 PID。如果默认 profile 的任务已注册但未运行，请运行 `schtasks /Query /TN Hermes_Gateway /V /FO LIST` 查看其上次运行结果；命名 profile 则查询 `Hermes_Gateway_<profile>`。如果本地策略阻止任务启动，请运行 `hermes gateway uninstall`，然后在非提升权限的 PowerShell 中重新安装，并在询问是否打开 UAC 提示时回答**否**。安装程序将改用 Startup 文件夹回退路径。
 
 **设置 `$env:EDITOR` 后 `/edit` 仍然无响应。**
 你只在当前进程中设置了它；请关闭并重新打开 shell，或在系统属性 → 环境变量中以用户作用域设置。在新 PowerShell 窗口中用 `echo $env:EDITOR` 验证。

@@ -609,7 +609,31 @@ class BuzzAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
-        reply_target = reply_to or (metadata or {}).get("thread_id")
+        # Flat threads: prefer the thread ROOT as the reply target. Replying
+        # to a mid-thread comment makes buzz-cli resolve the root and emit
+        # root+reply e-tags, which the Buzz client renders as a NESTED
+        # sub-thread the user must click to open. Replying to the root emits
+        # a single reply e-tag → the answer stays flat inside the thread
+        # (same shape as the user's own in-thread messages). Top-level
+        # messages have no thread_id, so reply_to (the message itself) is
+        # used — a single reply tag there too.
+        #
+        # POLICY: this intentionally discards the mid-thread comment anchor
+        # whenever a thread root is known — the agent no longer replies to a
+        # specific comment inside a thread. Do not "fix" that back without
+        # accepting nested sub-threads in the Buzz client.
+        thread_id = (metadata or {}).get("thread_id") if isinstance(metadata, dict) else None
+        if reply_to and not thread_id:
+            # thread_id is only populated by _thread_id_from_event (the
+            # thread-routing fix). If a reply anchor exists but the root is
+            # missing, that fix is NOT active — the reply falls back to the
+            # comment anchor and nested sub-threads return.
+            logger.warning(
+                "Buzz: reply_to=%s present but thread_id missing — thread routing fix "
+                "inactive, reply will anchor to the comment (nested sub-thread risk)",
+                reply_to,
+            )
+        reply_target = thread_id or reply_to
         if reply_target:
             args += ["--reply-to", str(reply_target)]
         code, out, err = await self._run_cli(args, input_text=content)

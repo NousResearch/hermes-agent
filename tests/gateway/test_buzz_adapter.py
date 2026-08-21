@@ -409,6 +409,121 @@ class TestBuzzAdapterSend:
 
 
     @pytest.mark.asyncio
+    async def test_send_flat_thread_prefers_root_over_comment(self):
+        """In-thread replies must anchor to the thread ROOT, not the specific
+        comment. Replying to a mid-thread comment makes buzz-cli resolve the
+        root and emit root+reply e-tags → a nested sub-thread the user must
+        click; replying to the root emits a single reply tag → flat."""
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt123", "message": ""})
+        adapter._run_cli = cli
+
+        root = "r" * 64
+        comment = "c" * 64
+        await adapter.send(CHANNEL, "answer", reply_to=comment, metadata={"thread_id": root})
+
+        args, _ = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == root
+        assert comment not in args
+
+    @pytest.mark.asyncio
+    async def test_send_top_level_uses_reply_to(self):
+        """No thread root → reply to the triggering message itself (also a
+        single reply tag, flat)."""
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt123", "message": ""})
+        adapter._run_cli = cli
+
+        msg_id = "m" * 64
+        await adapter.send(CHANNEL, "answer", reply_to=msg_id)
+
+        args, _ = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == msg_id
+
+    @pytest.mark.asyncio
+    async def test_send_root_direct_reply_uses_root(self):
+        """reply_to == thread_id (direct reply to the root itself) — the
+        no-op path: root wins, same value either way."""
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt123", "message": ""})
+        adapter._run_cli = cli
+
+        root = "r" * 64
+        await adapter.send(CHANNEL, "answer", reply_to=root, metadata={"thread_id": root})
+
+        args, _ = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == root
+
+    @pytest.mark.asyncio
+    async def test_send_thread_id_without_reply_to_uses_root(self):
+        """reply_to None but thread_id set — exercises the left-hand side of
+        the `thread_id or reply_to` short-circuit."""
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt123", "message": ""})
+        adapter._run_cli = cli
+
+        root = "r" * 64
+        await adapter.send(CHANNEL, "answer", metadata={"thread_id": root})
+
+        args, _ = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == root
+
+    @pytest.mark.asyncio
+    async def test_send_no_anchors_omits_reply_to(self):
+        """reply_to None AND thread_id None — no --reply-to flag at all."""
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt123", "message": ""})
+        adapter._run_cli = cli
+
+        await adapter.send(CHANNEL, "answer")
+
+        args, _ = cli.calls[0]
+        assert "--reply-to" not in args
+
+    @pytest.mark.asyncio
+    async def test_send_metadata_without_thread_id_falls_back(self):
+        """metadata dict present but no thread_id key — the .get() fallback
+        path: reply_to still used."""
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt123", "message": ""})
+        adapter._run_cli = cli
+
+        msg_id = "m" * 64
+        await adapter.send(CHANNEL, "answer", reply_to=msg_id, metadata={"other": "x"})
+
+        args, _ = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == msg_id
+
+    @pytest.mark.asyncio
+    async def test_send_non_dict_metadata_does_not_crash(self):
+        """metadata is a non-dict (e.g. string) — the isinstance guard keeps
+        .get() from crashing; falls back to reply_to."""
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt123", "message": ""})
+        adapter._run_cli = cli
+
+        msg_id = "m" * 64
+        await adapter.send(CHANNEL, "answer", reply_to=msg_id, metadata="not-a-dict")
+
+        args, _ = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == msg_id
+
+
+    @pytest.mark.asyncio
     async def test_send_image_local_file_uses_file_flag(self, tmp_path):
         img = tmp_path / "shot.png"
         img.write_bytes(b"\x89PNG fake")

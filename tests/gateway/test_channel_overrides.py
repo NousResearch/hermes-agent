@@ -11,6 +11,10 @@ from gateway.config import (
     PlatformConfig,
 )
 from gateway.run import _get_channel_override, GatewayRunner
+from gateway.run import (
+    _resolve_runtime_agent_kwargs_for_provider,
+    _try_resolve_fallback_provider,
+)
 from gateway.session import SessionSource
 
 
@@ -130,27 +134,93 @@ class TestResolveSessionAgentRuntimePriority:
             chat_id="chan_1",
             user_id="u1",
         )
-        with patch("gateway.run._resolve_gateway_model", return_value="global/model"), \
-             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
-                 "provider": "anthropic",
-                 "api_key": "k",
-                 "base_url": "https://api.anthropic.com",
-                 "api_mode": "chat_completions",
-             }), \
-             patch(
-                 "gateway.run._resolve_runtime_agent_kwargs_for_provider",
-                 return_value={
-                     "provider": "openrouter",
-                     "api_key": "k2",
-                     "base_url": "https://openrouter.ai/api/v1",
-                     "api_mode": "chat_completions",
-                 },
-             ):
+        with (
+            patch("gateway.run._resolve_gateway_model", return_value="global/model"),
+            patch(
+                "gateway.run._resolve_runtime_agent_kwargs",
+                return_value={
+                    "provider": "anthropic",
+                    "api_key": "k",
+                    "base_url": "https://api.anthropic.com",
+                    "api_mode": "chat_completions",
+                },
+            ),
+            patch(
+                "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+                return_value={
+                    "provider": "openrouter",
+                    "api_key": "k2",
+                    "base_url": "https://openrouter.ai/api/v1",
+                    "api_mode": "chat_completions",
+                },
+            ) as resolve_runtime,
+        ):
             model, runtime = runner._resolve_session_agent_runtime(
                 source=source,
                 user_config={"model": {"default": "global/model"}},
             )
         assert model == "channel/model"
         assert runtime["provider"] == "openrouter"
+        resolve_runtime.assert_called_once_with(
+            "openrouter", target_model="channel/model"
+        )
+
+
+def test_provider_helper_passes_target_model_to_runtime_resolver(monkeypatch):
+    captured = {}
+
+    def fake_resolve_runtime_provider(**kwargs):
+        captured.update(kwargs)
+        return {
+            "provider": "copilot",
+            "api_key": "token",
+            "base_url": "https://api.githubcopilot.com",
+            "api_mode": "codex_responses",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        fake_resolve_runtime_provider,
+    )
+
+    runtime = _resolve_runtime_agent_kwargs_for_provider(
+        "copilot", target_model="gpt-5.6-sol"
+    )
+
+    assert captured == {"requested": "copilot", "target_model": "gpt-5.6-sol"}
+    assert runtime["api_mode"] == "codex_responses"
+
+
+def test_fallback_provider_passes_its_model_to_runtime_resolver(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_runtime_config",
+        lambda: {
+            "fallback_providers": [{"provider": "copilot", "model": "claude-opus-5"}]
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: None
+    )
+
+    def fake_resolve_runtime_provider(**kwargs):
+        captured.update(kwargs)
+        return {
+            "provider": "copilot",
+            "api_key": "token",
+            "base_url": "https://api.githubcopilot.com",
+            "api_mode": "chat_completions",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        fake_resolve_runtime_provider,
+    )
+    runtime = _try_resolve_fallback_provider()
+
+    assert runtime is not None
+    assert captured["target_model"] == "claude-opus-5"
+    assert runtime["model"] == "claude-opus-5"
+    assert runtime["api_mode"] == "chat_completions"
 
 

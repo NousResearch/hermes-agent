@@ -2760,7 +2760,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 try:
                     from gateway.run import _resolve_runtime_agent_kwargs_for_provider
 
-                    return _resolve_runtime_agent_kwargs_for_provider(provider_name)
+                    return _resolve_runtime_agent_kwargs_for_provider(
+                        provider_name, target_model=target_model or None
+                    )
                 except Exception:
                     pass
                 if required:

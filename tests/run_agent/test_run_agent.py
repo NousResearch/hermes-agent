@@ -1535,6 +1535,21 @@ class TestBuildApiKwargs:
 
         assert agent._github_models_reasoning_extra_body() == {"effort": "xhigh"}
 
+    @pytest.mark.parametrize(
+        ("requested", "expected"),
+        [("ultra", "high"), ("minimal", "low")],
+    )
+    def test_core_responses_clamps_to_nearest_supported_effort(
+        self, agent, monkeypatch, requested, expected
+    ):
+        monkeypatch.setattr(
+            "hermes_cli.models.github_model_reasoning_efforts",
+            lambda _model: ["low", "medium", "high"],
+        )
+        agent.model = "gpt-5.4"
+        agent.reasoning_config = {"enabled": True, "effort": requested}
+
+        assert agent._github_models_reasoning_extra_body() == {"effort": expected}
 
 
 
@@ -3997,6 +4012,51 @@ class TestRunConversation:
         assert calls["refresh"] == 1
         assert result["completed"] is True
         assert result["final_response"] == "Recovered after remint"
+
+    def test_copilot_401_refreshes_three_times_within_one_attempt(self, agent):
+        """Clock-driven Copilot IDE-token expiry may recur in a long attempt."""
+        self._setup_agent(agent)
+        agent.provider = "copilot"
+        agent.api_mode = "chat_completions"
+        agent.base_url = "https://api.githubcopilot.com"
+        agent._base_url_lower = agent.base_url.lower()
+        agent._api_max_retries = 4
+
+        calls = {"api": 0, "refresh": 0}
+
+        class _UnauthorizedError(RuntimeError):
+            def __init__(self):
+                super().__init__("Error code: 401 - IDE token expired")
+                self.status_code = 401
+
+        def _fake_api_call(api_kwargs):
+            calls["api"] += 1
+            if calls["api"] <= 3:
+                raise _UnauthorizedError()
+            return _mock_response(
+                content="Recovered after repeated re-mints", finish_reason="stop"
+            )
+
+        def _fake_refresh():
+            calls["refresh"] += 1
+            return True
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(
+                agent,
+                "_try_refresh_copilot_client_credentials",
+                side_effect=_fake_refresh,
+            ),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert calls == {"api": 4, "refresh": 3}
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered after repeated re-mints"
 
     def test_context_compression_triggered(self, agent):
         """When compressor says should_compress, compression runs."""

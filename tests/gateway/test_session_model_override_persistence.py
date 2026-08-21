@@ -112,8 +112,10 @@ def test_runner_rehydrates_override_after_restart(store_factory):
             "base_url": "https://api.openai.example/v1",
             "provider": "openai",
         },
-    ):
+    ) as resolve_runtime:
         runner._rehydrate_session_model_override(session_key)
+
+    resolve_runtime.assert_called_once_with("openai", target_model="gpt-5o")
 
     override = runner._session_model_overrides[session_key]
     assert override["model"] == "gpt-5o"

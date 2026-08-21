@@ -7789,15 +7789,16 @@ class AIAgent:
         else:
             requested_effort = "medium"
 
-        if requested_effort == "xhigh" and "xhigh" not in supported_efforts and "high" in supported_efforts:
-            requested_effort = "high"
-        elif requested_effort not in supported_efforts:
-            if requested_effort == "minimal" and "low" in supported_efforts:
-                requested_effort = "low"
-            elif "medium" in supported_efforts:
-                requested_effort = "medium"
-            else:
-                requested_effort = supported_efforts[0]
+        if requested_effort not in supported_efforts:
+            from agent.reasoning_effort import clamp_effort
+
+            requested_effort = clamp_effort(requested_effort, supported_efforts)
+            if requested_effort not in supported_efforts:
+                requested_effort = (
+                    "medium"
+                    if "medium" in supported_efforts
+                    else supported_efforts[0]
+                )
 
         return {"effort": requested_effort}
 

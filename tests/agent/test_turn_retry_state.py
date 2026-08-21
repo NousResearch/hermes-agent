@@ -13,12 +13,13 @@ from dataclasses import fields
 from agent.turn_retry_state import TurnRetryState
 
 
-EXPECTED_FIELDS = {
+REQUIRED_FIELDS = {
     "codex_auth_retry_attempted",
     "anthropic_auth_retry_attempted",
     "nous_auth_retry_attempted",
     "nous_paid_entitlement_refresh_attempted",
-    "copilot_auth_retry_attempted",
+    "copilot_auth_refresh_count",
+    "max_copilot_auth_refreshes",
     "copilot_stale_cred_retry_attempted",
     "vertex_auth_retry_attempted",
     "thinking_sig_retry_attempted",
@@ -38,13 +39,32 @@ EXPECTED_FIELDS = {
 }
 
 
-
-
-def test_field_set_matches_contract():
+def test_required_recovery_guards_are_present():
+    """Pin the recovery contract without rejecting legitimate new guards."""
     names = {f.name for f in fields(TurnRetryState)}
-    assert names == EXPECTED_FIELDS, (
-        f"unexpected drift: missing={EXPECTED_FIELDS - names} extra={names - EXPECTED_FIELDS}"
-    )
+    missing = REQUIRED_FIELDS - names
+    assert not missing, f"recovery branches unreachable: {missing}"
+
+
+def test_retry_state_defaults_distinguish_counters_from_ceilings():
+    """Counters start empty; configured retry ceilings must be positive."""
+    state = TurnRetryState()
+    for field in fields(TurnRetryState):
+        value = getattr(state, field.name)
+        if field.name.startswith("max_"):
+            assert isinstance(value, int) and value > 0, field.name
+        elif isinstance(value, bool):
+            assert value is False, field.name
+        elif isinstance(value, int):
+            assert value == 0, field.name
+
+
+def test_copilot_refresh_budget_stops_after_three_attempts():
+    state = TurnRetryState()
+    for _ in range(3):
+        assert state.may_refresh_copilot_auth()
+        state.record_copilot_auth_refresh()
+    assert not state.may_refresh_copilot_auth()
 
 
 

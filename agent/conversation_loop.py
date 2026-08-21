@@ -4851,9 +4851,9 @@ def run_conversation(
                 if (
                     _is_copilot_provider(agent)
                     and status_code == 401
-                    and not _retry.copilot_auth_retry_attempted
+                    and _retry.may_refresh_copilot_auth()
                 ):
-                    _retry.copilot_auth_retry_attempted = True
+                    _retry.record_copilot_auth_refresh()
                     if agent._try_refresh_copilot_client_credentials():
                         agent._buffer_vprint("🔐 Copilot credentials refreshed after 401. Retrying request...")
                         continue

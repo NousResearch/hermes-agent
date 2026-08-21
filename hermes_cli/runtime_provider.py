@@ -366,6 +366,15 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
         return True
     if normalized_provider == "custom":
         return normalized_configured == "custom" or normalized_configured.startswith("custom:")
+
+    # Compare canonical provider identities so supported aliases such as
+    # ``github-copilot`` do not make a legitimate persisted Copilot mode look
+    # like state leaked from a different provider.
+    try:
+        normalized_provider = auth_mod.resolve_provider(normalized_provider)
+        normalized_configured = auth_mod.resolve_provider(normalized_configured)
+    except Exception:
+        pass
     return normalized_configured == normalized_provider
 
 
@@ -377,7 +386,11 @@ def _copilot_runtime_api_mode(
 ) -> str:
     configured_provider = str(model_cfg.get("provider") or "").strip().lower()
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-    if configured_mode and _provider_supports_explicit_api_mode("copilot", configured_provider):
+    if (
+        configured_mode
+        and not (target_model or "").strip()
+        and _provider_supports_explicit_api_mode("copilot", configured_provider)
+    ):
         return configured_mode
 
     # Use the model being resolved for this runtime, not the persisted global
@@ -525,7 +538,7 @@ def _resolve_runtime_from_pool_entry(
         api_mode = _copilot_runtime_api_mode(
             model_cfg,
             getattr(entry, "runtime_api_key", ""),
-            target_model=effective_model,
+            target_model=target_model,  # Preserve None so a persisted pin can win.
         )
         base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
     elif provider == "azure-foundry":

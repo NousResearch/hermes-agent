@@ -44,7 +44,11 @@ class TurnRetryState:
     anthropic_auth_retry_attempted: bool = False
     nous_auth_retry_attempted: bool = False
     nous_paid_entitlement_refresh_attempted: bool = False
-    copilot_auth_retry_attempted: bool = False
+    # Copilot's exchanged IDE token expires on a short clock, so one long
+    # attempt can legitimately need more than one re-mint. Keep this separate
+    # from the single-shot stale-credential 400 recovery below.
+    copilot_auth_refresh_count: int = 0
+    max_copilot_auth_refreshes: int = 3
     # Copilot surfaces a stale/degraded credential as a 400
     # ``model_not_available_for_integrator`` / ``model_not_supported`` instead
     # of a clean 401 (e.g. a raw OAuth token seeded when the token exchange
@@ -86,6 +90,14 @@ class TurnRetryState:
     # loop must append a role-safe checkpoint + user message, rebuild the API
     # payload, and retry the same logical iteration.
     restart_with_redirected_messages: bool = False
+
+    def may_refresh_copilot_auth(self) -> bool:
+        """Return whether this attempt still has a Copilot 401 refresh available."""
+        return self.copilot_auth_refresh_count < self.max_copilot_auth_refreshes
+
+    def record_copilot_auth_refresh(self) -> None:
+        """Spend one unit of this attempt's Copilot 401 refresh budget."""
+        self.copilot_auth_refresh_count += 1
 
     def __iter__(self):
         # Convenience for debugging / tests: iterate (name, value) pairs.

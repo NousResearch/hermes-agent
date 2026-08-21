@@ -70,6 +70,18 @@ def test_catalog_placeholders_match_english(lang: str):
         )
 
 
+def test_fr_gateway_status_is_translated():
+    """French /status diagnostics must not silently fall back to English copy."""
+    en_flat = _flatten(_load_raw("en"))
+    fr_flat = _flatten(_load_raw("fr"))
+    copied = [
+        key
+        for key, en_value in en_flat.items()
+        if key.startswith("gateway.status.") and fr_flat.get(key) == en_value
+    ]
+    assert not copied, f"French /status values still in English: {sorted(copied)}"
+
+
 # ---------------------------------------------------------------------------
 # Language resolution
 # ---------------------------------------------------------------------------

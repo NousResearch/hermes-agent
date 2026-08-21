@@ -1,4 +1,5 @@
 import json
+import logging
 from unittest.mock import AsyncMock
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
@@ -151,6 +152,85 @@ def test_dm_policy_disabled_still_allows_groups():
 
 
 # --- New group_policy tests ---
+
+
+_LOGGER = "gateway.platforms.whatsapp_common"
+
+
+def _drop_lines(caplog):
+    return [r.getMessage() for r in caplog.records if "dropping group message" in r.getMessage()]
+
+
+def test_group_policy_pairing_drop_is_explained(caplog):
+    """The default policy drops every group message -- but now says so (#78366).
+
+    ``pairing`` admits no group chat, and the drop happens at intake before
+    any mention or allowlist logic runs. Outbound to the same group keeps
+    working, so without this line the failure is indistinguishable from
+    "no message was ever sent".
+    """
+    adapter = _make_adapter(group_policy="pairing", require_mention=False)
+
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER):
+        assert adapter._should_process_message(_group_message("hello")) is False
+
+    lines = _drop_lines(caplog)
+    assert lines, caplog.text
+    assert "120363001234567890@g.us" in lines[0]
+    assert "pairing" in lines[0]
+
+
+def test_group_policy_allowlist_miss_names_the_allowlist(caplog):
+    adapter = _make_adapter(group_policy="allowlist", group_allow_from="120363999999999999@g.us")
+
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER):
+        assert adapter._should_process_message(_group_message("hello")) is False
+
+    lines = _drop_lines(caplog)
+    assert lines, caplog.text
+    assert "group_allow_from" in lines[0]
+
+
+def test_group_policy_disabled_drop_is_explained(caplog):
+    adapter = _make_adapter(group_policy="disabled")
+
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER):
+        assert adapter._should_process_message(_group_message("hello")) is False
+
+    assert "disabled" in "".join(_drop_lines(caplog)), caplog.text
+
+
+def test_allowed_group_logs_no_drop(caplog):
+    """A permitted group must not emit a drop line."""
+    adapter = _make_adapter(group_policy="open", require_mention=False)
+
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER):
+        assert adapter._should_process_message(_group_message("hello")) is True
+
+    assert _drop_lines(caplog) == []
+
+
+def test_json_array_string_group_allow_from_matches_nothing():
+    """Pin the comma-split contract now documented on _coerce_allow_list (#78366).
+
+    ``hermes config set ... '["120363...@g.us"]'`` accepts a JSON array
+    string, but the value is split on commas, not parsed as JSON -- the
+    brackets and quotes survive into the entry so the real JID never
+    matches. Pinned so that adding JSON parsing later is a deliberate,
+    test-visible decision rather than a silent behavior change.
+    """
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    coerced = WhatsAppAdapter._coerce_allow_list('["120363001234567890@g.us"]')
+    assert "120363001234567890@g.us" not in coerced
+
+    # The documented forms both work.
+    assert WhatsAppAdapter._coerce_allow_list(
+        "120363001234567890@g.us,120363999999999999@g.us"
+    ) == {"120363001234567890@g.us", "120363999999999999@g.us"}
+    assert WhatsAppAdapter._coerce_allow_list(
+        ["120363001234567890@g.us"]
+    ) == {"120363001234567890@g.us"}
 
 
 # --- Config bridging tests ---

@@ -1,4 +1,4 @@
-"""Dedicated profile ``SessionDB`` handles must be closed by whoever ends up owning them.
+"""Dedicated session ``SessionDB`` handles must be closed by their final owner.
 
 Companion to ``test_session_resume_db_ownership.py``, which pins the paths that
 return BEFORE a handle reaches an agent. This file pins the other half — the two
@@ -19,8 +19,9 @@ gaps that survived that change:
     branch handler and the compute host all open a dedicated handle, pass it to
     ``_make_agent``, and had no close on their failure paths.
 
-The direction that must NOT regress is asserted everywhere: the shared launch
-handle is never closed, and a handle that WAS transferred is not closed twice.
+The direction that must NOT regress is asserted everywhere: the process-global
+launch handle is never closed, and a handle that WAS transferred is not closed
+twice.
 """
 
 from __future__ import annotations
@@ -82,10 +83,9 @@ def test_close_closes_a_dedicated_handle_it_owns():
 def test_close_never_closes_a_shared_handle():
     """The direction that must not regress.
 
-    Almost every agent is handed the SHARED launch handle, which outlives it and
-    is used by every other live session. Closing that on teardown would break
-    every other chat in the gateway, so ownership defaults to False and only the
-    dedicated-open sites set it.
+    Process-global queries still use a SHARED launch handle that outlives every
+    agent. Closing it from any teardown would break later gateway operations,
+    so ownership defaults to False and only dedicated-open sites set it.
     """
     db = _RecordingDB()
     agent = _bare_agent(_session_db=db, _owns_session_db=False)
@@ -369,18 +369,24 @@ def test_deferred_build_closes_the_handle_when_the_session_is_reaped_midbuild(
     assert session["agent"]._owns_session_db is False
 
 
-def test_deferred_build_never_opens_or_closes_for_the_launch_profile(
+def test_deferred_build_transfers_launch_profile_handle(
     build_env, registered, monkeypatch
 ):
-    """No profile scope -> no dedicated handle; the shared one is untouched."""
-    monkeypatch.setattr(
-        server,
-        "_make_agent",
-        lambda *a, **k: types.SimpleNamespace(_session_db=None, _owns_session_db=False),
-    )
+    """Launch sessions also use a dedicated, explicitly rooted handle."""
+
+    def _fake_make_agent(*_args, session_db=None, **_kwargs):
+        return types.SimpleNamespace(
+            _session_db=session_db,
+            _owns_session_db=False,
+        )
+
+    monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
     sid, session = "sid-launch", _session(None)
     registered(sid, session)
 
     _run_build(sid, session)
 
-    assert build_env.opened == []
+    assert len(build_env.opened) == 1
+    assert build_env.opened[0].db_path == server._session_db_path(session)
+    assert build_env.opened[0].closed == 0
+    assert session["agent"]._owns_session_db is True

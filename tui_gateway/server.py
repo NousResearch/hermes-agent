@@ -822,8 +822,8 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     _tui_owns_lifecycle = True
     if session_id:
         try:
-            # End the row in the *session's* profile state.db (app-global
-            # remote mode), not the launch profile's shared handle.
+            # End the row in the state.db owned by this live session, not a
+            # possibly stale process-global launch-profile handle.
             with _session_db(session) as db:
                 if db is not None:
                     # Don't end gateway-originated sessions — the gateway owns
@@ -1410,7 +1410,9 @@ def _get_db():
         from hermes_state import SessionDB
 
         try:
-            _db = SessionDB()
+            # This is the process-global launch-profile handle. An ambient
+            # per-session HERMES_HOME override must never redirect it.
+            _db = SessionDB(db_path=Path(_hermes_home) / "state.db")
             _db_error = None
         except Exception as exc:
             _db_error = str(exc)
@@ -2335,7 +2337,6 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # Build against the session's profile (global-remote): bind its
             # HERMES_HOME so config/skills/model resolve to it, and hand the
             # agent that profile's db so turns persist to the right state.db.
-            session_db = None
             if profile_home:
                 home_token = set_hermes_home_override(profile_home)
                 try:
@@ -2344,17 +2345,6 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
                 except Exception:
                     pass
-                try:
-                    from hermes_state import SessionDB
-
-                    # DEDICATED handle — ours until _transfer_db_to_agent hands
-                    # it to the built agent in the finally below. Every path
-                    # that leaves this build without that transfer (the except
-                    # below, and a session reaped mid-build) must close it.
-                    session_db = SessionDB(db_path=Path(profile_home) / "state.db")
-                    owns_db = True
-                except Exception:
-                    session_db = None
 
             try:
                 from tui_gateway.entry import ensure_mcp_discovery_started
@@ -2363,6 +2353,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
             except Exception:
                 logger.warning("MCP discovery startup failed", exc_info=True)
 
+            session_db = _new_session_db(current, "agent build")
+            owns_db = session_db is not None
             try:
                 # Lazy-resumed (watch) sessions carry the stored conversation
                 # id — pass it through so the upgrade continues that session
@@ -2496,7 +2488,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     unregister_gateway_notify(key)
                 except Exception:
                     pass
-            # Dedicated profile handle: hand it to the agent that will actually
+            # Dedicated session handle: hand it to the agent that will actually
             # be torn down, or close it here when no such agent exists. Both
             # non-transfer cases are real: the except above (build raised, so
             # nothing holds the handle) and `replaced` (the session was reaped
@@ -2896,6 +2888,24 @@ def _session_source(session: dict | None) -> str:
     return _resolve_session_platform()
 
 
+def _session_db_path(session: dict) -> Path:
+    """Return the state.db path that owns this live session."""
+    profile_home = session.get("profile_home")
+    if profile_home:
+        return Path(profile_home) / "state.db"
+    return Path(_hermes_home) / "state.db"
+
+
+def _new_session_db(session: dict, label: str):
+    from hermes_state import SessionDB
+
+    try:
+        return SessionDB(db_path=_session_db_path(session))
+    except Exception:
+        logger.debug("failed to open %s db for session", label, exc_info=True)
+        return None
+
+
 def _register_session_cwd(session: dict | None) -> None:
     if not session:
         return
@@ -2935,22 +2945,11 @@ def _ensure_session_db_row(session: dict) -> None:
     key = session.get("session_key")
     if not key:
         return
-    # Persist into the session's own profile db (global remote mode), not the
-    # launch profile's — otherwise the row lands in the wrong state.db, the
-    # unified list mis-tags it, and resume 404s ("session not found").
     profile_home = session.get("profile_home")
-    if profile_home:
-        from hermes_state import SessionDB
-
-        try:
-            db = SessionDB(db_path=Path(profile_home) / "state.db")
-        except Exception:
-            logger.debug("failed to open profile db for session row", exc_info=True)
-            return
-        close_db = True
-    else:
-        db = _get_db()
-        close_db = False
+    # Persist into the session's own DB. Even the launch/default profile uses
+    # an explicit path here so a stale process-global _get_db() handle cannot
+    # write this session into another profile's state.db.
+    db = _new_session_db(session, "row")
     if db is None:
         return
     # The session's own model/effort/fast pick — the composer override shipped on
@@ -3043,11 +3042,10 @@ def _ensure_session_db_row(session: dict) -> None:
             raise
         logger.debug("failed to persist desktop session row", exc_info=True)
     finally:
-        if close_db:
-            try:
-                db.close()
-            except Exception:
-                pass
+        try:
+            db.close()
+        except Exception:
+            pass
 
 
 def _persist_branch_seed(session: dict) -> None:
@@ -3117,26 +3115,15 @@ def _persist_branch_seed(session: dict) -> None:
 def _session_db(session: dict):
     """Yield the SessionDB that owns this session's row (profile-aware).
 
-    Mirrors :func:`_ensure_session_db_row`: a remote/profile session persists
-    into its own profile's ``state.db`` (a fresh handle we close on exit);
-    everything else borrows the shared ``_get_db()`` handle (left open). Yields
-    None when the db is unavailable.
+    Mirrors :func:`_ensure_session_db_row`: session-owned writes always use an
+    explicit ``state.db`` path derived from the live session/profile, including
+    launch-profile sessions. Yields None when the db is unavailable.
     """
-    db, close_db = None, False
-    profile_home = session.get("profile_home")
-    if profile_home:
-        from hermes_state import SessionDB
-
-        try:
-            db, close_db = SessionDB(db_path=Path(profile_home) / "state.db"), True
-        except Exception:
-            logger.debug("failed to open profile db for session", exc_info=True)
-    else:
-        db = _get_db()
+    db = _new_session_db(session, "profile")
     try:
         yield db
     finally:
-        if close_db and db is not None:
+        if db is not None:
             with contextlib.suppress(Exception):
                 db.close()
 
@@ -6844,6 +6831,7 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 
 def _reset_session_agent(sid: str, session: dict) -> dict:
     tokens = _set_session_context(session["session_key"])
+    session_db = None
     try:
         # /new is a full conversation boundary: session-scoped runtime
         # overrides (/model, /reasoning, /fast) do NOT carry forward — the
@@ -6856,12 +6844,23 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         session.pop("create_reasoning_override", None)
         session.pop("create_service_tier_override", None)
         session.pop("one_turn_model_restore", None)
+        session_db = _new_session_db(session, "agent reset")
         new_agent = _make_agent(
             sid,
             session["session_key"],
             session_id=session["session_key"],
+            session_db=session_db,
             platform_override=_session_source(session),
         )
+        if session_db is not None and not _transfer_db_to_agent(new_agent, session_db):
+            with contextlib.suppress(Exception):
+                session_db.close()
+            session_db = None
+    except Exception:
+        if session_db is not None:
+            with contextlib.suppress(Exception):
+                session_db.close()
+        raise
     finally:
         _clear_session_context(tokens)
     session["agent"] = new_agent
@@ -7021,11 +7020,14 @@ def _resolve_runtime_with_fallback(
         raise
 
 
+_SESSION_DB_UNSET = object()
+
+
 def _make_agent(
     sid: str,
     key: str,
     session_id: str | None = None,
-    session_db=None,
+    session_db=_SESSION_DB_UNSET,
     model_override: dict | str | None = None,
     provider_override: str | None = None,
     reasoning_config_override: dict | None = None,
@@ -7198,7 +7200,7 @@ def _make_agent(
         provider_data_collection=_pr.get("data_collection"),
         platform=_resolve_agent_platform(platform_override),
         session_id=session_id or key,
-        session_db=session_db if session_db is not None else _get_db(),
+        session_db=_get_db() if session_db is _SESSION_DB_UNSET else session_db,
         ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),

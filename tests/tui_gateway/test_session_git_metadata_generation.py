@@ -29,7 +29,7 @@ def test_cwd_claim_precedes_probe_and_generation_reaches_publish(monkeypatch):
             )
             return True
 
-    monkeypatch.setattr(server, "_get_db", lambda: DB())
+    monkeypatch.setattr(server, "_new_session_db", lambda *_a, **_k: DB())
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(
         server,
@@ -59,7 +59,7 @@ def test_cwd_claim_precedes_probe_and_generation_reaches_publish(monkeypatch):
 
 def test_missing_db_claim_never_starts_git_probe(monkeypatch):
     probed = []
-    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_new_session_db", lambda *_a, **_k: None)
     monkeypatch.setattr(
         server, "_git_branch_for_cwd", lambda cwd: probed.append(cwd)
     )

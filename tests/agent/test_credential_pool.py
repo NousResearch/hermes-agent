@@ -24,6 +24,55 @@ def _jwt_with_claims(claims: dict) -> str:
     return f"{_part({'alg': 'none', 'typ': 'JWT'})}.{_part(claims)}.sig"
 
 
+def test_providers_dict_seeds_custom_pool_when_legacy_list_exists(tmp_path, monkeypatch):
+    """The credential pool must consume the merged provider compatibility view."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (hermes_home / "config.yaml").write_text(
+        """
+model:
+  provider: openai
+  default: some-model
+custom_providers:
+  - name: legacy-endpoint
+    base_url: http://127.0.0.1:9001/v1
+    api_key: legacy-key
+    api_mode: chat_completions
+    model: legacy-model
+providers:
+  newstyle-endpoint:
+    name: newstyle-endpoint
+    api: http://127.0.0.1:9002/v1
+    api_key: newstyle-key
+    default_model: newstyle-model
+    transport: chat_completions
+    models:
+      - newstyle-model
+""".lstrip()
+    )
+
+    from agent.credential_pool import _iter_custom_providers, load_pool
+    from hermes_cli.config import get_compatible_custom_providers, load_config
+
+    cfg = load_config()
+    assert [entry["name"] for entry in get_compatible_custom_providers(cfg)] == [
+        "legacy-endpoint",
+        "newstyle-endpoint",
+    ]
+    assert [name for name, _ in _iter_custom_providers(cfg)] == [
+        "legacy-endpoint",
+        "newstyle-endpoint",
+    ]
+
+    pool = load_pool("custom:newstyle-endpoint")
+    assert pool.has_credentials() is True
+    entry = pool.entries()[0]
+    assert entry.source == "config:newstyle-endpoint"
+    assert entry.runtime_api_key == "newstyle-key"
+    assert entry.runtime_base_url == "http://127.0.0.1:9002/v1"
+
+
 
 
 

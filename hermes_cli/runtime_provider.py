@@ -155,6 +155,26 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     return None
 
 
+def _provider_default_host(provider: str) -> str:
+    """Return the provider's declared default base-URL host, or ``""``.
+
+    Consults the resolved provider catalog (models.dev + Hermes overlays)
+    first, then the runtime credential registry's ``inference_base_url`` for
+    providers the catalog doesn't carry.
+    """
+    from hermes_cli.providers import get_provider
+
+    pdef = get_provider(provider)
+    if pdef is not None and pdef.base_url:
+        host = base_url_hostname(pdef.base_url)
+        if host:
+            return host
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    if pconfig and pconfig.inference_base_url:
+        return base_url_hostname(pconfig.inference_base_url)
+    return ""
+
+
 def _fallback_api_mode(provider: str, base_url: str, model: str = "") -> str:
     """Resolve api_mode when no explicit/persisted mode applies.
 
@@ -163,6 +183,17 @@ def _fallback_api_mode(provider: str, base_url: str, model: str = "") -> str:
     ``providers.determine_api_mode`` — which already handles host mandates,
     dual-wire providers, and the registry transport map — and only then the
     ``chat_completions`` default for genuinely unknown providers/endpoints.
+
+    The provider-declared transport only applies while the endpoint sits on
+    the provider's own default host. A ``model.base_url`` override that points
+    at a *different* endpoint — an OpenAI-compatible relay in front of
+    MiniMax, a corporate egress gateway, a local LiteLLM instance — does not
+    inherit the declared wire protocol: the override is protocol-unknown, so
+    the safe generic ``chat_completions`` default applies. Without this gate,
+    a proxied ``minimax`` setup is resolved as ``anthropic_messages`` and
+    every request is built with Anthropic-shaped auth (``x-api-key``) against
+    an endpoint that expects ``Authorization: Bearer`` — HTTP 401, or a
+    silent reroute to a fallback provider (#76836).
 
     Before this helper the runtime paths consulted URL detection ONLY and
     silently landed reasoning providers on ``chat_completions`` whenever the
@@ -177,7 +208,19 @@ def _fallback_api_mode(provider: str, base_url: str, model: str = "") -> str:
         return detected
     from hermes_cli.providers import determine_api_mode
 
-    return determine_api_mode(provider, base_url, model) or "chat_completions"
+    declared = determine_api_mode(provider, base_url, model) or "chat_completions"
+    if declared == "chat_completions":
+        return declared
+    # Non-chat declared transports (anthropic_messages, codex_responses) are
+    # statements about the provider's own endpoint. When base_url was
+    # overridden to a foreign endpoint, do not assume the declared transport
+    # still applies — fall back to the generic OpenAI-compatible protocol
+    # instead of sending Anthropic/Responses-shaped requests (with the wrong
+    # auth header) at a relay that speaks chat/completions (#76836).
+    default_host = _provider_default_host(provider)
+    if default_host and base_url_host_matches(base_url, default_host):
+        return declared
+    return "chat_completions"
 
 
 def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> str:

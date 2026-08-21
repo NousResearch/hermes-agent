@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlsplit
 
+from gateway.config import Platform
+from gateway.session import SessionSource
 from gateway.becky_loop_summarizer import (
     AsyncAuxiliarySummaryProvider,
     LoopSummary,
@@ -382,8 +384,9 @@ def revision_for(row: dict[str, Any], transcript: list[dict[str, Any]]) -> str:
 class SessionDBBeckyLoopsStore:
     """Read-only projection over Hermes's existing SessionDB."""
 
-    def __init__(self, db: Any) -> None:
+    def __init__(self, db: Any, *, session_store: Any | None = None) -> None:
         self._db = db
+        self._session_store = session_store
         self._source_rows: dict[str, dict[str, Any]] = {}
         self._chat_id = ""
 
@@ -485,74 +488,139 @@ class SessionDBBeckyLoopsStore:
     def transcript(self, session_id: str) -> list[dict[str, Any]]:
         return self._db.get_messages(session_id, include_inactive=False)
 
+    def _shortcut_session_id(self, topic_id: str) -> str:
+        digest = hashlib.sha256(
+            f"telegram\0{self._chat_id}\0{topic_id}".encode()
+        ).hexdigest()[:32]
+        return f"telegram_shortcut_{digest}"
+
+    def _shortcut_source(self, topic_id: str) -> SessionSource:
+        return SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=self._chat_id,
+            chat_type="group",
+            thread_id=topic_id,
+        )
+
+    def _set_shortcut_title(self, session_id: str, title: str) -> None:
+        set_title = getattr(self._db, "set_session_title", None)
+        if not callable(set_title):
+            return
+        try:
+            set_title(session_id, title)
+        except ValueError:
+            for suffix in range(2, 100):
+                try:
+                    if set_title(session_id, f"{title} ({suffix})"):
+                        break
+                except ValueError:
+                    continue
+
+    def _shortcut_has_message(self, session_id: str, message_id: str) -> bool:
+        messages = self._db.get_messages(session_id, include_inactive=False)
+        return any(
+            str(message.get("platform_message_id") or "") == message_id
+            for message in messages
+        )
+
+    def _append_shortcut_message(
+        self, *, session_id: str, role: str, text: str, message_id: str
+    ) -> None:
+        timestamp = datetime.now(UTC).timestamp()
+        append = getattr(self._session_store, "append_to_transcript", None)
+        if callable(append):
+            append(
+                session_id,
+                {
+                    "role": role,
+                    "content": text,
+                    "message_id": message_id,
+                    "observed": True,
+                    "timestamp": timestamp,
+                },
+            )
+            return
+        self._db.append_message(
+            session_id,
+            role,
+            content=text,
+            platform_message_id=message_id,
+            observed=True,
+            timestamp=timestamp,
+        )
+
     def record_shortcut_topic(
         self, *, title: str, text: str, topic_id: str, message_id: str
     ) -> str | None:
         """Persist a Shortcut-created topic so it enters the normal projection."""
-        if not all(
-            callable(getattr(self._db, name, None))
-            for name in (
-                "create_session",
-                "get_session",
-                "get_messages",
-                "append_message",
-            )
-        ):
-            return None
-        digest = hashlib.sha256(
-            f"telegram\0{self._chat_id}\0{topic_id}".encode()
-        ).hexdigest()[:32]
-        session_id = f"telegram_shortcut_{digest}"
-        if self._db.get_session(session_id) is None:
-            self._db.create_session(
+        legacy_session_id = self._shortcut_session_id(topic_id)
+        session_id: str | None = None
+        if self._session_store is not None:
+            try:
+                entry = self._session_store.get_or_create_session(
+                    self._shortcut_source(topic_id)
+                )
+                session_id = str(getattr(entry, "session_id", "")) or None
+                legacy = self._db.get_session(legacy_session_id)
+                switch = getattr(self._session_store, "switch_session", None)
+                if (
+                    legacy is not None
+                    and session_id != legacy_session_id
+                    and callable(switch)
+                ):
+                    switched = switch(
+                        str(getattr(entry, "session_key", "")), legacy_session_id
+                    )
+                    if switched is not None:
+                        session_id = legacy_session_id
+            except Exception:
+                logger.debug(
+                    "Unable to route Shortcut topic through gateway session store",
+                    exc_info=True,
+                )
+                session_id = None
+
+        if session_id is None:
+            if not all(
+                callable(getattr(self._db, name, None))
+                for name in (
+                    "create_session",
+                    "get_session",
+                    "get_messages",
+                    "append_message",
+                )
+            ):
+                return None
+            session_id = legacy_session_id
+            if self._db.get_session(session_id) is None:
+                self._db.create_session(
+                    session_id=session_id,
+                    source="telegram",
+                    chat_id=self._chat_id,
+                    chat_type="group",
+                    thread_id=topic_id,
+                )
+
+        self._set_shortcut_title(session_id, title)
+        if not self._shortcut_has_message(session_id, message_id):
+            self._append_shortcut_message(
                 session_id=session_id,
-                source="telegram",
-                chat_id=self._chat_id,
-                chat_type="supergroup",
-                thread_id=topic_id,
-            )
-            set_title = getattr(self._db, "set_session_title", None)
-            if callable(set_title):
-                try:
-                    set_title(session_id, title)
-                except ValueError:
-                    for suffix in range(2, 100):
-                        try:
-                            if set_title(session_id, f"{title} ({suffix})"):
-                                break
-                        except ValueError:
-                            continue
-        messages = self._db.get_messages(session_id, include_inactive=False)
-        if not any(
-            str(message.get("platform_message_id") or "") == message_id
-            for message in messages
-        ):
-            self._db.append_message(
-                session_id,
-                "user",
-                content=text,
-                platform_message_id=message_id,
-                observed=True,
-                timestamp=datetime.now(UTC).timestamp(),
+                role="user",
+                text=text,
+                message_id=message_id,
             )
         return session_id
 
     def record_shortcut_answer(
         self, *, session_id: str, text: str, message_id: str
     ) -> None:
-        messages = self._db.get_messages(session_id, include_inactive=False)
-        if any(
-            str(message.get("platform_message_id") or "") == message_id
-            for message in messages
-        ):
+        if self._shortcut_has_message(session_id, message_id):
             return
-        self._db.append_message(
-            session_id,
-            "assistant",
-            content=text,
-            platform_message_id=message_id,
-            observed=True,
-            timestamp=datetime.now(UTC).timestamp(),
+        self._append_shortcut_message(
+            session_id=session_id,
+            role="assistant",
+            text=text,
+            message_id=message_id,
         )
 
     @staticmethod
@@ -1796,6 +1864,7 @@ async def start_becky_loops_bridge(
     *,
     config: BeckyLoopsConfig | None,
     db: Any,
+    session_store: Any | None = None,
     summarizer: LoopSummarizer | None = None,
     topic_sender: TopicSender | None = None,
     topic_controller: TopicController | None = None,
@@ -1805,7 +1874,7 @@ async def start_becky_loops_bridge(
     if config is None or not config.enabled:
         return None
     try:
-        store = SessionDBBeckyLoopsStore(db)
+        store = SessionDBBeckyLoopsStore(db, session_store=session_store)
         store._chat_id = config.chat_id
         server = BeckyLoopsBridgeServer(
             config=config,

@@ -394,6 +394,43 @@ class ShortcutProjectionDB:
         return len(self.messages[session_id])
 
 
+class GatewayShortcutSessionStore:
+    def __init__(self, db: ShortcutProjectionDB) -> None:
+        self.db = db
+        self.source = None
+        self.entry = None
+
+    def get_or_create_session(self, source):
+        self.source = source
+        if self.entry is None:
+            session_id = "gateway-session"
+            session_key = (
+                f"agent:main:telegram:group:{source.chat_id}:{source.thread_id}"
+            )
+            self.db.create_session(
+                session_id=session_id,
+                source="telegram",
+                session_key=session_key,
+                chat_id=source.chat_id,
+                chat_type=source.chat_type,
+                thread_id=source.thread_id,
+            )
+            self.entry = SimpleNamespace(
+                session_id=session_id,
+                session_key=session_key,
+            )
+        return self.entry
+
+    def append_to_transcript(self, session_id: str, message: dict[str, object]) -> None:
+        self.db.append_message(
+            session_id,
+            str(message.get("role") or "unknown"),
+            content=message.get("content"),
+            platform_message_id=message.get("message_id"),
+            timestamp=message.get("timestamp"),
+        )
+
+
 def config(*, port: int = 0, topic_reply: str = "unavailable") -> BeckyLoopsConfig:
     return BeckyLoopsConfig(
         enabled=True,
@@ -2106,6 +2143,35 @@ def test_session_store_persists_shortcut_topic_exchange_idempotently() -> None:
     )
 
     assert db.sessions[session_id]["title"] == "Energy Audit Request"
+    assert [message["role"] for message in db.messages[session_id]] == [
+        "user",
+        "assistant",
+    ]
+
+
+def test_session_store_routes_shortcut_exchange_to_gateway_topic_session() -> None:
+    from gateway.becky_loops import SessionDBBeckyLoopsStore
+
+    db = ShortcutProjectionDB()
+    routing = GatewayShortcutSessionStore(db)
+    store = SessionDBBeckyLoopsStore(db, session_store=routing)
+    store._chat_id = "-1004476874933"
+
+    session_id = store.record_shortcut_topic(
+        title="Energy Audit Request",
+        text="Can you audit my home energy usage?",
+        topic_id="44",
+        message_id="104",
+    )
+    store.record_shortcut_answer(
+        session_id=session_id or "",
+        text="Please provide last week's energy data.",
+        message_id="105",
+    )
+
+    assert session_id == "gateway-session"
+    assert routing.source.chat_type == "group"
+    assert routing.source.thread_id == "44"
     assert [message["role"] for message in db.messages[session_id]] == [
         "user",
         "assistant",

@@ -3054,6 +3054,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._becky_loops_bridge = await start_becky_loops_bridge(
                 config=config,
                 db=db,
+                session_store=getattr(self, "session_store", None),
                 topic_sender=topic_sender,
                 topic_controller=topic_controller,
             )

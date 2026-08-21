@@ -209,7 +209,6 @@ class TestTelegramAutoTtsCaptionDelivery:
                 "metadata": {"thread_id": "17585", "notify": True},
             }
         ]
->>>>>>> 06a428ef6 (test(gateway): expect forum topic reply anchors)
 
     @pytest.mark.asyncio
     async def test_long_original_with_short_spoken_script_still_sends_full_reply(self, tmp_path):
@@ -279,4 +278,3 @@ class TestTelegramAutoTtsCaptionDelivery:
                 "metadata": {"thread_id": "17585", "notify": True},
             }
         ]
->>>>>>> 06a428ef6 (test(gateway): expect forum topic reply anchors)

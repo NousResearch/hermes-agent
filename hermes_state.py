@@ -10661,6 +10661,41 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     repaired,
                     session_id,
                 )
+        # Strip empty tool_calls arrays from assistant messages before they
+        # reach any downstream send path.  DeepSeek v4 (and other strict
+        # OpenAI-compatible providers) reject ``tool_calls: []`` with HTTP 400
+        # ("empty array — expected minimum length 1").  Empty arrays can
+        # survive the DB round-trip (stored as NULL, not present on load) but
+        # are reintroduced by repair_message_sequence's consecutive-assistant
+        # merge when ``prev`` carries a pre-existing ``[]`` from a prior
+        # repair, a hand-built host history, or an import.  The pre-send
+        # chokepoints (conversation_loop + chat_completion_helpers) already
+        # run ``sanitize_api_messages``, which is the authoritative scrub;
+        # this load-time pass is defense-in-depth so no send path can ever
+        # receive a message with an empty tool_calls array — regardless of
+        # whether the runtime calls sanitize, uses a cached agent instance
+        # that skips the prologue, or hand-builds messages.
+        # (#58755 follow-up, #77921)
+        _stripped = 0
+        for _msg in messages:
+            if (
+                isinstance(_msg, dict)
+                and _msg.get("role") == "assistant"
+                and "tool_calls" in _msg
+                and not (
+                    isinstance(_msg["tool_calls"], list)
+                    and _msg["tool_calls"]
+                )
+            ):
+                del _msg["tool_calls"]
+                _stripped += 1
+        if _stripped:
+            logger.debug(
+                "Stripped empty tool_calls from %d assistant message(s) "
+                "during session load (session=%s)",
+                _stripped,
+                session_id,
+            )
         return messages
 
     def get_resume_conversations(

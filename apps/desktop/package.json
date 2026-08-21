@@ -158,7 +158,7 @@
   "devDependencies": {
     "@babel/core": "8.0.1",
     "@electron/rebuild": "4.2.0",
-    "@playwright/test": "1.58.2",
+    "@playwright/test": "1.62.1",
     "@rolldown/plugin-babel": "0.2.3",
     "@testing-library/dom": "10.4.1",
     "@testing-library/react": "16.3.2",

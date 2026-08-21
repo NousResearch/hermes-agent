@@ -858,6 +858,122 @@ def test_minimax_config_base_url_overrides_hardcoded_default(monkeypatch):
     assert resolved["api_mode"] == "anthropic_messages"
 
 
+def test_zai_config_base_url_overrides_auto_detected_env_pool_route(monkeypatch):
+    """An auto-detected pool route must not override explicit model config."""
+    entry = SimpleNamespace(
+        access_token="glm-key",
+        runtime_api_key="glm-key",
+        source="env:GLM_API_KEY",
+        base_url="https://api.z.ai/api/coding/paas/v4",
+        runtime_base_url=None,
+    )
+    monkeypatch.delenv("GLM_BASE_URL", raising=False)
+
+    resolved = rp._resolve_runtime_from_pool_entry(
+        provider="zai",
+        entry=entry,
+        requested_provider="zai",
+        model_cfg={
+            "provider": "zai",
+            "base_url": "https://api.z.ai/api/paas/v4",
+        },
+    )
+
+    assert resolved["base_url"] == "https://api.z.ai/api/paas/v4"
+
+
+@pytest.mark.parametrize(
+    ("source", "env_base_url"),
+    [
+        ("env:GLM_API_KEY", "https://api.z.ai/api/coding/paas/v4"),
+        ("manual:account-1", ""),
+    ],
+)
+def test_zai_explicit_pool_routes_override_model_config(
+    monkeypatch, source, env_base_url
+):
+    """Explicit env and manual-account routes retain their existing precedence."""
+    entry = SimpleNamespace(
+        access_token="glm-key",
+        runtime_api_key="glm-key",
+        source=source,
+        base_url="https://api.z.ai/api/coding/paas/v4",
+        runtime_base_url=None,
+    )
+    if env_base_url:
+        monkeypatch.setenv("GLM_BASE_URL", env_base_url)
+    else:
+        monkeypatch.delenv("GLM_BASE_URL", raising=False)
+
+    resolved = rp._resolve_runtime_from_pool_entry(
+        provider="zai",
+        entry=entry,
+        requested_provider="zai",
+        model_cfg={
+            "provider": "zai",
+            "base_url": "https://api.z.ai/api/paas/v4",
+        },
+    )
+
+    assert resolved["base_url"] == "https://api.z.ai/api/coding/paas/v4"
+
+
+def test_zai_dotenv_base_url_keeps_explicit_pool_route(monkeypatch):
+    """The pool and precedence guard must use the same .env-first reader."""
+    entry = SimpleNamespace(
+        access_token="glm-key",
+        runtime_api_key="glm-key",
+        source="env:GLM_API_KEY",
+        base_url="https://proxy.example.com/zai/v4",
+        runtime_base_url=None,
+    )
+    monkeypatch.delenv("GLM_BASE_URL", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "get_env_prefer_dotenv",
+        lambda name: (
+            "https://proxy.example.com/zai/v4" if name == "GLM_BASE_URL" else ""
+        ),
+    )
+
+    resolved = rp._resolve_runtime_from_pool_entry(
+        provider="zai",
+        entry=entry,
+        requested_provider="zai",
+        model_cfg={
+            "provider": "zai",
+            "base_url": "https://api.z.ai/api/paas/v4",
+        },
+    )
+
+    assert resolved["base_url"] == "https://proxy.example.com/zai/v4"
+
+
+def test_zai_explicit_default_env_url_overrides_model_config(monkeypatch):
+    """An explicit env route remains authoritative even when it equals the default."""
+    default_url = "https://api.z.ai/api/paas/v4"
+    entry = SimpleNamespace(
+        access_token="glm-key",
+        runtime_api_key="glm-key",
+        source="env:GLM_API_KEY",
+        base_url=default_url,
+        runtime_base_url=None,
+    )
+    monkeypatch.setenv("GLM_BASE_URL", default_url)
+
+    resolved = rp._resolve_runtime_from_pool_entry(
+        provider="zai",
+        entry=entry,
+        requested_provider="zai",
+        model_cfg={
+            "provider": "zai",
+            "base_url": "https://proxy.example.com/zai/v4",
+        },
+    )
+
+    assert resolved["base_url"] == default_url
+
+
 def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch):
     """opencode-zen/go re-derive api_mode from the effective model on every
     resolve, ignoring any persisted ``api_mode`` in config. Refs #16878 /

@@ -16,6 +16,7 @@ from agent.credential_pool import (
     PooledCredential,
     credential_pool_matches_provider,
     get_custom_provider_pool_key,
+    get_env_prefer_dotenv,
     load_pool,
 )
 from agent.secret_scope import get_secret as _get_secret
@@ -558,11 +559,19 @@ def _resolve_runtime_from_pool_entry(
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
         # Honour model.base_url from config.yaml when the configured provider
         # matches this provider — same pattern as the Anthropic branch above.
-        # Only override when the pool entry has no explicit base_url (i.e. it
-        # fell back to the hardcoded default).  Env var overrides win (#6039).
+        # An env-seeded Z.AI entry may contain an auto-detected endpoint rather
+        # than an explicit route; config must still win in that case (#89685).
+        # Explicit base-URL env vars and manual pool routes remain authoritative.
         pconfig = PROVIDER_REGISTRY.get(provider)
         pool_url_is_default = pconfig and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/")
-        if configured_provider == provider and pool_url_is_default:
+        entry_source = str(getattr(entry, "source", "") or "")
+        explicit_env_url = ""
+        if pconfig and pconfig.base_url_env_var:
+            explicit_env_url = get_env_prefer_dotenv(pconfig.base_url_env_var).strip()
+        config_may_override_pool_url = not explicit_env_url and (
+            pool_url_is_default or entry_source.startswith("env:")
+        )
+        if configured_provider == provider and config_may_override_pool_url:
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
             if cfg_base_url:
                 base_url = cfg_base_url

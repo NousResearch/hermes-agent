@@ -564,6 +564,9 @@ def convert_messages_to_converse(messages: List[Dict]) -> Tuple[Optional[List[Di
     """OpenAI messages → ``(system_blocks_or_None, converse_messages)``; tool results become ``toolResult``
     user blocks. Converse needs strict user/assistant alternation with a user turn first and last:
     same-role neighbours merge, placeholder user turns pad the ends."""
+    from agent.tool_argument_integrity import neutralize_completed_incomplete_tool_calls
+    messages = neutralize_completed_incomplete_tool_calls(messages)
+
     system_blocks: List[Dict] = []
     converse_msgs: List[Dict] = []
 

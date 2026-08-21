@@ -1529,6 +1529,9 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     (chat_completions / codex_responses / anthropic_messages all route
     OpenCode models). No-op for every other provider.
     """
+    from agent.tool_argument_integrity import neutralize_completed_incomplete_tool_calls
+    api_messages = neutralize_completed_incomplete_tool_calls(api_messages)
+
     from agent.opencode_affinity import merge_opencode_session_headers
 
     kwargs = _build_api_kwargs_for_mode(agent, api_messages, tools_for_api)

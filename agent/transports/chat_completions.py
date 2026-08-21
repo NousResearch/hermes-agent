@@ -340,6 +340,9 @@ class ChatCompletionsTransport(ProviderTransport):
 
         Returns the input list unchanged when nothing needs sanitizing.
         """
+        from agent.tool_argument_integrity import neutralize_completed_incomplete_tool_calls
+        messages = neutralize_completed_incomplete_tool_calls(messages)
+
         strip_extra_content = not _model_consumes_thought_signature(kwargs.get("model"))
         sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content)) for m in messages]
         if all(s is None for _, s in sanitized_pairs):

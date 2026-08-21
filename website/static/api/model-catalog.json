@@ -178,6 +178,10 @@
           "description": "free"
         },
         {
+          "id": "inclusionai/ling-3.0-flash:free",
+          "description": "free"
+        },
+        {
           "id": "inclusionai/ring-2.6-1t:free",
           "description": "free"
         }

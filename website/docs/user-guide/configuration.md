@@ -403,6 +403,30 @@ terminal:
 
 **Disk limit:** Daytona enforces a 10 GiB maximum. Requests above this are capped with a warning.
 
+### AgentSandbox
+
+Runs commands in an isolated [agent sandbox](https://github.com/kubernetes-sigs/agent-sandbox) pod.
+
+```yaml
+terminal:
+  backend: agent-sandbox
+  cwd: /app
+  timeout: 180
+  container_persistent: true
+  agent_sandbox_namespace: default
+  agent_sandbox_warmpool: python-sandbox-warmpool
+  agent_sandbox_connection_config:
+    name: SandboxLocalTunnelConnectionConfig
+    port_forward_ready_timeout: 30
+    server_port: 8888
+    router_namespace: default
+  lifetime_seconds: 300
+```
+
+**Requirements:** Running cluster with installed [k8s-agent-sandbox CRDs and Router](https://github.com/kubernetes-sigs/agent-sandbox#installation). Also deployed SandboxTemplate and SandboxWarmpool ([here is an example](https://github.com/kubernetes-sigs/agent-sandbox/tree/main/examples/python-runtime-sandbox#python-runtime-sandbox)).
+
+**Persistence:** When enabled, sandboxes are disconnected from `AgentSandboxBackend` (not deleted) on cleanup and getting connected on next session. Sandboxes have label: `hermes_task_id={task_id}`.
+
 ### Vercel Sandbox Backend
 
 Runs commands in a [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox) cloud microVM. Hermes uses the normal terminal and file tool surfaces; there are no Vercel-specific model-facing tools.

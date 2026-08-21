@@ -1221,7 +1221,7 @@ class ProcessRegistry:
         """
         Spawn a background process through a non-local environment backend.
 
-        For Docker/Singularity/Modal/Daytona/SSH: runs the command inside the sandbox
+        For Docker/Singularity/Modal/Daytona/agent-sandbox/SSH: runs the command inside the sandbox
         using the environment's execute() interface. We wrap the command to
         capture the in-sandbox PID and redirect output to a log file inside
         the sandbox, then poll the log via subsequent execute() calls.
@@ -2583,7 +2583,7 @@ class ProcessRegistry:
                         for item in extra_entries
                         if item.get("session_id") not in tracked_ids
                     )
-            
+
             # Atomic write to avoid corruption on crash
             from utils import atomic_json_write
             atomic_json_write(CHECKPOINT_PATH, entries)

@@ -1149,7 +1149,7 @@ def run_doctor(args):
             check_ok("No suspicious MCP stdio commands")
     except Exception as e:
         check_warn(f"MCP security check failed: {e}")
-    
+
     _section("Python Environment")
     py_version = sys.version_info
     if py_version >= (3, 11):
@@ -1216,27 +1216,27 @@ def run_doctor(args):
         ("yaml", "PyYAML"),
         ("httpx", "HTTPX"),
     ]
-    
+
     optional_packages = [
         ("croniter", "Croniter (cron expressions)"),
         ("telegram", "python-telegram-bot"),
         ("discord", "discord.py"),
     ]
-    
+
     for module, name in required_packages:
         try:
             __import__(module)
             check_ok(name)
         except ImportError:
             _fail_and_issue(name, "(missing)", f"Install {name}: {_python_install_cmd()} {module}", issues)
-    
+
     for module, name in optional_packages:
         try:
             __import__(module)
             check_ok(name, "(optional)")
         except ImportError:
             check_warn(name, "(optional, not installed)")
-    
+
     _section("Configuration Files")
     # Managed scope (administrator-pinned config/env), when present.
     managed_scope_check()
@@ -1244,7 +1244,7 @@ def run_doctor(args):
     env_path = HERMES_HOME / '.env'
     if env_path.exists():
         check_ok(f"{_DHH}/.env file exists")
-        
+
         # Prefer UTF-8 (.env is written as UTF-8 elsewhere). Fall back to
         # latin-1 for Windows Notepad/cp1252 files that are not valid UTF-8 —
         # matches hermes_cli.env_loader._load_dotenv_with_fallback.
@@ -1280,7 +1280,7 @@ def run_doctor(args):
             else:
                 check_info("Run 'hermes setup' to create one")
                 issues.append("Run 'hermes setup' to create .env")
-    
+
     # Check ~/.hermes/config.yaml (primary) or project cli-config.yaml (fallback)
     config_path = HERMES_HOME / 'config.yaml'
     if config_path.exists():
@@ -1763,7 +1763,7 @@ def run_doctor(args):
         fixed_count += 1
     else:
         check_warn(f"{_DHH} not found", "(will be created on first use)")
-    
+
     # Check expected subdirectories
     expected_subdirs = ["cron", "sessions", "logs", "skills", "memories"]
     for subdir_name in expected_subdirs:
@@ -1776,7 +1776,7 @@ def run_doctor(args):
             fixed_count += 1
         else:
             check_warn(f"{_DHH}/{subdir_name}/ not found", "(will be created on first use)")
-    
+
     # Check for SOUL.md persona file
     soul_path = hermes_home / "SOUL.md"
     if soul_path.exists():
@@ -1799,7 +1799,7 @@ def run_doctor(args):
             )
             check_ok(f"Created {_DHH}/SOUL.md with basic template")
             fixed_count += 1
-    
+
     # Check memory directory
     memories_dir = hermes_home / "memories"
     if memories_dir.exists():
@@ -1822,7 +1822,7 @@ def run_doctor(args):
             memories_dir.mkdir(parents=True, exist_ok=True)
             check_ok(f"Created {_DHH}/memories/")
             fixed_count += 1
-    
+
     # Check SQLite session store
     state_db_path = hermes_home / "state.db"
     if state_db_path.exists():
@@ -2063,14 +2063,14 @@ def run_doctor(args):
         check_ok("git")
     else:
         check_warn("git not found", "(optional)")
-    
+
     # ripgrep (optional, for faster file search)
     if _safe_which("rg"):
         check_ok("ripgrep (rg)", "(faster file search)")
     else:
         check_warn("ripgrep (rg) not found", "(file search uses grep fallback)")
         check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
-    
+
     # Docker (optional)
     terminal_env = os.getenv("TERMINAL_ENV", "local")
     try:
@@ -2119,7 +2119,7 @@ def run_doctor(args):
         pass  # already explained above
     else:
         check_warn("docker not found", "(optional)")
-    
+
     # SSH (if using ssh backend)
     if terminal_env == "ssh":
         ssh_host = os.getenv("TERMINAL_SSH_HOST")
@@ -2155,7 +2155,7 @@ def run_doctor(args):
                 "Set TERMINAL_SSH_HOST in .env",
                 issues,
             )
-    
+
     # Daytona (if using daytona backend)
     if terminal_env == "daytona":
         daytona_key = os.getenv("DAYTONA_API_KEY")
@@ -2176,6 +2176,18 @@ def run_doctor(args):
                 "daytona SDK not installed",
                 "(pip install daytona)",
                 "Install daytona SDK: pip install daytona",
+                issues,
+            )
+
+    if terminal_env == "agent-sandbox":
+        try:
+            from agent_sandbox import SandboxClient  # noqa: F401 — SDK presence check
+            check_ok("agent-sandbox SDK", "(installed)")
+        except ImportError:
+            _fail_and_issue(
+                "agent-sandbox SDK not installed",
+                "(pip install agent-sandbox)",
+                "Install agent-sandbox SDK: pip install k8s-agent-sandbox",
                 issues,
             )
 
@@ -2347,7 +2359,7 @@ def run_doctor(args):
             check_info(step)
     else:
         check_warn("Node.js not found", "(optional, needed for browser tools)")
-    
+
     # npm audit for all Node.js packages
     _npm_bin = _safe_which("npm")
     if _npm_bin:
@@ -2886,7 +2898,7 @@ def run_doctor(args):
         # Add project root to path for imports
         sys.path.insert(0, str(PROJECT_ROOT))
         from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
-        
+
         available, unavailable = check_tool_availability()
         available, unavailable = _apply_doctor_tool_availability_overrides(available, unavailable)
 
@@ -2926,7 +2938,7 @@ def run_doctor(args):
             issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
     except Exception as e:
         check_warn("Could not check tool availability", f"({e})")
-    
+
     _section("Skills Hub")
     hub_dir = HERMES_HOME / "skills" / ".hub"
     if hub_dir.exists():
@@ -3147,5 +3159,5 @@ def run_doctor(args):
     else:
         print(color("─" * 60, Colors.GREEN))
         print(color("  All checks passed! 🎉", Colors.GREEN, Colors.BOLD))
-    
+
     print()

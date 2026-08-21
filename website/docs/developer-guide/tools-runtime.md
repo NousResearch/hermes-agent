@@ -215,6 +215,7 @@ The terminal system supports multiple backends:
 - singularity
 - modal
 - daytona
+- agent-sandbox
 - vercel_sandbox
 
 It also supports:

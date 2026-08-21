@@ -9,7 +9,7 @@ Full reference: https://hermes-agent.nousresearch.com/docs/user-guide/configurat
 |---------|-------------|
 | `model` | `default`, `provider`, `base_url`, `api_key`, `context_length`, `aliases` |
 | `agent` | `max_turns` (90), `tool_use_enforcement`, `service_tier`, `verify_on_stop` |
-| `terminal` | `backend` (local/docker/ssh/modal/daytona/singularity), `cwd`, `timeout` (180) |
+| `terminal` | `backend` (local/docker/ssh/modal/daytona/agent-sandbox/singularity), `cwd`, `timeout` (180) |
 | `compression` | `enabled`, `threshold` (0.50), `target_ratio` (0.20) |
 | `display` | `skin`, `interface` (cli/tui), `language`, `show_reasoning`, `show_cost`, `pet` |
 | `approvals` | `mode` (smart/manual/off), `timeout`, `cron_mode` |

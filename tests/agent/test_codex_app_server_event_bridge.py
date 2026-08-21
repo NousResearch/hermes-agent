@@ -399,3 +399,43 @@ class TestBridgeWiredInRuntime:
         agent.tool_progress_callback.assert_called_once()
         assert agent.tool_progress_callback.call_args.args[0] == "tool.started"
         assert agent.tool_progress_callback.call_args.args[1] == "exec_command"
+
+
+class TestModelWiredInRuntime:
+    def test_session_constructor_receives_resolved_model(self, monkeypatch):
+        from agent import codex_runtime
+
+        captured: dict = {}
+
+        class FakeSession:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def run_turn(self, **_kwargs):
+                raise RuntimeError("stop after constructor capture")
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            "agent.transports.codex_app_server_session.CodexAppServerSession",
+            FakeSession,
+        )
+        agent = SimpleNamespace(
+            model="gpt-5.6-terra",
+            session_cwd=None,
+            _codex_session=None,
+            _interrupt_requested=False,
+            _interrupt_message=None,
+        )
+
+        result = codex_runtime.run_codex_app_server_turn(
+            agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=[],
+            effective_task_id="task-1",
+        )
+
+        assert captured["model"] == "gpt-5.6-terra"
+        assert result["completed"] is False

@@ -162,17 +162,33 @@ class TestLifecycle:
         method_calls = [m for (m, _) in client.requests if m == "thread/start"]
         assert len(method_calls) == 1
 
-    def test_thread_start_passes_cwd_only(self):
+    @pytest.mark.parametrize("model", [None, ""])
+    def test_thread_start_passes_cwd_only(self, model):
         """thread/start carries cwd. We intentionally do NOT pass `permissions`
         on this codex version (experimentalApi-gated + requires matching
         config.toml [permissions] table). Letting codex use its default
         (read-only unless user configures otherwise) is the documented path."""
         client = FakeClient()
-        s = make_session(client, permission_profile="workspace-write")
+        s = make_session(
+            client,
+            model=model,
+            permission_profile="workspace-write",
+        )
         s.ensure_started()
         method, params = next(r for r in client.requests if r[0] == "thread/start")
         assert params["cwd"] == "/tmp"
         assert "permissions" not in params  # see session.ensure_started() comment
+        assert "model" not in params
+
+    def test_thread_start_passes_explicit_model(self):
+        client = FakeClient()
+        s = make_session(client, model="gpt-5.6-terra")
+
+        s.ensure_started()
+
+        method, params = next(r for r in client.requests if r[0] == "thread/start")
+        assert method == "thread/start"
+        assert params == {"cwd": "/tmp", "model": "gpt-5.6-terra"}
 
     def test_close_idempotent(self):
         client = FakeClient()

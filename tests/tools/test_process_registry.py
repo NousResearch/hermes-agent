@@ -1701,6 +1701,36 @@ class TestReaderLoopOrphanedPipe:
             except (ProcessLookupError, PermissionError):
                 pass
 
+    def test_reader_still_streams_full_output_to_eof(self, registry):
+        """No-orphan case: the reader must still capture ALL output through
+        true EOF (the early-exit path must not race away buffered tail)."""
+        script = (
+            "for i in 1 2 3 4 5; do echo line-$i; done; "
+            "sleep 0.3; echo tail-after-sleep"
+        )
+        proc = subprocess.Popen(
+            ["sh", "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            preexec_fn=os.setsid,
+        )
+        s = _make_session(sid="proc_orphan_fulldrain")
+        s.process = proc
+        s.pid = proc.pid
+        registry._running[s.id] = s
+
+        registry._reader_loop(s)
+
+        assert s.exited is True
+        assert s.exit_code == 0
+        for i in range(1, 6):
+            assert f"line-{i}" in s.output_buffer
+        assert "tail-after-sleep" in s.output_buffer
+
+
 # =========================================================================
 # systemd cgroup isolation for gateway-spawned local executors (#70716)
 # =========================================================================
@@ -2413,3 +2443,68 @@ class TestGetByPrefix:
         result = registry.poll("4dae56ca")
         assert result["session_id"] == "proc_4dae56ca81f6"
         assert result["status"] == "running"
+
+
+def test_async_batch_block_surfaces_resolved_child_toolsets():
+    """A batch completion block must render each subagent's RESOLVED toolsets so
+    the parent can catch a goal/capability mismatch — e.g. a "write a file" goal
+    dispatched to a child that never held the file toolset, which a budget-tier
+    child may report as completed with a fabricated verification (issue #63887).
+    """
+    from tools.process_registry import format_process_notification
+
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg-abc",
+        "is_batch": True,
+        "goals": ["Write a bridge request file to ~/.hermes/bridge/requests/x.md"],
+        "results": [
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "Created the bridge request file and confirmed via cat.",
+                "toolsets": ["todo"],
+            },
+        ],
+        "role": "leaf",
+        "model": "deepseek-v4-flash",
+    }
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "Toolsets available: todo" in text
+    # The impossible capability (file) must be visibly absent from the child's
+    # resolved toolset list, exposing the mismatch to the parent.
+    toolset_line = text.split("Toolsets available:")[1].split("\n")[0]
+    assert "file" not in toolset_line
+
+
+@pytest.mark.parametrize("status", ["interrupted", "timeout", "error"])
+def test_async_batch_block_surfaces_toolsets_on_synthetic_results(status):
+    """The resolved-toolsets diagnostic must survive the synthetic result entries
+    too (interrupted / timed-out / errored children), not just successful ones —
+    those are exactly the runs where a capability mismatch is most worth seeing.
+    Regression for the per-subagent guarantee gap noted on #63887: fabricated
+    entries used to omit ``toolsets`` so the formatter dropped the line for them.
+    """
+    from tools.process_registry import format_process_notification
+
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg-xyz",
+        "is_batch": True,
+        "goals": ["Patch the config file and verify the change"],
+        "results": [
+            {
+                "task_index": 0,
+                "status": status,
+                "summary": None,
+                "error": "child did not finish",
+                "toolsets": ["todo", "web"],
+            },
+        ],
+        "role": "leaf",
+        "model": "deepseek-v4-flash",
+    }
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "Toolsets available: todo, web" in text

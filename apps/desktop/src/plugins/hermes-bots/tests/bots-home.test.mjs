@@ -750,6 +750,17 @@ test('an unavailable owner offers retry instead of a dead Open chat button', () 
   assert.doesNotMatch(view, /its work keeps running on that gateway/)
 })
 
+test('an available remote owner stays presentation-only without a fake mention action', () => {
+  const start = pluginSource.indexOf('function BotsHomeView(')
+  const view = pluginSource.slice(start, pluginSource.indexOf('function closeBotsHomeWorkspace('))
+
+  assert.match(view, /unavailable \|\| !bot\.remoteSource/)
+  assert.match(view, /bot\.remoteSource\s*\n\s*\? null/)
+  assert.doesNotMatch(view, /This bot lives on/)
+  assert.doesNotMatch(view, /Copy @/)
+  assert.doesNotMatch(view, /remoteCopy/)
+})
+
 test('Bot Mode copy says bot, not agent', () => {
   assert.doesNotMatch(pluginSource, /Name the agent first/)
   assert.doesNotMatch(pluginSource, /create agents first/)

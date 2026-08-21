@@ -11156,16 +11156,6 @@ function BotsHomeView() {
   const description = String(meta?.description || bot.description || '').trim()
   const unavailable = !status.available
   const sourceRemoved = status.key === 'missing'
-  const remoteCopy = async () => {
-    const mention = `@${handle}`
-
-    try {
-      await navigator.clipboard.writeText(mention)
-      host.notify?.({ kind: 'success', message: `${mention} copied` })
-    } catch {
-      host.notify?.({ kind: 'info', message: `Mention this bot with ${mention}` })
-    }
-  }
   // Retry re-polls the roster on the bot's OWN source. It never activates or
   // re-routes anything: if the gateway is back, its row reappears under the
   // same key and this view reconciles onto it.
@@ -11237,19 +11227,19 @@ function BotsHomeView() {
                   children: description
                 })
               : null,
-            jsx('p', {
-              className: cn(
-                'mt-4 max-w-lg text-xs leading-5',
-                unavailable ? 'text-amber-700 dark:text-amber-300' : 'text-(--ui-text-tertiary)'
-              ),
-              children: unavailable
-                ? sourceRemoved
-                  ? `${gateway} was removed. Choose another bot from the sidebar.`
-                  : `${gateway} is unavailable. Retry when it is back online.`
-                : bot.remoteSource
-                  ? `This bot lives on ${gateway}. Mention @${handle} from a Bot Chat to send it a message.`
-                  : 'Open this bot’s continuous chat. Its background work keeps running when you switch away.'
-            }),
+            unavailable || !bot.remoteSource
+              ? jsx('p', {
+                  className: cn(
+                    'mt-4 max-w-lg text-xs leading-5',
+                    unavailable ? 'text-amber-700 dark:text-amber-300' : 'text-(--ui-text-tertiary)'
+                  ),
+                  children: unavailable
+                    ? sourceRemoved
+                      ? `${gateway} was removed. Choose another bot from the sidebar.`
+                      : `${gateway} is unavailable. Retry when it is back online.`
+                    : 'Open this bot’s continuous chat. Its background work keeps running when you switch away.'
+                })
+              : null,
             unavailable && !sourceRemoved
               ? jsx(Button, {
                   variant: 'secondary',
@@ -11259,13 +11249,7 @@ function BotsHomeView() {
                   children: 'Retry'
                 })
               : bot.remoteSource
-                ? jsx(Button, {
-                    variant: 'secondary',
-                    size: 'sm',
-                    className: 'mt-5',
-                    onClick: () => void remoteCopy(),
-                    children: `Copy @${handle}`
-                  })
+                ? null
                 : jsx(Button, {
                     variant: 'secondary',
                     size: 'sm',
@@ -12098,9 +12082,12 @@ function BotsPane() {
               showRosterSearch
                 ? jsx(SearchField, {
                     'aria-label': 'Search bots and group chats',
-                    containerClassName: 'min-w-0 flex-1 opacity-100!',
+                    containerClassName: cn(
+                      'min-w-0 flex-1',
+                      query ? 'opacity-100!' : 'opacity-60 focus-within:opacity-100'
+                    ),
                     inputClassName:
-                      'w-full text-[0.75rem] placeholder:text-(--ui-text-secondary)',
+                      'w-full text-[0.75rem] placeholder:text-(--ui-text-tertiary)',
                     placeholder: 'Search bots and group chats…',
                     value: query,
                     onChange: setQuery

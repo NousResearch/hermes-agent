@@ -15,6 +15,7 @@ crashes due to a bad timezone string.
 
 import logging
 import os
+import time
 from datetime import datetime
 from hermes_constants import get_config_path
 from typing import Optional
@@ -27,11 +28,29 @@ except ImportError:
     # Python 3.8 fallback (shouldn't be needed — Hermes requires 3.9+)
     from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
 
-# Cached state — resolved once, reused on every call.
-# Call reset_cache() to force re-resolution (e.g. after config changes).
+# Cached state — resolved once, then re-checked at most every
+# ``_TZ_CACHE_TTL_SECONDS``. Call reset_cache() to force re-resolution now.
 _cached_tz: Optional[ZoneInfo] = None
 _cached_tz_name: Optional[str] = None
 _cache_resolved: bool = False
+_cache_checked_at: float = 0.0
+
+# How long a resolved timezone may be trusted before config.yaml /
+# HERMES_TIMEZONE are consulted again.
+#
+# The cache used to live for the whole process lifetime, which made the
+# effective zone depend on *when a process started*: a gateway that booted
+# before ``timezone:`` was added to config.yaml kept using server-local time
+# for days, while every freshly spawned CLI / worker picked the new zone up
+# immediately. Those processes then wrote mutually inconsistent timestamps
+# into the same files — the divergence behind the 8-hour cron shift in
+# #88220. Bounded re-resolution makes all processes converge within a minute
+# instead of at the next restart.
+#
+# The re-check itself is cheap: _resolve_timezone_name() reads the env var and
+# goes through read_raw_config(), which is mtime/size-cached, and the ZoneInfo
+# is only rebuilt when the name actually changed.
+_TZ_CACHE_TTL_SECONDS: float = 60.0
 
 
 def _resolve_timezone_name() -> str:
@@ -96,14 +115,38 @@ def _get_zoneinfo(name: str) -> Optional[ZoneInfo]:
 def get_timezone() -> Optional[ZoneInfo]:
     """Return the user's configured ZoneInfo, or None (meaning server-local).
 
-    Resolved once and cached. Call ``reset_cache()`` after config changes.
+    Cached, and re-resolved at most once per ``_TZ_CACHE_TTL_SECONDS`` so a
+    long-running process follows config edits instead of pinning the zone it
+    happened to boot with. Call ``reset_cache()`` to re-resolve immediately.
     """
-    global _cached_tz, _cached_tz_name, _cache_resolved
-    if not _cache_resolved:
-        _cached_tz_name = _resolve_timezone_name()
-        _cached_tz = _get_zoneinfo(_cached_tz_name)
-        _cache_resolved = True
+    global _cached_tz, _cached_tz_name, _cache_resolved, _cache_checked_at
+    fresh = (
+        _cache_resolved
+        and _TZ_CACHE_TTL_SECONDS > 0
+        and (time.monotonic() - _cache_checked_at) < _TZ_CACHE_TTL_SECONDS
+    )
+    if not fresh:
+        name = _resolve_timezone_name()
+        # Only rebuild (and only re-log an invalid name) when it changed.
+        if not _cache_resolved or name != _cached_tz_name:
+            _cached_tz = _get_zoneinfo(name)
+            _cached_tz_name = name
+            _cache_resolved = True
+        _cache_checked_at = time.monotonic()
     return _cached_tz
+
+
+def get_timezone_name() -> str:
+    """Return the configured IANA timezone name, or ``""`` for server-local.
+
+    Only names that actually resolve to a usable ``ZoneInfo`` are reported, so
+    callers can persist the result as a stable identifier (see
+    ``cron.jobs`` stamping ``schedule["tz"]``) without re-validating it.
+    """
+    tz = get_timezone()
+    if tz is None:
+        return ""
+    return _cached_tz_name or ""
 
 
 def reset_cache() -> None:
@@ -113,10 +156,11 @@ def reset_cache() -> None:
     config edit or ``HERMES_TIMEZONE`` update) to force ``get_timezone()`` /
     ``now()`` to read the new value instead of the value cached at first use.
     """
-    global _cached_tz, _cached_tz_name, _cache_resolved
+    global _cached_tz, _cached_tz_name, _cache_resolved, _cache_checked_at
     _cached_tz = None
     _cached_tz_name = None
     _cache_resolved = False
+    _cache_checked_at = 0.0
 
 
 def now() -> datetime:

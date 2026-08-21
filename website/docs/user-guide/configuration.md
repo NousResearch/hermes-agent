@@ -2353,6 +2353,23 @@ timezone: "America/New_York"   # IANA timezone (default: "" = server-local time)
 
 Supported values: any IANA timezone identifier (e.g. `America/New_York`, `Europe/London`, `Asia/Kolkata`, `UTC`). Leave empty or omit for server-local time.
 
+A change to this value is picked up by running processes within a minute — no gateway restart required.
+
+### Cron jobs and timezones
+
+A cron expression is local wall-clock intent: `30 14 * * *` means "14:30 in the configured timezone". Each cron job records the timezone it was created under:
+
+```json
+{
+  "schedule": { "kind": "cron", "expr": "30 14 * * *", "tz": "Asia/Shanghai" },
+  "next_run_at": "2026-08-17T14:30:00+08:00"
+}
+```
+
+That makes `next_run_at` mean the same instant to every process that reads it — the gateway, the CLI, and the web UI — instead of depending on which timezone each of them happens to resolve. Jobs created before this field existed adopt the configured timezone the first time the scheduler sees them; installs with no `timezone:` set keep using server-local time and store no `tz`.
+
+When you change `timezone:`, existing cron jobs are re-anchored once to the same wall-clock time in the new zone (a 14:30 job stays a 14:30 job) and their `tz` is updated. A daylight-saving transition is not a timezone change: the job keeps firing at its local wall-clock time across the boundary, without skipping or repeating an occurrence.
+
 ## Discord
 
 Configure Discord-specific behavior for the messaging gateway:

@@ -736,11 +736,19 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             croniter(schedule)
         except Exception as e:
             raise ValueError(f"Invalid cron expression '{schedule}': {e}")
-        return {
+        parsed = {
             "kind": "cron",
             "expr": schedule,
             "display": schedule
         }
+        # Pin the zone this expression's wall clock belongs to, so every later
+        # reader computes the same instant no matter which zone *it* resolves.
+        # Only cron carries wall-clock intent — "every 30m" and one-shots are
+        # already absolute — so nothing else grows the field.
+        tz_name = _configured_tz_name()
+        if tz_name:
+            parsed[SCHEDULE_TZ_KEY] = tz_name
+        return parsed
     
     # ISO timestamp (contains T or looks like date)
     if 'T' in schedule or re.match(r'^\d{4}-\d{2}-\d{2}', schedule):
@@ -789,6 +797,56 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         f"  - Cron: '0 9 * * *' (cron expression)\n"
         f"  - Timestamp: '2026-02-03T14:00:00' (one-shot at time)"
     )
+
+
+# =============================================================================
+# Cron schedules record the zone their wall-clock intent belongs to
+# =============================================================================
+# ``30 14 * * *`` means "14:30 local". Which "local" that is used to be
+# implicit — every process re-resolved it from HERMES_TIMEZONE / config.yaml
+# whenever it read or wrote the job. Two readers that disagreed (a gateway
+# pinned to the zone it booted with vs. a freshly spawned CLI) therefore read
+# the same persisted ``next_run_at`` as two different instants, shifting the
+# job by the whole UTC offset (#88220). Stamping the zone onto the schedule
+# makes the stored value mean exactly one thing to every reader.
+SCHEDULE_TZ_KEY = "tz"
+
+
+def _configured_tz_name() -> str:
+    """IANA name of the currently configured Hermes zone (``""`` if none)."""
+    try:
+        from hermes_time import get_timezone_name
+
+        return get_timezone_name() or ""
+    except Exception:
+        logger.debug("Failed to resolve configured Hermes timezone", exc_info=True)
+        return ""
+
+
+def _schedule_zone(schedule: Any) -> Optional[Any]:
+    """Return the ZoneInfo a schedule is evaluated in, or None.
+
+    None means "unstamped" — legacy jobs and server-local installs, which keep
+    the pre-#88220 behaviour of following the reading process' own zone.
+    """
+    if not isinstance(schedule, dict):
+        return None
+    name = schedule.get(SCHEDULE_TZ_KEY)
+    if not isinstance(name, str) or not name.strip():
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo(name.strip())
+    except Exception:
+        # A zone that no longer exists in the tz database must not wedge the
+        # scheduler; fall back to the process zone as if unstamped.
+        logger.warning(
+            "Cron schedule references unknown timezone %r; falling back to the "
+            "configured Hermes timezone.",
+            name,
+        )
+        return None
 
 
 def _ensure_aware(dt: datetime) -> datetime:
@@ -1083,6 +1141,22 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
                 base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
             except Exception:
                 base_time = now
+        zone = _schedule_zone(schedule)
+        if zone is not None:
+            # A cron expression is a *local wall clock*, so evaluate it on the
+            # naive wall clock of the schedule's own zone and re-attach the zone
+            # afterwards. Two reasons this beats handing croniter an aware base:
+            #
+            #  - the answer no longer depends on the zone the calling process
+            #    resolved, which is the divergence behind #88220;
+            #  - croniter walks a fixed UTC offset taken from the base, so an
+            #    aware base drifts by the DST delta across a transition
+            #    (``0 9 * * *`` based on 2026-03-28T09:00+01:00 returns
+            #    2026-03-29T08:00+02:00, an hour early). Localizing a naive
+            #    result keeps 09:00 meaning 09:00 on both sides of the boundary.
+            naive_base = base_time.astimezone(zone).replace(tzinfo=None)
+            next_naive = croniter(expr, naive_base).get_next(datetime)
+            return next_naive.replace(tzinfo=zone).isoformat()
         cron = croniter(expr, base_time)
         next_run = cron.get_next(datetime)
         return next_run.isoformat()
@@ -3205,6 +3279,11 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
         needs_save = True
         jobs = [j for j in jobs if any(rj.get("id") == j.get("id") for rj in raw_jobs)]
 
+    # Resolved once per scan rather than per job: the configured zone cannot
+    # meaningfully change mid-tick, and this keeps the ticker's per-job cost at
+    # a string comparison.
+    scan_tz_name = _configured_tz_name()
+
     for job in jobs:
         # Per-job containment (structural guard): one malformed or
         # unexpected job record must never abort the whole scan. The id /
@@ -3311,6 +3390,51 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             kind = schedule.get("kind")
 
             next_run_dt = _ensure_aware(raw_next_run_dt)
+
+            # Zone bookkeeping for cron jobs (#88220). A stamped schedule is
+            # self-describing, so its next_run_at is an unambiguous instant and
+            # needs no offset guessing below. Two things happen here:
+            #
+            #   1. Adoption — a legacy job created before stamping existed gets
+            #      the configured zone recorded once, after which every process
+            #      (gateway, CLI, web worker) agrees on what it means.
+            #   2. Rebase — the operator actually changed `timezone:`, so the
+            #      job's wall-clock intent is re-anchored in the new zone. This
+            #      is the #28934 repair, triggered by a zone *identity* change
+            #      instead of an offset delta: DST moves the offset without
+            #      changing the zone, so it no longer trips this path and no
+            #      longer silently swallows the pending occurrence.
+            configured_tz = scan_tz_name if kind == "cron" else ""
+            stamped_tz = schedule.get(SCHEDULE_TZ_KEY) if kind == "cron" else None
+            if configured_tz and not stamped_tz:
+                schedule[SCHEDULE_TZ_KEY] = configured_tz
+                for rj in raw_jobs:
+                    if rj["id"] == job["id"] and isinstance(rj.get("schedule"), dict):
+                        rj["schedule"][SCHEDULE_TZ_KEY] = configured_tz
+                        needs_save = True
+                        break
+            elif configured_tz and stamped_tz != configured_tz:
+                rebased_schedule = dict(schedule)
+                rebased_schedule[SCHEDULE_TZ_KEY] = configured_tz
+                new_next = compute_next_run(rebased_schedule, now.isoformat())
+                if new_next:
+                    logger.info(
+                        "Job '%s' timezone changed (%s -> %s). Re-anchoring the "
+                        "cron wall-clock intent in the new zone: %s",
+                        job.get("name", job.get("id", "?")),
+                        stamped_tz,
+                        configured_tz,
+                        new_next,
+                    )
+                    for rj in raw_jobs:
+                        if rj["id"] == job["id"]:
+                            if isinstance(rj.get("schedule"), dict):
+                                rj["schedule"][SCHEDULE_TZ_KEY] = configured_tz
+                            rj["next_run_at"] = new_next
+                            needs_save = True
+                            break
+                    continue
+
             # Migration repair: a cron job persists next_run_at as an absolute
             # instant, but the cron expr describes local wall-clock intent. If the
             # configured/system timezone changed after persistence, the stored
@@ -3326,8 +3450,16 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # the recompute lands on the same wall-clock time later the same period,
             # and DST-boundary collisions with a still-future stored wall clock are
             # rare relative to the double-fire bug this prevents (#28934).
+            #
+            # Only jobs that were still unstamped when this scan started take
+            # this path: once ``schedule["tz"]`` is recorded the zone change is
+            # detected exactly, above, and the stored instant is authoritative.
+            # ``stamped_tz`` is read before the adoption block so a job adopted
+            # on this very pass — whose next_run_at may still carry a foreign
+            # offset — is repaired here one last time.
             if (
                 kind == "cron"
+                and not stamped_tz
                 and next_run_dt <= now
                 and _timezone_offset_mismatch(raw_next_run_dt, now)
                 and _stored_wall_clock_is_future(raw_next_run_dt, now)

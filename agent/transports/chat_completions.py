@@ -299,6 +299,25 @@ class ChatCompletionsTransport(ProviderTransport):
         strip_extra_content = not _model_consumes_thought_signature(
             kwargs.get("model")
         )
+
+        # Index tool call function names by call ID across the whole message list.
+        # This is needed to ensure role: 'tool' message names match the exact
+        # function.name that was called by the assistant (e.g. when bridge tools
+        # like `tool_call` are unwrapped internally to `mcp__*`, strict providers
+        # like Google AI Studio via OpenRouter reject the name mismatch with
+        # HTTP 400 INVALID_ARGUMENT).
+        tool_name_by_call_id: dict[str, str] = {}
+        for msg in messages:
+            if isinstance(msg, dict):
+                tcs = msg.get("tool_calls")
+                if isinstance(tcs, list):
+                    for tc in tcs:
+                        if isinstance(tc, dict):
+                            tcid = tc.get("id") or tc.get("call_id")
+                            fname = (tc.get("function") or {}).get("name") or tc.get("name")
+                            if tcid and fname:
+                                tool_name_by_call_id[str(tcid)] = str(fname)
+
         needs_sanitize = False
         for msg in messages:
             if not isinstance(msg, dict):
@@ -313,6 +332,12 @@ class ChatCompletionsTransport(ProviderTransport):
             ):
                 needs_sanitize = True
                 break
+            if msg.get("role") == "tool":
+                tcid = str(msg.get("tool_call_id") or "")
+                expected_name = tool_name_by_call_id.get(tcid)
+                if expected_name and msg.get("name") != expected_name:
+                    needs_sanitize = True
+                    break
             if any(isinstance(k, str) and k.startswith("_") for k in msg):
                 needs_sanitize = True
                 break
@@ -389,6 +414,17 @@ class ChatCompletionsTransport(ProviderTransport):
                 out_msg.pop("effect_disposition", None)
                 out_msg.pop("timestamp", None)  # #47868 — leak into strict providers
                 out_msg.pop("api_content", None)  # persist-what-you-send sidecar
+
+            # Harmonize tool result 'name' with the matching tool_call function name
+            # so strict providers (Google AI Studio / Gemini over OpenRouter) don't
+            # reject replayed turns with INVALID_ARGUMENT when bridge tools like
+            # `tool_call` are unwrapped internally.
+            if msg.get("role") == "tool":
+                tcid = str(msg.get("tool_call_id") or "")
+                expected_name = tool_name_by_call_id.get(tcid)
+                if expected_name and msg.get("name") != expected_name:
+                    out_msg = mutable_msg()
+                    out_msg["name"] = expected_name
 
 
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).

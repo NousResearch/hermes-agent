@@ -171,6 +171,37 @@ class TestChatCompletionsBasic:
         assert msgs[1]["_empty_recovery_synthetic"] is True
 
 
+    def test_convert_messages_harmonizes_tool_result_name_with_call(self, transport):
+        """Tool result messages must match the exact function.name called by the
+        assistant (e.g. when `tool_call` bridge unwraps to `mcp__*`)."""
+        msgs = [
+            {"role": "user", "content": "fetch CRM reminders"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "tool_call",
+                            "arguments": '{"name": "mcp__crm__get_reminders"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "name": "mcp__crm__get_reminders",
+                "tool_call_id": "call_123",
+                "content": "[]",
+            },
+        ]
+        result = transport.convert_messages(msgs)
+        assert result is not msgs
+        assert result[2]["name"] == "tool_call"
+        assert result[2]["tool_call_id"] == "call_123"
+
     def test_convert_messages_copy_on_write_for_dirty_history(self, transport):
         """Dirty provider metadata should not force a full-history deepcopy."""
         clean_tool_call = {

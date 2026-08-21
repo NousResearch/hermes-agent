@@ -136,6 +136,51 @@ def test_skip_build_missing_dist_attempts_one_recovery_build(
 
 
 # ---------------------------------------------------------------------------
+# MCP discovery must wait for the listen socket.
+#
+# cmd_dashboard used to kick off background MCP discovery *before* calling
+# start_server. Every failed bind (port held by another dashboard, auth-gate
+# fail-closed exit) had therefore already spawned the stdio MCP servers and
+# opened a session on every HTTP MCP server, then died without closing them.
+# Under a KeepAlive supervisor that became a fresh MCP session per
+# ThrottleInterval and rate-limited a shared MCP server for every client on
+# the host. Discovery now hangs off start_server's post-bind on_listening hook.
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_discovery_deferred_to_on_listening_hook(main_mod, monkeypatch, tmp_path):
+    _wire_common(main_mod, monkeypatch)
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+    monkeypatch.setenv("HERMES_WEB_DIST", str(dist))
+
+    discovery_calls = []
+    monkeypatch.setattr(
+        "hermes_cli.mcp_startup.start_background_mcp_discovery",
+        lambda **kw: discovery_calls.append(kw),
+    )
+    started = []
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.web_server",
+        types.SimpleNamespace(start_server=lambda **k: started.append(k)),
+    )
+
+    main_mod.cmd_dashboard(_args())
+
+    assert len(started) == 1
+    # Nothing touched MCP before/while start_server was entered …
+    assert discovery_calls == []
+    hook = started[0].get("on_listening")
+    assert callable(hook)
+    # … and the hook is what starts discovery, once the server says it's bound.
+    hook()
+    assert len(discovery_calls) == 1
+    assert discovery_calls[0]["thread_name"] == "dashboard-mcp-discovery"
+
+
+# ---------------------------------------------------------------------------
 # Desktop-inherited env isolation (issue #52945 / supersedes #52948, #67402)
 # ---------------------------------------------------------------------------
 

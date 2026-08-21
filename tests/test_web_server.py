@@ -87,6 +87,77 @@ def test_start_server_applies_process_local_ssh_bootstrap_state(monkeypatch):
     assert captured["port"] == 0
 
 
+def test_start_server_on_listening_fires_after_bind(monkeypatch):
+    """The ``on_listening`` hook runs once, after uvicorn's startup() (socket
+    bound). Side effects that reach outside the process — MCP discovery
+    spawning stdio servers / opening HTTP MCP sessions — hang off it so a
+    failed bind never leaves them behind."""
+    events: list = []
+    captured = _stub_uvicorn(monkeypatch)
+    # Record ordering relative to the fake server's startup().
+    server_holder: dict = {}
+    real_server_factory = uvicorn.Server
+
+    def _tracking_server(config):
+        srv = real_server_factory(config)
+        orig_startup = srv.startup
+
+        async def startup(sockets=None):
+            events.append("bind")
+            await orig_startup(sockets)
+
+        srv.startup = startup
+        server_holder["srv"] = srv
+        return srv
+
+    monkeypatch.setattr(uvicorn, "Server", _tracking_server)
+
+    web_server.start_server(
+        host="127.0.0.1", port=0, open_browser=False,
+        on_listening=lambda: events.append("listening"),
+    )
+
+    assert events == ["bind", "listening"]
+    assert captured["port"] == 0
+
+
+def test_start_server_on_listening_skipped_when_startup_bails(monkeypatch):
+    """A failed startup (should_exit — e.g. EADDRINUSE) must not invoke the hook."""
+    events: list = []
+    _stub_uvicorn(monkeypatch)
+    real_server_factory = uvicorn.Server
+
+    def _failing_server(config):
+        srv = real_server_factory(config)
+
+        async def startup(sockets=None):
+            srv.should_exit = True
+
+        srv.startup = startup
+        return srv
+
+    monkeypatch.setattr(uvicorn, "Server", _failing_server)
+
+    web_server.start_server(
+        host="127.0.0.1", port=0, open_browser=False,
+        on_listening=lambda: events.append("listening"),
+    )
+
+    assert events == []
+
+
+def test_start_server_on_listening_error_does_not_kill_server(monkeypatch):
+    _stub_uvicorn(monkeypatch)
+
+    def _boom():
+        raise RuntimeError("hook exploded")
+
+    # Must return normally (server ran its main loop) despite the hook raising.
+    web_server.start_server(
+        host="127.0.0.1", port=0, open_browser=False, on_listening=_boom,
+    )
+
+
 def test_start_server_disables_ws_ping_on_loopback(monkeypatch):
     """Loopback binds (the Desktop case) MUST disable uvicorn's protocol-level
     keepalive ping so an event-loop stall can never trigger a false disconnect.

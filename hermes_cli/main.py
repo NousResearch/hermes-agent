@@ -11519,20 +11519,31 @@ def cmd_dashboard(args):
     # tool registry — it never starts MCP discovery (the stdio TUI does that in
     # tui_gateway/entry.py, which the dashboard process doesn't run).  Without
     # this, a profile's configured MCP servers never connect, so desktop
-    # sessions show no MCP tools.  Spawn discovery in the background here so a
+    # sessions show no MCP tools.  Discovery runs in the background so a
     # slow/dead server can't block dashboard startup.
-    try:
-        from hermes_cli.mcp_startup import start_background_mcp_discovery
+    #
+    # It is started from start_server's ``on_listening`` hook — i.e. only once
+    # uvicorn actually holds the listen socket — never before.  Starting it
+    # up-front meant every failed bind (port already taken by another
+    # dashboard, auth-gate fail-closed exit, …) had already spawned the stdio
+    # MCP servers and opened a session on every HTTP MCP server, and then
+    # died without closing any of it.  Under a KeepAlive supervisor
+    # (launchd/systemd) that turned a bind failure into a fresh MCP session
+    # every ThrottleInterval, rate-limiting shared MCP servers for every
+    # other client on the host.
+    def _start_dashboard_mcp_discovery() -> None:
+        try:
+            from hermes_cli.mcp_startup import start_background_mcp_discovery
 
-        start_background_mcp_discovery(
-            logger=logger,
-            thread_name="dashboard-mcp-discovery",
-        )
-    except Exception:
-        logger.debug(
-            "Background MCP tool discovery failed at dashboard startup",
-            exc_info=True,
-        )
+            start_background_mcp_discovery(
+                logger=logger,
+                thread_name="dashboard-mcp-discovery",
+            )
+        except Exception:
+            logger.debug(
+                "Background MCP tool discovery failed at dashboard startup",
+                exc_info=True,
+            )
 
     from hermes_cli.web_server import start_server
 
@@ -11555,6 +11566,7 @@ def cmd_dashboard(args):
         headless=_headless_backend,
         ssh_session_token=_ssh_session_token,
         ssh_owner_nonce=_ssh_owner_nonce,
+        on_listening=_start_dashboard_mcp_discovery,
     )
 
 

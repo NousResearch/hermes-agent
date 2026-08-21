@@ -48,7 +48,7 @@ import zipfile
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 import yaml
 
@@ -18911,6 +18911,7 @@ def start_server(
     headless: bool = False,
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
+    on_listening: Optional[Callable[[], None]] = None,
 ):
     """Start the web UI server.
 
@@ -18925,6 +18926,15 @@ def start_server(
 
     ``ssh_session_token`` and ``ssh_owner_nonce`` are process-local Desktop SSH
     bootstrap state. Neither is persisted or exported to child processes.
+
+    ``on_listening`` (optional) is called exactly once, on the event loop,
+    after uvicorn has bound the listen socket and the READY sentinel has been
+    printed — the earliest point at which this process is guaranteed to be
+    *the* dashboard on that port.  Side effects that reach outside the
+    process (MCP discovery: spawning stdio servers, opening HTTP MCP
+    sessions) belong here rather than before ``start_server``, so a failed
+    bind never leaves them behind.  Exceptions are logged and swallowed; the
+    server keeps serving.
     """
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
@@ -19173,6 +19183,12 @@ def start_server(
             else:
                 print(f"  Hermes Web UI → http://{host}:{actual_port}")
             _maybe_open_browser(host, actual_port, open_browser, initial_profile)
+
+            if on_listening is not None:
+                try:
+                    on_listening()
+                except Exception as exc:  # pragma: no cover - best-effort hook
+                    _log.warning("on_listening hook failed: %s", exc, exc_info=True)
 
             # Collapse the peer-hangup teardown flood (#50005). When the Desktop
             # forcibly closes its WebSocket mid-write, asyncio logs a full

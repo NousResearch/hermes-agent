@@ -1090,6 +1090,15 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
         self._voice_timeout_seconds = self._load_voice_timeout()
         self._playback_timeout_seconds = self._load_playback_timeout()
+        # Names this adapter itself has set on threads (thread_id -> name).
+        # The two-stage title system renames a thread twice: the instant
+        # derived title first, then the LLM upgrade seconds later. The
+        # no-clobber guard (only_if_current_name) compares against the
+        # ORIGINAL auto-created name, so the second rename was declined —
+        # current name was our own first rename, not the original. Accept
+        # our own last-set name as a valid "current" so the upgrade lands,
+        # while a human-renamed thread (matches neither) stays protected.
+        self._thread_last_renamed: Dict[int, str] = {}
         # Phase 2: voice listening
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
@@ -7277,11 +7286,20 @@ class DiscordAdapter(BasePlatformAdapter):
         name: str,
         *,
         only_if_current_name: Optional[str] = None,
+        prefer_connector_created: bool = False,
+        parent_chat_id: Optional[str] = None,
     ) -> bool:
         """Best-effort Discord thread rename.
 
         ``only_if_current_name`` prevents overwriting human-renamed or
         pre-existing threads.  This is intentionally a no-op on mismatch.
+
+        ``prefer_connector_created`` and ``parent_chat_id`` are accepted for
+        signature parity with the relay adapter (run.py
+        _rename_discord_auto_thread_for_session_title passes both). The
+        native lane renames via the direct Discord API and ignores them —
+        without accepting them every semantic rename died with a TypeError
+        (fixed 2026-08-04).
         """
         if not self._client or not DISCORD_AVAILABLE:
             return False
@@ -7310,11 +7328,18 @@ class DiscordAdapter(BasePlatformAdapter):
 
         current_name = getattr(thread, "name", None)
         if only_if_current_name is not None and current_name != only_if_current_name:
-            logger.info(
-                "[%s] Discord semantic thread rename skipped for %s: current name %r != expected %r",
-                self.name, thread_id, current_name, only_if_current_name,
-            )
-            return False
+            # The two-stage title system renames a thread twice (instant
+            # derived title, then LLM upgrade). Accept our own last-set
+            # name as a valid "current" — it means the earlier stage of OUR
+            # rename already landed, and this is the upgrade finishing the
+            # job, not a human having retitled the thread. A human-renamed
+            # thread matches neither and stays protected.
+            if current_name != self._thread_last_renamed.get(thread_id_int):
+                logger.info(
+                    "[%s] Discord semantic thread rename skipped for %s: current name %r != expected %r",
+                    self.name, thread_id, current_name, only_if_current_name,
+                )
+                return False
         if current_name == cleaned:
             return True
 
@@ -7323,6 +7348,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
         try:
             await edit(name=cleaned, reason="Hermes semantic session title")
+            self._thread_last_renamed[thread_id_int] = cleaned
             logger.info(
                 "[%s] Renamed Discord thread %s from %r to %r",
                 self.name, thread_id, current_name, cleaned,

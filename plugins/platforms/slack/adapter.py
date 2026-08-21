@@ -486,8 +486,18 @@ def _extract_text_from_slack_blocks(blocks: list) -> str:
                 _walk_elements(elem.get("elements", []), quote_depth=quote_depth + 1)
             elif elem_type == "rich_text_list":
                 list_style = elem.get("style")
+                # Slack splits one visible list into several blocks when the
+                # user puts anything between the items, and reports where the
+                # continuation resumes in "offset" (omitted when it is zero).
+                # Numbering every block from 1 renames the user's items: a list
+                # they see as 4. and 5. reaches the agent as 1. and 2.
+                try:
+                    list_offset = int(elem.get("offset") or 0)
+                except (TypeError, ValueError):
+                    list_offset = 0
                 for idx, item in enumerate(elem.get("elements", [])):
-                    item_bullet = "• " if list_style == "bullet" else f"{idx + 1}. "
+                    number = list_offset + idx + 1
+                    item_bullet = "• " if list_style == "bullet" else f"{number}. "
                     _walk_elements([item], quote_depth=quote_depth, bullet=item_bullet)
             elif elem_type == "rich_text_preformatted":
                 code_lines: list[str] = []

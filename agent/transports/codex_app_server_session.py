@@ -194,7 +194,8 @@ def _coerce_turn_input_text(user_input: Any) -> str:
             elif item_type in {"image", "image_url", "input_image"}:
                 parts.append("[image attached]")
         text = "\n\n".join(p for p in parts if p).strip()
-        return text or "What do you see in this image?"
+        from agent.image_routing import CAPTIONLESS_IMAGE_PLACEHOLDER
+        return text or CAPTIONLESS_IMAGE_PLACEHOLDER
     return "" if user_input is None else str(user_input)
 
 

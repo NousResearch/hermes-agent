@@ -141,6 +141,11 @@ class TestApprovalChoiceMapping:
 
 
 class TestTurnInputCoercion:
+    def test_empty_multimodal_list_uses_factual_placeholder(self):
+        from agent.image_routing import CAPTIONLESS_IMAGE_PLACEHOLDER
+
+        assert _coerce_turn_input_text([]) == CAPTIONLESS_IMAGE_PLACEHOLDER
+
     def test_list_content_keeps_text_and_marks_images(self):
         text = _coerce_turn_input_text([
             {"type": "text", "text": "caption"},

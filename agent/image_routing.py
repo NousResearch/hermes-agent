@@ -48,6 +48,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Factual placeholder when a user attaches an image with no caption. Must not
+# read as user-authored intent (issue #82847).
+CAPTIONLESS_IMAGE_PLACEHOLDER = "[User attached an image without a caption.]"
+
 
 _VALID_MODES = frozenset({"auto", "native", "text"})
 
@@ -805,7 +809,7 @@ def build_native_content_parts(
     # If at least one image attached, build a single text part that combines
     # the user's caption (or a neutral default) with one hint per image.
     if attached_paths or attached_urls:
-        base_text = text or "What do you see in this image?"
+        base_text = text or CAPTIONLESS_IMAGE_PLACEHOLDER
         hint_lines: List[str] = []
         hint_lines.extend(f"[Image attached at: {p}]" for p in attached_paths)
         hint_lines.extend(f"[Image attached: {u}]" for u in attached_urls)
@@ -822,6 +826,7 @@ def build_native_content_parts(
 
 
 __all__ = [
+    "CAPTIONLESS_IMAGE_PLACEHOLDER",
     "decide_image_input_mode",
     "build_native_content_parts",
     "extract_image_refs",

@@ -7386,7 +7386,8 @@ def _build_image_ref_message(user_text: str, image_paths: list[str]) -> str:
     prefix = "\n\n".join(parts)
     if prefix:
         return f"{prefix}\n\n{text}" if text else prefix
-    return text or "What do you see in this image?"
+    from agent.image_routing import CAPTIONLESS_IMAGE_PLACEHOLDER
+    return text or CAPTIONLESS_IMAGE_PLACEHOLDER
 
 
 def _build_persist_message_with_image_refs(user_text: str, image_paths: list[str]) -> str:

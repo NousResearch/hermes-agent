@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 
 from agent.image_routing import (
+    CAPTIONLESS_IMAGE_PLACEHOLDER,
     _coerce_capability_bool,
     _coerce_mode,
     _explicit_aux_vision_override,
@@ -188,6 +189,15 @@ def _png_bytes() -> bytes:
 
 
 class TestBuildNativeContentParts:
+    def test_captionless_image_uses_factual_placeholder(self, tmp_path: Path):
+        img = tmp_path / "scan.png"
+        img.write_bytes(_png_bytes())
+        parts, skipped = build_native_content_parts("", [str(img)])
+        assert skipped == []
+        text_part = next(p for p in parts if p.get("type") == "text")
+        assert text_part["text"].startswith(CAPTIONLESS_IMAGE_PLACEHOLDER)
+        assert "What do you see in this image?" not in text_part["text"]
+
     def test_text_then_image(self, tmp_path: Path):
         img = tmp_path / "cat.png"
         img.write_bytes(_png_bytes())

@@ -29,6 +29,10 @@ export const STARTUP_RESUME_ID = (process.env.HERMES_TUI_RESUME ?? '').trim()
 export const STARTUP_QUERY = (process.env.HERMES_TUI_QUERY ?? '').trim()
 export const STARTUP_IMAGE = (process.env.HERMES_TUI_IMAGE ?? '').trim()
 
+/** Factual placeholder for captionless image uploads (issue #82847). */
+export const CAPTIONLESS_IMAGE_PLACEHOLDER =
+  '[User attached an image without a caption.]'
+
 // Mouse tracking mode resolution at startup. Per-mode selection (off|wheel|
 // buttons|all) lives in display.mouse_tracking in config.yaml — these env
 // vars only set the boot-time default before that config is applied.

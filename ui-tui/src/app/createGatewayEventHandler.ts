@@ -2,7 +2,7 @@ import { execFile } from 'child_process'
 
 import { forceRedraw, onTerminalBackground, onTerminalForeground } from '@hermes/ink'
 
-import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
+import { CAPTIONLESS_IMAGE_PLACEHOLDER, STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import type {
@@ -635,7 +635,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
       }
 
-      submitRef.current(STARTUP_QUERY || 'What do you see in this image?')
+      submitRef.current(STARTUP_QUERY || CAPTIONLESS_IMAGE_PLACEHOLDER)
     }, 0)
   }
 

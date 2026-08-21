@@ -6882,12 +6882,50 @@ This compaction should PRIORITISE preserving all information related to the focu
         Without this, the in-memory-only splice leaves old exchange rows at
         ``active=1``, and a session resume double-loads both the summary and
         the original messages — blowing past the model's context limit.
+
+        Takes the same durable ``compression_locks`` row batch compression
+        uses (:meth:`SessionDB.try_acquire_compression_lock`) before calling
+        ``archive_and_compact``.  Without it, a micro-compact here and a
+        batch compression running concurrently on the same session_id (e.g.
+        an old worker still finishing a rotation after a gateway restart, or
+        two multiplex/cron processes sharing a session) can both soft-archive
+        the ``active=1`` rows and insert their own replacement set — whichever
+        commits second silently discards the other's already-committed
+        write, the exact "split session lineage" corruption the lock exists
+        to prevent (see :meth:`try_acquire_compression_lock`'s docstring).
+        The critical section here is one short transaction, so unlike the
+        batch path this does not need a lease refresher — acquire, write,
+        release, all synchronously.
         """
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
         if not session_db or not session_id:
             return
+
+        from agent.conversation_compression import _compression_lock_holder
+
+        holder = _compression_lock_holder(self)
+        lock_acquired = False
         try:
+            try_acquire = getattr(session_db, "try_acquire_compression_lock", None)
+            if callable(try_acquire):
+                lock_acquired = try_acquire(session_id, holder, ttl_seconds=30.0)
+            else:
+                # Legacy SessionDB instance predating the lock API (hot-reload
+                # version skew) — nothing to coordinate against, so proceed
+                # the same as before this fix existed.
+                lock_acquired = True
+
+            if not lock_acquired:
+                logger.info(
+                    "Micro-compaction DB sync skipped for session=%s — a "
+                    "batch compression currently holds the compression "
+                    "lock; resume will double-load compacted messages "
+                    "until it finishes",
+                    session_id,
+                )
+                return
+
             session_db.archive_and_compact(session_id, compacted_messages)
             for msg in compacted_messages:
                 if isinstance(msg, dict):
@@ -6897,6 +6935,16 @@ This compaction should PRIORITISE preserving all information related to the focu
                 "Micro-compaction DB sync failed — resume will double-load "
                 "compacted messages until the next batch compression"
             )
+        finally:
+            if lock_acquired:
+                try:
+                    release = getattr(session_db, "release_compression_lock", None)
+                    if callable(release):
+                        release(session_id, holder)
+                except Exception:
+                    logger.debug(
+                        "micro-compaction lock release failed", exc_info=True
+                    )
 
     def _splice_micro_compact_result(
         self,

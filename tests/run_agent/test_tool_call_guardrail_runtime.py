@@ -423,3 +423,8 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+    assert deltas[-1] == halt_text, (
+        "guardrail halt text is final turn content; a trailing None would be "
+        "misinterpreted by gateway streaming as a tool/segment boundary and "
+        "allow the normal final-send path to deliver the same text again"
+    )

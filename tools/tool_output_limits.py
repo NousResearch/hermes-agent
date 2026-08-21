@@ -47,6 +47,11 @@ _cached_limits: dict | None = None
 
 def _coerce_positive_int(value: Any, default: int) -> int:
     """Return ``value`` as a positive int, or ``default`` on any issue."""
+    # bool is an int subclass, but YAML true/false is not a meaningful output
+    # limit. Treat it as a malformed type instead of silently turning true
+    # into a one-byte/one-line cap.
+    if isinstance(value, bool):
+        return default
     try:
         iv = int(value)
     except (TypeError, ValueError):

@@ -2645,6 +2645,7 @@ from gateway.config import (
 )
 from gateway.session import (
     AsyncSessionStore,
+    MultiplexSessionCollisionError,
     SessionEntry,
     SessionStore,
     SessionSource,
@@ -12551,7 +12552,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         if await self._abort_startup_if_shutdown_requested():
             return True
-        
+
+        # Multiplexed adapters must not connect while two profile namespaces
+        # point at one session: from the first inbound message the two share a
+        # cache, a transcript, and a turn lease. Load the routing index and
+        # fail closed with a redacted operator error before any platform can
+        # receive traffic. Covers the root/legacy routing scope — see
+        # SessionStore.assert_no_cross_profile_session_aliases.
+        if getattr(self.config, "multiplex_profiles", False):
+            try:
+                await (
+                    self.async_session_store
+                    .assert_no_cross_profile_session_aliases()
+                )
+            except MultiplexSessionCollisionError as exc:
+                reason = str(exc)
+                logger.error("Gateway multiplex session collision: %s", reason)
+                try:
+                    from gateway.status import write_runtime_status
+                    write_runtime_status(
+                        gateway_state="startup_failed",
+                        exit_reason="multiplex_session_collision",
+                    )
+                except Exception:
+                    pass
+                self._exit_code = GATEWAY_FATAL_CONFIG_EXIT_CODE
+                self._request_clean_exit(reason)
+                return True
+
         # Warn if no user allowlists are configured and open access is not opted in
         _builtin_allowed_vars = (
             "TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",

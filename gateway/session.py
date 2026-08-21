@@ -1242,6 +1242,10 @@ class AsyncSessionStore:
 _DB_UNPINNED = object()
 
 
+class MultiplexSessionCollisionError(RuntimeError):
+    """Active gateway routing aliases one session across profile namespaces."""
+
+
 class SessionStore:
     """
     Manages session storage and retrieval.
@@ -1427,6 +1431,51 @@ class SessionStore:
         """Load sessions index from disk if not already loaded."""
         with self._lock:
             self._ensure_loaded_locked()
+
+    def assert_no_cross_profile_session_aliases(self) -> None:
+        """Reject root routing that aliases one session across profiles.
+
+        Duplicate keys within one normalized profile are legitimate aliases,
+        but a session ID reachable from two distinct profile namespaces would
+        merge that session's cache, transcript, and turn lease between two
+        people. Startup is the only safe place to notice: once adapters accept
+        traffic the merge has already happened.
+
+        Scope — this reads ONE routing index, not every profile's. ``_db``
+        resolves per active profile scope and ``_ensure_loaded`` runs once, so
+        a store checked at startup sees the root/legacy scope that was active
+        then (the same limitation ``close_all_db_handles`` documents). That is
+        deliberately where it is useful: un-migrated aliases predating
+        per-profile state.db live in exactly that index. A profile whose rows
+        were written to its own state.db is NOT covered by this call.
+
+        No-op unless ``gateway.multiplex_profiles`` is on — a single-profile
+        gateway has one namespace and cannot alias across two.
+
+        The raised error deliberately omits routing keys and session IDs: it
+        reaches operator logs and runtime status, which are not the place for
+        chat identifiers.
+        """
+        if not getattr(self.config, "multiplex_profiles", False):
+            return
+
+        self._ensure_loaded()
+        profiles_by_session: Dict[str, set] = {}
+        with self._lock:
+            for session_key, entry in self._entries.items():
+                profile = self._profile_from_session_key(session_key)
+                if profile is None:
+                    continue
+                profiles_by_session.setdefault(entry.session_id, set()).add(profile)
+
+        collisions = sum(
+            1 for profiles in profiles_by_session.values() if len(profiles) > 1
+        )
+        if collisions:
+            raise MultiplexSessionCollisionError(
+                "multiplex routing contains "
+                f"{collisions} cross-profile session collision(s)"
+            )
 
     def _routing_scope(self) -> str:
         """Namespace for this store's rows in the gateway_routing table.

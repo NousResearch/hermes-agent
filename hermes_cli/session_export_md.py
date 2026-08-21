@@ -187,7 +187,10 @@ def redact_session_data(session: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value, list):
             return [_clean(v) for v in value]
         if isinstance(value, dict):
-            return {k: _clean(v) for k, v in value.items()}
+            # Keys are strings too — a credential-shaped key (a misbehaving
+            # JSON emitter writing {"sk-...": value}) must not pass through
+            # verbatim when the user asked for --redact (review on #90361).
+            return {_clean(k) if isinstance(k, str) else k: _clean(v) for k, v in value.items()}
         return value
 
     return _clean(session)

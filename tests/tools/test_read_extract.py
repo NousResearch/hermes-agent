@@ -355,6 +355,40 @@ class TestNotebookExtraction(unittest.TestCase):
         # Order preserved: markdown before code.
         self.assertLess(text.index("Title"), text.index("print(x)"))
 
+    def test_legacy_v3_code_cell_uses_input(self):
+        # Real nbformat v3 code cells carry their text in "input" (not
+        # "source"); markdown cells use "source". Both must survive.
+        p = os.path.join(self.tmp, "nb3_input.ipynb")
+        nb = {"worksheets": [{"cells": [
+            {"cell_type": "code",
+             "input": ["import os\n", "print(os.getcwd())"],
+             "outputs": [{"output_type": "pyout", "text": ["legacy result"]}]},
+            {"cell_type": "markdown", "source": "## v3 heading text"}]}],
+            "nbformat": 3}
+        with open(p, "w") as fh:
+            json.dump(nb, fh)
+        text = extract_document_text(p)
+        self.assertIn("print(os.getcwd())", text)
+        self.assertIn("Output (cell 1)", text)
+        self.assertIn("legacy result", text)
+        self.assertIn("v3 heading text", text)
+        self.assertLess(text.index("print(os.getcwd())"), text.index("legacy result"))
+
+    def test_present_source_not_overridden_by_input(self):
+        # A cell that carries an explicit (even empty or null) "source" keeps
+        # it; "source" always wins over "input" when present.
+        p = os.path.join(self.tmp, "nb_empty_source.ipynb")
+        nb = {"worksheets": [{"cells": [
+            {"cell_type": "code", "source": "", "input": "STALE_EMPTY"},
+            {"cell_type": "code", "source": None, "input": "STALE_NULL"},
+            {"cell_type": "markdown", "source": "real markdown"}]}],
+            "nbformat": 3}
+        with open(p, "w") as fh:
+            json.dump(nb, fh)
+        text = extract_document_text(p)
+        self.assertNotIn("STALE_EMPTY", text)
+        self.assertNotIn("STALE_NULL", text)
+        self.assertIn("real markdown", text)
 
     def test_empty_cells_raises(self):
         p = os.path.join(self.tmp, "empty.ipynb")

@@ -536,7 +536,13 @@ def _extract_notebook(path: str) -> str:
             continue
         counts[typ] += 1
         suffix = f" {counts[typ]}" if typ != "raw" else ""
-        out.extend((f"# ── {labels[typ]} cell{suffix} ──", _source_text(cell.get("source", "")).rstrip("\n"), ""))
+        # nbformat v3 code cells store their text under "input"; markdown/raw
+        # cells (and every v4 cell) use "source". Fall back to "input" only when
+        # "source" is absent, so legacy-v3 code cells — reached via the
+        # "worksheets" branch above — aren't silently dropped as empty. A cell
+        # that has an (even empty) "source" keeps it: "source" always wins.
+        body = cell["source"] if "source" in cell else cell.get("input", "")
+        out.extend((f"# ── {labels[typ]} cell{suffix} ──", _source_text(body).rstrip("\n"), ""))
         if typ == "code":
             rendered = _notebook_outputs(cell, jq_pointer, nb_name)
             if rendered:

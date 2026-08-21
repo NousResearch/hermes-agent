@@ -3155,6 +3155,96 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+_SKILL_FRONTMATTER_NAME = re.compile(
+    r"^name:\s*[\"']?([A-Za-z0-9][A-Za-z0-9._-]*)",
+    re.MULTILINE,
+)
+
+
+def _add_skill_md_names(path: Path, names: set[str]) -> None:
+    names.add(path.parent.name)
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")[:2000]
+    except OSError:
+        return
+    match = _SKILL_FRONTMATTER_NAME.search(text)
+    if match:
+        names.add(match.group(1))
+
+
+def _collect_skill_names(
+    root: Path, names: set[str], seen: Optional[set[Path]] = None
+) -> None:
+    """Walk a skills tree, following directory symlinks, collecting names."""
+    visited = seen if seen is not None else set()
+    try:
+        resolved = root.resolve()
+    except OSError:
+        return
+    if resolved in visited:
+        return
+    visited.add(resolved)
+    if resolved.is_file() and resolved.name == "SKILL.md":
+        _add_skill_md_names(resolved, names)
+        return
+    if not resolved.is_dir():
+        return
+    skill_md = resolved / "SKILL.md"
+    if skill_md.is_file():
+        _add_skill_md_names(skill_md, names)
+        return
+    try:
+        children = list(resolved.iterdir())
+    except OSError:
+        return
+    for child in children:
+        _collect_skill_names(child, names, visited)
+
+
+def _assignee_skill_catalog(assignee: Optional[str]) -> Optional[set[str]]:
+    """Skill names the assignee profile can ``--skills`` load, or None if unknown.
+
+    ``None`` means we cannot see a profile directory, so the pin list is left
+    alone (review-dispatch tests and not-yet-created assignees). An existing
+    profile with no ``skills/`` tree is an empty catalog — every pin is dropped.
+    """
+    if not assignee:
+        return None
+    try:
+        from hermes_cli.profiles import get_profile_dir
+
+        home = get_profile_dir(assignee)
+    except Exception:
+        return None
+    if not home.is_dir():
+        return None
+    names: set[str] = set()
+    skills_root = home / "skills"
+    if skills_root.exists():
+        _collect_skill_names(skills_root, names)
+    return names
+
+
+def _filter_skills_for_assignee(
+    assignee: Optional[str], skills: list[str]
+) -> tuple[list[str], list[str]]:
+    """Split *skills* into (kept, dropped) against the assignee catalog.
+
+    When the catalog cannot be resolved, every name is kept.
+    """
+    catalog = _assignee_skill_catalog(assignee)
+    if catalog is None:
+        return list(skills), []
+    kept: list[str] = []
+    dropped: list[str] = []
+    for name in skills:
+        if name in catalog:
+            kept.append(name)
+        else:
+            dropped.append(name)
+    return kept, dropped
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -3203,8 +3293,11 @@ def create_task(
 
     ``skills`` is an optional list of skill names to force-load into
     the worker when dispatched. Stored as JSON; the dispatcher passes
-    each name to ``hermes --skills ...``. Use this to pin a task to a
-    specialist skill (e.g. ``skills=["translation"]`` so the worker loads the
+    each name to ``hermes --skills ...``. Names the assignee profile
+    cannot load are dropped (recorded on the ``created`` event as
+    ``dropped_skills``) so the worker does not crash on boot. Use this
+    to pin a task to a specialist skill (e.g. ``skills=["translation"]``
+    so the worker loads the
     translation skill regardless of the profile's default config).
 
     ``model_override`` / ``provider_override`` pin the worker to a specific
@@ -3393,6 +3486,14 @@ def create_task(
             )
         skills_list = cleaned
 
+    dropped_skills: list[str] = []
+    if skills_list:
+        skills_list, dropped_skills = _filter_skills_for_assignee(
+            assignee, skills_list
+        )
+        if not skills_list:
+            skills_list = None
+
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
     # and to avoid holding a write lock during the lookup. Race is
@@ -3549,6 +3650,7 @@ def create_task(
                         "branch_name": branch_name,
                         "project_id": project_id,
                         "skills": list(skills_list) if skills_list else None,
+                        "dropped_skills": list(dropped_skills) or None,
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
@@ -10853,10 +10955,19 @@ def _default_spawn(
     # accepts both forms (action='append' + comma-split), but
     # per-name pairs are easier to read in `ps` output and avoid any
     # quoting ambiguity if a skill name ever contains unusual chars.
-    if task.skills:
-        for sk in task.skills:
-            if sk:
-                cmd.extend(["--skills", sk])
+    spawn_skills, dropped_skills = _filter_skills_for_assignee(
+        task.assignee, list(task.skills or [])
+    )
+    if dropped_skills:
+        _log.warning(
+            "Dropping unknown skills for assignee %s on task %s: %s",
+            task.assignee,
+            task.id,
+            ", ".join(dropped_skills),
+        )
+    for sk in spawn_skills:
+        if sk:
+            cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
         # Pin the provider too when the override names one, so the worker

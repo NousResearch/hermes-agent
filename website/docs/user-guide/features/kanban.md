@@ -461,7 +461,7 @@ hermes kanban create "audit auth flow" \
 
 **From the dashboard**, type the skills comma-separated into the **skills** field of the create-task dialog.
 
-The dispatcher emits one `--skills <name>` flag per skill listed, so the worker spawns with all of them loaded on top of the auto-injected kanban guidance. The skill names must match skills that are actually installed on the assignee's profile (run `hermes skills list` to see what's available); there's no runtime install.
+The dispatcher emits one `--skills <name>` flag per skill listed, so the worker spawns with all of them loaded on top of the auto-injected kanban guidance. Names the assignee profile cannot load are **dropped** at create time (and again at spawn) instead of crashing the worker — there is still no runtime install. Run `hermes -p <assignee> skills list` to see what that profile actually has before pinning.
 
 ### Per-task model override
 

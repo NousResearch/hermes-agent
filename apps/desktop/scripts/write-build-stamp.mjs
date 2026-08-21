@@ -10,6 +10,7 @@
  *     "commit":        "<40-char SHA>",
  *     "branch":        "<branch name>",
  *     "builtAt":       "<ISO 8601 UTC timestamp>",
+ *     "desktopContentHash": "<SHA-256 supplied by hermes desktop>" | null,
  *     "dirty":         true|false,
  *     "source":        "ci" | "local" | "fallback"
  *   }
@@ -114,6 +115,22 @@ export function isFallbackCommit(commit) {
   return typeof commit === "string" && /^0{7,40}$/.test(commit)
 }
 
+export function payloadForStamp(stamp, env = process.env, now = () => new Date()) {
+  const desktopContentHash = env.HERMES_DESKTOP_CONTENT_HASH
+
+  return {
+    schemaVersion: STAMP_SCHEMA_VERSION,
+    commit: stamp.commit,
+    branch: stamp.branch,
+    builtAt: now().toISOString(),
+    desktopContentHash: /^[0-9a-f]{64}$/i.test(desktopContentHash || "")
+      ? desktopContentHash.toLowerCase()
+      : null,
+    dirty: stamp.dirty,
+    source: stamp.source
+  }
+}
+
 function main() {
   const stamp = resolveStamp()
   if (!stamp || !stamp.commit) {
@@ -149,14 +166,7 @@ function main() {
     )
   }
 
-  const payload = {
-    schemaVersion: STAMP_SCHEMA_VERSION,
-    commit: stamp.commit,
-    branch: stamp.branch,
-    builtAt: new Date().toISOString(),
-    dirty: stamp.dirty,
-    source: stamp.source
-  }
+  const payload = payloadForStamp(stamp)
 
   mkdirSync(OUT_DIR, { recursive: true })
   writeFileSync(OUT_FILE, JSON.stringify(payload, null, 2) + "\n", "utf8")

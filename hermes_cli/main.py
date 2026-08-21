@@ -6589,6 +6589,32 @@ def _renderer_bundle_dir(desktop_dir: Path, *, source_mode: bool) -> Optional[Pa
     return resources / "app.asar.unpacked" / "dist"
 
 
+def _packaged_desktop_provenance(desktop_dir: Path) -> Optional[dict]:
+    """Read the build provenance shipped beside the packaged Electron app."""
+    executable = _desktop_packaged_executable(desktop_dir)
+    if executable is None:
+        return None
+
+    resources = (
+        executable.parent.parent / "Resources"
+        if sys.platform == "darwin"
+        else executable.parent / "resources"
+    )
+    stamp_path = resources / "install-stamp.json"
+    try:
+        payload = json.loads(stamp_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _packaged_desktop_matches_source(desktop_dir: Path, expected_hash: str) -> bool:
+    """True only when the packaged app proves which desktop source it contains."""
+    provenance = _packaged_desktop_provenance(desktop_dir)
+    packaged_hash = provenance.get("desktopContentHash") if provenance else None
+    return isinstance(packaged_hash, str) and packaged_hash.lower() == expected_hash.lower()
+
+
 # The module files the renderer fetches before any app code runs: Vite emits
 # them as `<script type="module" src>` plus `<link rel="modulepreload" href>`.
 _HTML_TAG_WITH_URL = re.compile(r"""<(?:script|link)\b[^>]*\b(?:src|href)=["']([^"']+)["'][^>]*>""", re.IGNORECASE)
@@ -6669,7 +6695,18 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
         return True
 
     current_hash = _compute_desktop_content_hash(project_root)
-    return current_hash != saved_hash
+    if current_hash != saved_hash:
+        return True
+
+    # The external stamp describes the source tree, not the app that actually
+    # launches. A skipped/torn packaging leg can update that stamp while leaving
+    # release/**/resources/app.asar on an older renderer. Require the package's
+    # own provenance to carry the same content hash before skipping a rebuild.
+    if not source_mode and not _packaged_desktop_matches_source(desktop_dir, current_hash):
+        print("  ⚠ Packaged desktop provenance is missing or stale; rebuilding it")
+        return True
+
+    return False
 
 
 def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None:
@@ -7936,6 +7973,8 @@ def cmd_gui(args: argparse.Namespace):
                 print("  → No Developer ID configured; ad-hoc signing this local rebuild "
                       "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
             npm_build_env = _npm_lifecycle_env(env)
+            desktop_content_hash = _compute_desktop_content_hash(PROJECT_ROOT)
+            npm_build_env["HERMES_DESKTOP_CONTENT_HASH"] = desktop_content_hash
             if not source_mode:
                 # A running desktop instance launched from release/win-unpacked
                 # holds Hermes.exe locked on Windows, so the pack can't replace
@@ -8024,6 +8063,20 @@ def cmd_gui(args: argparse.Namespace):
                 ):
                     sys.exit(1)
                 packaged_executable = verified_executable
+
+                # A successful npm/electron-builder exit is not proof that the
+                # package was replaced. Windows locks, interrupted swaps, and
+                # stale release trees can leave a runnable OLD app behind. The
+                # build embeds the source hash in resources/install-stamp.json;
+                # require that exact hash before recording success.
+                if not _packaged_desktop_matches_source(desktop_dir, desktop_content_hash):
+                    print("✗ Desktop package provenance does not match the source just built")
+                    print("  The packaged renderer may be stale; retry with `hermes desktop --force-build`.")
+                    try:
+                        _desktop_stamp_path().unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    sys.exit(1)
 
             # Build succeeded — write the stamp so next run can skip
             _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)

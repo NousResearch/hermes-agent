@@ -47,6 +47,12 @@ def _stable_keychain_detection(monkeypatch):
     monkeypatch.setenv("GNOME_KEYRING_CONTROL", "/run/user/1000/keyring")
 
 
+@pytest.fixture(autouse=True)
+def _successful_pack_build_has_matching_provenance(monkeypatch):
+    """The mocked pack steps in this file represent a complete valid package."""
+    monkeypatch.setattr(cli_main, "_packaged_desktop_matches_source", lambda *_: True)
+
+
 def _ns(**kw):
     defaults = dict(
         skip_build=False,
@@ -102,6 +108,7 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     desktop_dir = root / "apps" / "desktop"
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     packaged_exe = _make_packaged_executable(root, monkeypatch)
+    desktop_content_hash = "a" * 64
 
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
     pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
@@ -110,6 +117,7 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._compute_desktop_content_hash", return_value=desktop_content_hash), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
@@ -128,6 +136,7 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     assert install_env is not None and "PATH" in install_env
     assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]
     assert mock_run.call_args_list[0].kwargs["cwd"] == desktop_dir
+    assert mock_run.call_args_list[0].kwargs["env"]["HERMES_DESKTOP_CONTENT_HASH"] == desktop_content_hash
     assert mock_run.call_args_list[1].args[0] == [str(packaged_exe)]
     assert mock_run.call_args_list[1].kwargs["cwd"] == desktop_dir
 

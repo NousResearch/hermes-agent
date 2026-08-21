@@ -62,6 +62,64 @@ describe('JsonRpcGatewayClient connect() URL guard', () => {
       expect(client.connectionState).toBe('open')
     }
   })
+
+  it('settles a closed connect and cannot poison a newer socket after its old timeout', async () => {
+    vi.useFakeTimers()
+
+    class ControlledSocket {
+      static OPEN = 1
+      readyState = 0
+      private readonly listeners = new Map<string, Set<() => void>>()
+
+      addEventListener = vi.fn((type: string, handler: () => void) => {
+        const handlers = this.listeners.get(type) ?? new Set<() => void>()
+        handlers.add(handler)
+        this.listeners.set(type, handlers)
+      })
+      removeEventListener = vi.fn((type: string, handler: () => void) => {
+        this.listeners.get(type)?.delete(handler)
+      })
+      close = vi.fn()
+      send = vi.fn()
+
+      open(): void {
+        this.readyState = ControlledSocket.OPEN
+
+        for (const handler of this.listeners.get('open') ?? []) {
+          handler()
+        }
+      }
+    }
+
+    const sockets: ControlledSocket[] = []
+    const client = new JsonRpcGatewayClient({
+      connectTimeoutMs: 50,
+      socketFactory: () => {
+        const socket = new ControlledSocket()
+        sockets.push(socket)
+
+        return socket as unknown as WebSocket
+      }
+    })
+
+    try {
+      const stale = client.connect('ws://127.0.0.1:1234/stale')
+      expect(client.connectionState).toBe('connecting')
+      client.close()
+      await expect(stale).rejects.toThrow('WebSocket closed')
+
+      const current = client.connect('ws://127.0.0.1:1234/current')
+      sockets[1].open()
+      await expect(current).resolves.toBeUndefined()
+      expect(client.connectionState).toBe('open')
+
+      await vi.advanceTimersByTimeAsync(50)
+      expect(client.connectionState).toBe('open')
+    } finally {
+      client.close()
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('JsonRpcGatewayClient structured errors', () => {

@@ -144,6 +144,23 @@ afterEach(() => {
 })
 
 describe('profile-scoped gateway request leases', () => {
+  it('leases a shared-primary transport for a non-primary logical profile', async () => {
+    const primary = fakes.instances[0]
+
+    getConnection.mockResolvedValueOnce({ ...connection('work'), sharedPrimary: true })
+    await ensureGatewayForProfile('work')
+    primary.requestImplementation = async () => ({ transport: 'shared-primary' })
+
+    const lease = acquireGatewayRequestLease(primary as unknown as HermesGateway, 'work')
+
+    await expect(lease.request('session.branch', { profile: 'work' })).resolves.toEqual({
+      transport: 'shared-primary'
+    })
+    expect(primary.connect).not.toHaveBeenCalled()
+
+    lease.release()
+  })
+
   it('recovers a disconnected primary on that exact transport before retrying', async () => {
     const primary = fakes.instances[0]
     const lease = acquireGatewayRequestLease(primary as unknown as HermesGateway, 'default')
@@ -468,10 +485,13 @@ describe('profile-scoped gateway request leases', () => {
     lease.release()
   })
 
-  it('coalesces primary lease and ordinary reconnect callers through one owner generation', async () => {
+  it('coalesces a shared-profile lease and ordinary primary reconnect through one physical generation', async () => {
     const primary = fakes.instances[0]
     const reconnect = deferred<void>()
-    const lease = acquireGatewayRequestLease(primary as unknown as HermesGateway, 'default')
+
+    getConnection.mockResolvedValueOnce({ ...connection('work'), sharedPrimary: true })
+    await ensureGatewayForProfile('work')
+    const lease = acquireGatewayRequestLease(primary as unknown as HermesGateway, 'work')
 
     primary.setState('closed')
 
@@ -495,10 +515,7 @@ describe('profile-scoped gateway request leases', () => {
 
     reconnect.resolve()
 
-    await expect(Promise.all([leasedRequest, ordinaryReconnect])).resolves.toEqual([
-      { ok: true },
-      connection('default')
-    ])
+    await expect(Promise.all([leasedRequest, ordinaryReconnect])).resolves.toEqual([{ ok: true }, connection('work')])
     expect(getConnection).toHaveBeenCalledOnce()
     expect(primary.connect).toHaveBeenCalledOnce()
 

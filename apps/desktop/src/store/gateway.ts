@@ -1078,9 +1078,9 @@ function ownerStillRegistered(owner: LeasedGatewayOwner): boolean {
         owner.secondary.wantOpen &&
         g.secondaries.get(owner.secondary.scope) === owner.secondary &&
         owner.secondary.gateway === owner.gateway
-    : g.primaryGateway === owner.gateway &&
-        g.primaryProfile === owner.profile &&
-        g.primaryGeneration === owner.generation
+    : // `owner.profile` is a logical request scope on shared-primary routes;
+      // physical ownership is the primary object plus its generation.
+      g.primaryGateway === owner.gateway && g.primaryGeneration === owner.generation
 }
 
 type GatewayConnection = Awaited<ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>>
@@ -1088,11 +1088,7 @@ type GatewayConnection = Awaited<ReturnType<NonNullable<typeof window.hermesDesk
 async function reconnectPrimary(owner: LeasedGatewayOwner): Promise<GatewayConnection | null> {
   const current = g.primaryReconnect
 
-  if (
-    current?.gateway === owner.gateway &&
-    current.profile === owner.profile &&
-    current.generation === owner.generation
-  ) {
+  if (current?.gateway === owner.gateway && current.generation === owner.generation) {
     return current.promise
   }
 
@@ -1196,7 +1192,9 @@ export function acquireGatewayRequestLease(gateway: HermesGateway, profile: stri
 
   if (
     (secondary && secondary.gateway !== gateway) ||
-    (!secondary && (g.primaryGateway !== gateway || g.primaryProfile !== key))
+    // A shared-primary command intentionally binds a logical profile that is
+    // different from `g.primaryProfile`. Generation guards the physical owner.
+    (!secondary && g.primaryGateway !== gateway)
   ) {
     throw new Error('Hermes source gateway unavailable')
   }

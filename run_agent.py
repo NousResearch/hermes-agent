@@ -5372,6 +5372,13 @@ class AIAgent:
             return primary_client
         with self._openai_client_lock():
             request_kwargs = dict(self._client_kwargs)
+        endpoint_override = getattr(
+            self, "_chat_completions_base_url_override", None
+        )
+        if isinstance(endpoint_override, dict):
+            configured_base = str(request_kwargs.get("base_url") or "").rstrip("/")
+            if configured_base == endpoint_override.get("source"):
+                request_kwargs["base_url"] = endpoint_override.get("target")
         # Per-request OpenAI-wire clients (used by both the non-streaming
         # chat-completions path and the streaming chat-completions path
         # in `_interruptible_api_call`) should not run the SDK's built-in

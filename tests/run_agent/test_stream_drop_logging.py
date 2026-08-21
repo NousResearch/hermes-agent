@@ -42,6 +42,7 @@ def test_stream_diag_init_returns_well_formed_dict():
     assert diag["bytes"] == 0
     assert diag["first_chunk_at"] is None
     assert diag["http_status"] is None
+    assert diag["content_type"] is None
     assert diag["headers"] == {}
 
 
@@ -73,8 +74,20 @@ def test_stream_diag_capture_response_collects_known_headers():
     assert diag["headers"]["x-openrouter-provider"] == "Anthropic"
     assert diag["headers"]["x-openrouter-id"] == "gen-abc123"
     assert diag["headers"]["server"] == "cloudflare"
+    assert diag["content_type"] is None
     # Headers not in _STREAM_DIAG_HEADERS must not be captured (PII surface).
     assert "irrelevant-header" not in diag["headers"]
+
+
+def test_stream_diag_capture_response_records_content_type_separately():
+    agent = _make_agent()
+    diag = AIAgent._stream_diag_init()
+    resp = _FakeResponse({"content-type": "text/html; charset=utf-8"})
+
+    agent._stream_diag_capture_response(diag, resp)
+
+    assert diag["content_type"] == "text/html; charset=utf-8"
+    assert "content-type" not in diag["headers"]
 
 
 

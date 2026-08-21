@@ -189,6 +189,31 @@ def test_replace_primary_openai_client_survives_repeated_rebuilds():
     )
 
 
+def test_request_client_applies_runtime_endpoint_override_without_mutating_configured_base():
+    agent = _make_agent()
+    source = "https://custom.example"
+    target = f"{source}/v1"
+    agent._client_kwargs = {"api_key": "test-key", "base_url": source}
+    agent._chat_completions_base_url_override = {
+        "source": source,
+        "target": target,
+    }
+    captured = {}
+    request_client = SimpleNamespace(close=lambda: None)
+
+    def _create(kwargs, **_):
+        captured.update(kwargs)
+        return request_client
+
+    with patch.object(agent, "_ensure_primary_openai_client", return_value=object()), \
+         patch.object(agent, "_create_openai_client", side_effect=_create):
+        created = agent._create_request_openai_client(reason="test")
+
+    assert created is request_client
+    assert captured["base_url"] == target
+    assert agent._client_kwargs["base_url"] == source
+
+
 def test_force_close_tcp_sockets_descends_httpcore_1_connection_wrapper():
     """httpcore 1.x stores the real stream below conn._connection.
 

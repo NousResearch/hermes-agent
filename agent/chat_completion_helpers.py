@@ -66,6 +66,58 @@ _PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
 _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 
 
+def _try_recover_custom_endpoint_missing_v1(agent, diag: dict[str, Any]) -> bool:
+    """Route later chat requests through ``/v1`` after a proven SPA response.
+
+    Some OpenAI-compatible deployments expose their web app at the configured
+    root while serving the API below ``/v1``.  The OpenAI SDK accepts the root
+    URL, POSTs to ``/chat/completions``, then presents the HTTP 200 HTML body as
+    an empty stream.  Only adapt after that exact POST response; probing a
+    guessed API path would reject endpoints that intentionally support POST
+    without a corresponding GET route.
+
+    The override is request-local runtime state.  ``agent.base_url``, stored
+    client kwargs, credential-pool identity, and config.yaml remain unchanged.
+    """
+    providers = {
+        str(getattr(agent, name, "") or "").strip().lower()
+        for name in ("provider", "requested_provider")
+    }
+    if not any(value == "custom" or value.startswith("custom:") for value in providers):
+        return False
+    if getattr(agent, "api_mode", None) != "chat_completions":
+        return False
+    if not isinstance(diag, dict) or diag.get("http_status") != 200:
+        return False
+    if int(diag.get("chunks") or 0) != 0:
+        return False
+    if "text/html" not in str(diag.get("content_type") or "").lower():
+        return False
+
+    base_url = str(
+        (getattr(agent, "_client_kwargs", {}) or {}).get("base_url")
+        or getattr(agent, "base_url", "")
+        or ""
+    ).strip().rstrip("/")
+    if not base_url or base_url.lower().endswith("/v1"):
+        return False
+    existing = getattr(agent, "_chat_completions_base_url_override", None)
+    if isinstance(existing, dict) and existing.get("source") == base_url:
+        return False
+
+    target = f"{base_url}/v1"
+    agent._chat_completions_base_url_override = {
+        "source": base_url,
+        "target": target,
+    }
+    logger.warning(
+        "Custom endpoint returned HTTP 200 HTML at /chat/completions; "
+        "retrying this session through %s without changing config.yaml.",
+        target,
+    )
+    return True
+
+
 def _context_thread_target(callback):
     """Bind a no-argument thread target to the caller's ContextVars."""
     context = contextvars.copy_context()
@@ -4751,6 +4803,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     )
                     _is_stream_parse_err = agent._is_provider_stream_parse_error(e)
                     _is_empty_stream = isinstance(e, EmptyStreamError)
+                    _adapted_missing_v1 = (
+                        _is_empty_stream
+                        and _stream_attempt < _max_stream_retries
+                        and _try_recover_custom_endpoint_missing_v1(
+                            agent, request_client_holder.get("diag") or {}
+                        )
+                    )
 
                     # If the stream died AFTER some tokens were delivered:
                     # normally we don't retry (the user already saw text,
@@ -4898,6 +4957,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         # Transient network / timeout error. Retry the
                         # streaming request with a fresh connection first.
                         if _stream_attempt < _max_stream_retries:
+                            if _adapted_missing_v1:
+                                logger.info(
+                                    "Retrying empty custom-endpoint stream with "
+                                    "runtime /v1 route adaptation."
+                                )
                             agent._emit_stream_drop(
                                 error=e,
                                 attempt=_stream_attempt + 2,

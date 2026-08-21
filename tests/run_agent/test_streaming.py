@@ -960,6 +960,116 @@ class TestAnthropicStreamCallbacks:
         assert mock_rebuild.call_count == 0
 
 
+class TestCustomEndpointVersionRecovery:
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_html_empty_stream_retries_custom_endpoint_with_v1(
+        self, mock_close, mock_create, monkeypatch,
+    ):
+        """A custom endpoint's SPA route must not consume every stream retry."""
+        from run_agent import AIAgent
+
+        class _Headers(dict):
+            def get(self, key, default=None):
+                return super().get(key.lower(), default)
+
+        class _ProviderStream:
+            def __init__(self, chunks, content_type):
+                self._chunks = chunks
+                self.response = SimpleNamespace(
+                    status_code=200,
+                    headers=_Headers({"content-type": content_type}),
+                )
+
+            def __iter__(self):
+                return iter(self._chunks)
+
+            def close(self):
+                pass
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://custom.example",
+            provider="custom",
+            model="test-model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        attempted_bases = []
+
+        def _request_client(*args, **kwargs):
+            override = getattr(agent, "_chat_completions_base_url_override", {})
+            request_base = override.get("target", agent.base_url)
+            attempted_bases.append(request_base)
+            client = MagicMock()
+            if request_base == "https://custom.example":
+                stream = _ProviderStream([], "text/html; charset=utf-8")
+            else:
+                stream = _ProviderStream(
+                    [
+                        _make_stream_chunk(
+                            content="recovered",
+                            finish_reason="stop",
+                            model="test-model",
+                        )
+                    ],
+                    "text/event-stream",
+                )
+            client.chat.completions.create.return_value = stream
+            return client
+
+        mock_create.side_effect = _request_client
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "recovered"
+        assert attempted_bases == [
+            "https://custom.example",
+            "https://custom.example/v1",
+        ]
+        assert agent.base_url == "https://custom.example"
+        assert agent._client_kwargs["base_url"] == "https://custom.example"
+        assert agent._primary_runtime["base_url"] == "https://custom.example"
+        assert agent._chat_completions_base_url_override == {
+            "source": "https://custom.example",
+            "target": "https://custom.example/v1",
+        }
+
+    def test_json_empty_stream_does_not_guess_v1(self):
+        """Only an observed HTML POST response permits route adaptation."""
+        from agent.chat_completion_helpers import (
+            _try_recover_custom_endpoint_missing_v1,
+        )
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://post-only.example",
+            provider="custom",
+            model="test-model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+        recovered = _try_recover_custom_endpoint_missing_v1(
+            agent,
+            {
+                "http_status": 200,
+                "chunks": 0,
+                "content_type": "application/json",
+            },
+        )
+
+        assert recovered is False
+        assert not hasattr(agent, "_chat_completions_base_url_override")
+        assert agent.base_url == "https://post-only.example"
+
+
 class TestPartialToolCallWarning:
     """Regression: when a stream dies mid tool-call argument generation after
     text was already delivered, the partial-stream stub at run_agent.py

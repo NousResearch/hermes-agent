@@ -52,6 +52,7 @@ def stream_diag_init() -> Dict[str, Any]:
         "bytes": 0,
         "headers": {},
         "http_status": None,
+        "content_type": None,
     }
 
 
@@ -70,6 +71,9 @@ def stream_diag_capture_response(agent: Any, diag: Dict[str, Any], http_response
         pass
     try:
         headers = getattr(http_response, "headers", None) or {}
+        content_type = headers.get("content-type")
+        if content_type:
+            diag["content_type"] = str(content_type)[:120]
         captured: Dict[str, str] = {}
         # Allow per-agent override of the headers list (back-compat).
         target_headers = getattr(agent, "_STREAM_DIAG_HEADERS", STREAM_DIAG_HEADERS)

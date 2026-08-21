@@ -26,8 +26,16 @@ function splitUrlTail(raw: string) {
   return { trailing: raw.slice(url.length), url }
 }
 
-/** A URL needs a host past the scheme to be worth chipping. */
-const hasHost = (url: string) => /^https?:\/\/[^/\s]/i.test(url)
+/** A URL needs a valid HTTP(S) authority and host to be worth treating as a URL reference. */
+export const hasHttpUrlHost = (url: string) => {
+  try {
+    const parsed = new URL(splitUrlTail(url).url)
+
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && Boolean(parsed.hostname)
+  } catch {
+    return false
+  }
+}
 
 /** Rewrite bare links in `text` as `@url:` directives, leaving links that are
  *  already part of a directive alone. Returns `text` unchanged when there are
@@ -48,7 +56,7 @@ export function linkifyUrls(text: string) {
     const start = match.index ?? 0
     const { url } = splitUrlTail(match[0])
 
-    if (!hasHost(url) || fenced.some(span => start >= span.start && start < span.end)) {
+    if (!hasHttpUrlHost(url) || fenced.some(span => start >= span.start && start < span.end)) {
       continue
     }
 
@@ -85,7 +93,7 @@ export function chipTypedUrlOnSpace(event: KeyboardEvent<HTMLDivElement>) {
 
   const { trailing, url } = splitUrlTail(token)
 
-  if (!hasHost(url)) {
+  if (!hasHttpUrlHost(url)) {
     return false
   }
 

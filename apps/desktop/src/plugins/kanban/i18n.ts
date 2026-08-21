@@ -94,6 +94,7 @@ type KanbanMessages = {
   roughEstimate: string
   tokUnit: string
   couldNotEstimate: string
+  estimateTimeout: string
   complexity: Record<'L' | 'M' | 'S', string>
   introBody: string
   introGotIt: string
@@ -294,6 +295,7 @@ export const en: KanbanMessages = {
   roughEstimate: 'Rough estimate',
   tokUnit: 'tok',
   couldNotEstimate: 'Could not estimate',
+  estimateTimeout: 'The estimate took too long -- the backend may be slow or unavailable. Try again in a moment.',
   complexity: { S: 'Small', M: 'Medium', L: 'Large' },
   introBody:
     'You don’t run the cards — agents do. Put a card in Ready with an assignee and an agent picks it up within a minute. No assignee, no run. Triage: an agent rewrites the idea into a proper task first. Todo: waiting on other cards. Scheduled: waiting on a timer. Running and Review: the agents’ lanes, hands off. Blocked: it’s waiting on you. Results come back on the card.',
@@ -496,6 +498,7 @@ const ja: KanbanMessages = {
   roughEstimate: '概算',
   tokUnit: 'tok',
   couldNotEstimate: '見積もりできませんでした',
+  estimateTimeout: '見積もりがタイムアウトしました -- バックエンドが遅いか利用できない可能性があります。しばらくしてから再試行してください。',
   complexity: { S: '小', M: '中', L: '大' },
   introBody:
     'カードはあなたではなくエージェントが実行します。担当を設定したカードを Ready に置くと、1分以内にエージェントが取得します。担当がなければ実行されません。トリアージ: エージェントがまずアイデアを適切なタスクに書き直します。Todo: 他のカード待ち。スケジュール: タイマー待ち。実行中とレビュー: エージェントのレーンなので手を出さないでください。ブロック: あなたの対応待ちです。結果はカードに戻ってきます。',
@@ -696,6 +699,7 @@ const zh: KanbanMessages = {
   roughEstimate: '粗略估算',
   tokUnit: 'tok',
   couldNotEstimate: '无法估算',
+  estimateTimeout: '估算超时 -- 后端可能较慢或不可用，请稍后重试。',
   complexity: { S: '小', M: '中', L: '大' },
   introBody:
     '卡片不由你运行，而是由代理运行。把带有负责人的卡片放入“就绪”，代理会在一分钟内领取。没有负责人就不会运行。分诊：代理先把想法改写成合适的任务。待办：等待其他卡片。已排期：等待计时器。运行中与审查：这是代理的通道，请勿插手。受阻：正在等你。结果会回到卡片上。',
@@ -894,6 +898,7 @@ const zhHant: KanbanMessages = {
   roughEstimate: '粗略估算',
   tokUnit: 'tok',
   couldNotEstimate: '無法估算',
+  estimateTimeout: '估算逾時 -- 後端可能較慢或不可用，請稍後重試。',
   complexity: { S: '小', M: '中', L: '大' },
   introBody:
     '卡片不由你執行，而是由代理執行。把有負責人的卡片放入「就緒」，代理會在一分鐘內領取。沒有負責人就不會執行。分類：代理先把想法改寫成合適的任務。待辦：等待其他卡片。已排程：等待計時器。執行中與審查：這是代理的通道，請勿插手。受阻：正在等你。結果會回到卡片上。',

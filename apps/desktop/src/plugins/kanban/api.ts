@@ -243,14 +243,21 @@ export const createBoard = (slug: string, name: string, projectId?: string) =>
     body: { slug, name, ...(projectId ? { project_id: projectId } : {}) }
   })
 
+/** The backend's _run_estimate makes an LLM call with a 60s timeout
+ *  (plugin_api.py). The IPC timeout must exceed that so a slow-but-healthy
+ *  estimate is not cut short. 5s margin covers network/IPC overhead. */
+const ESTIMATE_TIMEOUT_MS = 65_000
+
 /** Rough auxiliary-model estimate for a task (tokens + complexity). Makes a
- *  model call — gate behind an explicit user action + disclaimer. */
-export const estimateTask = (id: string) =>
-  call<TaskEstimate>(withBoard(`/tasks/${id}/estimate`), { method: 'POST', body: {} })
+ *  model call -- gate behind an explicit user action + disclaimer. The
+ *  AbortSignal lets the UI cancel the fetch so the backend LLM call is
+ *  freed sooner when the user navigates away. */
+export const estimateTask = (id: string, signal?: AbortSignal) =>
+  call<TaskEstimate>(withBoard(`/tasks/${id}/estimate`), { method: 'POST', body: {}, timeoutMs: ESTIMATE_TIMEOUT_MS, signal })
 
 /** Estimate from typed title/body before a task exists (create dialog). */
-export const estimateNew = (title: string, body: string) =>
-  call<TaskEstimate>('/estimate', { method: 'POST', body: { title, body: body || undefined } })
+export const estimateNew = (title: string, body: string, signal?: AbortSignal) =>
+  call<TaskEstimate>('/estimate', { method: 'POST', body: { title, body: body || undefined }, timeoutMs: ESTIMATE_TIMEOUT_MS, signal })
 
 /** Edit a board's display metadata + default project directory. Pass
  *  `default_workdir: ''` to clear it. Slug is immutable. */

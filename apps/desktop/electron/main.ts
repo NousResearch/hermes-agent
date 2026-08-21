@@ -4827,6 +4827,15 @@ function fetchJson(url, token, options: any = {}) {
       return
     }
 
+    // If an AbortSignal is provided, abort the request when it fires.
+    // This destroys the underlying TCP socket so the backend HTTP handler
+    // sees the connection drop and can free its resources sooner.
+    if (options.signal?.aborted) {
+      reject(new Error('Request aborted by the client'))
+
+      return
+    }
+
     const req = client.request(
       parsed,
       {
@@ -4895,6 +4904,13 @@ function fetchJson(url, token, options: any = {}) {
     req.setTimeout(timeoutMs, () => {
       req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
     })
+
+    // Wire the AbortSignal: destroy the request when the signal fires.
+    // Placed after req exists so onAbort can reference it.
+    if (options.signal) {
+      const onAbort = () => req.destroy(new Error('Request aborted by the client'))
+      options.signal.addEventListener('abort', onAbort, { once: true })
+    }
 
     if (body) {
       req.write(body)
@@ -13727,7 +13743,9 @@ async function handleHermesApiRequest(request) {
         method: request?.method,
         body: request?.body,
         upload: request?.upload,
-        timeoutMs
+        timeoutMs,
+        bearer: restAuth.token,
+        signal: request?.signal
       })
     }
   } catch (error) {
@@ -13744,25 +13762,13 @@ async function handleHermesApiRequest(request) {
     throw error
   }
 
-  await profileRename?.complete()
-
-  return response
-}
-
-ipcMain.handle('hermes:api', async (_event, request) => {
-  // Hold the deletion gate for BOTH profile deletes and renames: a concurrent
-  // renderer reconnect entering ensureBackend() mid-mutation would otherwise
-  // respawn the old-name backend and recreate its HERMES_HOME (#45474).
-  const deletingProfile = profileNameFromDeleteRequest(request)
-  const mutatingProfile = deletingProfile || profileRenameFromRequest(request)?.oldName || null
-
-  if (!mutatingProfile) {
-    return handleHermesApiRequest(request)
-  }
-
-  const releaseProfileDeletion = profileDeletionGate.acquire(mutatingProfile)
-
-  return handleHermesApiRequest(request).finally(releaseProfileDeletion)
+  return fetchJson(url, connection.token, {
+    method: request?.method,
+    body: request?.body,
+    upload: request?.upload,
+    timeoutMs,
+    signal: request?.signal
+  })
 })
 
 // One deduper per cross-window cue — the choke point every window shares. Main

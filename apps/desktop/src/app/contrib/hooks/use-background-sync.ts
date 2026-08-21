@@ -199,6 +199,7 @@ export function rehydrateLiveSessionStatuses(
   profileKey = 'default'
 ): void {
   const ownerProfile = normalizeProfileKey(profileKey)
+  const occupiedRuntimeIds = new Set<string>()
   const seen = new Map<string, string>()
 
   for (const session of response.sessions ?? []) {
@@ -210,6 +211,12 @@ export function rehydrateLiveSessionStatuses(
     if (!runtimeSessionId || !storedSessionId) {
       continue
     }
+
+    // Even when the durable owner conflicts with the renderer cache, this
+    // profile's current snapshot proves the runtime slot is occupied. Record
+    // that fact before the fail-closed owner check so the absence reaper cannot
+    // misclassify the rejected replacement as disappearance of the old owner.
+    occupiedRuntimeIds.add(runtimeSessionId)
 
     const existing = $sessionStates.get()[runtimeSessionId]
     const owner = { profile: ownerProfile, storedSessionId }
@@ -277,7 +284,7 @@ export function rehydrateLiveSessionStatuses(
 
   if (previouslyLive) {
     for (const [runtimeSessionId, storedSessionId] of previouslyLive) {
-      if (seen.get(runtimeSessionId) === storedSessionId) {
+      if (occupiedRuntimeIds.has(runtimeSessionId)) {
         continue
       }
 

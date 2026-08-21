@@ -203,3 +203,67 @@ def test_tui_tick_noop_when_not_due(server, session):
 
     submit.assert_not_called()
     assert s["running"] is False
+
+
+# ── profile-scoped loop state ─────────────────────────────────────────
+
+
+def test_tui_tick_fires_profile_home_loop(server, session, tmp_path):
+    """A dashboard session with profile_home must read its loop from that
+    profile's state.db, not the launch profile's."""
+    sid, session_key, s = session
+    profile_home = tmp_path / "profiles" / "dev"
+    profile_home.mkdir(parents=True)
+
+    from hermes_cli import loops
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    # Seed a due loop inside the profile's own state.db.
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        mgr = loops.LoopManager(session_key)
+        mgr.set("poll the profile build", interval_seconds=60)
+        mgr.state.next_due_at = time.time() - 1
+        loops.save_loop(session_key, mgr.state)
+    finally:
+        reset_hermes_home_override(token)
+
+    s["profile_home"] = str(profile_home)
+
+    fired = {}
+
+    def fake_submit(rid, sid_, session_, text, **kwargs):
+        fired["text"] = text
+
+    with patch.object(server, "_run_prompt_submit", fake_submit), \
+         patch.object(server, "_emit"):
+        server._maybe_fire_tui_loop_tick(sid, s)
+
+    # The loop was found in the session's profile, so the tick fired.
+    assert "poll the profile build" in fired.get("text", "")
+    assert s["running"] is True
+
+
+def test_loop_set_persists_to_profile_home(server, session, tmp_path):
+    """`/loop` created from a dashboard session lands in that session's
+    profile state.db, not the launch profile's."""
+    sid, session_key, s = session
+    profile_home = tmp_path / "profiles" / "work"
+    profile_home.mkdir(parents=True)
+    s["profile_home"] = str(profile_home)
+
+    r = _call(server, "command.dispatch", name="loop", arg="5m check profile", session_id=sid)
+    assert r["result"]["type"] == "exec"
+    assert "Loop set" in r["result"]["output"]
+
+    from hermes_cli import loops
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    # The loop must be readable from the profile's home, not the launch home.
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        mgr = loops.LoopManager(session_key)
+        assert mgr.state is not None
+        assert mgr.state.prompt == "check profile"
+    finally:
+        reset_hermes_home_override(token)

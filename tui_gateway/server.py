@@ -9872,82 +9872,97 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     sid_key = session.get("session_key") or ""
     if not sid_key:
         return
-    mgr = LoopManager(session_id=sid_key)
-    if not mgr.is_due():
-        return
-    if goal_blocks_loop_tick(sid_key):
-        return
 
-    with session["history_lock"]:
-        if session.get("running"):
-            return  # busy — stays due, next poll retries
-        session["running"] = True
+    # Bind HERMES_HOME to the session's profile so the loop state is read and
+    # written in that profile's state.db. The post-turn completion hook runs
+    # inside the turn thread with the same profile override; both halves must
+    # agree on the home, otherwise fire_tick persists in one profile while
+    # complete_tick reads from another and the loop wedges at
+    # awaiting_response=True forever (wakeup #1 fires, then no further ticks).
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-    wakeup = mgr.fire_tick()
-    if not wakeup:
-        with session["history_lock"]:
-            session["running"] = False
-        return
-
-    tick_no = mgr.state.ticks_fired if mgr.state else "?"
-    rid = f"__loop__{int(time.time() * 1000)}"
+    profile_home = session.get("profile_home")
+    home_token = set_hermes_home_override(profile_home) if profile_home else None
     try:
-        _emit(
-            "status.update",
-            sid,
-            {"kind": "loop", "text": f"↻ /loop wakeup #{tick_no} firing…"},
-        )
-        if wakeup.lstrip().startswith("/"):
-            # Slash-command loop: route through the slash pipeline instead of
-            # the model. No model reply to evaluate — complete immediately.
+        mgr = LoopManager(session_id=sid_key)
+        if not mgr.is_due():
+            return
+        if goal_blocks_loop_tick(sid_key):
+            return
+
+        with session["history_lock"]:
+            if session.get("running"):
+                return  # busy — stays due, next poll retries
+            session["running"] = True
+
+        wakeup = mgr.fire_tick()
+        if not wakeup:
+            with session["history_lock"]:
+                session["running"] = False
+            return
+
+        tick_no = mgr.state.ticks_fired if mgr.state else "?"
+        rid = f"__loop__{int(time.time() * 1000)}"
+        try:
+            _emit(
+                "status.update",
+                sid,
+                {"kind": "loop", "text": f"↻ /loop wakeup #{tick_no} firing…"},
+            )
+            if wakeup.lstrip().startswith("/"):
+                # Slash-command loop: route through the slash pipeline instead of
+                # the model. No model reply to evaluate — complete immediately.
+                with session["history_lock"]:
+                    session["running"] = False
+                try:
+                    parts = wakeup.lstrip()[1:].split(None, 1)
+                    resp = _methods["command.dispatch"](
+                        rid,
+                        {
+                            "name": parts[0] if parts else "",
+                            "arg": parts[1] if len(parts) > 1 else "",
+                            "session_id": sid,
+                        },
+                    )
+                    payload = (resp or {}).get("result") or {}
+                    out = str(payload.get("output") or "").strip()
+                    if out:
+                        _emit("status.update", sid, {"kind": "loop", "text": out})
+                    if payload.get("type") == "send" and payload.get("message"):
+                        # The command resolves to a prompt (skill command etc.) —
+                        # run it as a normal turn; the post-turn hook completes
+                        # the tick.
+                        with session["history_lock"]:
+                            if session.get("running"):
+                                mgr.abandon_tick()
+                                return
+                            session["running"] = True
+                        _emit("message.start", sid)
+                        _run_prompt_submit(rid, sid, session, payload["message"])
+                        return
+                except Exception:
+                    pass
+                decision = mgr.complete_tick("")
+                if decision.get("message"):
+                    _emit("status.update", sid, {"kind": "loop", "text": decision["message"]})
+                return
+            _emit("message.start", sid)
+            _run_prompt_submit(rid, sid, session, wakeup)
+        except Exception as exc:
+            print(
+                f"[tui_gateway] loop wakeup dispatch failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
             with session["history_lock"]:
                 session["running"] = False
             try:
-                parts = wakeup.lstrip()[1:].split(None, 1)
-                resp = _methods["command.dispatch"](
-                    rid,
-                    {
-                        "name": parts[0] if parts else "",
-                        "arg": parts[1] if len(parts) > 1 else "",
-                        "session_id": sid,
-                    },
-                )
-                payload = (resp or {}).get("result") or {}
-                out = str(payload.get("output") or "").strip()
-                if out:
-                    _emit("status.update", sid, {"kind": "loop", "text": out})
-                if payload.get("type") == "send" and payload.get("message"):
-                    # The command resolves to a prompt (skill command etc.) —
-                    # run it as a normal turn; the post-turn hook completes
-                    # the tick.
-                    with session["history_lock"]:
-                        if session.get("running"):
-                            mgr.abandon_tick()
-                            return
-                        session["running"] = True
-                    _emit("message.start", sid)
-                    _run_prompt_submit(rid, sid, session, payload["message"])
-                    return
+                mgr.abandon_tick()
             except Exception:
                 pass
-            decision = mgr.complete_tick("")
-            if decision.get("message"):
-                _emit("status.update", sid, {"kind": "loop", "text": decision["message"]})
-            return
-        _emit("message.start", sid)
-        _run_prompt_submit(rid, sid, session, wakeup)
-    except Exception as exc:
-        print(
-            f"[tui_gateway] loop wakeup dispatch failed: "
-            f"{type(exc).__name__}: {exc}",
-            file=sys.stderr,
-        )
-        with session["history_lock"]:
-            session["running"] = False
-        try:
-            mgr.abandon_tick()
-        except Exception:
-            pass
+    finally:
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
 
 
 def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[str]:

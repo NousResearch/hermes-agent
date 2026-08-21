@@ -859,20 +859,34 @@ def _(rid, params: dict) -> dict:
         if not sid_key:
             return _err(rid, 4001, "no session key")
 
-        mgr = LoopManager(session_id=sid_key)
-        result = dispatch_loop_command(mgr, arg)
-        output = result.get("output") or ""
-        if result.get("created"):
-            try:
-                from hermes_cli.loops import goal_blocks_loop_tick
+        # Bind HERMES_HOME to the session's profile so the loop is persisted in
+        # that profile's state.db — the wakeup poller and the post-turn
+        # completion hook resolve the same profile. Without this a dashboard
+        # session's loop lands in the launch profile while its ticks complete
+        # against the session profile, wedging the loop at awaiting_response.
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-                if goal_blocks_loop_tick(sid_key):
-                    output += (
-                        "\nNote: an active /goal is driving this session — loop "
-                        "wakeups defer until the goal finishes, pauses, or parks."
-                    )
-            except Exception:
-                pass
+        profile_home = session.get("profile_home")
+        home_token = set_hermes_home_override(profile_home) if profile_home else None
+        output = ""
+        try:
+            mgr = LoopManager(session_id=sid_key)
+            result = dispatch_loop_command(mgr, arg)
+            output = result.get("output") or ""
+            if result.get("created"):
+                try:
+                    from hermes_cli.loops import goal_blocks_loop_tick
+
+                    if goal_blocks_loop_tick(sid_key):
+                        output += (
+                            "\nNote: an active /goal is driving this session — loop "
+                            "wakeups defer until the goal finishes, pauses, or parks."
+                        )
+                except Exception:
+                    pass
+        finally:
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
         return _ok(rid, {"type": "exec", "output": output})
 
     if name == "undo":

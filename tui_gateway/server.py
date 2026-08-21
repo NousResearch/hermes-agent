@@ -4471,6 +4471,14 @@ def _write_config_key(key_path: str, value):
     # Write-back round-trip: raw read is mandatory — saving the managed-
     # overlaid / env-expanded view would persist those values into the file.
     cfg = _load_cfg_raw()
+    # Audit approvals.mode changes (issue #84547): capture the persisted
+    # value BEFORE the write so the log records from -> to.
+    old_mode = None
+    if key_path == "approvals.mode":
+        appr = cfg.get("approvals")
+        old_mode = appr.get("mode") if isinstance(appr, dict) else None
+        if not isinstance(old_mode, str):
+            old_mode = None
     current = cfg
     keys = key_path.split(".")
     for key in keys[:-1]:
@@ -4479,6 +4487,20 @@ def _write_config_key(key_path: str, value):
         current = current[key]
     current[keys[-1]] = value
     _save_cfg(cfg)
+    if key_path == "approvals.mode":
+        from hermes_cli.approval_audit import (
+            audit_approval_mode,
+            note_mode_written,
+        )
+
+        audit_approval_mode(
+            old_mode=old_mode,
+            new_mode=str(value),
+            source="tui-config-set",
+        )
+        from hermes_cli.config import get_config_path
+
+        note_mode_written(str(get_config_path()), str(value))
 
 
 _STATUSBAR_MODES = frozenset({"off", "top", "bottom"})

@@ -3184,10 +3184,70 @@ def _get_approval_config() -> dict:
         return {}
 
 
+
+# #84547: track effective approvals.mode transitions so a silent flip
+# (e.g. from deliberately restrictive manual to permissive smart) is
+# warned about AND audit-logged, not silently observed.
+_approval_mode_observer_lock = threading.Lock()
+_LAST_OBSERVED_APPROVAL_MODE: dict = {}
+
+
+def _observe_approval_mode_transition(mode: str) -> None:
+    """Warn + audit-log when the EFFECTIVE approvals.mode changed since the
+    last observation (e.g. from a deliberately restrictive ``manual`` to permissive
+    ``smart``) without a WARNING plus an audit-log line.
+    """
+    try:
+        from hermes_cli.config import get_config_path
+
+        path = str(get_config_path())
+    except Exception:
+        return
+    with _approval_mode_observer_lock:
+        prev = _LAST_OBSERVED_APPROVAL_MODE.get(path)
+        _LAST_OBSERVED_APPROVAL_MODE[path] = mode
+    if prev is not None and prev != mode:
+        try:
+            from hermes_cli.approval_audit import last_written_mode
+
+            # This process just persisted this exact mode via the write
+            # path (CLI /approvals, hermes config set, TUI toggle) — it was
+            # already audited there. Only SILENT transitions need the
+            # observer's warning + audit line.
+            if last_written_mode(path) == mode:
+                return
+        except Exception:
+            pass
+        logger.warning(
+            "Effective approvals.mode changed from %r to %r — recorded in "
+            "$HERMES_HOME/logs/approvals.log",
+            prev,
+            mode,
+        )
+        try:
+            from hermes_cli.approval_audit import audit_approval_mode
+
+            audit_approval_mode(
+                old_mode=prev,
+                new_mode=mode,
+                source="effective-mode-observer",
+                actor="runtime",
+                detail=f"config={path}",
+            )
+        except Exception:
+            pass
+
+
 def _get_approval_mode() -> str:
     """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
-    mode = _get_approval_config().get("mode", "manual")
-    return _normalize_approval_mode(mode)
+    appr_cfg = _get_approval_config()
+    mode = appr_cfg.get("mode", "manual")
+    normalized = _normalize_approval_mode(mode)
+    # An empty block means the config read failed and 'manual' is a synthetic
+    # fallback, not a real mode — don't fabricate a transition from it.
+    if appr_cfg:
+        _observe_approval_mode_transition(normalized)
+    return normalized
 
 
 def is_approval_bypass_active_for_session(session_key: str) -> bool:

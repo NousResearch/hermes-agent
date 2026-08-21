@@ -5597,6 +5597,18 @@ def set_config_value(key: str, value: str, force: bool = False):
                     file=sys.stderr,
                 )
                 sys.exit(1)
+    # Audit approvals.mode changes (issue #84547): the operator must have a
+    # durable record of when/who changed the approval policy, even if the
+    # value later drifts via a re-serialization that drops the key. Capture
+    # the persisted old value BEFORE _set_nested mutates user_config.
+    _audit_old_mode = None
+    if key.strip().lower() == "approvals.mode":
+        _prev_node = user_config
+        for _part in key.split(".")[:-1]:
+            _prev_node = _prev_node.get(_part, {}) if isinstance(_prev_node, dict) else {}
+        _persisted_old = _prev_node.get(key.rsplit(".", 1)[-1]) if isinstance(_prev_node, dict) else None
+        if isinstance(_persisted_old, str):
+            _audit_old_mode = _persisted_old
     _set_nested(user_config, key, value)
     # Normalize the api_base → base_url alias at set-time too (issue #8919),
     # so a fresh `hermes config set model.api_base ...` lands on the canonical
@@ -5611,6 +5623,24 @@ def set_config_value(key: str, value: str, force: bool = False):
     ensure_hermes_home()
     from utils import atomic_yaml_write
     atomic_yaml_write(config_path, user_config, sort_keys=False)
+
+    # Audit-log the approvals.mode change (issue #84547) — who, when, from
+    # which mode to which. Skipped when the value is unchanged.
+    if key.strip().lower() == "approvals.mode":
+        _new_mode = str(value)
+        if _audit_old_mode is None or _audit_old_mode != _new_mode:
+            from hermes_cli.approval_audit import (
+                audit_approval_mode,
+                note_mode_written,
+            )
+
+            audit_approval_mode(
+                old_mode=_audit_old_mode,
+                new_mode=_new_mode,
+                source="cli-config-set",
+                detail=f"config={config_path}",
+            )
+            note_mode_written(str(config_path), _new_mode)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.

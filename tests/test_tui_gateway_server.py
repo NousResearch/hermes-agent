@@ -7197,15 +7197,17 @@ def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatc
     assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "manual"
 
 
-def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
+def test_config_get_approval_mode_fails_closed_to_manual_when_key_is_missing(
     tmp_path, monkeypatch
 ):
     import yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # Point the canonical resolver (load_config → env HERMES_HOME) at the
-    # temp home too, so the smart default is asserted against THIS config
-    # rather than whatever the developer's real ~/.hermes happens to hold.
+    # temp home too, so the fail-closed manual default is asserted against
+    # THIS config rather than whatever the developer's real ~/.hermes
+    # happens to hold (issue #84547: absence must resolve to manual, the
+    # restrictive value — never silently to LLM-adjudicated smart).
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(
         yaml.safe_dump({"approvals": {"timeout": 15}})
@@ -7214,7 +7216,7 @@ def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
     response = server.handle_request(
         {"id": "1", "method": "config.get", "params": {"key": "approvals.mode"}}
     )
-    assert response["result"]["value"] == "smart"
+    assert response["result"]["value"] == "manual"
 
 
 def test_config_get_approval_mode_fails_safe_to_manual_for_invalid_explicit_value(

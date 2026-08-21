@@ -4289,6 +4289,26 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
 
 
 
+def _coerce_tool_content_to_string(content: Any) -> str:
+    """Serialize non-string tool content to a plain string.
+
+    Chat-completions wire format requires ``ChatCompletionToolMessage.content``
+    to be a ``str`` — an Anthropic-style block list is rejected with HTTP 400
+    by every OpenAI-compatible provider, and the poisoned message would stay
+    in the conversation history, breaking all subsequent calls (including
+    fallbacks). Used by ``apply_pending_steer_to_tool_results`` before
+    appending the steer marker.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return str(content)
+
+
 def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
     """Append any pending /steer text to the last tool result in this turn.
 
@@ -4335,15 +4355,25 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     marker = format_steer_marker(steer_text)
     existing_content = messages[target_idx].get("content", "")
     if not isinstance(existing_content, str):
-        # Anthropic multimodal content blocks — preserve them and append
-        # a text block at the end.
-        try:
-            blocks = list(existing_content) if existing_content else []
-            blocks.append({"type": "text", "text": marker.lstrip()})
-            messages[target_idx]["content"] = blocks
-        except Exception:
-            # Fall back to string replacement if content shape is unexpected.
-            messages[target_idx]["content"] = f"{existing_content}{marker}"
+        if (getattr(agent, "api_mode", "") or "") == "anthropic_messages":
+            # Anthropic Messages API supports multimodal content blocks —
+            # preserve them and append a text block at the end.
+            try:
+                blocks = list(existing_content) if existing_content else []
+                blocks.append({"type": "text", "text": marker.lstrip()})
+                messages[target_idx]["content"] = blocks
+            except Exception:
+                # Fall back to string replacement if content shape is unexpected.
+                messages[target_idx]["content"] = f"{existing_content}{marker}"
+        else:
+            # Chat-completions wire format (OpenRouter, Xiaomi, DeepSeek,
+            # DeepInfra, ...) requires tool content to be a plain string; a
+            # block list is rejected with HTTP 400 and the poisoned message
+            # would stay in the history, breaking every subsequent call
+            # including fallbacks. Coerce to a string first, then append.
+            messages[target_idx]["content"] = (
+                _coerce_tool_content_to_string(existing_content) + marker
+            )
     else:
         messages[target_idx]["content"] = existing_content + marker
     _ra().logger.info(

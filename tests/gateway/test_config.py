@@ -686,6 +686,66 @@ class TestLoadGatewayConfig:
         assert Platform.RELAY in config.get_connected_platforms()
 
 
+    def test_relay_env_url_disables_other_messaging_platforms(self, tmp_path, monkeypatch):
+        """A GATEWAY_RELAY_URL env stamp means the connector owns all platform
+        connections: directly-connected messaging platforms must be disabled,
+        even when explicitly enabled in config.yaml, while non-messaging
+        surfaces (api_server et al.) survive."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      enabled: true\n"
+            "      bot_token: '123:abc'\n"
+            "    api_server:\n"
+            "      enabled: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("GATEWAY_RELAY_URL", "https://connector.example/relay")
+        # Credential-based auto-enable path must be suppressed too.
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "fake-token-for-test")
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.RELAY].enabled is True
+        assert config.platforms[Platform.TELEGRAM].enabled is False
+        discord_cfg = config.platforms.get(Platform.DISCORD)
+        assert discord_cfg is None or discord_cfg.enabled is False
+        # Non-messaging surfaces are untouched.
+        assert config.platforms[Platform.API_SERVER].enabled is True
+
+
+    def test_relay_yaml_url_keeps_other_platforms_enabled(self, tmp_path, monkeypatch):
+        """gateway.relay_url in config.yaml (no env stamp) keeps the old
+        additive behavior: relay runs beside directly-connected platforms."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    relay:\n"
+            "      enabled: true\n"
+            "      extra:\n"
+            "        relay_url: https://connector.example/relay\n"
+            "    telegram:\n"
+            "      enabled: true\n"
+            "      bot_token: '123:abc'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("GATEWAY_RELAY_URL", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.RELAY].enabled is True
+        assert config.platforms[Platform.TELEGRAM].enabled is True
+
+
     def test_thread_require_mention_yaml_does_not_overwrite_env(self, tmp_path, monkeypatch):
         """Explicit env var should win over config.yaml (env > yaml precedence)."""
         hermes_home = tmp_path / ".hermes"

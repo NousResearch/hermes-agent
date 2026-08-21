@@ -1850,7 +1850,28 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         # tools as unavailable (#89547). The client-surface fold below
         # already keyed off session_platform; the platform resolution now
         # does too.
-        enabled = _get_platform_tools(cfg, session_platform, include_default_mcp_servers=True)
+        #
+        # Review follow-up (#89550): "tui"/"desktop" are Hermes client
+        # surfaces, not registered platforms — with no
+        # platform_toolsets.<p> row, _get_platform_tools derives the
+        # unknown-platform composite hermes-<p>, which resolves to nothing
+        # (a bare TUI/desktop session got zero toolsets). Platforms without
+        # a config row or a registry entry fall back to the cli row, which
+        # is the documented default surface. session_platform itself stays
+        # unchanged so the client-surface fold below keeps keying off the
+        # real surface.
+        resolve_platform = session_platform
+        if resolve_platform != "cli" and (
+            not isinstance(cfg.get("platform_toolsets"), dict)
+            or resolve_platform not in cfg["platform_toolsets"]
+        ):
+            from hermes_cli.tools_config import PLATFORMS
+
+            if resolve_platform not in PLATFORMS:
+                resolve_platform = "cli"
+        enabled = _get_platform_tools(
+            cfg, resolve_platform, include_default_mcp_servers=True
+        )
         if fallback_notice is not None:
             _tui_notice(fallback_notice)
         return sorted(enabled | _gui_surface_toolsets(session_platform)) if enabled else None

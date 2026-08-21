@@ -23,6 +23,34 @@ def _reset_session_state(monkeypatch):
 class TestCloudProviderRuntimeFallback:
     """Tests for _get_session_info cloud → local fallback."""
 
+    def test_cloud_failure_tries_configured_cloud_fallback_before_local(self, monkeypatch):
+        """When primary cloud provider fails, try configured secondary cloud before local."""
+        _reset_session_state(monkeypatch)
+
+        primary = Mock(name="browser-use")
+        primary.name = "browser-use"
+        primary.create_session.side_effect = RuntimeError("browser-use quota")
+        secondary = Mock(name="browserbase")
+        secondary.name = "browserbase"
+        secondary.create_session.return_value = {
+            "session_name": "browserbase-sess",
+            "bb_session_id": "bb_456",
+            "cdp_url": None,
+            "features": {"browserbase": True},
+        }
+        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: primary)
+        monkeypatch.setattr(browser_tool, "_get_runtime_cloud_fallback_providers", lambda _primary: [secondary])
+        monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: None)
+
+        session = browser_tool._get_session_info("task-cloud-chain")
+
+        assert session["session_name"] == "browserbase-sess"
+        assert session["fallback_from_cloud"] is True
+        assert session["fallback_provider"] == "browser-use"
+        assert session["fallback_to_provider"] == "browserbase"
+        primary.create_session.assert_called_once()
+        secondary.create_session.assert_called_once()
+
     def test_cloud_failure_falls_back_to_local(self, monkeypatch):
         """When cloud provider.create_session raises, fall back to local."""
         _reset_session_state(monkeypatch)

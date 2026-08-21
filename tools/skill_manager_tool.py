@@ -853,6 +853,20 @@ def _validate_file_path(file_path: str) -> Optional[str]:
 
     normalized = Path(file_path)
 
+    # An absolute path can never name a location inside the skill directory,
+    # so say that plainly and point at the tool that does write elsewhere.
+    # Without this it falls through to the allowed-subdirectory message below,
+    # which reads as "use references/ instead" and invites the caller to retry
+    # a path shape that cannot work.
+    if normalized.is_absolute():
+        allowed = ", ".join(sorted(ALLOWED_SUBDIRS))
+        return (
+            f"Absolute paths are not allowed: skill files live inside the "
+            f"skill's own directory ({allowed}), and file_path is relative to "
+            f"it. To write a file anywhere else, use the terminal tool rather "
+            f"than skill_manage. Got: '{file_path}'"
+        )
+
     # Prevent path traversal (checked before any allow-listing so the SKILL.md
     # exception below can never be reached by a traversal-laden path).
     if has_traversal_component(file_path):
@@ -1562,6 +1576,16 @@ def skill_manage(
     preflight = _background_review_preflight(action, name)
     if preflight is not None:
         return json.dumps(preflight, ensure_ascii=False)
+
+    # Validate file_path BEFORE the approval gate. The gate stages a write into
+    # pending/skills and answers success:true ("staged for review"), so a path
+    # the write could never have honoured is reported to the caller as accepted
+    # and only fails later, at apply time, out of band. Rejecting here makes an
+    # impossible path fail on the call that made it.
+    if action in {"write_file", "remove_file"} and file_path:
+        path_error = _validate_file_path(file_path)
+        if path_error:
+            return tool_error(path_error, success=False)
 
     # Approval gate: when on, stages the write for review (skills are too large
     # to review inline, so they always stage regardless of origin); when off

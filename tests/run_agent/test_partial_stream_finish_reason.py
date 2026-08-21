@@ -820,3 +820,68 @@ class TestPortalLastOneWithoutDone:
         assert getattr(response, "id", None) != PARTIAL_STREAM_STUB_ID
         assert response.choices[0].finish_reason == "stop"
         assert response.choices[0].message.content == "LONGCAT_OK"
+
+
+# ── Trailing usage chunk with no finish_reason (#91373) ───────────────────
+
+class TestStreamIncludeUsageFinalChunk:
+    """OpenAI / vLLM streaming with stream_options={'include_usage': True} emits
+    a final usage-only chunk with empty choices (choices=[]) and no finish_reason.
+    Hermes must recognize that the presence of usage proves the stream completed
+    cleanly and must NOT misclassify it as a mid-stream network drop (#91373).
+    """
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_text_stream_with_final_usage_chunk_completes_as_stop(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        """When text is streamed and the final chunk is a usage-only chunk
+        without finish_reason, the completion must complete with finish_reason='stop'
+        instead of returning PARTIAL_STREAM_STUB_ID."""
+        def _vllm_stream():
+            # Chunks 1 and 2: text deltas with finish_reason=None
+            yield _make_stream_chunk(content="The final answer is 42.")
+            # Chunk 3: trailing usage-only chunk (choices=[], usage present)
+            usage = SimpleNamespace(prompt_tokens=100, completion_tokens=10, total_tokens=110)
+            yield SimpleNamespace(choices=[], model="vllm/test-model", usage=usage)
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = lambda *a, **kw: _vllm_stream()
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == "stop"
+        assert response.choices[0].message.content == "The final answer is 42."
+        assert response.usage is not None
+        assert response.usage.prompt_tokens == 100
+        assert response.usage.completion_tokens == 10
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_text_stream_abrupt_drop_without_usage_still_returns_stub(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        """When text is streamed but the connection is severed before any usage
+        chunk arrives (usage is None and finish_reason is None), it remains
+        correctly classified as a partial stream stub."""
+        def _dropped_stream():
+            yield _make_stream_chunk(content="Partial text before drop")
+            # Stream ends abruptly without finish_reason and without usage
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = lambda *a, **kw: _dropped_stream()
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._current_streamed_assistant_text = "Partial text before drop"
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+        assert response.choices[0].message.content == "Partial text before drop"

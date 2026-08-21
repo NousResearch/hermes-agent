@@ -4609,10 +4609,16 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # text content but no tool calls.  Without this guard the partial
         # text is silently stamped finish_reason="stop" and the turn ends as
         # if complete — the model's intended next step is lost (#32086).
+        # When `include_usage` is requested, OpenAI-compliant providers (e.g.
+        # vLLM, OpenAI, DeepSeek) emit a final usage-only chunk with empty
+        # choices and no finish_reason. Receiving a valid usage object proves
+        # the provider completed generation and closed the stream cleanly
+        # (#91373), so it is not a mid-stream drop.
         _text_only_dropped_no_finish = (
             finish_reason is None
             and content_parts
             and not tool_calls_acc
+            and usage_obj is None
         )
         if _text_only_dropped_no_finish:
             logger.warning(

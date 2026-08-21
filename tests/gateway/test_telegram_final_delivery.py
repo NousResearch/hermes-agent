@@ -139,3 +139,20 @@ async def test_telegram_long_flood_result_keeps_retry_after():
     assert result.retry_after == 30.0
 
 
+@pytest.mark.asyncio
+async def test_telegram_send_preserves_retry_after_after_inline_retries(monkeypatch):
+    """The outer delivery layer must receive Telegram's authoritative delay."""
+    from telegram.error import RetryAfter
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(side_effect=RetryAfter(30))
+    sleep = AsyncMock()
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.sleep", sleep)
+
+    result = await adapter.send("123", "Final answer")
+
+    assert result.success is False
+    assert result.retry_after == 30.0
+    assert sleep.await_count == 2
+

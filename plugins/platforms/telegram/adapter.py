@@ -5388,7 +5388,11 @@ class TelegramAdapter(BasePlatformAdapter):
                         retry_after = getattr(send_err, "retry_after", None)
                         if retry_after is not None or "retry after" in str(send_err).lower():
                             if _send_attempt < 2:
-                                wait = float(retry_after) if retry_after is not None else 1.0
+                                wait = (
+                                    retry_after.total_seconds()
+                                    if hasattr(retry_after, "total_seconds")
+                                    else float(retry_after)
+                                ) if retry_after is not None else 1.0
                                 safe_send_error = _redact_telegram_error_text(send_err)
                                 logger.warning(
                                     "[%s] Telegram flood control on send (attempt %d/3), retrying in %.1fs: %s",
@@ -5433,6 +5437,7 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to send Telegram message: %s", self.name, safe_error)
             err_str = str(e).lower()
             error_kind = classify_send_error(e)
+            retry_after = getattr(e, "retry_after", None)
             # Message too long — content exceeded 4096 chars. Return failure so
             # stream consumer enters fallback mode and sends the remainder.
             if "message_too_long" in err_str or "too long" in err_str:
@@ -5455,6 +5460,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 error=safe_error,
                 retryable=(is_connect_timeout or is_pool_timeout or not is_timeout),
                 error_kind=error_kind,
+                retry_after=(
+                    retry_after.total_seconds()
+                    if hasattr(retry_after, "total_seconds")
+                    else float(retry_after)
+                ) if retry_after is not None else None,
             )
 
     async def send_or_update_status(

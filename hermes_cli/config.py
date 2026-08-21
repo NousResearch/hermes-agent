@@ -4025,6 +4025,15 @@ def load_env() -> Dict[str, str]:
             raw_lines = f.readlines()
         # Normalize line endings without interpreting value contents as syntax.
         lines = _sanitize_env_lines(raw_lines)
+        # Strip dotenv-style inline comments (``KEY=value # comment``) with
+        # the same quote-aware helper the profile secret scope uses
+        # (agent.secret_scope.load_env_file). Without this, load_env() returns
+        # ``KEY=https://x/v4  # comment`` as the value, so get_env_prefer_dotenv()
+        # / credential-pool seeding persist a base URL that contains the
+        # comment text → runtime requests fail with HTTP 404 (encoded spaces).
+        # Lazy import mirrors secret_scope's own lazy import of
+        # _parse_env_value and avoids any import-time cycle.
+        from agent.secret_scope import _strip_inline_comment
         for line in lines:
             line = line.strip()
             if line and not line.startswith('#') and '=' in line:
@@ -4034,7 +4043,7 @@ def load_env() -> Dict[str, str]:
                 if line.startswith('export '):
                     line = line[7:]
                 key, _, value = line.partition('=')
-                env_vars[key.strip()] = _parse_env_value(value)
+                env_vars[key.strip()] = _parse_env_value(_strip_inline_comment(value))
 
     if cache_key is not None:
         _env_cache = (cache_key, dict(env_vars))

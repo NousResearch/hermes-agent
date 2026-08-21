@@ -86,6 +86,11 @@ export function resolveDefaultWslDistro(): string {
     const out = execFileSync('wsl.exe', ['-l', '-q'], {
       encoding: 'utf8',
       env: { ...process.env, WSL_UTF8: '1' },
+      // On WSL-less machines wsl.exe prints "The Windows Subsystem for Linux
+      // is not installed..." to stderr; stderr is inherited by default, so
+      // that banner leaks into whatever console the app is attached to
+      // (visible e.g. during the update hand-off). Discard it. (#80184)
+      stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 2000,
       windowsHide: true
     })

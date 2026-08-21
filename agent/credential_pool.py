@@ -716,6 +716,42 @@ class CredentialPool:
             available, _pending = self._available_entries()
             return bool(available)
 
+    def has_available_readonly(self) -> bool:
+        """True if at least one entry is available — computed without writes.
+
+        :meth:`has_available` answers the same question but is not read-only:
+        ``_available_entries`` prunes aged-out DEAD manual entries (rebinding
+        ``self._entries``), re-syncs stale entries from external credential
+        stores, and persists auth.json.  Callers that share one memoized pool
+        instance across read-only consumers (the /model picker caches pools
+        for a whole listing pass) need an order-independent probe instead:
+        this evaluates the same availability predicate on the current entries
+        and never mutates state or touches disk.  Unlike ``has_available``
+        it does not re-sync exhausted entries whose tokens another process
+        refreshed, so it can be conservative right after an out-of-band
+        re-auth; the next mutating consumer syncs as usual.
+        """
+        with self._lock:
+            now = time.time()
+            sole_credential = sum(
+                1 for e in self._entries if e.last_status != STATUS_DEAD
+            ) <= 1
+            for entry in self._entries:
+                # Mirrors _available_entries(clear_expired=False,
+                # refresh=False) minus the mutating prune/sync/persist paths.
+                if entry.auth_type == AUTH_TYPE_API_KEY and not entry.runtime_api_key:
+                    continue
+                if entry.last_status == STATUS_DEAD:
+                    continue
+                if entry.last_status == STATUS_EXHAUSTED:
+                    exhausted_until = _exhausted_until(
+                        entry, sole_credential=sole_credential
+                    )
+                    if exhausted_until is not None and now < exhausted_until:
+                        continue
+                return True
+            return False
+
     def next_available_at(self) -> Optional[float]:
         """Earliest epoch time (seconds) any entry re-enters rotation.
 

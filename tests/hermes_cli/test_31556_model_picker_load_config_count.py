@@ -116,3 +116,95 @@ def test_list_authenticated_providers_reuses_pool_per_provider(
         f"load_pool called {counts['load_pool']}x — "
         "regression reintroduces repeated pool seeding per provider"
     )
+
+
+def test_memoized_pool_probe_is_readonly(empty_picker_home, monkeypatch):
+    """The shared picker pool must not be pruned or persisted by a probe.
+    """
+    import time
+
+    from hermes_cli.model_switch import _credential_pool_is_usable
+
+    provider = "probe-readonly-provider"
+    dead = cp.PooledCredential(
+        provider=provider,
+        id="dead1",
+        label="old key",
+        auth_type=cp.AUTH_TYPE_API_KEY,
+        priority=0,
+        source=cp.SOURCE_MANUAL,
+        access_token="sk-dead",
+        last_status=cp.STATUS_DEAD,
+        last_status_at=time.time() - cp.DEAD_MANUAL_PRUNE_TTL_SECONDS - 3600,
+    )
+    pool = cp.CredentialPool(provider, [dead])
+
+    writes = []
+    monkeypatch.setattr(
+        cp, "write_credential_pool", lambda *a, **kw: writes.append((a, kw))
+    )
+
+    # Pre-seed the memoized cache the way list_authenticated_providers()
+    # does after its first section checked this provider.
+    cache = {provider: pool}
+    assert (
+        _credential_pool_is_usable(
+            provider, raw_pool_present=True, _pool_cache=cache
+        )
+        is False
+    )
+    # Read-only: the aged-out DEAD entry survives the probe and auth.json is
+    # never written. On the pre-fix head, has_available() pruned the entry
+    # (rebinding _entries) and persisted via write_credential_pool.
+    assert pool.entries() == [dead]
+    assert writes == []
+
+
+def test_has_available_readonly_matches_has_available_verdicts(empty_picker_home):
+    """The read-only probe agrees with has_available() on plain verdicts."""
+    import time
+
+    provider = "probe-verdict-provider"
+
+    def _pool(entries):
+        return cp.CredentialPool(provider, entries)
+
+    def _entry(**overrides):
+        defaults = dict(
+            provider=provider,
+            id=overrides.pop("id", "e1"),
+            label="key",
+            auth_type=cp.AUTH_TYPE_API_KEY,
+            priority=0,
+            source=cp.SOURCE_MANUAL,
+            access_token="sk-live",
+        )
+        return cp.PooledCredential(**{**defaults, **overrides})
+
+    now = time.time()
+    # Healthy credential → available.
+    healthy = _pool([_entry()])
+    assert healthy.has_available() is True
+    assert healthy.has_available_readonly() is True
+    # Exhausted inside the cooldown window (sole credential) → unavailable.
+    cooling = _pool(
+        [
+            _entry(id="a", last_status=cp.STATUS_EXHAUSTED,
+                   last_error_reset_at=now + 3600),
+        ]
+    )
+    assert cooling.has_available() is False
+    assert cooling.has_available_readonly() is False
+    # Exhausted with the cooldown elapsed → available again.
+    recovered = _pool(
+        [
+            _entry(id="a", last_status=cp.STATUS_EXHAUSTED,
+                   last_error_reset_at=now - 60),
+        ]
+    )
+    assert recovered.has_available() is True
+    assert recovered.has_available_readonly() is True
+    # Unhydrated api_key row (no runtime key) → never selectable.
+    unhydrated = _pool([_entry(access_token="")])
+    assert unhydrated.has_available() is False
+    assert unhydrated.has_available_readonly() is False

@@ -2229,6 +2229,11 @@ def _credential_pool_is_usable(
     ``_pool_cache`` lets ``list_authenticated_providers()`` reuse the same
     ``CredentialPool`` instance across the three sections that check the same
     provider, instead of loading and seeding the pool repeatedly for each row.
+    A shared instance must be probed read-only: ``has_available()`` prunes
+    aged-out DEAD entries, re-syncs entries from credential stores, and
+    persists auth.json, which would make the memoized result order-dependent
+    across sections and turn a picker render into a credential-store write.
+    The memoized path therefore uses :meth:`has_available_readonly`.
     """
     try:
         from agent.credential_pool import load_pool
@@ -2240,6 +2245,14 @@ def _credential_pool_is_usable(
             if _pool_cache is not None:
                 _pool_cache[provider] = pool
         if pool.has_credentials():
+            if _pool_cache is not None:
+                # Memoized instance shared across sections: probe read-only.
+                # has_available() would prune/persist, making the shared
+                # instance order-dependent across callers. Pool-like objects
+                # without the read-only probe keep the legacy behavior.
+                readonly_probe = getattr(pool, "has_available_readonly", None)
+                if readonly_probe is not None:
+                    return readonly_probe()
             return pool.has_available()
     except Exception:
         pass
@@ -2666,8 +2679,9 @@ def list_authenticated_providers(
     # sections (HERMES_OVERLAYS, canonical list, and section-1 fallback). Each
     # check used to call load_pool() and re-seed from auth.json/config, so a
     # single /model invocation loaded the same pool 2-3x per provider. Cache
-    # CredentialPool instances within this call; they are read-only for the
-    # has_credentials/has_available checks we perform here.
+    # CredentialPool instances within this call and probe them read-only
+    # (has_credentials / has_available_readonly) so a shared instance is never
+    # pruned, re-synced, or persisted by a picker render.
     _pool_cache: Dict[str, Any] = {}
 
     def _can_probe_custom_provider(*, row_is_current: bool) -> bool:

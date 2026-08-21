@@ -838,7 +838,8 @@ const plTranslatedOverrides = {
       cloudOrgPickerTitle: 'Wybierz organizację',
       cloudOrgSelect: 'Wybierz',
       cloudOrgChange: 'Zmień organizację',
-      cloudOrgRole: role => `Rola: ${role}`,
+      cloudOrgRole: role =>
+        `Rola: ${role === 'OWNER' ? 'właściciel' : role === 'MEMBER' ? 'członek' : `nieznana (${role})`}`,
       cloudLoadingAgents: 'Ładowanie agentów…',
       cloudNoAgents: {
         before: 'Nie znaleziono agentów na tym koncie. Utwórz agenta w ',
@@ -857,7 +858,18 @@ const plTranslatedOverrides = {
       cloudConnectedPill: 'Połączono',
       cloudConnectedTo: name => `Połączono z ${name}.`,
       cloudAgentProvisioning: 'Przygotowywanie…',
-      cloudStatusLabel: status => `Stan: ${status}`,
+      cloudStatusLabel: status =>
+        `Stan: ${
+          status === 'active'
+            ? 'aktywny'
+            : status === 'degraded'
+              ? 'ograniczony'
+              : status === 'down'
+                ? 'niedostępny'
+                : status === 'unknown'
+                  ? 'nieznany'
+                  : `nieznany (${status})`
+        }`,
       remoteUrlTitle: 'Adres URL bramy zdalnej',
       remoteUrlDesc:
         'Bazowy adres URL backendu zdalnego panelu WWW. Obsługiwane są prefiksy ścieżek, na przykład /hermes.',
@@ -1174,7 +1186,14 @@ const plTranslatedOverrides = {
       webUseForExtract: 'Użyj do ekstrakcji',
       webUsedForSearch: 'Backend wyszukiwania',
       webUsedForExtract: 'Backend ekstrakcji',
-      webCapabilitySelectedMessage: (provider, capability) => `${provider} obsługuje teraz funkcję web: ${capability}.`,
+      webCapabilitySelectedMessage: (provider, capability) =>
+        `${provider} obsługuje teraz ${
+          capability === 'search'
+            ? 'wyszukiwanie w internecie'
+            : capability === 'extract'
+              ? 'ekstrakcję treści stron internetowych'
+              : `funkcję internetową „${capability}”`
+        }.`,
       failedSelectCapability: provider => `Nie udało się ustawić ${provider}`,
       terminalBackend: {
         sectionTitle: 'Backend wykonywania',
@@ -3061,7 +3080,7 @@ const plTranslatedOverrides = {
     handoff: {
       pickPlatform: 'Wybierz miejsce docelowe',
       success: platform => `Przekazano do ${platform}. Wznów tutaj w dowolnym momencie.`,
-      systemNote: platform => `↻ Przekazano ${platform} — wznów tutaj w dowolnym momencie.`,
+      systemNote: platform => `↻ Przekazano do ${platform} — wznów tutaj w dowolnym momencie.`,
       failed: error => `Przekazanie nie powiodło się: ${error}`,
       timedOut: 'Upłynął limit czasu oczekiwania na bramę. Czy `hermes gateway` działa?'
     }

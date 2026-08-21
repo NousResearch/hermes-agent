@@ -150,6 +150,34 @@ describe('Polish desktop catalog', () => {
     expect(pl.prompts.gatewayDisconnected).toBe('Brama Hermesa nie jest podłączona')
   })
 
+  it('translates closed runtime labels instead of exposing enum values', () => {
+    expect(pl.settings.gateway.cloudOrgRole('OWNER')).toBe('Rola: właściciel')
+    expect(pl.settings.gateway.cloudOrgRole('MEMBER')).toBe('Rola: członek')
+    expect(pl.settings.gateway.cloudOrgRole('OTHER')).toBe('Rola: nieznana (OTHER)')
+
+    expect(pl.settings.gateway.cloudStatusLabel('active')).toBe('Stan: aktywny')
+    expect(pl.settings.gateway.cloudStatusLabel('degraded')).toBe('Stan: ograniczony')
+    expect(pl.settings.gateway.cloudStatusLabel('down')).toBe('Stan: niedostępny')
+    expect(pl.settings.gateway.cloudStatusLabel('unknown')).toBe('Stan: nieznany')
+    expect(pl.settings.gateway.cloudStatusLabel('other')).toBe('Stan: nieznany (other)')
+
+    expect(pl.settings.toolsets.webCapabilitySelectedMessage('Dostawca', 'search')).toBe(
+      'Dostawca obsługuje teraz wyszukiwanie w internecie.'
+    )
+    expect(pl.settings.toolsets.webCapabilitySelectedMessage('Dostawca', 'extract')).toBe(
+      'Dostawca obsługuje teraz ekstrakcję treści stron internetowych.'
+    )
+  })
+
+  it('describes both handoff messages as movement to a platform', () => {
+    expect(pl.desktop.handoff.success('Telegram')).toBe(
+      'Przekazano do Telegram. Wznów tutaj w dowolnym momencie.'
+    )
+    expect(pl.desktop.handoff.systemNote('Telegram')).toBe(
+      '↻ Przekazano do Telegram — wznów tutaj w dowolnym momencie.'
+    )
+  })
+
   it('preserves state-specific toggle labels', () => {
     expect(pl.settings.mcp.toggleFailed('serwer', true)).not.toBe(pl.settings.mcp.toggleFailed('serwer', false))
     expect(pl.skills.toggleToolset('web', true)).not.toBe(pl.skills.toggleToolset('web', false))

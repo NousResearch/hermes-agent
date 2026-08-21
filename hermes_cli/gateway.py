@@ -727,7 +727,18 @@ def find_gateway_pids(
     """
     _exclude = set(exclude_pids or set())
     pids: list[int] = []
-    if not all_profiles:
+    if all_profiles:
+        # An S4U Scheduled Task runs in session 0 and can hide its command line
+        # from CIM/WMIC/psutil even for the same user.  The process-table scan
+        # below therefore cannot identify it as ``gateway run``.  Validated
+        # profile PID/lock records remain readable, so include them in the
+        # all-profile sweep before falling back to service/process discovery.
+        # This is especially important for ``hermes update``: missing the S4U
+        # gateway here leaves its venv launcher alive, and the later .pyd-holder
+        # guard correctly aborts the update as unsafe.
+        for proc in find_profile_gateway_processes(exclude_pids=_exclude):
+            _append_unique_pid(pids, proc.pid, _exclude)
+    else:
         try:
             from gateway.status import get_running_pid
 

@@ -189,6 +189,36 @@ def test_quarantine_reports_a_lock_it_cannot_break(_winp, tmp_path, capsys, monk
 # ---------------------------------------------------------------------------
 
 
+def test_all_profile_gateway_scan_uses_pid_files_when_s4u_hides_command_line(
+    monkeypatch,
+):
+    """S4U hides argv, but its validated gateway.pid record remains readable."""
+    import hermes_cli.gateway as gateway_mod
+
+    profile_proc = SimpleNamespace(profile="default", path="ignored", pid=321)
+    excluded_proc = SimpleNamespace(profile="work", path="ignored", pid=654)
+    seen_exclusions = []
+
+    def fake_profile_processes(exclude_pids=None):
+        seen_exclusions.append(exclude_pids)
+        # Return the excluded PID too: the aggregator must remain defensive
+        # even if a discovery source fails to honor the exclusion itself.
+        return [profile_proc, excluded_proc]
+
+    # Repeating the profile PID through service discovery must not duplicate it.
+    monkeypatch.setattr(gateway_mod, "_get_service_pids", lambda: {321})
+    monkeypatch.setattr(
+        gateway_mod,
+        "find_profile_gateway_processes",
+        fake_profile_processes,
+    )
+    monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway_mod, "_scan_gateway_pids", lambda *_a, **_k: [])
+
+    assert gateway_mod.find_gateway_pids(exclude_pids={654}, all_profiles=True) == [321]
+    assert seen_exclusions == [{654}]
+
+
 @patch.object(cli_main, "_is_windows", return_value=True)
 def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
     _winp,

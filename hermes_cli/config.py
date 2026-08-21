@@ -4557,19 +4557,51 @@ _SECRET_CONFIG_KEYS = frozenset({
     "jwt",
 })
 
+# Case-insensitive SUFFIXES for credential-named keys (e.g. ``COINGECKO_PRO_API_KEY``).
+# Exact names are covered by ``_SECRET_CONFIG_KEYS``; these catch the common
+# ``*_API_KEY`` / ``*_TOKEN`` / ``*_SECRET`` env-map shapes used by MCP servers
+# and provider configs. Suffix-only (never substring) so benign keys like
+# ``token_count`` or ``secret_santa`` are untouched.
+_SECRET_CONFIG_KEY_SUFFIXES = (
+    "_api_key",
+    "_apikey",
+    "_token",
+    "_access_token",
+    "_refresh_token",
+    "_id_token",
+    "_secret",
+    "_client_secret",
+    "_password",
+    "_passwd",
+    "_auth",
+    "_authorization",
+    "_private_key",
+    "_bearer",
+    "_jwt",
+)
+
+
+def _is_secret_config_key(key: str) -> bool:
+    """Return whether ``key`` names a credential by exact name or secret suffix."""
+    k = key.lower()
+    return k in _SECRET_CONFIG_KEYS or k.endswith(_SECRET_CONFIG_KEY_SUFFIXES)
+
 
 def redact_config_value(value: Any, _depth: int = 0) -> Any:
     """Return a copy of ``value`` with credential-shaped keys masked for display.
 
-    Recursively walks dicts/lists and replaces the value of any key in
-    ``_SECRET_CONFIG_KEYS`` (case-insensitive) with a masked form via
-    :func:`agent.redact.mask_secret`. Non-secret keys and scalar values pass
-    through unchanged. Use this before ``print``-ing any config sub-tree that
-    might carry a custom-provider ``api_key`` — ``print`` bypasses the logging
-    redactor, and opaque tokens (e.g. Cloudflare ``cfut_...``) don't match the
-    vendor-prefix regexes either, so structural key-name masking is required.
+    Recursively walks dicts/lists and replaces the value of any key that names a
+    credential — exact match on ``_SECRET_CONFIG_KEYS`` or a secret suffix such as
+    ``*_API_KEY`` / ``*_TOKEN`` / ``*_SECRET`` (case-insensitive) — with a masked
+    form via :func:`agent.redact.mask_secret`. String leaves that embed URLs with
+    credential-named query params (e.g. ``https://...?apikey=...``) have those
+    values masked via :func:`agent.redact.redact_url_query_params`. Non-secret
+    keys and scalar values pass through unchanged. Use this before ``print``-ing
+    any config sub-tree that might carry a credential — ``print`` bypasses the
+    logging redactor, and opaque tokens (e.g. Cloudflare ``cfut_...``) don't match
+    the vendor-prefix regexes either, so structural key-name masking is required.
     """
-    from agent.redact import mask_secret
+    from agent.redact import mask_secret, redact_url_query_params
 
     # Defensive bound on recursion depth for pathological/cyclic configs.
     if _depth > 20:
@@ -4577,13 +4609,17 @@ def redact_config_value(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, dict):
         out = {}
         for k, v in value.items():
-            if isinstance(k, str) and k.lower() in _SECRET_CONFIG_KEYS and isinstance(v, str) and v:
+            if isinstance(k, str) and isinstance(v, str) and v and _is_secret_config_key(k):
                 out[k] = mask_secret(v)
             else:
                 out[k] = redact_config_value(v, _depth + 1)
         return out
     if isinstance(value, list):
         return [redact_config_value(v, _depth + 1) for v in value]
+    if isinstance(value, str):
+        # Resolved strings can embed credentials in URL query params (MCP server
+        # ``url: https://...?apikey=${VAR}``), so redact those values as well.
+        return redact_url_query_params(value)
     return value
 
 
@@ -5662,17 +5698,49 @@ def set_config_value(key: str, value: str, force: bool = False):
         ))
 
 
+def _config_redaction_enabled(cfg: Dict[str, Any]) -> bool:
+    """Whether ``config get`` output should redact credentials.
+
+    Mirrors ``security.redact_secrets`` — ON by default (DEFAULT_CONFIG); an
+    explicit ``false`` opts out of display redaction for scripts that need raw
+    resolved values.
+    """
+    sec = cfg.get("security")
+    if not isinstance(sec, dict):
+        return True
+    value = sec.get("redact_secrets")
+    return True if value is None else bool(value)
+
+
 def get_config_value(key: str, *, as_json: bool = False):
-    """Print a resolved configuration value."""
+    """Print a resolved configuration value.
+
+    With ``security.redact_secrets`` enabled (the default), credential-shaped
+    values are masked before printing so resolved ``${ENV_VAR}`` references in
+    e.g. ``mcp_servers`` never leak into terminal output, transcripts, or model
+    context (issue #84106).
+    """
+    cfg = load_config()
     if _is_env_config_key(key):
         env_value = get_env_value(key.upper())
         value = _MISSING if env_value is None else env_value
     else:
-        value = _get_nested(load_config(), key)
+        value = _get_nested(cfg, key)
 
     if value is _MISSING:
         print(f"Config key not set: {key}", file=sys.stderr)
         sys.exit(1)
+
+    if value is not None and _config_redaction_enabled(cfg):
+        if isinstance(value, str) and _is_secret_config_key(key.rsplit(".", 1)[-1]):
+            # Leaf scalar under a credential-named key (e.g.
+            # ``mcp_servers.demo_env.env.COINGECKO_PRO_API_KEY``): the key context
+            # is only available here, so mask by key name.
+            from agent.redact import mask_secret
+
+            value = mask_secret(value)
+        else:
+            value = redact_config_value(value)
 
     print(_format_config_get_value(value, as_json=as_json))
 

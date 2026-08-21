@@ -647,6 +647,17 @@ def _redact_url_query_params(text: str) -> str:
     return _URL_WITH_QUERY_RE.sub(_sub, text)
 
 
+def redact_url_query_params(text: str) -> str:
+    """Redact sensitive query-string parameter values in URLs embedded in ``text``.
+
+    Public wrapper around :func:`_redact_url_query_params` for callers that need
+    the sensitive query-name policy (``apikey``, ``token``, ``key``, ...) without
+    the full-text redactor — e.g. ``hermes config get`` output, where resolved
+    MCP server URLs can embed credentials (issue #84106).
+    """
+    return _redact_url_query_params(text)
+
+
 def _redact_url_userinfo(text: str) -> str:
     """Strip `user:password@` from HTTP/WS/FTP URLs.
 

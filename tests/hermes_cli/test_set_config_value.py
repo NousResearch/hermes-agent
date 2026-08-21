@@ -760,3 +760,57 @@ class TestMalformedYAMLConfigPreservation:
         assert "Cannot parse" in captured.out or "Cannot parse" in captured.err
         raw = _read_config(_isolated_hermes_home)
         assert raw == self.BROKEN_CONFIG
+
+
+class TestConfigGetRedaction:
+    """#84106: `config get` must redact credential-shaped values when
+    security.redact_secrets is enabled (default), so resolved ${ENV_VAR}
+    references in mcp_servers never leak into output/transcripts/model context."""
+
+    def _write_config(self, tmp_path, body):
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+
+    def test_get_mcp_servers_redacts_resolved_credentials(self, _isolated_hermes_home, capsys, monkeypatch):
+        monkeypatch.setenv("COINGECKO_PRO_API_KEY", "sk-super-secret-123")
+        self._write_config(_isolated_hermes_home, (
+            "security:\n  redact_secrets: true\n"
+            "mcp_servers:\n  demo:\n    url: https://example.com\n"
+            "    env:\n      COINGECKO_PRO_API_KEY: ${COINGECKO_PRO_API_KEY}\n"
+        ))
+        from hermes_cli.config import get_config_value
+        get_config_value("mcp_servers", as_json=True)
+        out = capsys.readouterr().out
+        assert "sk-super-secret-123" not in out
+        assert "..." in out  # mask_secret format (sk-s...-123)
+
+    def test_get_leaf_env_credential_is_masked(self, _isolated_hermes_home, capsys, monkeypatch):
+        monkeypatch.setenv("MY_API_KEY", "abc-secret-xyz")
+        self._write_config(_isolated_hermes_home, (
+            "security:\n  redact_secrets: true\n"
+            "mcp_servers:\n  s:\n    env:\n      MY_API_KEY: ${MY_API_KEY}\n"
+        ))
+        from hermes_cli.config import get_config_value
+        get_config_value("mcp_servers.s.env.MY_API_KEY")
+        out = capsys.readouterr().out
+        assert "abc-secret-xyz" not in out
+
+    def test_get_leaf_url_redacts_query_credential(self, _isolated_hermes_home, capsys):
+        self._write_config(_isolated_hermes_home, (
+            "security:\n  redact_secrets: true\n"
+            "mcp_servers:\n  s:\n    url: https://x.com?apikey=leaky-value\n"
+        ))
+        from hermes_cli.config import get_config_value
+        get_config_value("mcp_servers.s.url")
+        out = capsys.readouterr().out
+        assert "leaky-value" not in out
+
+    def test_get_mcp_servers_returns_raw_when_redaction_disabled(self, _isolated_hermes_home, capsys, monkeypatch):
+        monkeypatch.setenv("COINGECKO_PRO_API_KEY", "sk-visible-456")
+        self._write_config(_isolated_hermes_home, (
+            "security:\n  redact_secrets: false\n"
+            "mcp_servers:\n  demo:\n    env:\n      COINGECKO_PRO_API_KEY: ${COINGECKO_PRO_API_KEY}\n"
+        ))
+        from hermes_cli.config import get_config_value
+        get_config_value("mcp_servers", as_json=True)
+        out = capsys.readouterr().out
+        assert "sk-visible-456" in out  # opt-out preserves raw behavior

@@ -71,7 +71,7 @@ class BotPolicyVerdict(str, Enum):
 class BotPolicyReason(str, Enum):
     CAPABILITY_GRANTED = "capability_granted"
     CAPABILITY_MISSING = "capability_missing"
-    PROFILE_MISMATCH = "profile_mismatch"
+    ADDRESS_MISMATCH = "address_mismatch"
     PROFILE_REVISION_MISMATCH = "profile_revision_mismatch"
     GRANT_MISMATCH = "grant_mismatch"
     REVOCATION_EPOCH_MISMATCH = "revocation_epoch_mismatch"
@@ -139,7 +139,7 @@ class RuntimeCapabilitySnapshot:
     """Effective runtime and revocable grant for one profile generation."""
 
     grant_id: str
-    profile_id: str
+    address: BotAddress
     profile_config_revision: str
     runtime_snapshot_id: str
     effective_provider: str
@@ -155,9 +155,10 @@ class RuntimeCapabilitySnapshot:
     fallback_reason: Optional[str] = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.address, BotAddress):
+            raise TypeError("address must be a BotAddress")
         for field_name in (
             "grant_id",
-            "profile_id",
             "profile_config_revision",
             "runtime_snapshot_id",
             "effective_provider",
@@ -198,7 +199,7 @@ class RuntimeCapabilitySnapshot:
         cls,
         *,
         grant_id: str,
-        profile_id: str,
+        address: BotAddress,
         profile_config_revision: str,
         runtime_snapshot_id: str,
         effective_provider: str,
@@ -215,7 +216,7 @@ class RuntimeCapabilitySnapshot:
     ) -> "RuntimeCapabilitySnapshot":
         return cls(
             grant_id=grant_id,
-            profile_id=profile_id,
+            address=address,
             profile_config_revision=profile_config_revision,
             runtime_snapshot_id=runtime_snapshot_id,
             effective_provider=effective_provider,
@@ -421,8 +422,8 @@ def evaluate_capability(
     decision_id = _required_str(decision_id, "decision_id")
     checks = (
         (
-            context.address.profile_id != snapshot.profile_id,
-            BotPolicyReason.PROFILE_MISMATCH,
+            context.address != snapshot.address,
+            BotPolicyReason.ADDRESS_MISMATCH,
         ),
         (
             context.profile_config_revision != snapshot.profile_config_revision,

@@ -145,6 +145,7 @@ export const ar = defineLocale({
       microphoneFailed: 'فشل الميكروفون',
       microphoneInUse: 'الميكروفون مستخدم من تطبيق آخر.',
       microphonePermissionDenied: 'تم رفض إذن الميكروفون.',
+      microphoneSecureContextRequired: 'يتطلب تسجيل الميكروفون HTTPS أو localhost أو تطبيق سطح المكتب الأصلي.',
       microphoneStartFailed: 'تعذر بدء تسجيل الميكروفون.',
       microphoneUnsupported: 'هذا المتصفح لا يدعم تسجيل الميكروفون.',
       noMicrophone: 'لم يتم العثور على ميكروفون.',

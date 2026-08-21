@@ -1,5 +1,7 @@
 # Routing Heuristics
 
+The fast lookup *beneath* the diagnostic model in `SKILL.md` (intent → bottleneck → Boden move → prescribe). Use the model to decide the creative move and whether one method or a set; use these tables to pick the specific method once the move is known. When a table and the model disagree, the model wins.
+
 Decision tree for picking a method. Read top to bottom; first match wins.
 
 ## Phase signals — what stage is the user in?

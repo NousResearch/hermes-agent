@@ -2,7 +2,7 @@
 name: creative-ideation
 title: Creative Ideation — Routed Library of Creative Methods
 description: "Generate ideas via named methods from creative practice."
-version: 2.1.0
+version: 2.2.0
 author: SHL0MS
 license: MIT
 platforms: [linux, macos, windows]
@@ -31,13 +31,32 @@ Any open-ended generative or selective question: "I want to make / build / write
 6. **Name the method you used and who invented it.** Attribution invokes the discipline.
 7. **When user picks one, build it.** Don't keep generating after they've chosen.
 
-## Routing — 4-step procedure
+## Routing — diagnose, then prescribe
 
-Do this *before* generating any output. Routing failures produce slop.
+The router is a **diagnostic clinic**, not a lookup table. A prompt is a *symptom*; find what is actually blocking a good idea, then prescribe the technique that supplies the missing thing. Three questions resolve any prompt. Run them *before* generating — routing failures produce slop.
 
-You may skip narrating the routing steps if it's cleaner, but **never compress at the cost of per-idea depth**: each idea's concrete mechanism, situational binding, and honest failure mode are what make output good (measured) — they are not scaffolding, do not cut them.
+You may skip narrating the steps if it's cleaner, but **never compress at the cost of per-idea depth**: each idea's concrete mechanism, situational binding, and honest failure mode are what make output good — they are not scaffolding, do not cut them.
 
-### Step 1 — Extract three signals from the prompt
+### The model
+
+Creativity needs two things and a position. **Constraint** — limits that give traction (none → paralysis). **Direction** — an aim/value that gives shape (none → noise). And it must land **off the center** of the conceptual space, because the center is the average and the average is slop (`references/boden-creativity.md`). A prompt is uncreative when one of these is missing; the three questions find which.
+
+```
+  Q1 INTENT  ─►  Q2 BOTTLENECK  ─►  Q3 MOVE (Boden)  ─►  PRESCRIBE
+  what they      what's actually     what kind of         one method,
+  want, surface  blocking a good     novelty closes       or a principled
+  + underlying   idea right now      the gap              set (≤2)
+```
+
+### Q1 — INTENT · what does the user actually want?
+
+Read the surface request **and** the underlying need.
+
+- **Move** — generate / expand / select / unblock / subvert / refine / synthesize  (→ PHASE)
+- **Object** — text / object / artifact / system / self / research / product  (→ DOMAIN)
+- **Givens** — how much is already on the table: none / domain / project / problem  (→ SPECIFICITY)
+- **Value sought** — what "good" means here: novel / useful / beautiful / rigorous / weird / personal. This is the *direction*; name it — it breaks ties.
+- **Surface vs underlying** — high-slop requests ("startup ideas", "a habit app") carry an unspoken *"…but not the obvious one."* The underlying intent **overrides** the surface request.
 
 **PHASE** — what stage is the user in?
 
@@ -72,16 +91,43 @@ You may skip narrating the routing steps if it's cleaner, but **never compress a
 | **PROJECT** | "I'm working on this specific X" |
 | **PROBLEM** | "I have this specific friction within X" |
 
-### Step 2 — Apply overrides (highest priority, fire first)
+### Q2 — BOTTLENECK · what is blocking a good idea right now?
 
-Override rules beat the routing table:
+The diagnosis: find the **one** binding constraint. (Two at once → see Prescribe.)
 
-- **Mood signal** — user says "weird", "strange", "surprising", "less obvious", "more interesting" → `references/methods/lateral-provocations.md` or `references/methods/pataphysics.md`, regardless of domain.
-- **User names a method** — use it.
-- **User asks for a method recommendation** ("which method") → surface 2–3 candidates with one-line each, ask which to apply. Don't silently default.
-- **High-slop terrain** — "AI ideas", "startup ideas", "habit tracker", "productivity / wellness / fitness / food / travel app" → force `references/methods/lateral-provocations.md` or `references/methods/pataphysics.md` over the obvious method. Refuse the first **5** ideas, not 3.
+| Bottleneck | Looks like | What it needs |
+|---|---|---|
+| **No constraint** | blank page, "anything", no traction | a constraint (exploratory) |
+| **No direction** | aimless, "I don't know what I want" | clarify the aim, then select |
+| **Frame lock** | too safe, obvious, "been done", high-slop | break a defining constraint (**transformational**) |
+| **Disconnection** | has material but stale, no fresh angle | an outside link (combinational) |
+| **Lost contact** | stuck mid-work, going in circles | a random relocation (exploratory / unblock) |
+| **Overload** | too many options, can't choose | a selection test |
+| **Raw pile** | notes / observations, no structure | synthesis |
 
-### Step 3 — Route by phase first, then domain
+### Q3 — MOVE · what kind of novelty closes the gap? (Boden)
+
+The bottleneck names the **family** (`references/boden-creativity.md`): **combinational** (new links between existing ideas) / **exploratory** (search unvisited regions of the space) / **transformational** (change a defining constraint of the space). Combinational is cheapest, exploratory the workhorse, **transformational the strongest — and the one slop never reaches.** On slop terrain, aim transformational; exploratory variation on a slop seed stays slop.
+
+### Prescribe — one technique, or a principled set
+
+The move picks the **family**; PHASE + DOMAIN pick the **method** (tables below). Prescribe a **set** only when *two things are missing at once*, and stack exactly one technique per missing thing — never three:
+
+- constraint **+** frame-lock ("weird startup ideas") → `jobs-to-be-done` **+** `lateral-provocations`
+- generate **+** choose → `volume-generation` → `premortem-and-inversion`
+- disconnection **+** no structure → `derive-and-mapping` → `affinity-diagrams`
+- contradiction **+** needs an analog → `triz-principles` → `biomimicry`
+
+Stacking to cover a weak diagnosis is an anti-pattern: bad pick + bad pick ≠ good pick.
+
+### Overrides — fire first, they beat the diagnosis
+
+- **User names a method** → use it.
+- **User asks "which method?"** → surface 2–3 candidates, one line each, ask. Don't silently default.
+- **Mood word** ("weird / strange / surprising / less obvious") → transformational: `references/methods/lateral-provocations.md` or `references/methods/pataphysics.md`, regardless of domain.
+- **High-slop terrain** ("AI / startup / habit-tracker / productivity / wellness / fitness / food / travel app") → frame-lock by default → `references/methods/lateral-provocations.md` / `references/methods/pataphysics.md`; refuse the first **5** ideas, not 3.
+
+### Route — move picks the family, phase + domain pick the method
 
 **By phase (applies regardless of domain):**
 
@@ -120,13 +166,13 @@ Override rules beat the routing table:
 | PRODUCT (business, service) | `references/methods/jobs-to-be-done.md` |
 | Need to break a frame / find analogy | `references/methods/analogy-and-blending.md` |
 
-### Step 4 — Handle ambiguity and contradiction
+### Resolve ambiguity
 
-- **Multiple paths plausible** → pick the one closest to the user's actual phrasing. Don't pick the most interesting method to seem sophisticated.
-- **Genuinely ambiguous** → ask ONE clarifying question, don't silently guess. Examples: *"Are you generating ideas or picking between ones you have?"* / *"Is this for fiction, essay, or something else?"*
-- **Signals contradict** (e.g., "weird startup ideas" → product domain + weird mood) → **stack two methods explicitly**. State what you're doing: *"Using `jobs-to-be-done` for the product framing + `lateral-provocations` to break the obvious shape."*
+- **Multiple paths plausible** → pick the one closest to the user's phrasing, not the most impressive method.
+- **Genuinely ambiguous** → ask ONE question (intent or object), don't guess. *"Generating ideas, or choosing between ones you have?"* / *"Fiction, essay, or something else?"*
+- **Signals contradict** (e.g. "weird startup ideas" = product **+** frame-lock) → that is a *two-things-missing* case → stack two and say so: *"`jobs-to-be-done` for the framing + `lateral-provocations` to break the obvious shape."*
 - **No match** → constraint dispatch (`references/full-prompt-library.md`) is the safe fallback.
-- **Same question asked again** → switch methods. Variation in method = variation in idea distribution.
+- **Same question again** → switch method; variation in method = variation in idea distribution.
 
 ### Anti-default check (run before generating)
 
@@ -165,6 +211,7 @@ For other methods, use the format the method specifies (TRIZ produces a contradi
 
 ## File map
 
+- `references/boden-creativity.md` — the routing theory: novelty+value, the conceptual space, and the three creative moves (combinational / exploratory / transformational) that pick the method family.
 - `references/full-prompt-library.md` — constraint library, sectioned by domain (General, Software, Physical, Social, Lists). Default path for SPECIFICITY=NONE.
 - `references/method-catalog.md` — one-line summary + when-to-use per method
 - `references/heuristics.md` — extended decision tree for edge cases

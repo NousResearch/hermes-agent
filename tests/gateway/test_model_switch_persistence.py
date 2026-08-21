@@ -145,6 +145,35 @@ class TestApplySessionModelOverride:
         # stale provider keys must not clobber the valid runtime kwargs
         assert rt == orig_rt
 
+    def test_keyless_local_provider_override_applies(self):
+        """A keyless-but-valid local provider (e.g. Ollama, which resolves
+        api_key='') is legitimate: its provider/base_url must still apply."""
+        runner = _make_runner()
+        sk = build_session_key(_make_source())
+
+        runner._session_model_overrides[sk] = {
+            "model": "qwen3:8b",
+            "provider": "ollama",
+            "api_key": "",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_mode": "chat_completions",
+            # Resolution succeeded without a credential -> not stale.
+            "keyless": True,
+        }
+
+        orig_rt = {
+            "provider": "anthropic",
+            "api_key": "ant-key",
+            "base_url": "https://api.anthropic.com",
+            "api_mode": "anthropic_messages",
+        }
+        model, rt = runner._apply_session_model_override(sk, "anthropic/claude-sonnet-4", dict(orig_rt))
+
+        assert model == "qwen3:8b"
+        assert rt["provider"] == "ollama"
+        assert rt["base_url"] == "http://127.0.0.1:11434/v1"
+        assert rt["api_mode"] == "chat_completions"
+
 
 # ---------------------------------------------------------------------------
 # Tests: _is_intentional_model_switch

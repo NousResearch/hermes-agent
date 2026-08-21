@@ -8061,8 +8061,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "api_mode": override.get("api_mode"),
                 "max_tokens": override.get("max_tokens"),
                 "credential_pool": override.get("credential_pool"),
+                "keyless": bool(override.get("keyless")),
             }
-            if override_runtime.get("api_key"):
+            # A keyless marker means the provider was validated to resolve
+            # without a credential (e.g. local Ollama resolves api_key='') —
+            # legitimate, unlike a stale credential-less override.
+            if override_runtime.get("api_key") or override_runtime.get("keyless"):
                 if override_runtime.get("credential_pool") is None:
                     override_runtime["credential_pool"] = _credential_pool_for_provider(
                         override.get("provider")
@@ -8073,8 +8077,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     override_runtime.get("provider"),
                 )
                 return override_model, override_runtime
-            # Override exists but has no api_key — fall through to env-based
-            # resolution and apply model/provider from the override on top.
+            # Override exists but has no api_key and is not marked keyless —
+            # fall through to env-based resolution and apply model/provider
+            # from the override on top.
             logger.debug(
                 "Session model override (no api_key, fallback): session=%s config_model=%s override_model=%s",
                 resolved_session_key or "", model, override_model,
@@ -26303,6 +26308,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             override["credential_pool"] = runtime.get("credential_pool")
             if not override.get("base_url"):
                 override["base_url"] = runtime.get("base_url")
+            if not override.get("api_key"):
+                # Resolution succeeded without a credential: a keyless-but-
+                # valid provider (e.g. local Ollama). Mark it so the apply
+                # gates don't mistake it for a stale credential-less override.
+                override["keyless"] = True
         self._session_state(session_key).conversation.model_override = override
         logger.info(
             "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
@@ -26326,11 +26336,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return model, runtime_kwargs
         model = override.get("model", model)
         # Only apply the provider/runtime keys if the override still carries
-        # a resolvable credential. A credential-less override (e.g. the
-        # provider was removed from config after the switch) would otherwise
-        # poison runtime_kwargs with a stale provider and produce an
+        # a resolvable credential or was validated as keyless-but-legitimate
+        # (e.g. local Ollama resolves api_key=''). A credential-less override
+        # (e.g. the provider was removed from config after the switch) would
+        # otherwise poison runtime_kwargs with a stale provider and produce an
         # "UNKNOWN <provider>" failure downstream.
-        if override.get("api_key"):
+        if override.get("api_key") or override.get("keyless"):
             for key in ("provider", "api_key", "base_url", "api_mode", "credential_pool"):
                 val = override.get(key)
                 if val is not None:

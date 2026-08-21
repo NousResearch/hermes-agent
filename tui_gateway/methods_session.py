@@ -861,7 +861,14 @@ def _(rid, params: dict) -> dict:
                     # leaves the old leak, which is survivable; closing under a
                     # live session is the permanent "Cannot operate on a closed
                     # database" break this patch exists to avoid.
-                    _transfer_db_to_agent(agent, db)
+                    #
+                    # The transfer itself is gated on owns_db: with no
+                    # non-launch profile selected this path resolved db to the
+                    # SHARED launch handle (_get_db()), and transferring it
+                    # made session.close() tear down the process-wide
+                    # database under every unrelated session (#91610).
+                    if owns_db:
+                        _transfer_db_to_agent(agent, db)
                     owns_db = False
                 finally:
                     if init_home_token is not None:

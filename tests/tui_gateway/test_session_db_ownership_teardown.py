@@ -227,6 +227,20 @@ def test_transfer_is_refused_for_missing_operands(agent, db):
     assert server._transfer_db_to_agent(agent, db) is False
 
 
+def test_transfer_is_refused_for_the_shared_launch_handle(monkeypatch):
+    """Defense in depth for #91610: identity alone passes for the SHARED
+    launch handle — a launch-profile agent IS holding it — so ownership
+    would make session.close() tear down the process-wide database under
+    every other session. The transfer must refuse it even when a caller
+    invokes the transfer incorrectly."""
+    shared = _RecordingDB()
+    monkeypatch.setattr(server, "_get_db", lambda: shared)
+    agent = types.SimpleNamespace(_session_db=shared, _owns_session_db=False)
+
+    assert server._transfer_db_to_agent(agent, shared) is False
+    assert agent._owns_session_db is False
+
+
 # ---------------------------------------------------------------------------
 # 3. The deferred builder — _start_agent_build
 # ---------------------------------------------------------------------------

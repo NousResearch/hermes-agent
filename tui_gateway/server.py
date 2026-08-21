@@ -1988,9 +1988,54 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     credential-shaped value Tirith flagged would otherwise be echoed verbatim
     to the TUI client (#48456 — third egress transport alongside the chat
     platforms and the SSE/API stream fixed in #50767). Reuse the shared gateway
-    seam so all approval transports redact consistently."""
+    seam so all approval transports redact consistently.
+
+    Delivery hardening (#83443 / #84395): if the session's own transport is
+    dead (WebSocket disconnected and the session parked on the drop sentinel
+    while waiting for a reconnect/resume), the frame must NOT be written into
+    that black hole — the agent thread then blocks the full approval timeout
+    with no prompt ever rendered. Fall back to fanning the approval frame out
+    to every live transport so a reconnected/resumed client still receives it.
+    """
     payload = _approval_request_payload(data)
-    _emit("approval.request", sid, payload)
+    frame = _event_frame("approval.request", sid, payload)
+    with _sessions_lock:
+        session = _sessions.get(sid)
+        transport = (session or {}).get("transport") if session else None
+    if transport is not None and not _transport_is_dead(transport):
+        # Check the write() result, not just _closed (review #85967): a WS
+        # transport mid-close (disconnect received, teardown not yet run) can
+        # still look alive here but silently drop the frame — the exact
+        # silent-loss class this fan-out targets, in a narrower window. A
+        # False return is the drop-sentinel contract; fall through to the
+        # broadcast so the approval is not lost.
+        if transport.write(frame):
+            return
+    # No live session transport (disconnected / parked on the drop sentinel,
+    # mid-close write dropped, or the session record is gone): broadcast to
+    # every connected client so the approval is not silently lost. The frame
+    # keeps its session_id, so the frontend routes it to the right session
+    # even on a broadcast path. NOTE: this intentionally crosses session
+    # boundaries (a second connected peer renders another session's approval
+    # prompt); that is safe only because approval.respond is
+    # session/ownership-scoped server-side — keep that invariant.
+    logger.warning(
+        "approval.request for session %s has no live transport; broadcasting to connected clients",
+        sid,
+    )
+    with _live_transports_lock:
+        targets = list(_live_transports)
+    for transport in targets:
+        if transport is None or _transport_is_dead(transport):
+            continue
+        try:
+            transport.write(frame)
+        except Exception:
+            logger.debug(
+                "approval broadcast write failed type=approval.request peer=%r",
+                transport,
+                exc_info=True,
+            )
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):
@@ -2430,7 +2475,18 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 notify_registered = True
                 load_permanent_allowlist()
             except Exception:
-                pass
+                # Never swallow this silently: a session whose approval notify
+                # callback failed to register will block the agent thread for
+                # the full approval timeout with nothing rendered to the user
+                # (#83443 / #84395 silent-approval-timeout family). Log loudly
+                # so the operator sees the gap; the delivery fallback in
+                # _emit_approval_request still fans events to live transports.
+                logger.exception(
+                    "Failed to register gateway approval notify for session %s (key=%s) — "
+                    "approval prompts for this session may not reach the client",
+                    sid,
+                    key,
+                )
 
             _wire_callbacks(sid)
             # Surface the self-improvement review's "💾 …" summary as an event
@@ -5471,7 +5527,13 @@ def _sync_session_key_after_compress(
                 lambda data: _emit_approval_request(sid, data),
             )
         except Exception:
-            pass
+            logger.exception(
+                "Failed to re-register gateway approval notify after session rename "
+                "old_key=%s new_key=%s sid=%s",
+                old_key,
+                new_session_id,
+                sid,
+            )
     except Exception:
         # Even if the approval module fails to import, still anchor the
         # session_key on the new continuation id so downstream lookups

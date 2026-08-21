@@ -19830,3 +19830,132 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert captured["row_update"] == (target, str(new_cwd))
     assert live["cwd"] == str(new_cwd)
     assert live.get("explicit_cwd") is True
+
+
+def test_emit_approval_request_falls_back_to_live_transports_when_session_detached():
+    """A detached (drop-sentinel) session must not lose approval events.
+
+    #83443 / #84395: when the desktop WebSocket disconnects, the session is
+    parked on _detached_ws_transport (a write-returns-False black hole). An
+    approval.request emitted through that session would silently vanish and
+    the agent thread blocks the full approval timeout. The emitter must fall
+    back to every registered live transport so a reconnected client still
+    receives the prompt.
+    """
+
+    class _LiveTransport:
+        def __init__(self):
+            self.frames = []
+
+        def write(self, obj):
+            self.frames.append(obj)
+            return True
+
+    live = _LiveTransport()
+    try:
+        server.register_live_transport(live)
+        server._sessions["detached-approval-sid"] = {
+            "transport": server._detached_ws_transport,
+        }
+        server._emit_approval_request(
+            "detached-approval-sid",
+            {
+                "command": "rm -rf /tmp/x",
+                "pattern_key": "dangerous",
+                "description": "dangerous command",
+                "allow_permanent": True,
+            },
+        )
+        assert len(live.frames) == 1, "approval must be fanned out to live transports"
+        frame = live.frames[0]
+        assert frame["params"]["type"] == "approval.request"
+        assert frame["params"]["session_id"] == "detached-approval-sid"
+        # Redaction must still apply on the broadcast path.
+        assert "rm -rf" in frame["params"]["payload"]["command"]
+    finally:
+        server.unregister_live_transport(live)
+        server._sessions.pop("detached-approval-sid", None)
+
+
+def test_emit_approval_request_uses_session_transport_when_live():
+    """A live session keeps the direct transport path (no broadcast)."""
+
+    class _LiveTransport:
+        def __init__(self):
+            self.frames = []
+
+        def write(self, obj):
+            self.frames.append(obj)
+            return True
+
+    session_t = _LiveTransport()
+    other_t = _LiveTransport()
+    try:
+        server.register_live_transport(other_t)
+        server._sessions["live-approval-sid"] = {
+            "transport": session_t,
+        }
+        server._emit_approval_request("live-approval-sid", {"command": "ls"})
+        assert len(session_t.frames) == 1, "session transport gets the frame"
+        assert len(other_t.frames) == 0, "live transports are not spammed when session is live"
+    finally:
+        server.unregister_live_transport(other_t)
+        server._sessions.pop("live-approval-sid", None)
+
+
+def test_approval_notify_registration_failure_logs_loudly(caplog, monkeypatch):
+    """A failed register_gateway_notify must not be swallowed silently.
+
+    #83443 / #84395 silent-approval-timeout family: a session whose notify
+    callback failed to register would block the agent for the full timeout
+    with nothing rendered. The build path must log the failure loudly.
+
+    Drives the REAL _start_agent_build → _build path with register_gateway_notify
+    failing, so the test fails if the guarded block ever regresses to a silent
+    `except: pass` (review #85967: previously the test called
+    server.logger.exception directly and passed regardless).
+    """
+    import threading
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda *args, **kwargs: type("Agent", (), {"model": "test"})(),
+    )
+    monkeypatch.setattr(
+        "tui_gateway.entry.ensure_mcp_discovery_started", lambda: None
+    )
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_SlashWorker", lambda *args: None)
+    monkeypatch.setattr(server, "_attach_worker", lambda *args: None)
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("", ""))
+    monkeypatch.setattr(
+        _approval, "register_gateway_notify", lambda *a, **k: (_ for _ in ()).throw(
+            RuntimeError("injected registration failure")
+        )
+    )
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    ready = threading.Event()
+    sid = "fail-reg-sid"
+    session = {
+        "agent_ready": ready,
+        "session_key": "fail-reg-key",
+    }
+
+    server._sessions[sid] = session
+    try:
+        with caplog.at_level("ERROR", logger="tui_gateway.server"):
+            server._start_agent_build(sid, session)
+            # Wait for the FULL build thread to finish (ready is set in
+            # _build's finally, AFTER the approval-registration block ran),
+            # not just for _make_agent — otherwise caplog exits its capture
+            # scope before the background thread logs the failure.
+            assert ready.wait(timeout=5), "agent build should still complete"
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert "Failed to register gateway approval notify" in caplog.text
+    assert "injected registration failure" in caplog.text

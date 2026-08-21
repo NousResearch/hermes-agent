@@ -254,6 +254,42 @@ class TestMentionGating:
         assert [message["message_id"] for message in adapter._dispatched] == ["e1", "e2"]
 
     @pytest.mark.asyncio
+    async def test_legacy_lone_reply_tag_continues_mentioned_thread(self, adapter):
+        reply = _event("e2", content="please continue", created_at=11)
+        reply["tags"].append(["e", "e1"])
+        await self._poll_with(
+            adapter,
+            _event("e1", content="@Chip can you help?", created_at=10),
+            reply,
+        )
+
+        assert [message["message_id"] for message in adapter._dispatched] == ["e1", "e2"]
+
+    @pytest.mark.asyncio
+    async def test_explicit_reply_marker_wins_over_preceding_mention_marker(self, adapter):
+        reply = _event("e2", content="please continue", created_at=11)
+        reply["tags"] += [["e", "unrelated", "", "mention"], ["e", "e1", "", "reply"]]
+        await self._poll_with(
+            adapter,
+            _event("e1", content="@Chip can you help?", created_at=10),
+            reply,
+        )
+
+        assert [message["message_id"] for message in adapter._dispatched] == ["e1", "e2"]
+
+    @pytest.mark.asyncio
+    async def test_legacy_root_and_reply_tags_use_last_unmarked_target(self, adapter):
+        reply = _event("e3", content="please continue", created_at=12)
+        reply["tags"] += [["e", "root"], ["e", "e1"]]
+        await self._poll_with(
+            adapter,
+            _event("e1", content="@Chip can you help?", created_at=10),
+            reply,
+        )
+
+        assert [message["message_id"] for message in adapter._dispatched] == ["e1", "e3"]
+
+    @pytest.mark.asyncio
     async def test_out_of_order_reply_dispatches_after_its_mentioned_parent_arrives(self, adapter):
         state = adapter._channel_state[CHANNEL]
         reply = _tagged_event("e2", CHANNEL, content="please continue", reply_to="e1", created_at=11)
@@ -344,10 +380,78 @@ class TestMentionGating:
         assert [message["message_id"] for message in adapter._dispatched] == ["e1"]
 
     @pytest.mark.asyncio
+    async def test_unauthorized_reply_is_neither_dispatched_nor_deferred(self, adapter):
+        adapter._allowed_pubkeys = {OTHER_PUBKEY}
+        await self._poll_with(adapter, _event("e1", content="@Chip can you help?", created_at=10))
+        unauthorized_reply = _tagged_event(
+            "e2", CHANNEL, content="please continue", pubkey="b" * 64, reply_to="missing", created_at=11
+        )
+
+        await self._poll_with(adapter, unauthorized_reply)
+
+        assert [message["message_id"] for message in adapter._dispatched] == ["e1"]
+        assert CHANNEL not in adapter._pending_thread_replies
+
+    @pytest.mark.asyncio
     async def test_allowlist_blocks_unauthorized(self, adapter):
         adapter._allowed_pubkeys = {"b" * 64}
         await self._poll_with(adapter, _event("e1", content="@Chip hello", created_at=10))
         assert adapter._dispatched == []
+
+
+class TestWebSocketThreadReplyRewind:
+
+    @pytest.mark.asyncio
+    async def test_out_of_order_reply_replaces_live_subscription_with_rewind(self, monkeypatch):
+        """A pending child must trigger a fresh REQ before a WS reconnect."""
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 100, "seen": {}}
+        adapter._authenticate_websocket = AsyncMock()
+
+        class ScriptedWebSocket:
+            def __init__(self):
+                self.sent = []
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+            async def send(self, payload):
+                self.sent.append(json.loads(payload))
+
+            def __aiter__(self):
+                return self._frames()
+
+            async def _frames(self):
+                yield json.dumps([
+                    "EVENT",
+                    "test-subscription",
+                    _tagged_event("e2", CHANNEL, content="continue", reply_to="e1", created_at=20),
+                ])
+                raise asyncio.CancelledError()
+
+        websocket = ScriptedWebSocket()
+
+        async def subscribe(ws):
+            await adapter._send_channel_subscription(ws, "test-subscription", CHANNEL)
+            return {"test-subscription": CHANNEL}
+
+        adapter._subscribe_websocket = subscribe
+        import websockets
+
+        monkeypatch.setattr(websockets, "connect", lambda *_args, **_kwargs: websocket)
+        with pytest.raises(asyncio.CancelledError):
+            await adapter._websocket_loop()
+
+        assert len(websocket.sent) == 2
+        assert websocket.sent[0][0:2] == ["REQ", "test-subscription"]
+        assert websocket.sent[1] == [
+            "REQ",
+            "test-subscription",
+            {"kinds": [9], "#h": [CHANNEL], "since": 0},
+        ]
 
 
 # ── DM classification via p-tags (issue #68871) ──────────────────────────

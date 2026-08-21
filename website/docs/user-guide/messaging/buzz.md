@@ -101,7 +101,7 @@ gateway:
 ## Mentions, channels, and DMs
 
 - In shared channels the agent only responds when **addressed** — by `@name`, its npub, or its hex pubkey. Everything else is ignored.
-- Once addressed, the agent follows direct replies in that reply tree without another mention by default. Set `thread_require_mention: true` to keep strict mention gating inside threads.
+- Once addressed, the agent follows direct replies in that reply tree without another mention by default. This in-memory membership is bounded to the 500 most recently active thread events per channel and has no time expiry; set `thread_require_mention: true` to keep strict mention gating inside threads.
 - Direct messages always reach the agent, no mention needed.
 - The agent's own messages are never dispatched back to it (self-echo suppression by pubkey), and every event is de-duplicated by event id against a per-channel high-water mark.
 

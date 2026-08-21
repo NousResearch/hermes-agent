@@ -94,7 +94,9 @@ _FETCH_LIMIT = 50
 # Bound on the per-channel de-dupe set (events, not bytes).
 _SEEN_CAP = 500
 # When a reply reaches us before its parent, briefly rewind inbound cursors so
-# the next poll / WebSocket reconnect can retrieve that parent too.
+# the next poll / WebSocket reconnect can retrieve that parent too. Keep the
+# rewind and retention windows separate: reducing either can make a parent
+# unreachable before its deferred child is discarded.
 _PENDING_REPLY_LOOKBACK_SECONDS = 60
 _PENDING_REPLY_MAX_AGE_SECONDS = 60
 # Re-run DM discovery (``dms list`` plus the channels-list fallback) every
@@ -1087,6 +1089,8 @@ class BuzzAdapter(BasePlatformAdapter):
         )
         # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /
         # BUZZ_ALLOW_ALL_USERS centrally as well; empty list = no filter here).
+        # This precedes _defer_thread_reply deliberately: unauthorized events
+        # must never be retained for later delivery when a parent arrives.
         if self._allowed_pubkeys and pubkey not in self._allowed_pubkeys:
             logger.debug("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
             return
@@ -1281,20 +1285,25 @@ class BuzzAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _reply_to_event_id(event: dict) -> Optional[str]:
-        """Return the direct reply target from Buzz's Nostr ``e`` tag."""
+        """Return the direct reply target from a NIP-10 or legacy ``e`` tag."""
         tags = event.get("tags")
         if not isinstance(tags, list):
             return None
+        legacy_targets = []
+        has_explicit_mention = False
         for tag in tags:
-            if (
-                isinstance(tag, (list, tuple))
-                and len(tag) >= 4
-                and tag[0] == "e"
-                and tag[3] == "reply"
-                and tag[1]
-            ):
+            if not (isinstance(tag, (list, tuple)) and len(tag) >= 2 and tag[0] == "e" and tag[1]):
+                continue
+            marker = str(tag[3]).lower() if len(tag) >= 4 and tag[3] else ""
+            if marker == "reply":
                 return str(tag[1])
-        return None
+            # Legacy NIP-10 events omitted markers. A lone e-tag is their
+            # direct parent; root + reply pairs put the direct parent last.
+            if not marker or marker == "root":
+                legacy_targets.append(str(tag[1]))
+            elif marker == "mention":
+                has_explicit_mention = True
+        return legacy_targets[-1] if legacy_targets and not has_explicit_mention else None
 
     def _remember_mentioned_thread_event(self, channel_id: str, event_id: str) -> None:
         """Record one event in an @mentioned reply tree with a bounded LRU."""

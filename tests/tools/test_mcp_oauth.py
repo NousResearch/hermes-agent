@@ -584,6 +584,54 @@ class TestRemoveOAuthTokens:
         assert not (d / "myserver.client.json").exists()
 
 
+class TestOAuthRollback:
+    """#76590: a failed re-auth must restore the pre-flow OAuth state even
+    when the aborted flow left partial files behind (client.json / meta.json
+    written by RFC 7591 registration and metadata discovery before the flow
+    dies). only_if_absent would see that partial state and skip the rollback,
+    leaving the previously-valid tokens deleted from disk."""
+
+    def _write_state(self, storage, *, tokens: str = "TOKEN_OLD", client: bool = True):
+        storage._tokens_path().parent.mkdir(parents=True, exist_ok=True)
+        storage._tokens_path().write_text(
+            '{"access_token":"%s","token_type":"Bearer","expires_in":3600}' % tokens
+        )
+        if client:
+            storage._client_info_path().write_text('{"client_id":"old-client"}')
+
+    def test_restore_rolls_back_over_partial_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("myserver")
+        self._write_state(storage)
+
+        backup = storage.snapshot()
+        storage.remove()  # re-auth wipes disk state…
+        # …then the aborted flow leaves a partial client registration behind,
+        # exactly like a probe that died before the browser step completed.
+        storage._client_info_path().write_text('{"client_id":"partial-client"}')
+
+        storage.restore(backup, only_if_absent=False)
+
+        assert "TOKEN_OLD" in storage._tokens_path().read_text()
+        assert "old-client" in storage._client_info_path().read_text()
+
+    def test_restore_only_if_absent_skips_partial_state(self, tmp_path, monkeypatch):
+        """Document the hazard: the old only_if_absent=True call skipped the
+        rollback whenever ANY state file existed, leaving tokens deleted."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("myserver")
+        self._write_state(storage)
+
+        backup = storage.snapshot()
+        storage.remove()
+        storage._client_info_path().write_text('{"client_id":"partial-client"}')
+
+        storage.restore(backup, only_if_absent=True)
+
+        assert not storage._tokens_path().exists()
+        assert "partial-client" in storage._client_info_path().read_text()
+
+
 # ---------------------------------------------------------------------------
 # Client-change token invalidation (port of cline/cline#12983)
 # ---------------------------------------------------------------------------

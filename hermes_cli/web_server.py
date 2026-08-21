@@ -13455,7 +13455,16 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
 
                         reconnect_mcp_server(flow.server_name)
                 except Exception:
-                    storage.restore(backup, only_if_absent=True)
+                    # #76590: roll the failed re-auth back UNCONDITIONALLY.
+                    # The MCP SDK commonly writes partial state (client.json
+                    # via RFC 7591 registration, meta.json from discovery)
+                    # before the flow dies — e.g. a non-interactive probe or
+                    # a transient connection failure. With only_if_absent=True
+                    # that partial file made the restore skip, leaving the
+                    # previously-valid tokens deleted from disk with no way to
+                    # recover headlessly. A failed re-auth must never destroy
+                    # working credentials, so restore over any partial state.
+                    storage.restore(backup, only_if_absent=False)
                     manager.restore_entry(
                         flow.server_name,
                         previous_entry,

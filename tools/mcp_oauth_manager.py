@@ -714,21 +714,31 @@ class MCPOAuthManager:
         server_name: str,
         *,
         hermes_home: str | Path | None = None,
+        delete_tokens: bool = True,
     ) -> _ProviderEntry | None:
         """Evict the provider from cache AND delete tokens from disk.
 
         Called by ``hermes mcp remove <name>`` and (indirectly) by
         ``hermes mcp login <name>`` during forced re-auth.
+
+        This is the ONLY disk-deleting operation on the manager. It must
+        never be invoked from the automatic reconnect/parking machinery —
+        a transient connection failure must use :meth:`evict` instead so
+        the persisted OAuth tokens survive (see #76590). ``delete_tokens``
+        is exposed so a caller that wants the in-memory eviction plus the
+        returned entry (e.g. to restore it after a failed re-auth) can opt
+        out of the destructive disk step explicitly.
         """
         with self._entries_lock:
             entry = self._entries.pop(self._key(server_name, hermes_home), None)
 
-        from tools.mcp_oauth import remove_oauth_tokens
-        remove_oauth_tokens(server_name, hermes_home=hermes_home)
-        logger.info(
-            "MCP OAuth '%s': evicted from cache and removed from disk",
-            server_name,
-        )
+        if delete_tokens:
+            from tools.mcp_oauth import remove_oauth_tokens
+            remove_oauth_tokens(server_name, hermes_home=hermes_home)
+            logger.info(
+                "MCP OAuth '%s': evicted from cache and removed from disk",
+                server_name,
+            )
         return entry
 
     def restore_entry(
@@ -750,7 +760,13 @@ class MCPOAuthManager:
         *,
         hermes_home: str | Path | None = None,
     ) -> None:
-        """Drop only the in-process provider, preserving persisted OAuth state."""
+        """Drop only the in-process provider, preserving persisted OAuth state.
+
+        The soft path for transient connection failures: the MCP runtime
+        calls this when a server is parked after failed reconnects, so the
+        revival rebuilds the provider fresh from the still-persisted tokens.
+        Unlike :meth:`remove`, this NEVER touches disk (see #76590).
+        """
         with self._entries_lock:
             self._entries.pop(self._key(server_name, hermes_home), None)
 

@@ -2971,7 +2971,27 @@ class MCPServerTask:
             request or self-probe timeout). The reconnect event is cleared
             before returning so the next park cycle starts from a fresh
             signal. Shutdown takes precedence.
+
+        Note:
+            Entering the park is a *transient connection failure*, not an
+            auth failure — so it must never delete this server's OAuth
+            tokens from disk. We drop only the in-memory provider via
+            ``MCPOAuthManager.evict()`` (the soft path); the revival path
+            rebuilds the provider fresh from the still-persisted tokens.
+            The disk-deleting ``MCPOAuthManager.remove()`` stays reserved
+            for explicit ``hermes mcp remove`` / ``hermes mcp login`` /
+            dashboard re-auth. See #76590.
         """
+        # #76590: evict the in-memory OAuth provider (soft path) so the
+        # parked server's revival rebuilds it from the persisted tokens.
+        # Best-effort: a missing manager or entry is not an error.
+        if self._auth_type == "oauth":
+            try:
+                from tools.mcp_oauth_manager import get_manager
+
+                get_manager().evict(self.name)
+            except Exception:  # pragma: no cover — defensive, must not throw
+                pass
         shutdown_task = asyncio.ensure_future(self._shutdown_event.wait())
         reconnect_task = asyncio.ensure_future(self._reconnect_event.wait())
         try:

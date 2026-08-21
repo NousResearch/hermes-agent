@@ -10,28 +10,6 @@ reconnect is a reliable hung-poll signature.
 
 import asyncio
 import logging
-import sys
-from unittest.mock import MagicMock
-
-def _ensure_telegram_mock():
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-    telegram_mod = MagicMock()
-    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.constants.ChatType.GROUP = "group"
-    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-    telegram_mod.constants.ChatType.CHANNEL = "channel"
-    telegram_mod.constants.ChatType.PRIVATE = "private"
-    telegram_mod.error.NetworkError = type("NetworkError", (OSError,), {})
-    telegram_mod.error.TimedOut = type("TimedOut", (OSError,), {})
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
-    sys.modules.setdefault("telegram.error", telegram_mod.error)
-
-
-_ensure_telegram_mock()
-
 from gateway.config import Platform  # noqa: E402
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 

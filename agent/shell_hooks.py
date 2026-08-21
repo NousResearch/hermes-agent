@@ -739,20 +739,46 @@ def _evaluate_result(
     return parsed
 
 
+def _resolve_hook_cwd(task_id: Any) -> str:
+    """Resolve the hook payload ``cwd`` using the same ladder file tools use.
+
+    Order (mirrors ``tools.file_tools._resolve_base_dir``):
+
+      1. this chat's recorded session cwd (``terminal_tool.get_session_cwd``);
+      2. a registered task/session workspace override;
+      3. an absolute, sentinel-free ``$TERMINAL_CWD`` (never the literal
+         ``"."`` a stale config can leave behind);
+      4. the process cwd as a last resort.
+
+    Reusing ``_resolve_base_dir`` guarantees the hook and the file tools pick
+    the *same* directory — the property a house write-guard (P0b) depends on
+    to join relative paths against the chat folder rather than the
+    program-start folder.
+    """
+    try:
+        from tools.file_tools import _resolve_base_dir
+
+        return str(_resolve_base_dir(str(task_id or "default")))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug(
+            "shell hook cwd ladder unavailable (%s) — using process cwd", exc,
+        )
+    try:
+        return str(Path.cwd())
+    except OSError:
+        return ""
+
+
 def _serialize_payload(event: str, kwargs: Dict[str, Any]) -> str:
     """Render the stdin JSON payload.  Unserialisable values are
     stringified via ``default=str`` rather than dropped."""
     extras = {k: v for k, v in kwargs.items() if k not in _TOP_LEVEL_PAYLOAD_KEYS}
-    try:
-        cwd = str(Path.cwd())
-    except OSError:
-        cwd = ""
     payload = {
         "hook_event_name": event,
         "tool_name": kwargs.get("tool_name"),
         "tool_input": kwargs.get("args") if isinstance(kwargs.get("args"), dict) else None,
         "session_id": kwargs.get("session_id") or kwargs.get("parent_session_id") or "",
-        "cwd": cwd,
+        "cwd": _resolve_hook_cwd(extras.get("task_id")),
         "extra": extras,
     }
     return json.dumps(payload, ensure_ascii=False, default=str)

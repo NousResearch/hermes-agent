@@ -9,6 +9,7 @@ covered in ``test_shell_hooks_consent.py``.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -102,6 +103,63 @@ class TestSerializePayload:
         assert payload["tool_input"] is None
 
 
+# ── cwd ladder (P0a) ─────────────────────────────────────────────────────
+
+
+class TestHookCwdLadder:
+    """payload cwd follows the same ladder file tools use:
+
+    recorded session cwd → registered workspace override → absolute
+    TERMINAL_CWD → process cwd.  A task that recorded a cwd must win over
+    the process cwd; sentinel/relative TERMINAL_CWD must never be honored.
+    """
+
+    def _cwd_for_task(self, task_id: str) -> str:
+        return json.loads(
+            shell_hooks._serialize_payload(
+                "post_tool_call",
+                {"task_id": task_id, "session_id": "sess-1"},
+            ),
+        )["cwd"]
+
+    def test_process_cwd_no_task_falls_back(self, tmp_path, monkeypatch):
+        """No session record, no workspace, no configured cwd → process cwd."""
+        monkeypatch.setenv("TERMINAL_CWD", ".")
+        monkeypatch.chdir(tmp_path)
+        assert self._cwd_for_task("") == os.path.realpath(str(tmp_path))
+
+    def test_task_cwd_wins_over_process_cwd(self, tmp_path, monkeypatch):
+        """Process cwd ~/.hermes + task cwd ~/Projects/foo → task cwd."""
+        from tools import terminal_tool
+
+        process_cwd = tmp_path / "process"
+        process_cwd.mkdir()
+        task_dir = tmp_path / "Projects" / "foo"
+        task_dir.mkdir(parents=True)
+        monkeypatch.chdir(process_cwd)
+        terminal_tool.record_session_cwd("t-99", str(task_dir))
+        try:
+            assert self._cwd_for_task("t-99") == os.path.realpath(str(task_dir))
+        finally:
+            terminal_tool.clear_session_cwd("t-99")
+
+    def test_absolute_terminal_cwd_used_when_no_record(
+        self, tmp_path, monkeypatch,
+    ):
+        """No record/override → sentinel-free absolute TERMINAL_CWD."""
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        monkeypatch.setenv("TERMINAL_CWD", str(ws))
+        monkeypatch.chdir(tmp_path)
+        assert self._cwd_for_task("t-x") == os.path.realpath(str(ws))
+
+    def test_sentinel_terminal_cwd_rejected(
+        self, tmp_path, monkeypatch,
+    ):
+        """Literal ``\".\"`` from a stale config is not a real anchor."""
+        monkeypatch.setenv("TERMINAL_CWD", ".")
+        monkeypatch.chdir(tmp_path)
+        assert self._cwd_for_task("") == os.path.realpath(str(tmp_path))
 
 
 # ── Matcher behaviour ─────────────────────────────────────────────────────

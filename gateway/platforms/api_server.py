@@ -3605,7 +3605,14 @@ class APIServerAdapter(BasePlatformAdapter):
         loop = asyncio.get_running_loop()
         _send = _browser_controller_ws_sender(ws, loop)
 
-        self._browser_control_broker.attach(scope, _send, owner=ws)
+        # attach/disconnect/detach acquire the controller's send_lock, which a
+        # worker-thread dispatch may hold while blocking on THIS loop to
+        # transmit its frame (run_coroutine_threadsafe + result(timeout=10)).
+        # Offload them so a teardown/attach racing an in-flight send parks a
+        # worker thread, never the event loop.
+        await asyncio.to_thread(
+            self._browser_control_broker.attach, scope, _send, owner=ws
+        )
         try:
             async for msg in ws:
                 if msg.type == web.WSMsgType.TEXT:
@@ -3614,7 +3621,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     except Exception:
                         continue
                     if isinstance(frame, dict):
-                        reply = self._handle_browser_control_frame(
+                        reply = await asyncio.to_thread(
+                            self._handle_browser_control_frame,
                             scope,
                             frame,
                             owner=ws,
@@ -3624,7 +3632,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
                     break
         finally:
-            self._browser_control_broker.disconnect(
+            await asyncio.to_thread(
+                self._browser_control_broker.disconnect,
                 scope,
                 owner=ws,
             )

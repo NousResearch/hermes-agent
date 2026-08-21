@@ -466,12 +466,20 @@ async def handle_ws(
             # A reconnect with the same stable identity may deliver a terminal
             # result for work already in flight; no new dispatch is admitted
             # while the controller is offline.
+            #
+            # Offloaded via to_thread: disconnect acquires the controller's
+            # send_lock, which a worker-thread dispatch may hold while blocking
+            # on THIS loop to transmit its frame (run_coroutine_threadsafe +
+            # result(timeout=10)). Acquiring it synchronously here would park
+            # the whole event loop behind that 10s send bridge.
             try:
                 from gateway.browser_control_broker import (
                     get_browser_control_broker,
                 )
 
-                get_browser_control_broker().disconnect_owner(transport)
+                await asyncio.to_thread(
+                    get_browser_control_broker().disconnect_owner, transport
+                )
             except Exception:
                 _log.exception("ws browser-controller disconnect failed peer=%s", peer)
 

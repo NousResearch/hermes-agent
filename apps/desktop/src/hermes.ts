@@ -51,6 +51,8 @@ export type {
   CronDeliveryTarget,
   CronJob,
   CronJobCreatePayload,
+  CronJobOutput,
+  CronJobOutputDetail,
   CronJobSchedule,
   CronJobUpdates,
   CuratorStatusResponse,

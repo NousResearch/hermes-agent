@@ -513,10 +513,13 @@ export function useSessionActions({
         setSessionStartedAt(Date.now())
         const yoloArmed = $yoloActive.get()
         const runtimeInfo = applyRuntimeInfo(created.info)
+        const runtimeProfile = normalizeProfileKey(typeof params.profile === 'string' ? params.profile : null)
 
-        if (runtimeInfo) {
-          updateSessionState(created.session_id, state => ({ ...state, ...runtimeInfo }), stored)
-        }
+        updateSessionState(
+          created.session_id,
+          state => ({ ...state, profile: runtimeProfile, ...(runtimeInfo ?? {}) }),
+          stored
+        )
 
         // User may have armed YOLO on the new-chat draft before the runtime
         // session existed — apply it to the freshly created session.
@@ -605,7 +608,12 @@ export function useSessionActions({
         // Project "+" created a session while the main chat was occupied
         // (#76696). Split/side tiles deliberately stay isolated.
         const runtimeInfo = applyRuntimeInfo(created.info, { foreground: false })
-        updateSessionState(created.session_id, state => (runtimeInfo ? { ...state, ...runtimeInfo } : state), stored)
+        const runtimeProfile = normalizeProfileKey(typeof params.profile === 'string' ? params.profile : null)
+        updateSessionState(
+          created.session_id,
+          state => ({ ...state, profile: runtimeProfile, ...(runtimeInfo ?? {}) }),
+          stored
+        )
 
         openSessionTile(stored, dir)
         patchSessionTile(stored, { runtimeId: created.session_id })
@@ -697,18 +705,50 @@ export function useSessionActions({
       // under the current route (the "open chat A, chat B loads" bug). On a
       // mismatch the mapping is cross-wired: purge both sides and report a miss
       // so the caller falls through to a full resume that rebinds a correct id.
-      const takeWarmCache = (): { runtimeId: string; state: ClientSessionState } | null => {
-        const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-        const state = runtimeId ? sessionStateByRuntimeIdRef.current.get(runtimeId) : undefined
+      const dropWarmCache = (runtimeId: string) => {
+        // The bare reverse index can only point at one same-id runtime. Do not
+        // erase another profile's valid binding when dropping this candidate.
+        if (runtimeIdByStoredSessionIdRef.current.get(storedSessionId) === runtimeId) {
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+        }
+
+        sessionStateByRuntimeIdRef.current.delete(runtimeId)
+        dropSessionState(runtimeId)
+      }
+
+      const takeWarmCache = (profile?: string): { runtimeId: string; state: ClientSessionState } | null => {
+        const expectedProfile = profile?.trim() ? normalizeProfileKey(profile) : null
+        let runtimeId: string | undefined
+        let state: ClientSessionState | undefined
+
+        if (expectedProfile) {
+          // Stored session ids are profile-local. The legacy reverse index is
+          // intentionally still bare for ordinary foreground routing, so an
+          // owner-qualified cron open must resolve from runtime provenance
+          // instead of trusting whichever same-id profile wrote that index last.
+          for (const [candidateRuntimeId, candidateState] of sessionStateByRuntimeIdRef.current.entries()) {
+            if (
+              candidateState.storedSessionId === storedSessionId &&
+              candidateState.profile !== null &&
+              normalizeProfileKey(candidateState.profile) === expectedProfile
+            ) {
+              runtimeId = candidateRuntimeId
+              state = candidateState
+
+              break
+            }
+          }
+        } else {
+          runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+          state = runtimeId ? sessionStateByRuntimeIdRef.current.get(runtimeId) : undefined
+        }
 
         if (!runtimeId || !state) {
           return null
         }
 
         if (state.storedSessionId !== storedSessionId) {
-          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
-          sessionStateByRuntimeIdRef.current.delete(runtimeId)
-          dropSessionState(runtimeId)
+          dropWarmCache(runtimeId)
 
           return null
         }
@@ -716,7 +756,7 @@ export function useSessionActions({
         return { runtimeId, state }
       }
 
-      if (!takeWarmCache()) {
+      if (!takeWarmCache(ownerProfile)) {
         setActiveSessionId(null)
         activeSessionIdRef.current = null
         // History load is not turn-busy. Drop the previous session's leftover
@@ -775,14 +815,14 @@ export function useSessionActions({
       // Re-check after the profile-resolve / gateway-swap awaits above: the
       // cache may have changed, and takeWarmCache re-validates belongs-to and
       // purges a cross-wired mapping before we trust the fast-path.
-      const warmHit = takeWarmCache()
+      const warmHit = takeWarmCache(sessionProfile)
 
       if (warmHit) {
         const cachedRuntimeId = warmHit.runtimeId
         const cachedState = warmHit.state
 
         const stored =
-          $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+          storedForProfile ?? $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
 
         let cachedViewState =
           !cachedState.model && stored?.model != null
@@ -806,9 +846,7 @@ export function useSessionActions({
         }
 
         if (sessionShouldHaveTranscript(stored) && cachedViewState.messages.length === 0) {
-          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
-          sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
-          dropSessionState(cachedRuntimeId)
+          dropWarmCache(cachedRuntimeId)
         } else {
           // Paint the warm cache immediately, but also refresh the persisted
           // transcript in parallel. A resumed runtime carries the agent's
@@ -873,9 +911,7 @@ export function useSessionActions({
             }
 
             if (activated.session_key && activated.session_key !== storedSessionId) {
-              runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
-              sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
-              dropSessionState(cachedRuntimeId)
+              dropWarmCache(cachedRuntimeId)
             } else {
               const pendingApproval = restorePendingApproval(activated, cachedRuntimeId)
               const pendingClarify = restorePendingClarify(activated, cachedRuntimeId)
@@ -1020,9 +1056,7 @@ export function useSessionActions({
               return
             }
 
-            runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
-            sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
-            dropSessionState(cachedRuntimeId)
+            dropWarmCache(cachedRuntimeId)
           }
         }
       }
@@ -1319,6 +1353,7 @@ export function useSessionActions({
           resumed.session_id,
           state => ({
             ...state,
+            profile: normalizeProfileKey(sessionProfile),
             ...(runtimeInfo ?? {}),
             messages: messagesForView,
             busy: resumedRunning,
@@ -1559,6 +1594,7 @@ export function useSessionActions({
           branched.session_id,
           state => ({
             ...state,
+            profile: normalizeProfileKey(profile),
             messages: effectiveBranchMessages.map(({ source }) => source),
             busy: false,
             awaitingResponse: false

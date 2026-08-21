@@ -1140,6 +1140,12 @@ class DiscordAdapter(BasePlatformAdapter):
             "websocket_max_latency_seconds",
             30.0,
         )
+        # Auto-archive duration (minutes) for threads Hermes creates (auto-
+        # threads, /thread slash, handoffs). Discord only accepts 60/1440/4320/
+        # 10080; any other config value falls back to the default 1440.
+        self._thread_auto_archive_duration = self._config_int("thread_auto_archive_duration", 1440)
+        if self._thread_auto_archive_duration not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
+            self._thread_auto_archive_duration = 1440
         self._liveness_task: Optional[asyncio.Task] = None
         self._liveness_notification_task: Optional[asyncio.Task] = None
         # True while disconnect() is intentionally closing discord.py. The
@@ -5987,7 +5993,7 @@ class DiscordAdapter(BasePlatformAdapter):
             interaction: discord.Interaction,
             name: str,
             message: str = "",
-            auto_archive_duration: int = 1440,
+            auto_archive_duration: Optional[int] = None,
         ):
             # defer() is performed inside the handler *after* the auth gate
             # so a rejected invoker can receive an ephemeral rejection.
@@ -6433,11 +6439,16 @@ class DiscordAdapter(BasePlatformAdapter):
         interaction: discord.Interaction,
         name: str,
         message: str = "",
-        auto_archive_duration: int = 1440,
+        auto_archive_duration: Optional[int] = None,
     ) -> None:
         """Create a Discord thread from a slash command and start a session in it."""
         if not await self._check_slash_authorization(interaction, "/thread"):
             return
+        effective_duration = (
+            auto_archive_duration
+            if auto_archive_duration is not None
+            else self._thread_auto_archive_duration
+        )
         deferred_response = False
         try:
             await interaction.response.defer(ephemeral=True)
@@ -6453,7 +6464,7 @@ class DiscordAdapter(BasePlatformAdapter):
             interaction,
             name=name,
             message=message,
-            auto_archive_duration=auto_archive_duration,
+            auto_archive_duration=effective_duration,
         )
 
         if not result.get("success"):
@@ -7125,7 +7136,7 @@ class DiscordAdapter(BasePlatformAdapter):
         *,
         name: str,
         message: str = "",
-        auto_archive_duration: int = 1440,
+        auto_archive_duration: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Create a thread in the current Discord channel.
 
@@ -7137,7 +7148,12 @@ class DiscordAdapter(BasePlatformAdapter):
         if not name:
             return {"error": "Thread name is required."}
 
-        if auto_archive_duration not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
+        effective_duration = (
+            auto_archive_duration
+            if auto_archive_duration is not None
+            else self._thread_auto_archive_duration
+        )
+        if effective_duration not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
             allowed = ", ".join(str(v) for v in sorted(VALID_THREAD_AUTO_ARCHIVE_MINUTES))
             return {"error": f"auto_archive_duration must be one of: {allowed}."}
 
@@ -7158,7 +7174,7 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             thread = await parent_channel.create_thread(
                 name=name,
-                auto_archive_duration=auto_archive_duration,
+                auto_archive_duration=effective_duration,
                 reason=reason,
             )
             if starter_message:
@@ -7174,7 +7190,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 seed_msg = await parent_channel.send(seed_content)
                 thread = await seed_msg.create_thread(
                     name=name,
-                    auto_archive_duration=auto_archive_duration,
+                    auto_archive_duration=effective_duration,
                     reason=reason,
                 )
                 return {
@@ -7232,7 +7248,10 @@ class DiscordAdapter(BasePlatformAdapter):
 
         for attempt in range(2):
             try:
-                thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+                thread = await message.create_thread(
+                    name=thread_name,
+                    auto_archive_duration=self._thread_auto_archive_duration,
+                )
                 try:
                     setattr(thread, "_hermes_auto_thread_initial_name", thread_name)
                 except Exception:
@@ -7246,7 +7265,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     )
                     thread = await seed_msg.create_thread(
                         name=thread_name,
-                        auto_archive_duration=1440,
+                        auto_archive_duration=self._thread_auto_archive_duration,
                         reason=reason,
                     )
                     try:
@@ -7381,7 +7400,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if create is not None:
                 thread = await create(
                     name=thread_name,
-                    auto_archive_duration=1440,
+                    auto_archive_duration=self._thread_auto_archive_duration,
                     reason=reason,
                 )
                 return str(thread.id)
@@ -7399,7 +7418,7 @@ class DiscordAdapter(BasePlatformAdapter):
             seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
             thread = await seed_msg.create_thread(
                 name=thread_name,
-                auto_archive_duration=1440,
+                auto_archive_duration=self._thread_auto_archive_duration,
                 reason=reason,
             )
             return str(thread.id)

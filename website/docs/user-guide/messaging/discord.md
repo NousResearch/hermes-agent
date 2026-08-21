@@ -336,6 +336,7 @@ discord:
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
+  thread_auto_archive_duration: 1440  # Auto-archive minutes for threads Hermes creates (60/1440/4320/10080)
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
@@ -409,6 +410,19 @@ Free-response channels also **skip auto-threading** — the bot replies inline r
 When enabled, every `@mention` in a regular text channel automatically creates a new thread for the conversation. This keeps the main channel clean and gives each conversation its own isolated session history. Once a thread is created, subsequent messages in that thread don't require `@mention` — the bot knows it's already participating. Set [`thread_require_mention`](#discordthread_require_mention) to `true` to disable this in-thread shortcut for multi-bot setups.
 
 Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.free_response_channels` or `discord.no_thread_channels` also bypass auto-threading and get inline replies instead.
+
+#### `discord.thread_auto_archive_duration`
+
+**Type:** integer — **Default:** `1440`
+
+Auto-archive duration in minutes for threads Hermes creates: mention auto-threads, `/thread` slash-command sessions, and session handoff threads. Discord only accepts `60` (1 hour), `1440` (24 hours), `4320` (3 days), or `10080` (7 days); anything else falls back to the default `1440`.
+
+```yaml
+discord:
+  thread_auto_archive_duration: 4320   # archive threads Hermes creates after 3 days
+```
+
+Passing `auto_archive_duration` to the `/thread` slash command overrides this setting for that thread. Invalid values (config or slash parameter) are rejected or fall back to `1440` rather than being sent to Discord.
 
 #### `discord.reactions`
 

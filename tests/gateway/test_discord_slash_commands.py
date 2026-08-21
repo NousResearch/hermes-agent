@@ -141,6 +141,48 @@ async def test_registers_native_thread_slash_command(adapter):
     adapter._handle_thread_create_slash.assert_awaited_once_with(interaction, "Planning", "", 1440)
 
 
+# ------------------------------------------------------------------
+# thread_auto_archive_duration — config resolution and slash default
+# ------------------------------------------------------------------
+
+
+def test_thread_auto_archive_duration_defaults_to_1440():
+    """With no config value, threads use Discord's default 1440-minute archive."""
+    config = PlatformConfig(enabled=True, token="***")
+    adapter = DiscordAdapter(config)
+    assert adapter._thread_auto_archive_duration == 1440
+
+
+def test_thread_auto_archive_duration_reads_valid_config_value():
+    """A valid configured duration is honored."""
+    config = PlatformConfig(enabled=True, token="***", extra={"thread_auto_archive_duration": 4320})
+    adapter = DiscordAdapter(config)
+    assert adapter._thread_auto_archive_duration == 4320
+
+
+def test_thread_auto_archive_duration_invalid_config_falls_back_to_1440():
+    """Discord only accepts 60/1440/4320/10080; an invalid config value falls back to 1440."""
+    config = PlatformConfig(enabled=True, token="***", extra={"thread_auto_archive_duration": 9999})
+    adapter = DiscordAdapter(config)
+    assert adapter._thread_auto_archive_duration == 1440
+
+
+@pytest.mark.asyncio
+async def test_thread_slash_omitted_param_forwards_none(adapter):
+    """Omitting auto_archive_duration in /thread forwards None so the config default is used."""
+    adapter._handle_thread_create_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    command = adapter._client.tree.commands["thread"]
+    interaction = SimpleNamespace(
+        response=SimpleNamespace(defer=AsyncMock()),
+    )
+
+    await command(interaction, name="Planning", message="")
+
+    adapter._handle_thread_create_slash.assert_awaited_once_with(interaction, "Planning", "", None)
+
+
 @pytest.mark.asyncio
 async def test_run_simple_slash_executes_when_defer_interaction_expired(adapter):
     class UnknownInteraction(Exception):
@@ -346,6 +388,68 @@ async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
     interaction.followup.send.assert_awaited()
 
 
+@pytest.mark.asyncio
+async def test_handle_thread_create_slash_none_uses_config_duration(adapter):
+    """auto_archive_duration=None resolves to the configured value."""
+    adapter._thread_auto_archive_duration = 10080
+    created_thread = SimpleNamespace(id=555, name="Planning", send=AsyncMock())
+    parent_channel = SimpleNamespace(create_thread=AsyncMock(return_value=created_thread), send=AsyncMock())
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(parent=parent_channel),
+        channel_id=123,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+        guild=SimpleNamespace(name="TestGuild"),
+        followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
+    )
+
+    await adapter._handle_thread_create_slash(interaction, "Planning", "Kickoff")
+
+    parent_channel.create_thread.assert_awaited_once_with(
+        name="Planning",
+        auto_archive_duration=10080,
+        reason="Requested by Jezza via /thread",
+    )
+
+
+@pytest.mark.asyncio
+async def test_handle_thread_create_slash_explicit_param_wins(adapter):
+    """An explicit valid auto_archive_duration beats the config value."""
+    adapter._thread_auto_archive_duration = 10080
+    created_thread = SimpleNamespace(id=555, name="Planning", send=AsyncMock())
+    parent_channel = SimpleNamespace(create_thread=AsyncMock(return_value=created_thread), send=AsyncMock())
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(parent=parent_channel),
+        channel_id=123,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+        guild=SimpleNamespace(name="TestGuild"),
+        followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
+    )
+
+    await adapter._handle_thread_create_slash(interaction, "Planning", "Kickoff", 4320)
+
+    parent_channel.create_thread.assert_awaited_once_with(
+        name="Planning",
+        auto_archive_duration=4320,
+        reason="Requested by Jezza via /thread",
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_thread_rejects_invalid_explicit_duration(adapter):
+    """Explicit invalid durations are still rejected even when the config default is valid."""
+    interaction = SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="general"),
+        user=SimpleNamespace(display_name="Jezza", id=42),
+    )
+
+    result = await adapter._create_thread(interaction, name="Planning", auto_archive_duration=9999)
+
+    assert not result.get("success")
+    assert "auto_archive_duration must be one of" in result["error"]
+
+
 # ------------------------------------------------------------------
 # _dispatch_thread_session — builds correct event and routes it
 # ------------------------------------------------------------------
@@ -425,6 +529,43 @@ async def test_auto_create_thread_strips_mention_syntax_from_name(adapter):
     assert "<@" not in name, f"role/user mention leaked: {name!r}"
     assert "<#" not in name, f"channel mention leaked: {name!r}"
     assert name == "please help"
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_uses_config_archive_duration(adapter):
+    """Auto-created threads honor the configured auto-archive duration."""
+    adapter._thread_auto_archive_duration = 10080
+    thread = SimpleNamespace(id=999, name="help")
+    message = SimpleNamespace(
+        content="please help",
+        create_thread=AsyncMock(return_value=thread),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    await adapter._auto_create_thread(message)
+
+    message.create_thread.assert_awaited_once()
+    assert message.create_thread.await_args.kwargs["auto_archive_duration"] == 10080
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_fallback_uses_config_archive_duration(adapter):
+    """The seed-message fallback also honors the configured auto-archive duration."""
+    adapter._thread_auto_archive_duration = 60
+    thread = SimpleNamespace(id=999, name="help")
+    seed_msg = SimpleNamespace(create_thread=AsyncMock(return_value=thread))
+    message = SimpleNamespace(
+        content="please help",
+        create_thread=AsyncMock(side_effect=RuntimeError("direct failed")),
+        channel=SimpleNamespace(send=AsyncMock(return_value=seed_msg)),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    await adapter._auto_create_thread(message)
+
+    seed_msg.create_thread.assert_awaited_once()
+    assert seed_msg.create_thread.await_args.kwargs["auto_archive_duration"] == 60
 
 
 @pytest.mark.asyncio
@@ -599,6 +740,31 @@ def test_register_skill_command_payload_fits_discord_8kb_limit(adapter):
     assert len(payload) < 500, (
         f"Flat /skill command payload is ~{len(payload)} bytes — the whole "
         f"point of this design is that it stays small regardless of skill count"
+    )
+
+
+# ------------------------------------------------------------------
+# create_handoff_thread — config-driven auto-archive duration
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handoff_thread_uses_config_archive_duration(adapter):
+    """Handoff threads honor the configured auto-archive duration."""
+    adapter._thread_auto_archive_duration = 60
+    parent = SimpleNamespace(
+        create_thread=AsyncMock(return_value=SimpleNamespace(id=777)),
+        send=AsyncMock(),
+    )
+    adapter._client.get_channel = lambda _id: parent
+
+    thread_id = await adapter.create_handoff_thread("123", "handoff test")
+
+    assert thread_id == "777"
+    parent.create_thread.assert_awaited_once_with(
+        name="handoff test",
+        auto_archive_duration=60,
+        reason="Hermes session handoff",
     )
 
 

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import type { SpawnOptions } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, writeSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 import { test } from 'vitest'
@@ -8,6 +10,7 @@ import {
   collectRelaunchArgs,
   MARKER_SELF_ADOPT_EPOCH_MS,
   observeUpdaterHandoff,
+  openUpdaterOutputTarget,
   resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
   resolveUpdateScriptHandoff,
@@ -418,6 +421,79 @@ test('observeUpdaterHandoff accepts a clean exit 0 (Windows cmd start wrapper)',
 
   assert.equal(outcome.ok, true)
   assert.equal(outcome.code, 0)
+})
+
+test('observeUpdaterHandoff rejects an immediate clean exit 0 for a direct spawn', async () => {
+  const child = new FakeChild()
+  const timer = manualTimer()
+
+  // No wrapper to hand off to: exiting 0 inside the window means the updater
+  // returned without doing any work. This is the silent no-op that left an
+  // install on its old commit with a success-looking log and no error.
+  const outcomePromise = observeUpdaterHandoff(child, 2500, {
+    ...timer.deps,
+    immediateCleanExitIsSuccess: false
+  })
+
+  child.emit('exit', 0, null)
+
+  const outcome = await outcomePromise
+
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.reason, 'early-exit')
+  assert.equal(outcome.code, 0)
+  assert.match(outcome.message ?? '', /without starting the update/)
+})
+
+test('observeUpdaterHandoff still settles ok for a direct spawn that survives the window', async () => {
+  const child = new FakeChild()
+  const timer = manualTimer()
+
+  const outcomePromise = observeUpdaterHandoff(child, 2500, {
+    ...timer.deps,
+    immediateCleanExitIsSuccess: false
+  })
+
+  timer.fire()
+
+  const outcome = await outcomePromise
+
+  assert.equal(outcome.ok, true)
+})
+
+// ── openUpdaterOutputTarget ────────────────────────────────────────────────
+
+test('openUpdaterOutputTarget routes the detached updater stdout+stderr to a file', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'hermes-updater-log-'))
+  const logPath = path.join(dir, 'nested', 'updater-handoff.log')
+  const target = openUpdaterOutputTarget(logPath)
+
+  assert.notEqual(target.stdio, 'ignore')
+  assert.equal(Array.isArray(target.stdio), true)
+
+  const [stdin, out, err] = target.stdio as ['ignore', number, number]
+
+  assert.equal(stdin, 'ignore')
+  // stdout and stderr share one fd so interleaving is preserved.
+  assert.equal(out, err)
+
+  writeSync(out, 'updater said something\n')
+  target.close()
+
+  assert.match(readFileSync(logPath, 'utf8'), /updater said something/)
+})
+
+test('openUpdaterOutputTarget degrades to ignore rather than blocking the update', () => {
+  // A directory where the log file must be: unopenable, and never fatal.
+  const dir = mkdtempSync(path.join(tmpdir(), 'hermes-updater-log-'))
+  const logPath = path.join(dir, 'collides')
+
+  mkdirSync(logPath)
+
+  const target = openUpdaterOutputTarget(logPath)
+
+  assert.equal(target.stdio, 'ignore')
+  target.close()
 })
 
 test('observeUpdaterHandoff settles ok when the child survives the window', async () => {

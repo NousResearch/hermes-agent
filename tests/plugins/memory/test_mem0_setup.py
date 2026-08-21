@@ -16,6 +16,8 @@ from plugins.memory.mem0._setup import (
     _check_qdrant_path,
     _check_ollama,
     _check_pgvector,
+    _load_mem0_json,
+    _select_filter_by_agent_id,
 )
 
 
@@ -42,6 +44,30 @@ def _inject_fake_hermes_cli(monkeypatch):
 
 
 class TestParseFlags:
+
+    def test_load_mem0_json_returns_existing_config(self, tmp_path):
+        (tmp_path / "mem0.json").write_text(
+            json.dumps({"filter_by_agent_id": "true"}), encoding="utf-8"
+        )
+
+        assert _load_mem0_json(str(tmp_path))["filter_by_agent_id"] == "true"
+
+    def test_select_filter_by_agent_id_uses_existing_value_as_default(self, monkeypatch):
+        seen = {}
+
+        def select(title, items, default=0):
+            seen["title"] = title
+            seen["default"] = default
+            return default
+
+        monkeypatch.setattr("plugins.memory.mem0._setup._curses_select", select)
+
+        assert _select_filter_by_agent_id("true") == "true"
+        assert seen["default"] == 0
+        assert "Scope memory search to this agent only" in seen["title"]
+
+        assert _select_filter_by_agent_id("false") == "false"
+        assert seen["default"] == 1
 
     def test_mode_platform(self):
         flags = parse_flags(["--mode", "platform", "--api-key", "sk-test"])
@@ -198,6 +224,54 @@ class TestPostSetup:
         mem0_json = json.loads((tmp_path / "mem0.json").read_text())
         assert mem0_json["mode"] == "platform"
 
+    def test_platform_setup_preserves_native_false_filter_default(self, tmp_path, monkeypatch):
+        (tmp_path / "mem0.json").write_text(
+            json.dumps({"filter_by_agent_id": False}), encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            "sys.argv",
+            ["hermes", "--mode", "platform", "--api-key", "sk-test"],
+        )
+        monkeypatch.setattr(
+            "plugins.memory.mem0._setup.get_hermes_home", lambda: tmp_path
+        )
+        _inject_fake_hermes_cli(monkeypatch)
+        monkeypatch.setattr(
+            "plugins.memory.mem0._setup._curses_select",
+            lambda title, items, default=0: default,
+        )
+        config = {"memory": {}}
+
+        post_setup(str(tmp_path), config)
+
+        mem0_json = json.loads((tmp_path / "mem0.json").read_text(encoding="utf-8"))
+        assert mem0_json["filter_by_agent_id"] == "false"
+
+    def test_platform_setup_saves_filter_by_agent_id(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "sys.argv",
+            ["hermes", "--mode", "platform", "--api-key", "sk-test"],
+        )
+        monkeypatch.setattr(
+            "plugins.memory.mem0._setup.get_hermes_home", lambda: tmp_path
+        )
+        _inject_fake_hermes_cli(monkeypatch)
+
+        def select_filter(title, items, default=0):
+            if "Scope memory search to this agent only" in title:
+                return 0
+            return default
+
+        monkeypatch.setattr(
+            "plugins.memory.mem0._setup._curses_select", select_filter
+        )
+        config = {"memory": {}}
+
+        post_setup(str(tmp_path), config)
+
+        mem0_json = json.loads((tmp_path / "mem0.json").read_text(encoding="utf-8"))
+        assert mem0_json["filter_by_agent_id"] == "true"
+
 
     def test_selfhosted_flag_mode(self, tmp_path, monkeypatch):
         monkeypatch.setattr("sys.argv", [
@@ -215,6 +289,7 @@ class TestPostSetup:
         mem0_json = json.loads((tmp_path / "mem0.json").read_text())
         assert mem0_json["host"] == "http://localhost:8888"  # trailing slash stripped
         assert mem0_json["user_id"] == "hermes-user"
+        assert mem0_json["filter_by_agent_id"] == "true"
 
 
 class TestDryRun:

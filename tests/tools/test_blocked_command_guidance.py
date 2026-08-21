@@ -49,6 +49,33 @@ class TestParserLimitRecovery:
         # And nothing was saved for a genuine hardline block.
         assert not (tmp_path / ".hermes" / "cache" / "blocked-scripts").exists()
 
+    def test_parser_limit_hardline_payload_is_not_handed_back(self, tmp_path, monkeypatch):
+        """A size-blocked hardline spelling must not be returned as bash <file>."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        cmd = "rm -rf / # " + ("A" * 5000)
+        r = _hardline_block_result(_PARSER_LIMIT_DESCRIPTION, cmd)
+        assert r["approved"] is False
+        assert "bash " not in r["message"]
+        assert "review only" in r["message"]
+        import re as _re
+        m = _re.search(r"saved to (\S+\.sh)", r["message"])
+        assert m, r["message"]
+        from pathlib import Path
+        saved = Path(m.group(1))
+        assert saved.exists()
+        assert "rm -rf /" in saved.read_text()
+
+    def test_bash_saved_hardline_payload_is_blocked(self, tmp_path, monkeypatch):
+        from tools.approval import check_all_command_guards
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        saved = tmp_path / "blocked.sh"
+        saved.write_text("#!/bin/bash\nrm -rf /\n")
+        r = check_all_command_guards(f'bash "{saved}"', "local")
+        assert r.get("approved") is False
+        assert r.get("hardline") is True
+
+
     def test_old_saved_payloads_cleaned(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         import os

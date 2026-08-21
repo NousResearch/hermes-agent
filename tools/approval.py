@@ -23,6 +23,7 @@ import threading
 import time
 import unicodedata
 import uuid
+from pathlib import Path
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -673,11 +674,11 @@ def _save_blocked_payload(command: str) -> Optional[str]:
     The parser-limit block fires on payload SIZE/shape, not on the
     operation — the command itself is usually a legitimate script the
     model inlined (heredoc, giant one-liner). Materialize it to a file so
-    the recovery is one turn (`bash <file>`) instead of two (re-author via
-    write_file, then run). Saving is strictly safer than the hint-only
-    path: the file goes through the same execution pipeline as any other
-    script (including the referenced-script content guard), and nothing
-    is executed here.
+    the recovery is one turn (`bash <file>`) instead of two — but only
+    when the saved text itself would not hit the hardline floor. A
+    payload that smuggled ``rm -rf /`` (or another hardline spelling)
+    behind the size limit is still saved for the operator to inspect;
+    the agent is not told to execute it.
 
     Returns the saved path, or None on any failure (the hint then falls
     back to the manual write_file recipe).
@@ -700,16 +701,67 @@ def _save_blocked_payload(command: str) -> Optional[str]:
         path.write_text(
             "#!/bin/bash\n"
             "# Auto-saved by Hermes: this command exceeded the inline command\n"
-            "# parser limit and was blocked from direct execution. Review it,\n"
-            "# then run it via: bash " + str(path) + "\n"
+            "# parser limit and was blocked from direct execution. Review it\n"
+            "# before running it yourself in a terminal outside the agent.\n"
             + command
             + ("\n" if not command.endswith("\n") else ""),
-            encoding="utf-8", errors="replace",
+            encoding="utf-8",
+            errors="replace",
         )
         return str(path)
     except Exception:
         logger.debug("failed to save blocked payload", exc_info=True)
         return None
+
+
+def _hardline_in_payload_text(text: str) -> tuple:
+    """Return whether *text* itself matches the hardline floor.
+
+    Parser-limit is a size/shape gate, not a verdict on the operation.
+    The saved body has to be inspected separately or a catastrophic
+    spelling padded past the limit would be handed back as ``bash <file>``.
+    """
+    if not text:
+        return (False, None)
+    candidates = [text]
+    try:
+        normalized = _normalize_command_for_detection(text)
+        if normalized and normalized != text:
+            candidates.append(normalized)
+    except Exception:
+        pass
+    for candidate in candidates:
+        lowered = candidate.lower()
+        for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
+            if pattern_re.search(lowered):
+                return (True, description)
+    return (False, None)
+
+
+def _script_path_from_interpreter_command(command: str) -> Optional[str]:
+    """Return the script path for ``bash file`` / ``sh file``, else None.
+
+    ``bash -c`` and similar inline forms are not a referenced file.
+    """
+    try:
+        argv = shlex.split(command, posix=True)
+    except ValueError:
+        return None
+    if not argv:
+        return None
+    exe = os.path.basename(argv[0]).lower()
+    if exe not in {"bash", "bash.exe", "sh", "sh.exe", "dash"}:
+        return None
+    i = 1
+    while i < len(argv) and argv[i].startswith("-") and argv[i] not in {"-", "--"}:
+        if argv[i] in {"-c", "-s"} or argv[i].startswith("-c") or argv[i].startswith("-s"):
+            return None
+        i += 1
+    if i < len(argv) and argv[i] == "--":
+        i += 1
+    if i >= len(argv):
+        return None
+    return argv[i]
 
 
 def _hardline_block_result(description: str, command: str = "") -> dict:
@@ -731,20 +783,29 @@ def _hardline_block_result(description: str, command: str = "") -> dict:
     if description in (_PARSER_LIMIT_DESCRIPTION, _MALFORMED_EXEC_DESCRIPTION):
         saved = _save_blocked_payload(command) if command else None
         if saved:
-            message += (
-                " RECOVERY: this block fires on oversized/unparseable inline "
-                "command payloads (heredocs, giant one-liners), not on the "
-                f"operation itself. Your command was saved to {saved} — "
-                f"review it, then run: terminal(command=\"bash {saved}\"). "
-                "Do not retry inline."
-            )
+            hits_floor, floor_desc = _hardline_in_payload_text(command)
+            if hits_floor:
+                message += (
+                    f" The oversized payload was saved to {saved} for operator "
+                    "review only. It matches the unconditional blocklist"
+                    + (f" ({floor_desc})" if floor_desc else "")
+                    + " and must not be executed via the agent. Do not retry inline."
+                )
+            else:
+                message += (
+                    " RECOVERY: this block fires on oversized/unparseable inline "
+                    "command payloads (heredocs, giant one-liners), not on the "
+                    f"operation itself. Your command was saved to {saved} — "
+                    f'review it, then run: terminal(command="bash {saved}"). '
+                    "Do not retry inline."
+                )
         else:
             message += (
                 " RECOVERY: this block fires on oversized/unparseable inline "
                 "command payloads (heredocs, giant one-liners), not on the "
                 "operation itself. Write the script to a file with write_file, "
-                "then run it: terminal(command=\"bash /path/script.sh\") or "
-                "\"python3 /path/script.py\". Do not retry inline."
+                'then run it: terminal(command="bash /path/script.sh") or '
+                '"python3 /path/script.py". Do not retry inline.'
             )
     return {
         "approved": False,
@@ -4357,6 +4418,22 @@ def check_all_command_guards(command: str, env_type: str,
     # once host paths are bind-mounted into the sandbox.
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return {"approved": True, "message": None}
+
+    script_path = _script_path_from_interpreter_command(command)
+    if script_path:
+        try:
+            body = Path(script_path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            body = ""
+        if body:
+            hits_floor, floor_desc = _hardline_in_payload_text(body)
+            if hits_floor:
+                logger.warning(
+                    "Hardline block via referenced script %s: %s",
+                    script_path,
+                    floor_desc,
+                )
+                return _hardline_block_result(floor_desc, body)
 
     # Hardline floor: unconditional block for catastrophic commands
     # (rm -rf /, mkfs, dd to raw device, shutdown/reboot, fork bomb,

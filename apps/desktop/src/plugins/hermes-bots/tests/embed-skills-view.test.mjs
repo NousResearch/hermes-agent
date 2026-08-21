@@ -22,7 +22,7 @@ test('Edit Profile renders the pinned Capabilities surface when the export exist
 
 test('New Agent gains a Capabilities tab that materializes the profile first', () => {
   // Tab list swaps to General + Capabilities on newer builds…
-  assert.match(source, /\['capabilities', 'Capabilities'\]/)
+  assert.match(source, /\['capabilities', k\.create\.capabilitiesTab\]/)
   // …and opening it creates the profile through the same lazy door MCP setup uses.
   assert.match(source, /id === 'capabilities'/)
   assert.match(source, /ensureAgentCreated\(\)\s*\n?\s*\.then\(created => created && setCreatedForCaps\(created\)\)/)

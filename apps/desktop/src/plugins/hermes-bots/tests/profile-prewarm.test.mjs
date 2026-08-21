@@ -37,7 +37,13 @@ function renderBotRow(input = 'alpha') {
     }
   })
   const node = (type, props = {}) => ({ type, props })
+  // i18n stub: components call useBots(); behavior tests never assert labels.
+  const botsTextStub = new Proxy(function () { return '' }, {
+    get: (_t, _p) => botsTextStub,
+    apply: () => ''
+  })
   const context = {
+    useBots: () => botsTextStub,
     BotFace: 'BotFace',
     ContextMenu: 'ContextMenu',
     ContextMenuContent: 'ContextMenuContent',
@@ -166,7 +172,13 @@ test('behavior: remote default does not open this-device chat when the source di
     }
   })
   const node = (type, props = {}) => ({ type, props })
+  // i18n stub: components call useBots(); behavior tests never assert labels.
+  const botsTextStub = new Proxy(function () { return '' }, {
+    get: (_t, _p) => botsTextStub,
+    apply: () => ''
+  })
   const context = {
+    useBots: () => botsTextStub,
     BotFace: 'BotFace',
     ContextMenu: 'ContextMenu',
     ContextMenuContent: 'ContextMenuContent',

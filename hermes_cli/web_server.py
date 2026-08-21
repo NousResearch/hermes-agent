@@ -13641,25 +13641,33 @@ def _webhook_route_summary(name: str, route: Dict[str, Any], base_url: str) -> D
 
 
 @app.get("/api/webhooks")
-async def list_webhooks():
+async def list_webhooks(profile: Optional[str] = None):
     import hermes_cli.webhook as wh
 
-    base_url = wh._get_webhook_base_url()
-    subs = wh._load_subscriptions()
-    return {
-        "enabled": wh._is_webhook_enabled(),
-        "base_url": base_url,
-        "subscriptions": [
-            _webhook_route_summary(name, route, base_url)
-            for name, route in subs.items()
-        ],
-    }
+    # The dashboard can manage any profile's webhook subscriptions: the
+    # gateway adapter reads webhook_subscriptions.json from the per-profile
+    # HERMES_HOME, so a machine-level dashboard that resolves the default
+    # home would show stale/empty data whenever the active profile differs
+    # from the dashboard process's own home (#88409). Scope the whole read
+    # through the same context-local override sibling endpoints use.
+    with _config_profile_scope(profile):
+        base_url = wh._get_webhook_base_url()
+        subs = wh._load_subscriptions()
+        return {
+            "enabled": wh._is_webhook_enabled(),
+            "base_url": base_url,
+            "subscriptions": [
+                _webhook_route_summary(name, route, base_url)
+                for name, route in subs.items()
+            ],
+        }
 
 
 @app.post("/api/webhooks/enable")
-async def enable_webhooks():
+async def enable_webhooks(profile: Optional[str] = None):
     try:
-        _write_platform_enabled("webhook", True)
+        with _config_profile_scope(profile):
+            _write_platform_enabled("webhook", True)
     except Exception as exc:
         _log.exception("Failed to enable webhook platform from dashboard")
         raise HTTPException(
@@ -13667,7 +13675,7 @@ async def enable_webhooks():
             detail="Failed to enable webhook platform.",
         ) from exc
 
-    restart_result = _restart_gateway_after_webhook_enable()
+    restart_result = _restart_gateway_after_webhook_enable(profile)
     return {
         "ok": True,
         "platform": "webhook",
@@ -13678,74 +13686,76 @@ async def enable_webhooks():
 
 
 @app.post("/api/webhooks")
-async def create_webhook(body: WebhookCreate):
+async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
     import re as _re
     import secrets as _secrets
     import time as _time
     import hermes_cli.webhook as wh
 
-    if not wh._is_webhook_enabled():
-        raise HTTPException(
-            status_code=400,
-            detail="Webhook platform is not enabled. Enable it from the Webhooks page first.",
-        )
+    with _config_profile_scope(profile):
+        if not wh._is_webhook_enabled():
+            raise HTTPException(
+                status_code=400,
+                detail="Webhook platform is not enabled. Enable it from the Webhooks page first.",
+            )
 
-    name = (body.name or "").strip().lower().replace(" ", "-")
-    if not _re.match(r"^[a-z0-9][a-z0-9_-]*$", name):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid name. Use lowercase alphanumeric with hyphens/underscores.",
-        )
+        name = (body.name or "").strip().lower().replace(" ", "-")
+        if not _re.match(r"^[a-z0-9][a-z0-9_-]*$", name):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid name. Use lowercase alphanumeric with hyphens/underscores.",
+            )
 
-    if body.deliver_only and body.deliver == "log":
-        raise HTTPException(
-            status_code=400,
-            detail="Direct delivery requires a real target (telegram, discord, …), not 'log'.",
-        )
+        if body.deliver_only and body.deliver == "log":
+            raise HTTPException(
+                status_code=400,
+                detail="Direct delivery requires a real target (telegram, discord, …), not 'log'.",
+            )
 
-    secret = body.secret or _secrets.token_urlsafe(32)
-    route: Dict[str, Any] = {
-        "description": body.description or f"Dashboard-created subscription: {name}",
-        "events": [e.strip() for e in body.events if e.strip()],
-        "secret": secret,
-        "prompt": body.prompt or "",
-        "skills": [s.strip() for s in body.skills if s.strip()],
-        "deliver": body.deliver or "log",
-        "created_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
-    }
-    if body.script and body.script.strip():
-        route["script"] = body.script.strip()
-    if body.deliver_only:
-        route["deliver_only"] = True
-    if body.deliver_chat_id:
-        route["deliver_extra"] = {"chat_id": body.deliver_chat_id}
+        secret = body.secret or _secrets.token_urlsafe(32)
+        route: Dict[str, Any] = {
+            "description": body.description or f"Dashboard-created subscription: {name}",
+            "events": [e.strip() for e in body.events if e.strip()],
+            "secret": secret,
+            "prompt": body.prompt or "",
+            "skills": [s.strip() for s in body.skills if s.strip()],
+            "deliver": body.deliver or "log",
+            "created_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+        }
+        if body.script and body.script.strip():
+            route["script"] = body.script.strip()
+        if body.deliver_only:
+            route["deliver_only"] = True
+        if body.deliver_chat_id:
+            route["deliver_extra"] = {"chat_id": body.deliver_chat_id}
 
-    subs = wh._load_subscriptions()
-    subs[name] = route
-    wh._save_subscriptions(subs)
+        subs = wh._load_subscriptions()
+        subs[name] = route
+        wh._save_subscriptions(subs)
 
-    base_url = wh._get_webhook_base_url()
-    summary = _webhook_route_summary(name, route, base_url)
+        base_url = wh._get_webhook_base_url()
+        summary = _webhook_route_summary(name, route, base_url)
     # Surface the secret exactly once, on create.
     summary["secret"] = secret
     return summary
 
 
 @app.delete("/api/webhooks/{name}")
-async def delete_webhook(name: str):
+async def delete_webhook(name: str, profile: Optional[str] = None):
     import hermes_cli.webhook as wh
 
     key = (name or "").strip().lower()
-    subs = wh._load_subscriptions()
-    if key not in subs:
-        raise HTTPException(status_code=404, detail=f"No subscription named '{key}'")
-    del subs[key]
-    wh._save_subscriptions(subs)
+    with _config_profile_scope(profile):
+        subs = wh._load_subscriptions()
+        if key not in subs:
+            raise HTTPException(status_code=404, detail=f"No subscription named '{key}'")
+        del subs[key]
+        wh._save_subscriptions(subs)
     return {"ok": True}
 
 
 @app.put("/api/webhooks/{name}/enabled")
-async def set_webhook_enabled(name: str, body: WebhookEnabledToggle):
+async def set_webhook_enabled(name: str, body: WebhookEnabledToggle, profile: Optional[str] = None):
     """Enable or disable a webhook route.
 
     Disabled routes stay in the subscriptions file (so they can be
@@ -13756,11 +13766,12 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle):
     import hermes_cli.webhook as wh
 
     key = (name or "").strip().lower()
-    subs = wh._load_subscriptions()
-    if key not in subs:
-        raise HTTPException(status_code=404, detail=f"No subscription named '{key}'")
-    subs[key]["enabled"] = bool(body.enabled)
-    wh._save_subscriptions(subs)
+    with _config_profile_scope(profile):
+        subs = wh._load_subscriptions()
+        if key not in subs:
+            raise HTTPException(status_code=404, detail=f"No subscription named '{key}'")
+        subs[key]["enabled"] = bool(body.enabled)
+        wh._save_subscriptions(subs)
     return {"ok": True, "name": key, "enabled": bool(body.enabled)}
 
 

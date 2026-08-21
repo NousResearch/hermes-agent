@@ -347,6 +347,91 @@ class TestWebhookEndpoints:
         subs = self.client.get("/api/webhooks").json()["subscriptions"]
         assert subs[0]["script"] == "todoist_filter.py"
 
+    def test_webhooks_resolve_named_profile_home(self):
+        """Subscriptions must come from the requested profile's HERMES_HOME.
+
+        The gateway adapter hot-reloads webhook_subscriptions.json from the
+        per-profile home, so a dashboard managing a named profile must read
+        that file — not the dashboard process's own (default) home, which
+        shows stale/empty data whenever the gateway runs under a profile
+        (#88409).
+        """
+        from hermes_cli.webhook import _save_subscriptions
+        from hermes_constants import (
+            get_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        profile_dir = get_hermes_home() / "profiles" / "work"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
+        # Profile's own config enables the webhook platform...
+        (profile_dir / "config.yaml").write_text(
+            "platforms:\n  webhook:\n    enabled: true\n    extra:\n"
+            "      port: 8644\n",
+            encoding="utf-8",
+        )
+        # ...and owns a subscription the default home does not.
+        token = set_hermes_home_override(str(profile_dir))
+        try:
+            _save_subscriptions(
+                {"github-push": {"description": "profile-only", "secret": "x"}}
+            )
+        finally:
+            reset_hermes_home_override(token)
+
+        scoped = self.client.get("/api/webhooks?profile=work").json()
+        assert scoped["enabled"] is True
+        assert [s["name"] for s in scoped["subscriptions"]] == ["github-push"]
+
+        # The unscoped view (dashboard's own home) stays empty — the two
+        # stores are isolated, exactly like the gateway's reads.
+        default_view = self.client.get("/api/webhooks").json()
+        assert default_view["subscriptions"] == []
+
+    def test_webhook_create_writes_to_named_profile_home(self):
+        """POST /api/webhooks?profile= must persist into the profile's store.
+
+        Mirrors the gateway contract: the adapter reads
+        webhook_subscriptions.json from the profile home, so a subscription
+        created for a named profile must land there — not in the dashboard
+        process's default home (#88409).
+        """
+        from hermes_cli.webhook import _load_subscriptions
+        from hermes_constants import (
+            get_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        profile_dir = get_hermes_home() / "profiles" / "work"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        (profile_dir / "config.yaml").write_text(
+            "platforms:\n  webhook:\n    enabled: true\n    extra:\n"
+            "      port: 8644\n",
+            encoding="utf-8",
+        )
+
+        r = self.client.post(
+            "/api/webhooks?profile=work",
+            json={"name": "todoist", "deliver": "log"},
+        )
+        assert r.status_code == 200
+
+        # The subscription is visible to the profile's own store — what the
+        # gateway reads.
+        token = set_hermes_home_override(str(profile_dir))
+        try:
+            subs = _load_subscriptions()
+        finally:
+            reset_hermes_home_override(token)
+        assert "todoist" in subs
+
+        # ...and it never leaked into the default home's store.
+        default_subs = self.client.get("/api/webhooks").json()["subscriptions"]
+        assert "todoist" not in [s["name"] for s in default_subs]
+
     def test_enable_platform_starts_gateway_restart(self, monkeypatch):
         import hermes_cli.web_server as ws
         from hermes_cli.config import load_config

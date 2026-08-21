@@ -63,7 +63,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # rebound real ``googleapiclient.errors.HttpError`` is what actually
 # matches at runtime.
 GOOGLE_CHAT_AVAILABLE: bool = False
-httplib2: Any = None  # type: ignore
+urllib3: Any = None  # type: ignore
 pubsub_v1: Any = None  # type: ignore
 gax_exceptions: Any = None  # type: ignore
 service_account: Any = None  # type: ignore
@@ -143,24 +143,24 @@ def _load_google_modules() -> bool:
     every CLI invocation, even ones that never touch a gateway.
     """
     global GOOGLE_CHAT_AVAILABLE, _google_modules_loaded
-    global httplib2, pubsub_v1, gax_exceptions, service_account
+    global urllib3, pubsub_v1, gax_exceptions, service_account
     global AuthorizedHttp, build_service, HttpError, MediaFileUpload
     if _google_modules_loaded:
         return GOOGLE_CHAT_AVAILABLE
     _google_modules_loaded = True
     try:
-        import httplib2 as _httplib2
+        import urllib3 as _urllib3
         from google.cloud import pubsub_v1 as _pubsub_v1
         from google.api_core import exceptions as _gax_exceptions
         from google.oauth2 import service_account as _service_account
-        from google_auth_httplib2 import AuthorizedHttp as _AuthorizedHttp
+        from google.auth.transport.urllib3 import AuthorizedHttp as _AuthorizedHttp
         from googleapiclient.discovery import build as _build_service
         from googleapiclient.errors import HttpError as _HttpError
         from googleapiclient.http import MediaFileUpload as _MediaFileUpload
     except ImportError:
         GOOGLE_CHAT_AVAILABLE = False
         return False
-    httplib2 = _httplib2
+    urllib3 = _urllib3
     pubsub_v1 = _pubsub_v1
     gax_exceptions = _gax_exceptions
     service_account = _service_account
@@ -170,6 +170,63 @@ def _load_google_modules() -> bool:
     MediaFileUpload = _MediaFileUpload
     GOOGLE_CHAT_AVAILABLE = True
     return True
+
+
+class _Httplib2CompatResponse:
+    """Minimal httplib2.Response-compatible view over a urllib3 response.
+
+    googleapiclient's ``execute(http=...)`` expects the httplib2 request
+    protocol: ``(resp, content) = http.request(uri, method, ...)`` where
+    ``resp`` is a dict-like object exposing ``.status`` / ``.reason``.
+    ``google.auth.transport.urllib3.AuthorizedHttp`` speaks the urllib3
+    protocol instead (a single ``urllib3.HTTPResponse`` is returned), so this
+    small adapter bridges the two and lets us drop the deprecated
+    ``google-auth-httplib2`` dependency (issue #76500).
+    """
+
+    def __init__(self, response: Any) -> None:
+        self._response = response
+        self.status = response.status
+        self.reason = response.reason
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._response.headers
+
+    def __getitem__(self, key: str) -> Any:
+        return self._response.headers[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._response.headers.get(key, default)
+
+
+class _Httplib2CompatAuthorizedHttp:
+    """httplib2-protocol facade over ``google.auth.transport.urllib3.AuthorizedHttp``.
+
+    googleapiclient's discovery client calls ``http.request(uri, method, ...)``
+    (httplib2 protocol) and unpacks ``(resp, content)``. The maintained
+    ``google.auth.transport.urllib3.AuthorizedHttp`` implements the urllib3
+    request protocol (``request(method, url, ...)`` returning a single
+    ``urllib3.HTTPResponse``), so this wrapper translates between the two.
+    Each instance owns a fresh ``urllib3.PoolManager`` with the same 30s
+    timeout the httplib2 transport used.
+    """
+
+    def __init__(self, credentials: Any, timeout: float = 30.0) -> None:
+        self._authed = AuthorizedHttp(
+            credentials,
+            http=urllib3.PoolManager(timeout=urllib3.Timeout(total=timeout)),
+        )
+
+    def request(
+        self,
+        uri: str,
+        method: str = "GET",
+        body: Any = None,
+        headers: Any = None,
+        **kwargs: Any,
+    ) -> tuple:
+        response = self._authed.request(method, uri, body=body, headers=headers)
+        return _Httplib2CompatResponse(response), response.data
 
 from gateway.config import Platform, PlatformConfig
 
@@ -2526,14 +2583,14 @@ class GoogleChatAdapter(BasePlatformAdapter):
         return None
 
     def _new_authed_http(self) -> Any:
-        """Return a fresh AuthorizedHttp.
+        """Return a fresh httplib2-compatible authorized HTTP client.
 
         googleapiclient's discovery client is NOT thread-safe because httplib2
         shares SSL state between calls. Passing a fresh http= to each
         ``execute()`` avoids record-layer failures when calls run in
         ``asyncio.to_thread`` workers. Cheap (~no network).
         """
-        return AuthorizedHttp(self._credentials, http=httplib2.Http(timeout=30))
+        return _Httplib2CompatAuthorizedHttp(self._credentials, timeout=30)
 
     async def _call_with_retry(
         self,

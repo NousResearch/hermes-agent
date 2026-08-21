@@ -68,11 +68,11 @@ def _ensure_google_mocks():
     oauth2.Credentials.from_service_account_info = MagicMock(return_value=MagicMock())
     oauth2.Credentials.from_service_account_file = MagicMock(return_value=MagicMock())
 
-    # --- google_auth_httplib2 + httplib2 ---
-    httplib2 = MagicMock()
-    httplib2.Http = MagicMock()
-    google_auth_httplib2 = MagicMock()
-    google_auth_httplib2.AuthorizedHttp = MagicMock()
+    # --- google.auth.transport.urllib3 + urllib3 ---
+    urllib3 = MagicMock()
+    urllib3.PoolManager = MagicMock()
+    google_auth_urllib3 = MagicMock()
+    google_auth_urllib3.AuthorizedHttp = MagicMock()
 
     # --- googleapiclient ---
     gapi = MagicMock()
@@ -91,8 +91,10 @@ def _ensure_google_mocks():
         "google.api_core.exceptions": gax,
         "google.oauth2": MagicMock(service_account=oauth2),
         "google.oauth2.service_account": oauth2,
-        "google_auth_httplib2": google_auth_httplib2,
-        "httplib2": httplib2,
+        "google.auth": MagicMock(),
+        "google.auth.transport": MagicMock(),
+        "google.auth.transport.urllib3": google_auth_urllib3,
+        "urllib3": urllib3,
         "googleapiclient": gapi,
         "googleapiclient.discovery": gapi_discovery,
         "googleapiclient.errors": gapi_errors,

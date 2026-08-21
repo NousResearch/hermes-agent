@@ -3890,6 +3890,66 @@ def _try_azure_foundry(
     return client, final_model
 
 
+def _try_minimax_oauth(
+    model: Optional[str] = None,
+) -> Tuple[Optional[Any], Optional[str]]:
+    """Resolve a MiniMax OAuth auxiliary client with a refreshable token.
+
+    MiniMax OAuth access tokens expire in ~15 minutes. The primary-path
+    provider switch (``agent_init.py`` / ``agent_runtime_helpers.py``)
+    already swaps a static token for a per-request callable
+    (``build_minimax_oauth_token_provider()``) for exactly this reason —
+    a long session must survive the token expiring mid-conversation.
+    Auxiliary tasks (title generation, compression, memory extraction,
+    vision, session search, ...) go through a separately-cached client and
+    need the same treatment, or a long session starts 401ing on side
+    channels once the token captured at startup goes stale (#49232,
+    #22213).
+
+    Mirrors the ``_try_azure_foundry`` shape: resolve credentials via the
+    same helper ``hermes model`` login uses, then forward the callable
+    ``api_key`` through ``_maybe_wrap_anthropic`` unchanged — it already
+    detects callables and installs the bearer-injecting httpx hook (see
+    the Entra ID branch of ``_try_azure_foundry`` above).
+
+    Returns ``(client, model)`` or ``(None, None)`` when not logged in.
+    """
+    try:
+        from hermes_cli.auth import AuthError, resolve_minimax_oauth_runtime_credentials
+    except ImportError:
+        return None, None
+
+    try:
+        creds = resolve_minimax_oauth_runtime_credentials(as_token_provider=True)
+    except AuthError as exc:
+        logger.debug("Auxiliary minimax-oauth: %s", exc)
+        return None, None
+    except Exception as exc:
+        # Token refresh does a live HTTP call (portal /oauth/token) that
+        # only wraps HTTP-level failures in AuthError, not transport
+        # errors (timeout, DNS, connection refused). A flaky network
+        # blip on a side-channel task must not crash the caller — same
+        # belt-and-suspenders as _try_azure_foundry above.
+        logger.debug("Auxiliary minimax-oauth runtime error: %s", exc)
+        return None, None
+
+    api_key = creds["api_key"]  # zero-arg callable, not a string — see docstring
+    base_url = str(creds.get("base_url", "") or "")
+    if not base_url:
+        return None, None
+
+    final_model = _normalize_resolved_model(
+        model or _get_aux_model_for_provider("minimax-oauth"), "minimax-oauth",
+    )
+    if not final_model:
+        return None, None
+
+    client = _create_openai_client(api_key=api_key, base_url=base_url)
+    return _maybe_wrap_anthropic(
+        client, final_model, api_key, base_url, "anthropic_messages",
+    ), final_model
+
+
 def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
@@ -6753,6 +6813,23 @@ def resolve_provider_client(
             )
             return None, None
         final_model = _normalize_resolved_model(model or default_model, provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
+    # ── MiniMax OAuth (routed here, not through the api_key branch below —
+    # its auth_type is "oauth_minimax", so PROVIDER_REGISTRY dispatch on
+    # auth_type never reaches it and it silently dead-ends in the
+    # unhandled-auth_type fallback at the end of this function; see
+    # _try_minimax_oauth's docstring for why a callable token, not a
+    # static string, is required here) ────────────────────────────────
+    if provider == "minimax-oauth":
+        client, final_model = _try_minimax_oauth(model=model)
+        if client is None:
+            logger.warning(
+                "resolve_provider_client: minimax-oauth requested but no "
+                "credentials found (run: hermes model)"
+            )
+            return None, None
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 

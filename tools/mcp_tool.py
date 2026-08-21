@@ -880,18 +880,102 @@ def _scan_mcp_description(server_name: str, tool_name: str, description: str) ->
     return findings
 
 
+def _env_key(env: dict, key: str) -> str | None:
+    """Return the real env key matching *key*."""
+    if sys.platform == "win32":
+        lowered = key.lower()
+        # If a normal dict contains both inherited ``PATH`` and configured
+        # ``Path``, the later entry is what Windows passes to the child.
+        for candidate in reversed(env):
+            if str(candidate).lower() == lowered:
+                return candidate
+        return None
+    return key if key in env else None
+
+
+def _env_get(env: dict, key: str) -> str | None:
+    """Return *key* from env, honoring Windows' case-insensitive names."""
+    real_key = _env_key(env, key)
+    return env[real_key] if real_key is not None else None
+
+
 def _prepend_path(env: dict, directory: str) -> dict:
     """Prepend *directory* to env PATH if it is not already present."""
     updated = dict(env or {})
     if not directory:
         return updated
 
-    existing = updated.get("PATH", "")
+    path_key = _env_key(updated, "PATH") or "PATH"
+    existing = updated.get(path_key, "")
     parts = [part for part in existing.split(os.pathsep) if part]
     if directory not in parts:
         parts = [directory, *parts]
-    updated["PATH"] = os.pathsep.join(parts) if parts else directory
+    updated[path_key] = os.pathsep.join(parts) if parts else directory
     return updated
+
+
+def _which_in_env(command: str, env: dict) -> str | None:
+    """Resolve *command* against the same env passed to the MCP process."""
+    path_arg = _env_get(env, "PATH")
+    pathext = _env_get(env, "PATHEXT")
+
+    if sys.platform != "win32" or not isinstance(pathext, str):
+        return shutil.which(command, path=path_arg)
+
+    # ``shutil.which(path=...)`` still reads PATHEXT from ``os.environ``.
+    # Reproduce its Windows search with the target env's PATHEXT instead of
+    # temporarily mutating process-global state while other MCPs may connect.
+    if path_arg is None:
+        path_arg = os.environ.get("PATH", os.defpath)
+    if not path_arg:
+        return None
+
+    paths = os.fsdecode(path_arg).split(os.pathsep)
+    mode = os.F_OK | os.X_OK
+    needs_curdir = getattr(shutil, "_win_path_needs_curdir", None)
+    if needs_curdir is None:
+        # Python 3.11 always gives the current directory precedence.
+        if os.curdir not in paths:
+            paths.insert(0, os.curdir)
+    elif needs_curdir(command, mode):
+        # Python 3.12+ delegates this decision to the Windows API.
+        paths.insert(0, os.curdir)
+
+    default_pathext = getattr(shutil, "_WIN_DEFAULT_PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    extensions = [ext for ext in (pathext or default_pathext).split(os.pathsep) if ext]
+    if needs_curdir is None:
+        files = (
+            [command]
+            if any(command.lower().endswith(ext.lower()) for ext in extensions)
+            else [command + ext for ext in extensions]
+        )
+    else:
+        # Python 3.12+ strips trailing dots and, for executable lookups, tries
+        # the direct name first only when it already has a PATHEXT suffix.
+        extensions = [ext.rstrip(".") for ext in extensions]
+        files = [command + ext for ext in extensions]
+        if any(command.upper().endswith(ext.upper()) for ext in extensions):
+            files.insert(0, command)
+
+    access_check = getattr(shutil, "_access_check", None)
+    seen = set()
+    for directory in paths:
+        normdir = os.path.normcase(directory)
+        if normdir in seen:
+            continue
+        seen.add(normdir)
+        for filename in files:
+            candidate = os.path.join(directory, filename)
+            if access_check is not None:
+                if access_check(candidate, mode):
+                    return candidate
+            elif (
+                os.path.exists(candidate)
+                and os.access(candidate, mode)
+                and not os.path.isdir(candidate)
+            ):
+                return candidate
+    return None
 
 
 # Safety cap on nextCursor pagination loops so a misbehaving server that
@@ -981,30 +1065,11 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     resolved_command = os.path.expanduser(str(command).strip())
     resolved_env = dict(env or {})
 
-    if os.sep not in resolved_command:
-        path_arg = resolved_env["PATH"] if "PATH" in resolved_env else None
-        which_hit = shutil.which(resolved_command, path=path_arg)
-        if which_hit is None and sys.platform == "win32" and resolved_env:
-            # shutil.which(..., path=...) resolves extensions from the PARENT
-            # process PATHEXT, not the MCP subprocess env — so a config that
-            # supplies both PATH and PATHEXT can fail to resolve a command
-            # its own env can find (#56536). Retry with the config's PATHEXT
-            # (any key casing: PATHEXT / Pathext / pathext) applied.
-            cfg_pathext = next(
-                (v for k, v in resolved_env.items()
-                 if k.upper() == "PATHEXT" and isinstance(v, str) and v.strip()),
-                None,
-            )
-            if cfg_pathext and cfg_pathext != os.environ.get("PATHEXT"):
-                _saved = os.environ.get("PATHEXT")
-                try:
-                    os.environ["PATHEXT"] = cfg_pathext
-                    which_hit = shutil.which(resolved_command, path=path_arg)
-                finally:
-                    if _saved is None:
-                        os.environ.pop("PATHEXT", None)
-                    else:
-                        os.environ["PATHEXT"] = _saved
+    # ``os.path.dirname`` recognizes both ``\\`` and ``/`` on Windows.
+    # Keep directory-qualified commands pinned to their configured location;
+    # treating ``subdir/demo`` as a bare name would search every PATH entry.
+    if not os.path.dirname(resolved_command):
+        which_hit = _which_in_env(resolved_command, resolved_env)
         if which_hit:
             resolved_command = which_hit
         elif resolved_command in {"npx", "npm", "node"}:

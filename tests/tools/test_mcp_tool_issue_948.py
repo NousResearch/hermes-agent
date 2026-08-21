@@ -4,8 +4,16 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
-from tools.mcp_tool import MCPServerTask, _format_connect_error, _resolve_stdio_command, _MCP_AVAILABLE
+
+from tools.mcp_tool import (
+    MCPServerTask,
+    _build_safe_env,
+    _format_connect_error,
+    _resolve_stdio_command,
+    _MCP_AVAILABLE,
+)
 
 # Ensure the mcp module symbols exist for patching even when the SDK isn't installed
 if not _MCP_AVAILABLE:
@@ -64,6 +72,98 @@ def test_resolve_stdio_command_falls_back_to_usr_local_bin():
     # /usr/local/bin must be prepended so npx's shebang (`/usr/bin/env node`)
     # can find node in the same directory.
     assert env["PATH"].split(os.pathsep)[0] == os.path.dirname(target)
+
+
+@pytest.mark.windows_only
+def test_resolve_stdio_command_respects_env_pathext_on_windows(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cmd_path = bin_dir / "demo.CMD"
+    cmd_path.write_text("@echo off\n", encoding="utf-8")
+    cmd_path.chmod(0o755)
+
+    monkeypatch.setenv("PATHEXT", ".EXE")
+
+    command, env = _resolve_stdio_command(
+        "demo",
+        {"PATH": str(bin_dir), "PATHEXT": ".CMD"},
+    )
+
+    assert os.path.normcase(command) == os.path.normcase(str(cmd_path))
+    assert env["PATH"].split(os.pathsep)[0] == str(bin_dir)
+    assert os.environ["PATHEXT"] == ".EXE"
+
+
+@pytest.mark.windows_only
+def test_resolve_stdio_command_preserves_windows_path_key_casing(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cmd_path = bin_dir / "demo.CMD"
+    cmd_path.write_text("@echo off\n", encoding="utf-8")
+    cmd_path.chmod(0o755)
+
+    inherited_path = str(tmp_path / "inherited")
+    monkeypatch.setenv("PATH", inherited_path)
+    monkeypatch.setenv("PATHEXT", ".EXE")
+    safe_env = _build_safe_env({"Path": str(bin_dir), "Pathext": ".CMD"})
+
+    command, env = _resolve_stdio_command("demo", safe_env)
+
+    assert os.path.normcase(command) == os.path.normcase(str(cmd_path))
+    assert "Path" in env
+    assert env["Path"].split(os.pathsep)[0] == str(bin_dir)
+    assert env["PATH"] == inherited_path
+
+
+@pytest.mark.windows_only
+def test_resolve_stdio_command_appends_pathext_to_unlisted_suffix(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cmd_path = bin_dir / "demo.py.CMD"
+    cmd_path.write_text("@echo off\n", encoding="utf-8")
+    cmd_path.chmod(0o755)
+
+    command, _env = _resolve_stdio_command(
+        "demo.py",
+        {"PATH": str(bin_dir), "PATHEXT": ".CMD"},
+    )
+
+    assert os.path.normcase(command) == os.path.normcase(str(cmd_path))
+
+
+@pytest.mark.windows_only
+def test_resolve_stdio_command_does_not_mutate_process_pathext(tmp_path, monkeypatch):
+    observed_pathext = []
+
+    def fake_access_check(_candidate, _mode):
+        observed_pathext.append(os.environ.get("PATHEXT"))
+        return False
+
+    monkeypatch.setattr("tools.mcp_tool.shutil._access_check", fake_access_check)
+    monkeypatch.setenv("PATHEXT", ".EXE")
+
+    _resolve_stdio_command(
+        "demo",
+        {"PATH": str(tmp_path), "PATHEXT": ".CMD"},
+    )
+
+    assert observed_pathext
+    assert set(observed_pathext) == {".EXE"}
+
+
+@pytest.mark.windows_only
+def test_resolve_stdio_command_does_not_search_path_for_forward_slash(tmp_path):
+    path_dir = tmp_path / "path-bin"
+    nested = path_dir / "subdir"
+    nested.mkdir(parents=True)
+    (nested / "demo.CMD").write_text("@echo off\n", encoding="utf-8")
+
+    command, _env = _resolve_stdio_command(
+        "subdir/demo",
+        {"PATH": str(path_dir), "PATHEXT": ".CMD"},
+    )
+
+    assert command == "subdir/demo"
 
 
 # ---------------------------------------------------------------------------

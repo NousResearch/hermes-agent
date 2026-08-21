@@ -663,17 +663,17 @@ class TestOwnTabPreamble:
         fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
                   and n.name == "_hermes_ensure_own_tab")
 
-        # Walk statements in source order; find the gate return (inside the
-        # version-check if) and the createTarget call, assert ordering.
-        gate_return_line = None
+        # Collect the line numbers of every return and of the createTarget
+        # call. ast.walk is breadth-first (NOT source order), so ordering is
+        # decided from line numbers: the earliest return is the version
+        # gate's stand-down (the gate sits at the top of the function body),
+        # and it must precede any target creation.
+        return_lines = []
         create_target_line = None
 
         for node in ast.walk(fn):
-            if isinstance(node, ast.Return) and gate_return_line is None:
-                # The first return in the function is the version gate's
-                # stand-down (the marker-file return comes later, guarded by
-                # an os.path.exists check).
-                gate_return_line = node.lineno
+            if isinstance(node, ast.Return):
+                return_lines.append(node.lineno)
             if isinstance(node, ast.Call):
                 func = node.func
                 # cdp("Target.createTarget", ...).get("targetId") — match the
@@ -683,15 +683,32 @@ class TestOwnTabPreamble:
                         if (isinstance(arg, ast.Constant)
                                 and arg.value == "Target.createTarget"):
                             create_target_line = node.lineno
-        assert gate_return_line is not None, "version-gate return missing"
+        assert return_lines, "no returns found in preamble function"
         assert create_target_line is not None, "createTarget call missing"
-        assert gate_return_line < create_target_line, (
+        assert min(return_lines) < create_target_line, (
             "the native-isolation stand-down must run before any target is "
             "created, else harness 0.1.9+ gets a redundant tab (#91522)"
         )
-        # The embedded threshold matches the module-level constant so the
-        # two can't drift apart silently.
-        assert bu_cli._NATIVE_TAB_ISOLATION_SINCE == (0, 1, 9)
+        # The threshold tuple embedded in the preamble's version gate must
+        # equal the module-level constant — extracted from the AST so the
+        # two implementations can't drift apart silently (editing the
+        # preamble's literal without the constant now fails this test).
+        embedded = None
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+                continue
+            if not isinstance(node.ops[0], ast.GtE):
+                continue
+            comparator = node.comparators[0]
+            if not (isinstance(comparator, ast.Tuple)
+                    and all(isinstance(e, ast.Constant) for e in comparator.elts)):
+                continue
+            embedded = tuple(e.value for e in comparator.elts)
+        assert embedded is not None, "version-gate tuple comparison missing"
+        assert embedded == bu_cli._NATIVE_TAB_ISOLATION_SINCE, (
+            "preamble's embedded threshold drifted from "
+            "_NATIVE_TAB_ISOLATION_SINCE"
+        )
 
     def test_version_prefix_parser(self):
         """The leading-numeric parser mirrors the preamble's inline parse

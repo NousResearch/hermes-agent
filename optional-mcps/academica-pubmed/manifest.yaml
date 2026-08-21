@@ -1,0 +1,42 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: academica-pubmed
+description: >-
+  Ranked PubMed literature retrieval with retained source identifiers (PMID, journal, authorship).
+source: https://github.com/academica-sh/academica-mcp
+
+# Hosted Streamable HTTP. Read-only evidence retrieval. Hermes does not
+# spawn a local process. One Academica API key authenticates every server
+# in this family (https://academica.sh/mcp/keys).
+transport:
+  type: http
+  url: https://academica.sh/api/mcp/pubmed
+  headers:
+    Authorization: "Bearer ${ACADEMICA_API_KEY}"
+
+auth:
+  type: api_key
+  env:
+    - name: ACADEMICA_API_KEY
+      prompt: "Academica API key (https://academica.sh/mcp/keys)"
+      required: true
+      secret: true
+
+suggest:
+  keywords:
+    - pubmed
+    - medline
+    - biomedical literature
+    - PMID
+  hosts:
+    - academica.sh
+
+post_install: |
+  Issue a key at https://academica.sh/mcp/keys. Developer keys are 100
+  calls/month. Privacy: https://academica.sh/legal/privacy. Terms:
+  https://academica.sh/legal/terms.
+
+  The eight Academica catalog entries share ACADEMICA_API_KEY. Start a
+  new Hermes session after install so the tools load.

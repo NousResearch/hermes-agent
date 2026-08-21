@@ -1,0 +1,43 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: academica-reimbursement
+description: >-
+  Native reimbursement schedules, code evidence, provider economics, jurisdiction coverage, and observed procedure volume.
+source: https://github.com/academica-sh/academica-mcp
+
+# Hosted Streamable HTTP. Read-only evidence retrieval. Hermes does not
+# spawn a local process. One Academica API key authenticates every server
+# in this family (https://academica.sh/mcp/keys).
+transport:
+  type: http
+  url: https://academica.sh/api/mcp/reimbursement
+  headers:
+    Authorization: "Bearer ${ACADEMICA_API_KEY}"
+
+auth:
+  type: api_key
+  env:
+    - name: ACADEMICA_API_KEY
+      prompt: "Academica API key (https://academica.sh/mcp/keys)"
+      required: true
+      secret: true
+
+suggest:
+  keywords:
+    - reimbursement
+    - market access
+    - CMS
+    - HCRIS
+    - MBS
+  hosts:
+    - academica.sh
+
+post_install: |
+  Issue a key at https://academica.sh/mcp/keys. Developer keys are 100
+  calls/month. Privacy: https://academica.sh/legal/privacy. Terms:
+  https://academica.sh/legal/terms.
+
+  The eight Academica catalog entries share ACADEMICA_API_KEY. Start a
+  new Hermes session after install so the tools load.

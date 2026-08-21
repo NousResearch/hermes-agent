@@ -3924,6 +3924,138 @@ class TestThreadContextUnverifiedTagging:
 
 
 # ---------------------------------------------------------------------------
+# TestThreadContextFetchRetry
+# ---------------------------------------------------------------------------
+
+
+class _FakeSlackApiError(Exception):
+    """Minimal stand-in for slack_sdk's SlackApiError: message + response
+    object exposing ``status_code``."""
+
+    def __init__(self, message, status_code):
+        super().__init__(message)
+        self.response = MagicMock()
+        self.response.status_code = status_code
+
+
+class TestThreadContextFetchRetry:
+    """conversations.replies is read-only, so besides Tier-3 rate limits the
+    fetch also retries connection/socket timeouts and 5xx responses —
+    transient failures where a retry can't cause duplicate delivery. Applies
+    to both _fetch_thread_context and the cold-cache fetch in
+    _fetch_thread_parent_text (shared _conversations_replies_with_retry)."""
+
+    _MESSAGES = [
+        {"ts": "100.0", "user": "U_BOB", "text": "kicking off"},
+        {"ts": "101.0", "user": "U_BOB", "text": "any updates?"},
+    ]
+
+    async def _fetch(self, adapter):
+        adapter._thread_context_cache.clear()
+        with (
+            patch.object(
+                adapter, "_resolve_user_name",
+                new=AsyncMock(side_effect=lambda uid, **_: uid),
+            ),
+            patch("asyncio.sleep", new_callable=AsyncMock) as sleep_mock,
+        ):
+            content = await adapter._fetch_thread_context(
+                channel_id="C1", thread_ts="100.0", current_ts="999.0",
+            )
+        return content, sleep_mock
+
+    @pytest.mark.asyncio
+    async def test_retries_on_socket_timeout(self, adapter):
+        adapter._app.client.conversations_replies = AsyncMock(
+            side_effect=[
+                asyncio.TimeoutError("timed out"),
+                {"messages": self._MESSAGES},
+            ]
+        )
+        content, sleep_mock = await self._fetch(adapter)
+        assert "U_BOB: kicking off" in content
+        assert adapter._app.client.conversations_replies.call_count == 2
+        sleep_mock.assert_awaited_once_with(1.0)
+
+    @pytest.mark.asyncio
+    async def test_retries_on_5xx_status(self, adapter):
+        adapter._app.client.conversations_replies = AsyncMock(
+            side_effect=[
+                _FakeSlackApiError("server error", 503),
+                {"messages": self._MESSAGES},
+            ]
+        )
+        content, _ = await self._fetch(adapter)
+        assert "U_BOB: kicking off" in content
+        assert adapter._app.client.conversations_replies.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_retries_on_rate_limit(self, adapter):
+        adapter._app.client.conversations_replies = AsyncMock(
+            side_effect=[
+                _FakeSlackApiError("ratelimited", 429),
+                {"messages": self._MESSAGES},
+            ]
+        )
+        content, _ = await self._fetch(adapter)
+        assert "U_BOB: kicking off" in content
+        assert adapter._app.client.conversations_replies.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_no_retry_on_permanent_error(self, adapter):
+        adapter._app.client.conversations_replies = AsyncMock(
+            side_effect=Exception("channel_not_found")
+        )
+        content, sleep_mock = await self._fetch(adapter)
+        assert content == ""
+        assert adapter._app.client.conversations_replies.call_count == 1
+        sleep_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_gives_up_after_three_attempts(self, adapter):
+        adapter._app.client.conversations_replies = AsyncMock(
+            side_effect=asyncio.TimeoutError("timed out")
+        )
+        content, sleep_mock = await self._fetch(adapter)
+        assert content == ""
+        assert adapter._app.client.conversations_replies.call_count == 3
+        assert sleep_mock.await_count == 2  # backoff between attempts only
+
+    @pytest.mark.asyncio
+    async def test_parent_text_cold_fetch_retries_on_timeout(self, adapter):
+        """The cold-cache fetch in _fetch_thread_parent_text goes through the
+        same retry wrapper."""
+        adapter._thread_context_cache.clear()
+        adapter._app.client.conversations_replies = AsyncMock(
+            side_effect=[
+                asyncio.TimeoutError("timed out"),
+                {"messages": [{"ts": "100.0", "user": "U_BOB", "text": "root message"}]},
+            ]
+        )
+        with patch("asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
+            text = await adapter._fetch_thread_parent_text(
+                channel_id="C1", thread_ts="100.0",
+            )
+        assert text == "root message"
+        assert adapter._app.client.conversations_replies.call_count == 2
+        sleep_mock.assert_awaited_once_with(1.0)
+
+    @pytest.mark.asyncio
+    async def test_parent_text_no_retry_on_permanent_error(self, adapter):
+        adapter._thread_context_cache.clear()
+        adapter._app.client.conversations_replies = AsyncMock(
+            side_effect=Exception("channel_not_found")
+        )
+        with patch("asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
+            text = await adapter._fetch_thread_parent_text(
+                channel_id="C1", thread_ts="100.0",
+            )
+        assert text == ""
+        assert adapter._app.client.conversations_replies.call_count == 1
+        sleep_mock.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # TestThreadContextAppMessages
 # ---------------------------------------------------------------------------
 

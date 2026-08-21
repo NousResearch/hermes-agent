@@ -63,6 +63,7 @@ PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = "/tmp/hermes-results"
 SPILLOVER_SUBDIR = "cache/spillover"
 SPILLOVER_MAX_AGE_HOURS = 24
+RESULT_TTL_DAYS = 7
 HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -204,7 +205,7 @@ def _resolve_storage_dir(env) -> str:
             except Exception as exc:
                 logger.debug("Could not resolve env temp dir: %s", exc)
             else:
-                if temp_dir:
+                if isinstance(temp_dir, str) and temp_dir:
                     temp_dir = temp_dir.rstrip("/") or "/"
                     return f"{temp_dir}/hermes-results"
     return STORAGE_DIR
@@ -260,9 +261,65 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     the exec-arg ceiling.
     """
     storage_dir = os.path.dirname(remote_path)
-    cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
+    quoted_dir = shlex.quote(storage_dir)
+    quoted_path = shlex.quote(remote_path)
+    # Persisted results can contain credentials or private session history.
+    # Create them under a private directory with a restrictive umask, and
+    # remove the target before a retry so an older permissive mode cannot
+    # survive shell redirection. On systems with NFSv4-style ACLs (notably
+    # macOS), chmod alone does not revoke inherited grants, so strip those
+    # ACLs before applying and verifying the private mode. POSIX ACLs are
+    # constrained by the mode bits, and setfacl removes any residual entries
+    # where available. Reject a symlinked or foreign-owned leaf directory
+    # before writing beneath a shared temp root. Cleanup is deliberately
+    # best-effort: a backend without a compatible `find` must still persist.
+    cmd = (
+        "umask 077 && "
+        f"[ ! -L {quoted_dir} ] && mkdir -p {quoted_dir} && "
+        f"[ -O {quoted_dir} ] && "
+        f"if [ \"$(uname -s 2>/dev/null)\" = Darwin ]; then "
+        f"chmod -N {quoted_dir}; "
+        "elif command -v setfacl >/dev/null 2>&1; then "
+        f"setfacl -b -k {quoted_dir}; fi && "
+        f"chmod 700 {quoted_dir} && "
+        f"(find {quoted_dir} \\( -type f -o -type l \\) "
+        f"-name '*.txt' -mtime +{RESULT_TTL_DAYS - 1} "
+        "-exec rm -f {} + 2>/dev/null || true) && "
+        f"rm -f {quoted_path} && cat > {quoted_path} && "
+        f"if [ \"$(uname -s 2>/dev/null)\" = Darwin ]; then "
+        f"chmod -N {quoted_path}; "
+        "elif command -v setfacl >/dev/null 2>&1; then "
+        f"setfacl -b {quoted_path}; fi && "
+        f"chmod 600 {quoted_path} && "
+        f"mode=$(stat -c '%a' {quoted_path} 2>/dev/null || "
+        f"stat -f '%Lp' {quoted_path} 2>/dev/null) && [ \"$mode\" = 600 ]"
+    )
     result = env.execute(cmd, timeout=30, stdin_data=content)
     return result.get("returncode", 1) == 0
+
+
+def _expire_persisted_result_on_access(remote_path: str, env) -> bool | None:
+    """Delete an expired persisted result before it is served.
+
+    Returns ``True`` when an existing result was expired and removed, ``False``
+    when the retention probe completed and the result is still current, and
+    ``None`` when expiry or deletion could not be verified. Callers restrict
+    this helper to the active environment's resolved ``hermes-results``
+    directory and must fail closed on ``None``.
+    """
+    quoted_path = shlex.quote(remote_path)
+    cmd = (
+        f"expired=$(find {quoted_path} -prune \\( -type f -o -type l \\) "
+        f"-mtime +{RESULT_TTL_DAYS - 1} -print -quit 2>/dev/null) && "
+        "if [ -n \"$expired\" ]; then "
+        f"rm -f {quoted_path} && printf '%s' expired; "
+        "fi"
+    )
+    result = env.execute(cmd, timeout=30)
+    if result.get("returncode", 1) != 0:
+        return None
+    output = result.get("output", result.get("stdout", ""))
+    return output.strip() == "expired"
 
 
 def _build_persisted_message(

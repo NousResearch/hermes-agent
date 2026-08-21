@@ -1636,13 +1636,75 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 "block or produce infinite output."
             )
 
+        # Keep a lexical host path for the persisted-result expiry gate. The
+        # ordinary resolver intentionally dereferences symlinks, but the gate
+        # must inspect/delete an expired symlink artifact itself, never its
+        # target. Canonicalize only the parent below so /tmp aliases still
+        # compare correctly on macOS.
+        expiry_candidate = None
+        if sys.platform != "win32" and not _uses_container_paths(task_id):
+            expanded = _expand_tilde(path)
+            candidate = Path(expanded)
+            if not candidate.is_absolute():
+                candidate = _resolve_base_dir(task_id, container_paths=False) / candidate
+            expiry_candidate = os.path.abspath(os.fspath(candidate))
+
         _resolved = _resolve_path_for_task(path, task_id)
+
+        # Persisted oversized tool results are sensitive, short-lived
+        # artifacts. Enforce their TTL when they are served as well as during
+        # later writes, so a result with no successor cannot remain readable
+        # indefinitely. Scope the mutating check to the active environment's
+        # exact storage directory; reading an unrelated old file must stay
+        # read-only.
+        file_ops = _get_file_ops(task_id)
+        from tools.tool_result_storage import (
+            RESULT_TTL_DAYS,
+            _expire_persisted_result_on_access,
+            _resolve_storage_dir,
+        )
+
+        file_env = getattr(file_ops, "env", None)
+        raw_persisted_dir = _resolve_storage_dir(file_env)
+        if _file_ops_uses_host_paths(file_ops):
+            # macOS exposes /tmp through /private/tmp; canonicalize the parent
+            # for comparison without dereferencing the leaf symlink before the
+            # expiry helper has a chance to remove it.
+            path_flavor = os.path
+            persisted_dir = os.path.realpath(raw_persisted_dir)
+            candidate_path = expiry_candidate or os.fspath(_resolved)
+            resolved_path = os.path.join(
+                os.path.realpath(os.path.dirname(candidate_path)),
+                os.path.basename(candidate_path),
+            )
+        else:
+            # Remote/container paths are POSIX even when the Hermes host is
+            # Windows; never reinterpret them with the host path module.
+            path_flavor = posixpath
+            persisted_dir = posixpath.normpath(raw_persisted_dir)
+            resolved_path = posixpath.normpath(os.fspath(_resolved))
+        if (
+            path_flavor.dirname(resolved_path) == persisted_dir
+            and path_flavor.basename(resolved_path).endswith(".txt")
+        ):
+            expiry_status = _expire_persisted_result_on_access(resolved_path, file_env)
+            if expiry_status is True:
+                return tool_error(
+                    f"Persisted tool result expired after {RESULT_TTL_DAYS} days "
+                    "and was deleted. Re-run the original tool call if the output "
+                    "is still needed."
+                )
+            if expiry_status is None:
+                return tool_error(
+                    "Persisted tool result retention could not be verified safely; "
+                    "access denied. Check backend permissions and retry."
+                )
 
         # ── Special-file type guard (stat-based) ──────────────────────
         # The name blocklist above catches /dev/* and /proc/* aliases; this
         # catches the class — any FIFO/socket/device wherever it lives. A
         # read on a FIFO blocks until the exec timeout: a self-shipped DoS.
-        if _file_ops_uses_host_paths(_get_file_ops(task_id)):
+        if _file_ops_uses_host_paths(file_ops):
             kind = _special_file_kind(_resolved)
             if kind is not None:
                 return json.dumps({
@@ -1845,7 +1907,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 pass  # stat failed — fall through to full read
 
         # ── Perform the read ──────────────────────────────────────────
-        file_ops = _get_file_ops(task_id)
         result = file_ops.read_file(path, offset, limit)
         result_dict = result.to_dict()
 

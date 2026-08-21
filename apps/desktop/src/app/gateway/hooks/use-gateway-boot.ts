@@ -744,6 +744,16 @@ export function useGatewayBoot({
           failDesktopBoot(message)
           notifyError(err, translateNow('boot.errors.desktopBootFailed'))
           setSessionsLoading(false)
+
+          // A cold Windows backend can accept the WebSocket while its Python
+          // event loop is still busy importing, then miss the ready-frame
+          // deadline. Treat that first transport failure like a post-boot drop:
+          // keep the recovery overlay available while the existing bounded
+          // reconnect loop retries. Auth rejection remains terminal.
+          if (!isGatewayReauthRequired(err)) {
+            bootCompleted = true
+            scheduleReconnect()
+          }
         }
       }
     }

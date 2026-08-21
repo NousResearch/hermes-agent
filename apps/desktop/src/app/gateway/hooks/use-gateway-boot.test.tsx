@@ -263,6 +263,23 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($desktopBoot.get().error).toBeTruthy()
   })
 
+  it('retries a transient initial gateway failure and completes boot when it recovers', async () => {
+    FakeWebSocket.mode = 'fail'
+    render(<Harness />)
+    await flushAsync()
+
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect($desktopBoot.get().error).toBeTruthy()
+
+    FakeWebSocket.mode = 'open'
+    await advanceBackoff()
+
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(1)
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+    expect($desktopBoot.get().visible).toBe(false)
+  })
+
   it('resets the old machine context before connecting an applied gateway', async () => {
     const beforeConnectionSwitch = vi.fn()
     render(<Harness beforeConnectionSwitch={beforeConnectionSwitch} />)

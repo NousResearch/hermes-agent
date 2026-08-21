@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  DEFAULT_BACKEND_READY_TIMEOUT_MS,
   DEFAULT_HEALTH_PROBE_TIMEOUT_MS,
   isAuthRejectionError,
   isGatedMissingHealthError,
@@ -12,6 +13,33 @@ import {
 } from './backend-health'
 
 const GATE_401 = '401: {"error":"unauthenticated","detail":"Unauthorized","reason":"no_cookie","login_url":"/login"}'
+
+test('allows a Windows cold backend up to 90 seconds to become ready', async () => {
+  let currentTime = 0
+  let attempts = 0
+
+  await waitForHermesReady('http://127.0.0.1:9000', {
+    fetchPublicJson: async () => {
+      attempts += 1
+
+      if (currentTime < 60_000) {
+        throw new Error('event loop stalled during cold import')
+      }
+
+      return { ok: true }
+    },
+    fetchJson: async () => {
+      throw new Error('status should not be called')
+    },
+    sleep: async ms => {
+      currentTime += ms
+    },
+    now: () => currentTime
+  })
+
+  assert.equal(DEFAULT_BACKEND_READY_TIMEOUT_MS, 90_000)
+  assert.ok(attempts > 1)
+})
 
 test('uses lightweight /api/health for current backends', async () => {
   const calls: string[][] = []

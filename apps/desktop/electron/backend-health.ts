@@ -1,4 +1,4 @@
-export const DEFAULT_BACKEND_READY_TIMEOUT_MS = 45_000
+export const DEFAULT_BACKEND_READY_TIMEOUT_MS = 90_000
 export const DEFAULT_BACKEND_READY_POLL_MS = 500
 // A cold backend can stall its event loop for tens of seconds while Windows
 // scans and byte-compiles the gateway import tree. At the default 15s socket

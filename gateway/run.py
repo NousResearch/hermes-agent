@@ -4270,6 +4270,32 @@ def _reconnect_backoff(attempt: int) -> int:
     return min(30 * (2 ** (attempt - 1)), _RECONNECT_BACKOFF_CAP)
 
 
+def _append_dedup_counter(base_msg: str, count: int) -> str:
+    """Append a repeat counter to a progress line without breaking code fences.
+
+    A terminal preview line is a fenced block ending in a bare ```` ``` ````
+    line. Appending `` (×N)`` after that closing fence turns it into
+    ```` ``` (×N) ````, which no longer matches the close-fence pattern
+    (``^```\\s*$``), so the block never closes and Feishu renders it as an
+    empty / "0 lines of code" block. Insert the counter *inside* the fence
+    as a trailing comment-free marker line instead, falling back to the old
+    suffix for non-fenced lines.
+    """
+    lines = base_msg.split("\n")
+    # Replace a counter line left by a previous dedup so repeats don't stack.
+    for idx in range(len(lines) - 1, -1, -1):
+        stripped = lines[idx].strip()
+        if stripped == "```":
+            insert_at = idx
+            if idx > 0 and re.fullmatch(r"\(×\d+\)", lines[idx - 1].strip()):
+                lines[idx - 1] = f"(×{count})"
+                return "\n".join(lines)
+            lines.insert(insert_at, f"(×{count})")
+            return "\n".join(lines)
+    # Non-fenced line: strip any previous counter before appending the new one.
+    return re.sub(r" \(×\d+\)$", "", base_msg) + f" (×{count})"
+
+
 def _reconnect_needs_attention(info: dict, now: float) -> bool:
     """Return True when a reconnect-queue entry has been continuously queued
     long enough to warrant a NEEDS_ATTENTION signal.
@@ -4481,11 +4507,16 @@ class TurnRunner:
             _code_block_full = f"{_block_header}```\n{_cmd_full}\n```"
             # Single-line, capped preview for non-verbose modes.
             _pl = get_tool_preview_max_len()
-            _cap = _pl if _pl > 0 else 40
+            # 0 = no limit (per config docs); only fall back to 40 when
+            # unset. Local patch 2026-08-20 (upstream treated 0 as falsy).
+            _cap = 40 if _pl is None else _pl
             _lines = _cmd_full.splitlines()
             _cmd_short = _lines[0] if _lines else _cmd_full
             _multiline = len(_lines) > 1
-            if len(_cmd_short) > _cap:
+            # _cap == 0 means unlimited — skip truncation entirely
+            # (guard added in local patch 2026-08-20: `len > 0` is always
+            # true, so an unguarded branch would cut len-3 chars off).
+            if _cap > 0 and len(_cmd_short) > _cap:
                 _cmd_short = _cmd_short[:_cap - 3] + "..."
             elif _multiline:
                 _cmd_short = _cmd_short + " ..."
@@ -4532,7 +4563,8 @@ class TurnRunner:
                 verb_drops_preview,
             )
             _pl = get_tool_preview_max_len()
-            _cap = _pl if _pl > 0 else 40
+            # 0 = no limit; fall back only when unset. Local patch 2026-08-20.
+            _cap = 40 if _pl is None else _pl
             _prepared_preview = prepare_tool_preview(
                 tool_name,
                 args,
@@ -4974,7 +5006,9 @@ class TurnRunner:
                 if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                     _, base_msg, count = raw
                     if progress_lines:
-                        progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                        progress_lines[-1] = _append_dedup_counter(
+                            base_msg, count + 1
+                        )
                     msg = progress_lines[-1] if progress_lines else base_msg
                 elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                     # Content bubble just landed on the platform — close off
@@ -5096,7 +5130,9 @@ class TurnRunner:
                         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                             _, base_msg, count = raw
                             if progress_lines:
-                                progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                                progress_lines[-1] = _append_dedup_counter(
+                                    base_msg, count + 1
+                                )
                                 await _roll_progress_overflow_if_needed()
                         elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                             # Content-bubble marker during drain: close off

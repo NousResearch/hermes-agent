@@ -33,7 +33,7 @@ from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
-from email.utils import formatdate
+from email.utils import formataddr, formatdate
 from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -1163,7 +1163,7 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = formataddr(("Hermes Agent", self._address))
         msg["To"] = to_addr
 
         # Thread context for reply
@@ -1278,7 +1278,7 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = formataddr(("Hermes Agent", self._address))
         msg["To"] = to_addr
 
         ctx = self._thread_context.get(to_addr, {})
@@ -1358,7 +1358,7 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> str:
         """Send an email with a file attachment via SMTP."""
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = formataddr(("Hermes Agent", self._address))
         msg["To"] = to_addr
 
         ctx = self._thread_context.get(to_addr, {})
@@ -1438,7 +1438,7 @@ async def _standalone_send(
     import smtplib
     import ssl as _ssl
     from email.mime.text import MIMEText
-    from email.utils import formatdate
+    from email.utils import formataddr, formatdate
 
     extra = getattr(pconfig, "extra", {}) or {}
     address = extra.get("address") or _get_secret("EMAIL_ADDRESS", "")
@@ -1454,7 +1454,7 @@ async def _standalone_send(
 
     try:
         msg = MIMEText(message, "plain", "utf-8")
-        msg["From"] = address
+        msg["From"] = formataddr(("Hermes Agent", address))
         msg["To"] = chat_id
         msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)

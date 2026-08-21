@@ -2403,22 +2403,34 @@ class SessionSearchMixin:
         Safe to call when FTS tables don't exist (skips them).
         Returns the number of FTS indexes that were rebuilt.
         """
+        # ``self._lock`` only protects threads sharing this SessionDB. FTS
+        # rebuild rewrites several shadow tables, so independent gateway/cron
+        # processes must also serialize the maintenance pass.
+        from hermes_state import _cross_process_repair_lock
+
         rebuilt = 0
-        with self._lock:
-            for tbl in self._FTS_TABLES:
-                if not self._fts_table_exists(tbl):
-                    continue
-                try:
-                    self._conn.execute(
-                        f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')"
-                    )
-                    self._conn.commit()
-                    rebuilt += 1
-                except sqlite3.OperationalError as exc:
-                    self._conn.rollback()
-                    logger.warning(
-                        "FTS rebuild failed for %s: %s", tbl, exc
-                    )
+        with _cross_process_repair_lock(self.db_path) as holding_lock:
+            if not holding_lock:
+                logger.warning(
+                    "state.db FTS rebuild skipped: repair lock is held by "
+                    "another process"
+                )
+                return 0
+            with self._lock:
+                for tbl in self._FTS_TABLES:
+                    if not self._fts_table_exists(tbl):
+                        continue
+                    try:
+                        self._conn.execute(
+                            f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')"
+                        )
+                        self._conn.commit()
+                        rebuilt += 1
+                    except sqlite3.OperationalError as exc:
+                        self._conn.rollback()
+                        logger.warning(
+                            "FTS rebuild failed for %s: %s", tbl, exc
+                        )
         return rebuilt
 
     def _merge_fts_incrementally(

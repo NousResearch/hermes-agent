@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import stat
+import sys
 import zipfile
 from argparse import Namespace
 from pathlib import Path
@@ -432,11 +433,16 @@ class TestImport:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         zip_path = tmp_path / "backup.zip"
+        sqlite_fixture = tmp_path / "state-fixture.db"
+        fixture_conn = sqlite3.connect(str(sqlite_fixture))
+        fixture_conn.execute("CREATE TABLE marker(value TEXT)")
+        fixture_conn.commit()
+        fixture_conn.close()
         self._make_backup_zip(zip_path, {
             "config.yaml": "model: openrouter\n",
             ".env": "OPENROUTER_API_KEY=sk-secret\n",
             "auth.json": '{"providers": {"nous": "token"}}',
-            "state.db": b"SQLite format 3\x00",
+            "state.db": sqlite_fixture.read_bytes(),
             "profiles/coder/.env": "ANTHROPIC_API_KEY=sk-ant-secret\n",
         })
 
@@ -1708,5 +1714,80 @@ class TestMemoryProviderExternalPaths:
         assert not (hermes_home / "_external").exists()
 
 
+class TestDatabaseRestoreLifecycleSafety:
+    """A restore must never mix a new main DB with old holders/sidecars."""
 
+    @staticmethod
+    def _seed(path: Path, value: str) -> None:
+        conn = sqlite3.connect(str(path))
+        conn.execute("CREATE TABLE IF NOT EXISTS marker(value TEXT NOT NULL)")
+        conn.execute("DELETE FROM marker")
+        conn.execute("INSERT INTO marker VALUES (?)", (value,))
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def _value(path: Path) -> str:
+        conn = sqlite3.connect(str(path))
+        try:
+            return str(conn.execute("SELECT value FROM marker").fetchone()[0])
+        finally:
+            conn.close()
+
+    def test_snapshot_restore_retires_stale_wal_bundle(self, tmp_path):
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        db = home / "state.db"
+        self._seed(db, "snapshot-generation")
+        snap_id = create_quick_snapshot(hermes_home=home)
+        assert snap_id is not None
+
+        self._seed(db, "retired-live-generation")
+        for suffix in ("-wal", "-shm", "-journal"):
+            db.with_name(db.name + suffix).write_bytes(b"stale-generation")
+
+        assert restore_quick_snapshot(snap_id, hermes_home=home) is True
+        assert self._value(db) == "snapshot-generation"
+        for suffix in ("-wal", "-shm", "-journal"):
+            assert not db.with_name(db.name + suffix).exists()
+
+    @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="uses /proc")
+    def test_snapshot_restore_refuses_live_untracked_connection(self, tmp_path):
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+        from hermes_cli.sqlite_safe_read import LiveConnectionError
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        db = home / "state.db"
+        self._seed(db, "snapshot-generation")
+        snap_id = create_quick_snapshot(hermes_home=home)
+        assert snap_id is not None
+        self._seed(db, "must-remain-live")
+
+        holder = sqlite3.connect(str(db))
+        try:
+            with pytest.raises(LiveConnectionError, match=str(os.getpid())):
+                restore_quick_snapshot(snap_id, hermes_home=home)
+        finally:
+            holder.close()
+        assert self._value(db) == "must-remain-live"
+
+    def test_snapshot_restore_rejects_corrupt_candidate_before_publish(self, tmp_path):
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        db = home / "state.db"
+        self._seed(db, "snapshot-generation")
+        snap_id = create_quick_snapshot(hermes_home=home)
+        assert snap_id is not None
+        self._seed(db, "must-survive-validation")
+
+        snapshot_db = home / "state-snapshots" / snap_id / "state.db"
+        snapshot_db.write_bytes(b"not a sqlite database" * 20)
+        with pytest.raises(OSError, match="refusing to install corrupt SQLite"):
+            restore_quick_snapshot(snap_id, hermes_home=home)
+        assert self._value(db) == "must-survive-validation"
 

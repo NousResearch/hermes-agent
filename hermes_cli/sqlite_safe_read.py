@@ -65,9 +65,11 @@ import contextlib
 import logging
 import os
 import sqlite3
+import sys
 import threading
 from pathlib import Path
 from typing import Optional
+from urllib.parse import unquote, urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +83,124 @@ _HEADER_PAGE_COUNT_OFFSET = 28
 _live_lock = threading.RLock()
 # canonical path -> number of live connections opened by this process
 _live_connections: dict[str, int] = {}
+
+
+def _lifecycle_lock_path(path: Path | str) -> Path:
+    """Return the sidecar used to coordinate DB opens with offline surgery."""
+    canonical = Path(_key(path))
+    return canonical.with_name(canonical.name + ".lifecycle.lock")
+
+
+def _filesystem_path_hint(
+    path: Path | str,
+    tracking_path: Path | str | None,
+) -> Optional[Path | str]:
+    """Resolve the on-disk path before connect, including SQLite file URIs."""
+    if tracking_path is not None:
+        return tracking_path
+    raw = str(path)
+    if raw == ":memory:":
+        return None
+    if not raw.startswith("file:"):
+        return path
+    parsed = urlsplit(raw)
+    if "mode=memory" in parsed.query.lower():
+        return None
+    return unquote(parsed.path)
+
+
+def _acquire_lifecycle_lock(
+    path: Path | str,
+    *,
+    exclusive: bool,
+    nonblocking: bool,
+):
+    """Acquire a process-spanning lifecycle lease for *path* on POSIX.
+
+    SQLite's own locks protect transactions, but they do not make replacing
+    the database pathname safe: an already-open connection keeps the old
+    inode while a new opener sees the replacement, and a stale ``-wal`` can
+    then be paired with the wrong main database. A shared lease is held for
+    every tracked connection; raw copy/restore/repair paths require the
+    exclusive form.
+
+    Returns an open lock-file handle, or ``None`` on platforms without
+    ``fcntl``. Callers must keep the handle alive for the whole lease.
+    """
+    if os.name != "posix":
+        return None
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - non-POSIX defensive fallback
+        return None
+
+    lock_path = _lifecycle_lock_path(path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+    if nonblocking:
+        operation |= fcntl.LOCK_NB
+    try:
+        fcntl.flock(handle.fileno(), operation)
+    except BaseException:
+        handle.close()
+        raise
+    return handle
+
+
+def _release_lifecycle_lock(handle) -> None:
+    if handle is None:
+        return
+    try:
+        import fcntl
+
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except (ImportError, OSError):  # pragma: no cover - defensive cleanup
+        pass
+    finally:
+        try:
+            handle.close()
+        except OSError:
+            pass
+
+
+def database_holder_pids(path: Path | str) -> Optional[set[int]]:
+    """Return Linux PIDs with *path* open, or ``None`` when unavailable.
+
+    This catches legacy/untracked SQLite clients that do not yet participate
+    in the lifecycle lease. The result is a lower bound when ``/proc`` hides
+    other users' descriptors, but Hermes services normally run as one user.
+    A descriptor to an inode replaced earlier is reported by Linux with a
+    ``" (deleted)"`` suffix; strip it so dangerous split-generation holders
+    are still detected.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    target = os.path.realpath(str(path))
+    holders: set[int] = set()
+    try:
+        pids = os.listdir("/proc")
+    except OSError:
+        return None
+    for raw_pid in pids:
+        if not raw_pid.isdigit():
+            continue
+        fd_dir = f"/proc/{raw_pid}/fd"
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                resolved = os.readlink(f"{fd_dir}/{fd}")
+            except OSError:
+                continue
+            if resolved.endswith(" (deleted)"):
+                resolved = resolved[: -len(" (deleted)")]
+            if os.path.realpath(resolved) == target:
+                holders.add(int(raw_pid))
+                break
+    return holders
 
 
 class UntrackableConnectionError(RuntimeError):
@@ -150,6 +270,7 @@ class _TrackingMixin:
     """Untrack-on-close behaviour, mixable into any Connection subclass."""
 
     _hermes_tracked_path: str | None = None
+    _hermes_lifecycle_lock = None
 
     def close(self) -> None:  # type: ignore[misc]
         with _live_lock:
@@ -162,6 +283,10 @@ class _TrackingMixin:
             if path is not None:
                 self._hermes_tracked_path = None
                 untrack_connection(path)
+            lifecycle_lock = getattr(self, "_hermes_lifecycle_lock", None)
+            if lifecycle_lock is not None:
+                self._hermes_lifecycle_lock = None
+                _release_lifecycle_lock(lifecycle_lock)
 
 
 class TrackedConnection(_TrackingMixin, sqlite3.Connection):
@@ -243,7 +368,25 @@ def connect_tracked(
     kwargs["factory"] = _tracking_factory(kwargs.get("factory", sqlite3.Connection))
 
     with _live_lock:
-        conn = opener(str(path), **kwargs)
+        # Acquire the shared lifecycle lease BEFORE SQLite opens the file.
+        # Otherwise an offline restorer can publish a new database generation
+        # between sqlite3.connect() and registration, leaving this connection
+        # attached to the retired inode.
+        lifecycle_path = _filesystem_path_hint(path, tracking_path)
+        lifecycle_lock = (
+            _acquire_lifecycle_lock(
+                lifecycle_path,
+                exclusive=False,
+                nonblocking=False,
+            )
+            if lifecycle_path is not None
+            else None
+        )
+        try:
+            conn = opener(str(path), **kwargs)
+        except BaseException:
+            _release_lifecycle_lock(lifecycle_lock)
+            raise
         try:
             resolved = (
                 _key(tracking_path)
@@ -252,6 +395,7 @@ def connect_tracked(
             )
             if resolved is None:
                 # In-memory / unnamed: nothing on disk to byte-probe.
+                _release_lifecycle_lock(lifecycle_lock)
                 return conn
             if not isinstance(conn, _TrackingMixin):
                 # The opener substituted its own factory and discarded ours
@@ -261,6 +405,7 @@ def connect_tracked(
                 # connection whose database has silently lost probe safety.
                 conn = _retrofit_tracking(conn, resolved)
             conn._hermes_tracked_path = resolved
+            conn._hermes_lifecycle_lock = lifecycle_lock
             _live_connections[resolved] = _live_connections.get(resolved, 0) + 1
             return conn
         except Exception:
@@ -270,6 +415,7 @@ def connect_tracked(
                 sqlite3.Connection.close(conn)
             except Exception:
                 pass
+            _release_lifecycle_lock(lifecycle_lock)
             raise
 
 
@@ -412,4 +558,29 @@ def offline_file_access(path: Path | str, *, what: str = "read"):
                 "connection's POSIX advisory locks. Close all database "
                 "handles (stop the gateway/dashboard) and retry."
             )
-        yield
+        lifecycle_lock = None
+        try:
+            try:
+                lifecycle_lock = _acquire_lifecycle_lock(
+                    path,
+                    exclusive=True,
+                    nonblocking=True,
+                )
+            except (BlockingIOError, OSError) as exc:
+                raise LiveConnectionError(
+                    f"Refusing to {what} {path}: another process holds a "
+                    "database lifecycle lease. Stop every gateway, dashboard, "
+                    "CLI, and worker using this profile, then retry."
+                ) from exc
+
+            holder_pids = database_holder_pids(path)
+            if holder_pids:
+                formatted = ", ".join(str(pid) for pid in sorted(holder_pids))
+                raise LiveConnectionError(
+                    f"Refusing to {what} {path}: database holder PID(s) "
+                    f"{formatted} are still active. Stop every gateway, "
+                    "dashboard, CLI, and worker using this profile, then retry."
+                )
+            yield
+        finally:
+            _release_lifecycle_lock(lifecycle_lock)

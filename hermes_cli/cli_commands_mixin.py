@@ -322,6 +322,7 @@ class CLICommandsMixin:
             create_quick_snapshot, list_quick_snapshots,
             restore_quick_snapshot, prune_quick_snapshots,
         )
+        from hermes_cli.sqlite_safe_read import LiveConnectionError
         from hermes_constants import display_hermes_home
 
         parts = command.split()
@@ -375,9 +376,21 @@ class CLICommandsMixin:
                     return
             except ValueError:
                 pass
-            if restore_quick_snapshot(snap_id):
+            try:
+                restored = restore_quick_snapshot(snap_id)
+            except (LiveConnectionError, OSError) as exc:
+                # Database restores intentionally fail closed while any
+                # gateway/dashboard/CLI still owns the live generation. Do
+                # not misreport that safety refusal as "snapshot not found".
+                print(f"  Restore refused: {exc}")
+                print(
+                    "  Stop every Hermes process using this profile and run "
+                    "the restore from a fresh shell."
+                )
+                return
+            if restored:
                 print(f"  Restored state from: {snap_id}")
-                print("  Restart recommended for state.db changes to take effect.")
+                print("  Restart Hermes services before opening the database.")
             else:
                 print(f"  Snapshot not found: {snap_id}")
 

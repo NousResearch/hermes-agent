@@ -23,12 +23,15 @@ import subprocess
 import sys
 import textwrap
 import threading
+from pathlib import Path
 
 import pytest
 
 from hermes_cli.sqlite_safe_read import (
+    LiveConnectionError,
     file_length_matches_header,
     has_live_connection,
+    offline_file_access,
     page_count_bytes,
     read_header_bytes_preopen,
     track_connection,
@@ -161,6 +164,78 @@ def test_tracking_registry_does_not_leak_across_close_paths(tmp_path, clean_regi
         connect_tracked(db).close()
     assert not has_live_connection(db)
 
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="uses /proc")
+def test_offline_access_refuses_untracked_external_holder(tmp_path, clean_registry):
+    """Recovery must see legacy/Rust/raw sqlite clients, not only our registry."""
+    db = tmp_path / "state.db"
+    _make_db(db, "WAL")
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sqlite3,sys; "
+                "c=sqlite3.connect(sys.argv[1]); "
+                "print('READY',flush=True); sys.stdin.read(1); c.close()"
+            ),
+            str(db),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "READY"
+        with pytest.raises(LiveConnectionError, match=str(holder.pid)):
+            with offline_file_access(db, what="restore"):
+                pytest.fail("live external holder was not rejected")
+    finally:
+        if holder.stdin is not None:
+            holder.stdin.write("x")
+            holder.stdin.close()
+        holder.wait(timeout=30)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="uses flock")
+def test_lifecycle_lease_refuses_external_tracked_holder(
+    tmp_path, clean_registry, monkeypatch
+):
+    """The lease remains load-bearing even when /proc discovery is unavailable."""
+    import hermes_cli.sqlite_safe_read as ssr
+
+    db = tmp_path / "state.db"
+    _make_db(db, "WAL")
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "from hermes_cli.sqlite_safe_read import connect_tracked; "
+                "c=connect_tracked(sys.argv[1]); "
+                "print('READY',flush=True); sys.stdin.read(1); c.close()"
+            ),
+            str(db),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    )
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "READY"
+        monkeypatch.setattr(ssr, "database_holder_pids", lambda _path: set())
+        with pytest.raises(LiveConnectionError, match="lifecycle lease"):
+            with offline_file_access(db, what="repair"):
+                pytest.fail("exclusive access bypassed the shared lease")
+    finally:
+        if holder.stdin is not None:
+            holder.stdin.write("x")
+            holder.stdin.close()
+        holder.wait(timeout=30)
 
 def test_failed_close_keeps_connection_tracked(tmp_path, clean_registry):
     """A raising close must not release the registry (#75629).

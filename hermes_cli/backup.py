@@ -19,7 +19,7 @@ import tempfile
 import threading
 import time
 import zipfile
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -36,6 +36,7 @@ from utils import (
 # Shared formatter; the private alias is kept because claw.py and the backup
 # tests import ``_format_size`` from this module.
 from hermes_cli.sizefmt import format_bytes as _format_size
+from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +158,10 @@ class _SQLiteSnapshotError(RuntimeError):
 
 class _SQLiteBackupTimeout(RuntimeError):
     """Raised when a SQLite snapshot remains busy past its deadline."""
+
+
+class _SQLiteRestoreValidationError(OSError):
+    """A staged SQLite restore candidate failed integrity validation."""
 
 
 @contextmanager
@@ -621,6 +626,108 @@ def copy_db_and_verify(src: Path, dst: Path) -> bool:
     return True
 
 
+def _validate_sqlite_restore_candidate(path: Path) -> None:
+    """Fail closed unless a staged database is structurally healthy.
+
+    Empty files are accepted as brand-new SQLite stores; SQLite will
+    initialise them on first open. Non-empty restore candidates always run
+    the full check, regardless of size: restores are rare, and the bounded
+    update-time shortcut previously missed the repeated ``messages`` b-tree
+    damage seen in the August 2026 incidents.
+    """
+    try:
+        if path.stat().st_size == 0:
+            return
+    except OSError as exc:
+        raise _SQLiteRestoreValidationError(str(exc)) from exc
+
+    result = verify_sqlite_integrity(path, run_pragma=True, max_bytes=0)
+    if not result.get("valid"):
+        raise _SQLiteRestoreValidationError(
+            f"refusing to install corrupt SQLite snapshot {path}: "
+            f"{result.get('message') or 'integrity validation failed'}"
+        )
+
+    conn = None
+    try:
+        conn = sqlite3.connect(str(path), timeout=5.0)
+        foreign_key_errors = conn.execute("PRAGMA foreign_key_check").fetchmany(5)
+        if foreign_key_errors:
+            raise _SQLiteRestoreValidationError(
+                f"refusing to install SQLite snapshot {path}: "
+                f"foreign key check failed ({foreign_key_errors!r})"
+            )
+
+        # PRAGMA integrity_check does not validate an FTS5 inverted index.
+        # Ask each FTS5 virtual table to validate its shadow tables too; this
+        # catches the recurring "malformed inverted index" restore shape.
+        fts_tables = conn.execute(
+            "SELECT name FROM sqlite_schema "
+            "WHERE type = 'table' "
+            "AND lower(sql) LIKE 'create virtual table%using fts5%'"
+        ).fetchall()
+        for (name,) in fts_tables:
+            quoted = '"' + str(name).replace('"', '""') + '"'
+            conn.execute(
+                f"INSERT INTO {quoted}({quoted}) VALUES('integrity-check')"
+            )
+        conn.rollback()
+
+        # Prove the candidate can take a canonical main-schema write before
+        # publishing it. Rollback keeps the restored schema byte-for-byte
+        # logical-equivalent while exercising the actual writable path.
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "CREATE TABLE __hermes_restore_write_probe "
+            "(id INTEGER PRIMARY KEY)"
+        )
+        conn.execute("DROP TABLE __hermes_restore_write_probe")
+        conn.rollback()
+    except _SQLiteRestoreValidationError:
+        raise
+    except sqlite3.DatabaseError as exc:
+        raise _SQLiteRestoreValidationError(
+            f"refusing to install corrupt SQLite snapshot {path}: {exc}"
+        ) from exc
+    finally:
+        if conn is not None:
+            try:
+                conn.rollback()
+                conn.close()
+            except sqlite3.Error:
+                pass
+
+
+def _remove_stale_db_sidecars(path: Path) -> None:
+    """Remove journals belonging to the retired DB generation (offline only)."""
+    for suffix in ("-wal", "-shm", "-journal"):
+        path.with_name(path.name + suffix).unlink(missing_ok=True)
+
+
+def _restore_database_file_atomically(source: Path, target: Path) -> None:
+    """Validate and publish one DB while exclusively owning its lifecycle."""
+    fd, temp_name = tempfile.mkstemp(
+        dir=str(target.parent),
+        prefix=f".{target.name[:80]}.",
+        suffix=".restore-partial",
+    )
+    os.close(fd)
+    try:
+        shutil.copy2(source, temp_name)
+        with open(temp_name, "rb") as handle:
+            os.fsync(handle.fileno())
+        _validate_sqlite_restore_candidate(Path(temp_name))
+        with offline_file_access(target, what="restore"):
+            _remove_stale_db_sidecars(target)
+            atomic_replace(temp_name, target)
+    except BaseException:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
+
+
 # ---------------------------------------------------------------------------
 # Backup
 # ---------------------------------------------------------------------------
@@ -1013,13 +1120,30 @@ def _extract_member_atomically(
                 shutil.copyfileobj(src, dst)
             dst.flush()
             os.fsync(dst.fileno())
-        real_path = Path(atomic_replace(tmp_name, target))
-        # Owner first, mode second — the ordering ``atomic_yaml_write`` uses,
-        # because chown drops setuid/setgid and a mode restore that ran first
-        # would be partly undone.  Here ``mode`` no longer carries those bits,
-        # so the two agree: neither step can re-elevate the restored file.
-        _restore_file_owner(real_path, owner)
-        _restore_file_mode(real_path, mode)
+        db_restore = target.suffix == ".db"
+        guard = (
+            offline_file_access(target, what="restore")
+            if db_restore
+            else nullcontext()
+        )
+        with guard:
+            if db_restore:
+                _validate_sqlite_restore_candidate(Path(tmp_name))
+            # A WAL/SHM belongs to one exact database generation. Keeping an
+            # old sidecar beside a newly published main file can replay pages
+            # from the retired generation and corrupt an otherwise clean
+            # restore on its first open. Retire sidecars before publishing so
+            # there is no post-publish window where a raw legacy opener could
+            # pair the clean main with the old WAL.
+            if db_restore:
+                _remove_stale_db_sidecars(target)
+            real_path = Path(atomic_replace(tmp_name, target))
+            # Owner first, mode second — the ordering ``atomic_yaml_write``
+            # uses, because chown drops setuid/setgid and a mode restore that
+            # ran first would be partly undone. Here ``mode`` no longer
+            # carries those bits, so neither step can re-elevate the file.
+            _restore_file_owner(real_path, owner)
+            _restore_file_mode(real_path, mode)
     except BaseException:
         try:
             os.unlink(tmp_name)
@@ -1117,7 +1241,7 @@ def run_import(args) -> None:
                             pass
                     restored += 1
                     restored_external += 1
-                except (PermissionError, OSError) as exc:
+                except (PermissionError, OSError, LiveConnectionError) as exc:
                     errors.append(f"  {member}: {exc}")
                 if restored % 500 == 0:
                     print(f"  {restored}/{file_count} files ...")
@@ -1157,7 +1281,7 @@ def run_import(args) -> None:
                 if target.name in _SECRET_FILE_NAMES:
                     os.chmod(target, 0o600)
                 restored += 1
-            except (PermissionError, OSError) as exc:
+            except (PermissionError, OSError, LiveConnectionError) as exc:
                 errors.append(f"  {rel}: {exc}")
 
             if restored % 500 == 0:
@@ -1649,14 +1773,16 @@ def restore_quick_snapshot(
 
         try:
             if dst.suffix == ".db":
-                # Atomic-ish replace for databases
-                tmp = dst.parent / f".{dst.name}.snap_restore"
-                shutil.copy2(src, tmp)
-                dst.unlink(missing_ok=True)
-                shutil.move(str(tmp), str(dst))
+                _restore_database_file_atomically(src, dst)
             else:
                 shutil.copy2(src, dst)
             restored += 1
+        except (LiveConnectionError, _SQLiteRestoreValidationError):
+            # These are safety refusals, not per-file best-effort failures.
+            # Surface them to /snapshot so the operator sees the exact stop-
+            # services or corrupt-candidate action instead of a misleading
+            # "snapshot not found" message.
+            raise
         except (OSError, PermissionError) as exc:
             logger.error("Failed to restore %s: %s", rel, exc)
 

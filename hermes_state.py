@@ -2341,7 +2341,31 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
                 "schema surgery to avoid racing it"
             )
             return report
-        result = _repair_state_db_schema_locked(db_path, backup=backup, report=report)
+        # The repair lock serialises repairers, not ordinary SessionDB,
+        # gateway, dashboard, or CLI connections. In-place FTS rebuild,
+        # REINDEX, writable_schema surgery, and VACUUM must never run while
+        # another process owns this database generation. Doing so is how an
+        # apparently successful restore can be re-corrupted by an old open
+        # inode or stale WAL. Require the shared SQLite lifecycle layer's
+        # exclusive offline lease before any probe, raw backup, or mutation.
+        try:
+            from hermes_cli.sqlite_safe_read import (
+                LiveConnectionError,
+                offline_file_access,
+            )
+
+            with offline_file_access(db_path, what="repair"):
+                result = _repair_state_db_schema_locked(
+                    db_path,
+                    backup=backup,
+                    report=report,
+                )
+        except LiveConnectionError as exc:
+            report["error"] = str(exc)
+            logger.error("state.db repair refused: %s", exc)
+            # Ownership contention is not a failed repair attempt against the
+            # bytes, so do not consume the persistent corruption budget.
+            return report
         # Persist the outcome AFTER surgery, keyed on the post-attempt
         # fingerprint — that is the file state the NEXT attempt's exhaustion
         # probe will observe. Failures count toward the cross-restart cap;

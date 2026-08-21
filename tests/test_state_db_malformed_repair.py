@@ -91,6 +91,44 @@ def test_repaired_db_search_works(tmp_path):
         db.close()
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="uses flock")
+def test_fts_rebuild_respects_cross_process_repair_lock(tmp_path, monkeypatch):
+    """FTS recovery must not run beside another process's rebuild/repair."""
+    import hermes_state
+
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    lock_path = db_path.with_name(db_path.name + ".repair.lock")
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import fcntl,sys; "
+                "f=open(sys.argv[1], 'a+b'); "
+                "fcntl.flock(f.fileno(), fcntl.LOCK_EX); "
+                "print('READY', flush=True); sys.stdin.read(1)"
+            ),
+            str(lock_path),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    db = None
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "READY"
+        monkeypatch.setattr(hermes_state, "_REPAIR_LOCK_TIMEOUT_SECONDS", 0.05)
+        db = SessionDB(db_path=db_path)
+        assert db.rebuild_fts() == 0
+    finally:
+        if db is not None:
+            db.close()
+        if holder.stdin is not None:
+            holder.stdin.write("x")
+            holder.stdin.close()
+        holder.wait(timeout=30)
 
 
 def test_auto_heal_attempted_once_per_process(tmp_path, monkeypatch):

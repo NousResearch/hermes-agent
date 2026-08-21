@@ -21,6 +21,8 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -125,7 +127,6 @@ class TestBackupDedupeAndCap:
         # reused instead of copying another ~900MB.
         assert second == first
         assert len(_existing_malformed_backups(db)) == 1
-
     def test_changed_file_gets_a_new_backup(self, tmp_path):
         db = _make_unrepairable_db(tmp_path)
         first, _ = _backup_db_file(db)
@@ -161,3 +162,37 @@ class TestBackupDedupeAndCap:
         for _ in range(_MAX_PERSISTENT_REPAIR_ATTEMPTS):
             repair_state_db_schema(db)
         assert len(_existing_malformed_backups(db)) == 1
+
+
+def test_schema_repair_refuses_while_external_holder_is_live(tmp_path):
+    """The repair mutex alone must not authorize surgery against live users."""
+    if not sys.platform.startswith("linux"):
+        return
+    db = _make_healthy_db(tmp_path)
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); "
+                "print('READY',flush=True); sys.stdin.read(1); c.close()"
+            ),
+            str(db),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "READY"
+        report = repair_state_db_schema(db)
+        assert report["repaired"] is False
+        assert str(holder.pid) in str(report["error"])
+        assert not _repair_ledger_path(db).exists()
+        assert not _existing_malformed_backups(db)
+    finally:
+        if holder.stdin is not None:
+            holder.stdin.write("x")
+            holder.stdin.close()
+        holder.wait(timeout=30)

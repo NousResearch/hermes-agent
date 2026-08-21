@@ -1031,6 +1031,102 @@ def managed_scope_check() -> None:
         check_info(f"managed dir set via HERMES_MANAGED_DIR={managed_dir}")
 
 
+def check_macos_tcc_grants() -> None:
+    """Check macOS TCC grant persistence for a locally-built desktop bundle.
+
+    TCC keys permission grants (Screen Recording, Full Disk Access,
+    Accessibility, ...) to the app's code-signing requirement. A bundle
+    signed with the pre-#73681 cdhash-pinned ad-hoc identity gets a new DR on
+    every rebuild, so all grants silently stop matching — and the stale row
+    keeps the System Settings toggle ON while macOS re-prompts on every
+    capture (issue #86385).
+
+    Post-#73681 builds pin ``designated => identifier "com.nousresearch.hermes"``
+    (no cdhash), so new grants survive rebuilds — but grants made to older
+    binaries remain stale until re-granted once. The stale state is not
+    directly readable (TCC.db needs Full Disk Access), so this check reports
+    the DR class and, when the DR is stable, prints the exact one-time repair.
+    Silent on non-macOS and when no desktop bundle is installed.
+    """
+    if sys.platform != "darwin":
+        return
+    app = _desktop_app_bundle()
+    if app is None:
+        return
+    dr = _macos_desktop_dr(app)
+    if not dr:
+        check_warn(
+            "macOS TCC grant check",
+            "(could not read code-signing requirement of the desktop bundle)",
+        )
+        return
+    # The DR string is the only readable signal — TCC.db itself needs Full
+    # Disk Access. A cdhash anchor marks the pre-#73681 ad-hoc identity
+    # (rebuild ⇒ new cdhash ⇒ stale grants); its absence marks identifier-
+    # pinned. Treat the match as a proxy for the signing class, not a
+    # contract on DR wording.
+    if "cdhash" in dr.lower():
+        check_warn(
+            "macOS TCC grants will reset after every update",
+            "the desktop bundle's designated requirement is cdhash-pinned "
+            "(pre-#73681 build) — rebuilds invalidate all permission grants. "
+            "Run `hermes update` to get the stable identifier-pinned signing "
+            "identity, then re-grant permissions once.",
+        )
+        return
+    check_ok(
+        "macOS TCC signing identity is stable",
+        "(identifier-pinned DR; grants survive rebuilds)",
+    )
+    check_info(
+        "If macOS still re-prompts for permissions (toggle shows ON): the stored "
+        "grant is stale — run `tccutil reset ScreenCapture com.nousresearch.hermes` "
+        "(repeat per affected service), toggle it ON in System Settings, then "
+        "fully quit & relaunch Hermes once."
+    )
+
+
+def _desktop_app_bundle() -> Path | None:
+    """Locate the locally-built desktop app bundle, if any.
+
+    Mirrors the install layout the self-updater produces
+    (``apps/desktop/release/mac-<arch>/Hermes.app``) — the only layout whose
+    ad-hoc re-signed bundle can invalidate TCC grants. When multiple arch
+    trees coexist (stale cross-build), the newest wins, matching
+    ``_desktop_packaged_executable``'s selection. ``/Applications/Hermes.app``
+    is deliberately not probed: it is the separately-signed Hermes-Setup
+    launcher (``com.nousresearch.hermes.setup``, certificate-anchored), whose
+    grants are stable by construction and unaffected by rebuilds.
+    """
+    root = Path(__file__).resolve().parents[1]
+    release_dir = root / "apps" / "desktop" / "release"
+    candidates = [p for p in release_dir.glob("mac*/Hermes.app") if p.is_dir()]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def _macos_desktop_dr(app: Path) -> str | None:
+    """Return the bundle's designated requirement string, or None on failure."""
+    codesign = shutil.which("codesign")
+    if not codesign:
+        return None
+    try:
+        proc = subprocess.run(
+            [codesign, "-d", "--requirements", "-", str(app)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        # Never let a hanging codesign abort the whole doctor run — the
+        # caller falls through to its "could not read" warning.
+        return None
+    if proc.returncode != 0:
+        return None
+    return (proc.stdout or "") + (proc.stderr or "")
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
@@ -1204,6 +1300,12 @@ def run_doctor(args):
     # Detect drift between pyproject.toml and hermes_cli/__init__.py versions
     # (a git conflict resolution can silently revert one but not the other).
     _check_version_consistency(issues)
+
+    # macOS TCC grant persistence (issue #86385): a locally-built desktop
+    # bundle whose DR is cdhash-pinned loses every permission grant on each
+    # rebuild; a post-#73681 identifier-pinned DR survives, but grants made
+    # to older binaries stay stale (toggle shows ON while macOS re-prompts).
+    check_macos_tcc_grants()
 
     _section("SSL / CA Certificates")
     check_certificates(should_fix=should_fix, issues=manual_issues)

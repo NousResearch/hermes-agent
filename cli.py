@@ -10433,6 +10433,110 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         return result[0]
 
+    def _run_interactive_spec(self, spec: dict, command_name: str = "") -> object:
+        """Recursive nested-menu engine for plugin interactive results.
+
+        A plugin handler returns ``{"interactive": {...}}`` where the spec has:
+          - title:    picker title
+          - items:    list of {label, value, detail?, actions?, children?}
+          - actions:  global actions [{key, label, run_prompt?, spec?}]
+          - prompt:   optional free-text step {label, action} run after pick
+          - empty:    text when no items
+
+        The loop: pick an item (arrow keys) → on Enter:
+          - if item has children → recurse into that spec
+          - elif item has actions → show an action picker, run the chosen one
+            (an action may itself return a spec via a ``run`` callback passed
+            in ``actions``' ``handler``, or prompt for free text)
+          - else → print the item's detail
+        Esc pops one level; Esc at the root exits. Global actions are
+        appended after items so they're reachable by scrolling.
+        """
+        import copy
+
+        def _print_detail(item: dict) -> None:
+            _detail = item.get("detail")
+            _cprint(_detail if _detail else item.get("label", ""))
+
+        def _run_action(action: dict, item: dict | None) -> None:
+            value = item.get("value") if item else None
+            handler = action.get("handler")
+            # 1) handler with a nested picker (children): recurse, then feed the
+            #    chosen child value back into the handler so it executes.
+            children = action.get("children")
+            if children is not None:
+                chosen = self._run_interactive_spec(children, command_name)
+                if chosen is not None and handler is not None:
+                    _render(handler(value, chosen))
+                return
+            # 2) handler with a free-text prompt: collect text, then run.
+            prompt = action.get("prompt")
+            if prompt:
+                text = self._prompt_text_input(prompt)
+                if text is None:
+                    return  # Esc / empty
+                if handler is not None:
+                    _render(handler(value, text))
+                return
+            # 3) bare handler (no extra input) or plain detail print.
+            if handler is not None:
+                _render(handler(value, None))
+                return
+            _print_detail(item or {})
+
+        def _render(result) -> None:
+            """Render a handler's return: nested spec (recurse) or string."""
+            if isinstance(result, dict) and result.get("interactive"):
+                self._run_interactive_spec(result["interactive"], command_name)
+            elif result:
+                _cprint(str(result))
+
+        def _level(spec: dict) -> object:
+            _items = spec.get("items") or []
+            _actions = spec.get("actions") or []
+            _title = spec.get("title") or command_name
+            if not _items and not _actions:
+                _cprint(spec.get("empty", "No items."))
+                return None
+            # Build the picker rows: item labels + a trailing action block.
+            _labels = [i.get("label", str(i)) for i in _items]
+            for _a in _actions:
+                _labels.append(f"  [{_a.get('key', '?')}] {_a.get('label', '')}")
+            _idx = self._run_curses_picker(_title, _labels, default_index=0)
+            if _idx is None:
+                return None  # Esc
+            if _idx < len(_items):
+                _item = _items[_idx]
+                _item_actions = _item.get("actions") or []
+                _children = _item.get("children")
+                if _children:
+                    chosen = self._run_interactive_spec(_children, command_name)
+                    if chosen is not None and _item_actions:
+                        # Feed the chosen child value into the item's
+                        # children-action handler.
+                        for _a in _item_actions:
+                            if _a.get("children") is not None and _a.get("handler") is not None:
+                                _render(_a["handler"](_item.get("value"), chosen))
+                                break
+                    return chosen
+                elif _item_actions:
+                    _act_labels = [f"[{a.get('key','?')}] {a.get('label','')}" for a in _item_actions]
+                    _act_idx = self._run_curses_picker(
+                        f"{_item.get('label','')} — actions", _act_labels, default_index=0
+                    )
+                    if _act_idx is not None and 0 <= _act_idx < len(_item_actions):
+                        _run_action(_item_actions[_act_idx], _item)
+                    return _item.get("value")
+                else:
+                    _print_detail(_item)
+                    return _item.get("value")
+            else:
+                _action = _actions[_idx - len(_items)]
+                _run_action(_action, None)
+                return None
+
+        return _level(spec)
+
     def _prompt_text_input(self, prompt_text: str) -> str | None:
         """Prompt for free-text input safely inside or outside prompt_toolkit.
 
@@ -12436,25 +12540,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         if result:
                             # ── KENSEI CUSTOM: interactive plugin command results ──
                             # A plugin handler may return a structured dict
-                            # {"interactive": {"title", "items", "detail"}} to
-                            # render an arrow-key navigable picker instead of
-                            # flat text. Selection prints the chosen item's
-                            # detail. Mirrors /reasoning-style interactivity.
+                            # {"interactive": {...}} — the recursive nested-menu
+                            # engine drives it: picker → actions → prompts →
+                            # nested children, with Esc to pop a level.
                             if isinstance(result, dict) and result.get("interactive"):
-                                _spec = result["interactive"]
-                                _items = _spec.get("items") or []
-                                if _items:
-                                    _idx = self._run_curses_picker(
-                                        _spec.get("title", base_cmd.lstrip("/")),
-                                        [i.get("label", str(i)) for i in _items],
-                                        default_index=0,
-                                    )
-                                    if _idx is not None and 0 <= _idx < len(_items):
-                                        _chosen = _items[_idx]
-                                        _detail = _chosen.get("detail")
-                                        _cprint(_detail if _detail else _chosen.get("label", ""))
-                                else:
-                                    _cprint(_spec.get("empty", "No items."))
+                                self._run_interactive_spec(
+                                    result["interactive"], base_cmd.lstrip("/")
+                                )
                             else:
                                 _cprint(str(result))
                             # ── END KENSEI CUSTOM ──

@@ -7971,6 +7971,127 @@ def _parse_model_ids(resp: "Any") -> List[str]:
     return ids
 
 
+def _anthropic_compat_api_mode(api_mode: Optional[str] = None, base_url: str = "") -> bool:
+    """True when a custom endpoint speaks Anthropic native ``/models`` auth."""
+    mode = str(api_mode or "").strip().lower().replace("-", "_")
+    if mode in {"anthropic", "anthropic_messages"}:
+        return True
+    if not base_url:
+        return False
+    from hermes_cli.models import _base_url_looks_like_anthropic_messages
+    return _base_url_looks_like_anthropic_messages(base_url)
+
+
+def _custom_endpoint_probe_headers(
+    api_key: Optional[str] = None,
+    api_mode: Optional[str] = None,
+    base_url: str = "",
+) -> Dict[str, str]:
+    """Auth headers for GET ``{base_url}/models``.
+
+    Matches the CLI probe (``probe_api_models``): Anthropic-compat mode
+    uses ``x-api-key`` + ``anthropic-version`` instead of Bearer.
+    """
+    headers: Dict[str, str] = {"Accept": "application/json"}
+    key = (api_key or "").strip()
+    if not key:
+        return headers
+    if _anthropic_compat_api_mode(api_mode, base_url):
+        headers["x-api-key"] = key
+        headers["anthropic-version"] = "2023-06-01"
+    else:
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
+
+
+def _resolve_custom_endpoint_probe_key(
+    entry: Dict[str, Any],
+    submitted_key: Optional[str],
+) -> Optional[str]:
+    """Key for a catalog probe: newly submitted, else the stored credential."""
+    if submitted_key:
+        return submitted_key
+    plaintext = str(entry.get("api_key") or "").strip()
+    if plaintext:
+        return plaintext
+    key_env = str(entry.get("key_env") or "").strip()
+    if not key_env:
+        return None
+    from hermes_cli.config import get_env_value
+    return (get_env_value(key_env) or "").strip() or None
+
+
+def _discover_custom_endpoint_models(
+    base_url: str,
+    api_key: Optional[str] = None,
+    api_mode: Optional[str] = None,
+    timeout: float = 8.0,
+) -> List[str]:
+    """GET ``{base_url}/models`` — the same catalog probe as Desktop Test.
+
+    Failures (timeout, DNS, HTTP error) return ``[]`` so Save still
+    persists the typed model and GET list still returns typed/stored ids.
+    """
+    import httpx
+
+    url = (base_url or "").strip().rstrip("/") + "/models"
+    if url == "/models":
+        return []
+    headers = _custom_endpoint_probe_headers(api_key, api_mode, base_url)
+    try:
+        with httpx.Client(timeout=httpx.Timeout(timeout)) as client:
+            resp = client.get(url, headers=headers)
+    except Exception:
+        return []
+    return _parse_model_ids(resp)
+
+
+def _merge_discovered_custom_models(stored: List[str], discovered: List[str]) -> List[str]:
+    """Append newly discovered ids while keeping typed/stored order first."""
+    seen = set(stored)
+    merged = list(stored)
+    for raw in discovered:
+        model_id = str(raw).strip()
+        if model_id and model_id not in seen:
+            merged.append(model_id)
+            seen.add(model_id)
+    return merged
+
+
+def _apply_live_custom_endpoint_catalogs(response: Dict[str, Any], cfg: Dict[str, Any]) -> None:
+    """Merge a live GET ``{base_url}/models`` into Settings list responses.
+
+    Picker-open used to show only stored models until Test/Save persisted a
+    catalog. When ``discover_models`` is on we probe here and return typed +
+    stored + discovered. Failures keep the stored list. GET does not write
+    config.
+    """
+    providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+    for endpoint in response.get("endpoints") or []:
+        if not isinstance(endpoint, dict) or not bool(endpoint.get("discover_models", True)):
+            continue
+        if endpoint.get("source") == "direct-config":
+            entry = model_cfg
+        else:
+            entry = providers.get(str(endpoint.get("id") or ""))
+        if not isinstance(entry, dict):
+            continue
+        if endpoint.get("source") != "direct-config" and not bool(entry.get("discover_models", True)):
+            continue
+        discovered = _discover_custom_endpoint_models(
+            str(endpoint.get("base_url") or ""),
+            api_key=_resolve_custom_endpoint_probe_key(entry, None),
+            api_mode=str(entry.get("api_mode") or "").strip() or None,
+        )
+        if not discovered:
+            continue
+        endpoint["models"] = _merge_discovered_custom_models(
+            list(endpoint.get("models") or []),
+            discovered,
+        )
+
+
 def _custom_endpoint_id(raw: str, fallback: str = "custom") -> str:
     slug = re.sub(r"[^A-Za-z0-9_-]+", "-", (raw or "").strip()).strip("-_").lower()
     return slug or fallback
@@ -8143,15 +8264,27 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         "model": model,
         "discover_models": bool(body.discover_models),
     })
+    submitted_key = body.api_key.strip() if body.api_key is not None else None
+    api_mode = (body.api_mode or "").strip() or str(entry.get("api_mode") or "").strip() or None
+    if api_mode:
+        entry["api_mode"] = api_mode
     # Same for the model map: merge rather than replace, so existing models
     # keep their context lengths. ``body.models`` is the catalogue the panel's
     # Test button already discovered — without it only the one hand-typed
     # model survived Save, and every picker showed a single-entry list for a
-    # provider serving dozens (#69988). A payload with no ``models`` (older
-    # UI) still just ensures the named default is present.
+    # provider serving dozens (#69988). Save-without-Test used to skip the
+    # live catalog entirely; when discover_models is on we fetch
+    # GET {base_url}/models here and merge it in.
     existing_models = entry.get("models")
     models_map: Dict[str, Any] = dict(existing_models) if isinstance(existing_models, dict) else {}
-    for candidate in (*(body.models or ()), model):
+    discovered: List[str] = []
+    if body.discover_models:
+        discovered = _discover_custom_endpoint_models(
+            base_url,
+            api_key=_resolve_custom_endpoint_probe_key(entry, submitted_key),
+            api_mode=api_mode,
+        )
+    for candidate in (*(body.models or ()), *discovered, model):
         model_id = str(candidate).strip()
         if not model_id:
             continue
@@ -8166,7 +8299,6 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     # reference it via ``key_env`` — the same indirection built-in providers
     # use and that runtime_provider.py already resolves at load time.
     env_var = custom_endpoint_key_env(endpoint_id)
-    submitted_key = body.api_key.strip() if body.api_key is not None else None
     if submitted_key:
         save_env_value(env_var, submitted_key)
         entry["key_env"] = env_var
@@ -8210,7 +8342,10 @@ def list_custom_endpoints(profile: Optional[str] = None):
     """
     try:
         with _config_profile_scope(profile):
-            return _custom_endpoint_response(load_config())
+            cfg = load_config()
+            response = _custom_endpoint_response(cfg)
+            _apply_live_custom_endpoint_catalogs(response, cfg)
+            return response
     except HTTPException:
         raise
     except Exception:
@@ -8306,9 +8441,7 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
         return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
 
     url = base_url + "/models"
-    headers = {"Accept": "application/json"}
-    if body.api_key and body.api_key.strip():
-        headers["Authorization"] = f"Bearer {body.api_key.strip()}"
+    headers = _custom_endpoint_probe_headers(body.api_key, body.api_mode, base_url)
 
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:

@@ -255,6 +255,12 @@ class TestWebServerEndpoints:
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
+        # Save and GET list now probe GET {base_url}/models. Existing tests
+        # use fake hosts and must not pay a real DNS timeout.
+        monkeypatch.setattr(
+            "hermes_cli.web_server._discover_custom_endpoint_models",
+            lambda *a, **k: [],
+        )
 
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
@@ -4650,6 +4656,286 @@ class TestValidateProviderCredential:
                 "Authorization": "Bearer local-secret",
             },
         }
+
+    def test_named_custom_endpoint_probe_uses_anthropic_headers(self, monkeypatch):
+        """Anthropic-compat Test must send x-api-key + anthropic-version."""
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            is_success = True
+
+            def json(self):
+                return {"data": [{"id": "alpha"}, {"id": "beta"}, {"id": "gamma"}]}
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def get(self, url, *args, headers=None, **kwargs):
+                captured["url"] = url
+                captured["headers"] = headers
+                return _Resp()
+
+        monkeypatch.setattr("httpx.AsyncClient", _Client)
+
+        response = self.client.post(
+            "/api/providers/custom-endpoints/validate",
+            json={
+                "name": "Claude Proxy",
+                "base_url": "https://proxy.example/anthropic/v1",
+                "model": "only-typed",
+                "api_key": "sk-ant-secret",
+                "api_mode": "anthropic_messages",
+            },
+        )
+
+        assert response.json()["models"] == ["alpha", "beta", "gamma"]
+        assert captured == {
+            "url": "https://proxy.example/anthropic/v1/models",
+            "headers": {
+                "Accept": "application/json",
+                "x-api-key": "sk-ant-secret",
+                "anthropic-version": "2023-06-01",
+            },
+        }
+
+
+class TestCustomEndpointCatalogSave:
+    """Save and list must surface the live GET {base_url}/models catalog."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        self.captured = []
+
+        class _BlockingAsync:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("save-time catalog probe used AsyncClient")
+
+        monkeypatch.setattr("httpx.AsyncClient", _BlockingAsync)
+
+    def _mock_models_get(self, monkeypatch, ids, *, status=200):
+        captured = self.captured
+
+        class _Resp:
+            status_code = status
+            is_success = 200 <= status < 300
+
+            def json(self):
+                return {"data": [{"id": mid} for mid in ids]}
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def get(self, url, *args, headers=None, **kwargs):
+                captured.append({"url": url, "headers": dict(headers or {})})
+                return _Resp()
+
+        monkeypatch.setattr("httpx.Client", _Client)
+
+    def _payload(self, **overrides):
+        body = {
+            "id": "proxy",
+            "name": "Proxy",
+            "base_url": "https://llm.example.com/v1",
+            "model": "only-typed",
+            "api_key": "sk-secret",
+        }
+        body.update(overrides)
+        return body
+
+    def test_save_without_models_array_persists_discovered_catalog(self, monkeypatch):
+        """POST {model: only-typed} and no models[] must still store the catalog."""
+        self._mock_models_get(monkeypatch, ["alpha", "beta", "gamma"])
+
+        resp = self.client.post(
+            "/api/providers/custom-endpoints",
+            json=self._payload(),
+        )
+        assert resp.status_code == 200
+        endpoint = next(e for e in resp.json()["endpoints"] if e["id"] == "proxy")
+        assert endpoint["model"] == "only-typed"
+        assert endpoint["models"] == ["only-typed", "alpha", "beta", "gamma"]
+
+        listed = self.client.get("/api/providers/custom-endpoints").json()
+        endpoint = next(e for e in listed["endpoints"] if e["id"] == "proxy")
+        assert endpoint["models"] == ["only-typed", "alpha", "beta", "gamma"]
+
+        from hermes_cli.config import load_config
+        stored = load_config()["providers"]["proxy"]["models"]
+        assert set(stored) == {"only-typed", "alpha", "beta", "gamma"}
+        assert self.captured[0]["url"] == "https://llm.example.com/v1/models"
+        assert self.captured[0]["headers"]["Authorization"] == "Bearer sk-secret"
+
+    def test_save_skips_catalog_probe_when_discover_models_is_false(self, monkeypatch):
+        self._mock_models_get(monkeypatch, ["alpha"])
+
+        resp = self.client.post(
+            "/api/providers/custom-endpoints",
+            json=self._payload(discover_models=False),
+        )
+        assert resp.status_code == 200
+        endpoint = next(e for e in resp.json()["endpoints"] if e["id"] == "proxy")
+        assert endpoint["models"] == ["only-typed"]
+        assert self.captured == []
+
+    def test_save_anthropic_compat_uses_cli_headers(self, monkeypatch):
+        self._mock_models_get(monkeypatch, ["alpha", "beta", "gamma"])
+
+        resp = self.client.post(
+            "/api/providers/custom-endpoints",
+            json=self._payload(
+                base_url="https://proxy.example/anthropic/v1",
+                api_mode="anthropic_messages",
+                api_key="sk-ant-secret",
+            ),
+        )
+        assert resp.status_code == 200
+        endpoint = next(e for e in resp.json()["endpoints"] if e["id"] == "proxy")
+        assert endpoint["models"] == ["only-typed", "alpha", "beta", "gamma"]
+        assert self.captured[0]["url"] == "https://proxy.example/anthropic/v1/models"
+        assert self.captured[0]["headers"] == {
+            "Accept": "application/json",
+            "x-api-key": "sk-ant-secret",
+            "anthropic-version": "2023-06-01",
+        }
+        assert "Authorization" not in self.captured[0]["headers"]
+
+        from hermes_cli.config import load_config
+        assert load_config()["providers"]["proxy"]["api_mode"] == "anthropic_messages"
+
+    def test_save_infers_anthropic_headers_from_base_url(self, monkeypatch):
+        self._mock_models_get(monkeypatch, ["claude-sonnet"])
+
+        resp = self.client.post(
+            "/api/providers/custom-endpoints",
+            json=self._payload(
+                base_url="https://gateway.example/anthropic/v1",
+                api_key="sk-ant-url",
+            ),
+        )
+        assert resp.status_code == 200
+        assert self.captured[0]["headers"]["x-api-key"] == "sk-ant-url"
+        assert self.captured[0]["headers"]["anthropic-version"] == "2023-06-01"
+
+    def test_save_still_persists_typed_model_when_catalog_is_unreachable(self, monkeypatch):
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def get(self, *args, **kwargs):
+                raise RuntimeError("connection refused")
+
+        monkeypatch.setattr("httpx.Client", _Client)
+
+        resp = self.client.post(
+            "/api/providers/custom-endpoints",
+            json=self._payload(),
+        )
+        assert resp.status_code == 200
+        endpoint = next(e for e in resp.json()["endpoints"] if e["id"] == "proxy")
+        assert endpoint["models"] == ["only-typed"]
+
+    def _seed_typed_only_endpoint(self, **overrides):
+        """Pre-save-discover era: config has only the typed model, no Test/Save catalog."""
+        from hermes_cli.config import custom_endpoint_key_env, load_config, save_config, save_env_value
+
+        env_var = custom_endpoint_key_env("proxy")
+        save_env_value(env_var, "sk-secret")
+        entry = {
+            "name": "Proxy",
+            "base_url": "https://llm.example.com/v1",
+            "model": "only-typed",
+            "discover_models": True,
+            "key_env": env_var,
+            "models": {"only-typed": {}},
+        }
+        entry.update(overrides)
+        cfg = load_config()
+        providers = cfg.get("providers")
+        if not isinstance(providers, dict):
+            providers = {}
+        providers["proxy"] = entry
+        cfg["providers"] = providers
+        save_config(cfg)
+
+    def test_list_live_probes_catalog_when_only_typed_model_is_stored(self, monkeypatch):
+        """GET must return typed + discovered without a prior Test/Save models[]."""
+        self._mock_models_get(monkeypatch, ["alpha", "beta", "gamma"])
+        self._seed_typed_only_endpoint()
+
+        listed = self.client.get("/api/providers/custom-endpoints").json()
+        endpoint = next(e for e in listed["endpoints"] if e["id"] == "proxy")
+        assert endpoint["models"] == ["only-typed", "alpha", "beta", "gamma"]
+        assert self.captured == [{
+            "url": "https://llm.example.com/v1/models",
+            "headers": {
+                "Accept": "application/json",
+                "Authorization": "Bearer sk-secret",
+            },
+        }]
+
+        from hermes_cli.config import load_config
+        stored = load_config()["providers"]["proxy"]["models"]
+        assert set(stored) == {"only-typed"}
+
+    def test_list_skips_catalog_probe_when_discover_models_is_false(self, monkeypatch):
+        self._mock_models_get(monkeypatch, ["alpha", "beta"])
+        self._seed_typed_only_endpoint(discover_models=False)
+
+        listed = self.client.get("/api/providers/custom-endpoints").json()
+        endpoint = next(e for e in listed["endpoints"] if e["id"] == "proxy")
+        assert endpoint["models"] == ["only-typed"]
+        assert self.captured == []
+
+    def test_list_returns_typed_models_when_catalog_is_unreachable(self, monkeypatch):
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def get(self, *args, **kwargs):
+                raise RuntimeError("connection refused")
+
+        monkeypatch.setattr("httpx.Client", _Client)
+        self._seed_typed_only_endpoint()
+
+        listed = self.client.get("/api/providers/custom-endpoints").json()
+        endpoint = next(e for e in listed["endpoints"] if e["id"] == "proxy")
+        assert endpoint["models"] == ["only-typed"]
 
 
 class TestDesktopCronTicker:

@@ -43,7 +43,9 @@ def _responses_timeout_text(response: Any) -> tuple[bool, str | None]:
         if len(output) != 1:
             return True, None
         item = output[0]
-        if _obj_get(item, "type") != "message":
+        # Responses-compatible adapters often omit ``type`` while preserving
+        # the same message/content shape consumed by auxiliary recovery.
+        if _obj_get(item, "type") not in {"message", None}:
             return True, None
         content = _obj_get(item, "content")
         if not isinstance(content, (list, tuple)) or len(content) != 1:

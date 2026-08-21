@@ -482,6 +482,88 @@ class TestStreamingCallbacks:
         assert agent._get_transport().validate_response(response) is True
         assert "valid second choice" in "".join(deltas)
 
+    @pytest.mark.parametrize("evidence", ["second_choice", "tool_call", "usage"])
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_timeout_candidate_flushes_before_generator_exhaustion(
+        self, mock_close, mock_create, evidence
+    ):
+        """Conclusive stream evidence releases held bytes in the same iteration."""
+        from run_agent import AIAgent
+
+        sentinel = "Connect timeout, please try again later."
+        deltas = []
+
+        def choice(index, content=None, tool_calls=None, finish_reason=None):
+            return SimpleNamespace(
+                index=index,
+                delta=SimpleNamespace(
+                    content=content,
+                    tool_calls=tool_calls,
+                    reasoning_content=None,
+                    reasoning=None,
+                ),
+                finish_reason=finish_reason,
+            )
+
+        def chunks():
+            yield SimpleNamespace(
+                choices=[choice(0, sentinel, finish_reason="stop")],
+                model="test/model",
+                usage=None,
+            )
+            assert deltas == []
+
+            if evidence == "second_choice":
+                yield SimpleNamespace(
+                    choices=[choice(1, "second", finish_reason="stop")],
+                    model="test/model",
+                    usage=None,
+                )
+                assert deltas == [sentinel, "second"]
+            elif evidence == "tool_call":
+                yield SimpleNamespace(
+                    choices=[choice(
+                        0,
+                        tool_calls=[_make_tool_call_delta(
+                            tc_id="call_1", name="weather", arguments="{}"
+                        )],
+                        finish_reason="tool_calls",
+                    )],
+                    model="test/model",
+                    usage=None,
+                )
+                assert deltas == [sentinel]
+            else:
+                yield _make_empty_chunk(
+                    usage=SimpleNamespace(completion_tokens=1)
+                )
+                assert deltas == [sentinel]
+
+            yield _make_empty_chunk(
+                usage=SimpleNamespace(completion_tokens=1)
+            )
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = chunks()
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=deltas.append,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == sentinel
+        assert agent._get_transport().validate_response(response) is True
+
 
 
 

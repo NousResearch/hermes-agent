@@ -8892,18 +8892,20 @@ def _recover_aux_response_message(response: Any) -> Optional[Any]:
                 ),
                 finish_reason=_obj_get(item, "finish_reason") or "stop",
             ))
-    else:
-        output_text = _obj_get(response, "output_text")
-        if isinstance(output_text, str):
-            choices.append(SimpleNamespace(
-                index=0,
-                message=SimpleNamespace(
-                    role="assistant",
-                    content=output_text,
-                    tool_calls=None,
-                ),
-                finish_reason=_obj_get(response, "finish_reason") or "stop",
-            ))
+    output_text = _obj_get(response, "output_text")
+    if not choices and isinstance(output_text, str):
+        # ``output_text`` is a compatibility projection, but some adapters
+        # populate it alongside an ``output`` list containing only function
+        # calls. Keep both forms of evidence in the recovered chat message.
+        choices.append(SimpleNamespace(
+            index=0,
+            message=SimpleNamespace(
+                role="assistant",
+                content=output_text,
+                tool_calls=None,
+            ),
+            finish_reason=_obj_get(response, "finish_reason") or "stop",
+        ))
 
     if tool_calls and not choices:
         choices.append(SimpleNamespace(

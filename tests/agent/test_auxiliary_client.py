@@ -4677,6 +4677,35 @@ def test_auxiliary_validation_rejects_router_timeout_shim(response):
     "response",
     [
         SimpleNamespace(
+            output=[SimpleNamespace(
+                content=[SimpleNamespace(
+                    text="Connect timeout, please try again later.",
+                )],
+            )],
+            usage=SimpleNamespace(output_tokens=0),
+        ),
+        {
+            "output": [{
+                "content": [{
+                    "text": "Connect timeout, please try again later.",
+                }],
+            }],
+            "usage": {"output_tokens": 0},
+        },
+    ],
+)
+def test_auxiliary_validation_rejects_untyped_responses_message_shim(response):
+    """Validation must classify the same untyped message shape as recovery."""
+    from agent.auxiliary_client import _validate_llm_response
+
+    with pytest.raises(RuntimeError, match="router timeout shim"):
+        _validate_llm_response(response, task="compression")
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        SimpleNamespace(
             output_text="Connect timeout, please try again later.",
             usage=SimpleNamespace(output_tokens=1),
         ),
@@ -4807,6 +4836,45 @@ def test_auxiliary_recovery_preserves_responses_function_calls(include_text):
     assert tool_call.function.arguments == '{"city":"Warsaw"}'
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        SimpleNamespace(
+            output_text="Connect timeout, please try again later.",
+            output=[SimpleNamespace(
+                type="function_call",
+                call_id="call_weather",
+                name="weather",
+                arguments='{"city":"Warsaw"}',
+            )],
+            usage=SimpleNamespace(output_tokens=0),
+        ),
+        {
+            "output_text": "Connect timeout, please try again later.",
+            "output": [{
+                "type": "function_call",
+                "call_id": "call_weather",
+                "name": "weather",
+                "arguments": '{"city":"Warsaw"}',
+            }],
+            "usage": {"output_tokens": 0},
+        },
+    ],
+)
+def test_auxiliary_recovery_combines_top_level_text_with_output_tool(response):
+    """The Responses compatibility text must survive beside output tools."""
+    from agent.auxiliary_client import _validate_llm_response
+
+    recovered = _validate_llm_response(response, task="compression")
+
+    message = recovered.choices[0].message
+    assert message.content == "Connect timeout, please try again later."
+    assert len(message.tool_calls) == 1
+    assert message.tool_calls[0].id == "call_weather"
+    assert message.tool_calls[0].function.name == "weather"
+    assert message.tool_calls[0].function.arguments == '{"city":"Warsaw"}'
+
+
 def _multi_choice_stream_chunks():
     return [
         SimpleNamespace(
@@ -4886,21 +4954,16 @@ async def test_async_auxiliary_stream_aggregation_preserves_multiple_choices():
     assert recovered.choices[1].message.tool_calls[0].function.name == "weather"
 
 
-def _router_timeout_shim_response():
-    return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(
-            content="Connect timeout, please try again later.",
-            tool_calls=None,
-        ))],
-        usage=SimpleNamespace(completion_tokens=0),
-    )
-
-
 def test_sync_auxiliary_router_timeout_shim_continues_to_fallback():
     """The sync consumer must recover instead of returning the provider shim."""
     primary = MagicMock()
     primary.base_url = "https://primary.example/v1"
-    primary.chat.completions.create.return_value = _router_timeout_shim_response()
+    primary.chat.completions.create.return_value = SimpleNamespace(
+        output=[SimpleNamespace(content=[SimpleNamespace(
+            text="Connect timeout, please try again later.",
+        )])],
+        usage=SimpleNamespace(output_tokens=0),
+    )
     fallback = MagicMock()
     fallback.base_url = "https://openrouter.ai/api/v1"
     fallback.chat.completions.create.return_value = _DummyResponse("recovered sync")
@@ -4935,7 +4998,14 @@ async def test_async_auxiliary_router_timeout_shim_continues_to_fallback():
     primary = MagicMock()
     primary.base_url = "https://primary.example/v1"
     primary.chat.completions.create = AsyncMock(
-        return_value=_router_timeout_shim_response()
+        return_value={
+            "output": [{
+                "content": [{
+                    "text": "Connect timeout, please try again later.",
+                }],
+            }],
+            "usage": {"output_tokens": 0},
+        }
     )
     fallback = MagicMock()
     fallback.base_url = "https://openrouter.ai/api/v1"

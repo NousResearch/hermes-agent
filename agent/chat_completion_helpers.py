@@ -31,6 +31,7 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.chat_completion_validation import (
     ROUTER_TIMEOUT_SHIM,
+    _has_positive_completion_tokens,
     is_valid_chat_completion_response,
 )
 from agent.error_classifier import (
@@ -3920,8 +3921,24 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # can be classified. Ordinary text is released as soon as it diverges
         # from the sentinel, preserving normal token streaming behavior.
         pending_timeout_prefix: list[str] = []
+        timeout_candidate_accepted = False
+
+        def _accept_timeout_candidate() -> None:
+            """Release held bytes once raw stream evidence rules out the shim."""
+            nonlocal timeout_candidate_accepted
+            if timeout_candidate_accepted:
+                return
+            timeout_candidate_accepted = True
+            if pending_timeout_prefix:
+                agent._fire_stream_delta("".join(pending_timeout_prefix))
+                deltas_were_sent["yes"] = True
+                pending_timeout_prefix.clear()
 
         def _emit_stream_text(piece: str) -> None:
+            if timeout_candidate_accepted:
+                agent._fire_stream_delta(piece)
+                deltas_were_sent["yes"] = True
+                return
             candidate = "".join(pending_timeout_prefix) + piece
             unpadded = candidate.lstrip()
             sentinel_and_trailing_space = (
@@ -3935,14 +3952,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             ):
                 pending_timeout_prefix.append(piece)
                 return
-            pending_timeout_prefix.clear()
-            agent._fire_stream_delta(candidate)
-            deltas_were_sent["yes"] = True
+            pending_timeout_prefix.append(piece)
+            _accept_timeout_candidate()
 
         def _flush_valid_timeout_prefix(response: Any) -> None:
             if pending_timeout_prefix and is_valid_chat_completion_response(response):
-                agent._fire_stream_delta("".join(pending_timeout_prefix))
-                deltas_were_sent["yes"] = True
+                _accept_timeout_candidate()
             pending_timeout_prefix.clear()
 
         def _accumulate_additional_choice(choice: Any, position: int) -> None:
@@ -4264,9 +4279,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         ),
                         raw_text=f"{_err_type}: {_err_msg}",
                     )
+                if _has_positive_completion_tokens(usage_obj):
+                    _accept_timeout_candidate()
                 continue
 
+            if hasattr(chunk, "usage") and chunk.usage:
+                usage_obj = chunk.usage
+                if _has_positive_completion_tokens(usage_obj):
+                    _accept_timeout_candidate()
+
             primary_choice = None
+            additional_choices_in_chunk: list[tuple[Any, int]] = []
             for position, streamed_choice in enumerate(chunk.choices):
                 raw_index = getattr(streamed_choice, "index", None)
                 choice_index = raw_index if isinstance(raw_index, int) else position
@@ -4275,16 +4298,23 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 if choice_index == primary_choice_index and primary_choice is None:
                     primary_choice = streamed_choice
                 else:
-                    _accumulate_additional_choice(streamed_choice, position)
+                    additional_choices_in_chunk.append((streamed_choice, position))
+
+            if additional_choices_in_chunk:
+                # A second raw choice is conclusive cardinality evidence. Flush
+                # before processing its callbacks, while retaining choice order.
+                _accept_timeout_candidate()
 
             # Multi-choice providers may emit alternatives in separate chunks;
             # a chunk carrying only a non-primary choice is still useful output.
             if primary_choice is None:
-                if hasattr(chunk, "usage") and chunk.usage:
-                    usage_obj = chunk.usage
+                for streamed_choice, position in additional_choices_in_chunk:
+                    _accumulate_additional_choice(streamed_choice, position)
                 continue
             delta = getattr(primary_choice, "delta", None)
             if delta is None:
+                for streamed_choice, position in additional_choices_in_chunk:
+                    _accumulate_additional_choice(streamed_choice, position)
                 continue
             if hasattr(chunk, "model") and chunk.model:
                 model_name = chunk.model
@@ -4339,6 +4369,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Accumulate tool call deltas — notify display on first name
             delta_tool_calls = getattr(delta, "tool_calls", None)
             if delta_tool_calls:
+                _accept_timeout_candidate()
                 _flush_pending_stream_text()
                 for tc_delta in delta_tool_calls:
                     raw_index = getattr(tc_delta, "index", None)
@@ -4424,9 +4455,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             if chunk_finish_reason:
                 finish_reason = chunk_finish_reason
 
-            # Usage in the final chunk
-            if hasattr(chunk, "usage") and chunk.usage:
-                usage_obj = chunk.usage
+            for streamed_choice, position in additional_choices_in_chunk:
+                _accumulate_additional_choice(streamed_choice, position)
 
         _close_managed_stream()
 

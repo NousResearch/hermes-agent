@@ -61,7 +61,7 @@ def _snapshot(
 ):
     return RuntimeCapabilitySnapshot.build(
         grant_id=grant_id,
-        profile_id=profile_id,
+        address=_address(profile_id),
         profile_config_revision=profile_revision,
         runtime_snapshot_id=runtime_id,
         effective_provider="nous",
@@ -155,12 +155,28 @@ class TestFailClosedPolicyEvaluation:
         assert decision.reason is BotPolicyReason.CAPABILITY_GRANTED
 
     @pytest.mark.parametrize(
+        "address",
+        (
+            BotAddress("other-install", "gateway-a", "local", "profile-123"),
+            BotAddress("install-a", "other-gateway", "local", "profile-123"),
+            BotAddress("install-a", "gateway-a", "remote", "profile-123"),
+            BotAddress("install-a", "gateway-a", "local", "other-profile"),
+        ),
+    )
+    def test_every_address_axis_is_authoritative(self, address):
+        snapshot = _snapshot()
+        data = dict(snapshot.__dict__)
+        data["address"] = address
+        decision = self._decision(snapshot=RuntimeCapabilitySnapshot(**data))
+        assert decision.reason is BotPolicyReason.ADDRESS_MISMATCH
+
+    @pytest.mark.parametrize(
         ("context", "snapshot", "reason"),
         (
             (
                 _context(profile_id="profile-a"),
                 _snapshot(profile_id="profile-b"),
-                BotPolicyReason.PROFILE_MISMATCH,
+                BotPolicyReason.ADDRESS_MISMATCH,
             ),
             (
                 _context(profile_revision="old"),

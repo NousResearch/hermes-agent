@@ -349,6 +349,7 @@ function SidebarSessionRowImpl({
     >
       <SidebarRowShell
         actions={card ? undefined : actionsNode}
+        actionsClassName="pr-1"
         className={cn(
           'group row-hover relative',
           card && SIDEBAR_ROW_CARD_MIN_H,

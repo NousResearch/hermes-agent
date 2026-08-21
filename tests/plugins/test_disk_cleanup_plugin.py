@@ -235,6 +235,23 @@ class TestTrackForgetQuick:
         assert summary["deleted"] == 1
         assert not p.exists()
 
+    def test_quick_preserves_empty_checkpoint_git_internals(self, _isolate_env):
+        dg = _load_lib()
+        objects = _isolate_env / "checkpoints" / "store" / "objects"
+        refs = _isolate_env / "checkpoints" / "store" / "refs"
+        objects.mkdir(parents=True)
+        refs.mkdir(parents=True)
+        disposable = _isolate_env / "scratch" / "empty"
+        disposable.mkdir(parents=True)
+
+        summary = dg.quick()
+
+        assert objects.is_dir()
+        assert refs.is_dir()
+        assert (_isolate_env / "checkpoints").is_dir()
+        assert not disposable.exists()
+        assert summary["empty_dirs"] >= 1
+
 
     def test_forget_removes_entry(self, _isolate_env):
         dg = _load_lib()

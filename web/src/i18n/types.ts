@@ -203,6 +203,9 @@ export interface Translations {
     failedToDeleteSelected: string;
     resumeInChat: string;
     newChat: string;
+    copyId: string;
+    idCopied: string;
+    copyIdFailed: string;
     previousPage: string;
     nextPage: string;
     roles: {

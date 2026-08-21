@@ -30,6 +30,7 @@ import {
   Upload,
   Pencil,
   Check,
+  Copy,
   Archive,
 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -47,6 +48,7 @@ import type {
   StatusResponse,
 } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { Markdown } from "@/components/Markdown";
 import { PlatformsCard } from "@/components/PlatformsCard";
 import { Toast } from "@nous-research/ui/ui/components/toast";
@@ -473,10 +475,13 @@ function SessionRow({
   onDelete,
   onRename,
   onExport,
+  onCopyId,
   resumeInChatEnabled,
 }: SessionRowProps) {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [justCopied, setJustCopied] = useState(false);
+  const copiedTimerRef = useRef<number | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(session.title ?? "");
   const [renameSaving, setRenameSaving] = useState(false);
@@ -518,6 +523,30 @@ function SessionRow({
       setRenaming(false);
     } finally {
       setRenameSaving(false);
+    }
+  };
+
+  useEffect(
+    () => () => {
+      if (copiedTimerRef.current !== null) {
+        window.clearTimeout(copiedTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  const copyId = async () => {
+    const ok = await onCopyId(session.id);
+    if (copiedTimerRef.current !== null) {
+      window.clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = null;
+    }
+    setJustCopied(ok);
+    if (ok) {
+      copiedTimerRef.current = window.setTimeout(
+        () => setJustCopied(false),
+        1500,
+      );
     }
   };
 
@@ -721,6 +750,26 @@ function SessionRow({
                 )}
                 <span className="text-border">&#183;</span>
                 <span className="shrink-0">{timeAgo(session.last_active)}</span>
+                <span className="text-border">&#183;</span>
+                <button
+                  type="button"
+                  aria-label={t.sessions.copyId}
+                  title={t.sessions.copyId}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void copyId();
+                  }}
+                  className="inline-flex min-w-0 cursor-pointer items-center gap-1 font-mono-ui text-[11px] text-muted-foreground/70 transition-colors hover:text-foreground"
+                >
+                  <span className="max-w-[140px] truncate sm:max-w-none">
+                    {session.id}
+                  </span>
+                  {justCopied ? (
+                    <Check className="h-3 w-3 shrink-0 text-success" />
+                  ) : (
+                    <Copy className="h-3 w-3 shrink-0 opacity-50" />
+                  )}
+                </button>
               </div>
               {snippet && <SnippetHighlight snippet={snippet} />}
             </div>
@@ -1491,6 +1540,19 @@ export default function SessionsPage() {
     [showToast],
   );
 
+  const handleCopyId = useCallback(
+    async (id: string) => {
+      const ok = await copyTextToClipboard(id);
+      if (ok) {
+        showToast(`${t.sessions.idCopied}: ${id}`, "success");
+      } else {
+        showToast(t.sessions.copyIdFailed, "error");
+      }
+      return ok;
+    },
+    [showToast, t.sessions.idCopied, t.sessions.copyIdFailed],
+  );
+
   const handlePrune = useCallback(async () => {
     const days = parseInt(pruneDays, 10);
     if (!Number.isFinite(days) || days < 0) {
@@ -2088,6 +2150,7 @@ export default function SessionsPage() {
                   onDelete={() => sessionDelete.requestDelete(s.id)}
                   onRename={handleRename}
                   onExport={handleExport}
+                  onCopyId={handleCopyId}
                   resumeInChatEnabled={resumeInChatEnabled}
                 />
               ))}
@@ -2178,6 +2241,7 @@ export default function SessionsPage() {
 interface SessionRowProps {
   isExpanded: boolean;
   isSelected: boolean;
+  onCopyId: (id: string) => Promise<boolean>;
   onDelete: () => void;
   onExport: (id: string) => void;
   onRename: (id: string, title: string) => Promise<void>;

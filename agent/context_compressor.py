@@ -5226,6 +5226,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             _LENGTH_CONTINUATION_NETWORK_STUB,
             _LENGTH_CONTINUATION_OUTPUT_LIMIT,
         )
+        from agent.kanban_stop import KANBAN_STOP_NUDGE_PREFIX
 
         return text in {
             COMPRESSION_CONTINUATION_USER_CONTENT,
@@ -5243,6 +5244,8 @@ This compaction should PRIORITISE preserving all information related to the focu
             TODO_INJECTION_HEADER + "\n"
         ) or text.startswith(
             _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX
+        ) or text.startswith(
+            KANBAN_STOP_NUDGE_PREFIX
         )
 
     @staticmethod

@@ -745,7 +745,7 @@ def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
 # =========================================================================
 
 def _format_context_length(tokens: int) -> str:
-    """Format a token count for display (e.g. 128000 → '128K', 1048576 → '1M')."""
+    """Format a token count for display (e.g. 128000 → '128k', 1000000 → '1M')."""
     if tokens >= 1_000_000:
         val = tokens / 1_000_000
         rounded = round(val)
@@ -756,8 +756,8 @@ def _format_context_length(tokens: int) -> str:
         val = tokens / 1_000
         rounded = round(val)
         if abs(val - rounded) < 0.05:
-            return f"{rounded}K"
-        return f"{val:.1f}K"
+            return f"{rounded}k"
+        return f"{val:.1f}k"
     return str(tokens)
 
 

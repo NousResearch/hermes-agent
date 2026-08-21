@@ -41,7 +41,7 @@ class TestFormatSessionInfo:
                                   {"provider": "custom", "base_url": "", "api_key": ""})
         with p1, p2, p3:
             info = runner._format_session_info()
-        assert "32K" in info
+        assert "32k" in info
         assert "config" in info
 
     def test_default_fallback_hint(self, runner, tmp_path):
@@ -50,7 +50,7 @@ class TestFormatSessionInfo:
                                   {"provider": "", "base_url": "", "api_key": ""})
         with p1, p2, p3:
             info = runner._format_session_info()
-        assert "256K" in info
+        assert "256k" in info
         assert "model.context_length" in info
 
     def test_local_endpoint_shown(self, runner, tmp_path):
@@ -62,7 +62,7 @@ class TestFormatSessionInfo:
         with p1, p2, p3:
             info = runner._format_session_info()
         assert "localhost:11434" in info
-        assert "8K" in info
+        assert "8k" in info
 
     def test_named_custom_provider_keeps_context_pin_without_model_base_url(
         self, runner, tmp_path
@@ -112,9 +112,9 @@ class TestFormatSessionInfo:
             ),
         ):
             info = runner._format_session_info()
-        assert "262K" in info
+        assert "262k" in info
         assert "config" in info
-        assert "131K" not in info
+        assert "131k" not in info
 
 
 class TestResetNoticeSessionInfo:

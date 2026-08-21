@@ -669,6 +669,75 @@ class EmailAdapter(BasePlatformAdapter):
             # Retry with IPv4 only.
             return _connect(ipv4_only=True)
 
+    def _test_imap_connection(self, is_reconnect: bool) -> None:
+        """Synchronous IMAP connectivity test — runs in an executor thread.
+
+        Test IMAP connection. The handle is closed in ``finally`` —
+        before this, a failure in login/select/search left the TCP
+        socket open with no owner, leaking one fd per connect attempt.
+        Under the gateway's reconnect watcher (fresh adapter instance
+        per retry) against an unreachable/proxied host this grew
+        monotonically until fd exhaustion on macOS's 256 soft limit
+        (#79889).
+
+        2026-08-20: extracted from ``connect()`` so the synchronous
+        imaplib calls run off the event loop — against a slow IMAP
+        server (QQ mail read timeouts) the old inline version froze
+        the asyncio loop for 60-90s, tripping the gateway shutdown
+        watchdog (exit 75 restart loop).
+        """
+        imap = None
+        try:
+            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+            imap.login(self._address, self._password)
+            _send_imap_id(imap)
+            imap.select("INBOX")
+            snapshot = self._seen_uids_snapshot.get(self._address)
+            if is_reconnect and snapshot is not None:
+                # Reconnect within the same process: restore the previous
+                # adapter's seen-UID baseline instead of re-marking the whole
+                # mailbox. Mail that arrived during the outage stays UNSEEN
+                # relative to the baseline and is dispatched by the next poll
+                # instead of being silently skipped.
+                self._seen_uids = set(snapshot)
+                self._trim_seen_uids()
+                logger.info(
+                    "[Email] IMAP reconnect test passed. Restored %d seen UIDs; "
+                    "messages received during the outage will be processed.",
+                    len(self._seen_uids),
+                )
+            else:
+                # First connect (or no snapshot): mark all existing messages as
+                # seen so we only process new ones.
+                status, data = imap.uid("search", None, "ALL")
+                if status == "OK" and data and data[0]:
+                    for uid in data[0].split():
+                        self._seen_uids.add(uid)
+                # Keep only the most recent UIDs to prevent unbounded growth
+                self._trim_seen_uids()
+                logger.info(
+                    "[Email] IMAP connection test passed. %d existing messages skipped.",
+                    len(self._seen_uids),
+                )
+        finally:
+            if imap is not None:
+                _close_imap(imap)
+        self._seen_uids_snapshot[self._address] = set(self._seen_uids)
+
+    def _test_smtp_connection(self) -> None:
+        """Synchronous SMTP connectivity test — runs in an executor thread.
+
+        2026-08-20: extracted from ``connect()`` so smtplib (connect +
+        starttls + login can take 30s+ against a slow server) never
+        blocks the asyncio event loop (see _test_imap_connection).
+        """
+        smtp = self._connect_smtp()
+        try:
+            smtp.login(self._address, self._password)
+        finally:
+            smtp.quit()
+        logger.info("[Email] SMTP connection test passed.")
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
         # Validate up front so a missing host surfaces as an actionable config
@@ -702,47 +771,12 @@ class EmailAdapter(BasePlatformAdapter):
             return False
 
         try:
-            # Test IMAP connection. The handle is closed in ``finally`` —
-            # before this, a failure in login/select/search left the TCP
-            # socket open with no owner, leaking one fd per connect attempt.
-            # Under the gateway's reconnect watcher (fresh adapter instance
-            # per retry) against an unreachable/proxied host this grew
-            # monotonically until fd exhaustion on macOS's 256 soft limit
-            # (#79889).
-            imap = None
-            try:
-                imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
-                imap.login(self._address, self._password)
-                _send_imap_id(imap)
-                imap.select("INBOX")
-                snapshot = self._seen_uids_snapshot.get(self._address)
-                if is_reconnect and snapshot is not None:
-                    # Reconnect within the same process: restore the previous
-                    # adapter's seen-UID baseline instead of re-marking the whole
-                    # mailbox. Mail that arrived during the outage stays UNSEEN
-                    # relative to the baseline and is dispatched by the next poll
-                    # instead of being silently skipped.
-                    self._seen_uids = set(snapshot)
-                    self._trim_seen_uids()
-                    logger.info(
-                        "[Email] IMAP reconnect test passed. Restored %d seen UIDs; "
-                        "messages received during the outage will be processed.",
-                        len(self._seen_uids),
-                    )
-                else:
-                    # First connect (or no snapshot): mark all existing messages as
-                    # seen so we only process new ones.
-                    status, data = imap.uid("search", None, "ALL")
-                    if status == "OK" and data and data[0]:
-                        for uid in data[0].split():
-                            self._seen_uids.add(uid)
-                    # Keep only the most recent UIDs to prevent unbounded growth
-                    self._trim_seen_uids()
-                    logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
-            finally:
-                if imap is not None:
-                    _close_imap(imap)
-            self._seen_uids_snapshot[self._address] = set(self._seen_uids)
+            # Test IMAP connection off the event loop (2026-08-20): the
+            # synchronous imaplib calls below used to run inline and froze
+            # the asyncio loop for 60-90s against a slow server (QQ mail
+            # read timeouts), tripping gateway.shutdown_watchdog (exit 75
+            # restart loop). See _test_imap_connection for the moved body.
+            await asyncio.to_thread(self._test_imap_connection, is_reconnect)
         except Exception as e:
             logger.error("[Email] IMAP connection failed: %s", e)
             # Always set an explicit fatal code (OOF-156): returning False
@@ -763,13 +797,10 @@ class EmailAdapter(BasePlatformAdapter):
             return False
 
         try:
-            # Test SMTP connection
-            smtp = self._connect_smtp()
-            try:
-                smtp.login(self._address, self._password)
-            finally:
-                smtp.quit()
-            logger.info("[Email] SMTP connection test passed.")
+            # Test SMTP connection off the event loop (2026-08-20): same
+            # freeze guard as the IMAP test above — smtplib connect/starttls/
+            # login can take 30s+ against a slow server (SMTP_CONNECT_TIMEOUT).
+            await asyncio.to_thread(self._test_smtp_connection)
         except smtplib.SMTPAuthenticationError as e:
             logger.error("[Email] SMTP authentication failed: %s", e)
             # Typed auth failure (535 & friends): bad or revoked credentials

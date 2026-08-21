@@ -12,6 +12,7 @@ Exposes an HTTP server with endpoints:
 - POST /api/sessions               — create an empty Hermes session
 - GET/PATCH/DELETE /api/sessions/{session_id} — read/update/delete a session
 - GET  /api/sessions/{session_id}/messages — read session message history
+- GET  /api/sessions/{session_id}/delegations — list async delegations for a session
 - POST /api/sessions/{session_id}/fork — branch a session using SessionDB lineage
 - POST /api/sessions/{session_id}/chat[/stream] — chat with a persisted session
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
@@ -2208,6 +2209,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
+            ("GET", "/api/sessions/{session_id}/delegations", self._handle_session_delegations),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
@@ -3322,6 +3324,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat_streaming": True,
                 "session_fork": True,
                 "session_model_lock": True,
+                "session_delegations": True,
                 "admin_config_rw": False,
                 "jobs_admin": False,
                 "memory_write_api": False,
@@ -3379,6 +3382,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
                 "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
                 "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
+                "session_delegations": {
+                    "method": "GET",
+                    "path": "/api/sessions/{session_id}/delegations",
+                },
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
@@ -4472,6 +4479,101 @@ class APIServerAdapter(BasePlatformAdapter):
                 "order": order or ("latest" if default_page else "oldest"),
                 "returned": len(messages),
             },
+        })
+
+    # Public projection for GET /api/sessions/{id}/delegations — whitelist only.
+    # Deliberately omits free-text blobs like ``context`` / full result payloads
+    # that can be large or credential-bearing (#81754).
+    _DELEGATION_PUBLIC_KEYS = (
+        "delegation_id",
+        "status",
+        "goal",
+        "goals",
+        "is_batch",
+        "role",
+        "model",
+        "toolsets",
+        "dispatched_at",
+        "completed_at",
+        "seconds_since_progress",
+        "children_activity",
+        "in_tool",
+        "stalled_after_quiet_seconds",
+        "stall_threshold_seconds",
+        "stall_in_tool",
+        "origin_session_id",
+        "parent_session_id",
+        "session_key",
+        "delivery_state",
+        "delivered_at",
+    )
+
+    @classmethod
+    def _project_delegation_for_api(cls, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Project an async-delegation registry row for the public Sessions API."""
+        out: Dict[str, Any] = {}
+        for key in cls._DELEGATION_PUBLIC_KEYS:
+            if key not in item:
+                continue
+            value = item[key]
+            if key == "goal" and isinstance(value, str):
+                value = redact_sensitive_text(value, force=True)
+            elif key == "goals" and isinstance(value, list):
+                value = [
+                    redact_sensitive_text(str(part), force=True)
+                    if isinstance(part, str)
+                    else part
+                    for part in value
+                ]
+            out[key] = value
+        return out
+
+    async def _handle_session_delegations(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id}/delegations — async delegation status.
+
+        Thin projection of ``list_async_delegations_for_session`` for external
+        orchestrators that use ``/v1/runs`` and cannot treat ``run.completed``
+        as "all background children finished" (#81754).
+
+        Query params:
+        - ``include_recent`` (bool, default false): when true, also return
+          recently completed records retained by the registry.
+        - ``active_only`` (bool): when present, overrides ``include_recent``.
+          Default behavior is active-only.
+
+        Response also includes ``pending_delivery_count`` and ``drain_complete``
+        so orchestrators can wait for wake delivery after subagents finish.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        _, err = await self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+
+        include_recent = _coerce_request_bool(
+            request.query.get("include_recent"), default=False
+        )
+        active_only = not include_recent
+        if "active_only" in request.query:
+            active_only = _coerce_request_bool(
+                request.query.get("active_only"), default=True
+            )
+
+        from tools.async_delegation import snapshot_session_delegations
+
+        snapshot = snapshot_session_delegations(session_id, active_only=active_only)
+        return web.json_response({
+            "object": "hermes.session.delegations",
+            "session_id": session_id,
+            "active_count": snapshot["active_count"],
+            "pending_delivery_count": snapshot["pending_delivery_count"],
+            "drain_complete": snapshot["drain_complete"],
+            "delegations": [
+                self._project_delegation_for_api(item)
+                for item in snapshot["delegations"]
+            ],
         })
 
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":

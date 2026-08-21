@@ -477,6 +477,12 @@ redaction before leaving the process. Per-tool child events
 are high-volume UI noise; use the per-child live transcript files for
 play-by-play.
 
+Detached `delegate_task(background=true)` children may outlive the parent run:
+`run.completed` means the parent turn finished, not that every background
+subagent is done. Poll `GET /api/sessions/{session_id}/delegations` (see
+Sessions API below) for session-scoped async-delegation status after the run
+terminates.
+
 Unconsumed event buffers expire after five minutes so a detached client cannot
 grow memory indefinitely. This expires transport state only: a run that is
 still executing remains visible to status polling, approval, stop control, and
@@ -542,11 +548,72 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `PATCH` | `/api/sessions/{id}` | Update title or `end_reason` |
 | `DELETE` | `/api/sessions/{id}` | Delete a session |
 | `GET` | `/api/sessions/{id}/messages` | Message history for a session |
+| `GET` | `/api/sessions/{id}/delegations` | Active (or recent) async `delegate_task` background work for a session |
 | `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
 | `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
 | `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `tool.started`, `tool.completed`, `run.completed` events |
 
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
+
+### GET /api/sessions/\{id\}/delegations
+
+External orchestrators that drive Hermes through `POST /v1/runs` often treat
+`run.completed` as "the job is finished". That is true for the **parent turn**,
+but `delegate_task(background=true)` children can keep running after the parent
+run reaches a terminal state; their results re-enter the session later as a
+wake turn. This endpoint projects the in-process async-delegation registry for
+one session so clients can poll until background work drains.
+
+```bash
+curl http://localhost:8642/api/sessions/$ID/delegations \
+  -H "Authorization: Bearer $API_SERVER_KEY"
+```
+
+```json
+{
+  "object": "hermes.session.delegations",
+  "session_id": "my-session",
+  "active_count": 1,
+  "pending_delivery_count": 0,
+  "drain_complete": false,
+  "delegations": [
+    {
+      "delegation_id": "deleg_...",
+      "status": "running",
+      "goal": "...",
+      "dispatched_at": 0,
+      "seconds_since_progress": 12.3
+    }
+  ]
+}
+```
+
+Defaults to **active-only** (`running` / `stalling` / `finalizing`). Pass
+`?include_recent=1` (or `?active_only=false`) to also include recently
+completed records retained by the registry or durable store. `active_count`
+always reflects live work for the session, even when recent completions are
+included.
+
+**Delivery drain fields** (for external orchestrators such as SCLAW):
+
+| Field | Meaning |
+|-------|---------|
+| `active_count` | Live subagent/batch units still running in the registry |
+| `pending_delivery_count` | Terminal delegations whose wake completion is not yet `delivered` |
+| `drain_complete` | `active_count == 0` and `pending_delivery_count == 0` |
+| `delivery_state` | Per delegation: `pending`, `delivered`, or `dropped` (when included) |
+| `delivered_at` | Timestamp when wake injection completed (when `delivered`) |
+
+A subagent can finish (`active_count` drops to 0) while the parent session is
+still processing the wake turn (`pending_delivery_count > 0`). Poll until
+`drain_complete` is true before treating the session as fully drained.
+
+This does **not** change `run.completed` semantics: a run still completes when
+the parent turn ends. Typical orchestrator flow:
+
+1. Wait for `run.completed` on the original run
+2. Poll `GET /api/sessions/{session_id}/delegations` until `drain_complete == true`
+3. Read session messages for the consolidated child results
 
 ```bash
 # fork a session and run one turn

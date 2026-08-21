@@ -97,6 +97,83 @@ def test_active_for_session_counts_every_live_delegation_state():
     assert ad.active_for_session("") == 0
 
 
+def test_count_pending_deliveries_for_session():
+    session_id = "sess-pending-count"
+    foreign_id = "sess-foreign-count"
+    res = ad.dispatch_async_delegation(
+        goal="owner work",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="run-key",
+        origin_session_id=session_id,
+        max_async_children=1,
+        runner=lambda: {"status": "completed"},
+    )
+    ad.dispatch_async_delegation(
+        goal="foreign work",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="other-run",
+        origin_session_id=foreign_id,
+        max_async_children=2,
+        runner=lambda: {"status": "completed"},
+    )
+    deadline = time.monotonic() + 5.0
+    while ad.active_count() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert _drain_for(res["delegation_id"]) is not None
+
+    assert ad.count_pending_deliveries_for_session(session_id) == 1
+    assert ad.count_pending_deliveries_for_session(foreign_id) == 1
+    assert ad.count_pending_deliveries_for_session("nobody") == 0
+
+    ad.mark_completion_delivered(res["delegation_id"])
+    assert ad.count_pending_deliveries_for_session(session_id) == 0
+
+
+def test_snapshot_session_delegations_pending_delivery_blocks_drain():
+    session_id = "sess-snapshot-drain"
+    res = ad.dispatch_async_delegation(
+        goal="snapshot drain",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="run-key",
+        origin_session_id=session_id,
+        max_async_children=1,
+        runner=lambda: {"status": "completed", "summary": "ok"},
+    )
+    deadline = time.monotonic() + 5.0
+    while ad.active_count() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert _drain_for(res["delegation_id"]) is not None
+
+    snap = ad.snapshot_session_delegations(session_id, active_only=False)
+    assert snap["active_count"] == 0
+    assert snap["pending_delivery_count"] == 1
+    assert snap["drain_complete"] is False
+    row = next(
+        d for d in snap["delegations"] if d["delegation_id"] == res["delegation_id"]
+    )
+    assert row["status"] == "completed"
+    assert row["delivery_state"] == "pending"
+
+    ad.mark_completion_delivered(res["delegation_id"])
+    done = ad.snapshot_session_delegations(session_id, active_only=False)
+    assert done["pending_delivery_count"] == 0
+    assert done["drain_complete"] is True
+    delivered = next(
+        d for d in done["delegations"] if d["delegation_id"] == res["delegation_id"]
+    )
+    assert delivered["delivery_state"] == "delivered"
+    assert isinstance(delivered["delivered_at"], float)
+
+
 def test_dispatch_returns_immediately_without_blocking():
     gate = threading.Event()
 
@@ -469,6 +546,42 @@ def test_list_async_delegations_exposes_live_activity(monkeypatch):
         assert "progress_fn" not in item
         assert "interrupt_fn" not in item
         assert not any(k.startswith("_") for k in item)
+    finally:
+        gate.set()
+
+
+def test_list_async_delegations_for_session_matches_origin_and_filters(monkeypatch):
+    """Session filter must match origin_session_id even when session_key differs
+    (api_server /v1/runs approval key vs raw session id) (#81754)."""
+    monkeypatch.setattr(ad, "_STALE_CHECK_INTERVAL", 60.0)
+    gate = threading.Event()
+    try:
+        mine = ad.dispatch_async_delegation(
+            goal="mine",
+            context=None,
+            toolsets=None,
+            role="leaf",
+            model="m",
+            session_key="run_abc",
+            origin_session_id="sess-raw",
+            max_async_children=2,
+            runner=lambda: {} if gate.wait(timeout=10) else {},
+        )
+        ad.dispatch_async_delegation(
+            goal="theirs",
+            context=None,
+            toolsets=None,
+            role="leaf",
+            model="m",
+            session_key="other",
+            origin_session_id="other-sess",
+            max_async_children=2,
+            runner=lambda: {"status": "completed"},
+        )
+        active = ad.list_async_delegations_for_session("sess-raw")
+        assert [d["delegation_id"] for d in active] == [mine["delegation_id"]]
+        assert ad.list_async_delegations_for_session("") == []
+        assert ad.list_async_delegations_for_session("run_abc")  # session_key match
     finally:
         gate.set()
 

@@ -51,6 +51,7 @@ from cron.jobs import (
     resolve_job_ref,
     resume_job,
     update_job,
+    _normalize_repeat_value,
 )
 
 
@@ -1609,8 +1610,9 @@ def cronjob(
                         )
                 updates["no_agent"] = target_no_agent
             if repeat is not None:
-                # Normalize: treat 0 or negative as None (infinite)
-                normalized_repeat = None if repeat <= 0 else repeat
+                # Normalize: handle string synonyms ("forever"/"inf") and ints.
+                # Delegated to _normalize_repeat_value so create/update share one path.
+                normalized_repeat = _normalize_repeat_value(repeat)
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state
@@ -1679,8 +1681,11 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
                 "description": "Optional human-friendly name"
             },
             "repeat": {
-                "type": "integer",
-                "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring)."
+                "oneOf": [
+                    {"type": "integer"},
+                    {"type": "string", "enum": ["forever"]}
+                ],
+                "description": "Optional repeat count (integer) or the literal string \"forever\" for infinite recurrence. Omit for defaults (once for one-shot, forever for recurring). Acceptable integer values: positive integers for finite repetitions; zero or negative normalizes to infinite (same as omitting). String value: \"forever\", \"infinite\", \"inf\", or empty string all normalize to infinite recurrence."
             },
             "deliver": {
                 "type": "string",

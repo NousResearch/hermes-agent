@@ -146,6 +146,100 @@ def test_current_user_turn_is_persisted_before_provider_call(agent):
 class TestHTTP413Compression:
     """413 errors should trigger compression, not abort as generic 4xx."""
 
+    def test_request_evicts_old_images_before_provider_body_can_reach_413(self, agent):
+        """Only three image-bearing messages reach the provider per request."""
+        captured = {}
+
+        def _create(**kwargs):
+            captured.update(kwargs)
+            return _mock_response(content="bounded", finish_reason="stop")
+
+        agent.client.chat.completions.create.side_effect = _create
+
+        def _image(label):
+            return {
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/png;base64," + (label * 1000),
+                },
+            }
+
+        prefill = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "inspect these"},
+                    _image("initial"),
+                ],
+            }
+        ]
+        for index in range(5):
+            call_id = f"call_{index}"
+            prefill.extend([
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": "vision_analyze",
+                            "arguments": "{}",
+                        },
+                    }],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": "vision_analyze",
+                    "content": [
+                        {"type": "text", "text": f"result {index}"},
+                        _image(str(index)),
+                    ],
+                },
+            ])
+
+        with (
+            patch.object(agent, "_model_supports_vision", return_value=True),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("continue", conversation_history=prefill)
+
+        assert result["completed"] is True
+        sent = captured["messages"]
+        image_messages = [
+            message
+            for message in sent
+            if isinstance(message.get("content"), list)
+            and any(
+                isinstance(part, dict)
+                and part.get("type") in {"image_url", "input_image", "image"}
+                for part in message["content"]
+            )
+        ]
+        placeholders = [
+            part
+            for message in sent
+            if isinstance(message.get("content"), list)
+            for part in message["content"]
+            if isinstance(part, dict)
+            and "stripped from older request context" in part.get("text", "")
+        ]
+        assert len(image_messages) == 3
+        assert len(placeholders) == 3
+
+        # Request-only: all six originals remain in the caller's history.
+        historical_images = [
+            part
+            for message in prefill
+            if isinstance(message.get("content"), list)
+            for part in message["content"]
+            if isinstance(part, dict) and part.get("type") == "image_url"
+        ]
+        assert len(historical_images) == 6
+
     def test_413_triggers_compression(self, agent):
         """A 413 error should call _compress_context and retry, not abort."""
         # First call raises 413; second call succeeds after compression.

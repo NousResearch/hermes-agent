@@ -1607,6 +1607,9 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
 
 
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
+_OLD_REQUEST_IMAGE_PLACEHOLDER = (
+    "[Attached image — stripped from older request context]"
+)
 
 
 def _is_image_part(part: Any) -> bool:
@@ -1627,6 +1630,63 @@ def _content_has_images(content: Any) -> bool:
     if not isinstance(content, list):
         return False
     return any(_is_image_part(p) for p in content)
+
+
+def _strip_old_image_parts(
+    api_messages: List[Dict[str, Any]],
+    keep_recent: int = 3,
+) -> int:
+    """Replace image parts outside the newest image-bearing messages.
+
+    This is a request-time payload bound, independent of context compaction.
+    Long vision runs otherwise re-send every historical inline base64 image on
+    every model call and can hit a provider's HTTP body-size limit while the
+    token estimate remains far below the compression threshold.
+
+    The newest ``keep_recent`` *messages containing images* retain all their
+    image parts. Older image parts become short text placeholders. Message
+    rows are never removed, so assistant/tool-call pairing remains intact.
+    ``api_content`` is dropped from rewritten rows because replaying that
+    sidecar could restore the bytes this pass removed.
+
+    Mutates the per-call ``api_messages`` list and returns the number of image
+    parts replaced. Canonical/persisted history must not be passed here.
+
+    Removing bytes necessarily changes the request prefix once when an image
+    crosses the keep-window boundary. The projection is deterministic, so that
+    message is stable on every later request; running before cache planning
+    ensures cache markers describe the post-eviction payload. This mirrors the
+    existing Anthropic computer-use screenshot policy.
+    """
+    if not isinstance(api_messages, list):
+        return 0
+
+    remaining = max(0, keep_recent)
+    replaced = 0
+    for message in reversed(api_messages):
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list) or not _content_has_images(content):
+            continue
+        if remaining:
+            remaining -= 1
+            continue
+
+        new_content: List[Any] = []
+        for part in content:
+            if _is_image_part(part):
+                new_content.append({
+                    "type": "text",
+                    "text": _OLD_REQUEST_IMAGE_PLACEHOLDER,
+                })
+                replaced += 1
+            else:
+                new_content.append(part)
+        message["content"] = new_content
+        drop_stale_api_content(message)
+
+    return replaced
 
 
 def _strip_images_from_content(content: Any) -> Any:

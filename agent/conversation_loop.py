@@ -36,6 +36,7 @@ from agent.conversation_compression import (
     conversation_history_after_compression,
 )
 from agent.context_engine import automatic_compaction_status_message
+from agent.context_compressor import _strip_old_image_parts
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_metadata import append_message
@@ -2431,6 +2432,14 @@ def run_conversation(
         # lone surrogates (U+D800-U+DFFF) that crash json.dumps() inside
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
+
+        # Bound inline image bytes on every request, not only after context
+        # compaction. Long vision runs can remain below the token threshold
+        # while accumulated base64 tool results exceed the provider's HTTP
+        # body limit. This operates only on the per-call message copy; stored
+        # history remains untouched. Run before cache planning so the request
+        # prefix reflects the exact payload that will be sent.
+        _strip_old_image_parts(api_messages, keep_recent=3)
 
         # NOTE (empty-content class fix): no send-time pad loop here.  The
         # single owner for "never send a turn strict wire validation rejects

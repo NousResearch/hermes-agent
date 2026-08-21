@@ -2656,6 +2656,72 @@ class TestHandleMaxIterations:
         assert len(result) > 0
         assert "summary" in result.lower()
 
+    def test_summary_request_evicts_old_images_without_mutating_history(self, agent):
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+
+        def _image(label):
+            return {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64," + (label * 100)},
+            }
+
+        messages: list[dict] = [{"role": "user", "content": "inspect"}]
+        for index in range(5):
+            call_id = f"call_{index}"
+            messages.extend([
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": "vision_analyze",
+                            "arguments": "{}",
+                        },
+                    }],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": [
+                        {"type": "text", "text": f"result {index}"},
+                        _image(str(index)),
+                    ],
+                },
+            ])
+
+        assert agent._handle_max_iterations(messages, 60) == "Summary"
+
+        sent = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        sent_images = [
+            part
+            for message in sent
+            if isinstance(message.get("content"), list)
+            for part in message["content"]
+            if isinstance(part, dict) and part.get("type") == "image_url"
+        ]
+        placeholders = [
+            part
+            for message in sent
+            if isinstance(message.get("content"), list)
+            for part in message["content"]
+            if isinstance(part, dict)
+            and "stripped from older request context" in part.get("text", "")
+        ]
+        history_images = [
+            part
+            for message in messages
+            if isinstance(message.get("content"), list)
+            for part in message["content"]
+            if isinstance(part, dict) and part.get("type") == "image_url"
+        ]
+
+        assert len(sent_images) == 3
+        assert len(placeholders) == 2
+        assert len(history_images) == 5
+
     def test_summary_retries_share_relay_identity(self, agent):
         agent.client.chat.completions.create.side_effect = [
             _mock_response(content=""),

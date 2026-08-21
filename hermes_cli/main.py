@@ -39,6 +39,7 @@ Usage:
     hermes uninstall           Uninstall Hermes Agent
     hermes acp                 Run as an ACP server for editor integration
     hermes sessions browse     Interactive session picker with search
+    hermes sessions cost       Cache-hit and cost-savings report per session
 
     hermes claw migrate --dry-run  # Preview migration without changes
 """
@@ -13244,7 +13245,7 @@ def main():
     # =========================================================================
     sessions_parser = subparsers.add_parser(
         "sessions",
-        help="Manage session history (list, rename, export, prune, delete)",
+        help="Manage session history (list, cost, rename, export, prune, delete)",
         description="View and manage the SQLite session store",
     )
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
@@ -13445,6 +13446,33 @@ def main():
     sessions_delete.add_argument("session_id", help="Session ID to delete")
     sessions_delete.add_argument(
         "--yes", "-y", action="store_true", help="Skip confirmation"
+    )
+
+    sessions_cost = sessions_subparsers.add_parser(
+        "cost",
+        help="Per-session token, cache-hit and cost-savings report",
+        description=(
+            "Report each session's token usage, cache-hit rate, estimated "
+            "cost, and the counterfactual cost if the prompt cache had never "
+            "hit. The counterfactual is an ESTIMATE: it assumes cache reads "
+            "are billed at cost.cache_hit_ratio (default 0.10 = 10%) of the "
+            "cold input rate and attributes the recorded cost to the input "
+            "side in proportion to token counts."
+        ),
+    )
+    sessions_cost.add_argument(
+        "--session",
+        metavar="ID",
+        help="Session ID or unique prefix to show the full cost breakdown for",
+    )
+    sessions_cost.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Max sessions to include in the table (default: 20)",
+    )
+    sessions_cost.add_argument(
+        "--source", help="Filter by source (cli, telegram, discord, etc.)"
     )
 
     sessions_prune = sessions_subparsers.add_parser(

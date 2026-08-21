@@ -400,6 +400,116 @@ def cmd_sessions(args, sessions_parser=None):
                 sid = s["id"]
                 print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
 
+    elif action == "cost":
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.session_cost import (
+            CACHE_HIT_WARN_THRESHOLD_PCT,
+            cache_hit_ratio_from_config,
+            format_hit_pct,
+            format_tokens,
+            format_usd,
+            session_cost_breakdown,
+        )
+
+        ratio = cache_hit_ratio_from_config(load_config_readonly())
+
+        session_arg = getattr(args, "session", None)
+        if session_arg:
+            full_id = db.resolve_session_id(session_arg)
+            if not full_id:
+                print(f"Session '{session_arg}' not found.")
+                db.close()
+                return
+            row = db.get_session_rich_row(full_id)
+            if not row:
+                print(f"Session '{session_arg}' not found.")
+                db.close()
+                return
+            b = session_cost_breakdown(row, cache_hit_ratio=ratio)
+            title = (row.get("title") or "—").strip() or "—"
+            model = (row.get("model") or "unknown").strip() or "unknown"
+            source = (row.get("source") or "—").strip() or "—"
+            print(f"Session {full_id}")
+            print(f"  {'Title:':<20}{title}")
+            print(f"  {'Source:':<20}{source}")
+            print(f"  {'Model:':<20}{model}")
+            print(
+                f"  {'Input tokens:':<20}"
+                f"{format_tokens(b['input_tokens'])}"
+            )
+            print(
+                f"  {'Cache read:':<20}"
+                f"{format_tokens(b['cache_read_tokens'])}"
+            )
+            print(
+                f"  {'Cache write:':<20}"
+                f"{format_tokens(b['cache_write_tokens'])}"
+            )
+            print(
+                f"  {'Output tokens:':<20}"
+                f"{format_tokens(b['output_tokens'])}"
+            )
+            hit_line = format_hit_pct(b["cache_hit_pct"])
+            if b["below_threshold"]:
+                hit_line += (
+                    f"  ⚠ below {CACHE_HIT_WARN_THRESHOLD_PCT:.0f}% — "
+                    "prompt prefix may have been invalidated"
+                )
+            print(f"  {'Cache hit:':<20}{hit_line}")
+            print(
+                f"  {'Estimated cost:':<20}"
+                f"{format_usd(b['estimated_cost'])}"
+            )
+            print(
+                f"  {'Cost if 0% cache:':<20}"
+                f"{format_usd(b['counterfactual_cost'])}"
+            )
+            print(
+                f"  {'Estimated savings:':<20}"
+                f"{format_usd(b['savings'])}"
+            )
+            print(
+                f"  (Counterfactual assumes cache reads billed at "
+                f"{ratio:.0%} of the cold input rate — config "
+                f"cost.cache_hit_ratio; estimate, not a bill.)"
+            )
+            return
+
+        sessions = db.list_sessions_rich(
+            source=args.source, exclude_sources=_exclude, limit=args.limit
+        )
+        if not sessions:
+            print("No sessions found.")
+            return
+
+        print(
+            f"{'ID':<26}{'Hit%':>7}{'Input':>12}{'CRead':>12}"
+            f"{'CWrite':>12}{'Output':>12}{'Cost':>11}"
+            f"{'No-Cache':>11}{'Saved':>11}"
+        )
+        print("─" * 114)
+        for s in sessions:
+            b = session_cost_breakdown(s, cache_hit_ratio=ratio)
+            flag = "  ⚠" if b["below_threshold"] else ""
+            print(
+                f"{s['id']:<26}"
+                f"{format_hit_pct(b['cache_hit_pct']):>7}"
+                f"{format_tokens(b['input_tokens']):>12}"
+                f"{format_tokens(b['cache_read_tokens']):>12}"
+                f"{format_tokens(b['cache_write_tokens']):>12}"
+                f"{format_tokens(b['output_tokens']):>12}"
+                f"{format_usd(b['estimated_cost']):>11}"
+                f"{format_usd(b['counterfactual_cost']):>11}"
+                f"{format_usd(b['savings']):>11}"
+                f"{flag}"
+            )
+        print()
+        print(
+            f"Counterfactual: cache reads billed at {ratio:.0%} of the "
+            "cold input rate (config cost.cache_hit_ratio) — "
+            "estimates, not a bill."
+        )
+
     elif action == "export":
         from hermes_cli.session_filters import (
             build_prune_filters,

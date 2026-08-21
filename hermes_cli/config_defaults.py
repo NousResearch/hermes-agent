@@ -943,6 +943,15 @@ DEFAULT_CONFIG = {
         "cache_ttl": "5m",
     },
 
+    # Per-session cost reporting (`hermes sessions cost`): the assumed ratio
+    # of cache-read input price to cold input price, used for the
+    # "cost if cache had been 0%" counterfactual. 0.10 = cache reads are
+    # billed at 10% of the cold input rate (e.g. DeepSeek's ~10x spread).
+    # This is an estimate — the per-token price split is not persisted.
+    "cost": {
+        "cache_hit_ratio": 0.10,
+    },
+
     # OpenRouter-specific settings.
     # response_cache: enable OpenRouter response caching (X-OpenRouter-Cache header).
     #   When enabled, identical requests return cached responses for free (zero billing).

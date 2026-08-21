@@ -42,6 +42,15 @@ from hermes_cli import kanban_db as kb
 
 from utils import env_int
 
+
+def _load_config() -> dict:
+    try:
+        from hermes_cli.config import load_config
+        return load_config() or {}
+    except Exception:
+        return {}
+
+
 HERMES_KANBAN_SPECIFY_MAX_TOKENS = max(
     1500,
     env_int("HERMES_KANBAN_SPECIFY_MAX_TOKENS", 6000),
@@ -173,6 +182,16 @@ def specify_task(
         body=_truncate(task.body or "(no body)", 4000),
     )
 
+    # Resolve effective timeout: explicit arg > auxiliary.triage_specifier.timeout config > 120s legacy default
+    cfg = _load_config()
+    _aux_cfg = cfg.get("auxiliary", {}) if isinstance(cfg, dict) else {}
+    _spec_cfg = _aux_cfg.get("triage_specifier", {}) if isinstance(_aux_cfg, dict) else {}
+    try:
+        _cfg_timeout = int(_spec_cfg.get("timeout") or 0)
+    except (TypeError, ValueError):
+        _cfg_timeout = 0
+    effective_timeout = timeout or (_cfg_timeout if _cfg_timeout > 0 else 120)
+
     try:
         # Route through call_llm so auxiliary.triage_specifier.* config
         # (provider/model/base_url, extra_body, reasoning_effort, retries)
@@ -185,7 +204,7 @@ def specify_task(
             ],
             temperature=0.3,
             max_tokens=HERMES_KANBAN_SPECIFY_MAX_TOKENS,
-            timeout=timeout or 120,
+            timeout=effective_timeout,
         )
     except Exception as exc:
         logger.info(

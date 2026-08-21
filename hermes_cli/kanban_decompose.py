@@ -311,11 +311,20 @@ def decompose_task(
         default_assignee=default_assignee,
     )
 
+    # Resolve effective timeout: explicit arg > auxiliary.kanban_decomposer.timeout config > 180s legacy default
+    _aux_cfg = cfg.get("auxiliary", {}) if isinstance(cfg, dict) else {}
+    _decomp_cfg = _aux_cfg.get("kanban_decomposer", {}) if isinstance(_aux_cfg, dict) else {}
+    try:
+        _cfg_timeout = int(_decomp_cfg.get("timeout") or 0)
+    except (TypeError, ValueError):
+        _cfg_timeout = 0
+    effective_timeout = timeout or (_cfg_timeout if _cfg_timeout > 0 else 180)
+
     try:
         # Route through call_llm so auxiliary.kanban_decomposer.* config
         # (provider/model/base_url, extra_body, reasoning_effort, retries)
-        # all apply — the previous direct client.chat.completions.create()
-        # path dropped auxiliary.<task>.extra_body entirely (#35566).
+        # all apply — the previous direct client.chat.completions.create() path
+        # dropped auxiliary.<task>.extra_body entirely (#35566).
         resp = call_llm(
             task="kanban_decomposer",
             messages=[
@@ -324,7 +333,7 @@ def decompose_task(
             ],
             temperature=0.3,
             max_tokens=4000,
-            timeout=timeout or 180,
+            timeout=effective_timeout,
         )
     except Exception as exc:
         logger.info(

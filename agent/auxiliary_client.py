@@ -6211,6 +6211,42 @@ def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optio
         return model_name
 
 
+def _inherited_provider_api_mode(
+    provider: str,
+    main_runtime: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    """Return transport metadata inherited by an API-key provider.
+
+    Auxiliary callers do not always carry an explicit task-level ``api_mode``.
+    In that case the live main-runtime decision is authoritative when it belongs
+    to the same provider, followed by a provider plugin's non-default declared
+    transport.  Returning ``None`` keeps the existing endpoint/model
+    auto-detection path for providers without either source of metadata.
+    """
+    if main_runtime:
+        runtime_provider = _normalize_aux_provider(
+            str(main_runtime.get("provider") or "")
+        )
+        runtime_mode = str(main_runtime.get("api_mode") or "").strip()
+        if runtime_provider == provider and runtime_mode:
+            return runtime_mode
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(provider)
+        profile_mode = str(getattr(profile, "api_mode", "") or "").strip()
+        # ``ProviderProfile.api_mode`` defaults to ``chat_completions`` even
+        # when a profile did not declare a transport.  Treating that default
+        # as authoritative would suppress existing endpoint/key auto-detection
+        # (notably Kimi Coding's Anthropic-wire ``/coding`` endpoint).  Only a
+        # non-default profile mode carries new information here; an explicit
+        # task override or matching live runtime above may still deliberately
+        # select chat_completions.
+        return profile_mode if profile_mode != "chat_completions" else None
+    except Exception:
+        return None
+
+
 def resolve_provider_client(
     provider: str,
     model: str = None,
@@ -6777,6 +6813,17 @@ def resolve_provider_client(
         return None, None
 
     if pconfig.auth_type == "api_key":
+        # Precedence: an explicit auxiliary.<task>.api_mode wins, then the
+        # transport already selected for the matching live main runtime, then
+        # a non-default ProviderProfile declaration.  User model-provider
+        # plugins are auto-added to PROVIDER_REGISTRY without an api_mode field,
+        # so failing to consult their profile here silently downgraded
+        # Responses-only auxiliary/vision calls to chat.completions (#8857
+        # sibling path).  The profile's default chat_completions value is not
+        # inherited because it can mask endpoint/key auto-detection.
+        if not str(api_mode or "").strip():
+            api_mode = _inherited_provider_api_mode(provider, main_runtime)
+
         if provider == "anthropic":
             client, default_model = _try_anthropic(explicit_api_key=explicit_api_key)
             if client is None:
@@ -6899,8 +6946,8 @@ def resolve_provider_client(
             except ImportError:
                 pass
 
-        # Honor api_mode for any API-key provider (e.g. direct OpenAI with
-        # codex-family models).  The copilot-specific wrapping above handles
+        # Honor explicit, live-runtime, or ProviderProfile api_mode for any
+        # API-key provider.  The copilot-specific wrapping above handles
         # copilot; this covers the general case (#6800).  Also rewraps
         # Anthropic-wire endpoints (Kimi Coding Plan api.kimi.com/coding,
         # /anthropic-suffixed gateways) so named providers like kimi-coding

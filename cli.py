@@ -47,6 +47,36 @@ from typing import List, Dict, Any, Optional, Mapping
 
 logger = logging.getLogger(__name__)
 
+# Load the user dotenv and bridge this import-time redaction setting before
+# importing CLI mixins: cli_commands_mixin transitively imports agent.redact.
+from hermes_constants import get_hermes_home, display_hermes_home
+from hermes_cli.env_loader import load_hermes_dotenv
+from utils import fast_safe_load
+
+_hermes_home = get_hermes_home()
+_project_env = Path(__file__).parent / ".env"
+load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
+try:
+    _early_config_path = _hermes_home / "config.yaml"
+    if _early_config_path.exists():
+        _early_config = fast_safe_load(_early_config_path.read_text(encoding="utf-8")) or {}
+        _early_security = _early_config.get("security", {})
+        if isinstance(_early_security, dict):
+            if "HERMES_REDACT_SECRETS" not in os.environ:
+                _early_redact_secrets = _early_security.get("redact_secrets")
+                if _early_redact_secrets is not None:
+                    os.environ["HERMES_REDACT_SECRETS"] = str(
+                        _early_redact_secrets
+                    ).lower()
+            if "HERMES_REDACT_LEVEL" not in os.environ:
+                _early_redact_level = _early_security.get("redact_level")
+                if _early_redact_level is not None:
+                    os.environ["HERMES_REDACT_LEVEL"] = str(
+                        _early_redact_level
+                    ).lower()
+except Exception:
+    pass
+
 # Suppress startup messages for clean CLI experience
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
@@ -218,15 +248,13 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-from hermes_constants import get_hermes_home, display_hermes_home
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL,
     is_browser_debug_ready,
     manual_chrome_debug_command,
     try_launch_chrome_debug,
 )
-from hermes_cli.env_loader import load_hermes_dotenv
-from utils import base_url_host_matches, base_url_hostname, fast_safe_load
+from utils import base_url_host_matches, base_url_hostname
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -766,12 +794,19 @@ def load_cli_config() -> Dict[str, Any]:
         if api_key:
             os.environ[env_map["api_key"]] = api_key
     
-    # Security settings
+    # Security settings. A value loaded from ~/.hermes/.env is an explicit
+    # operator override and must win over config.yaml before agent.redact takes
+    # its import-time snapshot.
     security_config = defaults.get("security", {})
     if isinstance(security_config, dict):
-        redact = security_config.get("redact_secrets")
-        if redact is not None:
-            os.environ["HERMES_REDACT_SECRETS"] = str(redact).lower()
+        if "HERMES_REDACT_SECRETS" not in os.environ:
+            redact = security_config.get("redact_secrets")
+            if redact is not None:
+                os.environ["HERMES_REDACT_SECRETS"] = str(redact).lower()
+        if "HERMES_REDACT_LEVEL" not in os.environ:
+            redact_level = security_config.get("redact_level")
+            if redact_level is not None:
+                os.environ["HERMES_REDACT_LEVEL"] = str(redact_level).lower()
 
     # Session-search index knobs (hermes_state reads the env carriers).
     sessions_config = defaults.get("sessions", {})

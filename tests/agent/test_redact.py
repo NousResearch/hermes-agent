@@ -1051,3 +1051,94 @@ class TestMaskSecretControlStripping:
     def test_all_control_value_returns_empty_fallback(self):
         assert mask_secret("\n\x85\u200b") == ""
         assert mask_secret("\n\x85\u200b", empty="(not set)") == "(not set)"
+
+
+class TestRedactLevelStandard:
+    def test_standard_level_masks_luhn_valid_card_but_not_invalid_candidate(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_LEVEL", "standard")
+        valid_card = "4111 1111 1111 1111"
+        invalid_candidate = "4111 1111 1111 1112"
+
+        result = redact_sensitive_text(
+            f"valid={valid_card}; invalid={invalid_candidate}", force=True
+        )
+
+        assert valid_card not in result
+        assert invalid_candidate in result
+
+    @pytest.mark.parametrize(
+        "card",
+        [
+            "41111111111111113",
+            "411111111111111118",
+            "4111111111111111110",
+        ],
+    )
+    def test_standard_level_masks_valid_luhn_cards_through_nineteen_digits(
+        self, monkeypatch, card
+    ):
+        monkeypatch.setattr("agent.redact._REDACT_LEVEL", "standard")
+
+        result = redact_sensitive_text(f"card={card}", force=True)
+
+        assert card not in result
+
+    def test_standard_level_masks_ssn_and_iban(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_LEVEL", "standard")
+        ssn = "123-45-6789"
+        iban = "GB82WEST12345698765432"
+
+        result = redact_sensitive_text(f"ssn={ssn}; iban={iban}", force=True)
+
+        assert ssn not in result
+        assert iban not in result
+
+
+class TestRedactLevelStrict:
+    def test_strict_level_masks_email_and_non_loopback_ipv4(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_LEVEL", "strict")
+        email = "alice@example.com"
+        public_ip = "203.0.113.42"
+        loopback = "127.0.0.1"
+
+        result = redact_sensitive_text(
+            f"email={email}; public={public_ip}; loopback={loopback}", force=True
+        )
+
+        assert email not in result
+        assert public_ip not in result
+        assert loopback in result
+
+    def test_basic_level_preserves_optional_pii(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_LEVEL", "basic")
+        text = "card=4111 1111 1111 1111; email=alice@example.com; ip=203.0.113.42"
+
+        assert redact_sensitive_text(text, force=True) == text
+
+
+class TestAdditionalCredentialPatterns:
+    @pytest.mark.parametrize(
+        "token",
+        [
+            "AC" + "a" * 32,
+            "SK" + "b" * 32,
+            "c" * 32 + "-us3",
+            "Bot." + "a" * 24 + "." + "b" * 6 + "." + "c" * 27,
+            "whsec_" + "d" * 32,
+        ],
+    )
+    def test_supported_credential_pattern_is_redacted(self, token):
+        assert token not in redact_sensitive_text(f"leak: {token}", force=True)
+
+    @pytest.mark.parametrize(
+        "token",
+        [
+            "AC" + "a" * 32,
+            "SK" + "b" * 32,
+            "c" * 32 + "-us3",
+        ],
+    )
+    def test_credential_patterns_do_not_match_inside_larger_identifiers(self, token):
+        text = f"prefix{token}{' ' if token.endswith('-us3') else 'suffix'}"
+
+        assert redact_sensitive_text(text, force=True) == text

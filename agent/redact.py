@@ -76,6 +76,12 @@ _SENSITIVE_BODY_KEYS = frozenset({
 # downgrade — see `_log_redaction_status()` in gateway/run.py and cli.py.
 _REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "true").lower() in {"1", "true", "yes", "on"}
 
+# Optional PII coverage uses the same import-time snapshot as the secret
+# toggle, so a tool command cannot change the active policy mid-session.
+_REDACT_LEVEL = os.getenv("HERMES_REDACT_LEVEL", "basic").lower().strip()
+if _REDACT_LEVEL not in {"basic", "standard", "strict"}:
+    _REDACT_LEVEL = "basic"
+
 # Known API key prefixes -- match the prefix + contiguous token chars
 _PREFIX_PATTERNS = [
     r"sk-[A-Za-z0-9_-]{10,}",           # OpenAI / OpenRouter / Anthropic (sk-ant-*)
@@ -119,6 +125,9 @@ _PREFIX_PATTERNS = [
     r"fw-[A-Za-z0-9]{30,}",             # Fireworks AI API key
     r"fw_[A-Za-z0-9]{30,}",             # Fireworks AI API key
     r"fpk_[A-Za-z0-9]{30,}",            # Fireworks AI project key
+    r"AC[A-Za-z0-9]{32}",               # Twilio Account SID
+    r"SK[A-Za-z0-9]{32}",               # Twilio API key
+    r"whsec_[A-Za-z0-9+/]{32,}",        # Stripe webhook signing secret
     # GitLab token families (each pattern keeps a full literal prefix so the
     # _PREFIX_SUBSTRINGS pre-screen stays false-negative-free). Ported from
     # openclaw/openclaw#112954; follow-up invited in #4541.
@@ -138,6 +147,13 @@ _PREFIX_PATTERNS = [
     r"GR1348941[A-Za-z0-9_\-]{10,}",    # GitLab legacy runner registration token
     r"pk-lf-[A-Za-z0-9\-]{8,}",         # Langfuse public key (sk-lf- already covered by sk- pattern)
 ]
+
+# Mailchimp keys are recognizable by their datacenter suffix rather than a
+# vendor prefix, so scan them separately from the prefix-gated alternation.
+_MAILCHIMP_API_KEY_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9]{32}-us[0-9]{1,2}\b")
+_DISCORD_BOT_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27}(?![A-Za-z0-9_-])"
+)
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name.
 # Uppercase keys tolerate spaces around "=" (e.g. ``FOO_SECRET = bar``) because
@@ -407,6 +423,17 @@ _JWT_RE = re.compile(
 # E.164 phone numbers: +<country><number>, 7-15 digits
 # Negative lookahead prevents matching hex strings or identifiers
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
+
+_PAYMENT_CARD_RE = re.compile(r"(?<![\d-])\d(?:[- ]?\d){12,18}(?![\d-])")
+_SSN_RE = re.compile(
+    r"(?<!\d)(?!000|666|9\d\d)(\d{3})[- ](?!00)(\d{2})[- ](?!0000)(\d{4})(?!\d)"
+)
+_IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{4,30}\b")
+_EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
+_IPV4_RE = re.compile(
+    r"(?<!\d)(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}"
+    r"(?:25[0-5]|2[0-4]\d|1?\d?\d)(?!\d)"
+)
 
 # URLs containing query strings — matches `scheme://...?...[# or end]`.
 # Used to scan text for URLs whose query params may contain secrets.
@@ -771,6 +798,63 @@ def _mask_token_nonreusable(token: str) -> str:
     return f"«redacted:{label}…»" if label else "«redacted-secret»"
 
 
+def _luhn_valid(value: str) -> bool:
+    """Return whether a payment-card candidate contains a valid Luhn number."""
+    digits = "".join(character for character in value if character.isdigit())
+    if not 13 <= len(digits) <= 19 or len(set(digits)) == 1:
+        return False
+    total = 0
+    for index, character in enumerate(reversed(digits)):
+        digit = int(character)
+        if index % 2:
+            digit = digit * 2 - 9 if digit > 4 else digit * 2
+        total += digit
+    return total % 10 == 0
+
+
+def _iban_valid(value: str) -> bool:
+    """Return whether an IBAN-shaped value passes the ISO 13616 checksum."""
+    rearranged = value[4:] + value[:4]
+    digits = "".join(
+        character if character.isdigit() else str(ord(character) - ord("A") + 10)
+        for character in rearranged
+    )
+    return int(digits) % 97 == 1
+
+
+def _redact_standard_pii(text: str) -> str:
+    def redact_card(match: re.Match) -> str:
+        value = match.group(0)
+        if not _luhn_valid(value):
+            return value
+        digits = "".join(character for character in value if character.isdigit())
+        return f"****-****-****-{digits[-4:]}"
+
+    text = _PAYMENT_CARD_RE.sub(redact_card, text)
+    text = _SSN_RE.sub(r"***-**-\3", text)
+    return _IBAN_RE.sub(
+        lambda match: f"{match.group(0)[:4]}****"
+        if _iban_valid(match.group(0))
+        else match.group(0),
+        text,
+    )
+
+
+def _redact_strict_pii(text: str) -> str:
+    text = _EMAIL_RE.sub(
+        lambda match: f"{match.group(0).split('@', 1)[0][:2]}***@***", text
+    )
+
+    def redact_ipv4(match: re.Match) -> str:
+        address = match.group(0)
+        if address.startswith("127."):
+            return address
+        first, second, _third, _fourth = address.split(".")
+        return f"{first}.{second}.***.***"
+
+    return _IPV4_RE.sub(redact_ipv4, text)
+
+
 def redact_sensitive_text(
     text: str,
     *,
@@ -841,6 +925,11 @@ def redact_sensitive_text(
         # original are aligned 1:1 for non-control chars).
         text = _mask_control_split_tokens(text, _prefix_sub)
         text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
+
+    if "-us" in text:
+        text = _MAILCHIMP_API_KEY_RE.sub(lambda m: _mask_token(m.group(0)), text)
+    if text.count(".") >= 2:
+        text = _DISCORD_BOT_TOKEN_RE.sub(lambda m: _mask_token(m.group(0)), text)
 
     # ENV assignments: OPENAI_API_KEY=***  (skip for code files — false positives)
     if not code_file:
@@ -1005,6 +1094,11 @@ def redact_sensitive_text(
                 return phone[:2] + "****" + phone[-2:]
             return phone[:4] + "****" + phone[-4:]
         text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
+
+    if _REDACT_LEVEL in {"standard", "strict"}:
+        text = _redact_standard_pii(text)
+    if _REDACT_LEVEL == "strict":
+        text = _redact_strict_pii(text)
 
     return text
 

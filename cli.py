@@ -8402,8 +8402,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if snapshot is not None:
                 self._defer_tool_warnings = True
                 toolset_map = snapshot["toolset_map"]
+                # Route Rich banner output through the TUI-safe console
+                # (ChatConsole -> _cprint -> prompt_toolkit's ANSI renderer)
+                # instead of self.console, which writes raw ANSI to stdout
+                # and gets mangled by patch_stdout's StdoutProxy into garbled
+                # '?[33m...?[0m' text (#2262). Mirrors the /clear fresh-start
+                # path (see _reset_session) that already uses ChatConsole().
                 build_welcome_banner(
-                    console=self.console,
+                    console=self._output_console(),
                     model=self.model,
                     cwd=cwd,
                     tools=snapshot["tools"],
@@ -8450,8 +8456,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
                 availability = compute_toolset_availability(self.enabled_toolsets)
 
+                # See note above — route through the TUI-safe console so the
+                # banner's Rich ANSI isn't mangled into '?[33m...?[0m' by
+                # patch_stdout's StdoutProxy.
                 build_welcome_banner(
-                    console=self.console,
+                    console=self._output_console(),
                     model=self.model,
                     cwd=cwd,
                     tools=tools,

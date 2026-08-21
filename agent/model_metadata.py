@@ -158,6 +158,14 @@ _ENDPOINT_MODEL_CACHE_TTL = 300
 # of being pinned to the stale type for the whole process lifetime.
 # Values are (server_type, monotonic_timestamp).
 _ENDPOINT_PROBE_TTL_SECONDS = 3600.0
+# A failed probe verdict (server_type is None — no known endpoint answered)
+# is cached for a much shorter window: the in-memory entry exists only to
+# keep one image-bearing turn from re-running the 5-request waterfall on
+# every subsequent turn (#89863 — a keyed remote endpoint answered 401 to
+# each leg and the None verdict was never cached, so every turn re-probed).
+# Short TTL keeps a transient failure (server starting up, key being fixed)
+# recoverable within minutes instead of pinning "undetected" for an hour.
+_ENDPOINT_PROBE_FAILURE_TTL_SECONDS = 300.0
 _endpoint_probe_path_cache: Dict[str, tuple] = {}
 
 # A configured endpoint that is routable-but-dead — e.g. a corp LAN address
@@ -1006,8 +1014,18 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     lmstudio_url = _lmstudio_server_root(normalized)
 
     cached = _endpoint_probe_path_cache.get(server_url)
-    if cached is not None and (time.monotonic() - cached[1]) < _ENDPOINT_PROBE_TTL_SECONDS:
-        return cached[0]
+    if cached is not None:
+        # Positive verdicts live for the full TTL; a None verdict (probe
+        # waterfall answered nothing recognizable) gets the short failure
+        # TTL so it still throttles re-probing without pinning the
+        # endpoint as undetected for a whole hour (#89863).
+        ttl = (
+            _ENDPOINT_PROBE_TTL_SECONDS
+            if cached[0] is not None
+            else _ENDPOINT_PROBE_FAILURE_TTL_SECONDS
+        )
+        if (time.monotonic() - cached[1]) < ttl:
+            return cached[0]
 
     # The host already blackholed a connect: skip the waterfall below, each leg
     # of which would otherwise burn its full 2s timeout. Deliberately NOT
@@ -1086,6 +1104,12 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     if result is not None:
         _endpoint_probe_path_cache[server_url] = (result, time.monotonic())
         _local_probe_disk_put("server_type", server_url, result)
+    else:
+        # Cache the negative verdict in memory only (never on disk — a
+        # failure is often transient: server starting, key being fixed)
+        # so the very next turn does not re-run the whole waterfall
+        # against an endpoint that just answered nothing (#89863).
+        _endpoint_probe_path_cache[server_url] = (None, time.monotonic())
     return result
 
 

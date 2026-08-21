@@ -262,6 +262,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-productivity',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/bundled/productivity/productivity-agenda',
                     'user-guide/skills/bundled/productivity/productivity-airtable',
                     'user-guide/skills/bundled/productivity/productivity-box',
                     'user-guide/skills/bundled/productivity/productivity-document-to-action-items',

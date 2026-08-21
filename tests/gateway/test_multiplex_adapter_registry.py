@@ -163,6 +163,9 @@ class _SecondaryRecoveryAdapter:
     def set_platform_event_handler(self, handler):
         self.platform_event_handler = handler
 
+    def set_admin_policy_check(self, handler):
+        self.admin_policy_check = handler
+
 
 def _secondary_recovery_runner(*, running=True):
     runner = GatewayRunner.__new__(GatewayRunner)

@@ -382,6 +382,39 @@ class TestThreadContext(unittest.TestCase):
             self.assertEqual(send_call["References"], "<original@test.com>")
             self.assertIn("Date", send_call)
 
+    def test_explicit_cc_and_subject_are_sent(self):
+        adapter = self._make_adapter()
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            adapter._send_email(
+                "boardy@boardy.ai",
+                "Question",
+                None,
+                ["avi@test.com"],
+                "Important market question",
+            )
+        sent = mock_server.send_message.call_args[0][0]
+        self.assertEqual(sent["To"], "boardy@boardy.ai")
+        self.assertEqual(sent["Cc"], "avi@test.com")
+        self.assertEqual(sent["Subject"], "Important market question")
+
+    def test_reply_all_preserves_external_recipients_and_drops_self(self):
+        adapter = self._make_adapter()
+        adapter._thread_context["avi@test.com"] = {
+            "subject": "Boardy thread",
+            "message_id": "<original@test.com>",
+            "to_addrs": ["boardy@boardy.ai"],
+            "cc_addrs": ["hermes@test.com", "avi@test.com"],
+        }
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            adapter._send_email("avi@test.com", "Reply", None, reply_all=True)
+        sent = mock_server.send_message.call_args[0][0]
+        self.assertEqual(sent["To"], "avi@test.com")
+        self.assertEqual(sent["Cc"], "boardy@boardy.ai")
+
 
 class TestSendMethods(unittest.TestCase):
     """Test email send methods."""
@@ -479,8 +512,8 @@ class TestConnectDisconnect(unittest.TestCase):
 
             self.assertTrue(result)
             self.assertTrue(adapter._running)
-            # Should have skipped existing messages
-            self.assertEqual(len(adapter._seen_uids), 3)
+            # First connection bootstraps a durable high-water mark.
+            self.assertEqual(adapter._last_processed_uid, 3)
             # Cleanup
             adapter._running = False
             if adapter._poll_task:
@@ -529,7 +562,52 @@ class TestFetchNewMessages(unittest.TestCase):
         # Only UID 3 should be fetched (1 and 2 already seen)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["sender_addr"], "user@test.com")
-        self.assertIn(b"3", adapter._seen_uids)
+
+    def test_fetch_preserves_to_and_cc_recipients(self):
+        adapter = self._make_adapter()
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "avi@test.com"
+        raw_email["To"] = "Boardy <boardy@boardy.ai>"
+        raw_email["Cc"] = "Beca <hermes@test.com>, Avi <avi@test.com>"
+        raw_email["Subject"] = "Market question"
+        raw_email["Message-ID"] = "<recipients@test.com>"
+
+        mock_imap = MagicMock()
+        mock_imap.uid.side_effect = [
+            ("OK", [b"7"]),
+            ("OK", [(b"7", raw_email.as_bytes())]),
+        ]
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(results[0]["to_addrs"], ["boardy@boardy.ai"])
+        self.assertEqual(
+            results[0]["cc_addrs"],
+            ["hermes@test.com", "avi@test.com"],
+        )
+
+    def test_check_inbox_advances_cursor_only_after_dispatch(self):
+        import asyncio
+        adapter = self._make_adapter()
+        message = {
+            "uid": b"9",
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": "Test",
+            "message_id": "<9@test.com>",
+            "in_reply_to": "",
+            "to_addrs": ["hermes@test.com"],
+            "cc_addrs": [],
+            "body": "Hello",
+            "attachments": [],
+            "date": "",
+        }
+        adapter._fetch_new_messages = MagicMock(return_value=[message])
+        adapter._dispatch_message = AsyncMock(side_effect=RuntimeError("dispatch failed"))
+        adapter._save_uid_cursor = MagicMock()
+        with self.assertRaises(RuntimeError):
+            asyncio.run(adapter._check_inbox())
+        adapter._save_uid_cursor.assert_not_called()
 
 
 class TestPollLoop(unittest.TestCase):

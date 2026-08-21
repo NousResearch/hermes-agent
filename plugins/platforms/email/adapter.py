@@ -18,6 +18,7 @@ Environment variables:
 import asyncio
 import email as email_lib
 import imaplib
+import json
 import logging
 import os
 import re
@@ -33,7 +34,7 @@ from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
-from email.utils import formatdate
+from email.utils import formatdate, getaddresses
 from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -47,6 +48,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.config import Platform, PlatformConfig
+from hermes_constants import get_hermes_home
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -350,6 +352,18 @@ def _extract_email_address(raw: str) -> str:
     return raw.strip().lower()
 
 
+def _extract_email_addresses(raw_values: List[str]) -> List[str]:
+    """Return normalized, de-duplicated addresses from RFC mailbox headers."""
+    result: List[str] = []
+    seen = set()
+    for _name, address in getaddresses(raw_values or []):
+        normalized = address.strip().lower()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+    return result
+
+
 def _domain_of(address: str) -> str:
     """Return the lowercased domain part of an email address, or ''."""
     _, _, domain = address.rpartition("@")
@@ -558,6 +572,34 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
 
+        reply_all_raw = (
+            extra.get("reply_all_senders", "")
+            or _get_secret("EMAIL_REPLY_ALL_SENDERS", "")
+        )
+        reply_all_values = (
+            reply_all_raw.split(",")
+            if isinstance(reply_all_raw, str)
+            else reply_all_raw or []
+        )
+        self._reply_all_senders = {
+            str(address).strip().lower()
+            for address in reply_all_values
+            if str(address).strip()
+        }
+        always_cc_raw = extra.get("always_cc", "") or _get_secret("EMAIL_ALWAYS_CC", "")
+        self._always_cc = _extract_email_addresses(
+            [always_cc_raw] if isinstance(always_cc_raw, str) else list(always_cc_raw or [])
+        )
+        external_raw = (
+            extra.get("external_correspondents", "")
+            or _get_secret("EMAIL_EXTERNAL_CORRESPONDENTS", "")
+        )
+        self._external_correspondents = set(
+            _extract_email_addresses(
+                [external_raw] if isinstance(external_raw, str) else list(external_raw or [])
+            )
+        )
+
         # Skip attachments — configured via config.yaml:
         #   platforms:
         #     email:
@@ -603,9 +645,37 @@ class EmailAdapter(BasePlatformAdapter):
         self._last_fetch_error: str = ""
 
         # Map chat_id (sender email) -> last subject + message-id for threading
-        self._thread_context: Dict[str, Dict[str, str]] = {}
+        self._thread_context: Dict[str, Dict[str, Any]] = {}
+
+        state_dir = get_hermes_home() / "state"
+        safe_address = re.sub(r"[^A-Za-z0-9_.-]+", "_", self._address.lower())
+        self._cursor_path = state_dir / f"email-{safe_address}-cursor.json"
+        self._last_processed_uid = self._load_uid_cursor()
 
         logger.info("[Email] Adapter initialized for %s", self._address)
+
+    def _load_uid_cursor(self) -> int | None:
+        try:
+            payload = json.loads(self._cursor_path.read_text(encoding="utf-8"))
+            value = int(payload.get("last_processed_uid", 0))
+            return value if value > 0 else None
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+
+    def _save_uid_cursor(self, uid: bytes | str | int) -> None:
+        value = int(uid)
+        if self._last_processed_uid is not None and value <= self._last_processed_uid:
+            return
+        payload = {
+            "address": self._address.lower(),
+            "imap_host": self._imap_host.lower(),
+            "last_processed_uid": value,
+        }
+        self._cursor_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self._cursor_path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        tmp_path.replace(self._cursor_path)
+        self._last_processed_uid = value
 
     def _trim_seen_uids(self) -> None:
         """Keep only the most recent UIDs to prevent unbounded memory growth.
@@ -715,30 +785,21 @@ class EmailAdapter(BasePlatformAdapter):
                 imap.login(self._address, self._password)
                 _send_imap_id(imap)
                 imap.select("INBOX")
-                snapshot = self._seen_uids_snapshot.get(self._address)
-                if is_reconnect and snapshot is not None:
-                    # Reconnect within the same process: restore the previous
-                    # adapter's seen-UID baseline instead of re-marking the whole
-                    # mailbox. Mail that arrived during the outage stays UNSEEN
-                    # relative to the baseline and is dispatched by the next poll
-                    # instead of being silently skipped.
-                    self._seen_uids = set(snapshot)
-                    self._trim_seen_uids()
-                    logger.info(
-                        "[Email] IMAP reconnect test passed. Restored %d seen UIDs; "
-                        "messages received during the outage will be processed.",
-                        len(self._seen_uids),
-                    )
-                else:
-                    # First connect (or no snapshot): mark all existing messages as
-                    # seen so we only process new ones.
-                    status, data = imap.uid("search", None, "ALL")
-                    if status == "OK" and data and data[0]:
-                        for uid in data[0].split():
-                            self._seen_uids.add(uid)
-                    # Keep only the most recent UIDs to prevent unbounded growth
-                    self._trim_seen_uids()
-                    logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+                status, data = imap.uid("search", None, "ALL")
+                if status == "OK" and data and data[0]:
+                    all_uids = data[0].split()
+                    snapshot = self._seen_uids_snapshot.get(self._address)
+                    if is_reconnect and snapshot is not None:
+                        self._seen_uids = set(snapshot)
+                    else:
+                        self._seen_uids.update(all_uids)
+                        self._trim_seen_uids()
+                    if self._last_processed_uid is None and all_uids:
+                        self._save_uid_cursor(all_uids[-1])
+                logger.info(
+                    "[Email] IMAP connection test passed. Resume cursor UID %s.",
+                    self._last_processed_uid or 0,
+                )
             finally:
                 if imap is not None:
                     _close_imap(imap)
@@ -832,6 +893,7 @@ class EmailAdapter(BasePlatformAdapter):
         # (their processing already marked them seen).
         for msg_data in messages:
             await self._dispatch_message(msg_data)
+            self._save_uid_cursor(msg_data["uid"])
         if self._last_fetch_failed:
             # The IMAP check itself failed (connect/login/select/search/fetch),
             # not just an empty inbox. Surface it through the fatal-error hook
@@ -849,7 +911,7 @@ class EmailAdapter(BasePlatformAdapter):
             await self._notify_fatal_error()
 
     def _fetch_new_messages(self) -> List[Dict[str, Any]]:
-        """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
+        """Fetch messages after the durable UID cursor. Runs in executor thread."""
         results = []
         imap: Optional[imaplib.IMAP4] = None
         try:
@@ -859,11 +921,24 @@ class EmailAdapter(BasePlatformAdapter):
                 _send_imap_id(imap)
                 imap.select("INBOX")
 
-                status, data = imap.uid("search", None, "UNSEEN")
+                # UNSEEN is not restart-safe: another mail client can mark a
+                # message read while Hermes is down. Search after the durable
+                # high-water mark instead.
+                uid_range = (
+                    f"{self._last_processed_uid + 1}:*"
+                    if self._last_processed_uid is not None
+                    else "ALL"
+                )
+                status, data = imap.uid("search", None, uid_range)  # type: ignore[arg-type]
                 if status != "OK" or not data or not data[0]:
                     return results
 
                 for uid in data[0].split():
+                    if (
+                        self._last_processed_uid is not None
+                        and int(uid) <= self._last_processed_uid
+                    ):
+                        continue
                     if uid in self._seen_uids:
                         continue
 
@@ -949,6 +1024,8 @@ class EmailAdapter(BasePlatformAdapter):
         subject = _decode_header_value(msg.get("Subject", "(no subject)"))
         message_id = msg.get("Message-ID", "")
         in_reply_to = msg.get("In-Reply-To", "")
+        to_addrs = _extract_email_addresses(msg.get_all("To", []))
+        cc_addrs = _extract_email_addresses(msg.get_all("Cc", []))
         # Skip automated/noreply senders before any processing
         msg_headers = dict(msg.items())
         if _is_automated_sender(sender_addr, msg_headers):
@@ -975,6 +1052,8 @@ class EmailAdapter(BasePlatformAdapter):
             "subject": subject,
             "message_id": message_id,
             "in_reply_to": in_reply_to,
+            "to_addrs": to_addrs,
+            "cc_addrs": cc_addrs,
             "body": body,
             "attachments": attachments,
             "date": msg.get("Date", ""),
@@ -1081,6 +1160,9 @@ class EmailAdapter(BasePlatformAdapter):
         text = body
         if subject and not subject.startswith("Re:"):
             text = f"[Subject: {subject}]\n\n{body}"
+        is_external_correspondent = sender_addr in self._external_correspondents
+        if is_external_correspondent:
+            text = f"[External correspondent email]\n\n{text}"
 
         # Determine message type and media
         media_urls = []
@@ -1104,6 +1186,8 @@ class EmailAdapter(BasePlatformAdapter):
         self._thread_context[sender_addr] = {
             "subject": subject,
             "message_id": msg_data["message_id"],
+            "to_addrs": list(msg_data.get("to_addrs") or []),
+            "cc_addrs": list(msg_data.get("cc_addrs") or []),
         }
 
         source = self.build_source(
@@ -1122,6 +1206,13 @@ class EmailAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
             reply_to_message_id=msg_data["in_reply_to"] or None,
+            metadata={
+                "email_from": sender_addr,
+                "email_to": list(msg_data.get("to_addrs") or []),
+                "email_cc": list(msg_data.get("cc_addrs") or []),
+                "email_subject": subject,
+                "external_correspondent": is_external_correspondent,
+            },
         )
 
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
@@ -1137,8 +1228,16 @@ class EmailAdapter(BasePlatformAdapter):
         """Send an email reply to the given address."""
         try:
             loop = asyncio.get_running_loop()
+            send_metadata = metadata or {}
             message_id = await loop.run_in_executor(
-                None, self._send_email, chat_id, content, reply_to
+                None,
+                self._send_email,
+                chat_id,
+                content,
+                reply_to,
+                send_metadata.get("cc"),
+                send_metadata.get("subject"),
+                bool(send_metadata.get("reply_all")),
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -1160,16 +1259,46 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         reply_to_msg_id: Optional[str] = None,
+        cc_addrs: Optional[List[str] | str] = None,
+        subject_override: Optional[str] = None,
+        reply_all: bool = False,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
         msg = MIMEMultipart()
         msg["From"] = self._address
-        msg["To"] = to_addr
-
-        # Thread context for reply
         ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
+        should_reply_all = reply_all or to_addr.lower() in self._reply_all_senders
+        recipients_to = [to_addr.lower()]
+        recipients_cc: List[str] = []
+        if should_reply_all:
+            for address in list(ctx.get("to_addrs") or []) + list(ctx.get("cc_addrs") or []):
+                normalized = str(address).strip().lower()
+                if (
+                    normalized
+                    and normalized != self._address.lower()
+                    and normalized not in recipients_to
+                    and normalized not in recipients_cc
+                ):
+                    recipients_cc.append(normalized)
+        explicit_cc = (
+            _extract_email_addresses([cc_addrs])
+            if isinstance(cc_addrs, str)
+            else [str(address).strip().lower() for address in (cc_addrs or [])]
+        )
+        for normalized in explicit_cc + self._always_cc:
+            if (
+                normalized
+                and normalized != self._address.lower()
+                and normalized not in recipients_to
+                and normalized not in recipients_cc
+            ):
+                recipients_cc.append(normalized)
+        msg["To"] = ", ".join(recipients_to)
+        if recipients_cc:
+            msg["Cc"] = ", ".join(recipients_cc)
+
+        subject = subject_override or ctx.get("subject", "Hermes Agent")
+        if not subject_override and not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         msg["Subject"] = subject
 
@@ -1432,6 +1561,8 @@ async def _standalone_send(
     thread_id=None,
     media_files=None,
     force_document=False,
+    cc=None,
+    subject=None,
 ):
     """Out-of-process Email delivery via SMTP (one-shot). Implements the
     standalone_sender_fn contract; replaces the legacy _send_email helper."""
@@ -1456,7 +1587,17 @@ async def _standalone_send(
         msg = MIMEText(message, "plain", "utf-8")
         msg["From"] = address
         msg["To"] = chat_id
-        msg["Subject"] = "Hermes Agent"
+        cc_addrs = _extract_email_addresses(
+            [cc] if isinstance(cc, str) else list(cc or [])
+        )
+        cc_addrs = [
+            item
+            for item in cc_addrs
+            if item not in {address.lower(), chat_id.lower()}
+        ]
+        if cc_addrs:
+            msg["Cc"] = ", ".join(cc_addrs)
+        msg["Subject"] = subject or "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
 
         server = smtplib.SMTP(smtp_host, smtp_port)

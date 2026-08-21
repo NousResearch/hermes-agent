@@ -1090,6 +1090,33 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
     return None
 
 
+def _advance_recurring_run(job: Dict[str, Any], now: datetime) -> Optional[str]:
+    """Return the crash-safe next slot without adding scheduler observation drift.
+
+    Interval schedules keep their persisted ``next_run_at`` phase. If that slot
+    is due, advance by whole intervals to the first future slot; if an earlier
+    dispatch step already reserved a future slot, keep it unchanged. Cron
+    schedules retain their existing claim-time calculation.
+    """
+    schedule = job.get("schedule", {})
+    if schedule.get("kind") != "interval":
+        return compute_next_run(schedule, now.isoformat())
+
+    try:
+        interval = timedelta(minutes=float(schedule["minutes"]))
+        if interval.total_seconds() <= 0:
+            return None
+        scheduled = _ensure_aware(datetime.fromisoformat(job["next_run_at"]))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return compute_next_run(schedule, now.isoformat())
+
+    if scheduled > now:
+        return scheduled.isoformat()
+    elapsed = now - scheduled
+    periods = elapsed // interval + 1
+    return (scheduled + periods * interval).isoformat()
+
+
 # =============================================================================
 # Ticker heartbeat (liveness signal for `hermes cron status`)
 # =============================================================================
@@ -2566,8 +2593,25 @@ def _mark_job_run_locked(
                         save_jobs(jobs)
                         return True
                 
-                # Compute next run
-                job["next_run_at"] = compute_next_run(job["schedule"], now)
+                # Interval jobs normally keep the future slot reserved before
+                # dispatch. This preserves their wall-clock phase instead of
+                # adding sub-second completion drift that a 60s ticker can turn
+                # into a full extra minute. A long run whose reserved slot has
+                # already passed still re-anchors from completion, preserving
+                # the no-immediate-catch-up completion contract.
+                kind = job.get("schedule", {}).get("kind")
+                reserved_next = job.get("next_run_at")
+                keep_reserved_interval = False
+                if kind == "interval" and reserved_next:
+                    try:
+                        keep_reserved_interval = (
+                            _ensure_aware(datetime.fromisoformat(reserved_next))
+                            > _ensure_aware(datetime.fromisoformat(now))
+                        )
+                    except (TypeError, ValueError):
+                        pass
+                if not keep_reserved_interval:
+                    job["next_run_at"] = compute_next_run(job["schedule"], now)
 
                 # If no next run, decide whether this is terminal completion
                 # (one-shot) or a transient failure (recurring schedule couldn't
@@ -2576,7 +2620,6 @@ def _mark_job_run_locked(
                 # missing runtime dep into "job completed" and the user's
                 # schedule quietly goes off. See issue #16265.
                 if job["next_run_at"] is None:
-                    kind = job.get("schedule", {}).get("kind")
                     if kind in {"cron", "interval"}:
                         job["state"] = "error"
                         if not job.get("last_error"):
@@ -2811,7 +2854,7 @@ def advance_next_runs(job_ids) -> int:
         return 0
     with _jobs_lock():
         jobs = load_jobs()
-        now = _hermes_now().isoformat()
+        now = _hermes_now()
         advanced = 0
         for job in jobs:
             if job["id"] not in ids:
@@ -2819,7 +2862,7 @@ def advance_next_runs(job_ids) -> int:
             kind = job.get("schedule", {}).get("kind")
             if kind not in {"cron", "interval"}:
                 continue
-            new_next = compute_next_run(job["schedule"], now)
+            new_next = _advance_recurring_run(job, now)
             if new_next and new_next != job.get("next_run_at"):
                 job["next_run_at"] = new_next
                 advanced += 1
@@ -2868,6 +2911,7 @@ def claim_job_for_fire(
     claim_ttl_seconds: int = 300,
     force: bool = False,
     return_job: bool = False,
+    advance_schedule: bool = True,
 ) -> Union[bool, Dict[str, Any]]:
     with _fire_job_lock(job_id) as acquired:
         if not acquired:
@@ -2877,6 +2921,7 @@ def claim_job_for_fire(
             claim_ttl_seconds=claim_ttl_seconds,
             force=force,
             return_job=return_job,
+            advance_schedule=advance_schedule,
         )
 
 
@@ -2886,6 +2931,7 @@ def _claim_job_for_fire_locked(
     claim_ttl_seconds: int = 300,
     force: bool = False,
     return_job: bool = False,
+    advance_schedule: bool = True,
 ) -> Union[bool, Dict[str, Any]]:
     """Atomically claim a job for a single external 'fire' (multi-machine
     at-most-once). Returns True iff THIS caller won the claim.
@@ -2948,7 +2994,7 @@ def _claim_job_for_fire_locked(
             owner = f"{_machine_id()}:{uuid.uuid4().hex}"
             job["fire_claim"] = {"at": now.isoformat(), "by": owner}
             kind = job.get("schedule", {}).get("kind")
-            if kind in {"cron", "interval"}:
+            if advance_schedule and kind in {"cron", "interval"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())
                 if nxt:
                     job["next_run_at"] = nxt

@@ -15213,6 +15213,42 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
         self._execute_write(_do)
 
+    def reclaim_stale_running_handoffs(self, error: str) -> List[str]:
+        """Fail every handoff stuck in ``running``. Returns the ids reclaimed.
+
+        Only the gateway's watcher ever sets ``running``, and it does so for
+        the duration of a single in-process dispatch. So any row still in
+        ``running`` when a watcher starts up belongs to a PREVIOUS gateway
+        that died mid-dispatch (crash, kill, machine reboot).
+
+        Such a row is unrecoverable *and* poisonous: ``request_handoff`` only
+        accepts a new request when the state is NULL/``completed``/``failed``,
+        so a stranded ``running`` row makes that session permanently unable to
+        hand off again — with no error surfaced anywhere.
+
+        Failing (rather than re-queueing as ``pending``) is deliberate: the
+        dead gateway may have already switched the session key and dispatched
+        the synthetic turn before dying, so a blind retry risks double
+        delivery. The user's CLI has long since timed out; the right outcome
+        is a clean terminal state they can retry from explicitly.
+        """
+        def _do(conn):
+            cur = conn.execute(
+                "SELECT id FROM sessions WHERE handoff_state = 'running'"
+            )
+            ids = [r[0] for r in cur.fetchall()]
+            if ids:
+                conn.execute(
+                    "UPDATE sessions SET handoff_state = 'failed', "
+                    "handoff_error = ? WHERE handoff_state = 'running'",
+                    (error[:500],),
+                )
+            return ids
+        try:
+            return self._execute_write(_do) or []
+        except Exception:
+            return []
+
 
 class AsyncSessionDB:
     """Async door onto SessionDB: offloads each call via asyncio.to_thread so a blocking SQLite call never freezes the event loop. Generic forwarder — the audit confirms no method returns a live cursor/generator."""

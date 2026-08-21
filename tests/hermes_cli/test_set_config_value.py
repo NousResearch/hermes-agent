@@ -504,6 +504,19 @@ class TestSchemaValidation:
 
 
 
+    def test_plugin_settings_are_recognized(self, _isolated_hermes_home, capsys):
+        """#83899: ``plugins.<name>.<key>`` are first-class config — arbitrary
+        per-plugin settings must NOT trigger the unknown-key warning (plugins
+        read them at runtime), while the value is still saved under plugins."""
+        set_config_value("plugins.my_plugin.judge_threshold", "0.8")
+        captured = capsys.readouterr()
+        assert "not a recognized config key" not in captured.out
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["plugins"]["my_plugin"]["judge_threshold"] == 0.8
+
+
+
     def test_force_suppresses_notice(self, _isolated_hermes_home, capsys):
         """``--force`` writes unknown keys without the notice (scripted
         forward-compat writes)."""
@@ -526,6 +539,8 @@ class TestValidateConfigKey:
         "telegram.bot_token",
         "mcp_servers.foo.command",
         "providers.openrouter.api_key",
+        "plugins.my_plugin.judge_threshold",  # arbitrary per-plugin settings (#83899)
+        "plugins.enabled",
         "gateway.strict",
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",

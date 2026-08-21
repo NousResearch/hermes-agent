@@ -611,6 +611,131 @@ class TestSecondaryProfileConfigHandling:
         assert second == 1
         assert runner._profile_adapters["later"][photon] is later
 
+    @pytest.mark.asyncio
+    async def test_secondary_profile_adapter_start_skips_whatsapp(self, monkeypatch):
+        """WhatsApp is shared process-level ingress, like Relay.
+
+        The bridge is one authenticated session tied to a single phone number,
+        so a secondary profile has no credentials of its own to connect with.
+        Building an adapter for it only yields a connect/retry loop that stalls
+        startup for the profiles queued behind it.
+        """
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        class _DirectAdapter:
+            platform = Platform.TELEGRAM
+
+            def __getattr__(self, name):
+                if name.startswith("set_"):
+                    return lambda *args, **kwargs: None
+                raise AttributeError(name)
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+        runner.session_store = object()
+        runner._handle_adapter_fatal_error = object()
+        runner._handle_active_session_busy_message = object()
+        runner._recover_telegram_topic_thread_id = object()
+        runner._busy_text_mode = "queue"
+        runner._make_adapter_auth_check = lambda platform, profile_name=None: object()
+
+        secondary_cfg = GatewayConfig(multiplex_profiles=True)
+        secondary_cfg.platforms = {
+            Platform.WHATSAPP: PlatformConfig(enabled=True),
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="secondary-token"),
+        }
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config", lambda: secondary_cfg
+        )
+
+        direct = _DirectAdapter()
+        factory_calls = []
+
+        def _create_adapter(platform, config):
+            factory_calls.append(platform)
+            if platform is Platform.WHATSAPP:
+                raise AssertionError("secondary WhatsApp factory must not be invoked")
+            return direct
+
+        connect_calls = []
+
+        async def _connect(adapter, platform):
+            connect_calls.append((adapter, platform))
+            return True
+
+        monkeypatch.setattr(runner, "_create_adapter", _create_adapter)
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", _connect)
+
+        connected = await runner._start_one_profile_adapters(
+            "clientbot", "/tmp/x", {}
+        )
+
+        # The other platform on the same profile still starts normally — the
+        # skip is scoped to WhatsApp, it does not abort the profile.
+        assert connected == 1
+        assert factory_calls == [Platform.TELEGRAM]
+        assert connect_calls == [(direct, Platform.TELEGRAM)]
+        assert runner._profile_adapters["clientbot"] == {
+            Platform.TELEGRAM: direct,
+        }
+
+    @pytest.mark.asyncio
+    async def test_non_multiplex_profile_adapter_start_keeps_whatsapp(self, monkeypatch):
+        """The WhatsApp skip is gated to multiplex mode.
+
+        Single-profile installs — the overwhelming majority — must keep
+        building their WhatsApp adapter exactly as before.
+        """
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        class _WhatsAppAdapter:
+            platform = Platform.WHATSAPP
+
+            def __getattr__(self, name):
+                if name.startswith("set_"):
+                    return lambda *args, **kwargs: None
+                raise AttributeError(name)
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=False)
+        runner._profile_adapters = {}
+        runner.session_store = object()
+        runner._handle_adapter_fatal_error = object()
+        runner._handle_active_session_busy_message = object()
+        runner._recover_telegram_topic_thread_id = object()
+        runner._busy_text_mode = "queue"
+        runner._make_adapter_auth_check = lambda platform, profile_name=None: object()
+
+        profile_cfg = GatewayConfig(multiplex_profiles=False)
+        profile_cfg.platforms = {
+            Platform.WHATSAPP: PlatformConfig(enabled=True),
+        }
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: profile_cfg)
+
+        wa = _WhatsAppAdapter()
+        factory_calls = []
+        connect_calls = []
+
+        def _create_adapter(platform, config):
+            factory_calls.append(platform)
+            return wa
+
+        async def _connect(adapter, platform):
+            connect_calls.append((adapter, platform))
+            return True
+
+        monkeypatch.setattr(runner, "_create_adapter", _create_adapter)
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", _connect)
+
+        connected = await runner._start_one_profile_adapters(
+            "clientbot", "/tmp/x", {}
+        )
+
+        assert connected == 1
+        assert factory_calls == [Platform.WHATSAPP]
+        assert connect_calls == [(wa, Platform.WHATSAPP)]
+
 
 class TestFeishuPortBindingConditional:
     """Feishu websocket mode does NOT bind a port; only webhook mode does (#52563)."""

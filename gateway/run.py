@@ -15269,12 +15269,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         for platform, platform_config in profile_cfg.platforms.items():
             if not platform_config.enabled:
                 continue
-            # Relay is shared process-level ingress in multiplex mode. The
-            # active profile owns the one connection; connector-stamped
-            # source.profile routes inbound turns to secondary profiles.
+            # Relay and WhatsApp are shared process-level ingress in multiplex
+            # mode: one connection, owned by the active profile, with
+            # route-stamped source.profile fanning inbound turns out to
+            # secondary profiles. WhatsApp joins Relay here because the bridge
+            # is a single authenticated session tied to one phone number — a
+            # secondary profile has no credentials of its own to bring, so
+            # letting it construct an adapter only produces a connect/retry
+            # loop that stalls startup for every other profile behind it.
             if (
                 getattr(self.config, "multiplex_profiles", False)
-                and platform is Platform.RELAY
+                and platform in (Platform.RELAY, Platform.WHATSAPP)
             ):
                 continue
             try:

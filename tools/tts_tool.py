@@ -952,6 +952,13 @@ def _dispatch_to_plugin_provider(
     logger.info(
         "Generating speech with plugin TTS provider '%s'...", key,
     )
+    # Forward the resolved style channel via the ``**extra`` forward-compat
+    # contract on TTSProvider.synthesize — implementations that don't know
+    # the key ignore it. Only passed when non-empty.
+    extra_kwargs: Dict[str, Any] = {}
+    instructions = _tts_instructions_channel(tts_config)
+    if instructions:
+        extra_kwargs["instructions"] = instructions
     written = plugin_provider.synthesize(
         text,
         output_path,
@@ -959,6 +966,7 @@ def _dispatch_to_plugin_provider(
         model=model if isinstance(model, str) and model else None,
         speed=float(speed) if isinstance(speed, (int, float)) else None,
         format=str(fmt).lower() if fmt else "mp3",
+        **extra_kwargs,
     )
     # Provider contract: returns the (possibly rewritten) output path.
     # Defensive against a provider returning None or a non-string —
@@ -1360,6 +1368,7 @@ def _generate_command_tts(
             "voice": str(config.get("voice", "")),
             "model": str(config.get("model", "")),
             "speed": str(speed),
+            "instructions": _tts_instructions_channel(tts_config),
         }
         command = _render_command_tts_template(command_template, placeholders)
 
@@ -1398,6 +1407,220 @@ def _has_any_command_tts_provider(tts_config: Optional[Dict[str, Any]] = None) -
         tts_config = _load_tts_config()
     for _name, _cfg in _iter_command_providers(tts_config):
         return True
+    return False
+
+
+# ===========================================================================
+# Style instructions (cross-provider rendering of the `instructions` param)
+# ===========================================================================
+#
+# The ``instructions`` parameter on ``text_to_speech`` is a freeform style
+# channel ("whisper", "excited", "calm and slow"). It is resolved once per
+# call — tool param > ``tts.<provider>.instructions`` > ``tts.instructions``,
+# with an explicit empty string suppressing a configured default — and then
+# injected into the per-call config copy under ``tts_config["instructions"]``
+# exactly like ``speed``, so provider generator signatures stay unchanged.
+#
+# Each provider renders the resolved value in its own native way:
+#   openai / deepinfra  -> ``instructions`` API field (voice design)
+#   gemini              -> performance-direction section in the composed prompt
+#   xai                 -> ``<tag>...</tag>`` wrap when the value names a
+#                          documented wrapping tag, otherwise direction for the
+#                          auto-speech-tags auxiliary rewrite
+#   elevenlabs          -> ``[instructions] `` audio-tag prefix on v3 models
+#   minimax             -> ``voice_setting.emotion`` when the value names one
+#   command providers   -> ``{instructions}`` template placeholder
+#   plugin providers    -> ``instructions=...`` via the ``**extra`` contract
+#   edge / mistral / local engines -> ignored (no style input exists)
+
+TTS_INSTRUCTIONS_MAX_CHARS = 200
+
+_TTS_INSTRUCTIONS_BRACKETS_RE = re.compile(r"[<>\[\]{}]")
+_TTS_INSTRUCTIONS_WHITESPACE_RE = re.compile(r"\s+")
+
+# MiniMax t2a_v2 voice_setting.emotion accepts this fixed vocabulary.
+_MINIMAX_TTS_EMOTIONS = frozenset({
+    "happy", "sad", "angry", "fearful",
+    "disgusted", "surprised", "calm", "neutral",
+})
+
+_COMMAND_TTS_INSTRUCTIONS_PLACEHOLDER_RE = re.compile(
+    r"(?<!\$)\{\{?instructions\}\}?"
+)
+
+
+def _sanitize_tts_instructions(value: Any) -> str:
+    """Return *value* as safe freeform style text, or ``""``.
+
+    Sanitation, not grammar: stray brackets are stripped (several providers
+    render the text inside their own bracket markup), whitespace is
+    collapsed, and the result is capped at ``TTS_INSTRUCTIONS_MAX_CHARS`` so
+    a runaway value can't eat the per-request text budget.
+    """
+    if value is None:
+        return ""
+
+    clean = _TTS_INSTRUCTIONS_BRACKETS_RE.sub(" ", str(value))
+    clean = _TTS_INSTRUCTIONS_WHITESPACE_RE.sub(" ", clean).strip()
+    return clean[:TTS_INSTRUCTIONS_MAX_CHARS].strip()
+
+
+def _resolve_tts_instructions(
+    provider: Optional[str],
+    tts_config: Optional[Dict[str, Any]] = None,
+    instructions_override: Optional[str] = None,
+) -> str:
+    """Resolve the style instructions for *provider*.
+
+    Resolution order:
+      1. ``instructions_override`` (the model-supplied parameter) when not
+         None. An explicit empty string suppresses a configured default.
+      2. ``tts.<provider>.instructions`` (per-provider config, including
+         command/plugin providers declared under ``tts.providers.<name>``).
+      3. ``tts.instructions`` (global config default).
+    """
+    if instructions_override is not None:
+        return _sanitize_tts_instructions(instructions_override)
+
+    key = (provider or "").lower().strip()
+    cfg = tts_config if isinstance(tts_config, dict) else {}
+
+    prov_cfg = _get_provider_section(cfg, key)
+    if not prov_cfg and key and key not in BUILTIN_TTS_PROVIDERS:
+        prov_cfg = _get_named_provider_config(cfg, key)
+
+    value = prov_cfg.get("instructions") if isinstance(prov_cfg, dict) else None
+    if value is None:
+        value = cfg.get("instructions")
+    return _sanitize_tts_instructions(value)
+
+
+def _tts_instructions_channel(tts_config: Optional[Dict[str, Any]]) -> str:
+    """Read the resolved instructions the tool wrapper injected, or ``""``.
+
+    Provider generators read only this top-level key; the per-provider config
+    lookup already happened in :func:`_resolve_tts_instructions`.
+    """
+    if not isinstance(tts_config, dict):
+        return ""
+    value = tts_config.get("instructions")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _xai_instructions_wrap_tag(instructions: str) -> str:
+    """Return the xAI wrapping speech tag *instructions* names, or ``""``."""
+    candidate = instructions.lower().strip()
+    return candidate if candidate in _XAI_WRAPPING_SPEECH_TAGS else ""
+
+
+def _elevenlabs_supports_instruction_tags(model_id: str) -> bool:
+    """Return True for ElevenLabs models that interpret ``[tag]`` audio tags.
+
+    Only the v3 family understands audio tags; earlier models (including the
+    default ``eleven_multilingual_v2``) would speak the bracketed text.
+    """
+    normalized = (model_id or "").strip().lower()
+    return "v3" in normalized
+
+
+def _tts_instructions_overhead(
+    provider: Optional[str],
+    instructions: str,
+    tts_config: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Per-chunk character headroom the provider's inline rendering needs.
+
+    xAI wraps each chunk in ``<tag>...</tag>`` and ElevenLabs v3 prefixes
+    ``[instructions] ``, so their overhead is subtracted from the split cap
+    to keep every rendered chunk within the provider request limit. Field
+    and prompt providers carry no inline overhead.
+    """
+    if not instructions:
+        return 0
+    key = (provider or "").lower().strip()
+
+    if key == "xai":
+        tag = _xai_instructions_wrap_tag(instructions)
+        return 2 * len(tag) + 5 if tag else 0
+
+    if key == "elevenlabs":
+        el_cfg = _get_provider_section(tts_config or {}, "elevenlabs")
+        model_id = str(el_cfg.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID))
+        if _elevenlabs_supports_instruction_tags(model_id):
+            return len(instructions) + 3
+
+    return 0
+
+
+def _tts_text_chunk_limit(
+    provider: Optional[str],
+    instructions: str,
+    tts_config: Optional[Dict[str, Any]],
+    max_length: int,
+) -> int:
+    """Return the largest transcript chunk that fits the provider request."""
+    key = (provider or "").lower().strip()
+    cfg = tts_config if isinstance(tts_config, dict) else {}
+
+    if key == "gemini":
+        gemini_config = _get_provider_section(cfg, "gemini")
+        persona_prompt = _read_gemini_persona_prompt(gemini_config)
+        if persona_prompt or instructions:
+            lower = 0
+            upper = max_length
+            while lower < upper:
+                candidate = (lower + upper + 1) // 2
+                prompt = _compose_gemini_tts_prompt(
+                    "x" * candidate,
+                    gemini_config,
+                    persona_prompt=persona_prompt,
+                    instructions=instructions,
+                )
+                if len(prompt) <= max_length:
+                    lower = candidate
+                else:
+                    upper = candidate - 1
+
+            return max(1, lower)
+
+    overhead = _tts_instructions_overhead(provider, instructions, cfg)
+    return max(1, max_length - overhead)
+
+
+def _tts_instructions_applied(
+    provider: Optional[str],
+    instructions: str,
+    tts_config: Optional[Dict[str, Any]],
+    command_provider_config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Whether this request's resolved instructions actually shape delivery.
+
+    Mirrors the image upscale convention: providers that honour the request
+    report it in the response, providers that ignore it stay silent.
+    """
+    if not instructions:
+        return False
+    key = (provider or "").lower().strip()
+    cfg = tts_config if isinstance(tts_config, dict) else {}
+
+    if command_provider_config is not None:
+        template = str(command_provider_config.get("command") or "")
+        return bool(_COMMAND_TTS_INSTRUCTIONS_PLACEHOLDER_RE.search(template))
+
+    if key in {"openai", "deepinfra", "gemini"}:
+        return True
+
+    if key == "xai":
+        return bool(_xai_instructions_wrap_tag(instructions))
+
+    if key == "elevenlabs":
+        el_cfg = _get_provider_section(cfg, "elevenlabs")
+        model_id = str(el_cfg.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID))
+        return _elevenlabs_supports_instruction_tags(model_id)
+
+    if key == "minimax":
+        return instructions.lower() in _MINIMAX_TTS_EMOTIONS
+
     return False
 
 
@@ -1774,6 +1997,19 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     voice_id = el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
     model_id = el_config.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID)
 
+    # Render style instructions as an audio-tag prefix — v3 models only.
+    # Earlier models (including the default eleven_multilingual_v2) have no
+    # tag support and would read the bracketed text aloud.
+    instructions = _tts_instructions_channel(tts_config)
+    if instructions:
+        if _elevenlabs_supports_instruction_tags(str(model_id)):
+            text = f"[{instructions}] {text}"
+        else:
+            logger.debug(
+                "ElevenLabs model %s does not support audio tags; "
+                "ignoring TTS instructions", model_id,
+            )
+
     # Determine output format based on file extension
     if output_path.endswith(".ogg"):
         output_format = "opus_48000_64"
@@ -1844,7 +2080,9 @@ def _generate_openai_tts(
         speed: Playback speed. When None, reads ``tts.openai.speed`` /
             ``tts.speed``.
         instructions: Optional voice-design guidance (tone, emotion, pacing,
-            accent, whispering). Forwarded to `audio.speech.create` when
+            accent, whispering). When None, falls back to the resolved
+            ``tts_config["instructions"]`` channel (which is how DeepInfra's
+            delegation picks it up). Forwarded to `audio.speech.create` when
             truthy; omitted otherwise so ``tts-1``/``tts-1-hd`` and strict
             OpenAI-compatible servers that reject unknown kwargs are
             unaffected.
@@ -1852,6 +2090,8 @@ def _generate_openai_tts(
     Returns:
         Path to the saved audio file.
     """
+    if instructions is None:
+        instructions = _tts_instructions_channel(tts_config)
     # Only resolve the OpenAI auth chain when the caller didn't pass explicit
     # credentials. OpenAI-compatible backends (DeepInfra) pass api_key /
     # base_url / model / voice through and never hit the managed-gateway path.
@@ -2015,7 +2255,6 @@ _XAI_WRAPPING_SPEECH_TAGS = (
     "fast",
     "sing-song",
     "singing",
-    "laugh-speak",
     "emphasis",
 )
 _XAI_SPEECH_TAG_RE = re.compile(
@@ -2029,7 +2268,39 @@ def _xai_bool_config(value: Any, default: bool = False) -> bool:
     return _config_bool(value, default=default)
 
 
-def _apply_xai_auto_speech_tags(text: str) -> str:
+def _is_valid_xai_speech_tag_rewrite(tagged: str, transcript: str) -> bool:
+    """Return whether tags are balanced and the spoken text is unchanged."""
+    wrapping_tags: list[str] = []
+
+    for match in _XAI_SPEECH_TAG_RE.finditer(tagged):
+        token = match.group(0)
+        if token.startswith("["):
+            continue
+
+        closing = token.startswith("</")
+        name = token[2:-1] if closing else token[1:-1]
+        name = name.casefold()
+
+        if not closing:
+            wrapping_tags.append(name)
+            continue
+
+        if not wrapping_tags or wrapping_tags[-1] != name:
+            return False
+
+        wrapping_tags.pop()
+
+    if wrapping_tags:
+        return False
+
+    def spoken_text(value: str) -> str:
+        without_tags = _XAI_SPEECH_TAG_RE.sub(" ", value)
+        return re.sub(r"\s+", " ", without_tags).strip()
+
+    return spoken_text(tagged) == spoken_text(transcript)
+
+
+def _apply_xai_auto_speech_tags(text: str, direction: str = "") -> str:
     """Add xAI speech tags for more natural voice-mode replies.
 
     First applies a conservative local transform (inserts [pause] between
@@ -2037,8 +2308,10 @@ def _apply_xai_auto_speech_tags(text: str) -> str:
     no explicit user/model speech tags, asks the configured auxiliary model
     to rewrite the transcript with a richer set of xAI-supported tags
     (laughs, sighs, whispers, soft/loud, slow/fast, etc.) so the voice
-    output sounds more expressive. Falls back to the local result on any
-    auxiliary-model failure.
+    output sounds more expressive. ``direction`` is freeform style guidance
+    (from the ``instructions`` channel) the rewriter should realize through
+    its tag choices. Falls back to the local result on any auxiliary-model
+    failure.
     """
     clean = text.strip()
     if not clean:
@@ -2055,6 +2328,12 @@ def _apply_xai_auto_speech_tags(text: str) -> str:
     # If the user/model already supplied explicit speech tags, trust them
     # and don't re-rewrite.
     if _XAI_SPEECH_TAG_RE.search(clean):
+        if direction:
+            logger.debug(
+                "xAI TTS text already carries explicit speech tags; "
+                "auxiliary rewrite skipped, style direction %r unused",
+                direction,
+            )
         return local
 
     # Auxiliary rewrite for richer emotion tags (mirrors the Gemini path).
@@ -2064,17 +2343,22 @@ def _apply_xai_auto_speech_tags(text: str) -> str:
         "You rewrite transcripts for the xAI /v1/tts endpoint by inserting "
         "expressive speech tags.\n\n"
         "Valid inline tags (use as `[tag]`): " + inline + ".\n"
-        "Valid wrapping tags (use as `[tag]...[/tag]`): " + wrapping + ".\n\n"
+        "Valid wrapping tags (use as `<tag>...</tag>`): " + wrapping + ".\n\n"
         "Rules:\n"
         "- Preserve the spoken words, order, and meaning.\n"
         "- Do not add new spoken sentences or remove existing spoken words.\n"
         "- Use inline `[tag]` for short modifiers (laughs, sighs, pause, etc.).\n"
-        "- Use wrapping `[tag]...[/tag]` for sustained effects (whisper, soft, slow, fast, loud, etc.).\n"
-        "- Do not use angle-bracket tags like `<tag>...</tag>` — xAI uses BBCode-style closing tags with `[/tag]`.\n"
+        "- Use wrapping `<tag>...</tag>` for sustained effects (whisper, soft, slow, fast, loud, etc.).\n"
+        "- Square brackets are only for inline tags.\n"
         "- Do not use SSML.\n"
         "- Do not explain or comment.\n"
         "- Return only the tagged TTS script."
     )
+    if direction:
+        system_prompt += (
+            "\n\nSTYLE DIRECTION (from the user): " + direction + "\n"
+            "Choose tags that realize this direction across the transcript."
+        )
     try:
         from agent.auxiliary_client import call_llm
 
@@ -2091,7 +2375,12 @@ def _apply_xai_auto_speech_tags(text: str) -> str:
         fence = re.fullmatch(r"```(?:[A-Za-z0-9_-]+)?\s*(.*?)\s*```", tagged, flags=re.DOTALL)
         if fence:
             tagged = fence.group(1).strip()
-        return tagged or local
+        if not tagged:
+            return local
+        if not _is_valid_xai_speech_tag_rewrite(tagged, local):
+            logger.debug("xAI TTS audio tag rewrite was invalid; using locally-tagged text")
+            return local
+        return tagged
     except Exception as exc:
         logger.debug("xAI TTS audio tag rewrite failed; using locally-tagged text: %s", exc)
         return local
@@ -2156,8 +2445,24 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         xai_config.get("text_normalization"),
         DEFAULT_XAI_TEXT_NORMALIZATION_DEFAULT,
     )
+    # Render style instructions: a value that names a documented wrapping
+    # speech tag wraps the chunk directly (<whisper>...</whisper>); anything
+    # else becomes direction for the auto-speech-tags auxiliary rewrite. A
+    # wrapped chunk counts as explicitly tagged, so the rewrite's
+    # existing-tags guard leaves it alone rather than re-tagging.
+    instructions = _tts_instructions_channel(tts_config)
+    wrap_tag = _xai_instructions_wrap_tag(instructions) if instructions else ""
+    if wrap_tag:
+        text = f"<{wrap_tag}>{text}</{wrap_tag}>"
+    elif instructions and not auto_speech_tags:
+        logger.debug(
+            "xAI TTS ignoring instructions %r: not a documented wrapping "
+            "tag and auto_speech_tags is disabled", instructions,
+        )
     if auto_speech_tags:
-        text = _apply_xai_auto_speech_tags(text)
+        text = _apply_xai_auto_speech_tags(
+            text, direction="" if wrap_tag else instructions,
+        )
     if creds.get("provider") == "xai-oauth":
         base_url = str(creds.get("base_url") or DEFAULT_XAI_BASE_URL).strip().rstrip("/")
     else:
@@ -2254,6 +2559,20 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     vol = mm_config.get("vol", 1.0)
     pitch = mm_config.get("pitch", 0)
     emotion = mm_config.get("emotion", "neutral")
+
+    # Render style instructions as voice_setting.emotion — but only when the
+    # value names one of MiniMax's fixed emotions; freeform text would 400.
+    instructions = _tts_instructions_channel(tts_config)
+    if instructions:
+        candidate = instructions.lower()
+        if candidate in _MINIMAX_TTS_EMOTIONS:
+            emotion = candidate
+        else:
+            logger.debug(
+                "MiniMax TTS ignoring instructions %r: not one of the "
+                "supported emotions (%s)",
+                instructions, ", ".join(sorted(_MINIMAX_TTS_EMOTIONS)),
+            )
     sample_rate = mm_config.get("sample_rate", 32000)
     bitrate = mm_config.get("bitrate", 128000)
 
@@ -2578,31 +2897,44 @@ def _compose_gemini_tts_prompt(
     text: str,
     gemini_config: Dict[str, Any],
     persona_prompt: Optional[str] = None,
+    instructions: str = "",
 ) -> str:
-    """Build the Gemini prompt from persona direction plus the live transcript."""
+    """Build the Gemini prompt from direction sections plus the live transcript.
+
+    ``instructions`` (the resolved style channel) becomes a STYLE DIRECTION
+    section alongside the persona prompt — performance direction the model
+    follows but never speaks aloud.
+    """
     transcript = text.strip()
     if persona_prompt is None:
         persona_prompt = _read_gemini_persona_prompt(gemini_config)
-    if not persona_prompt:
+    instructions = (instructions or "").strip()
+    if not persona_prompt and not instructions:
         return transcript
 
     preamble = (
         "Synthesize speech from the TRANSCRIPT only. Treat AUDIO PROFILE, "
-        "SCENE, DIRECTOR'S NOTES, and SAMPLE CONTEXT as performance direction; "
-        "do not speak those sections aloud."
+        "SCENE, DIRECTOR'S NOTES, STYLE DIRECTION, and SAMPLE CONTEXT as "
+        "performance direction; do not speak those sections aloud."
     )
+
+    sections = [preamble]
+    if instructions:
+        sections.append(f"#### STYLE DIRECTION\n{instructions}")
 
     placeholder_patterns = (
         re.compile(r"\{\{\s*transcript\s*\}\}", flags=re.IGNORECASE),
         re.compile(r"\{\s*transcript\s*\}", flags=re.IGNORECASE),
     )
-    prompt = persona_prompt
     for pattern in placeholder_patterns:
-        if pattern.search(prompt):
-            prompt = pattern.sub(transcript, prompt)
-            return f"{preamble}\n\n{prompt}".strip()
+        if pattern.search(persona_prompt):
+            sections.append(pattern.sub(transcript, persona_prompt))
+            return "\n\n".join(sections).strip()
 
-    return f"{preamble}\n\n{persona_prompt}\n\n#### TRANSCRIPT\n{transcript}".strip()
+    if persona_prompt:
+        sections.append(persona_prompt)
+    sections.append(f"#### TRANSCRIPT\n{transcript}")
+    return "\n\n".join(sections).strip()
 
 
 def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
@@ -2650,6 +2982,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         tts_script,
         gemini_config,
         persona_prompt=persona_prompt,
+        instructions=_tts_instructions_channel(tts_config),
     )
     max_len = _resolve_max_text_length("gemini", tts_config)
     if len(prompt_text) > max_len:
@@ -3183,6 +3516,14 @@ def _text_to_speech_single(
     # OpenAI handler.
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
 
+    # Resolve style instructions (param > tts.<provider>.instructions >
+    # tts.instructions; explicit "" suppresses a configured default) and
+    # inject the result into the config copy like speed, overwriting the raw
+    # ``tts.instructions`` key so providers read only the resolved value.
+    instructions = _resolve_tts_instructions(provider, tts_config, instructions)
+    tts_config = dict(tts_config)
+    tts_config["instructions"] = instructions
+
     # The wrapper splits text into provider-safe chunks before calling this
     # function. If text exceeds the cap here, it means the caller bypassed
     # the wrapper — log a warning but don't silently truncate.
@@ -3468,13 +3809,21 @@ def _text_to_speech_single(
         if voice_compatible:
             media_tag = f"[[audio_as_voice]]\n{media_tag}"
 
-        return json.dumps({
+        response_payload: Dict[str, Any] = {
             "success": True,
             "file_path": file_str,
             "media_tag": media_tag,
             "provider": provider,
             "voice_compatible": voice_compatible,
-        }, ensure_ascii=False)
+        }
+        # Stamp when this provider actually rendered the style instructions
+        # (mirrors the image upscale `upscaled: True` convention).
+        if _tts_instructions_applied(
+            provider, instructions, tts_config, command_provider_config,
+        ):
+            response_payload["instructions_applied"] = True
+
+        return json.dumps(response_payload, ensure_ascii=False)
 
     except ValueError as e:
         # Configuration errors (missing API keys, etc.)
@@ -3520,7 +3869,11 @@ def text_to_speech_tool(
             input is split into ordered chunks without silent truncation.
         output_path: Optional custom save path.
         speed: Optional playback speed multiplier (0.25-4.0).
-        instructions: Optional voice-design guidance (tone, emotion, pacing).
+        instructions: Optional voice-style guidance (tone, emotion, pacing;
+            e.g. "whisper", "excited", "calm and slow"). Rendered natively
+            per provider where supported and silently ignored elsewhere.
+            Defaults to ``tts.<provider>.instructions`` / ``tts.instructions``
+            from config; an explicit empty string suppresses that default.
         provider: Optional TTS provider override.
 
     Returns:
@@ -3555,7 +3908,24 @@ def text_to_speech_tool(
         provider = _get_provider(tts_config)
 
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
+
+    # Resolve style instructions once (param > tts.<provider>.instructions >
+    # tts.instructions; explicit "" suppresses a configured default) and
+    # inject the result into the config copy like speed, overwriting the raw
+    # ``tts.instructions`` key so providers read only the resolved value.
+    instructions = _resolve_tts_instructions(provider, tts_config, instructions)
+    tts_config = dict(tts_config)
+    tts_config["instructions"] = instructions
+
+    # Budget every provider-side rendering before splitting. Gemini composes
+    # a prompt around the transcript; xAI and ElevenLabs add inline syntax.
     max_len = _resolve_max_text_length(provider, tts_config)
+    max_len = _tts_text_chunk_limit(
+        provider,
+        instructions,
+        tts_config,
+        max_len,
+    )
     chunks = _split_text_for_tts(text, max_len)
     if not chunks:
         return tool_error("Text is required", success=False)
@@ -3676,7 +4046,7 @@ def text_to_speech_tool(
         if voice_compatible:
             media_tag = f"[[audio_as_voice]]\n{media_tag}"
 
-        return json.dumps({
+        response_payload: Dict[str, Any] = {
             "success": True,
             "file_path": final_paths[0],
             "file_paths": final_paths,
@@ -3691,7 +4061,11 @@ def text_to_speech_tool(
                 "max_file_bytes": delivery_profile.max_file_bytes,
                 "target_file_bytes": delivery_profile.target_file_bytes,
             },
-        }, ensure_ascii=False)
+        }
+        if chunk_results[0].get("instructions_applied"):
+            response_payload["instructions_applied"] = True
+
+        return json.dumps(response_payload, ensure_ascii=False)
     except ValueError as exc:
         error_msg = f"TTS delivery error ({provider}): {exc}"
         logger.error("%s", error_msg)
@@ -4516,10 +4890,16 @@ TTS_SCHEMA = {
             "instructions": {
                 "type": "string",
                 "description": (
-                    "Optional voice-design guidance: tone, emotion, pacing, accent, "
-                    "whispering, impressions (e.g. 'Speak in a cheerful, excited whisper'). "
-                    "Forwarded to the OpenAI backend (gpt-4o-mini-tts and OpenAI-compatible "
-                    "voice-design servers). Silently ignored by backends that don't support it."
+                    "Optional voice-style guidance: tone, emotion, pacing, accent, "
+                    "delivery (e.g. 'whisper', 'excited', 'calm and slow'). Rendered "
+                    "natively per provider: OpenAI-compatible backends receive it as "
+                    "the voice-design instructions field, Gemini follows it as "
+                    "performance direction, xAI wraps the speech in a matching tag "
+                    "or steers its expressive tag rewrite, ElevenLabs v3 models get "
+                    "an audio-tag prefix, and MiniMax maps matching emotion names. "
+                    "Silently ignored by backends that don't support it. Defaults to "
+                    "the configured tts.instructions (or tts.<provider>.instructions); "
+                    "pass an empty string to suppress a configured default."
                 )
             },
             "provider": {
@@ -4537,6 +4917,38 @@ TTS_SCHEMA = {
     }
 }
 
+def _build_dynamic_tts_schema() -> Dict[str, Any]:
+    """Surface a configured default ``instructions`` in the model-facing schema.
+
+    Plugged into ``ToolEntry.dynamic_schema_overrides`` so the model sees the
+    style default it will actually get if it omits the parameter.
+    ``get_tool_definitions`` keys its cache on config.yaml mtime + size, so
+    editing ``tts.instructions`` in config invalidates the memoized schema
+    automatically.
+    """
+    try:
+        tts_config = _load_tts_config()
+        provider = _get_provider(tts_config)
+        default_instructions = _resolve_tts_instructions(provider, tts_config, None)
+    except Exception:  # noqa: BLE001 — defensive; fall back to the static schema
+        return {}
+
+    if not default_instructions:
+        return {}
+
+    import copy
+
+    params = copy.deepcopy(TTS_SCHEMA["parameters"])
+    params["properties"]["instructions"]["description"] = (
+        "Optional voice-style guidance: tone, emotion, pacing, accent, "
+        "delivery (e.g. 'whisper', 'excited', 'calm and slow'), rendered "
+        "natively by providers that support it. The user has configured a "
+        f"default of \"{default_instructions}\", applied when you omit this "
+        "parameter; pass an empty string to suppress it for this call."
+    )
+    return {"parameters": params}
+
+
 registry.register(
     name="text_to_speech",
     toolset="tts",
@@ -4548,5 +4960,6 @@ registry.register(
         instructions=args.get("instructions"),
         provider=args.get("provider")),
     check_fn=check_tts_requirements,
+    dynamic_schema_overrides=_build_dynamic_tts_schema,
     emoji="🔊",
 )

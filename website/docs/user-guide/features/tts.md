@@ -46,6 +46,7 @@ Convert text to speech with eleven providers:
 tts:
   provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "deepinfra" | "neutts" | "kittentts" | "piper" — or "nous" for the managed Tool Gateway (written when you pick Nous Subscription in `hermes tools`)
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
+  instructions: ""              # Default style guidance ("whisper", "excited"); see Style instructions below
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
     speed: 1.0                  # Converted to rate percentage (+/-%)
@@ -114,6 +115,25 @@ MiniMax TTS selects its region, endpoint, and credential together:
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
 
+### Style instructions
+
+The `text_to_speech` tool accepts a freeform `instructions` argument ("whisper", "excited", "calm and slow") that shapes delivery. Set a default in config — `tts.instructions` globally, or `tts.<provider>.instructions` per provider (including command providers declared under `tts.providers.<name>`) — and the model can override it per call. The per-call argument wins over config, and an explicit empty string suppresses a configured default for that call. Values are sanitised (brackets stripped, whitespace collapsed) and capped at 200 characters.
+
+Each provider renders the value in its own native way:
+
+| Provider | Rendering |
+|----------|-----------|
+| OpenAI / DeepInfra | `instructions` API field (`gpt-4o-mini-tts` voice design; also OpenAI-compatible voice-design servers) |
+| Gemini | `STYLE DIRECTION` section in the composed prompt — performance direction, never spoken |
+| xAI | A value naming a documented wrapping speech tag (`whisper`, `soft`, `loud`, `slow`, `fast`, ...) wraps each chunk as `<tag>...</tag>`; any other value steers the `auto_speech_tags` auxiliary rewrite as style direction (and is ignored when that rewrite is off) |
+| ElevenLabs | `[instructions] ` audio-tag prefix per chunk on v3 models (`eleven_v3` family) only; earlier models would speak the tag, so they ignore it |
+| MiniMax | `voice_setting.emotion` when the value names one of `happy`, `sad`, `angry`, `fearful`, `disgusted`, `surprised`, `calm`, `neutral`; anything else is ignored |
+| Command providers | `{instructions}` template placeholder |
+| Plugin providers | `instructions=...` keyword via `synthesize(**extra)` |
+| Edge, Mistral, NeuTTS, KittenTTS, Piper | Ignored — these engines have no style input |
+
+Providers report `instructions_applied: true` only when Hermes can confirm that the request was applied. Forwarding instructions to a plugin or auxiliary rewrite does not make that guarantee. Hermes budgets the xAI and ElevenLabs inline syntax and Gemini's composed prompt around each transcript chunk so every provider request stays within its limit.
+
 ### Gemini Persona Prompts
 
 Gemini TTS can follow natural-language performance direction. Set `tts.gemini.persona_prompt_file` to a local Markdown or text file that describes the voice persona. The file can include Gemini-style sections such as `AUDIO PROFILE`, `SCENE`, `DIRECTOR'S NOTES`, `SAMPLE CONTEXT`, and `TRANSCRIPT`.
@@ -130,7 +150,11 @@ tts:
 
 ### Audio Tags (Gemini, xAI)
 
-Google's Gemini 3.1 Flash TTS and xAI's Grok TTS support freeform square-bracket audio tags such as `[whispers]`, `[excitedly]`, `[very slow]`, `[laughs]`, and other expressive delivery notes. Enable `tts.gemini.audio_tags` or `tts.xai.auto_speech_tags` to have Hermes run a hidden rewrite pass before TTS. The rewrite inserts inline tags into the TTS script only; the visible chat reply stays unchanged.
+Google's Gemini 3.1 Flash TTS accepts freeform square-bracket audio tags such as `[whispers]`, `[excitedly]`, `[very slow]`, and `[laughs]`. [xAI uses a fixed speech-tag vocabulary][xai-tts-speech-tags]: inline effects such as `[pause]`, `[laugh]`, and `[sigh]` use square brackets, while sustained effects use wrapping tags such as `<whisper>...</whisper>` and `<slow>...</slow>`.
+
+Enable `tts.gemini.audio_tags` or `tts.xai.auto_speech_tags` to have Hermes run a hidden rewrite pass before TTS. The rewrite inserts the provider's tags into the TTS script only; the visible chat reply stays unchanged.
+
+[xai-tts-speech-tags]: https://docs.x.ai/developers/model-capabilities/audio/text-to-speech#speech-tags
 
 ```yaml
 tts:
@@ -336,6 +360,7 @@ Your command template can reference these placeholders. Hermes substitutes them 
 | `{voice}`        | `tts.providers.<name>.voice`, empty when unset       |
 | `{model}`        | `tts.providers.<name>.model`                         |
 | `{speed}`        | Resolved speed multiplier (provider or global)       |
+| `{instructions}` | Resolved style instructions, empty when unset        |
 
 Use `{{` and `}}` for literal braces.
 
@@ -427,6 +452,8 @@ def register(ctx):
 ```
 
 Enable it (`hermes plugins enable my-tts`), point `tts.provider` at it (`tts.provider: my-tts` in `config.yaml`), and the `text_to_speech` tool will route through your plugin.
+
+When the user or model supplies style [instructions](#style-instructions), the resolved value arrives as an `instructions` keyword in `**extra` — ignore it if your engine has no equivalent.
 
 #### Optional hooks
 

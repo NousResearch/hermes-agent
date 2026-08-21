@@ -1316,6 +1316,11 @@ platform_toolsets:
 # tts:
 #   provider: "gemini"
 #   speed: 1.0              # global speed multiplier (provider-specific overrides this)
+#   instructions: ""        # default style guidance ("whisper", "excited") rendered
+#                           # natively per provider (OpenAI voice design, Gemini prompt
+#                           # direction, xAI speech tags, ElevenLabs v3 audio tags,
+#                           # MiniMax emotions); tts.<provider>.instructions overrides
+#                           # this, and the tool's per-call argument overrides both
 #   gemini:
 #     model: "gemini-3.1-flash-tts-preview"
 #     voice: "Kore"

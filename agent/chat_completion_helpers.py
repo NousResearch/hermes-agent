@@ -2646,7 +2646,18 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
         # the stale value from the previous model.  See #22387.
+        # However, if the fallback chain entry itself has an explicit
+        # context_length, restore it so get_model_context_length() honours
+        # the user's per-fallback config instead of falling through to the
+        # 256K hardcoded default (custom models like xopdeepseekv4pro are
+        # not in any known catalog). See local fix for #22387.
+        _fb_entry_ctx_len = fb.get("context_length")
         agent._config_context_length = None
+        if _fb_entry_ctx_len is not None:
+            try:
+                agent._config_context_length = int(_fb_entry_ctx_len)
+            except (TypeError, ValueError):
+                pass
         agent.model = fb_model
         agent.provider = fb_provider
         agent.requested_provider = fb_provider

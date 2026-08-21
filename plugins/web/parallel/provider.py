@@ -17,13 +17,14 @@ Config keys this provider responds to::
       search_backend: "parallel"      # explicit per-capability
       extract_backend: "parallel"     # explicit per-capability
       backend: "parallel"             # shared fallback
-      # Optional: search mode (default "agentic"; also "fast" or "one-shot")
-      # via the PARALLEL_SEARCH_MODE env var.
+      # Optional: search mode via PARALLEL_SEARCH_MODE. Legacy agentic,
+      # one-shot, and fast values retain their Beta semantics; explicit v1
+      # values are basic, advanced, turbo, and v1-fast.
 
 Env vars::
 
     PARALLEL_API_KEY=...             # https://parallel.ai (required)
-    PARALLEL_SEARCH_MODE=agentic     # optional: agentic|fast|one-shot
+    PARALLEL_SEARCH_MODE=agentic     # optional; maps to v1 advanced
 """
 
 from __future__ import annotations
@@ -136,12 +137,24 @@ _get_parallel_client = _get_sync_client
 _get_async_parallel_client = _get_async_client
 
 
+_V1_SEARCH_MODES = {"turbo", "fast", "basic", "advanced"}
+_SEARCH_MODE_ALIASES = {
+    "agentic": "advanced",
+    "one-shot": "basic",
+    "fast": "basic",
+    "v1-fast": "fast",
+}
+
+
 def _resolve_search_mode() -> str:
-    """Return the validated PARALLEL_SEARCH_MODE value (default "agentic")."""
+    """Translate configured modes to their semantically equivalent v1 value.
+
+    Bare ``fast`` retains its legacy Beta meaning (v1 ``basic``). The new v1
+    ``fast`` mode is available only through the explicit ``v1-fast`` alias.
+    """
     mode = os.getenv("PARALLEL_SEARCH_MODE", "agentic").lower().strip()
-    if mode not in {"fast", "one-shot", "agentic"}:
-        mode = "agentic"
-    return mode
+    mode = _SEARCH_MODE_ALIASES.get(mode, mode)
+    return mode if mode in _V1_SEARCH_MODES else "advanced"
 
 
 class ParallelWebSearchProvider(WebSearchProvider):
@@ -186,9 +199,9 @@ class ParallelWebSearchProvider(WebSearchProvider):
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         """Execute a Parallel search (sync).
 
-        Uses the ``beta.search`` endpoint with the configured mode
-        (``PARALLEL_SEARCH_MODE`` env var, default "agentic"). Limit is
-        capped at 20 server-side.
+        Uses the v1 ``search`` endpoint with the configured mode. Legacy mode
+        names are translated by :func:`_resolve_search_mode`. Limit is capped
+        at 20 server-side.
         """
         try:
             from tools.interrupt import is_interrupted
@@ -211,11 +224,11 @@ class ParallelWebSearchProvider(WebSearchProvider):
             logger.info(
                 "Parallel search: '%s' (mode=%s, limit=%d)", query, mode, limit
             )
-            response = _get_sync_client().beta.search(
+            response = _get_sync_client().search(
                 search_queries=[query],
                 objective=query,
                 mode=mode,
-                max_results=min(limit, 20),
+                advanced_settings={"max_results": min(limit, 20)},
             )
 
             web_results = []
@@ -274,9 +287,9 @@ class ParallelWebSearchProvider(WebSearchProvider):
                 )
 
             logger.info("Parallel extract: %d URL(s)", len(urls))
-            response = await _get_async_client().beta.extract(
+            response = await _get_async_client().extract(
                 urls=urls,
-                full_content=True,
+                advanced_settings={"full_content": True},
             )
 
             results: List[Dict[str, Any]] = []

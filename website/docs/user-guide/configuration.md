@@ -2305,7 +2305,7 @@ web:
 
 **Self-hosted Firecrawl:** Set `FIRECRAWL_API_URL` to point at your own instance. When a custom URL is set, the API key becomes optional (set `USE_DB_AUTHENTICATION=*** on the server to disable auth).
 
-**Parallel search modes:** Set `PARALLEL_SEARCH_MODE` to control search behavior — `fast`, `one-shot`, or `agentic` (default: `agentic`).
+**Parallel search modes:** Set `PARALLEL_SEARCH_MODE` to control search behavior. Legacy `agentic` (the default) maps to v1 `advanced`; legacy `one-shot` and `fast` map to v1 `basic`. Explicit v1 `basic`, `advanced`, and `turbo` values pass through. Use `v1-fast` to select the new v1 `fast` mode, which has no Beta equivalent.
 
 **Exa:** Set `EXA_API_KEY` in `~/.hermes/.env`. Supports `category` filtering (`company`, `research paper`, `news`, `people`, `personal site`, `pdf`) and domain/date filters.
 

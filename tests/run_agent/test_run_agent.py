@@ -78,6 +78,64 @@ def agent():
         return a
 
 
+def test_a2a_platform_enforces_exact_tool_name_allowlist(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "strict_platform_tools:\n  a2a:\n    - web_search\n"
+    )
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("web_search", "future_privileged_tool"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        a = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            platform="a2a",
+            enabled_toolsets=["web"],
+        )
+    assert a.valid_tool_names == {"web_search"}
+
+    from tools.mcp_tool import refresh_agent_mcp_tools
+    with patch(
+        "model_tools.get_tool_definitions",
+        return_value=_make_tool_defs("web_search", "future_privileged_tool"),
+    ):
+        refresh_agent_mcp_tools(a)
+    assert a.valid_tool_names == {"web_search"}
+
+
+def test_a2a_platform_suppresses_persistent_memory_context(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "memory:\n  memory_enabled: true\n  user_profile_enabled: true\n"
+    )
+    (tmp_path / "MEMORY.md").write_text("PRIVATE_MEMORY")
+    (tmp_path / "USER.md").write_text("PRIVATE_USER_PROFILE")
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        a = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            platform="a2a",
+            enabled_toolsets=["web"],
+        )
+    assert a._memory_store is None
+    assert a._memory_enabled is False
+    assert a._user_profile_enabled is False
+    assert a._memory_manager is None
+
+
 def test_persist_user_message_override_rewrites_text_turns(agent):
     messages = [{"role": "user", "content": "API-only synthetic prefix\nhello"}]
     agent._persist_user_message_idx = 0

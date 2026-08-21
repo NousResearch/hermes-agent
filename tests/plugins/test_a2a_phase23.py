@@ -453,6 +453,20 @@ class TestTaskStore:
         assert rec["context_id"] == "c1"
         assert rec["peer"] == "peer-1"
 
+    def test_peer_scope_is_fail_closed_across_task_and_push_operations(self):
+        store = protocol.TaskStore()
+        store.create("t-alice", "ctx", "alice")
+        store.create("t-bob", "ctx", "bob")
+        assert store.get("t-alice", peer="alice") is not None
+        assert store.get("t-alice", peer="bob") is None
+        assert store.watch("t-alice", peer="bob") is None
+        assert store.set_push_config(
+            "t-alice", "https://example.com/hook", peer="bob"
+        ) is None
+        recs, _next, total = store.list(peer="alice", with_total=True)
+        assert [rec["task_id"] for rec in recs] == ["t-alice"]
+        assert total == 1
+
     def test_complete_keeps_task_queryable(self):
         store = protocol.TaskStore()
         store.create("t1", "c1", "p")

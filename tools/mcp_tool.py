@@ -7811,6 +7811,18 @@ def refresh_agent_mcp_tools(
     # this rebuild actually appended (matching agent_init's dedup-aware add).
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
 
+    # Preserve an exact tool-name security boundary across late MCP/plugin
+    # registry refreshes. The initial agent build applies this after plugin
+    # discovery; every later rebuild must apply the same filter before publish.
+    strict_names = getattr(agent, "_strict_tool_names", None)
+    if isinstance(strict_names, (set, frozenset)):
+        new_defs = [
+            tool for tool in new_defs
+            if tool.get("function", {}).get("name") in strict_names
+        ]
+        new_names = {tool["function"]["name"] for tool in new_defs}
+        staged_engine_names &= new_names
+
     # Single atomic read-diff-publish so the returned ``added`` is consistent
     # with what was actually published, even under concurrent callers, and a
     # stale (older-generation) rebuild can't overwrite a newer published one.

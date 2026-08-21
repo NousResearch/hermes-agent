@@ -606,6 +606,75 @@ def _bare_adapter():
 
 
 class TestReplyCapture:
+    def test_strict_platform_toolsets_reject_future_plugin_expansion(self, monkeypatch):
+        from hermes_cli import tools_config
+        import toolsets
+
+        monkeypatch.setitem(toolsets.TOOLSETS, "future_privileged_plugin", {
+            "description": "future privileged plugin",
+            "tools": ["future_privileged_tool"],
+            "includes": [],
+        })
+        monkeypatch.setattr(
+            tools_config,
+            "_get_plugin_toolset_keys",
+            lambda: {"future_privileged_plugin"},
+        )
+        config = {
+            "platform_toolsets": {
+                "a2a": ["web", "todo", "clarify", "no_mcp"],
+            },
+            "strict_platform_toolsets": ["a2a"],
+            "known_builtin_toolsets": {"a2a": ["bfl"]},
+        }
+        assert tools_config._get_platform_tools(config, "a2a") == {
+            "web", "todo", "clarify",
+        }
+
+    def test_context_ids_are_namespaced_by_authenticated_peer(self):
+        adapter = _bare_adapter()
+        alice = adapter._scoped_context_id("alice", "shared")
+        bob = adapter._scoped_context_id("bob", "shared")
+        assert alice != bob
+        assert alice == adapter._scoped_context_id("alice", "shared")
+
+    def test_streaming_can_be_disabled_for_hardened_endpoints(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.a2a.adapter import A2AAdapter
+
+        adapter = A2AAdapter(PlatformConfig(
+            enabled=True,
+            extra={"streaming": False, "push_notifications": False},
+        ))
+        assert adapter._streaming_enabled is False
+        assert adapter._build_card()["capabilities"]["streaming"] is False
+        assert adapter._push_notifications_enabled is False
+        assert adapter._build_card()["capabilities"]["pushNotifications"] is False
+
+    def test_late_final_cannot_complete_a_newer_task_in_same_context(self):
+        adapter = _bare_adapter()
+        first = adapter._add_pending("task-1", "ctx")
+        second = adapter._add_pending("task-2", "ctx")
+        adapter._pop_pending("task-1")
+
+        asyncio.run(adapter.send(
+            "ctx", "LATE-FIRST", reply_to="task-1", metadata={"notify": True}
+        ))
+        assert not second.done()
+
+        asyncio.run(adapter.send(
+            "ctx", "SECOND", reply_to="task-2", metadata={"notify": True}
+        ))
+        assert second.result(timeout=0) == (protocol.STATE_COMPLETED, "SECOND")
+        assert not first.done()
+
+    def test_a2a_never_auto_tts_text_replies(self):
+        """A2A is text-only; global voice defaults must not replace RPC text with an audio fallback."""
+        adapter = _bare_adapter()
+        adapter._auto_tts_default = True
+        adapter._auto_tts_enabled_chats.add("ctx-a2a")
+        assert adapter._should_auto_tts_for_chat("ctx-a2a") is False
+
     def test_send_waits_for_notify_marked_final_reply(self):
         """Interim/editable sends must not satisfy the blocked A2A RPC future."""
         adapter = _bare_adapter()
@@ -653,6 +722,43 @@ class TestReplyCapture:
             adapter._pop_pending("task-1")
             adapter._pop_pending("task-2")
 
+    def test_early_success_and_edit_preview_cannot_complete_the_rpc(self):
+        """Only a notify-marked final send may complete a successful A2A RPC."""
+        from gateway.platforms.base import ProcessingOutcome
+
+        adapter = _bare_adapter()
+        setattr(adapter, "_preview_settle_seconds", 0.01)
+        fut = adapter._add_pending("task-preview", "ctx-preview")
+        event = SimpleNamespace(
+            message_id="task-preview",
+            source=SimpleNamespace(chat_id="ctx-preview"),
+        )
+
+        async def run():
+            # The gateway may report SUCCESS before its background agent turn starts.
+            await adapter.on_processing_complete(
+                event, ProcessingOutcome.SUCCESS  # pyright: ignore[reportArgumentType]
+            )
+            assert fut.done() is False
+            # An edit-preview can be partial and must never resolve the RPC.
+            await adapter.send(
+                "ctx-preview", "PARTIAL", metadata={"expect_edits": True}
+            )
+            await asyncio.sleep(0.02)
+            assert fut.done() is False
+            await adapter.send(
+                "ctx-preview", "FINAL_TEXT", metadata={"notify": True}
+            )
+
+        try:
+            asyncio.run(run())
+            assert fut.result(timeout=0) == (
+                protocol.STATE_COMPLETED,
+                "FINAL_TEXT",
+            )
+        finally:
+            adapter._pop_pending("task-preview")
+
     def test_on_processing_complete_resolves_failure(self):
         """A failed run must resolve the future promptly (no reply timeout wait)."""
         from gateway.platforms.base import ProcessingOutcome
@@ -694,6 +800,19 @@ class TestReplyCapture:
 # --------------------------------------------------------------------------
 
 class TestTaskRpcHandlers:
+    def test_task_rpcs_are_scoped_to_authenticated_peer(self):
+        adapter = _bare_adapter()
+        adapter.tasks.create("task-alice", "ctx", "alice")
+        adapter.tasks.complete("task-alice", protocol.STATE_COMPLETED, "private")
+        assert "error" in adapter._rpc_tasks_get(
+            1, {"taskId": "task-alice"}, peer="bob"
+        )
+        listed = adapter._rpc_tasks_list(2, {}, peer="bob")["result"]
+        assert listed["tasks"] == []
+        assert "error" in adapter._rpc_tasks_cancel(
+            3, {"taskId": "task-alice"}, peer="bob"
+        )
+
     def test_tasks_get_unknown_uses_spec_error_code(self):
         adapter = _bare_adapter()
         resp = adapter._rpc_tasks_get(1, {"taskId": "ghost"})
@@ -709,16 +828,15 @@ class TestTaskRpcHandlers:
         assert protocol.extract_text(task["artifacts"][0]) == "answer"
 
     def test_tasks_cancel_resets_turns_for_context(self):
-        """Cancel must reset anti-loop turns for the task's CONTEXT (the old
-        code passed the task_id into a context-keyed map — silent no-op)."""
+        """Cancel resets the authenticated peer's internal anti-loop context."""
         adapter = _bare_adapter()
+        internal_context = adapter._scoped_context_id("peer", "ctx-loopy")
         for _ in range(4):
-            adapter._turns.track("ctx-loopy")
+            adapter._turns.track(internal_context)
         adapter.tasks.create("task-c", "ctx-loopy", "peer")
-        resp = adapter._rpc_tasks_cancel(1, {"taskId": "task-c"})
+        resp = adapter._rpc_tasks_cancel(1, {"taskId": "task-c"}, peer="peer")
         assert resp["result"]["status"]["state"] == "TASK_STATE_CANCELED"
-        # Turn counter went back to zero: next track() is turn 1.
-        assert adapter._turns.track("ctx-loopy") == 1
+        assert adapter._turns.track(internal_context) == 1
 
     def test_cancel_terminal_task_not_cancelable(self):
         adapter = _bare_adapter()
@@ -898,7 +1016,7 @@ class TestTaskRpcHandlers:
 # End-to-end inbound round-trip (real http.server + mocked agent)
 # --------------------------------------------------------------------------
 
-def _make_live_adapter(monkeypatch, reply_fn=None):
+def _make_live_adapter(monkeypatch, reply_fn=None, extra=None):
     """Create an adapter on a free port with a mocked agent handler.
 
     ``reply_fn(event) -> Optional[str]`` returns the agent's reply (None =
@@ -910,7 +1028,7 @@ def _make_live_adapter(monkeypatch, reply_fn=None):
     port = _free_port()
     monkeypatch.setenv("A2A_PORT", str(port))
 
-    adapter = A2AAdapter(PlatformConfig(enabled=True))
+    adapter = A2AAdapter(PlatformConfig(enabled=True, extra=extra or {}))
 
     async def fake_handle_message(event):
         if reply_fn is None:
@@ -950,6 +1068,32 @@ def _send_body(text, ctx="", extra_params=None):
 
 @pytest.mark.integration
 class TestInboundRoundTrip:
+    def test_hardened_endpoint_rejects_streaming_rpc(self, monkeypatch):
+        adapter, base = _make_live_adapter(
+            monkeypatch, extra={"streaming": False, "push_notifications": False}
+        )
+
+        async def run():
+            assert await adapter.connect() is True
+            body = _send_body("hello")
+            body["method"] = "SendStreamingMessage"
+            resp = await asyncio.to_thread(_post_json, base + "/", body)
+            assert resp["error"]["code"] == protocol.ERR_STREAMING_DISABLED
+            push = {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "CreateTaskPushNotificationConfig",
+                "params": {
+                    "taskId": "foreign",
+                    "pushNotificationConfig": {"url": "http://100.64.0.1/hook"},
+                },
+            }
+            push_resp = await asyncio.to_thread(_post_json, base + "/", push)
+            assert push_resp["error"]["code"] == protocol.ERR_PUSH_NOT_SUPPORTED
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
     def test_live_server_card_and_message_send(self, monkeypatch):
         """Start the real adapter server, hit the Agent Card, then send a task
         and verify the mocked agent's reply comes back as a v1.0 Task."""
@@ -1204,19 +1348,22 @@ class TestInboundRoundTrip:
         def reply_fn(event):
             seen["text"] = event.text
             seen["user"] = event.source.user_id
+            seen["chat"] = event.source.chat_id
             return "ok"
 
         adapter, base = _make_live_adapter(monkeypatch, reply_fn=reply_fn)
 
         async def run():
             assert await adapter.connect() is True
-            body = _send_body("do a thing")
+            body = _send_body("do a thing", ctx="shared-context")
             # An attacker-controlled 'peer' field in params must be ignored.
             body["params"]["peer"] = "the-operator"
             resp = await asyncio.to_thread(
                 _post_json, base + "/", body, {"Authorization": "Bearer tok-alice"})
             assert resp["result"]["status"]["state"] == "TASK_STATE_COMPLETED"
             assert seen["user"] == "alice"
+            assert seen["chat"] != "shared-context"
+            assert resp["result"]["contextId"] == "shared-context"
             assert "'alice'" in seen["text"]
             assert "the-operator" not in seen["text"]
             await adapter.disconnect()

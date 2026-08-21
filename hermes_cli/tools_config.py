@@ -2680,6 +2680,20 @@ def _get_platform_tools(
         }
         enabled_toolsets -= disabled_set
 
+    # Optional fail-closed platform boundary. Normal Hermes behavior discovers
+    # and auto-enables newly shipped/plugin toolsets for convenience. Security
+    # boundaries such as cross-principal A2A need the saved list to remain an
+    # exact allowlist even after an upgrade introduces a new toolset.
+    strict_platforms = config.get("strict_platform_toolsets") or []
+    if isinstance(strict_platforms, list) and platform in {
+        str(name) for name in strict_platforms
+    }:
+        explicit_allow = {
+            str(name) for name in (platform_toolsets.get(platform) or [])
+            if str(name) != "no_mcp"
+        }
+        enabled_toolsets &= explicit_allow
+
     # #38798: if this platform was explicitly configured but every toolset name
     # is invalid (e.g. a migration or hand-edit left `hermes` instead of
     # `hermes-cli`), resolve_toolset() returns [] for each and the platform ends

@@ -1569,6 +1569,30 @@ def init_agent(
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
     )
+    # Optional exact tool-name boundary applied after plugin discovery and
+    # check_fn filtering. Toolset allowlists alone can still widen when a future
+    # plugin registers another tool into an already-approved toolset.
+    try:
+        from hermes_cli.config import load_config_readonly as _load_strict_tool_config
+
+        _strict_tool_cfg = _load_strict_tool_config()
+    except Exception:
+        _strict_tool_cfg = {}
+    _strict_by_platform = _strict_tool_cfg.get("strict_platform_tools") or {}
+    _platform_key = str(platform or "").strip().lower()
+    _strict_names = (
+        _strict_by_platform.get(_platform_key)
+        if isinstance(_strict_by_platform, dict)
+        else None
+    )
+    agent._strict_tool_names = None
+    if isinstance(_strict_names, list):
+        _strict_allow = {str(name) for name in _strict_names if str(name)}
+        agent._strict_tool_names = frozenset(_strict_allow)
+        agent.tools = [
+            tool for tool in agent.tools
+            if tool.get("function", {}).get("name") in _strict_allow
+        ]
     
     # Show tool configuration and store valid tool names for validation
     agent.valid_tool_names = set()
@@ -1805,6 +1829,12 @@ def init_agent(
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.
     agent._aux_compression_context_length_config = None
+
+    # A2A peers are authenticated agents, not the profile owner. Persistent
+    # MEMORY.md / USER.md and external memory providers must never enter their
+    # system prompt, regardless of the profile's human-channel memory settings.
+    if str(platform or "").strip().lower() == "a2a":
+        skip_memory = True
 
     # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
     agent._memory_store = None

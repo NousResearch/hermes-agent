@@ -158,7 +158,12 @@ def _credential_pool_is_usable(
 
     ``_pool_cache`` lets ``list_authenticated_providers()`` reuse the same
     ``CredentialPool`` instance across the three sections that check the same
-    provider, instead of loading and seeding the pool repeatedly for each row."""
+    provider, instead of loading and seeding the pool repeatedly for each row.
+    A shared instance must be probed read-only: ``has_available()`` prunes
+    aged-out DEAD entries, re-syncs entries from credential stores, and
+    persists auth.json, which would make the memoized result order-dependent
+    across sections and turn a picker render into a credential-store write.
+    The memoized path therefore uses :meth:`has_available_readonly`."""
     try:
         from agent.credential_pool import load_pool
 
@@ -169,6 +174,14 @@ def _credential_pool_is_usable(
             if _pool_cache is not None:
                 _pool_cache[provider] = pool
         if pool.has_credentials():
+            if _pool_cache is not None:
+                # Memoized instance shared across sections: probe read-only.
+                # has_available() would prune/persist, making the shared
+                # instance order-dependent across callers. Pool-like objects
+                # without the read-only probe keep the legacy behavior.
+                readonly_probe = getattr(pool, "has_available_readonly", None)
+                if readonly_probe is not None:
+                    return readonly_probe()
             return pool.has_available()
     except Exception:
         pass
@@ -668,7 +681,8 @@ class _PickerBuild:
     section3_pairs: set = field(default_factory=set)
     # CredentialPool instances shared across sections 1, 2, 2b so the same provider is
     # loaded and seeded from auth.json/config only once per list_authenticated_providers()
-    # call. Read-only for the has_credentials/has_available checks performed here.
+    # call and probed read-only (has_credentials / has_available_readonly) so a shared
+    # instance is never pruned, re-synced, or persisted by a picker render.
     pool_cache: dict = field(default_factory=dict)
 
     @property

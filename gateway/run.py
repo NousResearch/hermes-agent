@@ -20391,12 +20391,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
                     turn_seconds=_turn_seconds,
+                    tokens_in=agent_result.get("last_prompt_tokens", 0) or 0,
+                    tokens_out=agent_result.get("output_tokens", 0) or 0,
+                    effort=(_load_gateway_config().get("agent") or {}).get("reasoning_effort") or None,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
-                response = f"{response}\n\n{_footer_line}"
+                if source.platform == Platform.FEISHU:
+                    # Card-style footer for Feishu: separated by a divider,
+                    # rendered as a small quote block so it reads as metadata
+                    # (mirrors cc-connect style) instead of inline text.
+                    response = f"{response}\n\n---\n> {_footer_line}"
+                else:
+                    response = f"{response}\n\n{_footer_line}"
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {

@@ -16,9 +16,13 @@ Available fields:
     context_pct  — last-call context occupancy as a percent (``5%``)
     latency      — wall-clock duration of the turn (``22s``, ``1m05s``)
     cwd          — home-relative working dir (``~``)
+    tokens_in    — last-call prompt tokens (``15.9k``)
+    tokens_out   — last-call output tokens (``1.2k``)
+    effort       — agent reasoning effort (``high``)
 
-``latency`` is opt-in: it is NOT in the default field set, so a footer whose
-``fields`` are unset renders exactly as before.
+``latency``/``tokens_in``/``tokens_out``/``effort`` are opt-in: they are NOT in
+the default field set, so a footer whose ``fields`` are unset renders exactly
+as before.
 
 Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
 Users can toggle the global setting with ``/footer on|off`` from both the CLI
@@ -39,6 +43,17 @@ from typing import Any, Iterable, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
 _SEP = " · "
+
+
+def _fmt_tokens(n: int) -> str:
+    """Format a token count compactly: 15932 -> 15.9k, 28 -> 28."""
+    if not n or n <= 0:
+        return "0"
+    if n >= 1000:
+        v = n / 1000.0
+        s = f"{v:.1f}".rstrip("0").rstrip(".")
+        return f"{s}k"
+    return str(n)
 
 
 def _home_relative_cwd(cwd: str) -> str:
@@ -115,12 +130,16 @@ def format_runtime_footer(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     turn_seconds: Optional[float] = None,
+    tokens_in: int = 0,
+    tokens_out: int = 0,
+    effort: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
     Fields are skipped silently when their underlying data is missing — a
     partially-populated footer is better than a line with ``?%`` or empty slots.
+    Supported fields: model, context_pct, cwd, latency, tokens_in, tokens_out, effort.
     """
     parts: list[str] = []
     for field in fields:
@@ -131,7 +150,7 @@ def format_runtime_footer(
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
-                parts.append(f"{pct}%")
+                parts.append(f"ctx {pct}%")
         elif field == "latency":
             # Wall-clock turn duration. Skipped when the caller supplied no
             # timing (call sites that don't measure) or the value is negative.
@@ -141,6 +160,15 @@ def format_runtime_footer(
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
                 parts.append(rel)
+        elif field == "tokens_in":
+            if tokens_in and tokens_in > 0:
+                parts.append(f"in {_fmt_tokens(tokens_in)}")
+        elif field == "tokens_out":
+            if tokens_out and tokens_out > 0:
+                parts.append(f"out {_fmt_tokens(tokens_out)}")
+        elif field == "effort":
+            if effort:
+                parts.append(f"effort:{effort}")
         # Unknown field names are silently ignored.
 
     if not parts:
@@ -157,6 +185,9 @@ def build_footer_line(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     turn_seconds: Optional[float] = None,
+    tokens_in: int = 0,
+    tokens_out: int = 0,
+    effort: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -177,5 +208,8 @@ def build_footer_line(
         context_length=context_length,
         cwd=cwd,
         turn_seconds=turn_seconds,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        effort=effort,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )

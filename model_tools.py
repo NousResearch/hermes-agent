@@ -33,6 +33,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import (
     CHECK_FN_CACHE_BYPASS,
+    _CHECK_FN_TTL_SECONDS,
     check_fn_cache_scope,
     discover_builtin_tools,
     registry,
@@ -296,10 +297,13 @@ _LEGACY_TOOLSET_MAP = {
 # filtering + check_fn probing per call. Only active when quiet_mode=True
 # because quiet_mode=False has stdout side effects (tool-selection prints).
 #
-# Invalidation happens transparently via the registry's _generation counter,
-# which bumps on register() / deregister() / register_toolset_alias(). The
-# inner check_fn TTL cache in registry.py handles environment drift (Docker
-# daemon start/stop, env var changes, etc.) on a 30 s horizon.
+# Invalidation happens via the registry's _generation counter (bumps on
+# register() / deregister() / register_toolset_alias()) plus a 30 s time-bucket
+# aligned with the inner check_fn TTL cache in registry.py. The bucket makes
+# sure an outer-cache hit can never outlive the check_fn verdicts it was built
+# from: environment drift (Docker daemon start/stop, env var changes, etc.)
+# that flips a check_fn verdict is reflected within the registry's own TTL
+# horizon instead of being masked forever (#84726).
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
 _tool_defs_cache_lock = threading.Lock()
 
@@ -363,6 +367,13 @@ def get_tool_definitions(
             cfg_fp = None
         profile_scope = check_fn_cache_scope()
         if profile_scope != CHECK_FN_CACHE_BYPASS:
+            # Time-bucket aligned with the registry's check_fn TTL: the outer
+            # memo must never outlive the inner check_fn verdicts it was built
+            # from, or a service that comes up / goes down stays hidden /
+            # announced indefinitely (#84726). Rolling the bucket forces a
+            # recompute at most once per _CHECK_FN_TTL_SECONDS; the recompute
+            # is cheap because the registry still serves TTL-cached verdicts.
+            ttl_bucket = int(time.monotonic() // _CHECK_FN_TTL_SECONDS)
             cache_key = (
                 registry.current_scope_key(),
                 frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
@@ -374,6 +385,7 @@ def get_tool_definitions(
                 _is_delegated_child_context(),
                 _is_dispatcher_owned_worker(),
                 profile_scope,
+                ttl_bucket,
             )
         with _tool_defs_cache_lock:
             cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
@@ -382,6 +394,10 @@ def get_tool_definitions(
             # consistent state even on a cache hit.
             global _last_resolved_tool_names
             _last_resolved_tool_names = [t["function"]["name"] for t in cached]
+            # Move the key to the end so cap eviction (_TOOL_DEFS_CACHE_MAX)
+            # is a real LRU instead of FIFO (#84726).
+            _tool_defs_cache.pop(cache_key, None)
+            _tool_defs_cache[cache_key] = cached
             # Return a shallow copy of the list but share the dict references —
             # schemas are treated as read-only by all known callers.
             return list(cached)

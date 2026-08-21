@@ -112,6 +112,47 @@ class TestResolverPlumbing:
         assert "desktop_ui" in desktop
         assert "desktop_ui" not in tui
 
+    def test_disabled_agent_toolsets_subtracted_after_surface_fold(
+        self, no_desktop_env
+    ):
+        """agent.disabled_toolsets must hold on desktop/TUI sessions too: the
+        surface fold runs AFTER the platform resolution, so without the same
+        subtraction ``project`` (and any disabled posture toolset) comes back
+        on every GUI surface while the CLI honours the disable (#88857)."""
+        import agent.coding_context as cc
+        import hermes_cli.config as config_mod
+
+        cfg = {
+            "platform_toolsets": {"cli": ["memory"]},
+            "agent": {"disabled_toolsets": ["project", "terminal"]},
+        }
+        no_desktop_env.setattr(cc, "coding_selection", lambda **_: ["coding", "terminal"])
+        no_desktop_env.setattr(config_mod, "load_config", lambda: cfg)
+
+        for platform in ("desktop", "tui"):
+            resolved = server._load_enabled_toolsets(platform)
+            assert resolved is not None
+            assert "project" not in resolved, platform
+            assert "terminal" not in resolved, platform
+            assert "coding" in resolved, platform
+
+    def test_disabled_toolsets_parse_json_array_string(self, no_desktop_env):
+        """`hermes config set` persists the list as a JSON-array string — the
+        subtraction must parse it, not compare the raw string (#86661 parity)."""
+        import agent.coding_context as cc
+        import hermes_cli.config as config_mod
+
+        cfg = {
+            "platform_toolsets": {"cli": ["memory"]},
+            "agent": {"disabled_toolsets": "['project']"},
+        }
+        no_desktop_env.setattr(cc, "coding_selection", lambda **_: ["coding"])
+        no_desktop_env.setattr(config_mod, "load_config", lambda: cfg)
+
+        resolved = server._load_enabled_toolsets("desktop")
+        assert resolved is not None
+        assert "project" not in resolved
+
     def test_explicit_env_pin_still_wins(self, no_desktop_env):
         """HERMES_TUI_TOOLSETS is an operator override; surface can't re-add."""
         no_desktop_env.setenv("HERMES_TUI_TOOLSETS", "web,memory")

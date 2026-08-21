@@ -4656,8 +4656,34 @@ def _gui_surface_toolsets(platform: str) -> set[str]:
     return surfaces
 
 
+def _disabled_agent_toolsets() -> set[str]:
+    """``agent.disabled_toolsets`` from config.yaml, as a set (empty on error).
+
+    Mirrors the subtraction ``_get_platform_tools`` applies last ("runs last
+    so it overrides everything above"). The TUI/desktop resolver folds
+    client-surface toolsets in AFTER the platform resolution, so without the
+    same subtraction here a profile that disables e.g. ``project`` or
+    ``terminal`` keeps seeing those tools in desktop sessions while the CLI
+    honours the disable — the restriction has to hold on every surface
+    (#88857).
+    """
+    try:
+        from agent.skill_utils import parse_config_string_list
+        from hermes_cli.config import load_config
+
+        raw = (load_config().get("agent") or {}).get("disabled_toolsets") or []
+        return {
+            str(name).strip()
+            for name in parse_config_string_list(raw)
+            if str(name).strip()
+        }
+    except Exception:
+        return set()
+
+
 def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     session_platform = platform or _resolve_session_platform()
+    disabled_agent_toolsets = _disabled_agent_toolsets()
     explicit = [
         item.strip()
         for item in os.environ.get("HERMES_TUI_TOOLSETS", "").split(",")
@@ -4681,8 +4707,11 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
                 # Fold in the client-surface toolsets here too: the focus-mode
                 # coding posture returns before the fallback path that normally
                 # adds them — without this the desktop loses its pane/project
-                # tools exactly when sitting in a repo (see below).
-                return sorted({*selection, *_gui_surface_toolsets(session_platform)})
+                # tools exactly when sitting in a repo (see below). Apply the
+                # agent.disabled_toolsets subtraction AFTER folding so a
+                # client-surface toolset stays disable-able (#88857).
+                folded = {*selection, *_gui_surface_toolsets(session_platform)}
+                return sorted(folded - disabled_agent_toolsets)
         except Exception:
             pass
 
@@ -4798,8 +4827,12 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         # recovery above — which keys off hermes-cli's tool universe — can't
         # surface them. This resolver runs ONLY in the desktop/TUI gateway, so
         # folding them in here is the gate that exposes them on exactly the
-        # surface that can answer them.
-        return sorted(enabled | _gui_surface_toolsets(session_platform))
+        # surface that can answer them. Subtract agent.disabled_toolsets AFTER
+        # the fold: _get_platform_tools already applied it to its own result,
+        # but the fold would otherwise reintroduce a disabled surface toolset
+        # (#88857).
+        folded = enabled | _gui_surface_toolsets(session_platform)
+        return sorted(folded - disabled_agent_toolsets)
     except Exception:
         if fallback_notice is not None:
             print(

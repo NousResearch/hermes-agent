@@ -7133,8 +7133,21 @@ class AIAgent:
         path = Path(tmp.name)
         return str(path), path
 
-    def _describe_image_for_anthropic_fallback(self, image_url: str, role: str) -> str:
-        cache_key = hashlib.sha256(str(image_url or "").encode("utf-8")).hexdigest()
+    def _describe_image_for_anthropic_fallback(
+        self,
+        image_url: str,
+        role: str,
+        intent: str = "",
+    ) -> str:
+        from agent.vision_prompt import build_vision_prompt, normalize_vision_intent
+
+        normalized_intent = normalize_vision_intent(intent)
+        cache_payload = json.dumps(
+            [str(image_url or ""), str(role or "user"), normalized_intent],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        cache_key = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()
         cached = self._anthropic_image_fallback_cache.get(cache_key)
         if cached:
             return cached
@@ -7143,10 +7156,9 @@ class AIAgent:
             "assistant": "assistant",
             "tool": "tool result",
         }.get(role, "user")
-        analysis_prompt = (
-            "Describe everything visible in this image in thorough detail. "
-            "Include any text, code, UI, data, objects, people, layout, colors, "
-            "and any other notable visual information."
+        analysis_prompt = build_vision_prompt(
+            normalized_intent,
+            surface="non_vision_message_fallback",
         )
 
         vision_source = str(image_url or "")
@@ -7230,7 +7242,7 @@ class AIAgent:
             return content
 
         text_parts: List[str] = []
-        image_notes: List[str] = []
+        image_urls: List[str] = []
         for part in content:
             if isinstance(part, str):
                 if part.strip():
@@ -7249,15 +7261,20 @@ class AIAgent:
             if ptype in {"image_url", "input_image"}:
                 image_data = part.get("image_url", {})
                 image_url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data or "")
-                if image_url:
-                    image_notes.append(self._describe_image_for_anthropic_fallback(image_url, role))
-                else:
-                    image_notes.append("[An image was attached but no image source was available.]")
+                image_urls.append(image_url)
                 continue
 
             text = str(part.get("text", "") or "").strip()
             if text:
                 text_parts.append(text)
+
+        intent = "\n".join(text_parts)
+        image_notes = [
+            self._describe_image_for_anthropic_fallback(image_url, role, intent)
+            if image_url
+            else "[An image was attached but no image source was available.]"
+            for image_url in image_urls
+        ]
 
         prefix = "\n\n".join(note for note in image_notes if note).strip()
         suffix = "\n".join(text for text in text_parts if text).strip()

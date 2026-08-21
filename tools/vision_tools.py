@@ -1774,10 +1774,14 @@ async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:
         logger.info("vision_analyze: native fast path")
         return await _vision_analyze_native(image_url, question, task_id=task_id, region=region)
 
-    # Legacy path: aux LLM describes the image and we return its text.
-    full_prompt = (
-        "Fully describe and explain everything about this image, then answer the "
-        f"following question:\n\n{question}"
+    # Legacy path: keep the user's task explicit when an auxiliary model must
+    # turn the pixels into text for the active non-vision model.
+    from agent.vision_prompt import build_vision_prompt
+
+    full_prompt = build_vision_prompt(
+        question,
+        surface="vision_analyze",
+        region=region,
     )
     # Prefer config.yaml auxiliary.vision.model; env var is a legacy override.
     model = None

@@ -471,7 +471,10 @@ class TestPreprocessImagesWithVision:
 
     def test_single_image_with_text(self, cli, tmp_path):
         img = self._make_image(tmp_path)
-        with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
+        with patch(
+            "tools.vision_tools.vision_analyze_tool",
+            side_effect=self._mock_vision_success(),
+        ) as mock_vision:
             result = cli._preprocess_images_with_vision("Describe this", [img])
 
         assert isinstance(result, str)
@@ -479,6 +482,10 @@ class TestPreprocessImagesWithVision:
         assert "Describe this" in result
         assert str(img) in result
         assert "base64," not in result  # no raw base64 image content
+        prompt = mock_vision.call_args.kwargs["user_prompt"]
+        assert "Describe this" in prompt
+        assert "cli_attachment" in prompt
+        assert "untrusted visual data" in prompt
 
 
     def test_vision_exception_includes_path(self, cli, tmp_path):

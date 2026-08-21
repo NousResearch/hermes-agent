@@ -7647,6 +7647,47 @@ def _desktop_linux_needs_no_sandbox() -> bool:
         return False
 
 
+def _desktop_linux_userns_available() -> bool:
+    """Return True when the kernel allows unprivileged user namespaces.
+
+    When True, Electron/Chromium can sandbox itself with the namespace
+    sandbox even without the root-owned SUID ``chrome-sandbox`` helper, so a
+    desktop launch does not require ``sudo``. Returns False (conservatively)
+    when running as root, when AppArmor or a sysctl clearly blocks user
+    namespaces, or on any read error.
+    """
+    if sys.platform != "linux":
+        return False
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return False  # root picks its own path explicitly
+
+    # AppArmor hardening that explicitly blocks unprivileged user namespaces.
+    try:
+        with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", encoding="utf-8") as f:
+            if f.read().strip() == "1":
+                return False
+    except OSError:
+        pass
+
+    # Older Debian/Ubuntu knob: "0" disallows unprivileged user namespaces.
+    try:
+        with open("/proc/sys/kernel/unprivileged_userns_clone", encoding="utf-8") as f:
+            if f.read().strip() == "0":
+                return False
+    except OSError:
+        pass
+
+    # No user namespaces permitted at all.
+    try:
+        with open("/proc/sys/user/max_user_namespaces", encoding="utf-8") as f:
+            if int((f.read().strip() or "0")) <= 0:
+                return False
+    except (OSError, ValueError):
+        pass
+
+    return True
+
+
 def _desktop_linux_sandbox_helper_is_regular_file(packaged_executable: Path) -> bool:
     """Return True when ``chrome-sandbox`` exists as a regular file."""
     if sys.platform != "linux":
@@ -8065,10 +8106,28 @@ def cmd_gui(args: argparse.Namespace):
 
     launch_command = [str(packaged_executable)]
     if not _desktop_linux_sandbox_fixup(packaged_executable):
-        if _desktop_linux_needs_no_sandbox() and _desktop_linux_sandbox_helper_is_regular_file(packaged_executable):
-            print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")
+        # The root-owned SUID chrome-sandbox helper could not be configured
+        # (no sudo / not root). Decide how to proceed without it:
+        #  - ELECTRON_DISABLE_SANDBOX=1  -> honour the explicit opt-out.
+        #  - unprivileged user namespaces available -> Electron sandboxes
+        #    itself via the namespace sandbox (no SUID helper, no sudo needed).
+        #  - otherwise -> fall back to --no-sandbox as a last resort.
+        #  - if none of those apply, hard-fail with actionable guidance.
+        if os.environ.get("ELECTRON_DISABLE_SANDBOX") == "1":
+            print("→ ELECTRON_DISABLE_SANDBOX=1 set: launching with --no-sandbox.")
+            launch_command.append("--no-sandbox")
+        elif _desktop_linux_userns_available():
+            print("→ Launching with the unprivileged user-namespace sandbox "
+                  "(SUID helper not configured; sudo not required).")
+        elif _desktop_linux_sandbox_helper_is_regular_file(packaged_executable):
+            print("⚠ Falling back to --no-sandbox: unprivileged user namespaces are "
+                  "blocked on this host and the Electron sandbox helper could not be configured.")
             launch_command.append("--no-sandbox")
         else:
+            print("✗ Hermes Desktop cannot establish a sandbox on this host and "
+                  "unprivileged user namespaces are unavailable.")
+            print("  Run once with sudo to set up the sandbox helper, or add "
+                  "desktop.electron_flags: ['--no-sandbox'] to config.yaml.")
             sys.exit(1)
 
     launch_command.extend(config_electron_flags)

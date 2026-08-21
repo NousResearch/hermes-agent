@@ -779,3 +779,85 @@ def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
     mock_detect.assert_not_called()
     launch_env = mock_run.call_args_list[1].kwargs["env"]
     assert "HERMES_DESKTOP_PASSWORD_STORE" not in launch_env
+
+
+# ── Sandbox-helper fallback tests ──────────────────────────────────────
+# These exercise the launch path taken when the root-owned SUID
+# chrome-sandbox helper cannot be configured (no sudo / not root). The old
+# code hard-exited (sys.exit(1)); it must now fall back to the unprivileged
+# user-namespace sandbox when the kernel supports it, and only --no-sandbox as
+# a last resort, and only hard-fail when namespaces are truly unavailable.
+
+
+def test_gui_launches_via_userns_sandbox_when_suid_helper_unavailable(tmp_path, monkeypatch):
+    """Regression: on a host where the SUID chrome-sandbox helper can't be
+    chown'd (no sudo) but unprivileged user namespaces are permitted, the
+    launcher must NOT hard-exit — it should launch with the namespace sandbox
+    and without --no-sandbox."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+
+    launch_ok = subprocess.CompletedProcess(["hermes"], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main._register_linux_desktop_entry"), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=False), \
+         patch("hermes_cli.main._desktop_linux_userns_available", return_value=True), \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
+         patch("hermes_cli.config.load_config", return_value={}), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    launch_call = mock_run.call_args_list[-1]
+    assert launch_call.args[0][0].endswith("hermes")
+    # No --no-sandbox: the namespace sandbox is used instead.
+    assert "--no-sandbox" not in launch_call.args[0]
+
+
+def test_gui_hard_fails_only_when_userns_unavailable_and_no_helper(tmp_path, monkeypatch):
+    """When the SUID helper can't be configured AND unprivileged user
+    namespaces are unavailable, the launcher must hard-fail with a clear
+    actionable message rather than launching unsandboxed by default."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main._register_linux_desktop_entry"), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=False), \
+         patch("hermes_cli.main._desktop_linux_userns_available", return_value=False), \
+         patch("hermes_cli.main._desktop_linux_sandbox_helper_is_regular_file", return_value=False), \
+         patch("hermes_cli.config.load_config", return_value={}), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 1
+
+
+def test_gui_explicit_disable_sandbox_flag_is_honoured(tmp_path, monkeypatch):
+    """ELECTRON_DISABLE_SANDBOX=1 must force --no-sandbox even when the userns
+    sandbox would otherwise be used."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+    monkeypatch.setenv("ELECTRON_DISABLE_SANDBOX", "1")
+
+    launch_ok = subprocess.CompletedProcess(["hermes"], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main._register_linux_desktop_entry"), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=False), \
+         patch("hermes_cli.main._desktop_linux_userns_available", return_value=True), \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
+         patch("hermes_cli.config.load_config", return_value={}), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    launch_call = mock_run.call_args_list[-1]
+    assert "--no-sandbox" in launch_call.args[0]

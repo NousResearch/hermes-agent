@@ -15,13 +15,24 @@ the raw byte would.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
+from prompt_toolkit import Application
+from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.input.vt100_parser import Vt100Parser
+from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
+from prompt_toolkit.layout import BufferControl, HSplit, Layout, Window
+from prompt_toolkit.output import DummyOutput
 
-from hermes_cli.pt_input_extras import install_modify_other_keys_aliases
+from hermes_cli.pt_input_extras import (
+    bind_terminal_sequence_handlers,
+    install_modify_other_keys_aliases,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -361,9 +372,56 @@ def test_shift_backspace_is_plain_backspace():
 
 
 def test_shift_space_inserts_space():
-    """Shift+Space must insert a space, not leak escape text (#86866)."""
-    assert _parse("\x1b[32;2u") == [" "]
-    assert _parse("\x1b[27;2;32~") == [" "]
+    """Shift+Space must bypass prompt_toolkit's raw-data self-insert path."""
+    assert _parse("\x1b[32;2u") == [Keys.Ignore]
+    assert _parse("\x1b[27;2;32~") == [Keys.Ignore]
+
+
+async def _run_application_probe(sequence, bindings):
+    buffer = Buffer()
+    with create_pipe_input() as pipe_input:
+        app = Application(
+            input=pipe_input,
+            output=DummyOutput(),
+            layout=Layout(HSplit([Window(BufferControl(buffer))])),
+            key_bindings=bindings,
+        )
+        run_task = asyncio.create_task(app.run_async())
+        pipe_input.send_text(f"ab{sequence}cd")
+        # Keep the fallback bound loose enough for contended CI workers; the
+        # condition normally becomes true immediately.
+        for _ in range(300):
+            if buffer.text.endswith("cd"):
+                break
+            await asyncio.sleep(0.01)
+        app.exit()
+        await run_task
+    return buffer.text
+
+
+@pytest.mark.parametrize("sequence", ["\x1b[32;2u", "\x1b[27;2;32~"])
+def test_shift_space_inserts_canonical_space_in_buffer(sequence):
+    """Exercise the real parser → key binding → Buffer path from #88071."""
+    bindings = KeyBindings()
+    bind_terminal_sequence_handlers(bindings)
+
+    assert asyncio.run(_run_application_probe(sequence, bindings)) == "ab cd"
+
+
+@pytest.mark.parametrize("sequence", ["\x1b[32;2u", "\x1b[27;2;32~"])
+def test_shift_space_preserves_canonical_space_bindings(sequence):
+    """Shift+Space must honor active bindings instead of forcing self-insert."""
+    bindings = KeyBindings()
+    calls = []
+
+    @bindings.add("space")
+    def handle_space(event):
+        calls.append(event.data)
+
+    bind_terminal_sequence_handlers(bindings)
+
+    assert asyncio.run(_run_application_probe(sequence, bindings)) == "abcd"
+    assert calls == [" "]
 
 
 # ---------------------------------------------------------------------------

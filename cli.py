@@ -70,6 +70,7 @@ from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
+from hermes_cli.pt_input_extras import bind_terminal_sequence_handlers
 try:
     from prompt_toolkit.cursor_shapes import CursorShape
     _STEADY_CURSOR = CursorShape.BLOCK  # Non-blinking block cursor
@@ -17619,32 +17620,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         _multiline_shortcuts_enabled = _cli_multiline_shortcuts_enabled(self.config or CLI_CONFIG)
 
-        from prompt_toolkit.keys import Keys as _IgnoreKeys
-
-        @kb.add(_IgnoreKeys.Ignore, eager=True)
-        def handle_ignored_terminal_sequence(event):
-            """Consume parser-level ignored terminal sequences before self-insert.
-
-            install_ignored_terminal_sequences() in hermes_cli.pt_input_extras
-            registers focus reports (CSI I / CSI O) as Keys.Ignore at the
-            VT100 parser level. Without this no-op binding the default
-            self-insert path would still fire and the bytes would land in
-            the buffer.
-
-            Focus-in (CSI I) additionally schedules a rate-limited full
-            repaint: while the tab/window was hidden the emulator may have
-            coalesced output or repainted the surface, so prompt_toolkit's
-            incremental diff would stack a fresh copy of the prompt chrome
-            on top of the stale one (#60920 focus-regain variant, #25337).
-            """
-            try:
-                for press in getattr(event, "key_sequence", None) or ():
-                    if getattr(press, "data", None) == "\x1b[I":
-                        self._schedule_focus_regain_redraw()
-                        break
-            except Exception:
-                pass
-            return None
+        # Consume parser-level terminal controls before self-insert. Focus-in
+        # additionally schedules a rate-limited repaint; Shift+Space is
+        # normalized to one plain space instead of its raw CSI payload.
+        bind_terminal_sequence_handlers(
+            kb,
+            on_focus_in=self._schedule_focus_regain_redraw,
+        )
 
         def handle_enter(event):
             """Handle Enter key - submit input.

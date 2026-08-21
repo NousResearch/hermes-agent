@@ -30,6 +30,12 @@ def _lock_twins(modifier: int) -> tuple[int, ...]:
     return tuple(modifier + off for off in _LOCK_BIT_OFFSETS[1:])
 
 
+_SHIFT_SPACE_SEQUENCES = frozenset({
+    "\x1b[27;2;32~",  # xterm modifyOtherKeys
+    "\x1b[32;2u",     # Kitty CSI-u
+})
+
+
 def _clear_vt100_prefix_cache() -> None:
     """Drop prompt_toolkit's memoized "is this a prefix of a longer match?"
     answers after mutating ``ANSI_SEQUENCES``.
@@ -218,7 +224,8 @@ def install_modify_other_keys_aliases() -> int:
       newline tuple; Shift+Tab → ``BackTab``; Ctrl+Tab → plain Tab;
       Ctrl/Alt+Backspace → ``(Escape, ControlH)`` (backward-kill-word,
       matching the Ink TUI and Desktop, #78285); Shift+Backspace → plain
-      backspace; Shift+Space → a plain space (#86866); Alt+Space →
+      backspace; Shift+Space → ``Keys.Ignore`` for canonical-space insertion
+      by ``bind_terminal_sequence_handlers`` (#86866, #88071); Alt+Space →
       ``(Escape, " ")``.
     * **Kitty functional keys** (Private Use Area codepoints): keypad keys
       → their non-keypad equivalents (KP_ENTER → Enter, KP_4 → '4',
@@ -381,7 +388,11 @@ def install_modify_other_keys_aliases() -> int:
     _install_paired(2, {
         9: Keys.BackTab,        # Shift+Tab — same as the legacy ESC[Z
         127: Keys.ControlH,     # Shift+Backspace — plain backspace
-        32: " ",                # Shift+Space — still a space (#86866)
+        # A literal " " key is unsafe here: Vt100Parser keeps the raw CSI
+        # bytes in KeyPress.data and prompt_toolkit's self-insert binding
+        # inserts that data. Route through a non-character key instead; the
+        # CLI binding below inserts exactly one canonical space (#88071).
+        32: Keys.Ignore,
     })
     _install_paired(3, {
         13: (Keys.Escape, Keys.ControlM),   # Alt+Enter — newline tuple
@@ -494,6 +505,41 @@ def install_modify_other_keys_aliases() -> int:
 
     return changed
 
+
+def bind_terminal_sequence_handlers(kb, *, on_focus_in=None) -> None:
+    """Bind parser-level terminal controls that need application behavior.
+
+    ``Keys.Ignore`` consumes terminal noise by default. Shift+Space is also
+    mapped to it because mapping an extended sequence directly to ``" "``
+    makes prompt_toolkit's self-insert handler insert the raw CSI payload.
+    Recognized Shift+Space payloads are normalized here to one plain space;
+    every other ignored sequence remains a no-op.
+
+    ``on_focus_in`` preserves the classic CLI's repaint hook for focus-in
+    reports without coupling this parser helper to ``HermesCLI``.
+    """
+    try:
+        from prompt_toolkit.key_binding.key_processor import KeyPress
+        from prompt_toolkit.keys import Keys
+    except Exception:
+        return
+
+    @kb.add(Keys.Ignore, eager=True)
+    def handle_terminal_sequence(event):
+        payloads = {
+            getattr(press, "data", None)
+            for press in (getattr(event, "key_sequence", None) or ())
+        }
+        if payloads & _SHIFT_SPACE_SEQUENCES:
+            # Re-feed a canonical keypress instead of mutating the buffer so
+            # active ``space`` bindings (for example clarify multi-select)
+            # retain their normal semantics. ``first`` preserves input order.
+            event.app.key_processor.feed(KeyPress(" ", " "), first=True)
+        elif on_focus_in is not None and "\x1b[I" in payloads:
+            try:
+                on_focus_in()
+            except Exception:
+                pass
 
 def install_ignored_terminal_sequences() -> int:
     """Map terminal-emitted noise sequences to ``Keys.Ignore`` so they

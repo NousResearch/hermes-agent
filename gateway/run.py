@@ -19136,6 +19136,73 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as e:
                 logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
 
+        # ── message:pre_route — hook-driven session redirect ──────────
+        # Fires after all session resolution (get_or_create, delegation
+        # pinning, topic tip-walk, auto-reset) is complete but BEFORE the
+        # turn-lease is claimed.  Hooks may return
+        #   {"decision": "switch_session", "session_id": "<id>"}
+        # to redirect this turn to a different session/worker profile.
+        _pre_route_ctx = {
+            "platform": source.platform.value if hasattr(source.platform, "value") else str(source.platform),
+            "user_id": str(source.user_id),
+            "chat_id": str(source.chat_id),
+            "thread_id": str(source.thread_id) if source.thread_id else None,
+            "chat_type": source.chat_type or "",
+            "session_id": session_entry.session_id,
+            "session_key": session_key,
+            "message": event.text or "",
+        }
+        try:
+            _pre_route_results = await asyncio.wait_for(
+                self.hooks.emit_collect("message:pre_route", _pre_route_ctx),
+                timeout=5.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("message:pre_route hook timed out after 5s")
+            _pre_route_results = []
+        except Exception:
+            logger.warning("message:pre_route hook emit failed", exc_info=True)
+            _pre_route_results = []
+        for _pr in _pre_route_results:
+            if not isinstance(_pr, dict):
+                continue
+            if _pr.get("decision") == "switch_session" and _pr.get("session_id"):
+                _target_id = str(_pr["session_id"])
+                if _target_id != session_entry.session_id:
+                    _switched = await self._async_session_store.switch_session(
+                        session_key, _target_id
+                    )
+                    if _switched:
+                        session_entry = _switched
+                        # Evict the cached agent for this session key so the
+                        # next turn starts with a clean agent context bound to
+                        # the new session_id — mirrors /resume behaviour at
+                        # slash_commands.py:4430-4442.  Without this the
+                        # cached AIAgent (and its memory provider, which
+                        # cached the old _session_id during initialize())
+                        # would continue writing into the wrong session's
+                        # transcript record.  See #6672 for the same bug
+                        # class on /branch and /reset.
+                        self._evict_cached_agent(session_key)
+                break
+
+        # ── Agent-cache isolation note (pre-route hooks) ──────────────
+        # NOTE: build_session_context() and _set_session_env() (above, at
+        # the "Build session context" block) run BEFORE this pre-route hook
+        # fires, so the session context and tool-session environment are
+        # already stamped with the *original* session_entry.  Swapping
+        # session_entry here via switch_session updates the session for
+        # history loading and transcript writes.  The _evict_cached_agent
+        # call (inside the _switched block above) ensures the next turn
+        # rebuilds a fresh AIAgent bound to the new session_id, mirroring
+        # the pattern used by /resume (slash_commands.py:4430-4442).
+        # The session context / tool-session environment stamps for the
+        # *current* turn still reference the original session; those are
+        # already in-flight and cannot be rewound.  This is acceptable:
+        # the current turn's output is written to the correct (new) session
+        # because session_entry.session_id has been updated in-place, and
+        # future turns start with the correct cached agent.
+
         # ── Turn lease (#64934) ────────────────────────────────────────
         # Session resolution is FINAL here (get_or_create → async-delegation
         # pinning → topic tip-walk switch_session are all above). Serialize

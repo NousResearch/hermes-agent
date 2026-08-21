@@ -1569,7 +1569,9 @@ def _generate_pkce() -> tuple:
     return verifier, challenge
 
 
-def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
+def run_hermes_oauth_login_pure(
+    open_browser: bool = True,
+) -> Optional[Dict[str, Any]]:
     """Run Hermes-native OAuth PKCE flow and return credential state."""
     import secrets
     import time
@@ -1608,7 +1610,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     except Exception:
         _can_open_gui = lambda: True  # noqa: E731 — degrade to prior behavior
 
-    if _can_open_gui():
+    if open_browser and _can_open_gui():
         try:
             webbrowser.open(auth_url)
             print("  (Browser opened automatically)")

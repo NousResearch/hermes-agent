@@ -266,6 +266,35 @@ def _has_provider_env_config(content: str) -> bool:
     return any(key in content for key in _PROVIDER_ENV_HINTS)
 
 
+def resolve_registered_provider_id(provider: str) -> str | None:
+    """Return the canonical provider name when a ProviderProfile is registered.
+
+    The ``model.provider`` validation below resolves names against the static
+    model catalog in ``hermes_cli/providers.py``. Provider *plugins* never
+    reach that catalog: bundled ones under ``plugins/model-providers/`` and
+    user ones under ``$HERMES_HOME/plugins/model-providers/`` register a
+    ``ProviderProfile`` with the separate ``providers/`` registry instead.
+    Catalog resolution alone therefore reports every plugin-declared provider
+    as unknown — including the ones the doctor itself lists as known, since
+    that list is built from the runtime registry.
+
+    Aliases resolve to the canonical name, so ``pm`` yields ``privatemode``.
+    Returns None when nothing is registered for *provider*.
+    """
+    name = (provider or "").strip().lower()
+    if not name:
+        return None
+    try:
+        from providers import get_provider_profile
+    except Exception:
+        return None
+    try:
+        profile = get_provider_profile(name)
+    except Exception:
+        return None
+    return getattr(profile, "name", None) or None
+
+
 def _honcho_is_configured_for_doctor() -> bool:
     """Return True when Honcho is configured, even if this process has no active session."""
     try:
@@ -1373,6 +1402,11 @@ def run_doctor(args):
             ):
                 provider_def = _resolve_provider_full(provider, user_providers, custom_providers)
                 catalog_provider = provider_def.id if provider_def is not None else None
+                if catalog_provider is None:
+                    # Not in the static catalog — fall back to the runtime
+                    # ProviderProfile registry, which is where every provider
+                    # plugin declares itself.
+                    catalog_provider = resolve_registered_provider_id(provider)
                 if catalog_provider is not None:
                     provider_ids_to_accept.add(catalog_provider)
 

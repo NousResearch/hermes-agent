@@ -51,7 +51,7 @@ class ApprovalRequest:
     pattern_key: str
     pattern_keys: tuple[str, ...]
     surface: str
-    timeout_seconds: float
+    timeout_seconds: float | None
     allowed_choices: tuple[ApprovalChoice, ...]
 
     @classmethod
@@ -66,7 +66,7 @@ class ApprovalRequest:
         surface: str,
         allow_session: bool,
         allow_permanent: bool,
-        timeout_seconds: float = 300,
+        timeout_seconds: float | None = 300,
     ) -> "ApprovalRequest":
         request_id = uuid.uuid4().hex
         choices: list[ApprovalChoice] = ["once"]
@@ -134,7 +134,7 @@ def invoke_approval_transport(
     present: ApprovalPresentFn,
     request: ApprovalRequest,
     *,
-    timeout_seconds: float,
+    timeout_seconds: float | None,
     poll_interval: float = 1.0,
     on_poll: Callable[[], None] | None = None,
     is_interrupted: Callable[[], bool] | None = None,
@@ -142,8 +142,10 @@ def invoke_approval_transport(
     """Run a sync or async transport on a bounded daemon worker.
 
     Async callbacks are awaited with ``asyncio.run`` on that worker, never on a
-    gateway or TUI event loop. A callback must return before the host timeout;
-    late results are discarded and cannot authorize another request.
+    gateway or TUI event loop. With a finite timeout, a callback must return
+    before the host deadline; late results are discarded and cannot authorize
+    another request. With no timeout, the host waits until a result or an
+    explicit interruption.
     """
 
     if not _transport_worker_slots.acquire(blocking=False):
@@ -151,7 +153,11 @@ def invoke_approval_transport(
         return ApprovalTransportResult("deny", "busy")
 
     results: queue.Queue[tuple[str, object, float]] = queue.Queue(maxsize=1)
-    deadline = time.monotonic() + max(float(timeout_seconds), 0.0)
+    deadline = (
+        None
+        if timeout_seconds is None
+        else time.monotonic() + max(float(timeout_seconds), 0.0)
+    )
 
     async def _await_value(value):
         return await value
@@ -185,14 +191,15 @@ def invoke_approval_transport(
         if is_interrupted is not None and is_interrupted():
             logger.info("Approval transport wait interrupted for %s", request.request_id)
             return ApprovalTransportResult("deny", "interrupted")
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            logger.warning("Approval transport timed out for request %s", request.request_id)
-            return ApprovalTransportResult("deny", "timeout")
+        wait_seconds = max(float(poll_interval), 0.001)
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.warning("Approval transport timed out for request %s", request.request_id)
+                return ApprovalTransportResult("deny", "timeout")
+            wait_seconds = min(wait_seconds, remaining)
         try:
-            kind, value, completed_at = results.get(
-                timeout=min(max(float(poll_interval), 0.001), remaining)
-            )
+            kind, value, completed_at = results.get(timeout=wait_seconds)
             break
         except queue.Empty:
             if on_poll is not None:
@@ -201,7 +208,7 @@ def invoke_approval_transport(
                 except Exception:
                     logger.debug("Approval transport poll callback failed", exc_info=True)
 
-    if completed_at > deadline:
+    if deadline is not None and completed_at > deadline:
         logger.warning("Approval transport timed out for request %s", request.request_id)
         return ApprovalTransportResult("deny", "timeout")
     if kind == "error":

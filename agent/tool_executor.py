@@ -128,9 +128,9 @@ _START_ORDER_GATE_TIMEOUT_S = 120.0
 # Fallback bound a concurrent worker will wait for the authorization gate's
 # serialization lock before running its prompt unserialized. The effective
 # bound is derived from ``approvals.timeout`` plus a margin (see
-# _authorization_gate_lock_timeout): a legitimate holder is at worst a human
-# answering an approval prompt, which self-terminates at approvals.timeout —
-# so a holder that overstays it is wedged and must not starve the batch.
+# _authorization_gate_lock_timeout). Disabled approval timeouts use
+# ``threading.TIMEOUT_MAX`` through ``human_wait_ceiling`` so the lock remains
+# serialized without passing an overflowing infinity to the threading API.
 _AUTHORIZATION_GATE_LOCK_TIMEOUT_S = 360.0
 
 
@@ -139,10 +139,9 @@ def _authorization_gate_lock_timeout() -> float:
 
     Delegates to ``tools.approval.human_wait_ceiling`` — the same bound that
     clamps a human-wait window's deadline contribution — so the two can't
-    drift. Long enough that serialization is never broken while a legitimate
-    approval prompt is still answerable; short enough that a wedged holder
-    (hanging ``pre_tool_call`` plugin, dead approval client) cannot park other
-    workers forever (#79719). Resolved once per gate (per batch), so a
+    drift. Finite approval prompts retain the bounded wedged-holder protection;
+    an explicitly disabled approval timeout intentionally keeps serialization
+    for the platform-safe maximum. Resolved once per gate (per batch), so a
     mid-process ``approvals.timeout`` change applies from the next batch.
     """
     try:

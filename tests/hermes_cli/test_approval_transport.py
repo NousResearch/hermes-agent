@@ -202,6 +202,45 @@ def test_host_transport_wait_is_interruptible_and_pollable():
     assert polls
 
 
+def test_host_transport_without_timeout_accepts_delayed_response():
+    from hermes_cli.approval_transport import ApprovalRequest, invoke_approval_transport
+
+    release = threading.Event()
+    polls = []
+    request = ApprovalRequest.create(
+        command="dangerous",
+        description="dangerous",
+        pattern_key="danger",
+        pattern_keys=("danger",),
+        session_key="session-a",
+        surface="cli",
+        allow_session=False,
+        allow_permanent=False,
+        timeout_seconds=None,
+    )
+
+    def present(received):
+        assert received.timeout_seconds is None
+        release.wait()
+        return received.respond("once")
+
+    def on_poll():
+        polls.append(1)
+        release.set()
+
+    result = invoke_approval_transport(
+        present,
+        request,
+        timeout_seconds=None,
+        poll_interval=0.01,
+        on_poll=on_poll,
+    )
+
+    assert result.choice == "once"
+    assert result.failure is None
+    assert polls
+
+
 def test_host_rejects_decision_completed_after_deadline(monkeypatch):
     import hermes_cli.approval_transport as transport_module
 

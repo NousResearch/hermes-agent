@@ -15,6 +15,7 @@ from tools.approval import (
     _get_approval_mode,
     _normalize_approval_mode,
     _smart_approve,
+    _normalize_approval_timeout,
     approve_session,
     detect_dangerous_command,
     detect_hardline_command,
@@ -39,6 +40,19 @@ class TestApprovalModeParsing:
     def test_config_bool_false_maps_to_off(self):
         with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {"mode": False}}):
             assert _get_approval_mode() == "off"
+
+
+class TestApprovalTimeoutParsing:
+    def test_positive_timeout_remains_seconds(self):
+        assert _normalize_approval_timeout(60) == 60
+        assert _normalize_approval_timeout("30") == 30
+
+    def test_zero_and_none_disable_timeout(self):
+        for raw in (0, "0", None, False, "none", "false", "never", "off", ""):
+            assert _normalize_approval_timeout(raw) is None
+
+    def test_invalid_timeout_falls_back_to_default(self):
+        assert _normalize_approval_timeout("bogus", default=42) == 42
 
 
 class TestSmartApproval:
@@ -1310,6 +1324,39 @@ class TestApprovalTimeoutIsNotConsent:
             "post_approval_response",
         ]
         assert hook_calls[-1][1]["choice"] == "notify_failed"
+    def test_zero_timeout_waits_for_explicit_gateway_response(self, monkeypatch):
+        """A disabled timeout stays pending but still accepts an explicit deny."""
+        from tools import approval as mod
+
+        self._force_short_timeout(monkeypatch, seconds=0)
+        mod.register_gateway_notify(self.SESSION_KEY, lambda _data: None)
+
+        result_holder = {}
+
+        def _check():
+            result_holder["r"] = mod.check_all_command_guards(
+                "rm -rf .git", "local"
+            )
+
+        thread = threading.Thread(target=_check)
+        thread.start()
+
+        for _ in range(200):
+            if mod._gateway_queues.get(self.SESSION_KEY):
+                break
+            time.sleep(0.005)
+
+        assert mod._gateway_queues.get(self.SESSION_KEY)
+        time.sleep(0.1)
+        assert result_holder == {}
+
+        mod.resolve_gateway_approval(self.SESSION_KEY, "deny")
+        thread.join(timeout=5)
+
+        assert not thread.is_alive()
+        assert result_holder["r"]["approved"] is False
+        assert result_holder["r"]["outcome"] == "denied"
+
 
     def test_pending_approval_is_replayable_and_acknowledged(self, monkeypatch):
         from tools import approval as mod

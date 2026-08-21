@@ -2391,15 +2391,17 @@ HUMAN_WAIT_MARGIN_S = 60.0
 def human_wait_ceiling() -> float:
     """Max seconds a single window may contribute: approvals.timeout + margin.
 
-    Every legitimate human wait self-terminates at ``approvals.timeout`` (the
-    CLI prompt join and the gateway poll loop both enforce it), so a window
-    that overstays this ceiling is itself wedged and must not keep extending
-    a batch deadline. Also used by agent/tool_executor.py as the bound on the
-    authorization gate's serialization-lock acquire, so the two bounds cannot
-    drift. Never call while holding ``_human_wait_lock`` — it reads the
-    config cache.
+    Finite human waits self-terminate at ``approvals.timeout`` (the CLI prompt
+    join and gateway poll loop both enforce it), so an overlong finite window
+    is wedged and must not keep extending a batch deadline. A disabled timeout
+    uses ``threading.TIMEOUT_MAX``: effectively unlimited while remaining safe
+    for the authorization lock's numeric timeout API. Never call while holding
+    ``_human_wait_lock`` — it reads the config cache.
     """
-    return float(_get_approval_timeout()) + HUMAN_WAIT_MARGIN_S
+    timeout = _get_approval_timeout()
+    if timeout is None:
+        return threading.TIMEOUT_MAX
+    return min(float(timeout) + HUMAN_WAIT_MARGIN_S, threading.TIMEOUT_MAX)
 
 
 def _clamped_window_seconds(started: float, now: float, ceiling: float) -> float:
@@ -2482,11 +2484,9 @@ def human_wait_seconds(session_key: str | None = None) -> float:
     baseline delta to zero (the safe direction: the deadline fires sooner).
     Deadline consumers snapshot a baseline at batch start and use the delta.
 
-    Each window's contribution is clamped to :func:`human_wait_ceiling`:
-    every legitimate human wait self-terminates at ``approvals.timeout``
-    (both the CLI prompt join and the gateway poll loop enforce it), so a
-    window that overstays that bound is itself wedged and must not keep
-    extending a batch deadline (belt-and-braces for #79719).
+    Each window's contribution is clamped to :func:`human_wait_ceiling`.
+    Finite approval waits stop extending the deadline after their configured
+    timeout plus margin; disabled timeouts use the platform-safe maximum.
     """
     key = session_key if session_key is not None else get_current_session_key()
     now = time.monotonic()
@@ -2962,7 +2962,7 @@ def save_permanent_allowlist(patterns: set):
 # =========================================================================
 
 def prompt_dangerous_approval(command: str, description: str,
-                              timeout_seconds: int | None = None,
+                              timeout_seconds: int | float | None = None,
                               allow_permanent: bool = True,
                               approval_callback=None,
                               *, smart_denied: bool = False) -> str:
@@ -2987,6 +2987,8 @@ def prompt_dangerous_approval(command: str, description: str,
     """
     if timeout_seconds is None:
         timeout_seconds = _get_approval_timeout()
+    else:
+        timeout_seconds = _normalize_approval_timeout(timeout_seconds)
 
     # Everything below is a human prompt: either the registered CLI callback
     # (prompt_toolkit panel, bounded by the approval deadline) or the input()
@@ -3004,7 +3006,7 @@ def prompt_dangerous_approval(command: str, description: str,
 
 
 def _prompt_dangerous_approval_inner(command: str, description: str,
-                                     timeout_seconds: int,
+                                     timeout_seconds: int | float | None,
                                      allow_permanent: bool = True,
                                      approval_callback=None,
                                      *, smart_denied: bool = False) -> str:
@@ -3218,18 +3220,46 @@ def is_approval_bypass_active() -> bool:
     )
 
 
-def _get_approval_timeout() -> int:
+def _normalize_approval_timeout(
+    raw, default: int | float = 300
+) -> int | float | None:
+    """Normalize ``approvals.timeout`` values.
+
+    Returns a positive number of seconds for finite timeouts. Returns
+    ``None`` when the configured value explicitly disables timeout-based
+    auto-denial. This lets a human approval prompt remain pending while the
+    user is away, instead of treating absence as denial.
+    """
+    if raw is None or raw is False:
+        return None
+    if isinstance(raw, str):
+        normalized = raw.strip().lower()
+        if normalized in {"", "0", "none", "false", "never", "off"}:
+            return None
+        raw = normalized
+    if isinstance(raw, (int, float)):
+        value = raw
+    else:
+        try:
+            value = int(raw)
+        except (ValueError, TypeError):
+            return default
+    return None if value <= 0 else value
+
+
+def _get_approval_timeout() -> int | float | None:
     """Read the approval timeout from config. Defaults to 300 seconds.
 
+    Returns ``None`` when timeout-based auto-denial is explicitly disabled.
     The default matches DEFAULT_CONFIG["approvals"]["timeout"]. Gateway
     approvals arrive as push notifications the user may not see for a couple
     of minutes; 60s proved too tight in practice (Telegram taps landed after
     the wait had already failed closed).
     """
-    try:
-        return int(_get_approval_config().get("timeout", 300))
-    except (ValueError, TypeError):
-        return 300
+    return _normalize_approval_timeout(
+        _get_approval_config().get("timeout", 300),
+        default=300,
+    )
 
 
 def _get_cron_approval_mode() -> str:
@@ -4284,7 +4314,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         touch_activity_if_due = None
 
     _now = time.monotonic()
-    _deadline = _now + max(timeout, 0)
+    _deadline = None if timeout is None else _now + timeout
     _activity_state = {"last_touch": _now, "start": _now}
     resolved = False
     # The poll loop below is verifiably blocked on a human answer (the user
@@ -4310,10 +4340,14 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
                 entry.event.set()
                 resolved = True
                 break
-            _remaining = _deadline - time.monotonic()
-            if _remaining <= 0:
-                break
-            if entry.event.wait(timeout=min(1.0, _remaining)):
+            if _deadline is None:
+                _wait_seconds = 1.0
+            else:
+                _remaining = _deadline - time.monotonic()
+                if _remaining <= 0:
+                    break
+                _wait_seconds = min(1.0, _remaining)
+            if entry.event.wait(timeout=_wait_seconds):
                 resolved = True
                 break
             if touch_activity_if_due is not None:

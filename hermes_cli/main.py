@@ -446,6 +446,7 @@ from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
+from hermes_cli.subcommands.terminal_setup import build_terminal_setup_parser
 
 from hermes_cli.subcommands.whatsapp import build_whatsapp_parser
 from hermes_cli.subcommands.slack import build_slack_parser
@@ -3542,6 +3543,13 @@ def cmd_setup(args):
     from hermes_cli.setup import run_setup_wizard
 
     run_setup_wizard(args)
+
+
+def cmd_terminal_setup(args):
+    """Show safe terminal guidance for multiline classic-CLI input."""
+    from hermes_cli.terminal_setup import run_terminal_setup
+
+    return run_terminal_setup(args)
 
 
 def cmd_model(args):
@@ -11657,7 +11665,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "project", "proxy",
         "prompt-size",
         "resume",
-        "send", "sessions", "setup",
+        "send", "sessions", "setup", "terminal-setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "verify",
@@ -12719,6 +12727,9 @@ def main():
     # setup command  (parser built in hermes_cli/subcommands/setup.py)
     # =========================================================================
     build_setup_parser(subparsers, cmd_setup=cmd_setup)
+
+    # Informational only: this command never edits terminal or shell config.
+    build_terminal_setup_parser(subparsers, cmd_terminal_setup=cmd_terminal_setup)
 
 
     # =========================================================================

@@ -199,9 +199,16 @@ class TestAncestorExclusion:
             "import json, os, sys\n"
             f"sys.path.insert(0, {str(PROJECT_ROOT)!r})\n"
             "from hermes_cli.update_cmd import _detect_venv_python_processes\n"
+            "import psutil\n"
+            "from gateway.status import looks_like_gateway_command_line\n"
+            "parent = psutil.Process(os.getppid())\n"
+            "parent_cmdline = ' '.join(parent.cmdline() or [])\n"
             "matches = _detect_venv_python_processes()\n"
             "print(json.dumps({'ppid': os.getppid(),"
-            " 'pids': [p for p, _, _ in matches]}))\n",
+            " 'pids': [p for p, _, _ in matches],"
+            " 'parent_cmdline': parent_cmdline,"
+            " 'parent_exe': parent.exe() or '',"
+            " 'matcher_says_gateway': looks_like_gateway_command_line(parent_cmdline)}))\n",
             encoding="utf-8",
         )
         parent_oneliner = (

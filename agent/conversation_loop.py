@@ -32,6 +32,7 @@ from agent.conversation_compression import (
     COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE,
+    _cached_prompt_reflects_builtin_memory,
     compression_skipped_due_to_lock,
     conversation_history_after_compression,
 )
@@ -1095,6 +1096,13 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     stored_platform = line_value("Platform")
     current_platform = str(getattr(agent, "platform", "") or "").strip()
     if stored_platform and current_platform and stored_platform != current_platform:
+        return False
+
+    # A fresh gateway/TUI agent may restore a prompt that predates the current
+    # frozen MEMORY/USER snapshot. Reuse compression's complete-block check:
+    # marker-only validation can be spoofed by context text and cannot detect
+    # obsolete block contents.
+    if not _cached_prompt_reflects_builtin_memory(agent, prompt):
         return False
 
     return True

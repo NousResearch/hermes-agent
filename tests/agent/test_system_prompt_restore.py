@@ -36,6 +36,9 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     # reconstruction is gated on _use_prompt_caching, so default it off
     # for the legacy restore tests (the reconstruction tests enable it).
     agent._use_prompt_caching = False
+    agent._memory_store = None
+    agent._memory_enabled = False
+    agent._user_profile_enabled = False
     agent._build_system_prompt = MagicMock(return_value=prebuilt_prompt)
     return agent
 
@@ -377,6 +380,123 @@ class TestReconstructStaticPrefixMemoization:
         assert build.call_count == 1
         assert agent._cached_system_prompt_static == stable
         assert getattr(agent, "_static_rebuild_failed_for", None) is None
+
+
+class TestStoredPromptBuiltinMemoryValidity:
+    """Continuing sessions must restore only the current complete blocks."""
+
+    @staticmethod
+    def _real_store(tmp_path, monkeypatch, *, user="", memory=""):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        memories = tmp_path / "memories"
+        memories.mkdir()
+        (memories / "USER.md").write_text(user, encoding="utf-8")
+        (memories / "MEMORY.md").write_text(memory, encoding="utf-8")
+
+        from tools.memory_tool import MemoryStore
+
+        store = MemoryStore()
+        store.load_from_disk()
+        return store
+
+    def test_context_header_collision_does_not_mask_missing_user_block(
+        self, tmp_path, monkeypatch
+    ):
+        store = self._real_store(
+            tmp_path, monkeypatch, user="Prefers concise answers."
+        )
+        stored = (
+            "Context from AGENTS.md mentions USER PROFILE (who the user is), "
+            "but the built-in block is absent.\n"
+            "Model: test-model\nProvider: openrouter"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent._memory_store = store
+        agent._user_profile_enabled = True
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "hi"}]
+        )
+
+        agent._build_system_prompt.assert_called_once()
+        db.update_system_prompt.assert_called_once()
+
+    def test_obsolete_user_block_rebuilds_even_when_header_is_present(
+        self, tmp_path, monkeypatch
+    ):
+        store = self._real_store(
+            tmp_path, monkeypatch, user="Current preference."
+        )
+        stored = (
+            "USER PROFILE (who the user is) [1% — 15/1,375 chars]\n"
+            + ("═" * 46)
+            + "\nObsolete preference.\n"
+            "Model: test-model\nProvider: openrouter"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent._memory_store = store
+        agent._user_profile_enabled = True
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "hi"}]
+        )
+
+        agent._build_system_prompt.assert_called_once()
+
+    def test_current_complete_blocks_are_reused_verbatim(
+        self, tmp_path, monkeypatch
+    ):
+        store = self._real_store(
+            tmp_path,
+            monkeypatch,
+            user="Prefers concise answers.",
+            memory="Project uses pytest.",
+        )
+        user_block = store.format_for_system_prompt("user")
+        memory_block = store.format_for_system_prompt("memory")
+        stored = (
+            f"{user_block}\n\n{memory_block}\n\n"
+            "Model: test-model\nProvider: openrouter"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent._memory_store = store
+        agent._user_profile_enabled = True
+        agent._memory_enabled = True
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "hi"}]
+        )
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+
+    def test_leftover_header_rebuilds_when_current_target_is_empty(
+        self, tmp_path, monkeypatch
+    ):
+        store = self._real_store(tmp_path, monkeypatch)
+        stored = (
+            "USER PROFILE (who the user is) [1% — 9/1,375 chars]\n"
+            + ("═" * 46)
+            + "\nOld fact.\n"
+            "Model: test-model\nProvider: openrouter"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent._memory_store = store
+        agent._user_profile_enabled = True
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "hi"}]
+        )
+
+        agent._build_system_prompt.assert_called_once()
 
 
 if __name__ == "__main__":

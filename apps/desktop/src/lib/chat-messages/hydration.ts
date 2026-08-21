@@ -189,7 +189,10 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       return
     }
 
-    const content = message.content || message.text || message.context || message.name
+    const content =
+      message.display_content !== undefined
+        ? message.display_content
+        : message.content || message.text || message.context || message.name
 
     const rawDisplayContent = transcriptContent(
       message.display_kind,

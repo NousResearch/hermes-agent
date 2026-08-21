@@ -37,6 +37,7 @@ import {
   applyBranchVisibility,
   applyReloadOptimistic,
   applyRewindOptimistic,
+  durableRowIdsForRebind,
   finalizeInterruptedMessages,
   planEdit,
   planReload,
@@ -410,7 +411,8 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       interruptFirst: boolean,
       truncateMessageId?: string,
       truncateRowId?: number,
-      sourceText?: string
+      sourceText?: string,
+      rebindRowIds?: readonly number[]
     ) =>
       runRewindSubmit(
         requestGateway,
@@ -426,7 +428,8 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
           }
         },
         truncateRowId,
-        sourceText
+        sourceText,
+        rebindRowIds
       ),
     [requestGateway]
   )
@@ -474,7 +477,8 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
             false,
             plan.truncateMessageId,
             plan.truncateRowId,
-            plan.sourceText
+            plan.sourceText,
+            durableRowIdsForRebind(state.messages)
           )
         )
       } catch (err) {
@@ -510,7 +514,8 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
             interruptFirst,
             plan.truncateMessageId,
             plan.truncateRowId,
-            plan.sourceText
+            plan.sourceText,
+            durableRowIdsForRebind(messages)
           )
         )
       } catch (err) {
@@ -558,7 +563,8 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
             interruptFirst,
             plan.truncateMessageId,
             plan.truncateRowId,
-            plan.sourceText
+            plan.sourceText,
+            durableRowIdsForRebind(messages)
           )
         )
       } catch (err) {

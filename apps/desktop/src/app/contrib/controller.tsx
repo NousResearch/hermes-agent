@@ -29,7 +29,9 @@ import {
   resetLayoutTree,
   revealTreePane,
   setStripTabHidden,
+  targetZoneTabStripVisible,
   togglePaneVisible,
+  toggleTargetZoneTabStrip,
   watchContributedPanes
 } from '@/components/pane-shell/tree/store'
 import { SidebarProvider } from '@/components/ui/sidebar'
@@ -40,7 +42,7 @@ import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { translateNow } from '@/i18n'
 import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
-import { Download, FileText, LayoutDashboard, PanelBottom, Terminal, Upload, Zap } from '@/lib/icons'
+import { Download, FileText, LayoutDashboard, PanelBottom, PanelTop, Terminal, Upload, Zap } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
 import { setYoloEnabled } from '@/lib/yolo-session'
@@ -322,6 +324,18 @@ registry.registerMany([
     keywords: ['status bar', 'statusbar', 'bottom bar', 'hide', 'show', 'chrome'],
     get: () => $statusbarVisible.get(),
     set: enabled => $statusbarVisible.set(enabled)
+  }),
+  paletteToggle({
+    id: 'view.toggleTabStrip',
+    label: 'Toggle tabs',
+    action: 'view.toggleTabStrip',
+    icon: PanelTop,
+    keywords: ['tab strip', 'tab bar', 'tabs', 'header', 'zone', 'hide', 'show', 'chrome'],
+    // On-screen truth for the zone the verbs target, not a stored flag: a zone
+    // on auto has no stored value, and the row must read as "what pressing
+    // this does to what I can see".
+    get: () => Boolean(targetZoneTabStripVisible()),
+    set: () => void toggleTargetZoneTabStrip()
   }),
   // The keybind panel's non-titlebar door (the keyboard icon is gone).
   {

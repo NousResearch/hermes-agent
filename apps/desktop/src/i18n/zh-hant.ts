@@ -332,6 +332,11 @@ export const zhHant = defineLocale({
       sessionDensityCompact: '緊湊',
       sessionDensityComfortable: '舒適',
       sessionDensityDetailed: '詳細',
+      tabStripTitle: '分頁列',
+      tabStripDesc: '在分區上方顯示分頁。自動模式會在分區只有一個面板時隱藏分頁。',
+      tabStripAuto: '自動',
+      tabStripAlways: '一律',
+      tabStripNever: '永不',
       terminalFontTitle: '終端機字型',
       terminalFontDesc:
         '選擇已安裝的字型用於桌面端終端機。Nerd Font 可正確顯示 Powerlevel10k 與 Shell 圖示；留空則使用內建的 JetBrains Mono。',

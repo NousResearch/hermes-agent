@@ -21,6 +21,7 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
+import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import {
   $translucency,
@@ -345,6 +346,7 @@ export function AppearanceSettings() {
   const toolViewMode = useStore($toolViewMode)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const sessionListDensity = useStore($sessionListDensity)
+  const tabStripDefault = useStore($tabStripDefault)
   const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
@@ -422,6 +424,12 @@ export function AppearanceSettings() {
     { id: 'comfortable', label: a.sessionDensityComfortable },
     { id: 'detailed', label: a.sessionDensityDetailed }
   ] as const satisfies readonly { id: SessionListDensity; label: string }[]
+
+  const tabStripOptions = [
+    { id: 'auto', label: a.tabStripAuto },
+    { id: 'always', label: a.tabStripAlways },
+    { id: 'never', label: a.tabStripNever }
+  ] as const satisfies readonly { id: TabStripDefault; label: string }[]
 
   const embedOptions = [
     { id: 'ask', label: a.embedsAsk },
@@ -581,6 +589,21 @@ export function AppearanceSettings() {
             }
             description={a.sessionDensityDesc}
             title={a.sessionDensityTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setTabStripDefault(id)
+                }}
+                options={tabStripOptions}
+                value={tabStripDefault}
+              />
+            }
+            description={a.tabStripDesc}
+            title={a.tabStripTitle}
           />
 
           {/* Linux has neither half of this setting (see TRANSLUCENCY_SUPPORTED),

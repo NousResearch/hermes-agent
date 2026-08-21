@@ -415,6 +415,11 @@ export interface Translations {
       sessionDensityCompact: string
       sessionDensityComfortable: string
       sessionDensityDetailed: string
+      tabStripTitle: string
+      tabStripDesc: string
+      tabStripAuto: string
+      tabStripAlways: string
+      tabStripNever: string
       terminalFontTitle: string
       terminalFontDesc: string
       terminalFontPlaceholder: string

@@ -483,6 +483,22 @@ CREATE TABLE IF NOT EXISTS session_turn_leases (
     expires_at REAL NOT NULL
 );
 
+-- Durable record of a turn that started running and never reached a terminal
+-- frame, so session.resume can offer to continue it (see
+-- tui_gateway/server.py _maybe_schedule_auto_continue). Keyed on the same
+-- compression-lineage root as session_turn_leases so a rotation mid-turn does
+-- not orphan the record. ``owner`` is the process that started the turn; only
+-- that process may retire the record, which is what stops a second process
+-- from deleting a turn it never ran.
+CREATE TABLE IF NOT EXISTS interrupted_turns (
+    conversation_id TEXT PRIMARY KEY,
+    prompt TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    started_at REAL NOT NULL,
+    owner TEXT,
+    cause TEXT
+);
+
 CREATE TABLE IF NOT EXISTS async_delegations (
     delegation_id TEXT PRIMARY KEY,
     origin_session TEXT NOT NULL,
@@ -520,6 +536,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_assistant_calls_by_session
     WHERE role = 'assistant' AND tool_calls IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_turn_leases_expires ON session_turn_leases(expires_at);
+CREATE INDEX IF NOT EXISTS idx_interrupted_turns_started ON interrupted_turns(started_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery

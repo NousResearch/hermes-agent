@@ -31,6 +31,7 @@ import threading
 import time
 import weakref
 from collections import deque
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -166,6 +167,14 @@ class SessionExportTooLargeError(ValueError):
 
 
 _COMPRESSION_LOCK_HOLDER_PID_RE = re.compile(r"(?:^|:)pid=(\d+)(?::|$)")
+
+# Enough to re-submit any realistic prompt; keeps a pathological multi-megabyte
+# paste out of the interrupted-turn row on every turn.
+_INTERRUPTED_TURN_MAX_PROMPT_CHARS = 64_000
+# A record this old is past every usable auto-continue freshness window, and
+# without a sweep a conversation that is never resumed again keeps its row
+# forever. Same bound the desktop sidecar this table replaces enforced.
+_INTERRUPTED_TURN_MAX_AGE_SECS = 24 * 3600
 
 
 def _system_prompt_hash(system_prompt: str) -> str:
@@ -6714,6 +6723,273 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
 
         self._execute_write(_do)
+
+    # ── Interrupted turns ────────────────────────────────────────────────
+    #
+    # A turn that started running and never reached a terminal frame leaves a
+    # row in ``interrupted_turns``; ``session.resume`` reads it to decide
+    # whether to continue the interrupted prompt. Rows use the same
+    # compression-lineage root key as the turn lease, so a rotation mid-turn
+    # cannot orphan the record, and every mutation runs inside
+    # ``_execute_write`` (BEGIN IMMEDIATE) so concurrent processes serialize on
+    # the database instead of on a lock only one of them can see.
+    #
+    # Every method here is best-effort by design — this bookkeeping must never
+    # break a turn — so storage errors degrade to "no record" instead of
+    # raising, matching the file-backed implementation this replaces.
+
+    def record_interrupted_turn(
+        self,
+        session_id: str,
+        prompt: str,
+        *,
+        attempts: int = 0,
+        owner: Optional[str] = None,
+        cause: Optional[str] = None,
+    ) -> bool:
+        """Record the turn that is about to run, stamping ``owner`` on the row.
+
+        ``attempts`` counts how many automatic continuations led to this run: 0
+        for a user-initiated turn, N for the Nth re-run, which is what bounds
+        the crash-loop breaker.
+
+        Last writer wins. The row describes the turn running on this
+        conversation right now, and the row it replaces describes a turn that
+        already ended, so overwriting it is the correct record and is what lets
+        the attempts counter advance across a restart. The owner stamp is not
+        an admission decision; it is what makes the retire in
+        :meth:`clear_interrupted_turn` checkable.
+
+        Returns True when a row was written.
+        """
+        if not session_id:
+            return False
+        text = str(prompt or "")
+        if not text.strip():
+            return False
+        try:
+            attempt_count = max(0, int(attempts))
+        except (TypeError, ValueError):
+            attempt_count = 0
+        now = time.time()
+
+        def _do(conn):
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            conn.execute(
+                "DELETE FROM interrupted_turns WHERE started_at < ?",
+                (now - _INTERRUPTED_TURN_MAX_AGE_SECS,),
+            )
+            conn.execute(
+                "INSERT INTO interrupted_turns "
+                "(conversation_id, prompt, attempts, started_at, owner, cause) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(conversation_id) DO UPDATE SET "
+                "prompt = excluded.prompt, "
+                "attempts = excluded.attempts, "
+                "started_at = excluded.started_at, "
+                "owner = excluded.owner, "
+                "cause = excluded.cause",
+                (
+                    conversation_id,
+                    text[:_INTERRUPTED_TURN_MAX_PROMPT_CHARS],
+                    attempt_count,
+                    now,
+                    owner or None,
+                    cause or None,
+                ),
+            )
+            return True
+
+        try:
+            return bool(self._execute_write(_do))
+        except sqlite3.Error as exc:
+            logger.warning(
+                "record_interrupted_turn(%s) failed: %s", session_id, exc,
+            )
+            return False
+
+    def import_interrupted_turns(
+        self,
+        records: Iterable[Tuple[str, Mapping[str, Any]]],
+        *,
+        cause: str = "migrated",
+    ) -> int:
+        """Import legacy records in one transaction; returns rows written.
+
+        ``records`` yields ``(session_id, entry)`` pairs where ``entry`` holds
+        ``prompt``, ``attempts`` and ``started_at``. ``session_id`` is the key
+        the legacy record was filed under, which is the compression *segment*
+        the turn was running on; the resolver maps it to the lineage root this
+        table is keyed on, so a record written before a rotation lands on the
+        row a post-rotation resume actually reads. Because of that mapping two
+        legacy keys can resolve to a single row, and the first pair imported
+        wins — pass them newest first.
+
+        Imported rows carry no owner: the legacy format never recorded one, so
+        any process may retire them. A row already present also wins; it was
+        written by a live process and is newer than anything being imported.
+
+        An entry the legacy file left unusable is dropped rather than imported
+        half-formed. Only the total is returned, so each drop is logged at
+        debug with its key and reason: a caller that renames the file aside on
+        success has no second chance to see what did not come across.
+        """
+        pending = []
+        for session_id, entry in records:
+            if not session_id or not isinstance(entry, Mapping):
+                logger.debug(
+                    "import_interrupted_turns: skipping %r, unusable entry "
+                    "of type %s",
+                    session_id,
+                    type(entry).__name__,
+                )
+                continue
+            text = str(entry.get("prompt") or "")
+            if not text.strip():
+                logger.debug(
+                    "import_interrupted_turns: skipping %r, empty prompt",
+                    session_id,
+                )
+                continue
+            raw_attempts = raw_started = None
+            try:
+                raw_attempts = entry.get("attempts")
+                raw_started = entry.get("started_at")
+                attempt_count = max(0, int(raw_attempts or 0))
+                started = float(raw_started or 0)
+            except (TypeError, ValueError) as exc:
+                logger.debug(
+                    "import_interrupted_turns: skipping %r, "
+                    "attempts=%r started_at=%r not numeric: %s",
+                    session_id,
+                    raw_attempts,
+                    raw_started,
+                    exc,
+                )
+                continue
+            pending.append(
+                (
+                    str(session_id),
+                    text[:_INTERRUPTED_TURN_MAX_PROMPT_CHARS],
+                    attempt_count,
+                    started,
+                )
+            )
+        if not pending:
+            return 0
+
+        def _do(conn):
+            written = 0
+            for session_id, text, attempt_count, started in pending:
+                conversation_id = self._session_turn_lease_key_on_conn(
+                    conn, session_id
+                )
+                cursor = conn.execute(
+                    "INSERT OR IGNORE INTO interrupted_turns "
+                    "(conversation_id, prompt, attempts, started_at, owner, cause) "
+                    "VALUES (?, ?, ?, ?, NULL, ?)",
+                    (
+                        conversation_id,
+                        text,
+                        attempt_count,
+                        started,
+                        cause or None,
+                    ),
+                )
+                written += cursor.rowcount
+            return written
+
+        return int(self._execute_write(_do))
+
+    def read_interrupted_turn(self, session_id: str) -> Optional[dict]:
+        """The record left by a turn that never concluded, or None."""
+        if not session_id:
+            return None
+        try:
+            with self._read_ctx() as conn:
+                conversation_id = self._session_turn_lease_key_on_conn(
+                    conn, session_id
+                )
+                row = conn.execute(
+                    "SELECT prompt, attempts, started_at, owner, cause "
+                    "FROM interrupted_turns WHERE conversation_id = ?",
+                    (conversation_id,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            logger.warning(
+                "read_interrupted_turn(%s) failed: %s", session_id, exc,
+            )
+            return None
+        if row is None:
+            return None
+        prompt = str(row["prompt"] or "")
+        if not prompt.strip():
+            return None
+        try:
+            started_at = float(row["started_at"] or 0)
+            attempts = max(0, int(row["attempts"] or 0))
+        except (TypeError, ValueError):
+            return None
+        return {
+            "attempts": attempts,
+            "prompt": prompt,
+            "started_at": started_at,
+            "owner": row["owner"],
+            "cause": row["cause"],
+        }
+
+    def clear_interrupted_turn(
+        self,
+        session_id: str,
+        *,
+        owner: Optional[str],
+        force: bool = False,
+    ) -> bool:
+        """Retire the record of a turn that concluded; True when a row went.
+
+        ``owner`` is checked against the stamp
+        :meth:`record_interrupted_turn` wrote. A process may retire its own
+        record, and a legacy record that carries no owner, and nothing else:
+        without that check a process that merely tried to take the conversation
+        and gave up can delete the record of a turn still running elsewhere,
+        and nothing then resumes that turn automatically.
+
+        ``force`` retires regardless of owner and exists for the scheduler's
+        policy deletions. A record past its freshness window or its attempt
+        ceiling is no longer actionable by any process, and the scheduler that
+        just made that determination is the right one to clear it.
+        """
+        if not session_id:
+            return False
+
+        def _do(conn):
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            if force:
+                cursor = conn.execute(
+                    "DELETE FROM interrupted_turns WHERE conversation_id = ?",
+                    (conversation_id,),
+                )
+            elif owner:
+                cursor = conn.execute(
+                    "DELETE FROM interrupted_turns "
+                    "WHERE conversation_id = ? AND (owner = ? OR owner IS NULL)",
+                    (conversation_id, owner),
+                )
+            else:
+                cursor = conn.execute(
+                    "DELETE FROM interrupted_turns "
+                    "WHERE conversation_id = ? AND owner IS NULL",
+                    (conversation_id,),
+                )
+            return cursor.rowcount > 0
+
+        try:
+            return bool(self._execute_write(_do))
+        except sqlite3.Error as exc:
+            logger.warning(
+                "clear_interrupted_turn(%s) failed: %s", session_id, exc,
+            )
+            return False
 
     def get_compression_lock_holder(self, session_id: str) -> Optional[str]:
         """Return the current (non-expired) holder for ``session_id``, or None.

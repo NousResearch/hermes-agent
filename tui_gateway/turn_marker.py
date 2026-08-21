@@ -1,21 +1,22 @@
-"""Durable interrupted-turn markers for the desktop/TUI auto-continue path.
+"""Reader for the legacy interrupted-turn sidecar (migration only).
 
-A running turn's progress lives only in process memory (the agent flushes to
-SQLite at turn end, not mid-turn), so an app/backend/machine death mid-turn
-leaves no durable trace of the interrupted prompt. This sidecar is that
-trace: a marker is written when a turn starts running and cleared when the
-turn concludes — success, handled error, or interrupt all clear it, so only
-a process death leaves one behind. ``session.resume`` reads the marker to
-decide whether to auto-continue the interrupted turn (see
-``_maybe_schedule_auto_continue`` in ``tui_gateway/server.py``).
+Interrupted-turn records live in ``state.db``'s ``interrupted_turns`` table
+(see ``SessionDB.record_interrupted_turn``). Before that they lived in this
+JSON sidecar, one file per ``HERMES_HOME``, rewritten in full on every turn
+start. This module is what remains of it: a reader the gateway calls once per
+home to import surviving entries into the table, after which the file is
+renamed and never read again.
 
-Markers are stored per ``HERMES_HOME`` (callers pass the session's home so
-profile sessions keep their state in their own profile directory) and the
-file is bounded: writes prune entries older than ``_MAX_AGE_SECS`` and cap
-the total count, so an unlucky streak of crashes can't grow it unboundedly.
+Nothing writes the sidecar any more. The whole-file rewrite it used was
+synchronized only by a lock local to the writing process, so two processes
+sharing a home could each load the map, change one key, and store the result,
+silently dropping the other's record; and any process could delete any entry,
+including one belonging to a turn still running elsewhere. Both are structural
+properties of the file format, which is why the record moved to a table with
+per-row writes and an owner stamp.
 
-Every function is best-effort by design — marker bookkeeping must never
-break a turn — so I/O errors degrade to "no marker" instead of raising.
+Reads are best-effort: an unreadable or corrupt file degrades to "no entries"
+instead of raising, so a bad sidecar cannot block a resume.
 """
 
 from __future__ import annotations
@@ -23,9 +24,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
-import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -33,13 +31,7 @@ logger = logging.getLogger(__name__)
 
 _MARKER_DIR = "desktop"
 _MARKER_FILE = "interrupted_turns.json"
-_MAX_AGE_SECS = 24 * 3600
-_MAX_ENTRIES = 32
-# Enough to re-submit any realistic prompt; guards the sidecar against a
-# pathological multi-megabyte paste being journaled on every turn.
-_MAX_PROMPT_CHARS = 64_000
-
-_lock = threading.Lock()
+_MIGRATED_SUFFIX = ".migrated"
 
 
 def _marker_path(home: Path | str) -> Path:
@@ -53,99 +45,14 @@ def _load(path: Path) -> dict[str, dict]:
     except FileNotFoundError:
         return {}
     except Exception:
-        logger.debug("unreadable turn-marker file %s; starting fresh", path, exc_info=True)
+        logger.debug("unreadable turn-marker file %s; ignoring", path, exc_info=True)
         return {}
     if not isinstance(data, dict):
         return {}
     return {k: v for k, v in data.items() if isinstance(v, dict)}
 
 
-def _prune(entries: dict[str, dict], now: float) -> dict[str, dict]:
-    fresh = {
-        key: entry
-        for key, entry in entries.items()
-        if now - float(entry.get("started_at") or 0) <= _MAX_AGE_SECS
-    }
-    if len(fresh) <= _MAX_ENTRIES:
-        return fresh
-    newest = sorted(
-        fresh.items(),
-        key=lambda item: float(item[1].get("started_at") or 0),
-        reverse=True,
-    )[:_MAX_ENTRIES]
-    return dict(newest)
-
-
-def _store(path: Path, entries: dict[str, dict]) -> None:
-    if not entries:
-        path.unlink(missing_ok=True)
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".turn-marker-")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(entries, f)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-
-def record_turn_start(
-    home: Path | str, session_key: str, prompt: str, *, attempts: int = 0
-) -> None:
-    """Persist the marker for a turn that is about to run.
-
-    ``attempts`` counts how many auto-continues led to this run: 0 for a
-    user-initiated turn, N for the Nth automatic re-run — the crash-loop
-    breaker reads it back on the next resume.
-    """
-    if not session_key or not prompt:
-        return
-    now = time.time()
-    entry = {
-        "attempts": max(0, int(attempts)),
-        "prompt": prompt[:_MAX_PROMPT_CHARS],
-        "started_at": now,
-    }
-    try:
-        with _lock:
-            path = _marker_path(home)
-            entries = _prune(_load(path), now)
-            entries[session_key] = entry
-            _store(path, entries)
-    except Exception:
-        logger.debug("failed to record turn marker for %s", session_key, exc_info=True)
-
-
-def clear_turn_marker(home: Path | str, session_key: str) -> None:
-    """Remove the marker once its turn concluded (any outcome the client saw)."""
-    if not session_key:
-        return
-    try:
-        with _lock:
-            path = _marker_path(home)
-            entries = _load(path)
-            if session_key not in entries:
-                return
-            del entries[session_key]
-            _store(path, entries)
-    except Exception:
-        logger.debug("failed to clear turn marker for %s", session_key, exc_info=True)
-
-
-def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | None:
-    """The marker left by a turn that never concluded, or None."""
-    if not session_key:
-        return None
-    try:
-        with _lock:
-            entry = _load(_marker_path(home)).get(session_key)
-    except Exception:
-        return None
+def _coerce_entry(entry: Any) -> dict[str, Any] | None:
     if not isinstance(entry, dict):
         return None
     prompt = str(entry.get("prompt") or "")
@@ -157,3 +64,40 @@ def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | Non
     except (TypeError, ValueError):
         return None
     return {"attempts": attempts, "prompt": prompt, "started_at": started_at}
+
+
+def sidecar_exists(home: Path | str) -> bool:
+    """Whether this home still has a sidecar left to import."""
+    try:
+        return _marker_path(home).is_file()
+    except Exception:
+        return False
+
+
+def retire_sidecar(home: Path | str) -> None:
+    """Rename the sidecar aside once its entries are in the table.
+
+    Raises on failure so the caller can leave the file where it is and retry
+    on the next resume; the rename is what makes the import one-shot.
+    """
+    path = _marker_path(home)
+    os.replace(path, path.with_name(path.name + _MIGRATED_SUFFIX))
+
+
+def read_turn_markers(home: Path | str) -> dict[str, dict[str, Any]]:
+    """Every usable entry in the legacy sidecar, keyed as the file keyed them.
+
+    Keys are the session key the turn was running under when it was recorded,
+    which is the compression segment rather than the lineage root the table is
+    keyed on — the importer resolves that.
+    """
+    try:
+        raw = _load(_marker_path(home))
+    except Exception:
+        return {}
+    entries = {}
+    for session_key, entry in raw.items():
+        coerced = _coerce_entry(entry)
+        if session_key and coerced is not None:
+            entries[str(session_key)] = coerced
+    return entries

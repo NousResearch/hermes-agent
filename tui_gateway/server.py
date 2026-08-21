@@ -40,9 +40,9 @@ from agent.skill_commands import describe_skill_invocation
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from tui_gateway import git_probe
 from tui_gateway.turn_marker import (
-    clear_turn_marker,
-    read_turn_marker,
-    record_turn_start,
+    read_turn_markers,
+    retire_sidecar,
+    sidecar_exists,
 )
 from tui_gateway.transport import (
     StdioTransport,
@@ -7973,20 +7973,138 @@ def _session_home(session: dict) -> Path:
     return Path(profile_home) if profile_home else Path(_hermes_home)
 
 
+def _turn_record_owner() -> str:
+    """This process's stamp on interrupted-turn records.
+
+    Same shape as the durable turn lease's holder (``run_agent.py`` mints
+    ``pid=<pid>:turn=<id>:platform=<platform>``) without the per-turn nonce: a
+    record outlives the turn that wrote it, and every turn in this process is
+    equally entitled to retire it. Computed per call rather than cached so a
+    forked child stamps its own pid.
+    """
+    return f"pid={os.getpid()}:platform=tui"
+
+
+def _record_interrupted_turn(
+    session: dict, key: str, prompt: str, *, attempts: int = 0
+) -> None:
+    """Record a turn that is about to run, stamped with this process."""
+    if not key or not isinstance(prompt, str) or not prompt.strip():
+        return
+    try:
+        with _session_db(session) as db:
+            if db is None:
+                return
+            db.record_interrupted_turn(
+                key, prompt, attempts=attempts, owner=_turn_record_owner()
+            )
+    except Exception:
+        logger.debug("failed to record interrupted turn for %s", key, exc_info=True)
+
+
+def _read_interrupted_turn(session: dict, key: str) -> dict | None:
+    """The record left by a turn on ``key`` that never concluded, or None."""
+    if not key:
+        return None
+    try:
+        with _session_db(session) as db:
+            if db is None:
+                return None
+            return db.read_interrupted_turn(key)
+    except Exception:
+        logger.debug("failed to read interrupted turn for %s", key, exc_info=True)
+        return None
+
+
+def _clear_interrupted_turn(session: dict, *keys: str, force: bool = False) -> None:
+    """Retire records this process owns; ``force`` retires regardless of owner."""
+    wanted = list(dict.fromkeys(key for key in keys if key))
+    if not wanted:
+        return
+    owner = _turn_record_owner()
+    try:
+        with _session_db(session) as db:
+            if db is None:
+                return
+            for key in wanted:
+                db.clear_interrupted_turn(key, owner=owner, force=force)
+    except Exception:
+        logger.debug("failed to clear interrupted turn", exc_info=True)
+
+
+_TURN_MARKER_MIGRATION_LOCK = threading.Lock()
+_TURN_MARKER_MIGRATION_WARNED: set[str] = set()
+
+
+def _migrate_turn_markers(session: dict) -> None:
+    """Import this home's legacy interrupted-turn sidecar, once, then rename it.
+
+    Lazy and per-HERMES_HOME rather than per-process: ``_session_home`` is
+    profile-aware, so one gateway can be serving two homes with a sidecar
+    each. The rename is the one-shot flag — a failure leaves the file in place
+    and the next resume retries; only the warning is deduplicated. Once a home
+    has no sidecar this costs one stat and takes no lock.
+
+    Legacy entries carry no owner, so they import as ``owner IS NULL`` and any
+    process may retire them, which is the same freedom the file gave.
+    """
+    home = _session_home(session)
+    if not sidecar_exists(home):
+        return
+    with _TURN_MARKER_MIGRATION_LOCK:
+        # Re-check: a concurrent resume on this home may have just finished.
+        if not sidecar_exists(home):
+            return
+        home_key = os.path.normcase(os.path.abspath(str(home)))
+        entries = read_turn_markers(home)
+        try:
+            with _session_db(session) as db:
+                if db is None:
+                    return
+                # Newest first: two sidecar keys can be segments of one
+                # compression lineage and therefore resolve to a single row,
+                # and the newest record is the one a resume should see.
+                imported = db.import_interrupted_turns(
+                    sorted(
+                        entries.items(),
+                        key=lambda item: item[1]["started_at"],
+                        reverse=True,
+                    )
+                )
+            retire_sidecar(home)
+        except Exception:
+            if home_key not in _TURN_MARKER_MIGRATION_WARNED:
+                _TURN_MARKER_MIGRATION_WARNED.add(home_key)
+                logger.warning(
+                    "could not import the legacy interrupted-turn sidecar; "
+                    "leaving it in place to retry on the next resume",
+                    exc_info=True,
+                )
+            return
+        _TURN_MARKER_MIGRATION_WARNED.discard(home_key)
+        if imported:
+            logger.info(
+                "imported %d legacy interrupted-turn record(s) into state.db",
+                imported,
+            )
+
+
 def _retire_turn_marker(session: dict, *keys: str) -> None:
-    """Drop the crash marker for a turn whose outcome is about to reach the client.
+    """Drop the crash record for a turn whose outcome is about to reach the client.
 
     Called immediately before the terminal frame rather than at the end of the
     turn thread: post-turn work (titles, memory sync, goal hooks) runs for a
     second or more after the client has its answer, and quitting inside that
-    window would leave a marker that looks like a crash — re-running a finished
+    window would leave a record that looks like a crash — re-running a finished
     turn on the next launch. Extra ``keys`` cover a session_key that
     compression rotated mid-turn.
+
+    Owner-checked: this retires the records this process wrote (and legacy
+    records that carry no owner). A turn running in another process keeps its
+    record even when this one decides the turn is over, because only the
+    process that ran the turn can know that it ended.
     """
-    home = _session_home(session)
-    for key in dict.fromkeys((*keys, str(session.get("session_key") or ""))):
-        if key:
-            clear_turn_marker(home, key)
+    _clear_interrupted_turn(session, *keys, str(session.get("session_key") or ""))
 
 
 def _auto_continue_note(prompt: str) -> str:
@@ -8013,16 +8131,24 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
     same _run_prompt_submit machinery as every other synthesized turn — so
     the client that just resumed streams it live.
     """
-    home = _session_home(session)
-    marker = read_turn_marker(home, session_key)
+    _migrate_turn_markers(session)
+    marker = _read_interrupted_turn(session, session_key)
     if marker is None:
         return None
     enabled, freshness_secs, max_attempts = _auto_continue_config()
     age = time.time() - marker["started_at"]
-    if not enabled or age > freshness_secs or marker["attempts"] >= max_attempts:
-        # Stale, disabled, or crash-looping: stop trying. The journal/partial
-        # transcript still shows what happened; a manual message continues it.
-        clear_turn_marker(home, session_key)
+    if age > freshness_secs or marker["attempts"] >= max_attempts:
+        # Stale or crash-looping: a policy retirement, so it is taken
+        # regardless of owner. The journal/partial transcript still shows what
+        # happened; a manual message continues it.
+        _clear_interrupted_turn(session, session_key, force=True)
+        return None
+    if not enabled:
+        # Disabled is a local policy state, not a fact about the record:
+        # another process may run with auto-continue on, and this one may be
+        # re-enabled later. Retire only what this process owns (plus ownerless
+        # legacy imports) and leave a foreign owner's live record alone.
+        _clear_interrupted_turn(session, session_key)
         return None
     if session.get("_auto_continue_scheduled"):
         return None
@@ -10756,18 +10882,19 @@ def _run_prompt_submit(
         # True once a failed turn's snapshot was retained for resume replay —
         # tells the finally below to skip the normal inflight clear.
         turn_error_retained = False
-        # Durable crash marker: written before the turn runs, retired the
+        # Durable crash record: written before the turn runs, retired the
         # moment its outcome reaches the client (see _retire_turn_marker).
         # Any concluded turn — success, handled error, interrupt — retires
-        # it, so a marker that survives means the process died mid-turn;
+        # it, so a record that survives means the process died mid-turn;
         # session.resume auto-continues from it. Compression can rotate
         # session_key mid-turn, so remember the key we wrote under.
-        marker_home = _session_home(session)
         marker_key = str(session.get("session_key") or "")
         marker_attempt = int(session.pop("_auto_continue_attempt", 0) or 0)
         marker_text = session.pop("_auto_continue_prompt", None) or text
         if isinstance(marker_text, str) and marker_text.strip():
-            record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt)
+            _record_interrupted_turn(
+                session, marker_key, marker_text, attempts=marker_attempt
+            )
         try:
             from tools.approval import (
                 reset_current_session_key,

@@ -89,6 +89,12 @@ _HERMES_CORE_TOOLS = [
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # NOTE: the Matrix room-admin tools (matrix_create_room / matrix_leave_room /
+    # matrix_delete_room) are deliberately NOT here — they are Matrix-specific
+    # and live in the `hermes-matrix` toolset below (matching the Matrix
+    # scoping contract in website/docs/user-guide/messaging/matrix.md: Matrix
+    # tools are not available in non-Matrix toolsets). Keeping them out of the
+    # shared core list is what keeps them off the CLI and every other platform.
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -572,7 +578,16 @@ TOOLSETS = {
 
     "hermes-matrix": {
         "description": "Matrix bot toolset - decentralized encrypted messaging (full access)",
-        "tools": _HERMES_CORE_TOOLS,
+        # Matrix room-admin tools live HERE (not in _HERMES_CORE_TOOLS) so they
+        # are offered only to Matrix sessions — never the CLI / other platforms
+        # (see the Matrix scoping contract in
+        # website/docs/user-guide/messaging/matrix.md). Gated on
+        # MATRIX_TOOLS_ALLOW_ROOM_CREATE via check_fn in tools/matrix_room_tool.py.
+        "tools": _HERMES_CORE_TOOLS + [
+            "matrix_create_room",
+            "matrix_leave_room",
+            "matrix_delete_room",
+        ],
         "includes": []
     },
 

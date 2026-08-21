@@ -413,11 +413,13 @@ In Matrix conversations, Hermes exposes Matrix-specific tools to the agent:
 - `matrix_send_reaction`
 - `matrix_redact_message`
 - `matrix_create_room`
+- `matrix_leave_room`
+- `matrix_delete_room`
 - `matrix_invite_user`
 - `matrix_fetch_history`
 - `matrix_set_presence`
 
-These tools are scoped to Matrix contexts and are not available in non-Matrix toolsets. Admin-style tools are disabled by default: redaction requires `MATRIX_TOOLS_ALLOW_REDACTION=true`, invites require `MATRIX_TOOLS_ALLOW_INVITES=true`, and room creation requires `MATRIX_TOOLS_ALLOW_ROOM_CREATE=true`. Public room creation also requires `MATRIX_ALLOW_PUBLIC_ROOMS=true`.
+These tools are scoped to Matrix contexts and are not available in non-Matrix toolsets. Admin-style tools are disabled by default: redaction requires `MATRIX_TOOLS_ALLOW_REDACTION=true`, invites require `MATRIX_TOOLS_ALLOW_INVITES=true`, room creation (and the leave/delete room-admin tools) require `MATRIX_TOOLS_ALLOW_ROOM_CREATE=true`. Public room creation also requires `MATRIX_ALLOW_PUBLIC_ROOMS=true`.
 If `MATRIX_ALLOWED_ROOMS` is set, Matrix tools may only target those rooms.
 
 Reaction controls use:

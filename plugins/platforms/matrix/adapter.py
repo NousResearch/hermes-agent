@@ -3851,6 +3851,32 @@ class MatrixAdapter(BasePlatformAdapter):
                     pass
             return False
 
+    def reconcile_left_room(self, room_id: str) -> None:
+        """Evict *room_id* from the live membership caches after a leave/forget.
+
+        Incremental sync only ADDS room ids (``self._joined_rooms.update(...)``
+        in ``_sync_loop`` / initial sync), and ``_join_room_by_id`` trusts
+        ``self._joined_rooms`` — returning True without re-joining when the id
+        is already present. A raw Client-Server leave/forget issued by an agent
+        tool (``tools/matrix_room_tool.py``) bypasses the sync loop, so without
+        this the id lingers in the cache: a later ``_join_room_by_id`` sees it
+        and skips the real join, leaving the room dead for dispatch.
+
+        Clearing ``_joined_rooms`` (and the identity / DM / pending-invite
+        caches keyed by the id) keeps the cache consistent with membership so a
+        subsequent join re-establishes it. Pure in-memory mutation (no awaits),
+        so it is safe to call from the agent tool's event loop.
+        """
+        if not room_id:
+            return
+        self._joined_rooms.discard(room_id)
+        self._room_identities.pop(room_id, None)
+        self._room_identity_cached_at.pop(room_id, None)
+        self._dm_rooms.pop(room_id, None)
+        pending = self._invite_join_tasks.pop(room_id, None)
+        if pending is not None and not pending.done():
+            pending.cancel()
+
     def _schedule_invite_join(
         self,
         room_id: str,

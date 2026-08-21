@@ -133,6 +133,37 @@ describe('I18nProvider', () => {
     expect(configClient.saveConfig).not.toHaveBeenCalled()
   })
 
+  it('loads pl-PL from display.language and persists pl without replacing unrelated settings', async () => {
+    const saveConfig = vi.fn().mockResolvedValue({ ok: true })
+
+    const configClient: I18nConfigClient = {
+      getConfig: vi
+        .fn()
+        .mockResolvedValueOnce({ display: { language: 'pl-PL', skin: 'mono' }, terminal: { cwd: '/old' } })
+        .mockResolvedValueOnce({ display: { language: 'pl-PL', skin: 'slate' }, terminal: { cwd: '/new' } }),
+      saveConfig
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe target="pl" />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+    expect(screen.getByTestId('locale').textContent).toBe('pl')
+    expect(screen.getByTestId('label').textContent).toBe('Język')
+    expect(screen.getByTestId('save').textContent).toBe('Zapisz')
+
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+
+    await waitFor(() => expect(saveConfig).toHaveBeenCalledTimes(1))
+    expect(saveConfig).toHaveBeenCalledWith({
+      display: { language: 'pl', skin: 'slate' },
+      terminal: { cwd: '/new' }
+    })
+  })
+
   it('does not overwrite unsupported configured languages', async () => {
     const configClient: I18nConfigClient = {
       getConfig: vi.fn().mockResolvedValue({ display: { language: 'de' } }),

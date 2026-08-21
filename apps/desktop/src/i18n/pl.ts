@@ -1,0 +1,3795 @@
+import { defineFieldCopy } from '@/app/settings/field-copy'
+
+import { defineLocale, mergeLocaleOverrides, type TranslationOverrides } from './define-locale'
+
+const plTranslatedOverrides = {
+  common: {
+    apply: 'Zastosuj',
+    back: 'Wstecz',
+    save: 'Zapisz',
+    saving: 'Zapisywanie…',
+    cancel: 'Anuluj',
+    change: 'Zmień',
+    choose: 'Wybierz',
+    clear: 'Wyczyść',
+    close: 'Zamknij',
+    collapse: 'Zwiń',
+    confirm: 'Potwierdź',
+    connect: 'Połącz',
+    connecting: 'Łączenie…',
+    continue: 'Kontynuuj',
+    copied: 'Skopiowano',
+    copy: 'Kopiuj',
+    copyFailed: 'Nie udało się skopiować',
+    delete: 'Usuń',
+    docs: 'Dokumentacja',
+    done: 'Gotowe',
+    error: 'Błąd',
+    expand: 'Rozwiń',
+    failed: 'Nie udało się',
+    formatJson: 'Formatuj JSON',
+    free: 'Bezpłatny',
+    loading: 'Ładowanie…',
+    notSet: 'Nie ustawiono',
+    refresh: 'Odśwież',
+    remove: 'Usuń',
+    replace: 'Zastąp',
+    retry: 'Spróbuj ponownie',
+    run: 'Uruchom',
+    send: 'Wyślij',
+    set: 'Ustaw',
+    skip: 'Pomiń',
+    update: 'Zaktualizuj',
+    tryHint: term => `Spróbuj „${term}”`,
+    on: 'Włączone',
+    off: 'Wyłączone'
+  },
+
+  fileMenu: {
+    revealFinder: 'Pokaż w Finderze',
+    revealExplorer: 'Pokaż w Eksploratorze plików',
+    revealFileManager: 'Otwórz folder zawierający',
+    revealInSidebar: 'Pokaż w drzewie plików',
+    copyPath: 'Skopiuj ścieżkę',
+    copyRelativePath: 'Skopiuj ścieżkę względną',
+    rename: 'Zmień nazwę…',
+    delete: 'Usuń',
+    renameTitle: 'Zmień nazwę',
+    renameLabel: 'Nowa nazwa',
+    deleteTitle: name => `Usuń ${name}?`,
+    deleteBody: 'Element zostanie przeniesiony do Kosza — stamtąd możesz go przywrócić.',
+    pathCopied: 'Ścieżka skopiowana'
+  },
+
+  boot: {
+    ready: 'Hermes Desktop jest gotowy',
+    desktopBootFailedWithMessage: message => `Nie udało się uruchomić aplikacji Hermes Desktop: ${message}`,
+    steps: {
+      connectingGateway: 'Łączenie z bramą aplikacji Hermes Desktop',
+      loadingSettings: 'Ładowanie ustawień Hermesa',
+      loadingSessions: 'Ładowanie ostatnich sesji',
+      startingDesktopConnection: 'Nawiązywanie połączenia z aplikacją Hermes Desktop',
+      startingHermesDesktop: 'Uruchamianie aplikacji Hermes Desktop…'
+    },
+    errors: {
+      backgroundExited: 'Proces Hermesa w tle zakończył działanie.',
+      backgroundExitedDuringStartup: 'Proces Hermesa w tle zakończył się podczas uruchamiania.',
+      backendStopped: 'Backend zatrzymany',
+      desktopBootFailed: 'Nie udało się uruchomić aplikacji Hermes Desktop',
+      gatewayConnectionLost: 'Utracono połączenie z bramą',
+      gatewaySignInRequired: 'Wymagane logowanie do bramy',
+      ipcBridgeUnavailable: 'Most IPC aplikacji Hermes Desktop jest niedostępny.'
+    },
+    failure: {
+      title: 'Nie udało się uruchomić Hermesa',
+      description:
+        'Brama działająca w tle nie uruchomiła się. Wypróbuj jeden z poniższych sposobów naprawy. Żaden z nich nie usunie Twoich czatów ani ustawień.',
+      remoteTitle: 'Wymagane logowanie do bramy zdalnej',
+      remoteDescription:
+        'Sesja bramy zdalnej wygasła. Zaloguj się ponownie, aby przywrócić połączenie. Nie spowoduje to usunięcia Twoich czatów ani ustawień.',
+      retry: 'Spróbuj ponownie',
+      repairInstall: 'Napraw instalację',
+      useLocalGateway: 'Użyj bramy lokalnej',
+      gatewaySettings: 'Ustawienia bramy',
+      back: 'Wstecz',
+      openLogs: 'Otwórz logi',
+      repairHint: 'Naprawa ponownie uruchamia instalator i na nowym komputerze może potrwać kilka minut.',
+      remoteSignInHint: signInLabel =>
+        `Wylogowuje zapisaną sesję przeglądarki bramy zdalnej, a następnie otwiera ${signInLabel}. Aby przełączyć się na wbudowany backend, użyj bramy lokalnej.`,
+      signOutAndSignIn: 'Wyloguj i zaloguj się',
+      remoteFailureHint: 'Sprawdź adres URL bramy i logowanie w Ustawieniach bramy albo przełącz się na bramę lokalną.',
+      hideRecentLogs: 'Ukryj ostatnie logi',
+      showRecentLogs: 'Pokaż ostatnie logi',
+      signedInTitle: 'Zalogowano',
+      signedInMessage: 'Ponowne łączenie z bramą zdalną…',
+      signInIncompleteTitle: 'Logowanie nie zostało ukończone',
+      signInIncompleteMessage: 'Okno logowania zamknięto przed zakończeniem uwierzytelniania.',
+      signInFailed: 'Nie udało się zalogować',
+      signInToRemoteGateway: 'Zaloguj się do bramy zdalnej',
+      signInWithProvider: provider => `Zaloguj się przez ${provider}`,
+      identityProvider: 'dostawcę tożsamości'
+    }
+  },
+
+  notifications: {
+    region: 'Powiadomienia',
+    hide: 'Ukryj',
+    show: 'Pokaż',
+    more: count => `Dodatkowe powiadomienia: ${count}`,
+    clearAll: 'Wyczyść wszystko',
+    dismiss: 'Odrzuć powiadomienie',
+    details: 'Szczegóły',
+    copyDetail: 'Skopiuj szczegóły',
+    copyDetailFailed: 'Nie udało się skopiować szczegółów powiadomienia',
+    backendOutOfDateTitle: 'Backend jest nieaktualny',
+    backendOutOfDateMessage:
+      'Backend Hermesa jest starszy niż ta wersja aplikacji Hermes Desktop i może nie działać poprawnie. Zaktualizuj go, aby wersje były zgodne.',
+    installMethodUnsupportedTitle: 'Nieobsługiwana metoda instalacji',
+    updateHermes: 'Zaktualizuj Hermesa',
+    updateReadyTitle: 'Aktualizacja gotowa',
+    updateReadyMessage: count => `Dostępne zmiany: ${count}.`,
+    seeWhatsNew: 'Zobacz, co nowego',
+    errors: {
+      elevenLabsNeedsKey: 'ElevenLabs STT wymaga ELEVENLABS_API_KEY.',
+      elevenLabsRejectedKey: 'ElevenLabs odrzuciło klucz API (401).',
+      methodNotAllowed:
+        'Backend aplikacji Hermes Desktop odrzucił to żądanie (405 Method Not Allowed). Spróbuj ponownie uruchomić aplikację Hermes Desktop.',
+      microphonePermission: 'Odmówiono dostępu do mikrofonu.',
+      openaiRejectedApiKey: 'OpenAI odrzucił klucz API.',
+      openaiRejectedApiKeyWithStatus: status => `OpenAI odrzucił klucz API (${status} invalid_api_key).`,
+      openaiTtsNeedsKey: 'OpenAI TTS wymaga VOICE_TOOLS_OPENAI_KEY lub OPENAI_API_KEY.',
+      gatewayAuthFailed: 'Uwierzytelnienie bramy nie powiodło się — sprawdź API_SERVER_KEY.'
+    },
+    voice: {
+      configureSpeechToText: 'Skonfiguruj zamianę mowy na tekst, aby korzystać z trybu głosowego.',
+      couldNotStartSession: 'Nie udało się rozpocząć sesji głosowej',
+      microphoneAccessDenied: 'Odmówiono dostępu do mikrofonu.',
+      microphoneConstraintsUnsupported: 'To urządzenie nie obsługuje wymaganych parametrów mikrofonu.',
+      microphoneFailed: 'Błąd mikrofonu',
+      microphoneInUse: 'Mikrofon jest już używany przez inną aplikację.',
+      microphonePermissionDenied: 'Odmówiono dostępu do mikrofonu.',
+      microphoneStartFailed: 'Nie udało się rozpocząć nagrywania z mikrofonu.',
+      microphoneUnsupported: 'To środowisko uruchomieniowe nie obsługuje nagrywania z mikrofonu.',
+      noMicrophone: 'Nie znaleziono mikrofonu.',
+      noSpeechDetected: 'Nie wykryto mowy',
+      playbackFailed: 'Nie udało się odtworzyć głosu',
+      recordingFailed: 'Nie udało się nagrać głosu',
+      transcriptionFailed: 'Nie udało się transkrybować głosu',
+      transcriptionUnavailable: 'Transkrypcja głosu nie jest jeszcze dostępna.',
+      tryRecordingAgain: 'Spróbuj nagrać ponownie.',
+      unavailable: 'Funkcje głosowe są niedostępne'
+    },
+    native: {
+      approvalTitle: 'Wymagana zgoda',
+      approveAction: 'Zezwól',
+      rejectAction: 'Odrzuć',
+      inputTitle: 'Potrzebna odpowiedź',
+      inputBody: 'Hermes czeka na Twoją odpowiedź.',
+      turnDoneTitle: 'Hermes zakończył generowanie odpowiedzi',
+      turnDoneBody: 'Odpowiedź jest gotowa.',
+      turnErrorTitle: 'Nie udało się wygenerować odpowiedzi',
+      backgroundDoneTitle: 'Zadanie w tle zakończone',
+      backgroundFailedTitle: 'Nie udało się wykonać zadania w tle',
+      creditsTitle: 'Środki'
+    }
+  },
+
+  remoteDisplayBanner: {
+    message: reason =>
+      `Aktywne renderowanie programowe — wykryto zdalny wyświetlacz (${reason}). Przyspieszenie GPU jest wyłączone, aby zapobiec migotaniu.`
+  },
+
+  titlebar: {
+    hideSidebar: 'Ukryj pasek boczny',
+    showSidebar: 'Pokaż pasek boczny',
+    search: 'Szukaj',
+    searchTitle: 'Wyszukaj sesje, widoki i działania',
+    swapSidebarSides: 'Zamień paski boczne stronami',
+    hideRightSidebar: 'Ukryj prawy pasek boczny',
+    showRightSidebar: 'Pokaż prawy pasek boczny',
+    muteHaptics: 'Wyłącz haptykę',
+    unmuteHaptics: 'Włącz haptykę',
+    openSettings: 'Otwórz ustawienia',
+    openStarmap: 'Otwórz graf pamięci',
+    layoutEditor: 'Edytor układu',
+    layoutEditorTitle: mod => `Edytor układu — kliknięcie z ${mod} przywraca układ`
+  },
+
+  keybinds: {
+    title: 'Skróty klawiaturowe',
+    subtitle: open => `Kliknij skrót, aby go zmienić · ${open} ponownie otwiera ten panel.`,
+    rebind: 'Zmień skrót',
+    reset: 'Przywróć ustawienia domyślne',
+    resetAll: 'Zresetuj wszystko',
+    pressKey: 'Naciśnij klawisz…',
+    set: 'ustawiono',
+    conflictWith: label => `Przypisany również do „${label}”`,
+    categories: {
+      composer: 'Pole wiadomości',
+      profiles: 'Profile',
+      session: 'Sesja',
+      navigation: 'Nawigacja',
+      view: 'Widok'
+    },
+    actions: {
+      'keybinds.openPanel': 'Otwórz skróty klawiaturowe',
+      'nav.commandPalette': 'Otwórz paletę poleceń',
+      'nav.commandCenter': 'Otwórz Centrum poleceń',
+      'nav.settings': 'Otwórz ustawienia',
+      'nav.profiles': 'Otwórz profile',
+      'nav.skills': 'Otwórz umiejętności',
+      'nav.messaging': 'Otwórz wiadomości',
+      'nav.artifacts': 'Otwórz artefakty',
+      'nav.cron': 'Otwórz zaplanowane zadania',
+      'nav.agents': 'Otwórz agentów',
+      'session.new': 'Nowa sesja',
+      'session.newTab': 'Nowa karta sesji',
+      'session.newWindow': 'Nowa sesja w oknie',
+      'session.next': 'Następna sesja',
+      'session.prev': 'Poprzednia sesja',
+      'session.slot.1': 'Przełącz na ostatnio używaną sesję nr 1',
+      'session.slot.2': 'Przełącz na ostatnio używaną sesję nr 2',
+      'session.slot.3': 'Przełącz na ostatnio używaną sesję nr 3',
+      'session.slot.4': 'Przełącz na ostatnio używaną sesję nr 4',
+      'session.slot.5': 'Przełącz na ostatnio używaną sesję nr 5',
+      'session.slot.6': 'Przełącz na ostatnio używaną sesję nr 6',
+      'session.slot.7': 'Przełącz na ostatnio używaną sesję nr 7',
+      'session.slot.8': 'Przełącz na ostatnio używaną sesję nr 8',
+      'session.slot.9': 'Przełącz na ostatnio używaną sesję nr 9',
+      'session.focusSearch': 'Wyszukaj sesje',
+      'session.togglePin': 'Przypnij/odepnij bieżącą sesję',
+      'workspace.newWorktree': 'Nowe drzewo robocze',
+      'composer.focus': 'Przejdź do pola wiadomości',
+      'composer.modelPicker': 'Otwórz selektor modeli',
+      'composer.voice': 'Rozpocznij / zatrzymaj rozmowę głosową',
+      'view.toggleSidebar': 'Przełącz widoczność paska bocznego sesji',
+      'view.toggleRightSidebar': 'Przełącz widoczność przeglądarki plików',
+      'view.toggleReview': 'Przełącz widoczność panelu zmian',
+      'hud.snapToPointer': 'Przenieś HUD do wskaźnika (globalnie, gdy HUD jest otwarty)',
+      'view.showFiles': 'Pokaż przeglądarkę plików',
+      'view.showTerminal': 'Przełącz widoczność terminala',
+      'view.newTerminal': 'Nowy terminal',
+      'view.nextTerminal': 'Następny terminal',
+      'view.prevTerminal': 'Poprzedni terminal',
+      'view.closeTerminal': 'Zamknij terminal',
+      'view.terminalSelection': 'Wstaw zaznaczenie z terminala do pola wiadomości',
+      'view.closeTab': 'Zamknij kartę',
+      'view.reopenTab': 'Otwórz ponownie zamkniętą kartę',
+      'view.flipPanes': 'Zamień paski boczne stronami',
+      'appearance.toggleMode': 'Przełącz między trybem jasnym a ciemnym',
+      'profile.default': 'Przełącz na profil domyślny',
+      'profile.switch.1': 'Przełącz na profil 1',
+      'profile.switch.2': 'Przełącz na profil 2',
+      'profile.switch.3': 'Przełącz na profil 3',
+      'profile.switch.4': 'Przełącz na profil 4',
+      'profile.switch.5': 'Przełącz na profil 5',
+      'profile.switch.6': 'Przełącz na profil 6',
+      'profile.switch.7': 'Przełącz na profil 7',
+      'profile.switch.8': 'Przełącz na profil 8',
+      'profile.switch.9': 'Przełącz na profil 9',
+      'profile.switch.10': 'Przełącz na profil 10',
+      'profile.switch.11': 'Przełącz na profil 11',
+      'profile.switch.12': 'Przełącz na profil 12',
+      'profile.switch.13': 'Przełącz na profil 13',
+      'profile.switch.14': 'Przełącz na profil 14',
+      'profile.switch.15': 'Przełącz na profil 15',
+      'profile.switch.16': 'Przełącz na profil 16',
+      'profile.switch.17': 'Przełącz na profil 17',
+      'profile.switch.18': 'Przełącz na profil 18',
+      'profile.next': 'Następny profil',
+      'profile.prev': 'Poprzedni profil',
+      'profile.toggleAll': 'Przełącz widok wszystkich profili',
+      'profile.create': 'Utwórz profil',
+      'composer.send': 'Wyślij wiadomość',
+      'composer.newline': 'Wstaw nową linię',
+      'composer.steer': 'Pokieruj generowaną odpowiedzią',
+      'composer.sendQueued': 'Wyślij następną wiadomość z kolejki',
+      'composer.mention': 'Dodaj odwołanie do pliku, folderu lub adresu URL',
+      'composer.slash': 'Paleta poleceń /',
+      'composer.help': 'Szybka pomoc',
+      'composer.history': 'Przełącz podpowiedzi / historię',
+      'composer.cancel': 'Zamknij menu · anuluj zadanie',
+      'composer.queue': 'Dodaj wiadomość do kolejki'
+    },
+    search: 'Szukaj skrótów…'
+  },
+
+  language: {
+    label: 'Język',
+    description: 'Wybierz język interfejsu aplikacji Hermes Desktop.',
+    saving: 'Zapisywanie języka…',
+    saveError: 'Aktualizacja języka nie powiodła się',
+    switchTo: 'Zmień język',
+    searchPlaceholder: 'Wyszukaj języki…',
+    noResults: 'Nie znaleziono języków'
+  },
+
+  settings: {
+    closeSettings: 'Zamknij ustawienia',
+    exportConfig: 'Eksportuj konfigurację',
+    importConfig: 'Importuj konfigurację',
+    resetToDefaults: 'Przywróć ustawienia domyślne',
+    resetConfirm: 'Przywrócić domyślne ustawienia Hermesa?',
+    exportFailed: 'Eksport nie powiódł się',
+    resetFailed: 'Resetowanie nie powiodło się',
+    nav: {
+      providers: 'Dostawcy',
+      providerAccounts: 'Konta',
+      providerApiKeys: 'Klucze API',
+      gateway: 'Brama',
+      apiKeys: 'Narzędzia i klucze API',
+      keysTools: 'Narzędzia',
+      keysSettings: 'Ustawienia',
+      mcp: 'MCP',
+      archivedChats: 'Zarchiwizowane czaty',
+      about: 'Informacje',
+      notifications: 'Powiadomienia',
+      plugins: 'Wtyczki',
+      providerCustomEndpoints: 'Własne endpointy',
+      keybinds: 'Skróty klawiaturowe',
+      billing: 'Rozliczenia'
+    },
+    plugins: {
+      title: 'Wtyczki aplikacji Hermes Desktop',
+      blurb:
+        'Rozszerzenia interfejsu ładowane w tej aplikacji — dołączone do kompilacji lub umieszczone w folderze desktop-plugins (również te utworzone przez Hermesa). Wyłączenie odłącza wtyczkę od razu i zachowuje ten stan po ponownym uruchomieniu.',
+      count: count => `Wtyczki: ${count}`,
+      openFolder: 'Otwórz folder wtyczek',
+      rescan: 'Skanuj ponownie',
+      reveal: 'Pokaż w menedżerze plików',
+      enable: 'Włącz',
+      disable: 'Wyłącz',
+      failed: 'nieudana',
+      empty: 'Nie zainstalowano jeszcze wtyczek aplikacji Hermes Desktop.',
+      kinds: {
+        bundled: 'dołączona',
+        disk: 'na dysku',
+        runtime: 'uruchomieniowa'
+      }
+    },
+    notifications: {
+      title: 'Powiadomienia',
+      intro:
+        'Natywne powiadomienia systemowe, niezależne od komunikatów w aplikacji. Są lokalne dla urządzenia — każdy komputer ma własne ustawienia.',
+      enableAll: 'Włącz powiadomienia',
+      enableAllDesc: 'Przełącznik główny. Wyłącz tę opcję, aby wyciszyć wszystkie powiadomienia poniżej.',
+      focusedHint: 'Powiadomienia o ukończeniu są wysyłane tylko wtedy, gdy Hermes działa w tle.',
+      kinds: {
+        approval: {
+          label: 'Wymagana zgoda',
+          description: 'Polecenie czeka, aż zezwolisz na jego wykonanie albo je odrzucisz.'
+        },
+        input: {
+          label: 'Potrzebna odpowiedź',
+          description: 'Hermes zadał pytanie albo potrzebuje hasła lub sekretu.'
+        },
+        turnDone: {
+          label: 'Odpowiedź gotowa',
+          description: 'Odpowiedź została wygenerowana, gdy Hermes działał w tle.'
+        },
+        turnError: {
+          label: 'Nie udało się wygenerować odpowiedzi',
+          description: 'Generowanie odpowiedzi zakończyło się błędem.'
+        },
+        backgroundDone: {
+          label: 'Zadanie w tle zakończone',
+          description: 'Polecenie terminala uruchomione w tle zostało wykonane.'
+        },
+        credits: {
+          label: 'Alerty o środkach',
+          description: 'Dostęp do środków został wstrzymany lub przywrócony.'
+        }
+      },
+      test: 'Wyślij powiadomienie testowe',
+      testTitle: 'Hermes',
+      testBody: 'Powiadomienia działają.',
+      testSent:
+        'Test wysłany. Jeśli nic się nie pojawi, sprawdź uprawnienia powiadomień systemu operacyjnego oraz tryb Skupienie / Nie przeszkadzać.',
+      testUnsupported: 'Ten system nie obsługuje natywnych powiadomień.',
+      completionSoundTitle: 'Dźwięk zakończenia',
+      completionSoundDesc:
+        'Odtwarzany po zakończeniu generowania odpowiedzi przez agenta. Wybierz dźwięk i odsłuchaj go tutaj.',
+      completionSoundPreview: 'Odsłuch'
+    },
+    sections: {
+      model: 'Model',
+      chat: 'Czat',
+      appearance: 'Wygląd',
+      workspace: 'Obszar roboczy',
+      safety: 'Bezpieczeństwo',
+      memory: 'Pamięć i kontekst',
+      voice: 'Głos',
+      advanced: 'Zaawansowane'
+    },
+    searchPlaceholder: {
+      about: 'Informacje o aplikacji Hermes Desktop',
+      config: 'Wyszukaj ustawienia…',
+      gateway: 'Połączenie z bramą…',
+      keys: 'Wyszukaj klucze API…',
+      mcp: 'Przeszukaj serwery MCP...',
+      sessions: 'Wyszukaj zarchiwizowane sesje...'
+    },
+    modeOptions: {
+      light: { label: 'Jasny', description: 'Jasny interfejs aplikacji' },
+      dark: { label: 'Ciemny', description: 'Interfejs przyjazny dla oczu' },
+      system: { label: 'Systemowy', description: 'Dostosuj do wyglądu systemu' }
+    },
+    appearance: {
+      title: 'Wygląd',
+      intro:
+        'Te ustawienia wyglądu dotyczą tylko aplikacji Hermes Desktop. Tryb określa jasność, a motyw — paletę akcentów i wygląd czatu.',
+      backdropTitle: 'Tło czatu',
+      backdropDesc: 'Delikatny obraz posągu widoczny za rozmową.',
+      colorMode: 'Tryb kolorów',
+      colorModeDesc: 'Wybierz stały tryb lub dostosuj wygląd Hermesa do ustawień systemu.',
+      toolViewTitle: 'Wyświetlanie wywołań narzędzi',
+      toolViewDesc:
+        'Widok podstawowy ukrywa surowe dane narzędzi; widok techniczny pokazuje pełne dane wejściowe i wyjściowe.',
+      uiScaleTitle: 'Skala interfejsu użytkownika',
+      uiScaleDesc: (percent: number) =>
+        `Skaluje tekst i elementy sterujące w całej aplikacji. Działają też skróty Cmd/Ctrl z klawiszami +, − i 0. Obecnie: ${percent}%.`,
+      translucencyTitle: 'Przezroczystość okna',
+      translucencyDesc: 'Zobacz swój pulpit przez całe okno. Tylko macOS i Windows.',
+      embedsTitle: 'Osadzone podglądy',
+      embedsDesc:
+        'Rozbudowane podglądy są ładowane z witryn innych firm (YouTube, X itd.). Opcja „Pytaj” pokazuje symbol zastępczy, dopóki nie zezwolisz na każdy podgląd; „Zawsze” ładuje je automatycznie; „Wyłączone” zachowuje zwykłe linki.',
+      embedsAsk: 'Pytaj',
+      embedsAlways: 'Zawsze',
+      embedsOff: 'Wyłączone',
+      embedsReset: (count: number) => `Zresetuj zezwolenia dla usług (${count})`,
+      product: 'Uproszczone',
+      productDesc: 'Czytelna aktywność narzędzi ze zwięzłymi podsumowaniami.',
+      technical: 'Techniczne',
+      technicalDesc: 'Pokazuje surowe argumenty i wyniki narzędzi oraz szczegóły niskiego poziomu.',
+      themeTitle: 'Motyw',
+      themeDesc: 'Palety dotyczą tylko aplikacji Hermes Desktop. Wybrany tryb jest nakładany na motyw.',
+      themeProfileNote: profile => `Zapisano dla profilu ${profile} — każdy profil ma własny motyw.`,
+      installTitle: 'Zainstaluj z VS Code',
+      installDesc:
+        'Wklej identyfikator rozszerzenia z Marketplace (np. dracula-theme.theme-dracula), aby przekształcić jego motyw kolorystyczny w paletę aplikacji Hermes Desktop.',
+      installPlaceholder: 'publisher.extension',
+      installButton: 'Zainstaluj',
+      installing: 'Instaluję…',
+      installError: 'Nie można zainstalować tego motywu.',
+      installed: name => `Zainstalowano „${name}”.`,
+      removeTheme: 'Usuń motyw',
+      importedBadge: 'Zaimportowany',
+      pet: {
+        title: 'Maskotka',
+        intro:
+          'Adoptuj animowaną maskotkę Petdex, która unosi się nad aplikacją i reaguje na działania Hermesa — porusza się podczas pracy narzędzi, świętuje sukcesy i smuci się po błędach.',
+        restartHint:
+          'Maskotki wymagają szybkiego ponownego uruchomienia aplikacji — została ona otwarta przed dodaniem tej funkcji. Zamknij Hermesa, uruchom go ponownie i wróć tutaj.',
+        on: 'Włączone',
+        off: 'Wyłączone',
+        scaleTitle: 'Rozmiar',
+        scaleDesc: 'Zmień rozmiar pływającej maskotki. Ma zastosowanie wszędzie i natychmiast.',
+        roamTitle: 'Swobodne poruszanie',
+        roamDesc: 'Pozwól maskotce samodzielnie poruszać się po oknie, gdy nic się nie dzieje.',
+        chooseTitle: 'Wybierz maskotkę',
+        chooseDesc: 'Wybrana maskotka zostanie w razie potrzeby zainstalowana i ustawiona jako aktywna.',
+        searchPlaceholder: 'Wyszukaj maskotki…',
+        unreachable: 'Nie udało się połączyć z galerią Petdex. Sprawdź swoje połączenie i otwórz ponownie tę stronę.',
+        noMatch: query => `Żadna maskotka nie pasuje do „${query}”.`,
+        installedTag: 'zainstalowana',
+        generatedTag: 'Wygenerowano',
+        countCapped: (cap, total) => `Wyświetlono ${cap} z ${total} — wpisz tekst, aby zawęzić wyniki.`,
+        count: n => `Maskotki: ${n}.`,
+        uninstall: name => `Odinstaluj ${name}`,
+        delete: name => `Usuń ${name}`,
+        deleteTitle: name => `Usuń ${name}?`,
+        deleteBody: 'Ta maskotka zostanie trwale usunięta i nie będzie można jej ponownie zainstalować.',
+        deleteConfirm: 'Usuń',
+        rename: name => `Zmień nazwę ${name}`,
+        renameTitle: 'Zmień nazwę maskotki',
+        renamePlaceholder: 'Nazwij maskotkę',
+        renameSave: 'Zapisz',
+        exportPet: name => `Eksportuj ${name}`,
+        adoptFailed: slug => `Nie udało się zaadoptować ${slug}`,
+        uninstallFailed: slug => `Nie można odinstalować ${slug}`,
+        renameFailed: slug => `Nie udało się zmienić nazwy ${slug}`,
+        exportFailed: slug => `Nie można wyeksportować ${slug}`,
+        noneAvailable: 'Brak maskotek, które można teraz włączyć.',
+        turnOnFailed: 'Nie udało się włączyć maskotki.',
+        turnOffFailed: 'Nie udało się wyłączyć maskotki.'
+      }
+    },
+    fieldLabels: defineFieldCopy({
+      model: 'Domyślny model',
+      modelContextLength: 'Okno kontekstu',
+      fallbackProviders: 'Modele rezerwowe',
+      toolsets: 'Włączone zestawy narzędzi',
+      timezone: 'Strefa czasowa',
+      desktop: {
+        repoScanEnabled: 'Automatyczne wykrywanie repozytoriów',
+        repoScanRoots: 'Katalogi przeszukiwania repozytoriów',
+        repoScanExcludePaths: 'Wykluczone ścieżki repozytoriów'
+      },
+      display: {
+        personality: 'Osobowość',
+        showReasoning: 'Bloki rozumowania'
+      },
+      agent: {
+        maxTurns: 'Maksymalna liczba kroków agenta',
+        imageInputMode: 'Załączniki graficzne',
+        apiMaxRetries: 'Ponowne próby API',
+        serviceTier: 'Poziom usług',
+        toolUseEnforcement: 'Egzekwowanie użycia narzędzi'
+      },
+      terminal: {
+        cwd: 'Katalog roboczy',
+        backend: 'Backend wykonawczy',
+        timeout: 'Limit czasu polecenia',
+        persistentShell: 'Trwała powłoka',
+        envPassthrough: 'Przekazywanie zmiennych środowiskowych',
+        dockerImage: 'Obraz Dockera',
+        singularityImage: 'Obraz Singularity',
+        modalImage: 'Obraz Modal',
+        daytonaImage: 'Obraz Daytona'
+      },
+      fileReadMaxChars: 'Limit odczytu pliku',
+      toolOutput: {
+        maxBytes: 'Limit danych wyjściowych terminala',
+        maxLines: 'Limit stron pliku',
+        maxLineLength: 'Limit długości linii'
+      },
+      codeExecution: {
+        mode: 'Tryb wykonania kodu'
+      },
+      approvals: {
+        mode: 'Tryb udzielania zgody',
+        timeout: 'Limit czasu na udzielenie zgody',
+        mcpReloadConfirm: 'Potwierdź ponowne załadowanie MCP'
+      },
+      commandAllowlist: 'Lista dozwolonych poleceń',
+      security: {
+        redactSecrets: 'Maskuj sekrety',
+        allowPrivateUrls: 'Zezwalaj na prywatne adresy URL'
+      },
+      browser: {
+        allowPrivateUrls: 'Prywatne adresy URL przeglądarki',
+        autoLocalForPrivateUrls: 'Lokalna przeglądarka dla prywatnych adresów URL'
+      },
+      checkpoints: {
+        enabled: 'Punkty kontrolne plików',
+        maxSnapshots: 'Limit punktów kontrolnych'
+      },
+      voice: {
+        recordKey: 'Skrót głosowy',
+        maxRecordingSeconds: 'Maksymalna długość nagrania',
+        autoTts: 'Odczytuj odpowiedzi na głos'
+      },
+      stt: {
+        enabled: 'Zamiana mowy na tekst',
+        echoTranscripts: 'Publikowanie transkrypcji w czacie',
+        provider: 'Dostawca zamiany mowy na tekst',
+        local: {
+          model: 'Lokalny model transkrypcji',
+          language: 'Język transkrypcji'
+        },
+        openai: {
+          model: 'Model OpenAI STT'
+        },
+        groq: {
+          model: 'Model Groq STT'
+        },
+        mistral: {
+          model: 'Model Mistral STT'
+        },
+        elevenlabs: {
+          modelId: 'Model ElevenLabs STT',
+          languageCode: 'Język ElevenLabs',
+          tagAudioEvents: 'Oznacz zdarzenia audio',
+          diarize: 'Rozróżnianie mówców'
+        }
+      },
+      tts: {
+        provider: 'Dostawca zamiany tekstu na mowę',
+        edge: {
+          voice: 'Głos Edge'
+        },
+        openai: {
+          model: 'Model OpenAI TTS',
+          voice: 'Głos OpenAI'
+        },
+        elevenlabs: {
+          voiceId: 'Głos ElevenLabs',
+          modelId: 'Model ElevenLabs'
+        },
+        xai: {
+          voiceId: 'Głos xAI (Grok)',
+          language: 'Język xAI',
+          speed: 'Szybkość odtwarzania xAI',
+          autoSpeechTags: 'Automatyczne znaczniki mowy xAI',
+          optimizeStreamingLatency: 'Optymalizacja opóźnienia strumieniowania xAI',
+          sampleRate: 'Częstotliwość próbkowania xAI',
+          bitRate: 'Przepływność xAI'
+        },
+        deepinfra: {
+          model: 'Model DeepInfra TTS',
+          voice: 'Głos DeepInfra'
+        },
+        minimax: {
+          model: 'Model MiniMax TTS',
+          voiceId: 'Głos MiniMax'
+        },
+        mistral: {
+          model: 'Model Mistral TTS',
+          voiceId: 'Głos Mistral'
+        },
+        gemini: {
+          model: 'Model TTS Gemini',
+          voice: 'Głos Gemini'
+        },
+        neutts: {
+          model: 'Model NeuTTS',
+          device: 'Urządzenie NeuTTS'
+        },
+        kittentts: {
+          model: 'Model KittenTTS',
+          voice: 'Głos KittenTTS'
+        },
+        piper: {
+          voice: 'Głos Piper'
+        }
+      },
+      memory: {
+        memoryEnabled: 'Trwała pamięć',
+        userProfileEnabled: 'Profil użytkownika',
+        memoryCharLimit: 'Budżet pamięci',
+        userCharLimit: 'Budżet profilu',
+        provider: 'Dostawca pamięci'
+      },
+      context: {
+        engine: 'Silnik kontekstowy'
+      },
+      compression: {
+        enabled: 'Automatyczna kompresja',
+        threshold: 'Próg kompresji',
+        targetRatio: 'Cel kompresji',
+        protectLastN: 'Chronione najnowsze wiadomości'
+      },
+      delegation: {
+        model: 'Model subagenta',
+        provider: 'Dostawca subagenta',
+        maxIterations: 'Limit tur subagenta',
+        maxConcurrentChildren: 'Równoległe subagenty',
+        childTimeoutSeconds: 'Limit czasu subagenta',
+        reasoningEffort: 'Poziom rozumowania subagenta'
+      },
+      updates: {
+        nonInteractiveLocalChanges: 'Lokalne zmiany podczas aktualizacji w aplikacji'
+      }
+    }),
+    fieldDescriptions: defineFieldCopy({
+      model: 'Używany w nowych czatach, chyba że wybierzesz inny model w polu wiadomości.',
+      modelContextLength: 'Pozostaw wartość 0, aby użyć okna kontekstu wykrytego dla wybranego modelu.',
+      fallbackProviders: 'Zapasowe wpisy dostawca:model używane, gdy model domyślny zawiedzie.',
+      display: {
+        personality: 'Domyślny styl asystenta dla nowych sesji.',
+        showReasoning: 'Pokaż sekcje rozumowania, jeśli udostępnia je backend.'
+      },
+      timezone:
+        'Używane, gdy Hermes potrzebuje kontekstu czasu lokalnego. Puste pole oznacza systemową strefę czasową.',
+      desktop: {
+        repoScanEnabled: 'Przeszukuj lokalne katalogi pod kątem repozytoriów Git wyświetlanych w Projektach.',
+        repoScanRoots: 'Katalogi do przeszukania. Pozostaw puste, aby przeszukać katalog domowy.',
+        repoScanExcludePaths: 'Katalogi pomijane wraz z całą zawartością podczas wykrywania repozytoriów.'
+      },
+      agent: {
+        imageInputMode: 'Kontroluje sposób wysyłania załączników obrazów do modelu.',
+        maxTurns: 'Górna granica liczby tur z wywołaniami narzędzi, po której Hermes zatrzymuje działanie.'
+      },
+      terminal: {
+        cwd: 'Domyślny folder projektu dla pracy z narzędziami i terminalem.',
+        persistentShell: 'Zachowaj stan powłoki między poleceniami, jeśli backend to obsługuje.',
+        envPassthrough: 'Zmienne środowiskowe przekazywane podczas wykonywania narzędzi.',
+        dockerImage: 'Obraz kontenera używany, gdy backendem wykonawczym jest Docker.',
+        singularityImage: 'Obraz używany, gdy backendem wykonawczym jest Singularity.',
+        modalImage: 'Obraz używany, gdy backendem wykonawczym jest Modal.',
+        daytonaImage: 'Obraz używany, gdy backendem wykonawczym jest Daytona.'
+      },
+      codeExecution: {
+        mode: 'Określa, jak ściśle wykonanie kodu jest ograniczone do bieżącego projektu.'
+      },
+      fileReadMaxChars: 'Maksymalna liczba znaków odczytywanych przez Hermesa w jednym wywołaniu narzędzia.',
+      approvals: {
+        mode: 'Sposób obsługi poleceń wymagających wyraźnej zgody.',
+        timeout: 'Czas oczekiwania na udzielenie zgody.'
+      },
+      security: {
+        redactSecrets: 'Ukrywaj wykryte sekrety w treści udostępnianej modelowi, gdy to możliwe.'
+      },
+      checkpoints: {
+        enabled: 'Przed edycją plików twórz migawki umożliwiające wycofanie zmian.'
+      },
+      memory: {
+        memoryEnabled: 'Zapisuj trwałe informacje, które mogą pomóc w przyszłych sesjach.',
+        userProfileEnabled: 'Utrzymuj kompaktowy profil preferencji użytkownika.'
+      },
+      context: {
+        engine: 'Strategia zarządzania długimi rozmowami w pobliżu limitu kontekstu.'
+      },
+      compression: {
+        enabled: 'Podsumuj starszy kontekst, gdy rozmowy stają się obszerne.'
+      },
+      voice: {
+        autoTts: 'Automatycznie odczytuj odpowiedzi asystenta.'
+      },
+      tts: {
+        xai: {
+          voiceId: 'Identyfikator głosu xAI (np. eve) lub niestandardowego głosu.',
+          language: 'Kod języka mówionego, np. pl.',
+          speed: 'Szybkość odtwarzania: 0,7 oznacza wolniej, 1,0 — normalnie, a 1,5 — szybciej.',
+          autoSpeechTags:
+            'Pozwól modelowi LLM dodawać do tekstu przed syntezą ekspresyjne znaczniki dźwiękowe, np. [laughing] i [sighs].',
+          optimizeStreamingLatency:
+            'Kompromis między opóźnieniem a jakością: 0 oznacza najwyższą jakość, a 2 — najniższe opóźnienie.',
+          sampleRate: 'Częstotliwość próbkowania dźwięku w Hz. Wyższa wartość oznacza lepszą jakość i większe pliki.',
+          bitRate: 'Przepływność MP3 w bitach na sekundę. Dotyczy tylko kodeka mp3.'
+        },
+        neutts: {
+          device: 'Urządzenie do lokalnego wnioskowania NeuTTS.'
+        }
+      },
+      stt: {
+        enabled: 'Włącz transkrypcję mowy lokalnie albo za pośrednictwem dostawcy.',
+        echoTranscripts: 'Publikuj surowe transkrypcje wiadomości głosowych w czacie, oznaczając je ikoną 🎙️.',
+        elevenlabs: {
+          languageCode: 'Opcjonalny kod języka ISO-639-3. Puste pole pozwala ElevenLabs wykryć język automatycznie.'
+        }
+      },
+      updates: {
+        nonInteractiveLocalChanges:
+          'Gdy Hermes aktualizuje się z poziomu aplikacji bez pytania w terminalu, wybierz, czy zachować lokalne zmiany w kodzie źródłowym (stash), czy je odrzucić (discard). Podczas aktualizacji z terminala Hermes zawsze pyta, co zrobić.'
+      }
+    }),
+    about: {
+      heading: 'Hermes Desktop',
+      version: value => `Wersja ${value}`,
+      versionUnavailable: 'Wersja niedostępna',
+      updates: 'Aktualizacje',
+      checkNow: 'Sprawdź teraz',
+      checking: 'Sprawdzam…',
+      seeWhatsNew: 'Zobacz, co nowego',
+      updateNow: 'Zaktualizuj teraz',
+      releaseNotes: 'Informacje o wydaniu',
+      onLatest: 'Korzystasz z najnowszej wersji.',
+      installing: 'Trwa instalowanie aktualizacji.',
+      cantUpdate: 'Ta kompilacja nie może zostać zaktualizowana z poziomu aplikacji.',
+      cantReach: 'Nie mogliśmy połączyć się z serwerem aktualizacji.',
+      tapCheck: 'Kliknij „Sprawdź teraz”, aby wyszukać aktualizacje.',
+      updateReady: count => `Nowa aktualizacja jest gotowa. Zmiany: ${count}.`,
+      lastChecked: age => `Ostatnie sprawdzenie: ${age}`,
+      justNowSuffix: ' · właśnie teraz',
+      automaticUpdates: 'Automatyczne aktualizacje',
+      automaticUpdatesDesc:
+        'Hermes automatycznie sprawdza dostępność aktualizacji w tle i informuje Cię, gdy będą gotowe.',
+      branchCommit: (branch, commit) => `Gałąź ${branch} · commit ${commit}`,
+      never: 'nigdy',
+      justNow: 'właśnie teraz',
+      minAgo: count => `${count} min temu`,
+      hoursAgo: count => `${count} godz. temu`,
+      daysAgo: count => (count === 1 ? '1 dzień temu' : `${count} dni temu`)
+    },
+    config: {
+      none: 'Brak',
+      noneParen: '(brak)',
+      notSet: 'Nie ustawiono',
+      commaSeparated: 'wartości oddzielone przecinkami',
+      loading: 'Ładowanie konfiguracji Hermesa...',
+      emptyTitle: 'Nic do skonfigurowania',
+      emptyDesc: 'W tej sekcji nie ma ustawień, które można zmienić.',
+      failedLoad: 'Nie udało się wczytać ustawień',
+      autosaveFailed: 'Autozapis nie powiódł się',
+      imported: 'Konfiguracja zaimportowana',
+      invalidJson: 'Nieprawidłowa konfiguracja JSON',
+      builtinOnly: 'Tylko wbudowane',
+      keepAwakeTitle: 'Nie usypiaj komputera',
+      keepAwakeDesc:
+        'Zapobiegaj uśpieniu tego komputera, aby długie lub nocne zadania mogły działać dalej. Ekran nadal może się wygasić.'
+    },
+    credentials: {
+      pasteKey: 'Wklej klucz',
+      pasteLabelKey: label => `Wklej klucz: ${label}`,
+      optional: 'Opcjonalne',
+      enterValueFirst: 'Najpierw wprowadź wartość.',
+      couldNotSave: 'Nie można zapisać danych logowania.',
+      remove: 'Usuń',
+      getKey: 'Uzyskaj klucz',
+      saving: 'Zapisywanie…'
+    },
+    envActions: {
+      actions: 'Działania dotyczące danych logowania',
+      docs: 'Dokumentacja',
+      hideValue: 'Ukryj wartość',
+      revealValue: 'Ujawnij wartość',
+      replace: 'Zastąp',
+      set: 'Ustaw',
+      clear: 'Wyczyść',
+      manageInKeys: 'Zarządzaj w Kluczach API'
+    },
+    gateway: {
+      loading: 'Ładowanie ustawień bramy…',
+      unavailableTitle: 'Ustawienia bramy są niedostępne',
+      unavailableDesc: 'Most IPC aplikacji Hermes Desktop nie udostępnia ustawień bramy.',
+      title: 'Połączenie z bramą',
+      envOverride: 'nadpisane przez zmienne środowiskowe',
+      intro:
+        'Hermes Desktop domyślnie uruchamia własną bramę lokalną. Użyj bramy zdalnej, jeśli aplikacja ma sterować działającym już backendem Hermesa na innym komputerze lub za zaufanym serwerem proxy. Wybierz profil poniżej, aby przypisać mu osobny host zdalny.',
+      envOverrideTitle: 'Bieżącą sesją aplikacji Hermes Desktop sterują zmienne środowiskowe.',
+      envOverrideDesc:
+        'Usuń HERMES_DESKTOP_REMOTE_URL i HERMES_DESKTOP_REMOTE_TOKEN ze środowiska, aby użyć ustawienia zapisanego poniżej.',
+      modeTitle: 'Tryb połączenia',
+      localTitle: 'Brama lokalna',
+      localDesc: 'Uruchom prywatny backend Hermesa na localhost. To ustawienie domyślne, które działa także offline.',
+      remoteTitle: 'Brama zdalna',
+      remoteDesc: 'Połącz aplikację Hermes Desktop ze zdalnym backendem Hermesa.',
+      remoteAuthHint:
+        'Bramy hostowane przez dostawcę używają OAuth albo nazwy użytkownika i hasła; bramy hostowane samodzielnie mogą używać tokena sesji.',
+      cloudTitle: 'Hermes Cloud',
+      cloudDesc: 'Zaloguj się raz do usługi Hermes Cloud i wybierz agenta ze swojego konta — bez wklejania adresu URL.',
+      cloudSignInTitle: 'Hermes Cloud',
+      cloudSignIn: 'Zaloguj się do usługi Hermes Cloud',
+      cloudSignedIn: 'Zalogowano się w usłudze Hermes Cloud',
+      cloudNeedsSignIn: 'Zaloguj się do usługi Hermes Cloud, aby wyszukać agentów na swoim koncie.',
+      cloudSignedInDesc: 'Jesteś zalogowany. Wybierz agenta poniżej; sesja odświeża się automatycznie.',
+      cloudAgentsTitle: 'Twoi agenci',
+      cloudOrgPickerTitle: 'Wybierz organizację',
+      cloudOrgSelect: 'Wybierz',
+      cloudOrgChange: 'Zmień organizację',
+      cloudOrgRole: role =>
+        `Rola: ${role === 'OWNER' ? 'właściciel' : role === 'MEMBER' ? 'członek' : `nieznana (${role})`}`,
+      cloudLoadingAgents: 'Ładowanie agentów…',
+      cloudNoAgents: {
+        before: 'Nie znaleziono agentów na tym koncie. Utwórz agenta w ',
+        linkText: 'Nous Portal',
+        after: ', a następnie odśwież.'
+      },
+      cloudRefresh: 'Odśwież',
+      cloudConnect: 'Połącz',
+      cloudConnecting: 'Łączenie…',
+      cloudDiscoverFailed: 'Nie udało się załadować agentów w usłudze Hermes Cloud',
+      cloudConnectFailed: 'Nie udało się połączyć z tym agentem',
+      cloudSignInFailed: 'Nie udało się zalogować do usługi Hermes Cloud',
+      cloudSignedOutTitle: 'Wylogowano z usługi Hermes Cloud',
+      cloudSignedOutMessage: 'Usunięto sesję usługi Hermes Cloud.',
+      cloudConnectedTitle: 'Połączono',
+      cloudConnectedPill: 'Połączono',
+      cloudConnectedTo: name => `Połączono z ${name}.`,
+      cloudAgentProvisioning: 'Przygotowywanie…',
+      cloudStatusLabel: status =>
+        `Stan: ${
+          status === 'active'
+            ? 'aktywny'
+            : status === 'degraded'
+              ? 'ograniczony'
+              : status === 'down'
+                ? 'niedostępny'
+                : status === 'unknown'
+                  ? 'nieznany'
+                  : `nieznany (${status})`
+        }`,
+      remoteUrlTitle: 'Adres URL bramy zdalnej',
+      remoteUrlDesc:
+        'Bazowy adres URL backendu zdalnego panelu WWW. Obsługiwane są prefiksy ścieżek, na przykład /hermes.',
+      probing: 'Sprawdzanie metody uwierzytelniania bramy…',
+      probeError:
+        'Nie udało się jeszcze połączyć z tą bramą. Sprawdź adres URL — metoda uwierzytelniania pojawi się, gdy brama odpowie.',
+      signedIn: 'Zalogowano',
+      signIn: 'Zaloguj się',
+      signOut: 'Wyloguj się',
+      signInWith: provider => `Zaloguj się przez ${provider}`,
+      authTitle: 'Uwierzytelnianie',
+      authSignedInPassword:
+        'Ta brama używa nazwy użytkownika i hasła. Jesteś zalogowany, a sesja odświeża się automatycznie.',
+      authSignedInOauth: 'Ta brama używa OAuth. Jesteś zalogowany, a sesja odświeża się automatycznie.',
+      authNeedsPassword:
+        'Ta brama używa nazwy użytkownika i hasła. Zaloguj się, aby udzielić aplikacji Hermes Desktop dostępu.',
+      authNeedsOauth: provider =>
+        `Ta brama używa OAuth. Zaloguj się przez ${provider}, aby udzielić aplikacji Hermes Desktop dostępu.`,
+      tokenTitle: 'Token sesji',
+      tokenDesc:
+        'Token sesji panelu WWW używany do dostępu przez REST i WebSocket. Pozostaw puste pole, aby zachować zapisany token.',
+      existingToken: value => `Istniejący token: ${value}`,
+      savedToken: 'zapisany',
+      pasteSessionToken: 'Wklej token sesji',
+      testRemote: 'Przetestuj bramę zdalną',
+      saveForRestart: 'Zapisz do następnego uruchomienia',
+      saveAndReconnect: 'Zapisz i połącz ponownie',
+      diagnostics: 'Diagnostyka',
+      diagnosticsDesc: 'Pokaż desktop.log w menedżerze plików — przydatne, gdy brama nie chce się uruchomić.',
+      openLogs: 'Otwórz logi',
+      incompleteTitle: 'Niepełna konfiguracja bramy zdalnej',
+      incompleteSignIn: 'Podaj zdalny adres URL i zaloguj się przed przełączeniem na bramę zdalną.',
+      incompleteToken: 'Podaj zdalny adres URL i token sesji przed przełączeniem na bramę zdalną.',
+      incompleteSignInTest: 'Podaj zdalny adres URL i zaloguj się przed testem.',
+      incompleteTokenTest: 'Podaj zdalny adres URL i token sesji przed testem.',
+      enterUrlFirst: 'Najpierw podaj zdalny adres URL.',
+      restartingTitle: 'Ponowne uruchamianie połączenia z bramą',
+      savedTitle: 'Zapisano ustawienia bramy',
+      restartingMessage: 'Hermes Desktop połączy się ponownie z użyciem zapisanych ustawień — okno pozostanie otwarte.',
+      savedMessage: 'Zapisano do następnego uruchomienia.',
+      connectedTo: (baseUrl, version) => `Połączono z ${baseUrl}${version ? ` · Hermes ${version}` : ''}`,
+      reachableTitle: 'Brama zdalna jest osiągalna',
+      signedOutTitle: 'Wylogowano',
+      signedOutMessage: 'Usunięto sesję bramy zdalnej.',
+      failedLoad: 'Nie udało się wczytać ustawień bramy',
+      signInFailed: 'Nie udało się zalogować',
+      signOutFailed: 'Nie udało się wylogować',
+      testFailed: 'Test bramy zdalnej nie powiódł się',
+      applyFailed: 'Nie udało się zastosować ustawień bramy',
+      saveFailed: 'Nie udało się zapisać ustawień bramy',
+      sshTitle: 'Połącz przez SSH',
+      sshDesc:
+        'Hermes jest uruchamiany na zdalnym hoście przez SSH i tunelowany do tej aplikacji — nie musisz niczego samodzielnie uruchamiać ani wystawiać. Wymagany jest działający dostęp do hosta przez SSH za pomocą klucza.',
+      sshTrustHint:
+        'Pierwszy przedstawiony klucz hosta zostaje uznany za zaufany i przypięty; późniejsza zmiana powoduje bezpieczne odrzucenie połączenia.',
+      sshHostTitle: 'Host',
+      sshHostDesc: 'user@host albo alias Host z ~/.ssh/config.',
+      sshHostPick: 'Wybierz host…',
+      sshHostPickTitle: 'Host',
+      sshHostPickDesc: 'Alias Host z ~/.ssh/config albo opcja Własny do ręcznego wpisania.',
+      sshHostCustom: 'Własny (wpisz ręcznie)…',
+      sshUserTitle: 'Użytkownik',
+      sshUserDesc: 'Puste = wartość z ~/.ssh/config albo bieżący użytkownik.',
+      sshUserPlaceholder: 'z ~/.ssh/config',
+      sshPortTitle: 'Port',
+      sshPortDesc: 'Puste = 22 albo port z ~/.ssh/config.',
+      sshKeyTitle: 'Plik tożsamości',
+      sshKeyDesc: 'Ścieżka do klucza prywatnego. Puste = ssh-agent albo ~/.ssh/config.',
+      sshHermesPathTitle: 'Ścieżka Hermesa (opcjonalnie)',
+      sshHermesPathDesc: 'Pełna ścieżka do zdalnego pliku wykonywalnego hermes. Puste = wykryj automatycznie.',
+      sshHermesPathPlaceholder: 'wykryj automatycznie',
+      sshTestConnection: 'Testuj SSH',
+      sshConnect: 'Połącz',
+      sshButtonsHint:
+        'Zapisane ustawienia zaczną obowiązywać przy następnym uruchomieniu. Połącz ponownie nawiązuje połączenie od razu.',
+      sshReachable: (host, platform) => `Host osiągalny: ${host} (${platform}) — znaleziono Hermesa`,
+      sshIncompleteHost: 'Wprowadź host SSH przed połączeniem.',
+      sshErrUnreachable: 'Nie można połączyć się z tym hostem przez SSH. Sprawdź host, port i połączenie sieciowe.',
+      sshErrAuth:
+        'Uwierzytelnienie SSH nie powiodło się. Załaduj klucz do ssh-agent (ssh-add) albo ustaw IdentityFile w ~/.ssh/config — Hermes uruchamia ssh nieinteraktywnie.',
+      sshErrHostKey:
+        'Klucz hosta ZMIENIŁ SIĘ od ostatniego połączenia. Sprawdź, czy zmiana jest oczekiwana, a następnie uruchom ssh-keygen -R <host> i połącz się ponownie.',
+      sshErrNotInstalled:
+        'Hermes nie jest zainstalowany na zdalnym hoście. Zainstaluj go tam (curl -fsSL https://hermes-agent.nousresearch.com/install.sh | sh) albo ustaw ścieżkę Hermesa.',
+      sshErrPlatform:
+        'Nieobsługiwana platforma zdalna. Tryb SSH w aplikacji Hermes Desktop obsługuje zdalne hosty Linux, macOS i Windows.',
+      sshErrTimeout: 'Przekroczono limit czasu połączenia SSH. Host może być nieosiągalny albo uśpiony.',
+      sshErrUpdateRequired: 'Przed połączeniem z aplikacją Hermes Desktop zaktualizuj Hermesa na zdalnym hoście.',
+      sshErrUnknown: 'Połączenie SSH nie powiodło się.'
+    },
+    keys: {
+      loading: 'Ładowanie kluczy i danych uwierzytelniających API...',
+      failedLoad: 'Nie udało się załadować kluczy API',
+      empty: 'Nic jeszcze nie skonfigurowano w tej kategorii.'
+    },
+    mcp: {
+      loading: 'Ładowanie serwerów MCP…',
+      failedLoad: 'Nie udało się załadować konfiguracji MCP',
+      nameRequiredTitle: 'Nazwa jest wymagana',
+      nameRequiredMessage: 'Nadaj temu serwerowi MCP klucz konfiguracyjny.',
+      objectRequired: 'Konfiguracja serwera musi być obiektem JSON',
+      invalidJson: 'Nieprawidłowy JSON serwera MCP',
+      saveFailed: 'Zapisywanie nie powiodło się',
+      removeFailed: 'Usunięcie nie powiodło się',
+      gatewayUnavailableTitle: 'Brama niedostępna',
+      gatewayUnavailableMessage: 'Połącz się ponownie z bramą przed ponownym załadowaniem MCP.',
+      reloadedTitle: 'Załadowano ponownie narzędzia MCP',
+      reloadedMessage: 'Nowe schematy narzędzi zaczną obowiązywać od następnej odpowiedzi.',
+      reloadFailed: 'Ponowne załadowanie MCP nie powiodło się',
+      savedTitle: 'Serwer MCP został zapisany',
+      savedMessage: name => `Zmiany serwera ${name} zaczną obowiązywać po ponownym załadowaniu MCP.`,
+      newServer: 'Nowy serwer',
+      reload: 'Załaduj ponownie MCP',
+      reloading: 'Ponowne ładowanie…',
+      emptyTitle: 'Brak serwerów MCP',
+      emptyDesc: 'Dodaj serwer stdio lub HTTP, aby udostępnić narzędzia MCP.',
+      disabled: 'wyłączone',
+      editServer: 'Edytuj serwer',
+      name: 'Nazwa',
+      serverJson: 'JSON serwera',
+      remove: 'Usuń',
+      saveServer: 'Zapisz serwer',
+      test: 'Przetestuj połączenie',
+      testing: 'Testowanie…',
+      testOk: count => `Połączono — dostępne narzędzia: ${count}`,
+      testFailed: 'Połączenie nie powiodło się',
+      enableServer: name => `Włącz ${name}`,
+      disableServer: name => `Wyłącz ${name}`,
+      serverEnabled: name => `Włączono ${name} — zmiana dotyczy nowych sesji.`,
+      serverDisabled: name => `Wyłączono ${name} — zmiana dotyczy nowych sesji.`,
+      toggleFailed: (name, enabled) => `Nie udało się ${enabled ? 'włączyć' : 'wyłączyć'} ${name}`,
+      tabServers: 'Serwery',
+      tabCatalog: 'Katalog',
+      catalogLoading: 'Ładowanie katalogu MCP…',
+      catalogLoadFailed: 'Nie udało się załadować katalogu MCP',
+      catalogEmpty: 'Brak wpisów w katalogu.',
+      catalogInstalled: 'Zainstalowany',
+      catalogEnabled: 'Włączony',
+      catalogNeedsInstall: 'Wymaga kompilacji',
+      catalogInstall: 'Zainstaluj',
+      catalogInstalling: 'Instalowanie…',
+      catalogInstallStarted: name => `Instalowanie ${name}… Po zakończeniu będzie dostępny w nowych sesjach.`,
+      catalogInstallFailed: name => `Nie udało się zainstalować ${name}`,
+      catalogEnvPrompt: name => `${name} wymaga danych logowania`,
+      catalogEnvRequired: 'Przed instalacją wprowadź wymagane wartości.',
+      capabilitySummary: (tools, prompts, resources) =>
+        `Włączono · ${[`Narzędzia: ${tools}`, ...(prompts ? [`Prompty: ${prompts}`] : []), ...(resources ? [`Zasoby: ${resources}`] : [])].join(', ')}`,
+      statusConnecting: 'Łączenie…',
+      statusNeedsAuth: 'Wymaga uwierzytelnienia',
+      statusError: 'Błąd',
+      statusOff: 'Wyłączone',
+      allServers: 'Wszystkie serwery',
+      authenticatedTitle: 'Uwierzytelniono',
+      authenticatedMessage: (server, count) => `${server} · narzędzia: ${count}`,
+      waitingForBrowser: 'Oczekiwanie na przeglądarkę…',
+      authenticate: 'Uwierzytelnij',
+      unsavedConnect: 'Niezapisane — zapisz plik mcp.json, aby się połączyć.',
+      enableTool: tool => `Włącz ${tool}`,
+      disableTool: tool => `Wyłącz ${tool}`,
+      noOutput: 'Nie ma jeszcze wyników.'
+    },
+    model: {
+      loading: 'Ładowanie konfiguracji modelu...',
+      appliesDesc: 'Dotyczy nowych sesji. Aby od razu zmienić model aktywnego czatu, użyj selektora w polu wiadomości.',
+      provider: 'Dostawca',
+      model: 'Model',
+      applying: 'Stosowanie...',
+      defaultsLabel: 'Domyślne',
+      reasoning: 'Rozumowanie',
+      reasoningOff: 'Wyłączone',
+      defaultsFailed: 'Nie udało się zapisać ustawień domyślnych modelu',
+      auxiliaryTitle: 'Modele pomocnicze',
+      resetAllToMain: 'Przywróć model główny dla wszystkich zadań',
+      auxiliaryDesc:
+        'Zadania pomocnicze są domyślnie uruchamiane na modelu głównym. Aby to zmienić, przypisz wybrany model do danego zadania.',
+      setToMain: 'Ustaw model główny',
+      change: 'Zmień',
+      autoUseMain: 'automatycznie · użyj modelu głównego',
+      providerDefault: '(domyślny dostawca)',
+      fallbackAdd: 'Dodaj model zapasowy',
+      fallbackEmpty: 'Brak modeli zapasowych — model domyślny będzie używany, dopóki nie zawiedzie.',
+      notInCatalog:
+        'nie znajduje się na liście modeli tego dostawcy — wywołania mogą zostać obsłużone przez model zapasowy.',
+      tasks: {
+        vision: { label: 'Wizja', hint: 'Analiza obrazu' },
+        web_extract: { label: 'Pobieranie treści stron', hint: 'Podsumowywanie stron' },
+        compression: { label: 'Kompresja', hint: 'Kompresowanie kontekstu' },
+        skills_hub: { label: 'Katalog umiejętności', hint: 'Wyszukiwanie umiejętności' },
+        approval: { label: 'Zgoda', hint: 'Inteligentne automatyczne udzielanie zgody' },
+        mcp: { label: 'MCP', hint: 'Kierowanie wywołań narzędzi MCP' },
+        title_generation: { label: 'Generowanie tytułów', hint: 'Tytuły sesji' },
+        curator: { label: 'Kurator', hint: 'Przegląd wykorzystania umiejętności' }
+      }
+    },
+    providers: {
+      connectAccount: 'Połącz konto',
+      haveApiKey: 'Masz zamiast tego klucz API?',
+      intro:
+        'Zaloguj się w ramach subskrypcji — nie ma klucza API do skopiowania. Hermes uruchamia dla Ciebie proces logowania w przeglądarce, bezpośrednio w aplikacji.',
+      connected: 'Połączono',
+      collapse: 'Zwiń',
+      connectAnother: 'Połącz innego dostawcę',
+      otherProviders: 'Inni dostawcy',
+      disconnect: 'Rozłącz',
+      disconnectInTerminal: 'Rozłącz (uruchamia polecenie usunięcia w terminalu)',
+      removeConfirm: provider => `Usunąć ${provider}?`,
+      removeExternalGeneric: provider => `${provider} jest zarządzany przez własne CLI — usuń go tam.`,
+      removeKeyManaged: provider => `${provider} korzysta z klucza API. Usuń go w sekcji Klucze API.`,
+      removeTerminalConfirm: (provider, command) =>
+        `Rozłączyć ${provider}? W terminalu zostanie uruchomione „${command}”, aby usunąć dane uwierzytelniające.`,
+      removeTerminalRunning: provider => `Odłączanie ${provider} w terminalu…`,
+      removedTitle: 'Konto usunięte',
+      removedMessage: provider => `Usunięto konto ${provider}.`,
+      failedRemove: provider => `Nie udało się usunąć ${provider}`,
+      noProviderKeys: 'Brak dostępnych kluczy API dostawców.',
+      searchKeys: 'Wyszukaj dostawców…',
+      noKeysMatch: 'Żaden dostawca nie pasuje do wyszukiwania.',
+      loading: 'Ładowanie dostawców…',
+      localEndpoint: {
+        title: 'Lokalny / własny endpoint',
+        description: 'Połącz Hermesa z dowolnym endpointem zgodnym z OpenAI (Zyphra, vLLM, llama.cpp, Ollama itd.).'
+      }
+    },
+    sessions: {
+      loading: 'Ładowanie zarchiwizowanych sesji…',
+      archivedTitle: 'Archiwalne sesje',
+      archivedIntro:
+        'Zarchiwizowane czaty są ukryte na pasku bocznym, ale zachowują wszystkie wiadomości. Naciśnij klawisz Ctrl/⌘ i kliknij czat na pasku bocznym, aby go zarchiwizować.',
+      emptyArchivedTitle: 'Nic nie zostało zarchiwizowane',
+      emptyArchivedDesc: 'Zarchiwizuj czat, aby ukryć go na pasku bocznym.',
+      unarchive: 'Cofnij archiwizację',
+      deletePermanently: 'Usuń trwale',
+      messages: count => `Wiadomości: ${count}`,
+      restored: 'Przywrócony',
+      deleteConfirm: title => `Usunąć trwale „${title}”? Tego nie można cofnąć.`,
+      defaultDirTitle: 'Domyślny katalog projektu',
+      defaultDirDesc:
+        'Nowe sesje rozpoczynają się w tym folderze, chyba że wybierzesz inny. Pozostaw tę opcję nieskonfigurowaną, aby używać katalogu domowego.',
+      defaultDirUpdated: 'Zaktualizowano domyślny katalog projektu — rozpocznij nowy czat (Ctrl/⌘+N), aby zastosować',
+      defaultsTo: label => `Domyślnie ${label}.`,
+      change: 'Zmień',
+      choose: 'Wybierz',
+      clear: 'Wyczyść',
+      notSet: 'Nie ustawiono',
+      failedLoad: 'Nie można wczytać zarchiwizowanych sesji',
+      unarchiveFailed: 'Nie udało się przywrócić sesji z archiwum',
+      deleteFailed: 'Usunięcie nie powiodło się',
+      updateDirFailed: 'Nie można zaktualizować katalogu domyślnego',
+      clearDirFailed: 'Nie można usunąć ustawienia katalogu domyślnego',
+      autoArchiveTitle: 'Automatycznie archiwizuj nieaktywne czaty',
+      autoArchiveDesc:
+        'Automatycznie archiwizuj czaty, których od dawna nie używasz. Przypięte czaty nigdy nie są archiwizowane i nic nie zostaje usunięte — zarchiwizowane czaty są tylko przenoszone tutaj.',
+      autoArchiveDaysLabel: 'Archiwizuj po',
+      autoArchiveDaysUnit: 'dniach bez aktywności',
+      autoArchiveFailed: 'Nie udało się zaktualizować automatycznego archiwizowania'
+    },
+    toolsets: {
+      loadingConfig: 'Ładowanie konfiguracji',
+      savedTitle: 'Dane uwierzytelniające zapisane',
+      savedMessage: key => `${key} zaktualizowany.`,
+      removedTitle: 'Poświadczenie zostało usunięte',
+      removedMessage: key => `Usunięto ${key}.`,
+      failedSave: key => `Nie udało się zapisać ${key}`,
+      failedRemove: key => `Nie udało się usunąć ${key}`,
+      failedReveal: key => `Nie udało się wyświetlić ${key}`,
+      removeConfirm: key => `Usunąć ${key} z pliku .env?`,
+      set: 'Ustaw',
+      notSet: 'Nie ustawiono',
+      selectedTitle: 'Wybrano dostawcę',
+      selectedMessage: provider => `Aktywny dostawca: ${provider}.`,
+      failedSelect: provider => `Nie udało się wybrać ${provider}`,
+      failedLoad: 'Nie udało się załadować konfiguracji narzędzi',
+      noProviderOptions:
+        'Ten zestaw narzędzi nie ma opcji dostawcy — włącz go i będzie działać z bieżącą konfiguracją.',
+      noProviders: 'W tej chwili nie jest dostępny żaden dostawca tego zestawu narzędzi.',
+      ready: 'Gotowe',
+      nousIncluded: 'W ramach subskrypcji Nous — zaloguj się w Nous Portal, aby aktywować.',
+      noApiKeyRequired: 'Nie jest wymagany klucz API.',
+      postSetupHint: step =>
+        `Ten backend wymaga jednorazowej instalacji (${step}). Instalacja jest wykonywana na tym komputerze i może potrwać kilka minut.`,
+      postSetupRun: 'Uruchom instalację',
+      postSetupRunning: 'Instaluję…',
+      postSetupStarting: 'Uruchamianie…',
+      postSetupCompleteTitle: 'Konfiguracja ukończona',
+      postSetupCompleteMessage: step => `Zainstalowano ${step}.`,
+      postSetupErrorTitle: 'Instalacja zakończyła się z błędami',
+      postSetupErrorMessage: step => `Sprawdź dziennik ${step}.`,
+      postSetupFailed: step => `Nie udało się wykonać kroku instalacji: ${step}`,
+      loadingModels: 'Ładowanie katalogu modeli...',
+      modelSectionTitle: 'Model',
+      modelCount: count => `Modele: ${count}`,
+      modelInUse: 'W użyciu',
+      modelDefault: 'domyślny',
+      modelInactiveHint: 'Najpierw wybierz ten backend, aby zmienić jego model.',
+      modelSelectedTitle: 'Wybrano model',
+      modelSelectedMessage: model => `${model} dotyczy nowych sesji.`,
+      failedSelectModel: model => `Nie udało się wybrać ${model}`,
+      needsSignIn: 'Wymaga zalogowania',
+      needsSetup: 'Wymaga konfiguracji',
+      nousAuthNeededTitle: 'Zaloguj się do Nous Portal',
+      nousAuthNeededMessage: provider =>
+        `${provider} jest zapisany, ale nie zostanie aktywowany, dopóki nie zalogujesz się do Nous Portal.`,
+      nousAuthSignIn: 'Zaloguj się',
+      nousAuthDoneTitle: 'Połączono z Nous Portal',
+      nousAuthDoneMessage: 'Backendy dostępne w ramach subskrypcji są teraz aktywne.',
+      nousAuthFailed: 'Logowanie do Nous Portal nie zostało ukończone',
+      postSetupInstalledHint: 'Zainstalowano. Uruchom konfigurację ponownie tylko wtedy, gdy coś nie działa.',
+      postSetupRerun: 'Uruchom konfigurację ponownie',
+      postSetupInstalled: 'Zainstalowano',
+      webSearchActive: backend => `Wyszukiwanie: ${backend}`,
+      webExtractActive: backend => `Ekstrakcja: ${backend}`,
+      webCapabilityUnset: 'nie ustawiono',
+      webUseForSearch: 'Użyj do wyszukiwania',
+      webUseForExtract: 'Użyj do ekstrakcji',
+      webUsedForSearch: 'Backend wyszukiwania',
+      webUsedForExtract: 'Backend ekstrakcji',
+      webCapabilitySelectedMessage: (provider, capability) =>
+        `${provider} obsługuje teraz ${
+          capability === 'search'
+            ? 'wyszukiwanie w internecie'
+            : capability === 'extract'
+              ? 'ekstrakcję treści stron internetowych'
+              : `funkcję internetową „${capability}”`
+        }.`,
+      failedSelectCapability: provider => `Nie udało się ustawić ${provider}`,
+      terminalBackend: {
+        sectionTitle: 'Backend wykonywania',
+        loading: 'Sprawdzanie backendów wykonywania…',
+        failedLoad: 'Nie udało się wczytać backendów terminala',
+        ready: 'Gotowy',
+        needsSetup: 'Wymaga konfiguracji',
+        unavailable: 'Niedostępny',
+        inUse: 'Używany',
+        selectedTitle: 'Wybrano backend',
+        selectedMessage: backend => `Polecenia terminala będą teraz wykonywane przez ${backend}. Dotyczy nowych sesji.`,
+        failedSelect: backend => `Nie udało się wybrać ${backend}`,
+        needsSetupHint:
+          'Możesz wybrać ten backend już teraz — polecenia nie będą działać do czasu ukończenia konfiguracji.'
+      }
+    }
+  },
+
+  skills: {
+    tabSkills: 'Umiejętności',
+    tabToolsets: 'Narzędzia',
+    tabMcp: 'MCP',
+    all: 'Wszystko',
+    searchSkills: 'Szukaj umiejętności…',
+    searchToolsets: 'Szukaj zestawów narzędzi…',
+    refresh: 'Odśwież umiejętności',
+    refreshing: 'Odświeżanie umiejętności',
+    loading: 'Ładowanie możliwości…',
+    noSkillsTitle: 'Nie znaleziono umiejętności',
+    noSkillsDesc: 'Spróbuj szerszego wyszukiwania lub innej kategorii.',
+    noToolsetsTitle: 'Nie znaleziono zestawów narzędzi',
+    noToolsetsDesc: 'Spróbuj szerszego zapytania.',
+    noDescription: 'Brak opisu.',
+    configured: 'Skonfigurowane',
+    needsKeys: 'Wymaga kluczy',
+    toolsetsEnabled: (enabled, total) => `Włączone zestawy narzędzi: ${enabled}/${total}`,
+    configureToolset: label => `Skonfiguruj ${label}`,
+    toggleToolset: (label, enabled) => `Spróbuj ${enabled ? 'włączyć' : 'wyłączyć'} zestaw narzędzi ${label}`,
+    skillsLoadFailed: 'Nie udało się wczytać umiejętności',
+    toolsetsRefreshFailed: 'Nie udało się odświeżyć zestawów narzędzi',
+    skillEnabled: 'Umiejętność włączona',
+    skillDisabled: 'Umiejętność wyłączona',
+    toolsetEnabled: 'Zestaw narzędzi włączony',
+    toolsetDisabled: 'Zestaw narzędzi wyłączony',
+    appliesToNewSessions: name => `${name} będzie dostępna w nowych sesjach.`,
+    failedToUpdate: name => `Nie udało się zaktualizować ${name}`,
+    sortMostUsed: 'Najczęściej używane',
+    sortAlpha: 'A–Z',
+    sortMostUsedDesc: '↓ Najczęściej używane',
+    sortLeastUsedAsc: '↑ Najrzadziej używane',
+    enableAll: 'Włącz wszystko',
+    disableAll: 'Wyłącz wszystko',
+    disableUnused: 'Wyłącz nieużywane',
+    bulkUpdated: count => `Elementy zaktualizowane dla nowych sesji: ${count}.`,
+    bulkNoChange: 'Nic do zmiany.',
+    usageCount: count => `użycia: ${count}`,
+    provenance: {
+      agent: 'Utworzona przez agenta',
+      bundled: 'Wbudowana',
+      hub: 'Centrum'
+    },
+    emptyNoneFound: noun =>
+      noun === 'skills'
+        ? 'Nie znaleziono umiejętności'
+        : noun === 'tools'
+          ? 'Nie znaleziono narzędzi'
+          : 'Nie znaleziono elementów',
+    emptyNothingMatches: query => `Nic nie pasuje do „${query}”.`,
+    emptyNoneAvailable: noun =>
+      noun === 'skills'
+        ? 'Brak dostępnych umiejętności.'
+        : noun === 'tools'
+          ? 'Brak dostępnych narzędzi.'
+          : 'Brak dostępnych elementów.',
+    changesApplyNewSessions: 'Zmiany dotyczą nowych sesji.',
+    skillUpdated: 'Umiejętność zaktualizowana',
+    edit: 'Edytuj',
+    archive: 'Archiwizuj',
+    skillArchivedTitle: 'Umiejętność zarchiwizowana',
+    skillArchivedMessage: 'Możesz ją przywrócić poleceniem hermes curator restore.',
+    hub: {
+      searchPlaceholder: 'Przeszukaj centrum umiejętności',
+      search: 'Szukaj',
+      searching: 'Wyszukiwanie…',
+      connectingHubs: 'Łączenie z centrami umiejętności…',
+      connectedHubs: 'Połączone centra:',
+      featured: 'Wyróżnione umiejętności',
+      landingHint:
+        'Przeszukaj centrum, aby przeglądać umiejętności z oficjalnego indeksu, GitHuba i źródeł społeczności.',
+      noResults: 'W centrum nie znaleziono pasujących umiejętności.',
+      resultCount: (count, ms) => `Wyniki: ${count}${ms !== null ? ` · ${ms} ms` : ''}`,
+      timedOut: sources => `Przekroczono limit czasu: ${sources}`,
+      installed: 'Zainstalowana',
+      install: 'Zainstaluj',
+      installing: 'Instalowanie…',
+      uninstall: 'Odinstaluj',
+      uninstalling: 'Odinstalowywanie…',
+      updateAll: 'Zaktualizuj zainstalowane umiejętności',
+      updating: 'Aktualizowanie…',
+      preview: 'Podgląd',
+      scan: 'Skanuj',
+      scanning: 'Skanowanie…',
+      close: 'Zamknij',
+      files: 'Pliki',
+      noReadme: 'Ta umiejętność nie ma podglądu SKILL.md.',
+      trust: {
+        builtin: 'wbudowana',
+        trusted: 'zaufana',
+        community: 'społeczność'
+      },
+      verdictSafe: 'Bezpieczna',
+      verdictCaution: 'Wymaga uwagi',
+      verdictDangerous: 'Niebezpieczna',
+      policyAllow: 'Instalacja dozwolona',
+      policyAsk: 'Przejrzyj przed instalacją',
+      policyBlock: 'Instalacja zablokowana przez zasady',
+      findings: count => `Wykryte problemy: ${count}`,
+      noFindings: 'Nie wykryto problemów z bezpieczeństwem.',
+      installStarted: name => `Instalowanie ${name}…`,
+      uninstallStarted: name => `Odinstalowywanie ${name}…`,
+      updateStarted: 'Aktualizowanie zainstalowanych umiejętności…',
+      actionFailed: 'Nie udało się wykonać działania na umiejętności',
+      actionLog: 'Dziennik działania',
+      loadFailed: 'Nie udało się wczytać centrum umiejętności',
+      previewFailed: 'Nie udało się wyświetlić podglądu umiejętności',
+      scanFailed: 'Nie udało się wykonać skanowania bezpieczeństwa',
+      searchFailed: 'Nie udało się przeszukać centrum'
+    },
+    visionModelHint:
+      'Funkcja analizy obrazu korzysta z konfiguracji modelu pomocniczego — model obsługujący obrazy wybiera się tam, a nie osobno dla każdego dostawcy.',
+    visionModelLink: 'Wybierz model analizy obrazu w Ustawienia → Modele'
+  },
+
+  starmap: {
+    title: 'Graf pamięci',
+    subtitle: (nodes, clusters) => `Umiejętności: ${nodes} · kategorie: ${clusters}`,
+    close: 'Zamknij graf pamięci',
+    refresh: 'Odśwież',
+    memory: 'Pamięć',
+    filterAll: 'Wszystko',
+    filterUsed: 'Używane',
+    filterLearned: 'Utworzone',
+    viewGraph: 'Graf',
+    loadFailed: 'Nie udało się wczytać wykresu pamięci',
+    loading: 'Ładowanie…',
+    emptyTitle: 'Brak utworzonych elementów',
+    emptyDesc: 'Tutaj pojawią się umiejętności i wpisy pamięci utworzone przez Hermesa podczas Twojej pracy.',
+    share: 'Udostępnij mapę',
+    shareHint:
+      'Skopiuj kod, aby udostępnić tę mapę, albo wklej kod, aby ją załadować. Kod zawiera tylko układ — bez pamięci i treści umiejętności.',
+    shareTitle: 'Import i eksport mapy',
+    sharePlaceholder: 'Wklej kod mapy…',
+    copy: 'Skopiuj kod mapy',
+    copied: 'Skopiowano!',
+    importMap: 'Zaimportuj mapę',
+    importBtn: 'Załaduj',
+    importEmpty: 'Wklej kod mapy, aby ją załadować.',
+    importSuccess: nodes => `Załadowano mapę. Węzły: ${nodes}.`,
+    importedBadge: 'zaimportowana mapa',
+    resetToMine: 'Wróć do mojej mapy'
+  },
+  agents: {
+    close: 'Zamknij agentów',
+    title: 'Drzewo agentów',
+    subtitle: 'Aktywność subagentów w bieżącej turze na żywo.',
+    emptyTitle: 'Brak aktywnych subagentów',
+    emptyDesc: 'Gdy Hermes oddeleguje pracę, tutaj pojawi się postęp subagentów.',
+    running: 'W toku',
+    failed: 'Niepowodzenie',
+    done: 'Gotowe',
+    streaming: 'Trwa generowanie',
+    files: 'Pliki',
+    moreFiles: count => `Dodatkowe pliki: ${count}`,
+    delegation: index => `Delegacja ${index}`,
+    workers: count => `Wykonawcy: ${count}`,
+    workersActive: count => `Aktywni wykonawcy: ${count}`,
+    agentsCount: count => `Agenci: ${count}`,
+    activeCount: count => `Aktywni: ${count}`,
+    failedCount: count => `Niepowodzenia: ${count}`,
+    toolsCount: count => `Narzędzia: ${count}`,
+    filesCount: count => `Pliki: ${count}`,
+    updatedAgo: age => `zaktualizowano ${age}`,
+    ageNow: 'teraz',
+    ageSeconds: seconds => `${seconds} s temu`,
+    ageMinutes: minutes => `${minutes} min temu`,
+    ageHours: hours => `${hours} godz. temu`,
+    durationSeconds: seconds => `${seconds} s`,
+    durationMinutes: (minutes, seconds) => `${minutes} min ${seconds} s`,
+    tokens: value => `Tokeny: ${value}`,
+    ageDays: days => `${days} d temu`
+  },
+
+  commandCenter: {
+    close: 'Zamknij Centrum poleceń',
+    paletteTitle: 'Paleta poleceń',
+    back: 'Wstecz',
+    searchPlaceholder: 'Wyszukaj sesje, widoki i działania',
+    goTo: 'Przejdź do',
+    goToSession: 'Przejdź do sesji',
+    branches: 'Gałęzie',
+    commands: 'Polecenia',
+    startInBranch: branch => `Nowa rozmowa — ${branch}`,
+    commandCenter: 'Centrum poleceń',
+    appearance: 'Wygląd',
+    settings: 'Ustawienia',
+    changeTheme: 'Zmień motyw',
+    changeColorMode: 'Zmień tryb kolorów…',
+    pets: {
+      title: 'Maskotki',
+      placeholder: 'Szukaj maskotek…',
+      loading: 'Ładowanie galerii Petdex…',
+      error: 'Nie udało się połączyć z galerią Petdex.',
+      staleBackend:
+        'Uruchom ponownie Hermesa, aby korzystać z maskotek — ta wersja backendu nie obsługuje jeszcze tej funkcji.',
+      empty: 'Brak pasujących maskotek.',
+      turnOff: 'Wyłącz',
+      turnOn: 'Włącz',
+      installed: 'Zainstalowana',
+      generatedTag: 'Wygenerowana',
+      adoptFailed: 'Nie udało się adoptować tej maskotki.',
+      toggleFailed: enabled => `Nie udało się ${enabled ? 'włączyć' : 'wyłączyć'} maskotki.`,
+      noneAvailable: 'Brak dostępnych maskotek — wybierz jedną poniżej, aby ją zainstalować.'
+    },
+    generatePet: {
+      title: 'Wygeneruj maskotkę',
+      placeholder: 'Opisz maskotkę, którą chcesz wygenerować…',
+      promptHint: 'Wpisz opis i naciśnij Enter, aby przygotować cztery wersje.',
+      readyHint: 'Naciśnij Enter, aby przygotować cztery wersje na podstawie opisu.',
+      generate: 'Wygeneruj',
+      generating: 'Generowanie…',
+      retry: 'Spróbuj ponownie',
+      hatch: 'Wykluj',
+      spawning: 'Generowanie…',
+      hatching: 'Wykluwanie maskotki…',
+      hatchingSub: 'Ożywianie maskotki…',
+      hatched: 'Maskotka wykluta!',
+      hatchRow: (_state, done, total) => `Szkicowanie klatki ${done} z ${total}…`,
+      hatchComposing: 'Łączenie klatek…',
+      hatchSaving: 'Prawie gotowe…',
+      namePlaceholder: 'Nazwij maskotkę',
+      staleBackend: 'Zaktualizuj Hermesa, aby generować maskotki.',
+      backgroundHint: 'Możesz zamknąć ten widok — Hermes powiadomi Cię po zakończeniu.',
+      slowProviderHint: 'Może to potrwać kilka minut',
+      remix: 'Wygeneruj wariant',
+      remixConfirmTitle: 'Wygenerować wariant tego wyglądu?',
+      remixConfirmBody:
+        'Powstanie nowy zestaw wersji roboczych z tym wyglądem jako punktem wyjścia. Może to potrwać kilka minut.',
+      genericError: 'Nie udało się wygenerować maskotki — spróbuj ponownie lub wybierz sugestię.',
+      referenceImageTooLarge: 'Obraz referencyjny jest za duży. Wybierz plik mniejszy niż 16 MB.',
+      referenceImageInvalid: 'Nie udało się odczytać obrazu referencyjnego. Wybierz plik PNG, JPG, WebP lub GIF.',
+      adopt: 'Adoptuj',
+      startOver: 'Zacznij od nowa'
+    },
+    installTheme: {
+      title: 'Zainstaluj motyw…',
+      pageTitle: 'Zainstaluj motyw',
+      placeholder: 'Przeszukaj VS Code Marketplace…',
+      loading: 'Przeszukiwanie Marketplace…',
+      error: 'Nie udało się połączyć z Marketplace.',
+      empty: 'Brak pasujących motywów.',
+      install: 'Zainstaluj',
+      installing: 'Instalowanie…',
+      installed: 'Zainstalowany',
+      installs: count => `Instalacje: ${count}`
+    },
+    settingsFields: 'Pola ustawień',
+    mcpServers: 'Serwery MCP',
+    archivedChats: 'Zarchiwizowane czaty',
+    sections: { maintenance: 'Konserwacja', sessions: 'Sesje', system: 'System', usage: 'Użycie' },
+    sectionDescriptions: {
+      maintenance: 'Diagnostyka, kopie zapasowe, kurator i dane pamięci',
+      sessions: 'Wyszukiwanie sesji i zarządzanie nimi',
+      system: 'Stan, logi i działania systemowe',
+      usage: 'Zużycie tokenów, koszty i aktywność umiejętności w czasie'
+    },
+    nav: {
+      newChat: { title: 'Nowa sesja', detail: 'Rozpocznij nową sesję' },
+      settings: { title: 'Ustawienia', detail: 'Skonfiguruj aplikację Hermes Desktop' },
+      skills: { title: 'Możliwości', detail: 'Umiejętności, narzędzia i serwery MCP' },
+      messaging: { title: 'Wiadomości', detail: 'Skonfiguruj Telegram, Slack, Discord i inne platformy' },
+      artifacts: { title: 'Artefakty', detail: 'Przeglądaj wygenerowane wyniki' }
+    },
+    sectionEntries: {
+      sessions: { title: 'Panel sesji', detail: 'Wyszukuj i przypinaj sesje oraz zarządzaj nimi' },
+      system: { title: 'Panel systemowy', detail: 'Stan bramy, logi, ponowne uruchamianie i aktualizacje' },
+      usage: { title: 'Panel użycia', detail: 'Zużycie tokenów, koszty i aktywność umiejętności' }
+    },
+    providerNavigate: 'Przejdź',
+    providerSessions: 'Sesje',
+    refresh: 'Odśwież',
+    refreshing: 'Odświeżanie…',
+    noResults: 'Nie znaleziono pasujących wyników.',
+    pinSession: 'Przypnij sesję',
+    unpinSession: 'Odepnij sesję',
+    exportSession: 'Eksportuj sesję',
+    deleteSession: 'Usuń sesję',
+    noSessions: 'Brak sesji.',
+    gatewayRunning: 'Brama wiadomości działa',
+    gatewayStopped: 'Brama wiadomości jest zatrzymana',
+    hermesActiveSessions: (version, count) => `Hermes ${version} · aktywne sesje: ${count}`,
+    restartGateway: 'Uruchom ponownie bramę',
+    gatewayRestartFailed: 'Nie udało się ponownie uruchomić bramy.',
+    updateHermes: 'Zaktualizuj Hermesa',
+    actionRunning: 'W toku',
+    actionDone: 'Gotowe',
+    actionFailed: 'Niepowodzenie',
+    actionStartedWaiting: 'Działanie rozpoczęte, oczekiwanie na stan…',
+    loadingStatus: 'Ładowanie stanu…',
+    recentLogs: 'Ostatnie logi',
+    noLogs: 'Nie wczytano jeszcze logów.',
+    days: count => `${count} d`,
+    statSessions: 'Sesje',
+    statApiCalls: 'Wywołania API',
+    statTokens: 'Tokeny wej./wyj.',
+    statCost: 'Szac. koszt',
+    actualCost: cost => `rzeczywisty: ${cost}`,
+    loadingUsage: 'Ładowanie danych o użyciu…',
+    noUsage: period => `Brak danych o użyciu w wybranym okresie (${period} d).`,
+    retry: 'Spróbuj ponownie',
+    dailyTokens: 'Tokeny dziennie',
+    input: 'wejście',
+    output: 'wyjście',
+    noDailyActivity: 'Brak aktywności dziennej.',
+    topModels: 'Najczęściej używane modele',
+    noModelUsage: 'Brak danych o użyciu modeli.',
+    topSkills: 'Najczęściej używane umiejętności',
+    noSkillActivity: 'Brak aktywności umiejętności.',
+    actions: count => `Działania: ${count}`,
+    logFile: 'Plik logu',
+    logLevel: 'Poziom',
+    logSearchPlaceholder: 'Filtruj wiersze logu…',
+    maintenance: {
+      runOps: 'Diagnostyka',
+      doctor: 'Uruchom diagnostykę',
+      doctorDesc: 'Sprawdź stan instalacji, konfiguracji i dostawców',
+      securityAudit: 'Audyt bezpieczeństwa',
+      securityAuditDesc: 'Przeskanuj konfigurację i umiejętności pod kątem ryzykownych ustawień',
+      backup: 'Utwórz kopię zapasową',
+      backupDesc: 'Spakuj konfigurację, wspomnienia, umiejętności i sesje',
+      debugShare: 'Udostępnij raport diagnostyczny',
+      debugShareDesc:
+        'Prześlij zanonimizowany raport z logami i uzyskaj linki do udostępnienia (automatycznie usuwane po 6 godzinach)',
+      debugShareRunning: 'Przesyłanie raportu diagnostycznego…',
+      debugShareLinks: 'Linki do udostępnienia',
+      debugShareFailed: 'Nie udało się udostępnić raportu diagnostycznego',
+      copyLink: 'Skopiuj link',
+      linkCopied: 'Link skopiowany',
+      curator: 'Kurator umiejętności',
+      curatorDesc: 'Działający w tle kurator archiwizuje nieaktualne umiejętności utworzone przez agenta',
+      curatorPaused: 'Wstrzymany',
+      curatorActive: 'Aktywny',
+      curatorDisabled: 'Wyłączony',
+      curatorLastRun: when => `Ostatnie uruchomienie: ${when}`,
+      curatorNeverRan: 'Jeszcze nie uruchamiano',
+      pause: 'Wstrzymaj',
+      resume: 'Wznów',
+      runNow: 'Uruchom teraz',
+      memoryData: 'Dane pamięci',
+      memoryDataDesc: 'Wbudowane pliki pamięci dodawane do każdej sesji',
+      memoryProvider: name => `Aktywny dostawca: ${name}`,
+      builtinMemory: 'wbudowana',
+      memoryFile: 'Pamięć agenta (MEMORY.md)',
+      userFile: 'Profil użytkownika (USER.md)',
+      bytes: size => size,
+      empty: 'pusty',
+      resetMemory: 'Zresetuj pamięć',
+      resetUser: 'Zresetuj profil',
+      resetAll: 'Zresetuj oba',
+      resetConfirm: target => `Usunąć ${target}? Tej operacji nie można cofnąć.`,
+      resetDone: files => `Usunięto: ${files}.`,
+      resetFailed: 'Nie udało się zresetować pamięci',
+      actionStarted: name => `Uruchomiono ${name} — śledzenie logu…`,
+      actionFailed: name => `Nie udało się uruchomić: ${name}`,
+      running: 'W toku…',
+      viewLog: 'Dziennik działania'
+    }
+  },
+
+  messaging: {
+    search: 'Szukaj platform wiadomości…',
+    loading: 'Ładowanie platform wiadomości…',
+    loadFailed: 'Nie udało się wczytać platform wiadomości',
+    states: {
+      connected: 'Połączono',
+      connecting: 'Łączenie…',
+      disabled: 'Wyłączono',
+      fatal: 'Błąd',
+      gateway_stopped: 'Brama wiadomości jest zatrzymana',
+      not_configured: 'Wymaga konfiguracji',
+      pending_restart: 'Wymaga ponownego uruchomienia',
+      retrying: 'Ponawianie',
+      startup_failed: 'Nie udało się uruchomić'
+    },
+    unknown: 'Nieznany',
+    hintPendingRestart: 'Aby zastosować tę zmianę, uruchom ponownie bramę z paska stanu.',
+    hintGatewayStopped: 'Uruchom bramę z paska stanu, aby nawiązać połączenie.',
+    credentialsSet: 'Dane logowania ustawione',
+    needsSetup: 'Wymaga konfiguracji',
+    gatewayStopped: 'Brama wiadomości jest zatrzymana',
+    getCredentials: 'Uzyskaj dane logowania',
+    openSetupGuide: 'Otwórz instrukcję konfiguracji',
+    required: 'Wymagane',
+    recommended: 'Zalecane',
+    advanced: count => `Zaawansowane (${count})`,
+    noTokenNeeded:
+      'Ta platforma nie wymaga tutaj tokena. Skorzystaj z powyższej instrukcji konfiguracji, a następnie włącz platformę poniżej.',
+    enabled: 'Włączono',
+    disabled: 'Wyłączono',
+    unsavedChanges: 'Niezapisane zmiany',
+    saving: 'Zapisywanie…',
+    saveChanges: 'Zapisz zmiany',
+    saved: 'Zapisano',
+    replaceValue: 'Zastąp bieżącą wartość',
+    openDocs: 'Otwórz dokumentację',
+    clearField: key => `Wyczyść ${key}`,
+    enableAria: name => `Włącz ${name}`,
+    disableAria: name => `Wyłącz ${name}`,
+    platformEnabled: name => `${name}: włączono`,
+    platformDisabled: name => `${name}: wyłączono`,
+    restartToApply: 'Zmiana zacznie obowiązywać po ponownym uruchomieniu bramy.',
+    setupSaved: name => `${name}: zapisano konfigurację`,
+    restartToReconnect: 'Nowe dane logowania zaczną obowiązywać po ponownym uruchomieniu bramy.',
+    keyCleared: key => `${key}: wyczyszczono`,
+    setupUpdated: name => `${name}: konfiguracja została zaktualizowana.`,
+    failedUpdate: name => `Nie udało się zaktualizować ${name}`,
+    failedSave: name => `Nie udało się zapisać ${name}`,
+    failedClear: key => `Nie udało się wyczyścić ${key}`,
+    fieldCopy: {
+      TELEGRAM_BOT_TOKEN: {
+        label: 'Token bota',
+        help: 'Utwórz bota za pomocą @BotFather, a następnie wklej otrzymany token.',
+        placeholder: 'Wklej token bota Telegramu'
+      },
+      TELEGRAM_ALLOWED_USERS: {
+        label: 'Dozwolone identyfikatory użytkowników Telegramu',
+        help: 'Zalecane. Numeryczne identyfikatory z @userinfobot, rozdzielone przecinkami. Bez tej listy każdy może wysłać prywatną wiadomość do Twojego bota.'
+      },
+      TELEGRAM_PROXY: {
+        label: 'Adres URL serwera proxy',
+        help: 'Wymagany tylko w sieciach, w których Telegram jest zablokowany.'
+      },
+      DISCORD_BOT_TOKEN: {
+        label: 'Token bota',
+        help: 'Utwórz aplikację w Discord Developer Portal, dodaj bota, a następnie wklej jego token.'
+      },
+      DISCORD_ALLOWED_USERS: {
+        label: 'Dozwolone identyfikatory użytkowników Discorda',
+        help: 'Zalecane. Identyfikatory użytkowników Discorda rozdzielone przecinkami.'
+      },
+      DISCORD_REPLY_TO_MODE: { label: 'Styl odpowiedzi', help: 'Wartości: first, all lub off.' },
+      DISCORD_ALLOW_ALL_USERS: {
+        label: 'Zezwalaj wszystkim użytkownikom Discorda',
+        help: 'Tylko do użytku deweloperskiego. Wartość true pozwala każdemu wysłać prywatną wiadomość do bota bez listy dozwolonych użytkowników.'
+      },
+      DISCORD_HOME_CHANNEL: {
+        label: 'Identyfikator kanału głównego',
+        help: 'Kanał, na który bot wysyła wiadomości z własnej inicjatywy (wyniki zadań cron, przypomnienia).'
+      },
+      DISCORD_HOME_CHANNEL_NAME: {
+        label: 'Nazwa kanału głównego',
+        help: 'Nazwa kanału głównego wyświetlana w logach i informacjach o stanie.'
+      },
+      BLUEBUBBLES_ALLOW_ALL_USERS: {
+        label: 'Zezwalaj wszystkim użytkownikom iMessage',
+        help: 'Wartość true pomija listę dozwolonych użytkowników BlueBubbles.'
+      },
+      MATTERMOST_ALLOW_ALL_USERS: { label: 'Zezwalaj wszystkim użytkownikom Mattermost' },
+      MATTERMOST_HOME_CHANNEL: { label: 'Kanał główny' },
+      QQ_ALLOW_ALL_USERS: { label: 'Zezwalaj wszystkim użytkownikom QQ' },
+      QQBOT_HOME_CHANNEL: {
+        label: 'Kanał główny QQ',
+        help: 'Domyślny kanał lub grupa, do których mają trafiać wyniki zadań cron.'
+      },
+      QQBOT_HOME_CHANNEL_NAME: { label: 'Nazwa kanału głównego QQ' },
+      SLACK_BOT_TOKEN: {
+        label: 'Token bota Slacka',
+        help: 'Po zainstalowaniu aplikacji Slack użyj tokena bota z sekcji OAuth & Permissions.',
+        placeholder: 'Wklej token bota Slacka'
+      },
+      SLACK_APP_TOKEN: {
+        label: 'Token aplikacji Slacka',
+        help: 'Użyj tokena na poziomie aplikacji wymaganego przez Socket Mode.',
+        placeholder: 'Wklej token aplikacji Slacka'
+      },
+      SLACK_ALLOWED_USERS: {
+        label: 'Dozwolone identyfikatory użytkowników Slacka',
+        help: 'Zalecane. Identyfikatory użytkowników Slacka rozdzielone przecinkami.'
+      },
+      MATTERMOST_URL: { label: 'Adres URL serwera', placeholder: 'https://mattermost.example.com' },
+      MATTERMOST_TOKEN: { label: 'Token bota' },
+      MATTERMOST_ALLOWED_USERS: {
+        label: 'Dozwolone identyfikatory użytkowników',
+        help: 'Zalecane. Identyfikatory użytkowników Mattermost rozdzielone przecinkami.'
+      },
+      MATRIX_HOMESERVER: { label: 'Adres URL homeservera', placeholder: 'https://matrix.org' },
+      MATRIX_ACCESS_TOKEN: { label: 'Token dostępu' },
+      MATRIX_USER_ID: { label: 'Identyfikator użytkownika bota', placeholder: '@hermes:example.org' },
+      MATRIX_ALLOWED_USERS: {
+        label: 'Dozwolone identyfikatory użytkowników Matrix',
+        help: 'Zalecane. Identyfikatory rozdzielone przecinkami w formacie @użytkownik:serwer.'
+      },
+      SIGNAL_HTTP_URL: {
+        label: 'Adres URL mostu Signal',
+        placeholder: 'http://127.0.0.1:8080',
+        help: 'Adres URL działającego mostu REST signal-cli.'
+      },
+      SIGNAL_ACCOUNT: { label: 'Numer telefonu', help: 'Numer zarejestrowany w moście signal-cli.' },
+      SIGNAL_ALLOWED_USERS: {
+        label: 'Dozwoleni użytkownicy Signal',
+        help: 'Zalecane. Identyfikatory Signal rozdzielone przecinkami.'
+      },
+      WHATSAPP_ENABLED: {
+        label: 'Włącz most WhatsApp',
+        help: 'Ustawiane automatycznie przez poniższy przełącznik. Nie zmieniaj ręcznie, chyba że jest to konieczne.'
+      },
+      WHATSAPP_MODE: { label: 'Tryb mostu' },
+      WHATSAPP_ALLOWED_USERS: {
+        label: 'Dozwoleni użytkownicy WhatsApp',
+        help: 'Zalecane. Numery telefonów lub identyfikatory WhatsApp rozdzielone przecinkami.'
+      }
+    },
+    platformIntro: {}
+  },
+
+  profiles: {
+    close: 'Zamknij profile',
+    nameHint: 'Małe litery, cyfry, łączniki i podkreślenia. Nazwa musi zaczynać się od litery lub cyfry.',
+    title: 'Profile',
+    count: count => `Profile: ${count}`,
+    search: 'Szukaj profili…',
+    loading: 'Ładowanie profili…',
+    newProfile: 'Nowy profil',
+    allProfiles: 'Wszystkie profile',
+    showAllProfiles: 'Pokaż wszystkie profile',
+    switchToProfile: name => `Przełącz się na profil „${name}”`,
+    manageProfiles: 'Zarządzaj profilami…',
+    actions: 'Działania',
+    color: 'Kolor…',
+    colorFor: 'Kolor',
+    setColor: color => `Ustaw kolor ${color}`,
+    autoColor: 'Automatyczny',
+    noProfiles: 'Brak profili.',
+    selectPrompt: 'Wybierz profil, aby wyświetlić jego szczegóły.',
+    refresh: 'Odśwież profile',
+    refreshing: 'Odświeżanie profili',
+    default: 'domyślny',
+    skills: count => `Umiejętności: ${count}`,
+    env: 'zm. środ.',
+    defaultBadge: 'Domyślny',
+    rename: 'Zmień nazwę',
+    renameMenu: 'Zmień nazwę…',
+    editSoul: 'Edytuj SOUL.md…',
+    copySetup: 'Skopiuj polecenie konfiguracji',
+    copying: 'Kopiowanie…',
+    modelLabel: 'Model',
+    skillsLabel: 'Umiejętności',
+    notSet: 'Nie ustawiono',
+    soulDesc: 'Prompt systemowy i instrukcje osobowości zapisane w tym profilu.',
+    soulOptional: 'opcjonalny',
+    soulPlaceholder: mode =>
+      `Prompt systemowy i osobowość tego profilu.\nPozostaw puste, aby zachować wariant domyślny: ${mode}.`,
+    soulPlaceholderCloned: 'sklonowany',
+    soulPlaceholderEmpty: 'pusty',
+    unsavedChanges: 'Niezapisane zmiany',
+    loadingSoul: 'Ładowanie SOUL.md…',
+    emptySoul: 'Plik SOUL.md jest pusty — zacznij opisywać osobowość…',
+    saving: 'Zapisywanie…',
+    saveSoul: 'Zapisz SOUL.md',
+    deleteTitle: 'Usunąć profil?',
+    deleteDescPrefix: 'Usuniesz profil ',
+    deleteDescMid: ' oraz jego katalog ',
+    deleteDescSuffix: '. Tej operacji nie można cofnąć.',
+    deleting: 'Usuwanie…',
+    createDesc: 'Profile to niezależne środowiska Hermesa z osobną konfiguracją, umiejętnościami i plikiem SOUL.md.',
+    nameLabel: 'Nazwa',
+    cloneFrom: 'Klonuj z',
+    cloneFromNone: 'Brak (pusty profil)',
+    cloneFromDesc: 'Kopiuje konfigurację, umiejętności i plik SOUL.md z wybranego profilu źródłowego.',
+    cloneFromDefault: 'Klonuj z profilu domyślnego',
+    cloneFromDefaultDesc: 'Kopiuje konfigurację, umiejętności i plik SOUL.md z profilu domyślnego.',
+    invalidName: hint => `Nieprawidłowa nazwa. ${hint}`,
+    nameRequired: 'Nazwa jest wymagana.',
+    creating: 'Tworzenie…',
+    createAction: 'Utwórz profil',
+    renameTitle: 'Zmień nazwę profilu',
+    renameDescPrefix: 'Zmiana nazwy zaktualizuje katalog profilu i wszystkie skrypty uruchamiające w ',
+    renameDescSuffix: '.',
+    newNameLabel: 'Nowa nazwa',
+    renaming: 'Zmienianie nazwy…',
+    created: 'Profil utworzony',
+    renamed: 'Nazwa profilu zmieniona',
+    deleted: 'Profil usunięty',
+    setupCopied: 'Polecenie konfiguracji skopiowane',
+    soulSaved: 'Zapisano SOUL.md',
+    failedLoad: 'Nie udało się wczytać profili',
+    failedDelete: 'Nie udało się usunąć profilu',
+    failedCopy: 'Nie udało się skopiować polecenia konfiguracji',
+    failedLoadSoul: 'Nie udało się wczytać SOUL.md',
+    failedSaveSoul: 'Nie udało się zapisać SOUL.md',
+    failedCreate: 'Nie udało się utworzyć profilu',
+    failedRename: 'Nie udało się zmienić nazwy profilu'
+  },
+
+  cron: {
+    close: 'Zamknij zadania cron',
+    title: 'Zaplanowane zadania',
+    count: count => `Zadania: ${count}`,
+    search: 'Szukaj zadań cron…',
+    loading: 'Ładowanie zadań cron…',
+    states: {
+      enabled: 'włączone',
+      scheduled: 'zaplanowane',
+      running: 'w toku',
+      paused: 'wstrzymane',
+      disabled: 'wyłączone',
+      error: 'błąd',
+      completed: 'ukończone'
+    },
+    deliveryLabels: {
+      local: 'Ten komputer',
+      telegram: 'Telegram',
+      discord: 'Discord',
+      slack: 'Slack',
+      email: 'E-mail'
+    },
+    scheduleLabels: {
+      daily: 'Codziennie',
+      weekdays: 'W dni robocze',
+      weekly: 'Co tydzień',
+      monthly: 'Co miesiąc',
+      hourly: 'Co godzinę',
+      'every-15-minutes': 'Co 15 minut',
+      custom: 'Niestandardowo'
+    },
+    scheduleHints: {
+      daily: 'Codziennie o 9:00',
+      weekdays: 'Od poniedziałku do piątku o 9:00',
+      weekly: 'W każdy poniedziałek o 9:00',
+      monthly: 'Pierwszego dnia miesiąca o 9:00',
+      hourly: 'O pełnej godzinie',
+      'every-15-minutes': 'Co 15 minut',
+      custom: 'Składnia cron lub język naturalny'
+    },
+    days: {
+      '0': 'niedziela',
+      '1': 'poniedziałek',
+      '2': 'wtorek',
+      '3': 'środa',
+      '4': 'czwartek',
+      '5': 'piątek',
+      '6': 'sobota',
+      '7': 'niedziela'
+    },
+    dayFallback: value => `dzień ${value}`,
+    everyDayAt: time => `Codziennie o ${time}`,
+    weekdaysAt: time => `W dni robocze o ${time}`,
+    everyDayOfWeekAt: (day, time) => `Co tydzień (${day}) o ${time}`,
+    monthlyOnDayAt: (dayOfMonth, time) => `Co miesiąc — ${dayOfMonth}. dnia o ${time}`,
+    topOfHour: 'O pełnej godzinie',
+    everyHourAt: minute => `Co godzinę o minucie ${minute}`,
+    newCron: 'Nowe zadanie cron',
+    emptyDescNew:
+      'Zaplanuj uruchamianie promptu według wyrażenia cron. Hermes uruchomi prompt i dostarczy wyniki do wybranego miejsca docelowego.',
+    emptyDescSearch: 'Spróbuj szerszego zapytania.',
+    emptyTitleNew: 'Brak zaplanowanych zadań',
+    emptyTitleSearch: 'Brak dopasowań',
+    last: 'Ostatnie:',
+    next: 'Następne:',
+    noRuns: 'Brak uruchomień',
+    manage: 'Zarządzaj',
+    showRuns: 'Pokaż uruchomienia',
+    hideRuns: 'Ukryj uruchomienia',
+    runHistory: 'Historia uruchomień',
+    actionsTitle: 'Działania zadania cron',
+    resume: 'Wznów zadanie cron',
+    pause: 'Wstrzymaj zadanie cron',
+    resumeTitle: 'Wznów',
+    pauseTitle: 'Wstrzymaj',
+    triggerNow: 'Uruchom teraz',
+    edit: 'Edytuj zadanie cron',
+    deleteTitle: 'Usunąć zadanie cron?',
+    deleteDescPrefix: 'Trwale usuniesz ',
+    deleteDescSuffix: '. Zadanie natychmiast przestanie się uruchamiać.',
+    deleting: 'Usuwanie…',
+    resumed: 'Zadanie cron wznowione',
+    paused: 'Zadanie cron wstrzymane',
+    triggered: 'Zadanie cron uruchomione',
+    deleted: 'Zadanie cron usunięte',
+    created: 'Zadanie cron utworzone',
+    updated: 'Zadanie cron zaktualizowane',
+    failedLoad: 'Nie udało się wczytać zadań cron',
+    failedUpdate: 'Nie udało się zaktualizować zadania cron',
+    failedTrigger: 'Nie udało się uruchomić zadania cron',
+    failedDelete: 'Nie udało się usunąć zadania cron',
+    failedSave: 'Nie udało się zapisać zadania cron',
+    editTitle: 'Edytuj zadanie cron',
+    createTitle: 'Nowe zadanie cron',
+    editDesc: 'Zmień harmonogram, prompt lub miejsce docelowe. Zmiany zaczną obowiązywać przy następnym uruchomieniu.',
+    createDesc:
+      'Zaplanuj automatyczne uruchamianie promptu. Użyj składni cron lub wyrażenia w języku naturalnym, np. „co 15 minut”.',
+    nameLabel: 'Nazwa',
+    namePlaceholder: 'Poranna odprawa',
+    promptLabel: 'Prompt',
+    promptPlaceholder: 'Podsumuj moje nieprzeczytane wątki na Slacku i wyślij mi e-mailem 5 najważniejszych…',
+    frequencyLabel: 'Częstotliwość',
+    deliverLabel: 'Dostarcz do',
+    customScheduleLabel: 'Niestandardowy harmonogram',
+    customPlaceholder: '0 9 * * * lub w dni robocze o 9:00',
+    customHint: 'Wyrażenie cron lub zwrot, np. „co godzinę” albo „w dni robocze o 9:00”.',
+    optional: 'Opcjonalne',
+    promptRequired: 'Prompt jest wymagany.',
+    promptScheduleRequired: 'Prompt i harmonogram są wymagane.',
+    scheduleRequired: 'Harmonogram jest wymagany.',
+    scriptOnlyEditHint: 'Zadanie tylko ze skryptem (bez promptu AI). Identyfikator zadania:',
+    saveChanges: 'Zapisz zmiany',
+    createAction: 'Utwórz zadanie cron',
+    deliverNeedsHomeChannel: 'najpierw ustaw kanał domowy',
+    modelLabel: 'Model',
+    modelDefault: 'Domyślny (model globalny)',
+    tabs: { jobs: 'Zadania', blueprints: 'Szablony' },
+    blueprints: {
+      tab: 'Szablony',
+      startFrom: 'Rozpocznij od',
+      custom: 'Własny',
+      subtitle: 'Gotowe automatyzacje',
+      dialogDesc: 'Uzupełnij szczegóły i ustaw harmonogram.',
+      scheduleIt: 'Zaplanuj',
+      scheduling: 'Planowanie…',
+      scheduled: 'Zaplanowano szablon',
+      loading: 'Ładowanie szablonów…',
+      failedLoad: 'Nie udało się wczytać szablonów',
+      emptyTitle: 'Brak dostępnych szablonów',
+      emptyDesc: 'Ten backend nie udostępnia szablonów automatyzacji.'
+    }
+  },
+
+  artifacts: {
+    search: 'Szukaj artefaktów…',
+    refresh: 'Odśwież artefakty',
+    refreshing: 'Odświeżanie artefaktów…',
+    indexing: 'Indeksowanie artefaktów ostatnich sesji',
+    tabAll: 'Wszystko',
+    tabImages: 'Obrazy',
+    tabFiles: 'Pliki',
+    tabLinks: 'Linki',
+    noArtifactsTitle: 'Nie znaleziono artefaktów',
+    noArtifactsDesc: 'Wygenerowane obrazy i pliki będą pojawiać się tutaj po utworzeniu ich w sesjach.',
+    failedLoad: 'Nie udało się wczytać artefaktów',
+    openFailed: 'Otwarcie nie powiodło się',
+    itemsImage: 'obrazy',
+    itemsLink: 'linki',
+    itemsFile: 'pliki',
+    itemsGeneric: 'elementy',
+    zero: '0 poz. ·',
+    rangeOf: (start, end, total) => `${start}–${end} z ${total} poz. ·`,
+    goToPage: (itemLabel, page) => `Przejdź do strony ${page}: ${itemLabel}`,
+    colTitleLink: 'Tytuł linku',
+    colTitleFile: 'Nazwa',
+    colTitleDefault: 'Tytuł/nazwa',
+    colLocationLink: 'URL',
+    colLocationFile: 'Ścieżka',
+    colLocationDefault: 'Lokalizacja',
+    colSession: 'Sesja',
+    kindImage: 'obraz',
+    kindFile: 'plik',
+    kindLink: 'łącze',
+    chat: 'Czat',
+    copyUrl: 'Skopiuj URL',
+    copyPath: 'Skopiuj ścieżkę'
+  },
+
+  sidebar: {
+    nav: {
+      'new-session': 'Nowa sesja',
+      skills: 'Możliwości',
+      messaging: 'Wiadomości',
+      artifacts: 'Artefakty'
+    },
+    searchAria: 'Wyszukaj sesje',
+    searchPlaceholder: 'Wyszukaj sesje…',
+    clearSearch: 'Wyczyść wyszukiwanie',
+    noMatch: query => `Żadna sesja nie pasuje do „${query}”.`,
+    results: 'Wyniki',
+    pinned: 'Przypięte',
+    sessions: 'Sesje',
+    cronJobs: 'Zadania cron',
+    groupAriaGrouped: 'Pokaż sesje jako pojedynczą listę',
+    groupAriaUngrouped: 'Grupuj sesje według obszaru roboczego',
+    showProjects: 'Pokaż projekty',
+    showSessions: 'Pokaż sesje',
+    groupTitleGrouped: 'Rozgrupuj sesje',
+    groupTitleUngrouped: 'Grupuj według obszaru roboczego',
+    allPinned: 'Wszystkie sesje są przypięte. Odepnij czat, aby pojawił się w ostatnich sesjach.',
+    shiftClickHint: 'Kliknij czat, przytrzymując klawisz Shift, aby go przypiąć',
+    noWorkspace: 'Brak obszaru roboczego',
+    projectEmpty: 'Nie ma jeszcze sesji',
+    noSessions: 'Nie ma jeszcze sesji',
+    projects: {
+      sectionLabel: 'Projekty',
+      newButton: 'Nowy projekt',
+      createTitle: 'Nowy projekt',
+      createDesc: 'Nazwij obszar roboczy i dodaj jeden lub więcej folderów.',
+      renameTitle: 'Zmień nazwę projektu',
+      addFolderTitle: 'Dodaj folder',
+      namePlaceholder: 'np. Skunkworks',
+      foldersLabel: 'Foldery',
+      ideaLabel: 'Pomysł',
+      ideaPlaceholder: 'O co chodzi w tym projekcie? (zapisane w IDEA.md)',
+      ideaGenerate: 'Wygeneruj pomysł',
+      ideaGenerating: 'Generowanie…',
+      ideaShuffle: 'Losuj szablony',
+      noFolders: 'Nie dodano jeszcze żadnych folderów.',
+      addFolder: 'Dodaj folder',
+      primaryBadge: 'podstawowy',
+      removeFolder: 'Usuń folder z projektu',
+      create: 'Utwórz',
+      menu: 'Działania projektowe',
+      menuRename: 'Zmień nazwę',
+      menuAppearance: 'Wygląd',
+      noColor: 'Brak koloru',
+      menuAddFolder: 'Dodaj folder',
+      menuSetActive: 'Ustaw jako aktywny',
+      menuDelete: 'Usuń',
+      reveal: 'Pokaż w folderze',
+      copyPath: 'Skopiuj ścieżkę',
+      removeFromSidebar: 'Ukryj na pasku bocznym',
+      createFailed: 'Nie można utworzyć projektu',
+      staleBackend:
+        'Zaktualizuj backend Hermesa, aby tworzyć projekty — jest starszy niż aplikacja Hermes Desktop (Ustawienia → Aktualizacje → Backend).',
+      deleteConfirm:
+        'Spowoduje to usunięcie zapisanego projektu z Hermesa. Pliki, repozytoria Git i drzewa robocze pozostaną bez zmian.',
+      startWork: 'Nowe drzewo robocze',
+      newWorktreeTitle: 'Nowe drzewo robocze',
+      newWorktreeDesc: 'Nazwij gałąź tego drzewa roboczego.',
+      branchPlaceholder: 'np. moja-funkcja',
+      startWorkFailed: 'Nie można utworzyć drzewa roboczego',
+      branchOff: () => ({ before: 'utwórz gałąź od ', after: '' }),
+      convertBranch: 'Przekształć gałąź…',
+      convertBranchTitle: 'Przekształć gałąź',
+      convertBranchDesc: 'Otwórz gałąź używaną w innym katalogu albo utwórz drzewo robocze dla wolnej gałęzi.',
+      convertBranchPlaceholder: 'Wyszukaj gałęzie…',
+      baseBranchPlaceholder: 'Wyszukaj gałęzie…',
+      baseBranchNone: 'Nie znaleziono gałęzi',
+      convertBranchInstead: 'Przekształć istniejącą gałąź',
+      branchOpenExisting: 'otwórz',
+      branchSwitchHome: 'przełącz gałąź w katalogu głównym',
+      branchCreateWorktree: 'nowe drzewo robocze',
+      branchesLoading: 'Ładowanie gałęzi…',
+      noBranches: 'Nie znaleziono gałęzi',
+      removeWorktree: 'Usuń drzewo robocze',
+      removeWorktreeFailed: 'Nie można usunąć drzewa roboczego (zmiany bez commita?)',
+      removeWorktreeConfirm:
+        'Usuń drzewo robocze za pomocą polecenia Git (katalog zostanie usunięty, ale gałąź pozostanie) albo tylko ukryj jego sekcję na pasku bocznym i pozostaw je na dysku.',
+      removeWorktreeDirty:
+        'To drzewo robocze zawiera zmiany bez commita. Wymuś usunięcie, aby je odrzucić, albo tylko ukryj jego sekcję i pozostaw je na dysku.',
+      forceRemove: 'Wymuś usunięcie',
+      enter: label => `Otwórz ${label}`,
+      reorder: label => `Zmień kolejność ${label}`,
+      toggle: (label, open) => `${open ? 'Pokaż' : 'Ukryj'} sesje projektu „${label}”`,
+      back: 'Wszystkie projekty'
+    },
+    newSessionIn: label => `Nowa sesja w ${label}`,
+    showMoreIn: (count, label) => `Pokaż więcej sesji w „${label}” (${count})`,
+    loading: 'Ładowanie…',
+    loadMore: 'Załaduj więcej',
+    loadCount: step => `Załaduj więcej (${step})`,
+    row: {
+      pin: 'Przypnij',
+      unpin: 'Odepnij',
+      copyId: 'Skopiuj identyfikator',
+      export: 'Eksportuj',
+      branchFrom: 'Utwórz odgałęzienie rozmowy',
+      rename: 'Zmień nazwę',
+      archive: 'Archiwizuj',
+      newWindow: 'Nowe okno',
+      copyIdFailed: 'Nie można skopiować identyfikatora sesji',
+      sessionActions: 'Działania dotyczące sesji',
+      sessionRunning: 'Sesja jest w toku',
+      needsInput: 'Wymaga Twojej reakcji',
+      waitingForAnswer: 'Oczekiwanie na Twoją odpowiedź',
+      handoffOrigin: platform => `Przekazano z ${platform}`,
+      hideTabBar: 'Ukryj pasek kart',
+      openInNewTab: 'Otwórz w nowej karcie',
+      openInSplit: 'Otwórz w podzielonym widoku',
+      finishedUnread: 'Zakończono — nieprzeczytane',
+      backgroundRunning: 'Trwa zadanie w tle',
+      renamed: 'Zmieniono nazwę',
+      renameFailed: 'Zmiana nazwy nie powiodła się',
+      renameTitle: 'Zmień nazwę sesji',
+      renameDesc: 'Nadaj temu czatowi łatwy do zapamiętania tytuł. Pozostaw pole puste, aby usunąć tytuł.',
+      untitledChat: id => `Czat ${id}`,
+      untitledPlaceholder: 'Sesja bez tytułu',
+      ageNow: 'teraz',
+      ageDay: 'd',
+      ageHour: 'h',
+      ageMin: 'm',
+      ownedByProfile: profile => `Profil: ${profile}`
+    },
+    dateDivider: {
+      today: 'Wcześniej dzisiaj',
+      yesterday: 'Wczoraj',
+      thisWeek: 'Wcześniej w tym tygodniu',
+      lastWeek: 'W zeszłym tygodniu',
+      thisMonth: 'Wcześniej w tym miesiącu'
+    }
+  },
+
+  composer: {
+    message: 'Wiadomość',
+    wakingProfile: profile => `Uruchamianie profilu ${profile}…`,
+    placeholderStarting: 'Uruchamianie Hermesa…',
+    placeholderReconnecting: 'Ponowne łączenie z Hermesem…',
+    placeholderFollowUp: 'Wyślij wiadomość uzupełniającą',
+    newSessionPlaceholders: [
+      'Co budujemy?',
+      'Daj Hermesowi zadanie',
+      'O czym myślisz?',
+      'Opisz, czego potrzebujesz',
+      'Czym powinniśmy się zająć?',
+      'Zapytaj o cokolwiek',
+      'Zacznij od celu'
+    ],
+    followUpPlaceholders: [
+      'Wyślij kolejną wiadomość',
+      'Dodaj więcej kontekstu',
+      'Doprecyzuj żądanie',
+      'Co dalej?',
+      'Kontynuuj to',
+      'Działaj dalej',
+      'Dostosuj lub kontynuuj'
+    ],
+    startVoice: 'Rozpocznij rozmowę głosową',
+    queueMessage: 'Wiadomość w kolejce',
+    steer: 'Pokieruj bieżącym zadaniem',
+    stop: 'Zatrzymaj',
+    send: 'Wyślij',
+    speaking: 'Odtwarzanie odpowiedzi',
+    transcribing: 'Transkrybowanie',
+    thinking: 'Myślenie',
+    muted: 'Wyciszono',
+    listening: 'Słuchanie',
+    muteMic: 'Wycisz mikrofon',
+    unmuteMic: 'Włącz mikrofon',
+    stopListening: 'Przestań słuchać i wyślij',
+    stopShort: 'Zatrzymaj',
+    endConversation: 'Zakończ rozmowę głosową',
+    endShort: 'Koniec',
+    stopDictation: 'Przestań dyktować',
+    transcribingDictation: 'Transkrybowanie dyktowania',
+    voiceDictation: 'Dyktowanie głosowe',
+    speakReplies: 'Przeczytaj odpowiedzi na głos',
+    stopSpeakingReplies: 'Przestań czytać odpowiedzi na głos',
+    lookupLoading: 'Wyszukiwanie…',
+    lookupNoMatches: 'Brak dopasowań.',
+    lookupTry: 'Spróbuj',
+    lookupOr: 'lub',
+    commonCommands: 'Najczęstsze polecenia',
+    hotkeys: 'Skróty klawiszowe',
+    helpFooter: 'otwórz pełny panel · Backspace: zamknij',
+    commandDescs: {
+      '/help': 'pełna lista poleceń + skróty klawiszowe',
+      '/clear': 'rozpocznij nową sesję',
+      '/resume': 'wznów poprzednią sesję',
+      '/details': 'ustaw poziom szczegółowości transkrypcji',
+      '/copy': 'skopiuj zaznaczenie lub ostatnią odpowiedź asystenta',
+      '/quit': 'wyjdź z Hermesa'
+    },
+    hotkeyDescs: {
+      'composer.mention': 'dołącz pliki, foldery i adresy URL',
+      'composer.slash': 'paleta poleceń ukośnikowych',
+      'composer.help': 'szybka pomoc (Backspace: zamknij)',
+      'composer.sendNewline': 'wyślij · Shift+Enter dla nowej linii',
+      'composer.sendQueued': 'wyślij następną wiadomość z kolejki',
+      'keybinds.openPanel': 'wszystkie skróty klawiaturowe',
+      'composer.cancel': 'zamknij okno podręczne · anuluj zadanie',
+      'composer.history': 'przełącz okno podręczne / historię'
+    },
+    attachUrlTitle: 'Dołącz URL',
+    attachUrlDesc: 'Hermes pobierze tę stronę i uwzględni ją jako kontekst w tej turze.',
+    urlPlaceholder: 'https://example.com/post',
+    urlHintPre: 'Dołącz pełny adres URL, np.',
+    attach: 'Dołącz',
+    queued: count => `W kolejce: ${count}`,
+    attachmentOnly: 'Wiadomość zawierająca tylko załącznik',
+    emptyTurn: 'Pusta wiadomość',
+    attachments: count => `Załączniki: ${count}`,
+    editingInComposer: 'Edycja w polu wiadomości',
+    editingQueuedInComposer: 'Edycja wiadomości w kolejce',
+    queueEdit: 'Edytuj',
+    queueSendNext: 'Następny',
+    queueSend: 'Wyślij',
+    queueDelete: 'Usuń',
+    queueStuckTitle: 'Wiadomość w kolejce nie została wysłana',
+    queueStuckBody: 'Nie udało się wysłać oczekującej wiadomości. Nadal jest w kolejce — spróbuj wysłać ją ponownie.',
+    previewUnavailable: 'Podgląd niedostępny',
+    previewLabel: label => `Podgląd ${label}`,
+    couldNotPreview: label => `Nie można wyświetlić podglądu ${label}`,
+    removeAttachment: label => `Usuń ${label}`,
+    dictating: 'Dyktowanie',
+    preparingAudio: 'Przygotowanie dźwięku',
+    speakingResponse: 'Odtwarzanie odpowiedzi',
+    readingAloud: 'Czytanie na głos',
+    themeSuggestions: 'Sugestie motywów dla aplikacji Hermes Desktop',
+    noMatchingThemes: 'Brak pasujących motywów.',
+    themeTryPre: 'Spróbuj ',
+    themeTryPost: '.',
+    attachLabel: 'Dołącz',
+    files: 'Pliki…',
+    folder: 'Folder…',
+    images: 'Obrazy…',
+    pasteImage: 'Wklej obraz',
+    url: 'URL…',
+    promptSnippets: 'Szybkie fragmenty…',
+    tipPre: 'Wskazówka: wpisz ',
+    tipPost: ', aby dołączać pliki.',
+    snippetsTitle: 'Szybkie fragmenty',
+    snippetsDesc: 'Wybierz prompt startowy, aby wstawić go do pola wiadomości.',
+    dropFiles: 'Upuść pliki, które chcesz załączyć',
+    dropSession: 'Upuść, aby dołączyć ten czat',
+    snippets: {
+      codeReview: {
+        label: 'Przegląd kodu',
+        description: 'Sprawdź bieżące zmiany pod kątem regresji, przypadków brzegowych i brakujących testów.',
+        text: 'Przejrzyj to pod kątem błędów, regresji i brakujących testów.'
+      },
+      implementationPlan: {
+        label: 'Plan wdrożenia',
+        description: 'Przed zmianą kodu opisz podejście, aby zakres pozostał jasno określony.',
+        text: 'Przed zmianą kodu przygotuj zwięzły plan wdrożenia.'
+      },
+      explainThis: {
+        label: 'Wyjaśnij to',
+        description: 'Wyjaśnij działanie wybranego kodu i wskaż najważniejsze pliki.',
+        text: 'Wyjaśnij, jak to działa i wskaż mi kluczowe pliki.'
+      }
+    },
+    queuedPaused: count => `W kolejce: ${count} — wstrzymano`,
+    queueResume: 'Wznów',
+    queueResumeTip: 'Wstrzymano przez Stop — wznów wysyłanie tur z kolejki'
+  },
+
+  statusStack: {
+    agents: 'Agenci',
+    background: count => `Zadania w tle: ${count}`,
+    subagents: count => `Subagenci: ${count}`,
+    todos: (done, total) => `Zadania ${done}/${total}`,
+    running: 'W toku',
+    stop: 'Zatrzymaj',
+    dismiss: 'Odrzuć',
+    exit: code => `wyjście ${code}`,
+    coding: {
+      title: 'Drzewo robocze',
+      noBranch: 'Brak gałęzi',
+      detached: 'odłączony',
+      clean: 'Czysty',
+      changed: count => `Zmienione pliki: ${count}`,
+      ahead: count => `Commity lokalne: ${count}`,
+      behind: count => `Brakujące commity: ${count}`,
+      review: 'Recenzja',
+      close: 'Zamknij',
+      openChanges: 'Otwórz zmiany',
+      openFile: 'Otwórz plik',
+      stage: 'Dodaj do indeksu',
+      unstage: 'Usuń z indeksu',
+      stageAll: 'Dodaj wszystko do indeksu',
+      viewAsTree: 'Zobacz jako drzewo',
+      viewAsList: 'Wyświetl jako listę',
+      revert: 'Przywróć',
+      revertAll: 'Przywróć wszystko',
+      revertConfirm: 'Odrzucić zmiany w tym pliku i przywrócić go do zatwierdzonego stanu? Tego nie można cofnąć.',
+      revertAllConfirm: 'Odrzucić każdą zmianę i przywrócić pliki do stanu zatwierdzonego? Tego nie można cofnąć.',
+      staged: 'W indeksie',
+      noChanges: 'Brak zmian',
+      notRepo: 'To nie jest repozytorium Git',
+      noDiff: 'Brak różnic do pokazania',
+      scopeUncommitted: 'Niezatwierdzone zmiany',
+      scopeBranch: 'Gałąź',
+      scopeLastTurn: 'Ostatnia tura',
+      commit: 'Utwórz commit',
+      commitAndPush: 'Utwórz commit i wypchnij',
+      commitPlaceholder: shortcut => `Opis commita (${shortcut}: utwórz commit)`,
+      generateCommitMessage: 'Wygeneruj opis commita',
+      stopGenerating: 'Zatrzymaj generowanie',
+      createPr: 'Utwórz PR',
+      openPr: 'Otwórz PR',
+      ghMissing: 'Zainstaluj GitHub CLI (gh) i zaloguj się, aby otworzyć PR',
+      agentShip: 'Poproś Hermesa o otwarcie PR',
+      agentShipPrompt:
+        'Przejrzyj bieżące zmiany, utwórz commit z czytelnym opisem zgodnym z Conventional Commits, wypchnij gałąź i otwórz pull request.',
+      newBranch: 'Nowa gałąź',
+      branchOffFrom: base => `Nowa gałąź z ${base}`,
+      switchTo: branch => `Przełącz na ${branch}`,
+      switchFailed: branch => `Nie udało się przełączyć na ${branch}`,
+      worktrees: 'Drzewa robocze'
+    }
+  },
+
+  updates: {
+    stages: {
+      idle: 'Przygotowanie…',
+      prepare: 'Przygotowanie…',
+      fetch: 'Pobieranie…',
+      pull: 'Prawie na miejscu…',
+      pydeps: 'Kończenie aktualizacji…',
+      update: 'Aktualizowanie Hermesa…',
+      rebuild: 'Przebudowywanie aplikacji Hermes Desktop…',
+      restart: 'Ponowne uruchamianie Hermesa…',
+      done: 'Aktualizacja zakończona',
+      manual: 'Zaktualizuj z terminala',
+      guiSkew: 'Zaktualizuj aplikację komputerową',
+      error: 'Aktualizacja wstrzymana'
+    },
+    checking: 'Sprawdzanie aktualizacji…',
+    checkFailedTitle: 'Nie udało się sprawdzić dostępności aktualizacji',
+    tryAgain: 'Spróbuj ponownie',
+    notAvailableTitle: 'Aktualizacja niedostępna',
+    unsupportedMessage: 'Ta wersja Hermesa nie może aktualizować się z poziomu aplikacji.',
+    connectionRetry: 'Sprawdź połączenie i spróbuj ponownie.',
+    latestBody: 'Używasz najnowszej wersji.',
+    latestBodyBackend: 'Backend działa w najnowszej wersji.',
+    allSetTitle: 'Wszystko gotowe',
+    availableTitle: 'Dostępna nowa aktualizacja',
+    availableBody: 'Nowa wersja Hermesa jest gotowa do instalacji.',
+    availableTitleBackend: 'Dostępna aktualizacja backendu',
+    availableBodyBackend: 'Nowsza wersja podłączonego backendu Hermesa jest gotowa do zainstalowania.',
+    availableBodyNoChangelog:
+      'Nowsza wersja jest gotowa. Informacje o wersji nie są dostępne dla tego typu instalacji.',
+    updateNow: 'Zaktualizuj teraz',
+    maybeLater: 'Może później',
+    moreChanges: count => `Pozostałe zmiany w aktualizacji: ${count}.`,
+    manualTitle: 'Zaktualizuj z terminala',
+    manualBody:
+      'Hermes został zainstalowany z wiersza poleceń, dlatego aktualizację również trzeba uruchomić w terminalu. Wklej to polecenie:',
+    manualPickedUp: 'Hermes pobierze nową wersję przy następnym uruchomieniu.',
+    guiSkewTitle: 'Zaktualizuj aplikację komputerową',
+    guiSkewBody:
+      'Backend został zaktualizowany, ale pakiet aplikacji Hermes Desktop nie. Zaktualizuj lub zainstaluj ponownie aplikację Hermes Desktop (AppImage / .deb / .rpm), aby wersje były zgodne.',
+    copy: 'Kopiuj',
+    copied: 'Skopiowano',
+    done: 'Gotowe',
+    applyingBody:
+      'Aktualizator Hermesa przejmuje kontrolę w osobnym oknie i po zakończeniu automatycznie ponownie otworzy Hermesa. Nie uruchamiaj samodzielnie Hermesa podczas aktualizacji.',
+    applyingBodyBackend:
+      'Zdalny backend instaluje aktualizację i uruchomi się ponownie. Hermes automatycznie połączy się z nim, gdy będzie dostępny.',
+    applyingClose:
+      'To okno zostanie zamknięte na czas aktualizacji, a po jej zakończeniu Hermes otworzy się automatycznie.',
+    errorTitle: 'Aktualizacja nie została zakończona',
+    errorBody: 'Bez obaw – nic straconego. Możesz teraz spróbować ponownie.',
+    notNow: 'Nie teraz',
+    applyStatus: {
+      preparing: 'Przygotowywanie backendu…',
+      pulling: 'Aktualizacja backendu…',
+      restarting: 'Backend uruchamia się ponownie, aby załadować aktualizację…',
+      notAvailable: 'Aktualizacja nie jest dostępna dla tego backendu.',
+      failed: 'Aktualizacja backendu nie powiodła się.',
+      noReturn: 'Backend nie wrócił do trybu online. Aktualizacja mogła nie zostać ukończona — sprawdź hosta backendu.'
+    }
+  },
+
+  install: {
+    stageStates: {
+      pending: 'Oczekujące',
+      running: 'Instalowanie',
+      succeeded: 'Gotowe',
+      skipped: 'Pominięte',
+      failed: 'Nie udało się'
+    },
+    oneTimeTitle: 'Hermes wymaga jednorazowej instalacji',
+    unsupportedDesc: platform =>
+      `Automatyczna instalacja przy pierwszym uruchomieniu nie jest jeszcze dostępna na platformie ${platform}. Otwórz Terminal i uruchom poniższe polecenie, a następnie uruchom ponownie tę aplikację. Kolejne uruchomienia pominą ten krok.`,
+    installCommand: 'Polecenie instalacji',
+    copyCommand: 'Kopiuj polecenie',
+    viewDocs: 'Zobacz dokumentację instalacyjną',
+    installTo: 'Katalog instalacji',
+    retryAfterRun: 'Polecenie uruchomione — spróbuj ponownie',
+    failedTitle: 'Instalacja nie powiodła się',
+    settingUpTitle: 'Konfigurowanie Hermesa',
+    finishingTitle: 'Kończenie konfiguracji',
+    failedDesc:
+      'Jeden z etapów instalacji nie powiódł się. W systemie Windows może się to zdarzyć, jeśli działa inna instancja aplikacji Hermes CLI lub Hermes Desktop. Zamknij wszystkie działające instancje Hermesa i spróbuj ponownie. Pełne informacje znajdziesz w szczegółach poniżej lub w logu aplikacji Hermes Desktop.',
+    activeDesc:
+      'Jest to konfiguracja jednorazowa. Instalator Hermesa pobiera zależności i konfiguruje Twój komputer. Kolejne uruchomienia pominą ten krok.',
+    progress: (completed, total) => `Ukończone kroki: ${completed}/${total}`,
+    currentStage: stage => `-- teraz: ${stage}`,
+    fetchingManifest: 'Pobieranie manifestu instalatora…',
+    error: 'Błąd',
+    hideOutput: 'Ukryj dane wyjściowe instalatora',
+    showOutput: 'Pokaż dane wyjściowe instalatora',
+    lines: count => `Liczba wierszy: ${count}`,
+    noOutput: 'Nie ma jeszcze wyników.',
+    cancelling: 'Anulowanie…',
+    cancelInstall: 'Anuluj instalację',
+    transcriptSaved: 'Pełny zapis zapisano w',
+    copiedOutput: 'Skopiowano',
+    copyOutput: 'Skopiuj dane wyjściowe',
+    reloadRetry: 'Załaduj ponownie i spróbuj ponownie',
+    setupChoiceTitle: 'Skonfiguruj aplikację Hermes Desktop',
+    setupChoiceDesc:
+      'Połącz tę aplikację z działającą bramą Hermesa albo zainstaluj Hermesa lokalnie na tym komputerze.',
+    connectExistingTitle: 'Połącz z istniejącą bramą Hermesa',
+    connectExistingShort: 'Połącz z bramą',
+    connectExistingDesc:
+      'Użyj zdalnego backendu z tokenem sesji albo logowaniem w przeglądarce. Instalacja lokalna nie zostanie uruchomiona.',
+    installLocalTitle: 'Zainstaluj Hermesa lokalnie',
+    installLocalDesc: 'Pobierz Hermesa, utwórz jego środowisko Python i uruchom backend na tym komputerze.',
+    localStartUnavailable:
+      'Nie udało się rozpocząć instalacji lokalnej. Uruchom ponownie aplikację Hermes Desktop i spróbuj jeszcze raz.',
+    remoteSetupTitle: 'Połącz z istniejącą bramą Hermesa',
+    remoteSetupDesc:
+      'Wprowadź URL bramy. Hermes Desktop wykryje, czy wymagany jest token, czy logowanie w przeglądarce.',
+    remoteUrlTitle: 'URL bramy',
+    remoteUrlDesc: 'Użyj bazowego URL bramy Hermesa, wraz z https:// dla połączenia zdalnego.',
+    remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
+    probing: 'Wykrywanie sposobu uwierzytelnienia bramy…',
+    probeError: 'Nie można połączyć się z tą bramą Hermesa.',
+    identityProvider: 'dostawca tożsamości',
+    authTitle: 'Uwierzytelnianie',
+    authNeedsOauth: provider => `Zaloguj się przez ${provider} przed przetestowaniem tej bramy.`,
+    authSignedIn: 'Ukończono logowanie w przeglądarce.',
+    connected: 'Połączono',
+    signIn: 'Zaloguj się',
+    signInWith: provider => `Zaloguj się przez ${provider}`,
+    enterUrlFirst: 'Najpierw wprowadź URL bramy.',
+    signInIncomplete: 'Okno logowania zostało zamknięte przed ukończeniem uwierzytelniania.',
+    tokenTitle: 'Token sesji',
+    tokenDesc: 'Wklej token sesji z pliku .env zdalnej bramy.',
+    pasteSessionToken: 'Wklej token sesji',
+    incompleteSignInTest: 'Zaloguj się przed przetestowaniem tej bramy chronionej przez OAuth.',
+    incompleteTokenTest: 'Wprowadź token sesji przed przetestowaniem tej bramy.',
+    testConnection: 'Testuj połączenie',
+    testSucceeded: (baseUrl, version) => `Połączono z ${baseUrl}${version ? ` (${version})` : ''}.`,
+    applyRemote: 'Zastosuj i połącz ponownie',
+    backToSetup: 'Wstecz'
+  },
+
+  onboarding: {
+    headerTitle: 'Skonfigurujmy Hermes Agent',
+    headerDesc: 'Połącz się z dostawcą modelu, aby rozpocząć czat. Większość opcji wymaga jednego kliknięcia.',
+    preparingInstall: 'Hermes kończy instalację. Przy pierwszym uruchomieniu zwykle zajmuje to mniej niż minutę.',
+    starting: 'Uruchamianie Hermesa…',
+    lookingUpProviders: 'Wyszukiwanie dostawców…',
+    collapse: 'Zwiń',
+    otherProviders: 'Inni dostawcy',
+    haveApiKey: 'Mam klucz API',
+    chooseLater: 'Później wybiorę dostawcę',
+    recommended: 'Zalecane',
+    connected: 'Połączono',
+    featuredPitch: 'Jedna subskrypcja, ponad 300 wiodących modeli — zalecany sposób korzystania z Hermesa',
+    openRouterPitch: 'Jeden klucz, setki modeli — dobry wybór domyślny',
+    apiKeyOptions: {
+      fireworks: {
+        short: 'bezpośrednie API modeli',
+        description: 'Bezpośredni dostęp do modeli hostowanych przez Fireworks AI.'
+      },
+      openrouter: {
+        short: 'jeden klucz, wiele modeli',
+        description: 'Obsługuje setki modeli za jednym kluczem. Dobre ustawienie domyślne dla nowych instalacji.'
+      },
+      openai: { short: 'Modele klasy GPT', description: 'Bezpośredni dostęp do modeli OpenAI.' },
+      gemini: { short: 'Modele Gemini', description: 'Bezpośredni dostęp do modeli Google Gemini.' },
+      xai: { short: 'Modele Groka', description: 'Bezpośredni dostęp do modeli xAI Grok.' },
+      local: {
+        short: 'hostowany lokalnie',
+        description:
+          'Skieruj Hermesa na lokalny lub hostowany przez siebie punkt końcowy zgodny z OpenAI (vLLM, llama.cpp, Ollama itp.).'
+      }
+    },
+    backToSignIn: 'Wróć do logowania',
+    getKey: 'Pobierz klucz',
+    replaceCurrent: 'Zastąp bieżącą wartość',
+    pasteApiKey: 'Wklej klucz API',
+    localApiKeyPlaceholder: 'Klucz API (opcjonalny — tylko jeśli wymaga tego Twój punkt końcowy)',
+    couldNotSave: 'Nie można zapisać danych logowania.',
+    connecting: 'Łączenie…',
+    update: 'Aktualizacja',
+    flowSubtitles: {
+      pkce: 'Otwiera przeglądarkę, aby się zalogować, a następnie kontynuuje tutaj',
+      device_code: 'Otwiera stronę weryfikacyjną w Twojej przeglądarce — Hermes łączy się automatycznie',
+      external: 'Zaloguj się raz w terminalu, a następnie wróć do czatu'
+    },
+    startingSignIn: provider => `Rozpoczynanie logowania przez ${provider}…`,
+    verifyingCode: provider => `Weryfikowanie kodu przez ${provider}…`,
+    connectedProvider: provider => `Połączono z: ${provider}`,
+    connectedPicking: provider => `Połączono z: ${provider}. Wybór modelu domyślnego…`,
+    signInFailed: 'Logowanie nie powiodło się. Spróbuj ponownie.',
+    pickDifferentProvider: 'Wybierz innego dostawcę',
+    signInWith: provider => `Zaloguj się za pomocą ${provider}`,
+    openedBrowser: provider => `Otworzyliśmy ${provider} w Twojej przeglądarce.`,
+    authorizeThere: 'Autoryzuj tam Hermesa.',
+    copyAuthCode: 'Skopiuj kod autoryzacyjny i wklej go poniżej.',
+    pasteAuthCode: 'Wklej kod autoryzacyjny',
+    reopenAuthPage: 'Otwórz ponownie stronę autoryzacji',
+    autoBrowser: provider =>
+      `Otworzyliśmy ${provider} w Twojej przeglądarce. Autoryzuj tam Hermesa, a połączenie zostanie nawiązane automatycznie — nie trzeba nic kopiować ani wklejać.`,
+    reopenSignInPage: 'Otwórz ponownie stronę logowania',
+    waitingAuthorize: 'Oczekiwanie na autoryzację…',
+    externalPending: provider =>
+      `${provider} loguje się poprzez własny CLI. Uruchom to polecenie w terminalu, a następnie wróć i wybierz „Zalogowałem się”:`,
+    signedIn: 'Zalogowałem się',
+    deviceCodeOpened: provider => `Otworzyliśmy ${provider} w Twojej przeglądarce. Wpisz tam ten kod:`,
+    reopenVerification: 'Otwórz ponownie stronę weryfikacji',
+    copy: 'Kopiuj',
+    defaultModel: 'Domyślny model',
+    freeTier: 'Poziom bezpłatny',
+    pro: 'Pro',
+    free: 'Bezpłatny',
+    price: (input, output) => `${input} wejście / ${output} wyjście za 1 mln tokenów`,
+    change: 'Zmień',
+    startChatting: 'Rozpocznij',
+    docs: provider => `Dokumentacja ${provider}`,
+    fireworksPitch: 'Bezpośrednie API modelu — modele frontier hostowane przez Fireworks'
+  },
+
+  modelPicker: {
+    title: 'Zmień model',
+    current: 'Bieżący:',
+    unknown: '(nieznany)',
+    search: 'Filtruj dostawców i modele…',
+    noModels: 'Nie znaleziono żadnych modeli.',
+    addProvider: 'Dodaj dostawcę',
+    loadFailed: 'Nie udało się załadować modeli',
+    noAuthenticatedProviders: 'Brak uwierzytelnionych dostawców.',
+    pro: 'Pro',
+    proNeedsSubscription: 'Modele Pro wymagają płatnej subskrypcji Nous.',
+    free: 'Bezpłatny',
+    freeTier: 'Poziom bezpłatny',
+    priceTitle: 'Cena wejściowa/wyjściowa za milion tokenów',
+    wasPrice: 'wcześniej'
+  },
+
+  modelVisibility: {
+    title: 'Modele',
+    search: 'Wyszukaj modele',
+    noAuthenticatedProviders: 'Brak uwierzytelnionych dostawców.',
+    addProvider: 'Dodaj dostawcę…'
+  },
+
+  shell: {
+    windowControls: 'Sterowanie oknem',
+    paneControls: 'Sterowanie panelem',
+    appControls: 'Sterowanie aplikacją',
+    modelMenu: {
+      search: 'Wyszukaj modele',
+      noModels: 'Nie znaleziono żadnych modeli',
+      editModels: 'Edytuj modele…',
+      refreshModels: 'Odśwież modele',
+      fast: 'Szybki'
+    },
+    modelOptions: {
+      noOptions: 'Brak opcji dla tego modelu',
+      options: 'Opcje',
+      thinking: 'Myślenie',
+      fast: 'Szybki',
+      effort: 'Poziom rozumowania',
+      minimal: 'Minimalny',
+      low: 'Niski',
+      medium: 'Średni',
+      high: 'Wysoki',
+      xhigh: 'Bardzo wysoki',
+      max: 'Maksymalny',
+      ultra: 'Ultra',
+      updateFailed: 'Aktualizacja opcji modelu nie powiodła się',
+      fastFailed: 'Aktualizacja w trybie szybkim nie powiodła się'
+    },
+    gatewayMenu: {
+      gateway: 'Brama',
+      connected: 'Połączono',
+      connecting: 'Łączenie…',
+      offline: 'Nieaktywny',
+      inferenceReady: 'Wnioskowanie gotowe',
+      inferenceNotReady: 'Wnioskowanie nie jest gotowe',
+      checkingInference: 'Sprawdzanie wnioskowania',
+      disconnected: 'Rozłączony',
+      openSystem: 'Otwórz panel systemowy',
+      connection: label => `Połączenie: ${label}`,
+      recentActivity: 'Ostatnia aktywność',
+      viewAllLogs: 'Zobacz wszystkie logi →',
+      messagingPlatforms: 'Platformy przesyłania wiadomości'
+    },
+    approvalMode: {
+      title: 'Tryb zatwierdzania',
+      ariaLabel: mode => `Tryb zatwierdzania: ${mode}`,
+      manual: 'Ręczny',
+      manualDescription: 'Pytaj przed działaniami wymagającymi zatwierdzenia',
+      smart: 'Inteligentny',
+      smartDescription: 'Automatycznie oceniaj działania i pytaj, gdy to konieczne',
+      off: 'Wyłączony',
+      offDescription: 'Uruchamiaj bez pytań o zatwierdzenie'
+    },
+    statusbar: {
+      unknown: 'nieznany',
+      restart: 'uruchom ponownie',
+      update: 'aktualizacja',
+      updateInProgress: 'Aktualizacja w toku',
+      commitsBehind: (count, branch) => `Brakujące commity dla gałęzi ${branch}: ${count}`,
+      desktopVersion: version => `Wersja aplikacji Hermes Desktop: ${version}`,
+      backendVersion: version => `Wersja backendu: ${version}`,
+      clientLabel: version => `Klient: ${version}`,
+      backendLabel: version => `Backend: ${version}`,
+      commit: sha => `commit ${sha}`,
+      branch: branch => `gałąź ${branch}`,
+      closeCommandCenter: 'Zamknij Centrum poleceń',
+      openCommandCenter: 'Otwórz Centrum poleceń',
+      showTerminal: 'Pokaż terminal',
+      hideTerminal: 'Ukryj terminal',
+      gateway: 'Brama',
+      gatewayReady: 'gotowy',
+      gatewayNeedsSetup: 'wymaga konfiguracji',
+      gatewayChecking: 'sprawdzanie',
+      gatewayConnecting: 'łączenie',
+      gatewayOffline: 'nieaktywny',
+      gatewayRestarting: 'ponowne uruchomienie…',
+      gatewayTitle: 'Stan bramy wnioskowania Hermesa',
+      agents: 'Agenci',
+      closeAgents: 'Zamknij agentów',
+      openAgents: 'Otwórz agentów',
+      subagents: count => `Subagenci: ${count}`,
+      failed: count => `Nieudane: ${count}`,
+      running: count => `W toku: ${count}`,
+      cron: 'Cron',
+      openCron: 'Otwórz zadania cron',
+      starmap: 'Graf pamięci',
+      openStarmap: 'Otwórz graf pamięci',
+      turnRunning: 'W toku',
+      contextUsage: 'Użycie kontekstu',
+      contextUsagePanel: {
+        categories: {
+          conversation: 'Rozmowa',
+          mcp: 'MCP',
+          memory: 'Pamięć',
+          rules: 'Zasady',
+          skills: 'Umiejętności',
+          subagent_definitions: 'Definicje subagentów',
+          system_prompt: 'Prompt systemowy',
+          tool_definitions: 'Definicje narzędzi'
+        },
+        empty: 'Brak jeszcze danych kontekstowych',
+        loading: 'Ładowanie zestawienia…',
+        percentFull: percent => `${percent}% wykorzystano`,
+        title: 'Użycie kontekstu',
+        tokenSummary: (used, max) => `${used} / ${max} tokenów`
+      },
+      session: 'Sesja',
+      yoloOn:
+        'YOLO wł. — automatyczne zatwierdzanie niebezpiecznych poleceń. Kliknij, aby wyłączyć. Shift + kliknięcie przełącza to globalnie.',
+      yoloOff:
+        'YOLO wyłączone — kliknij, aby automatycznie zatwierdzać niebezpieczne polecenia. Shift + kliknięcie przełącza to globalnie.',
+      modelNone: 'żaden',
+      noModel: 'żadnego modelu',
+      switchModel: 'Zmień model',
+      openModelPicker: 'Otwórz selektor modeli',
+      modelTitle: (provider, model) => `Model · ${provider}: ${model}`,
+      providerModelTitle: (provider, model) => `${provider} · ${model}`,
+      connectionSsh: host => `SSH: ${host}`,
+      connectionRemote: host => `Zdalnie: ${host}`,
+      connectionCloud: host => `Chmura: ${host}`,
+      connectionCloudTooltip: host => `Połączono z usługą Hermes Cloud pod adresem ${host} · kliknij, aby zarządzać`,
+      connectionSshTooltip: host => `Połączono przez SSH z ${host} · kliknij, aby zarządzać`,
+      connectionRemoteTooltip: host => `Połączono ze zdalnym backendem ${host} · kliknij, aby zarządzać`,
+      webhooks: 'Webhooki',
+      openWebhooks: 'Otwórz webhooki',
+      modelPinned: 'przypięty przez Ciebie; nowe czaty używają go zamiast modelu domyślnego z Ustawień'
+    }
+  },
+
+  rightSidebar: {
+    aria: 'Prawy pasek boczny',
+    panelsAria: 'Panele prawego paska bocznego',
+    files: 'System plików',
+    terminal: 'Terminal',
+    noFolderSelected: 'Nie wybrano folderu',
+    changeCwdTitle: 'Zmień katalog roboczy',
+    remotePickerTitle: 'Wybierz folder zdalny',
+    remotePickerDescription: 'Przeglądaj foldery na podłączonym backendzie.',
+    remotePickerSelect: 'Wybierz folder',
+    folderTip: cwd => `${cwd} — kliknij, aby zmienić folder`,
+    openFolder: 'Otwórz folder',
+    refreshTree: 'Odśwież drzewo',
+    collapseAll: 'Zwiń wszystkie foldery',
+    previewUnavailable: 'Podgląd niedostępny',
+    couldNotPreview: path => `Nie można wyświetlić podglądu ${path}`,
+    noProjectTitle: 'Brak projektu',
+    noProjectBody: 'Otwórz projekt, aby przeglądać jego pliki i zmiany.',
+    noProjectOpen: 'Żaden projekt nie jest otwarty',
+    noDiffs: 'Brak różnic',
+    unreadableTitle: 'Nie można odczytać',
+    unreadableBody: error => `Nie można odczytać tego folderu (${error}).`,
+    emptyTitle: 'Pusty',
+    emptyBody: 'Ten folder jest pusty.',
+    treeErrorTitle: 'Błąd drzewa plików',
+    treeErrorBody: 'W drzewie plików wystąpił błąd podczas renderowania tego folderu.',
+    tryAgain: 'Spróbuj ponownie',
+    loadingTree: 'Ładowanie drzewa plików',
+    loadingFiles: 'Ładowanie plików',
+    terminalHide: 'Ukryj terminal',
+    terminalsAria: 'Terminale',
+    terminalNew: 'Nowy terminal',
+    terminalCloseOthers: 'Zamknij pozostałe',
+    terminalCloseAll: 'Zamknij wszystko',
+    addToChat: 'Dodaj do czatu'
+  },
+
+  preview: {
+    tab: 'Podgląd',
+    closePane: 'Zamknij panel podglądu',
+    loading: 'Ładowanie podglądu',
+    unavailable: 'Podgląd niedostępny',
+    opening: 'Otwieranie…',
+    hide: 'Ukryj',
+    openPreview: 'Otwórz podgląd',
+    openInBrowser: 'Otwórz w przeglądarce',
+    linkHint: '⌘/Ctrl-click w panelu podglądu',
+    sourceLineTitle: 'Kliknij, aby wybrać · Shift i kliknij, aby rozszerzyć · przeciągnij do pola wiadomości',
+    source: 'ŹRÓDŁO',
+    renderedPreview: 'PODGLĄD',
+    diff: 'RÓŻNICE',
+    unknownSize: 'nieznany rozmiar',
+    binaryTitle: 'To prawdopodobnie plik binarny',
+    binaryBody: label => `Podgląd ${label} może wyświetlać nieczytelny tekst.`,
+    largeTitle: 'Ten plik jest duży',
+    largeBody: (label, size) => `${label} ma rozmiar ${size}. Hermes pokaże tylko pierwsze 512 KB.`,
+    previewAnyway: 'Podgląd mimo to',
+    truncated: 'Wyświetlono pierwsze 512 KB.',
+    noInlineTitle: 'Brak podglądu wbudowanego',
+    noInlineBody: mimeType => `${mimeType || 'Ten typ pliku'} nadal można dołączyć jako kontekst.`,
+    edit: 'Edytuj',
+    editing: 'Edycja',
+    unsavedChanges: 'Niezapisane zmiany',
+    saveFailed: message => `Nie udało się zapisać: ${message}`,
+    diskChangedTitle: 'Zmieniono plik na dysku',
+    diskChangedBody:
+      'Ten plik zmienił się od czasu jego otwarcia. Zastąpić go swoją wersją czy odrzucić zmiany i załadować ponownie?',
+    overwrite: 'Zastąp',
+    discardReload: 'Odrzuć i załaduj ponownie',
+    console: {
+      deselect: 'Odznacz wpis',
+      select: 'Wybierz wpis',
+      copyFailed: 'Nie można skopiować danych wyjściowych konsoli',
+      copyEntry: 'Skopiuj ten wpis',
+      sendEntry: 'Wyślij ten wpis do czatu',
+      messages: count => `Komunikaty konsoli: ${count}`,
+      resize: 'Zmień rozmiar konsoli podglądu',
+      title: 'Konsola podglądu',
+      selected: count => `Wybrane: ${count}`,
+      sendToChat: 'Wyślij na czat',
+      copySelected: 'Skopiuj wybrane do schowka',
+      copyAll: 'Skopiuj wszystko do schowka',
+      copy: 'Kopiuj',
+      clear: 'Wyczyść',
+      empty: 'Nie ma jeszcze żadnych komunikatów konsoli.',
+      promptHeader: 'Podgląd konsoli:',
+      sentTitle: 'Wysłano na czat',
+      sentMessage: count => `Wpisy dziennika dodane do pola wiadomości: ${count}`
+    },
+    web: {
+      appFailedToBoot: 'Nie udało się uruchomić aplikacji podglądu',
+      serverNotFound: 'Nie znaleziono serwera',
+      failedToLoad: 'Nie udało się załadować podglądu',
+      tryAgain: 'Spróbuj ponownie',
+      restarting: 'Hermes uruchamia się ponownie…',
+      askRestart: 'Poproś Hermesa o ponowne uruchomienie serwera',
+      lookingRestart: taskId => `Hermes szuka serwera podglądu do ponownego uruchomienia (${taskId})`,
+      restartingTitle: 'Ponowne uruchamianie serwera podglądu',
+      restartingMessage: 'Hermes pracuje w tle. Sprawdź postęp w konsoli podglądu.',
+      startRestartFailed: message => `Nie można rozpocząć ponownego uruchamiania serwera: ${message}`,
+      restartFailed: 'Ponowne uruchomienie serwera nie powiodło się',
+      hideConsole: 'Ukryj konsolę podglądu',
+      showConsole: 'Pokaż konsolę podglądu',
+      hideDevTools: 'Ukryj podgląd DevTools',
+      openDevTools: 'Otwórz podgląd DevTools',
+      finishedRestarting: message =>
+        `Hermes zakończył ponowne uruchamianie serwera podglądu${message ? `: ${message}` : ''}`,
+      failedRestarting: message => `Ponowne uruchomienie serwera nie powiodło się: ${message}`,
+      unknownError: 'nieznany błąd',
+      restartedTitle: 'Serwer podglądu został ponownie uruchomiony',
+      reloadingNow: 'Ponowne ładowanie podglądu.',
+      restartFailedTitle: 'Ponowne uruchomienie podglądu nie powiodło się',
+      restartFailedMessage: 'Hermes nie mógł zrestartować serwera.',
+      stillWorking:
+        'Hermes nadal działa, ale nie pojawił się jeszcze żaden wynik ponownego uruchomienia. Polecenie serwera może działać na pierwszym planie.',
+      workspaceReloading: 'Obszar roboczy został zmieniony — ponowne ładowanie podglądu',
+      fileChanged: url => `Plik został zmieniony — ponowne ładowanie podglądu: ${url}`,
+      filesChanged: (count, url) => `Zmienione pliki: ${count}. Ponowne ładowanie podglądu: ${url}`,
+      watchFailed: message => `Nie można monitorować pliku podglądu: ${message}`,
+      moduleMimeDescription:
+        'Skrypty modułów są udostępniane z nieprawidłowym typem MIME. Zwykle oznacza to, że aplikację Vite/React udostępnia statyczny serwer plików zamiast serwera deweloperskiego projektu.',
+      loadFailedConsole: (code, message) => `Ładowanie nie powiodło się${code ? ` (${code})` : ''}: ${message}`,
+      unreachableDescription: 'Nie udało się uzyskać dostępu do strony podglądu.',
+      openTarget: url => `Otwórz ${url}`,
+      fallbackTitle: 'Podgląd'
+    }
+  },
+
+  zones: {
+    showHeader: 'Pokaż nagłówek',
+    hideHeader: 'Ukryj nagłówek',
+    minimize: 'Minimalizuj',
+    restore: 'Przywróć',
+    closeRunningTitle: 'Zamknąć działającą kartę?',
+    closeRunningBody:
+      'Ten czat nadal pracuje albo oczekuje na Twoją odpowiedź. Zamknięcie karty tylko go ukryje — sesja zachowa postęp i można ją ponownie otworzyć z paska bocznego.',
+    closeRunningConfirm: 'Zamknij kartę',
+    closeOthers: 'Zamknij pozostałe',
+    closeToRight: 'Zamknij karty po prawej',
+    closeAll: 'Zamknij wszystkie',
+    pluginDisabled: pluginId => `Wtyczka „${pluginId}” jest wyłączona`,
+    pluginDisabledBody: 'Włącz ją ponownie w Ustawienia → Wtyczki, aby przywrócić panel.',
+    missingPane: paneId => `brakujący panel: ${paneId}`,
+    editTitle: 'Układy',
+    editHint:
+      'Wybierz układ albo przeciągaj panele między strefami. Kliknij strefę prawym przyciskiem, aby ją podzielić.',
+    reset: 'Resetuj',
+    templates: 'Szablony',
+    custom: 'Własny',
+    newGridLayout: 'Nowy układ siatki',
+    saveCurrentAs: 'Zapisz bieżący układ jako szablon',
+    nameLayoutPlaceholder: 'Nazwij ten układ…',
+    deletePreset: name => `Usuń ${name}`,
+    zoneEditorTitle: 'Edytor stref',
+    editorHintPre: 'kliknij, aby podzielić · ',
+    editorHintPost:
+      ' odwraca linię · przeciągaj przez strefy, aby je połączyć · przeciągaj wspólne krawędzie, aby zmienić rozmiar',
+    templateColumns: 'Kolumny',
+    templateRows: 'Wiersze',
+    templateGrid: 'Siatka',
+    templatePriority: 'Priorytet',
+    zoneTag: index => `strefa ${index}`,
+    mergeZones: count => `Połącz strefy: ${count}`,
+    customZoneName: count => `Własny układ ${count} stref`,
+    layoutNamePlaceholder: fallback => `Nazwa układu (${fallback})`,
+    saveApply: 'Zapisz i zastosuj',
+    notExpressible:
+      'ten układ jest zazębiający się (wiatrak) — nie można go jeszcze wyrazić jako zagnieżdżonych podziałów',
+    zoneCount: count => `Strefy: ${count}`,
+    newSessionTab: 'Nowa karta sesji'
+  },
+
+  assistant: {
+    thread: {
+      loadingSession: 'Ładowanie sesji',
+      showEarlier: 'Pokaż wcześniejsze wiadomości',
+      loadingResponse: 'Hermes ładuje odpowiedź',
+      resumeWhenBackgroundDone: count =>
+        count === 1
+          ? 'Zostanie wznowione po zakończeniu zadania w tle'
+          : `Zadania w tle do zakończenia: ${count}. Sesja zostanie wznowiona automatycznie.`,
+      thinking: 'Myślenie',
+      today: time => `Dzisiaj, ${time}`,
+      yesterday: time => `Wczoraj, ${time}`,
+      copy: 'Kopiuj',
+      refresh: 'Odśwież',
+      moreActions: 'Więcej akcji',
+      branchNewChat: 'Odgałęź do nowego czatu',
+      dismissError: 'Odrzuć błąd',
+      readAloudFailed: 'Czytanie na głos nie powiodło się',
+      preparingAudio: 'Przygotowywanie dźwięku…',
+      stopReading: 'Przestań czytać',
+      readAloud: 'Przeczytaj na głos',
+      editMessage: 'Edytuj wiadomość',
+      expandMessage: 'Rozwiń wiadomość',
+      scrollToBottom: 'Przewiń w dół',
+      stop: 'Zatrzymaj',
+      restorePrevious: 'Przywróć poprzedni punkt kontrolny',
+      restoreCheckpoint: 'Przywróć punkt kontrolny',
+      restoreFromHere: 'Przywróć punkt kontrolny — uruchom ponownie od tego promptu',
+      restoreTitle: 'Przywrócić do tego punktu kontrolnego?',
+      restoreBody:
+        'Wszystko po tym prompcie zostanie usunięte z rozmowy, a prompt zostanie uruchomiony ponownie w tym miejscu.',
+      restoreConfirm: 'Przywróć i uruchom ponownie',
+      restoreNext: 'Przywróć następny punkt kontrolny',
+      goForward: 'Idź naprzód',
+      sendEdited: 'Wyślij edytowaną wiadomość',
+      attachingFile: 'Dołączanie…'
+    },
+    approval: {
+      gatewayDisconnected: 'Brama Hermesa nie jest podłączona',
+      sendFailed: 'Nie można wysłać decyzji dotyczącej zgody',
+      run: 'Uruchom',
+      command: 'Polecenie',
+      moreOptions: 'Więcej opcji zgody',
+      allowSession: 'Zezwól na tę sesję',
+      alwaysAllowMenu: 'Zawsze zezwalaj…',
+      jumpToApproval: 'Wymagana zgoda',
+      reject: 'Odrzuć',
+      alwaysTitle: 'Zawsze zezwalać na to polecenie?',
+      alwaysDescription: pattern =>
+        `To dodaje „${pattern}” na stałą listę dozwolonych (~/.hermes/config.yaml). Hermes nie będzie już więcej pytał o takie polecenia – ani w tej sesji, ani w żadnej przyszłej.`,
+      alwaysAllow: 'Zawsze zezwalaj'
+    },
+    clarify: {
+      notReady: 'Żądanie doprecyzowania nie jest jeszcze gotowe',
+      gatewayDisconnected: 'Brama Hermesa nie jest podłączona',
+      sendFailed: 'Nie można wysłać odpowiedzi',
+      loadingQuestion: 'Ładowanie pytania…',
+      other: 'Inne (wpisz swoją odpowiedź)',
+      placeholder: 'Wpisz swoją odpowiedź…',
+      skip: 'Pomiń',
+      skipped: 'Pominięto',
+      continueLabel: 'Kontynuuj',
+      lateAnswer: (question, choice) => `Odpowiedź na „${question}”: ${choice}`,
+      lateAnswerTip: 'Utwórz z tej odpowiedzi wersję roboczą kolejnej wiadomości',
+      lateAnswerHint:
+        'Ten prompt nie oczekuje już na odpowiedź. Wybierz opcję, aby utworzyć z niej wersję roboczą kolejnej wiadomości.'
+    },
+    tool: {
+      copyCode: 'Skopiuj kod',
+      renderingImage: 'Renderowanie obrazu',
+      copyOutput: 'Skopiuj dane wyjściowe',
+      copyCommand: 'Kopiuj polecenie',
+      copyContent: 'Skopiuj treść',
+      copyUrl: 'Skopiuj URL',
+      copyResults: 'Skopiuj wyniki',
+      copyQuery: 'Skopiuj zapytanie',
+      copyFile: 'Skopiuj plik',
+      copyPath: 'Skopiuj ścieżkę',
+      outputAlt: 'Wyjście narzędzia',
+      rawResponse: 'Surowa odpowiedź',
+      copyActivity: 'Kopiuj aktywność',
+      recoveredOne: 'Odzyskano po 1 nieudanym kroku',
+      recoveredMany: count => `Odzyskano po nieudanych krokach. Liczba: ${count}`,
+      failedOne: '1 krok nie powiódł się',
+      failedMany: count => `Nieudane kroki: ${count}`,
+      statusRunning: 'W toku',
+      statusError: 'Błąd',
+      statusRecovered: 'Odzyskano',
+      statusDone: 'Gotowe',
+      actions: {
+        read: 'Przeczytaj',
+        reading: 'Czytanie',
+        opened: 'Otwarto',
+        opening: 'Otwieranie',
+        failedToOpen: 'Nie udało się otworzyć',
+        searched: 'Przeszukano',
+        searching: 'Wyszukiwanie',
+        ran: 'Uruchomiono',
+        running: 'W toku',
+        ranCode: 'Uruchomiono kod',
+        runningCode: 'Uruchamianie kodu'
+      },
+      prefixes: {
+        browser: 'Przeglądarka',
+        web: 'Sieć'
+      },
+      titleTemplates: {
+        actionCommand: (action, command) => `${action} ${command}`,
+        actionQuoted: (action, value) => `${action} “${value}”`,
+        actionTarget: (action, target) => `${action} ${target}`,
+        prefixedDone: (prefix, action) => `${prefix} ${action}`,
+        runningPrefixedTool: (prefix, action) => `Wykonywanie: ${prefix.toLowerCase()} ${action.toLowerCase()}`,
+        runningTool: action => `Wykonywanie: ${action.toLowerCase()}`
+      },
+      titles: {
+        browser_click: {
+          done: 'Kliknięty element strony',
+          pending: 'Kliknięcie elementu strony',
+          pendingAction: 'Kliknięcie'
+        },
+        browser_fill: {
+          done: 'Wypełnione pole formularza',
+          pending: 'Wypełnienie pola formularza',
+          pendingAction: 'Wypełnienie'
+        },
+        browser_navigate: { done: 'Otwarta strona', pending: 'Otwieranie strony', pendingAction: 'Otwarcie' },
+        browser_snapshot: {
+          done: 'Przechwycona migawka strony',
+          pending: 'Przechwytywanie migawki strony',
+          pendingAction: 'Przechwytywanie'
+        },
+        browser_take_screenshot: {
+          done: 'Przechwycony zrzut ekranu',
+          pending: 'Przechwytywanie zrzutu ekranu',
+          pendingAction: 'Przechwytywanie'
+        },
+        browser_type: { done: 'Wpisano na stronie', pending: 'Wpisywanie na stronie', pendingAction: 'Pisanie' },
+        clarify: { done: 'Zadano pytanie', pending: 'Zadawanie pytania', pendingAction: 'Zadawanie' },
+        cronjob: { done: 'Zaplanowano zadanie cron', pending: 'Planowanie zadania cron', pendingAction: 'Planowanie' },
+        edit_file: { done: 'Edytowano plik', pending: 'Edycja pliku', pendingAction: 'Edytowanie' },
+        execute_code: { done: 'Uruchomiono kod', pending: 'Uruchamianie kodu', pendingAction: 'Uruchamianie' },
+        image_generate: { done: 'Wygenerowano obraz', pending: 'Generowanie obrazu', pendingAction: 'Generowanie' },
+        list_files: { done: 'Lista plików', pending: 'Lista plików', pendingAction: 'Lista' },
+        patch: { done: 'Zmieniono plik', pending: 'Wprowadzanie zmian w pliku', pendingAction: 'Modyfikowanie' },
+        read_file: { done: 'Odczytano plik', pending: 'Odczytywanie pliku', pendingAction: 'Odczytywanie' },
+        search_files: { done: 'Przeszukano pliki', pending: 'Wyszukiwanie w plikach', pendingAction: 'Wyszukiwanie' },
+        session_search_recall: {
+          done: 'Przeszukana historia sesji',
+          pending: 'Przeszukiwanie historii sesji',
+          pendingAction: 'Wyszukiwanie'
+        },
+        terminal: { done: 'Uruchomiono polecenie', pending: 'Uruchamianie polecenia', pendingAction: 'Uruchamianie' },
+        todo: { done: 'Zaktualizowane zadania', pending: 'Aktualizowanie zadań', pendingAction: 'Aktualizowanie' },
+        vision_analyze: {
+          done: 'Przeanalizowano obraz',
+          pending: 'Analizowanie obrazu',
+          pendingAction: 'Analizowanie'
+        },
+        web_extract: {
+          done: 'Odczytano stronę internetową',
+          pending: 'Odczytywanie strony internetowej',
+          pendingAction: 'Odczytywanie'
+        },
+        web_search: { done: 'Przeszukano sieć', pending: 'Wyszukiwanie w sieci', pendingAction: 'Wyszukiwanie' },
+        write_file: { done: 'Zapisano plik', pending: 'Zapisywanie pliku', pendingAction: 'Zapisywanie' }
+      }
+    }
+  },
+
+  prompts: {
+    gatewayDisconnected: 'Brama Hermesa nie jest podłączona',
+    sudoSendFailed: 'Nie można wysłać hasła sudo',
+    secretSendFailed: 'Nie można wysłać sekretu',
+    sudoTitle: 'Hasło administratora',
+    sudoDesc:
+      'Hermes potrzebuje hasła sudo, aby uruchomić polecenie z podwyższonymi uprawnieniami. Hasło jest wysyłane wyłącznie do lokalnego agenta.',
+    sudoPlaceholder: 'hasło sudo',
+    secretTitle: 'Wymagany sekret',
+    secretDesc: 'Hermes potrzebuje danych uwierzytelniających, aby kontynuować.',
+    secretPlaceholder: 'tajna wartość'
+  },
+
+  desktop: {
+    audioReadFailed: 'Nie można odczytać nagranego dźwięku',
+    sessionUnavailable: 'Sesja niedostępna',
+    createSessionFailed: 'Nie można utworzyć nowej sesji',
+    promptFailed: 'Nie udało się wysłać promptu',
+    providerCredentialRequired: 'Dodaj dane uwierzytelniające dostawcy przed wysłaniem pierwszej wiadomości.',
+    emptySlashCommand: 'puste polecenie ukośnikowe',
+    desktopCommands: 'Polecenia aplikacji Hermes Desktop',
+    skillCommandsAvailable: count => `Dostępne polecenia umiejętności: ${count}.`,
+    warningLine: message => `ostrzeżenie: ${message}`,
+    yoloArmed: 'Tryb YOLO jest aktywny w tym czacie',
+    yoloOff: 'YOLO wyłączone',
+    yoloSystem: active => `Tryb YOLO w tej sesji: ${active ? 'włączony' : 'wyłączony'}`,
+    yoloTitle: 'YOLO',
+    yoloToggleFailed: 'Nie można przełączyć YOLO',
+    profileStatus: current =>
+      `Profil: ${current}. Użyj /profile <nazwa> lub selektora „Nowa sesja”, aby rozpocząć czat w innym profilu.`,
+    unknownProfile: 'Nieznany profil',
+    noProfileNamed: (target, available) => `Brak profilu o nazwie „${target}”. Dostępne: ${available}`,
+    newChatsProfile: name => `Nowe czaty będą korzystać z profilu ${name}.`,
+    setProfileFailed: 'Nie udało się ustawić profilu',
+    sttDisabled: 'Zamiana mowy na tekst jest wyłączona w ustawieniach.',
+    stopFailed: 'Zatrzymanie nie powiodło się',
+    regenerateFailed: 'Regeneracja nie powiodła się',
+    editFailed: 'Edycja nie powiodła się',
+    resumeFailed: 'Wznowienie nie powiodło się',
+    resumeStrandedTitle: 'Nie udało się wczytać tej sesji',
+    resumeStrandedBody:
+      'Połączenie z tą sesją nie powiodło się i automatyczne ponawianie prób zostało przerwane. Sprawdź, czy brama działa, a następnie spróbuj ponownie.',
+    resumeRetry: 'Spróbuj ponownie',
+    nothingToBranch: 'Nie ma nic do rozgałęzienia',
+    branchNeedsChat: 'Rozpocznij lub wznów czat przed rozgałęzieniem.',
+    sessionBusy: 'Sesja zajęta',
+    branchStopCurrent: 'Zatrzymaj bieżącą turę przed rozgałęzieniem tego czatu.',
+    branchNoText: 'Ta wiadomość nie zawiera tekstu, z którego można by rozgałęziać się.',
+    branchTitle: n => `Wersja robocza: odgałęzienie nr ${n}`,
+    branchFailed: 'Nie udało się utworzyć odgałęzienia',
+    deleteFailed: 'Usunięcie nie powiodło się',
+    archived: 'Zarchiwizowane',
+    archiveFailed: 'Archiwizacja nie powiodła się',
+    cwdChangeFailed: 'Zmiana katalogu roboczego nie powiodła się',
+    cwdStagedTitle: 'Katalog roboczy ustawiony',
+    cwdStagedMessage:
+      'Uruchom ponownie backend aplikacji Hermes Desktop, aby zastosować zmianę katalogu roboczego w tej aktywnej sesji.',
+    modelSwitchFailed: 'Zmiana modelu nie powiodła się',
+    sessionExported: 'Sesja wyeksportowana',
+    sessionExportFailed: 'Nie można wyeksportować sesji',
+    imageSaved: 'Obraz został zapisany',
+    downloadStarted: 'Pobieranie rozpoczęte',
+    restartToUseSaveImage: 'Uruchom ponownie aplikację Hermes Desktop, aby użyć opcji Zapisz obraz.',
+    restartToSaveImages: 'Uruchom ponownie aplikację Hermes Desktop, aby zapisać obrazy',
+    imageDownloadFailed: 'Pobieranie obrazu nie powiodło się',
+    openImage: 'Otwórz obraz',
+    downloadImage: 'Pobierz obraz',
+    savingImage: 'Zapisywanie obrazu',
+    imagePreviewFailed: 'Podgląd obrazu nie powiódł się',
+    imageAttach: 'Załącz obraz',
+    imageWriteFailed: 'Nie udało się zapisać obrazu na dysk.',
+    imageAttachFailed: 'Dołączenie obrazu nie powiodło się',
+    attachImages: 'Dołącz obrazy',
+    clipboard: 'Schowek',
+    noClipboardImage: 'Nie znaleziono obrazu w schowku',
+    clipboardPasteFailed: 'Wklejenie schowka nie powiodło się',
+    dropFiles: 'Upuść pliki',
+    handoff: {
+      pickPlatform: 'Wybierz miejsce docelowe',
+      success: platform => `Przekazano do ${platform}. Wznów tutaj w dowolnym momencie.`,
+      systemNote: platform => `↻ Przekazano do ${platform} — wznów tutaj w dowolnym momencie.`,
+      failed: error => `Przekazanie nie powiodło się: ${error}`,
+      timedOut: 'Upłynął limit czasu oczekiwania na bramę. Czy `hermes gateway` działa?'
+    }
+  },
+
+  errors: {
+    genericFailure: 'Coś poszło nie tak',
+    boundaryTitle: 'Coś się popsuło w interfejsie',
+    boundaryDesc: 'W widoku wystąpił nieoczekiwany błąd. Twoje czaty i ustawienia są bezpieczne.',
+    reloadWindow: 'Załaduj ponownie okno',
+    openLogs: 'Otwórz logi'
+  },
+
+  ui: {
+    search: {
+      clear: 'Wyczyść wyszukiwanie'
+    },
+    pagination: {
+      label: 'paginacja',
+      previous: 'Poprzednia',
+      previousAria: 'Przejdź do poprzedniej strony',
+      next: 'Następna',
+      nextAria: 'Przejdź do następnej strony'
+    },
+    sidebar: {
+      title: 'Pasek boczny',
+      description: 'Wyświetla mobilny pasek boczny.',
+      toggle: open => `${open ? 'Pokaż' : 'Ukryj'} pasek boczny`
+    }
+  },
+  billingBlock: {
+    titleNous: 'Brak środków Nous',
+    titleProvider: provider => `Brak środków — ${provider}`,
+    fallbackMessage: 'Na koncie nie ma środków. Dodaj środki, aby kontynuować.',
+    openBilling: 'Otwórz rozliczenia',
+    addCredits: 'Dodaj środki',
+    dismiss: 'Zamknij'
+  },
+  webhooks: {
+    search: 'Szukaj webhooków…',
+    loading: 'Ładowanie webhooków…',
+    loadFailed: 'Nie udało się wczytać webhooków',
+    subscriptions: (count: number) => `Subskrypcje (${count})`,
+    hint: 'Zmiany subskrypcji są wczytywane na gorąco, gdy odbiornik działa. Wyłączone subskrypcje odrzucają zdarzenia przychodzące.',
+    empty: 'Brak subskrypcji webhooków.',
+    disabledTitle: 'Odbiornik webhooków jest wyłączony',
+    disabledBody:
+      'Webhooki są osobną platformą bramy. Włącz je tutaj, aby przyjmować przychodzące zdarzenia HTTP; kanały czatu są potrzebne tylko wtedy, gdy subskrypcja dostarcza dane do Telegrama, Discorda, Slacka lub innego kanału.',
+    enable: 'Włącz webhooki',
+    enabling: 'Włączanie…',
+    enabled: (name: string) => `Włączono: „${name}”`,
+    disabled: (name: string) => `Wyłączono: „${name}”`,
+    enableRow: 'Włącz',
+    disableRow: 'Wyłącz',
+    delete: 'Usuń',
+    deleting: 'Usuwanie…',
+    deleted: 'Usunięto webhook',
+    deleteTitle: 'Usuń webhook',
+    deleteDescPrefix: 'Spowoduje to trwałe usunięcie ',
+    deleteDescSuffix: '. Tej operacji nie można cofnąć.',
+    deleteFailed: (name: string) => `Nie udało się usunąć „${name}”`,
+    toggleFailed: (name: string, enabled: boolean) => `Nie udało się ${enabled ? 'włączyć' : 'wyłączyć'} „${name}”`,
+    newSubscription: 'Nowa subskrypcja',
+    restarting: 'Ponowne uruchamianie bramy…',
+    restartNeeded: 'Webhooki są włączone, ale brama wymaga ponownego uruchomienia, zanim odbiornik będzie dostępny.',
+    restartGateway: 'Uruchom ponownie bramę',
+    restartingGateway: 'Ponowne uruchamianie…',
+    restartFailed: (detail: string) => `Nie udało się ponownie uruchomić bramy${detail}`,
+    enabledRestarting: 'Włączono webhooki; trwa ponowne uruchamianie bramy…',
+    all: '(wszystkie)',
+    deliverOnly: 'tylko dostarcz',
+    createdTitle: 'Utworzono subskrypcję',
+    createdSecretHint: 'Skopiuj sekret teraz — jest wyświetlany tylko raz.',
+    webhookUrl: 'URL webhooka',
+    secretOnce: 'Sekret (wyświetlany raz)',
+    done: 'Gotowe',
+    fieldName: 'Nazwa',
+    fieldNamePlaceholder: 'np. github-push',
+    fieldDescription: 'Opis',
+    fieldDescriptionPlaceholder: 'Co robi ten webhook (opcjonalnie)',
+    fieldEvents: 'Zdarzenia',
+    fieldEventsPlaceholder: 'rozdzielone przecinkami; puste oznacza wszystkie',
+    fieldSkills: 'Umiejętności',
+    fieldSkillsPlaceholder: 'nazwy umiejętności rozdzielone przecinkami (opcjonalnie)',
+    fieldDeliver: 'Dostarcz do',
+    fieldDeliverOnly: 'Dostarcz tylko payload',
+    fieldPrompt: 'Prompt',
+    fieldPromptPlaceholder: 'Instrukcje dla agenta po wywołaniu webhooka (opcjonalnie)',
+    nameRequired: 'Nazwa jest wymagana',
+    create: 'Utwórz',
+    creating: 'Tworzenie…',
+    created: 'Utworzono',
+    createFailed: (detail: string) => `Nie udało się utworzyć: ${detail}`,
+    copy: 'Kopiuj',
+    deliverOptions: {
+      log: 'Log',
+      telegram: 'Telegram',
+      discord: 'Discord',
+      slack: 'Slack',
+      email: 'E-mail',
+      github_comment: 'Komentarz GitHub'
+    }
+  }
+} satisfies TranslationOverrides
+
+const plMissingOverrides = {
+  notifications: {
+    updateReadyMessageUnknown: 'Dostępna jest nowa aktualizacja.',
+    errors: { diskFull: 'Dysk jest pełny — zwolnij trochę miejsca, a następnie spróbuj ponownie.' },
+    voice: { sayStopToEnd: (phrase: string) => `Powiedz „${phrase}”, aby zakończyć rozmowę głosową.` },
+    mcp: {
+      needsAuthTitle: 'Serwer MCP wymaga ponownego uwierzytelnienia',
+      needsAuthMessage: (name: string) => `Serwer MCP ${name} wymaga ponownego uwierzytelnienia.`,
+      errorTitle: 'Serwer MCP jest nieosiągalny',
+      errorMessage: (name: string) => `Serwer MCP ${name} nie przeszedł kontroli stanu.`,
+      signIn: 'Zaloguj się',
+      view: 'Wyświetl'
+    }
+  },
+  titlebar: { enterHud: 'Tryb HUD', exitHud: 'Wyjdź z trybu HUD' },
+  keybinds: {
+    actions: {
+      'workspace.openFolder': 'Otwórz folder jako projekt',
+      'session.archive': 'Zarchiwizuj bieżącą sesję',
+      'view.toggleStatusbar': 'Przełącz pasek stanu',
+      'view.toggleHud': 'Przełącz tryb HUD',
+      'view.terminalCopy': 'Kopiuj zaznaczenie terminala',
+      'view.terminalPaste': 'Wklej do terminala',
+      'view.findInPage': 'Znajdź na stronie',
+      'view.findNext': 'Znajdź następne dopasowanie',
+      'view.findPrevious': 'Znajdź poprzednie dopasowanie'
+    }
+  },
+  findInPage: { next: 'Następne dopasowanie', previous: 'Poprzednie dopasowanie' },
+  settings: {
+    plugins: {
+      agent: {
+        title: 'Wtyczki agenta',
+        blurb:
+          'Działają w backendzie Hermesa — narzędzia, umiejętności, serwery MCP, haki i polecenia ukośnikowe. Przenośne wtyczki to pakiety Agent Plugins (umiejętności i zestawy MCP działające także w innych agentach). Przełączniki dotyczą nowych sesji.',
+        empty: 'Nie zainstalowano jeszcze żadnych wtyczek agenta.',
+        loadFailed: 'Nie udało się wczytać wtyczek agenta',
+        portable: 'przenośna',
+        search: 'Szukaj wtyczek…',
+        noMatches: 'Żadna wtyczka nie pasuje do wyszukiwania.',
+        toggleFailed: (name: string) => `Nie udało się przełączyć wtyczki ${name}`,
+        updateBackendToManage: 'Zaktualizuj backend Hermesa, aby zarządzać tą wtyczką z aplikacji Desktop.',
+        sources: { bundled: 'wbudowana', user: 'użytkownika', git: 'git', project: 'projekt', entrypoint: 'pip' }
+      }
+    },
+    notifications: {
+      kinds: {
+        plugin: {
+          label: 'Powiadomienia wtyczek',
+          description: 'Wtyczka Desktop wysłała powiadomienie, gdy Hermes działał w tle.'
+        }
+      }
+    },
+    appearance: {
+      reasoningCollapsedTitle: 'Domyślnie zwijaj rozumowanie',
+      reasoningCollapsedDesc: 'Zachowaj strumieniowane rozumowanie bez rozwijania go, dopóki go nie otworzysz.',
+      sessionDensityTitle: 'Gęstość listy sesji',
+      sessionDensityDesc: 'Wybierz, ile kontekstu ma się pojawiać pod tytułami sesji na pasku bocznym.',
+      sessionDensityCompact: 'Kompaktowa',
+      sessionDensityComfortable: 'Wygodna',
+      sessionDensityDetailed: 'Szczegółowa',
+      composerPopoutTitle: 'Pływające pole wiadomości',
+      composerPopoutDesc:
+        'Zezwól na przeciąganie pola wiadomości poza dok. Wyłącz tę opcję, aby pozostało przypięte u dołu.',
+      terminalFontTitle: 'Czcionka terminala',
+      terminalFontDesc:
+        'Wybierz zainstalowaną czcionkę dla terminali Desktop. Nerd Fonts wyświetlają Powerlevel10k i ikony powłoki; pozostaw puste, aby użyć dołączonej czcionki JetBrains Mono.',
+      terminalFontPlaceholder: 'MesloLGS NF lub stos czcionek CSS',
+      terminalFontPreview: 'Podgląd glifów',
+      terminalFontReset: 'Użyj domyślnej',
+      reactionsTitle: 'Reakcje na wiadomości',
+      reactionsDesc: 'Reakcje emoji w stylu iMessage — reaguj na wiadomości, a Hermes może reagować na Twoje.'
+    },
+    config: {
+      toolsetsWipeConfirm:
+        'Usunąć wszystkie włączone zestawy narzędzi? Spowoduje to wyłączenie pamięci, terminala, wyszukiwania w sieci, delegowania i większości innych narzędzi do czasu ich ponownego włączenia.',
+      disableF12Title: 'Wyłącz otwieranie DevTools klawiszem F12',
+      disableF12Desc:
+        'Zablokuj otwieranie narzędzi deweloperskich klawiszem F12. Skrót Ctrl+Shift+I (lub Cmd+Opt+I na Macu) nadal działa.',
+      searchPlaceholder: 'Szukaj…',
+      noResults: 'Nie znaleziono wyników',
+      systemDefault: 'Domyślne ustawienie systemu',
+      attachmentSizeTitle: 'Maksymalny rozmiar podglądu / wczytywanego obrazu',
+      attachmentSizeDesc:
+        'Maksymalny rozmiar lokalnego pliku w MB, który Desktop wczyta do podglądu lub jako załącznik obrazu. Domyślnie 16 MB. Zdalne załączniki inne niż obrazy mają osobny limit 256 MB. Bardzo wysoka wartość wczyta cały plik do pamięci i może zawiesić lub zamknąć aplikację.',
+      attachmentSizeUnit: 'MB',
+      attachmentSizeLabel: 'Maksymalny rozmiar podglądu / wczytywanego obrazu w megabajtach'
+    },
+    about: { updateReadyUnknown: 'Nowa aktualizacja jest gotowa.' },
+    connections: {
+      title: 'Połączenia',
+      intro:
+        'Zarejestruj wszystkie miejsca, w których działają Twoi agenci — to urządzenie, zdalne bramy w Twojej sieci i instancje w usłudze Hermes Cloud. Wszystkie są przechowywane tutaj.',
+      stagedNote:
+        'Czaty i lista agentów korzystają z wybranego źródła; backend tego okna, którym zarządza aplikacja, nadal wybierasz w Ustawienia → Brama.',
+      loadFailed: 'Nie udało się wczytać połączeń',
+      primaryPill: 'Główne',
+      managedPill: 'To urządzenie',
+      addConnection: 'Dodaj połączenie',
+      editConnection: 'Edytuj',
+      removeConnection: 'Usuń',
+      removeConfirmTitle: 'Usunąć to połączenie?',
+      removeConfirmDesc: (label: string) =>
+        `„${label}” zostanie usunięte z tej aplikacji. Sama instancja pozostanie bez zmian — w każdej chwili możesz dodać ją ponownie.`,
+      makePrimary: 'Ustaw jako główne',
+      testConnection: 'Testuj',
+      testOk: 'Osiągalne',
+      testFailed: 'Test połączenia nie powiódł się',
+      saveFailed: 'Nie udało się zapisać połączenia',
+      removeFailed: 'Nie udało się usunąć połączenia',
+      updateAll: 'Zaktualizuj wszystkie instancje',
+      updateAllRunning: 'Aktualizowanie wszystkich instancji…',
+      updateAllDone: 'Wysłano aktualizacje',
+      updateAllFailed: 'Nie udało się wysłać aktualizacji do wszystkich instancji',
+      updateSkippedCloud: 'Zarządzane przez usługę Hermes Cloud',
+      kindLocal: 'Lokalne',
+      kindRemote: 'Brama zdalna',
+      kindCloud: 'Hermes Cloud',
+      kindSsh: 'SSH',
+      kindLocalDesc: 'Środowisko uruchomieniowe Hermesa zarządzane przez tę aplikację.',
+      kindRemoteDesc: 'Brama Hermesa dostępna przez HTTP(S) — w sieci LAN, Tailscale lub internecie.',
+      kindCloudDesc: 'Hostowana instancja wykryta za pośrednictwem Twojego konta w usłudze Hermes Cloud.',
+      kindSshDesc: 'Instalacja Hermesa dostępna przez SSH.',
+      labelTitle: 'Nazwa',
+      labelDesc:
+        'Wymagana. Wyświetlana wszędzie tam, gdzie pojawia się ta instancja; musi być unikatowa (np. „Homelab”, „Laptop służbowy”).',
+      labelPlaceholder: 'Homelab',
+      urlTitle: 'URL bramy',
+      sshHostTitle: 'Host SSH',
+      save: 'Zapisz połączenie',
+      saving: 'Zapisywanie…',
+      cancel: 'Anuluj',
+      empty: 'Nie zarejestrowano jeszcze żadnych połączeń.'
+    },
+    quickEntry: {
+      enabledTitle: 'Szybkie wprowadzanie',
+      enabledDesc:
+        'Wywołaj małe pole tworzenia wiadomości z dowolnego miejsca globalnym skrótem i wyślij prompt bez otwierania Hermesa.',
+      shortcutTitle: 'Skrót szybkiego wprowadzania',
+      shortcutDesc: 'Wymaga co najmniej jednego klawisza modyfikującego, np. CommandOrControl+Shift+Space.',
+      active: 'Skrót jest aktywny.',
+      takenBy: 'Inna aplikacja już używa tego skrótu — wybierz inny.',
+      invalidShortcut: 'To nie jest prawidłowy skrót. Dodaj co najmniej jeden klawisz modyfikujący.'
+    },
+    gateway: {
+      plainTextConfirmTitle: 'Zapisać token bramy jako zwykły tekst?',
+      plainTextConfirmDesc:
+        'Na tym komputerze nie znaleziono usługi systemowego magazynu kluczy, więc token zostałby zapisany bez szyfrowania w pliku ustawień połączeń aplikacji. Każdy proces uruchomiony przez tego użytkownika mógłby go odczytać. Zainstaluj lub włącz GNOME Keyring albo KWallet, aby korzystać z szyfrowanego magazynu.',
+      plainTextConfirmAction: 'Zapisz jako zwykły tekst',
+      plainTextStoredTitle: 'Token zapisany jako zwykły tekst',
+      plainTextStoredDesc:
+        'Bezpieczny magazyn jest niedostępny, dlatego zapisany token znajduje się bez szyfrowania w pliku ustawień połączeń aplikacji na tym komputerze. Zainstaluj lub włącz GNOME Keyring albo KWallet, aby go zaszyfrować.'
+    },
+    toolsets: {
+      activeBackend: 'Aktywny',
+      activeBackendHint: 'To jest Twój aktywny backend',
+      useBackend: 'Użyj tego backendu'
+    },
+    mcp: {
+      costTokens: (tokens: string) => `~${tokens} tokenów/wywołanie`,
+      usage30d: (uses: string) => `${uses} użyć/30 dni`,
+      unusedPill: 'nieużywany',
+      deepLinkTitle: 'Dodać serwer MCP?',
+      deepLinkDescription:
+        'To łącze zawiera prośbę o dodanie serwera MCP do Hermesa. Sprawdź poniższą dokładną konfigurację — pochodzi z łącza, a nie od Hermesa.',
+      deepLinkStdioWarning:
+        'Ten serwer uruchamia na Twoim komputerze lokalny proces za pomocą polecenia widocznego poniżej. Kontynuuj tylko wtedy, gdy ufasz jego źródłu.',
+      deepLinkConfirm: 'Dodaj serwer',
+      deepLinkNameInvalid: 'Nazwa może zawierać od 1 do 64 liter, cyfr, kropek, łączników lub podkreśleń.',
+      deepLinkNameConflict: (name: string) => `Serwer o nazwie ${name} już istnieje — wybierz inną nazwę albo anuluj.`,
+      deepLinkErrorTitle: 'Odrzucono łącze instalacyjne MCP',
+      deepLinkErrorName: 'W łączu brakuje nazwy serwera albo jest ona nieprawidłowa.',
+      deepLinkErrorConfig: 'Konfiguracja w łączu nie jest prawidłowym dokumentem JSON zakodowanym w formacie base64.',
+      deepLinkErrorShape: 'Konfiguracja musi być obiektem JSON z tekstowym polem `url` lub `command`.',
+      deepLinkErrorUrl: 'Dozwolone są wyłącznie adresy URL serwerów zaczynające się od http:// lub https://.',
+      deepLinkErrorTooLarge: 'Dane konfiguracji przekraczają limit 32 KB.',
+      importButton: 'Importuj',
+      importPlaceholder: 'Wklej fragment mcp.json, polecenie npx/docker, wiersz claude mcp add, URL lub łącze Cursor…',
+      importNoMatch: 'Nie rozpoznano konfiguracji serwera we wklejonym tekście.',
+      importConfirm: 'Dodaj do mcp.json',
+      importConfirmMany: (count: number) => `Dodaj serwery do mcp.json (${count})`
+    }
+  },
+  skills: {
+    configuringProfile: 'Konfigurowany profil:',
+    hub: {
+      alreadyInstalled: (name: string) => `„${name}” jest już zainstalowana`,
+      pickerTitle: 'Centrum umiejętności',
+      pickerBrowse: 'Przeglądaj całe centrum',
+      pickerHide: 'Ukryj przeglądarkę centrum',
+      pickerHint:
+        'Kliknij „+ Dodaj do tego agenta” przy dowolnej umiejętności — zostanie zainstalowana i pojawi się na powyższej liście.'
+    }
+  },
+  commandCenter: {
+    projects: 'Projekty',
+    openFolder: 'Otwórz folder jako projekt…',
+    openFolderAt: (path: string) => `Otwórz folder jako projekt — ${path}`,
+    newSessionInProject: (project: string) => `Nowa sesja w projekcie ${project}`
+  },
+  messaging: {
+    pendingRequests: (count: number) => `Oczekujące prośby (${count})`,
+    pendingAria: (count: number) => `${count} oczekujących próśb o parowanie`,
+    approvedUsers: (count: number) => `Zatwierdzeni użytkownicy (${count})`,
+    approve: 'Zatwierdź',
+    approving: 'Zatwierdzanie…',
+    revoke: 'Cofnij',
+    revoking: 'Cofanie…',
+    revokeAria: (name: string) => `Cofnij dostęp użytkownikowi ${name}`,
+    revokeTitle: 'Cofnąć dostęp',
+    revokeDesc: (name: string) => `${name} utraci dostęp i przestanie być rozpoznawany przy następnej wiadomości.`,
+    approvedUser: (name: string) => `Użytkownik ${name} został zatwierdzony`,
+    approvedHint: 'Zostanie rozpoznany automatycznie przy następnej wiadomości.',
+    revokedUser: (name: string) => `Użytkownikowi ${name} cofnięto dostęp`,
+    failedApprove: (name: string) => `Nie udało się zatwierdzić użytkownika ${name}`,
+    failedRevoke: (name: string) => `Nie udało się cofnąć dostępu użytkownikowi ${name}`,
+    pairingLockedOut: 'Zbyt wiele nieudanych zatwierdzeń — ta platforma została zablokowana. Spróbuj ponownie później.',
+    waitingSince: (minutes: number) => (minutes < 1 ? 'przed chwilą' : `${minutes} min temu`)
+  },
+  profiles: {
+    connectGateway: 'Połącz z inną bramą Hermesa…',
+    importProfile: 'Importuj profil…',
+    exportProfile: 'Eksportuj profil…',
+    imported: 'Profil zaimportowany',
+    exported: 'Profil wyeksportowany',
+    failedImport: 'Nie udało się zaimportować profilu',
+    failedExport: 'Nie udało się wyeksportować profilu'
+  },
+  cron: {
+    modelImpact: {
+      title: 'Zaplanowane zadania wymagają przeglądu',
+      message: (count: number) => `Liczba zaplanowanych zadań pomijanych do czasu przeglądu ustawień modelu: ${count}.`,
+      detailMore: (names: string, remaining: number) => `${names} i jeszcze ${remaining}`,
+      review: 'Przejrzyj zaplanowane zadania',
+      saveFailed: 'Hermes nie zapisał tej zmiany modelu.'
+    }
+  },
+  artifactCard: {
+    kind: { code: 'Kod', html: 'Strona interaktywna', svg: 'Grafika' },
+    generating: (lines: number) => `Generowanie… ${lines} wierszy`,
+    versionBadge: (count: number) => `${count} wersji`,
+    open: 'Otwórz'
+  },
+  artifactPreview: {
+    versionOf: (current: number, total: number) => `wersja ${current} z ${total}`,
+    olderVersion: 'Starsza wersja',
+    newerVersion: 'Nowsza wersja',
+    latest: 'Najnowsza',
+    copyContent: 'Kopiuj treść',
+    download: 'Pobierz',
+    openInBrowser: 'Otwórz w przeglądarce',
+    openInBrowserFailed: 'Nie udało się otworzyć w przeglądarce',
+    missingTitle: 'Artefakt niedostępny',
+    missingBody: 'Ten artefakt nie jest już dostępny w lokalnym rejestrze.'
+  },
+  sidebar: {
+    nav: { cron: 'Zaplanowane zadania' },
+    messageCount: (count: number) => `Wiadomości: ${count}`,
+    toolCallCount: (count: number) => `Wywołania narzędzi: ${count}`,
+    markAllRead: 'Oznacz wszystkie jako przeczytane',
+    noFilterMatches: 'Żadna sesja nie pasuje do tych filtrów',
+    projects: {
+      home: 'Strona główna',
+      moveToProject: 'Przenieś do projektu',
+      movedTo: (name: string) => `Przeniesiono do ${name}`,
+      moveFailed: 'Nie udało się przenieść sesji',
+      moveNoFolder: 'Ten projekt nie ma folderu, do którego można przenieść sesję',
+      moveNoProjects: 'Brak innych projektów',
+      worktreeProjectLabel: 'Projekt',
+      worktreeProjectPlaceholder: 'Szukaj projektów…',
+      worktreeProjectNone: 'Brak projektów z folderem',
+      branchTrackRemote: 'Śledź zdalną gałąź'
+    },
+    row: {
+      draftSession: 'Wersja robocza — nic jeszcze nie wysłano',
+      markUnread: 'Oznacz jako nieprzeczytane',
+      markRead: 'Oznacz jako przeczytane',
+      unreadFailed: 'Nie udało się zaktualizować stanu przeczytania',
+      openInTerminal: 'Otwórz w terminalu',
+      deleteTitle: 'Usunąć sesję?',
+      deleteDesc: (title: string) => `Spowoduje to trwałe usunięcie „${title}”. Tej operacji nie można cofnąć.`,
+      deleting: 'Usuwanie…',
+      deleted: 'Sesja usunięta',
+      messageCount: (count: number) => `Wiadomości: ${count}`,
+      todoProgress: 'Ukończone zadania'
+    },
+    statusDivider: { working: 'W toku', done: 'Gotowe' }
+  },
+  composer: {
+    queueSteer: 'Pokieruj — natychmiast zmień kierunek generowanej odpowiedzi',
+    mcpSuggestions: {
+      label: (server: string) => `Dodaj ${server}`,
+      tip: (keyword: string) => `Sugestia na podstawie wzmianki „${keyword}” — kliknij, aby połączyć`,
+      connecting: (server: string) => `Łączenie: ${server}…`,
+      cancelTip: 'Kliknij, aby anulować',
+      added: (server: string) => `Dodano ${server}`,
+      addedTip: 'Połączono — narzędzia serwera są gotowe w tym czacie',
+      connectFailed: (server: string) => `Nie udało się połączyć: ${server}`
+    },
+    skillSuggestions: {
+      label: (skill: string) => `Użyj umiejętności: ${skill}`,
+      tip: (skill: string) => `Wspomniano „${skill}” — kliknij, aby rozpocząć z tą umiejętnością`,
+      done: (skill: string) => `Dodano /${skill}`,
+      doneTip: 'Umiejętność zostanie wczytana po wysłaniu wiadomości'
+    },
+    githubSuggestions: {
+      label: 'Skonfiguruj GitHub',
+      tip: 'GitHub działa tutaj przez umiejętności korzystające z CLI gh — kliknij, aby połączyć konto',
+      done: 'Dodano /github-auth',
+      doneTip: 'Wyślij wiadomość, a agent przeprowadzi Cię przez logowanie do GitHuba'
+    },
+    repairSuggestions: {
+      label: (server: string) => `Połącz ponownie: ${server}`,
+      tip: (server: string) => `Wywołanie ${server} właśnie nie powiodło się z powodu błędu połączenia`,
+      working: (server: string) => `Ponowne łączenie: ${server}…`,
+      workingTip: 'Kliknij, aby anulować',
+      done: (server: string) => `Ponownie połączono: ${server}`,
+      doneTip: 'Nowe dane uwierzytelniające są aktywne w tym czacie',
+      failed: (server: string) => `Nie udało się ponownie połączyć: ${server}`
+    },
+    cronSuggestions: {
+      label: 'Zaplanuj',
+      tip: (phrase: string) => `„${phrase}” brzmi jak zadanie cykliczne — uruchamiaj je według harmonogramu`,
+      prefix: 'Skonfiguruj to jako zaplanowane zadanie:',
+      done: 'Oznaczono do zaplanowania',
+      doneTip: 'Wyślij wiadomość, a agent utworzy zadanie'
+    },
+    openDirective: 'Otwórz dyrektywę',
+    wakeWordListening: (phrase: string) => `Hasło wybudzające: „${phrase}” — nasłuchiwanie`,
+    wakeWordOff: (phrase: string) => `Hasło wybudzające: „${phrase}” — wyłączone`,
+    wakeWordPausedVoice: (phrase: string) => `Hasło wybudzające: „${phrase}” — wstrzymane podczas rozmowy głosowej`
+  },
+  statusStack: {
+    goalActive: 'Cel aktywny',
+    goalDone: 'Cel osiągnięty',
+    goalPaused: 'Cel wstrzymany',
+    goalWaiting: 'Cel oczekuje'
+  },
+  shell: {
+    statusbar: {
+      resetStatusbar: 'Przywróć ustawienia domyślne',
+      customizeTitle: 'Dostosuj pasek stanu',
+      hideStatusbar: 'Ukryj pasek stanu',
+      toggleApprovalMode: 'Przełącz tryb zatwierdzania',
+      toggleBackendVersion: 'Przełącz wersję backendu',
+      toggleCommandCenter: 'Przełącz Centrum poleceń',
+      toggleContextUsage: 'Przełącz użycie kontekstu',
+      toggleRunningTimer: 'Przełącz licznik trwającej sesji',
+      toggleSessionTimer: 'Przełącz licznik sesji',
+      toggleTerminal: 'Przełącz terminal',
+      toggleVersion: 'Przełącz wersję',
+      toggleWorkspace: 'Przełącz obszar roboczy'
+    }
+  },
+  zones: { reload: 'Wczytaj ponownie', tabCount: (count: number) => `${count} kart` },
+  assistant: {
+    thread: {
+      turnDuration: (duration: string) => `Czas tej tury: ${duration}`,
+      thought: 'Myśl',
+      thoughtBriefly: 'Krótko przemyślano',
+      thoughtFor: (duration: string) => `Myślano przez ${duration}`,
+      react: 'Zareaguj',
+      filesChanged: (count: number) => (count === 1 ? 'Zmieniono 1 plik' : `Zmieniono ${count} plików`),
+      reviewChanges: 'Przejrzyj zmiany'
+    },
+    mcpSetup: {
+      installTitle: (server: string) => `Dodać serwer MCP ${server}?`,
+      enableTitle: (server: string) => `Włączyć serwer MCP ${server}?`,
+      authorizeTitle: (server: string) => `Autoryzować serwer MCP ${server}?`,
+      installAction: 'Zainstaluj',
+      enableAction: 'Włącz',
+      authorizeAction: 'Autoryzuj',
+      decline: 'Nie teraz',
+      declined: 'Odrzucono',
+      installed: (server: string) => `Zainstalowano ${server}`,
+      enabled: (server: string) => `Włączono ${server}`,
+      authorized: (server: string) => `Autoryzowano ${server}`,
+      failed: (server: string) => `Nie udało się skonfigurować ${server}`,
+      unanswered: 'Brak odpowiedzi',
+      toolCount: (count: number) => `Narzędzia: ${count}`,
+      notInCatalog: (server: string) => `„${server}” nie znajduje się w katalogu MCP`,
+      catalogSource: 'Z katalogu zatwierdzonego przez Nous',
+      envRequired: 'Najpierw uzupełnij wymagane dane uwierzytelniające',
+      sendFailed: 'Nie udało się wysłać odpowiedzi konfiguracji MCP',
+      reloadFailed:
+        'Serwer zapisano, ale nie udało się ponownie wczytać narzędzi MCP — zostaną wczytane w następnej sesji',
+      gatewayDisconnected: 'Brama Hermesa nie jest połączona'
+    },
+    tool: {
+      memoryWriteNoted: 'Zapis do pamięci odnotowany',
+      titles: {
+        memory: { done: 'Zapisano do pamięci', pending: 'Zapisywanie do pamięci', pendingAction: 'Zapisywanie' }
+      }
+    }
+  },
+  updates: {
+    blockerTitle: 'Zamknąć lokalne podglądy, aby zaktualizować Hermesa?',
+    blockerBody:
+      'Przed aktualizacją Hermes musi zatrzymać te lokalne podglądy. Nie zmodyfikuje ani nie usunie Twoich plików.',
+    foreignBlockerTitle: 'Zamknij inne procesy, aby zaktualizować Hermesa',
+    foreignBlockerBody:
+      'Hermes nie może bezpiecznie zamknąć tych procesów automatycznie. Zamknij aplikacje, terminale lub usługi, które je uruchomiły, a następnie ponów aktualizację.',
+    mixedBlockerBody:
+      'Hermes może zamknąć wymienione poniżej lokalne podglądy. Przed kontynuowaniem aktualizacji pozostałe procesy trzeba zamknąć ręcznie.',
+    closePreviewsAndUpdate: 'Zamknij podglądy i zaktualizuj',
+    closePreviewsAndCheckAgain: 'Zamknij podglądy i sprawdź ponownie',
+    localPreview: 'Podgląd lokalny',
+    portLabel: (port: number) => `Port ${port}`,
+    pidLabel: (pid: number) => `PID ${pid}`,
+    technicalDetails: 'Szczegóły techniczne'
+  },
+  desktop: {
+    editTurnUnavailable: 'Ta tura nie znajduje się już w historii serwera (mogła zostać usunięta podczas kompresji).'
+  }
+} satisfies TranslationOverrides
+
+const plCurrentMainOverrides = {
+  fileMenu: {
+    download: 'Pobierz',
+    downloadSaved: 'Zapisano',
+    downloadFailed: 'Nie udało się pobrać'
+  },
+  boot: {
+    steps: { retryingRemoteBackend: 'Ponowne łączenie ze zdalnym backendem Hermesa…' }
+  },
+  titlebar: {
+    unreadSessions: count => (count === 1 ? '1 nieprzeczytana sesja' : `${count} nieprzeczytanych sesji`)
+  },
+  keybinds: {
+    actions: { 'view.showBrowser': 'Otwórz przeglądarkę' }
+  },
+  settings: {
+    plugins: {
+      agent: { appliesTo: 'Dotyczy:' },
+      installModal: {
+        title: 'Zainstaluj wtyczkę',
+        description: 'Przed instalacją sprawdź, co zawiera to repozytorium.',
+        repoLabel: 'Repozytorium',
+        includesHeading: 'Ten pakiet zawiera',
+        agentLabel: 'Wtyczkę agenta',
+        desktopLabel: 'Interfejs Desktop',
+        agentTargetLocal: profile => `Instaluje w backendzie profilu ${profile} (~/.hermes/plugins/)`,
+        agentTargetRemote: profile => `Instaluje w połączonym backendzie profilu ${profile}`,
+        desktopTarget: 'Instaluje w lokalnym folderze desktop-plugins tej aplikacji',
+        desktopOnlyNote: 'Pakiety tylko dla Desktop nie instalują wtyczki agenta w backendzie.',
+        insecureWarning:
+          'Ten adres URL używa niezabezpieczonego lub lokalnego schematu. W środowisku produkcyjnym wybierz https:// albo git@.',
+        securityHeading: 'Przed instalacją',
+        securityIntro:
+          'Instaluj wyłącznie z zaufanych źródeł — jeśli chcesz sprawdzić, co zostanie dodane, przejrzyj poniższe repozytorium.',
+        sourceHeading: 'Kod źródłowy',
+        viewRepository: 'Wyświetl repozytorium',
+        viewPluginFiles: 'Wyświetl pliki wtyczki',
+        gitCloneLabel: 'URL do klonowania Git',
+        enableAgent: 'Włącz wtyczkę agenta po instalacji',
+        forceReinstall: 'Wymuś ponowną instalację (zastąp już zainstalowaną)',
+        install: 'Zainstaluj',
+        installing: 'Instalowanie…',
+        probing: 'Sprawdzanie repozytorium…',
+        probeUnavailable: 'Sprawdzanie wtyczek jest niedostępne w tym środowisku.',
+        desktopUnavailable: 'Instalowanie wtyczek Desktop jest niedostępne w tym środowisku.',
+        selectComponent: 'Wybierz co najmniej jeden składnik do zainstalowania.',
+        agentSuccess: name => `Zainstalowano wtyczkę agenta ${name}`,
+        desktopSuccess: name => `Zainstalowano wtyczkę Desktop ${name}`,
+        agentFailed: 'Nie udało się zainstalować wtyczki agenta',
+        desktopFailed: 'Nie udało się zainstalować wtyczki Desktop',
+        missingEnv: vars => `Brakujące zmienne środowiskowe: ${vars}. Dodaj je w Ustawienia → Klucze.`
+      }
+    },
+    appearance: {
+      translucencyGlassDesc:
+        'Matowe szkło: pulpit prześwituje przez płynne rozmycie, a tekst pozostaje ostry. Ustawienia są osobne dla jasnego i ciemnego motywu.',
+      translucencyModeClear: 'Przezroczysty',
+      translucencyModeGlass: 'Szkło',
+      translucencyTintTitle: 'Odcień',
+      translucencyFadeTitle: 'Wygaszenie',
+      translucencyFrostTitle: 'Zmatowienie',
+      translucencyFrost: {
+        'under-window': 'Głębokie',
+        popover: 'Miękkie',
+        titlebar: 'Jasne',
+        header: 'Połysk'
+      },
+      translucencyScopeTitle: 'Obszar',
+      translucencyScope: { window: 'Całe okno', sidebar: 'Tylko pasek boczny' },
+      introSplashTitle: 'Ekran powitalny',
+      introSplashDesc: 'Logotyp i podpowiedź wyświetlane w pustym czacie.'
+    },
+    about: {
+      bundleOutOfSync: 'Kompilacja aplikacji jest nieaktualna',
+      bundleOutOfSyncDesc:
+        'Środowisko uruchomieniowe Hermesa zostało zaktualizowane, ale aplikacja Desktop nadal jest starszą kompilacją — nowe funkcje interfejsu (np. Tryb bota) będą niedostępne do czasu aktualizacji. Uruchom poniższą aktualizację, aby przebudować aplikację. Jeśli ostrzeżenie nie zniknie, zainstaluj ponownie najnowszy instalator Desktop.',
+      bundleOutOfSyncAction: 'Pobierz instalator'
+    },
+    connections: {
+      launchModeTitle: 'Przy uruchomieniu wróć do Sesji na ostatnio używanej bramie',
+      launchModeDesc: 'Gdy opcja jest wyłączona, Sesje otwierają się na bramie głównej.',
+      searchPlaceholder: 'Szukaj bram…',
+      noSearchResults: 'Żadna brama nie pasuje do wyszukiwania.',
+      currentPill: 'Bieżąca',
+      headersTitle: 'Dodatkowe nagłówki bramy',
+      headersDesc:
+        'Wysyłane z każdym żądaniem HTTP i WebSocket do tej bramy — dla serwerów proxy kontroli dostępu, takich jak Cloudflare Access (CF-Access-Client-Id / CF-Access-Client-Secret). Wartości są przechowywane w postaci zaszyfrowanej. Nagłówki zarządzane przez Hermesa (Authorization, Cookie, Host…) są ignorowane.',
+      headerValuePlaceholder: 'Wartość',
+      headerValueSaved: 'Zapisano — pozostaw puste, aby zachować',
+      headerAdd: 'Dodaj nagłówek',
+      headerRemove: 'Usuń',
+      duplicateLocal: 'Ta aplikacja zarządza już połączeniem lokalnym — może istnieć tylko jedno.',
+      duplicateUrl: label => `Połączenie z tym adresem URL bramy już istnieje („${label}”).`,
+      duplicateSsh: label => `Połączenie z tym hostem SSH już istnieje („${label}”).`,
+      sameBackendHint: label => `Ten sam backend co „${label}”`,
+      localAddHint:
+        'Połączenie lokalne jest niedostępne: zarządzane połączenie lokalne już istnieje (zawsze jest tylko jedno).',
+      cloudAddHint:
+        'Wskazówka: logowanie do usługi Hermes Cloud powyżej automatycznie wykrywa agentów — tego formularza używaj tylko do ręcznej rejestracji znanego adresu URL instancji.'
+    },
+    search: { placeholder: 'Szukaj we wszystkich ustawieniach…', pill: 'Szukaj' },
+    profileScope: {
+      appliesTo: 'Dotyczy',
+      editsProfile: profile => `Zmiany na tej stronie dotyczą profilu „${profile}”.`
+    }
+  },
+  commandCenter: {
+    openBrowser: 'Otwórz przeglądarkę',
+    reloadWindow: 'Wczytaj ponownie okno'
+  },
+  profiles: {
+    switchToConnection: name => `Przełącz na ${name}`,
+    switchConnectionFailed: name => `Nie udało się połączyć z ${name}`,
+    displayNameTitle: 'Nazwij tego agenta',
+    displayNameDesc:
+      'Ustawia nazwę wyświetlaną w całej aplikacji. Wewnętrzny identyfikator profilu pozostaje „default”.',
+    displayNameLabel: 'Nazwa wyświetlana'
+  },
+  sidebar: {
+    projects: {
+      worktreeStaleBackend:
+        'Zaktualizuj backend Hermesa, aby tworzyć drzewa robocze przez to połączenie zdalne — powstało przed interfejsem API git worktree.'
+    }
+  },
+  composer: { voiceControls: 'Głos' },
+  statusStack: {
+    coding: { agentShipUnavailable: 'Czat, do którego należą te zmiany, nie jest obecnie wyświetlany.' }
+  },
+  updates: {
+    clientAlsoBehindTitle: 'Aplikacja Desktop jest nieaktualna',
+    clientAlsoBehindMessage:
+      'Backend jest aktualny, ale aplikacja Desktop nadal ma starszą wersję. Zaktualizuj ją, aby otrzymać najnowsze poprawki.',
+    clientAlsoBehindAction: 'Zaktualizuj aplikację Desktop',
+    everythingDispatched: 'Wysłano aktualizację',
+    everythingSkipped: 'Pominięto',
+    everythingRowFailed: 'Aktualizacja nie powiodła się',
+    everythingFanoutFailedTitle: 'Nie udało się zaktualizować innych instancji'
+  },
+  shell: { gatewayMenu: { reconnectGateway: 'Połącz bramę ponownie' } },
+  preview: {
+    web: {
+      remoteLoopback:
+        'Ten adres wskazuje komputer, na którym działa agent, a nie ten komputer. Panel przeglądarki wczytuje strony lokalnie, więc zdalny serwer deweloperski wymaga przekierowania portu albo osiągalnej nazwy hosta.',
+      goBack: 'Wstecz',
+      goForward: 'Dalej',
+      reload: 'Wczytaj stronę ponownie',
+      address: 'Adres',
+      addressPlaceholder: 'Wpisz adres',
+      blankPageBody: 'Wpisz adres powyżej, aby przeglądać, albo poproś Hermesa o otwarcie strony.'
+    }
+  },
+  zones: {
+    showStripTab: title => `Pokaż ${title}`,
+    hideStripTab: title => `Ukryj ${title}`,
+    lastTabKeptTitle: 'Ostatnia karta pozostaje widoczna',
+    lastTabKeptBody:
+      'Ta strefa wymaga co najmniej jednej widocznej karty. Najpierw pokaż inną kartę albo zwiń cały pasek boczny.',
+    toggleStripTab: title => `Przełącz kartę ${title}`
+  },
+  contextMenu: {
+    link: {
+      openInApp: 'Otwórz we wbudowanej przeglądarce',
+      openExternal: 'Otwórz w zewnętrznej przeglądarce',
+      copyUrl: 'Kopiuj URL',
+      copyResolvedUrl: 'Kopiuj rozwiązany URL'
+    },
+    image: {
+      copyImage: 'Kopiuj obraz',
+      copyImageAddress: 'Kopiuj adres obrazu',
+      saveImageAs: 'Zapisz obraz jako…'
+    },
+    edit: {
+      cut: 'Wytnij',
+      paste: 'Wklej',
+      selectAll: 'Zaznacz wszystko',
+      addToDictionary: 'Dodaj do słownika'
+    },
+    page: { copyPageUrl: 'Kopiuj URL strony', inspectElement: 'Zbadaj element' }
+  },
+  assistant: {
+    clarify: {
+      confirmAndContinueLabel: 'Potwierdź i kontynuuj',
+      answeredBadge: 'Odpowiedziano',
+      questionProgress: (answered, total) => `Odpowiedziano na ${answered} z ${total}`
+    }
+  }
+} satisfies TranslationOverrides
+
+export const plOverrides = mergeLocaleOverrides(plTranslatedOverrides, plMissingOverrides, plCurrentMainOverrides)
+
+export const pl = defineLocale(plOverrides)

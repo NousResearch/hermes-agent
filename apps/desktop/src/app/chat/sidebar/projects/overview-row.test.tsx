@@ -3,31 +3,23 @@ import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
+import { I18nProvider, type Locale } from '@/i18n'
 
 import { ProjectOverviewRow } from './overview-row'
 import type { SidebarProjectTree } from './workspace-groups'
 
-afterEach(cleanup)
+const modelState = vi.hoisted(() => ({ open: false, toggleOpen: vi.fn() }))
 
-vi.mock('@/i18n', () => ({
-  useI18n: () => ({
-    t: {
-      sidebar: {
-        newSessionIn: (label: string) => `New session in ${label}`,
-        projects: {
-          enter: (label: string) => `Enter ${label}`,
-          reorder: (label: string) => `Reorder ${label}`,
-          toggle: (label: string, open: boolean) => `${open ? 'Show' : 'Hide'} ${label} sessions`
-        }
-      }
-    }
-  })
-}))
+afterEach(() => {
+  cleanup()
+  modelState.open = false
+  modelState.toggleOpen.mockReset()
+})
 
 vi.mock('./model', () => ({
   PROJECT_PREVIEW_COUNT: 3,
   latestProjectSessions: () => [],
-  useWorkspaceNodeOpen: () => [false, vi.fn()]
+  useWorkspaceNodeOpen: () => [modelState.open, modelState.toggleOpen]
 }))
 
 // ProjectMenu (the kebab) has its own dedicated test file — stub it here so
@@ -43,16 +35,23 @@ const project = { id: 'p1', label: 'Test D' } as unknown as SidebarProjectTree
 
 const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"]')
 
+const renderLocalized = (node: ReactNode, locale: Locale = 'en') =>
+  render(
+    <I18nProvider configClient={null} initialLocale={locale}>
+      {node}
+    </I18nProvider>
+  )
+
 describe('ProjectOverviewRow', () => {
   it('wraps the "new session" add button in a Tip with the project-scoped label', () => {
-    render(<ProjectOverviewRow onNewSession={vi.fn()} project={project} />)
+    renderLocalized(<ProjectOverviewRow onNewSession={vi.fn()} project={project} />)
 
     const button = screen.getByRole('button', { name: 'New session in Test D' })
     expect(tipTrigger(button)).toBeTruthy()
   })
 
   it('wraps the disclosure toggle in a Tip when there are preview sessions', () => {
-    render(
+    renderLocalized(
       <ProjectOverviewRow
         previewSessions={[{ id: 's1' } as unknown as SessionInfo]}
         project={project}
@@ -65,8 +64,24 @@ describe('ProjectOverviewRow', () => {
     expect(tipTrigger(button)).toBeTruthy()
   })
 
+  it('uses the real Polish catalog with the target disclosure state passed by the row', () => {
+    const props = {
+      previewSessions: [{ id: 's1' } as unknown as SessionInfo],
+      project,
+      renderRows: () => null
+    }
+
+    const collapsed = renderLocalized(<ProjectOverviewRow {...props} />, 'pl')
+    expect(screen.getByRole('button', { name: 'Pokaż sesje projektu „Test D”' })).toBeTruthy()
+    collapsed.unmount()
+
+    modelState.open = true
+    renderLocalized(<ProjectOverviewRow {...props} />, 'pl')
+    expect(screen.getByRole('button', { name: 'Ukryj sesje projektu „Test D”' })).toBeTruthy()
+  })
+
   it('does not render the disclosure toggle when there is nothing to preview', () => {
-    render(<ProjectOverviewRow project={project} />)
+    renderLocalized(<ProjectOverviewRow project={project} />)
 
     expect(screen.queryByRole('button', { name: 'Show Test D sessions' })).toBeNull()
   })
@@ -81,7 +96,7 @@ describe('ProjectOverviewRow', () => {
 
     const onNewSession = vi.fn()
 
-    render(<ProjectOverviewRow onNewSession={onNewSession} project={home} />)
+    renderLocalized(<ProjectOverviewRow onNewSession={onNewSession} project={home} />)
     fireEvent.click(screen.getByRole('button', { name: 'New session in Home' }))
 
     expect(onNewSession).toHaveBeenCalledWith(null)

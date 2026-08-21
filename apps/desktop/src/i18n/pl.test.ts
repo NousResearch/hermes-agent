@@ -1,0 +1,188 @@
+import { describe, expect, it } from 'vitest'
+
+import { en } from './en'
+import { pl, plOverrides } from './pl'
+
+interface CatalogLeaf {
+  kind: string
+  value: unknown
+}
+
+function placeholders(value: string): string[] {
+  return [...value.matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map(match => match[1]).sort()
+}
+
+function ownLeaves(value: unknown, prefix = ''): Map<string, CatalogLeaf> {
+  if (
+    typeof value === 'function' ||
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean' ||
+    value === null
+  ) {
+    return new Map([[prefix, { kind: value === null ? 'null' : typeof value, value }]])
+  }
+
+  if (Array.isArray(value)) {
+    return new Map(value.flatMap((item, index) => [...ownLeaves(item, `${prefix}[${index}]`)]))
+  }
+
+  if (value && typeof value === 'object') {
+    return new Map(
+      Object.keys(value as Record<string, unknown>).flatMap(key => [
+        ...ownLeaves((value as Record<string, unknown>)[key], prefix ? `${prefix}.${key}` : key)
+      ])
+    )
+  }
+
+  return new Map([[prefix, { kind: typeof value, value }]])
+}
+
+const argumentPairs: ReadonlyArray<readonly [unknown, unknown]> = [
+  ['alpha', 'beta'],
+  [1, 2],
+  [false, true],
+  [null, 'value'],
+  [undefined, 'value'],
+  ['skills', 'tools'],
+  ['linux', 'windows']
+]
+
+function observesArgument(fn: (...args: never[]) => unknown, arity: number, index: number): boolean {
+  for (const fill of ['value', 1, false, null, undefined]) {
+    for (const [left, right] of argumentPairs) {
+      const leftArgs: unknown[] = Array.from({ length: arity }, () => fill)
+      const rightArgs = [...leftArgs]
+      leftArgs[index] = left
+      rightArgs[index] = right
+
+      try {
+        if (fn(...(leftArgs as never[])) !== fn(...(rightArgs as never[]))) {
+          return true
+        }
+      } catch {
+        // This vector does not match the callback's runtime input shape.
+      }
+    }
+  }
+
+  return false
+}
+
+describe('Polish desktop catalog', () => {
+  it('overrides every English leaf without relying on the merge fallback', () => {
+    expect([...ownLeaves(plOverrides).keys()].sort()).toEqual([...ownLeaves(en).keys()].sort())
+  })
+
+  it('preserves runtime leaf kinds, callback arity, and argument flow', () => {
+    const englishLeaves = ownLeaves(en)
+    const polishLeaves = ownLeaves(plOverrides)
+
+    expect([...polishLeaves.keys()].sort()).toEqual([...englishLeaves.keys()].sort())
+
+    for (const [path, englishLeaf] of englishLeaves) {
+      const polishLeaf = polishLeaves.get(path)
+
+      expect(polishLeaf?.kind, path).toBe(englishLeaf.kind)
+
+      if (englishLeaf.kind === 'string' && polishLeaf?.kind === 'string') {
+        expect(placeholders(polishLeaf.value as string), `${path} placeholders`).toEqual(
+          placeholders(englishLeaf.value as string)
+        )
+      }
+
+      if (englishLeaf.kind !== 'function' || polishLeaf?.kind !== 'function') {
+        continue
+      }
+
+      const englishFn = englishLeaf.value as (...args: never[]) => unknown
+      const polishFn = polishLeaf.value as (...args: never[]) => unknown
+
+      expect(polishFn.length, `${path} arity`).toBe(englishFn.length)
+
+      for (let index = 0; index < englishFn.length; index += 1) {
+        expect(observesArgument(polishFn, polishFn.length, index), `${path} argument ${index}`).toBe(
+          observesArgument(englishFn, englishFn.length, index)
+        )
+      }
+    }
+  })
+
+  it('uses Polish for core visible actions', () => {
+    expect(pl.common.save).toBe('Zapisz')
+    expect(pl.common.cancel).toBe('Anuluj')
+    expect(pl.common.delete).toBe('Usuń')
+    expect(pl.settings.nav.providers).toBe('Dostawcy')
+    expect(pl.boot.ready).toBe('Hermes Desktop jest gotowy')
+    expect(pl.boot.steps.startingDesktopConnection).toBe('Nawiązywanie połączenia z aplikacją Hermes Desktop')
+    expect(pl.settings.searchPlaceholder.about).toBe('Informacje o aplikacji Hermes Desktop')
+    expect(pl.settings.gateway.sshErrUpdateRequired).toBe(
+      'Przed połączeniem z aplikacją Hermes Desktop zaktualizuj Hermesa na zdalnym hoście.'
+    )
+    expect(pl.settings.gateway.cloudNeedsSignIn).toBe(
+      'Zaloguj się do usługi Hermes Cloud, aby wyszukać agentów na swoim koncie.'
+    )
+    expect(pl.settings.gateway.cloudSignInFailed).toBe('Nie udało się zalogować do usługi Hermes Cloud')
+    expect(pl.commandCenter.commandCenter).toBe('Centrum poleceń')
+    expect(pl.commandCenter.generatePet.hatch).toBe('Wykluj')
+    expect(pl.assistant.approval.run).toBe('Uruchom')
+    expect(pl.install.setupChoiceDesc).toBe(
+      'Połącz tę aplikację z działającą bramą Hermesa albo zainstaluj Hermesa lokalnie na tym komputerze.'
+    )
+    expect(pl.install.connectExistingTitle).toBe('Połącz z istniejącą bramą Hermesa')
+    expect(pl.install.connectExistingShort).toBe('Połącz z bramą')
+    expect(pl.install.installLocalTitle).toBe('Zainstaluj Hermesa lokalnie')
+    expect(pl.install.installLocalDesc).toBe(
+      'Pobierz Hermesa, utwórz jego środowisko Python i uruchom backend na tym komputerze.'
+    )
+    expect(pl.install.remoteSetupTitle).toBe('Połącz z istniejącą bramą Hermesa')
+    expect(pl.settings.gateway.sshHermesPathTitle).toBe('Ścieżka Hermesa (opcjonalnie)')
+    expect(pl.settings.gateway.sshReachable('host', 'linux')).toBe('Host osiągalny: host (linux) — znaleziono Hermesa')
+    expect(pl.settings.gateway.sshErrNotInstalled).toContain('ustaw ścieżkę Hermesa.')
+    expect(pl.settings.providers.localEndpoint.description).toBe(
+      'Połącz Hermesa z dowolnym endpointem zgodnym z OpenAI (Zyphra, vLLM, llama.cpp, Ollama itd.).'
+    )
+    expect(pl.install.activeDesc).toContain('Instalator Hermesa')
+    expect(pl.install.remoteUrlDesc).toBe('Użyj bazowego URL bramy Hermesa, wraz z https:// dla połączenia zdalnego.')
+    expect(pl.install.probeError).toBe('Nie można połączyć się z tą bramą Hermesa.')
+    expect(pl.assistant.approval.gatewayDisconnected).toBe('Brama Hermesa nie jest podłączona')
+    expect(pl.assistant.clarify.gatewayDisconnected).toBe('Brama Hermesa nie jest podłączona')
+    expect(pl.prompts.gatewayDisconnected).toBe('Brama Hermesa nie jest podłączona')
+  })
+
+  it('translates closed runtime labels instead of exposing enum values', () => {
+    expect(pl.settings.gateway.cloudOrgRole('OWNER')).toBe('Rola: właściciel')
+    expect(pl.settings.gateway.cloudOrgRole('MEMBER')).toBe('Rola: członek')
+    expect(pl.settings.gateway.cloudOrgRole('OTHER')).toBe('Rola: nieznana (OTHER)')
+
+    expect(pl.settings.gateway.cloudStatusLabel('active')).toBe('Stan: aktywny')
+    expect(pl.settings.gateway.cloudStatusLabel('degraded')).toBe('Stan: ograniczony')
+    expect(pl.settings.gateway.cloudStatusLabel('down')).toBe('Stan: niedostępny')
+    expect(pl.settings.gateway.cloudStatusLabel('unknown')).toBe('Stan: nieznany')
+    expect(pl.settings.gateway.cloudStatusLabel('other')).toBe('Stan: nieznany (other)')
+
+    expect(pl.settings.toolsets.webCapabilitySelectedMessage('Dostawca', 'search')).toBe(
+      'Dostawca obsługuje teraz wyszukiwanie w internecie.'
+    )
+    expect(pl.settings.toolsets.webCapabilitySelectedMessage('Dostawca', 'extract')).toBe(
+      'Dostawca obsługuje teraz ekstrakcję treści stron internetowych.'
+    )
+  })
+
+  it('describes both handoff messages as movement to a platform', () => {
+    expect(pl.desktop.handoff.success('Telegram')).toBe(
+      'Przekazano do Telegram. Wznów tutaj w dowolnym momencie.'
+    )
+    expect(pl.desktop.handoff.systemNote('Telegram')).toBe(
+      '↻ Przekazano do Telegram — wznów tutaj w dowolnym momencie.'
+    )
+  })
+
+  it('preserves state-specific toggle labels', () => {
+    expect(pl.settings.mcp.toggleFailed('serwer', true)).not.toBe(pl.settings.mcp.toggleFailed('serwer', false))
+    expect(pl.skills.toggleToolset('web', true)).not.toBe(pl.skills.toggleToolset('web', false))
+    expect(pl.sidebar.projects.toggle('Projekt', true)).toBe('Pokaż sesje projektu „Projekt”')
+    expect(pl.sidebar.projects.toggle('Projekt', false)).toBe('Ukryj sesje projektu „Projekt”')
+    expect(pl.webhooks.toggleFailed('subskrypcja', true)).not.toBe(pl.webhooks.toggleFailed('subskrypcja', false))
+  })
+})

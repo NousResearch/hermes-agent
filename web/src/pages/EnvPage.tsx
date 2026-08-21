@@ -80,7 +80,7 @@ function getProviderPriority(groupName: string): number {
   return entry?.priority ?? 99;
 }
 
-interface ProviderGroup {
+export interface ProviderGroup {
   name: string;
   priority: number;
   entries: [string, EnvVarInfo][];
@@ -335,7 +335,7 @@ function EnvVarRow({
 /*  ProviderGroupCard — groups API key + base URL per provider         */
 /* ------------------------------------------------------------------ */
 
-function ProviderGroupCard({
+export function ProviderGroupCard({
   group,
   edits,
   setEdits,
@@ -399,7 +399,7 @@ function ProviderGroupCard({
           </span>
           {hasAnyConfigured && (
             <Badge tone="success" className="text-xs">
-              {configuredCount} {t.common.set.toLowerCase()}
+              {t.env.configuredCount(configuredCount)}
             </Badge>
           )}
         </div>
@@ -416,9 +416,7 @@ function ProviderGroupCard({
             </a>
           )}
           <span className="text-xs text-text-tertiary">
-            {t.env.keysCount
-              .replace("{count}", String(group.entries.length))
-              .replace("{s}", group.entries.length !== 1 ? "s" : "")}
+            {t.env.keysCount(group.entries.length)}
           </span>
         </div>
       </ListItem>
@@ -549,9 +547,7 @@ function CustomKeysCard({
           <CardTitle className="text-base">{t.env.customTitle}</CardTitle>
         </div>
         <CardDescription>
-          {t.env.customConfigured
-            .replace("{count}", String(entries.length))
-            .replace("{s}", entries.length !== 1 ? "s" : "")}
+          {t.env.customConfigured(entries.length)}
         </CardDescription>
         <CardDescription className="text-text-tertiary">
           {t.env.customHint}
@@ -1014,7 +1010,7 @@ export default function EnvPage() {
 /*  EnvCategoryCard — keys / messaging / settings sections             */
 /* ------------------------------------------------------------------ */
 
-function EnvCategoryCard({
+export function EnvCategoryCard({
   section,
   edits,
   setEdits,
@@ -1086,8 +1082,7 @@ function EnvCategoryCard({
         </div>
 
         <CardDescription>
-          {section.setEntries.length} {t.common.of} {section.totalEntries}{" "}
-          {t.common.configured}
+          {t.env.configuredSummary(section.setEntries.length, section.totalEntries)}
         </CardDescription>
 
         {section.hint && (

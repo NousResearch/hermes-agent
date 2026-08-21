@@ -36,6 +36,10 @@ function mergeTranslations<T>(base: T, overrides: TranslationOverride<T> | undef
   return result as T
 }
 
+export function mergeLocaleOverrides(...overrides: TranslationOverrides[]): TranslationOverrides {
+  return overrides.reduce<TranslationOverrides>((merged, override) => mergeTranslations(merged, override), {})
+}
+
 export function defineLocale(overrides: TranslationOverrides): Translations {
   return mergeTranslations<Translations>(en, overrides)
 }

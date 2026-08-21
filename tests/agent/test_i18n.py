@@ -36,7 +36,6 @@ def _flatten(d, prefix="") -> dict:
 # ---------------------------------------------------------------------------
 
 
-
 @pytest.mark.parametrize("lang", [l for l in i18n.SUPPORTED_LANGUAGES if l != "en"])
 def test_catalog_keys_match_english(lang: str):
     """Every non-English catalog must have exactly the same key set as English."""
@@ -57,6 +56,7 @@ def test_catalog_placeholders_match_english(lang: str):
     value.  Pin parity at the test layer.
     """
     import re
+
     placeholder_re = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
     en_flat = _flatten(_load_raw("en"))
     lang_flat = _flatten(_load_raw(lang))
@@ -75,13 +75,33 @@ def test_catalog_placeholders_match_english(lang: str):
 # ---------------------------------------------------------------------------
 
 
+def test_normalize_lang_accepts_polish_aliases():
+    assert i18n._normalize_lang("Polski") == "pl"
+    assert i18n._normalize_lang("Polish") == "pl"
+    assert i18n._normalize_lang("pl-PL") == "pl"
+    assert i18n._LANGUAGE_ALIASES["pl-pl"] == "pl"
 
 
+def test_polish_language_flows_through_real_config_seam(tmp_path, monkeypatch):
+    """A real HERMES_HOME config drives load_config_readonly(), get_language(), and t()."""
+    from hermes_cli.config import load_config_readonly
 
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  language: pl-PL\n  skin: mono\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    i18n.reset_language_cache()
 
-
-
-
+    try:
+        config = load_config_readonly()
+        assert config["display"]["language"] == "pl-PL"
+        assert config["display"]["skin"] == "mono"
+        assert i18n.get_language() == "pl"
+        assert i18n.t("approval.denied").endswith("Odrzucono")
+    finally:
+        i18n.reset_language_cache()
 
 
 def test_default_when_nothing_set(monkeypatch):
@@ -98,9 +118,31 @@ def test_default_when_nothing_set(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_t_explicit_polish_lang():
+    assert i18n.t("approval.denied", lang="pl").endswith("Odrzucono")
 
 
+def test_polish_catalog_preserves_targeted_translation_semantics():
+    """Pin corrected meanings to the keys where literal regressions occurred."""
+    catalog = _flatten(_load_raw("pl"))
 
+    # Valid vocabulary elsewhere must not affect these key-specific contracts.
+    catalog["unrelated.valid_vocabulary"] = "oddział żeton kompozytor monit"
+
+    expected = {
+        "gateway.agents.async_jobs": "**Zadania asynchroniczne bramy:** {count}",
+        "gateway.reload_mcp.tools_available": (
+            "\n🔧 Dostępne narzędzia: {tools} · Połączone serwery: {servers}"
+        ),
+        "gateway.reload_skills.total": "\n📚 Dostępne umiejętności: {count}",
+        "gateway.restart.in_progress": "⏳ Ponowne uruchamianie bramy jest już w toku…",
+        "gateway.debug.share_hint": (
+            "Udostępnij te linki zespołowi Hermesa, aby uzyskać pomoc."
+        ),
+        "gateway.status.header": "📊 **Stan bramy Hermesa**",
+    }
+
+    assert {key: catalog[key] for key in expected} == expected
 
 
 def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatch):
@@ -120,14 +162,11 @@ def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatc
         i18n.reset_language_cache()
 
 
-
-
 # ---------------------------------------------------------------------------
 # _locales_dir resolution ladder -- regression for #23943 / #27632 / #35374.
 # Sealed installs (Nix store venv, pip wheel) have no source tree next to
 # agent/, so _locales_dir must resolve via env override or the data scheme.
 # ---------------------------------------------------------------------------
-
 
 
 def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
@@ -138,5 +177,3 @@ def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
     assert result != tmp_path / "does-not-exist"
     # In a source checkout this is the repo-root locales dir.
     assert result.name == "locales"
-
-

@@ -388,3 +388,79 @@ def _make_file_chat_item(file_path: str, file_name: str) -> dict:
     }
 
 
+def _make_inline_image_chat_item(caption: str = "") -> dict:
+    """Direct-chat rcvMsgContent item with an inline base64 photo.
+
+    SimpleX mobile clients deliver gallery photos this way: the pixels
+    live in ``msgContent.image`` as a ``data:`` URL and there is no
+    ``chatItem.file`` sibling (that shape is only used for XFTP/file
+    transfers).
+    """
+    return {
+        "chatInfo": {
+            "type": "direct",
+            "contact": {"contactId": 42, "localDisplayName": "tester"},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv"},
+            "meta": {"itemTs": "2026-01-01T00:00:00Z"},
+            "content": {
+                "type": "rcvMsgContent",
+                "msgContent": {
+                    "type": "image",
+                    "text": caption,
+                    "image": "data:image/jpeg;base64,/9j/2w==",
+                },
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_inline_image_sets_photo_type():
+    """Inline base64 images must classify as PHOTO, not TEXT.
+
+    Regression guard for #76362: photos from SimpleX mobile clients arrive
+    as ``data:image/...`` URLs in ``msgContent.image`` with no
+    ``chatItem.file`` sibling, so the adapter has to surface them through
+    the same media slot or the gateway's vision pipeline never runs.
+    """
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import MessageType
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = _capture
+    await adapter._handle_chat_item(_make_inline_image_chat_item("look at this"))
+
+    assert dispatched, "_handle_chat_item did not dispatch any event"
+    assert dispatched[0].message_type == MessageType.PHOTO
+    assert dispatched[0].media_urls == ["data:image/jpeg;base64,/9j/2w=="]
+    assert dispatched[0].media_types == ["image/jpeg"]
+    assert dispatched[0].text == "look at this"
+
+
+@pytest.mark.asyncio
+async def test_inline_image_without_caption_still_dispatches():
+    """A caption-less inline photo still reaches the agent as PHOTO."""
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import MessageType
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = _capture
+    await adapter._handle_chat_item(_make_inline_image_chat_item())
+
+    assert dispatched, "_handle_chat_item did not dispatch any event"
+    assert dispatched[0].message_type == MessageType.PHOTO
+    assert dispatched[0].media_urls == ["data:image/jpeg;base64,/9j/2w=="]

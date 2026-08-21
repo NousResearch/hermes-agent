@@ -89,11 +89,28 @@ class QwenProfile(ProviderProfile):
         qwen_session_metadata: dict | None = None,
         **context,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Qwen metadata goes to top-level api_kwargs, not extra_body."""
-        top_level = {}
+        """Build Qwen's explicit thinking contract.
+
+        Qwen-compatible endpoints default to server-side ``auto`` when this
+        field is omitted.  Hermes must not rely on that implicit mode: unset
+        reasoning is the safe utility/coding mode, while an explicit enabled
+        config opts into thinking.  The 32K budget is deliberately below the
+        64K completion cap so an enabled request retains room for visible
+        answer tokens.
+        """
+        top_level: dict[str, Any] = {}
         if qwen_session_metadata:
             top_level["metadata"] = qwen_session_metadata
-        return {}, top_level
+
+        enabled = bool(
+            isinstance(reasoning_config, dict)
+            and type(reasoning_config.get("enabled")) is bool
+            and reasoning_config["enabled"] is True
+        )
+        extra_body: dict[str, Any] = {"enable_thinking": enabled}
+        if enabled:
+            extra_body["thinking_budget"] = 32768
+        return extra_body, top_level
 
 
 qwen = QwenProfile(

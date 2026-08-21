@@ -4478,6 +4478,25 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     return bool(row) and row["kind"] == "blocked"
 
 
+def has_block_loop_hold(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return whether a loop-escalated task still requires explicit recovery.
+
+    The hold is derived only from durable machine-state events. Comments and
+    mutable title/body prose therefore cannot accidentally make a held task
+    dispatchable. ``specify_triage_task(..., recover_block_loop_hold=True)``
+    is the supported recovery transition and appends ``block_loop_recovered``
+    in the same transaction as the triage promotion.
+    """
+    row = conn.execute(
+        "SELECT kind FROM task_events "
+        "WHERE task_id = ? "
+        "AND kind IN ('block_loop_detected', 'block_loop_recovered') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return bool(row) and row["kind"] == "block_loop_detected"
+
+
 def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     """Return the durable phase a blocked/dependency-wait task should resume.
 
@@ -4550,6 +4569,8 @@ def recompute_ready(
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            if has_block_loop_hold(conn, task_id):
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Worker / operator asked for explicit human intervention — do not
                 # silently auto-recover.  ``unblock_task`` is the only
@@ -4630,6 +4651,21 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        if has_block_loop_hold(conn, task_id):
+            # A stale writer may have moved a loop-held row out of triage.
+            # Restore the safe machine state before the final claim CAS.
+            demoted = conn.execute(
+                "UPDATE tasks SET status = 'triage', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status = 'ready'",
+                (task_id,),
+            )
+            if demoted.rowcount == 1:
+                _append_event(
+                    conn, task_id, "claim_rejected",
+                    {"reason": "block_loop_hold"},
+                )
+            return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -7194,6 +7230,7 @@ def specify_triage_task(
     body: Optional[str] = None,
     assignee: Optional[str] = None,
     author: Optional[str] = None,
+    recover_block_loop_hold: bool = False,
 ) -> bool:
     """Flesh out a triage task and promote it to ``todo``.
 
@@ -7215,6 +7252,9 @@ def specify_triage_task(
         raise ValueError("title cannot be blank")
     assignee = _canonical_assignee(assignee)
     with write_txn(conn):
+        held = has_block_loop_hold(conn, task_id)
+        if held and not recover_block_loop_hold:
+            return False
         existing = conn.execute(
             "SELECT title, body, assignee FROM tasks WHERE id = ? AND status = 'triage'",
             (task_id,),
@@ -7244,6 +7284,13 @@ def specify_triage_task(
         )
         if cur.rowcount != 1:
             return False
+        if held:
+            _append_event(
+                conn,
+                task_id,
+                "block_loop_recovered",
+                {"transition": "explicit_specify"},
+            )
         if changed_fields and author and author.strip():
             # Inline INSERT (rather than ``add_comment``) because we're
             # already inside this function's write_txn — nested BEGIN
@@ -7377,6 +7424,8 @@ def decompose_triage_task(
         if root_row is None:
             return None
         if root_row["status"] != "triage":
+            return None
+        if has_block_loop_hold(conn, task_id):
             return None
         tenant = root_row["tenant"]
         # Children inherit the root's workspace by default so a fan-out

@@ -196,7 +196,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, updateGroupChat, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, replaceGroupChatMembers, groupChatMemberBots, updateGroupChat, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -1158,6 +1158,50 @@ test('source contract: group roster rows expose a confirmed Delete Group action'
   assert.match(pluginSource, /children: 'Delete Group'/)
   assert.match(pluginSource, /title: 'Delete group chat\?'/)
   assert.match(pluginSource, /await disbandGroupChat\(deletingGroup\.name, deletingGroup\.members\)/)
+})
+
+test('existing group members can be replaced without stale profile metadata reseating removed bots', async () => {
+  const gc = load(() => '(pass)')
+  const roster = [
+    { name: 'research', title: '' },
+    { name: 'builder', title: '' },
+    { name: 'ops', title: '' }
+  ]
+
+  gc.$botMeta.set({
+    research: { groups: ['Core'], group: 'Core' },
+    builder: { groups: ['Core'], group: 'Core' },
+    ops: { groups: [], group: null }
+  })
+  gc.updateGroupChat('Core', room => {
+    room.members = [roster[0], roster[1]]
+    room.roomId = 'room-core'
+    return room
+  }, { sync: false })
+
+  await gc.replaceGroupChatMembers('Core', [roster[1], roster[2]])
+
+  assert.equal(JSON.stringify(gc.$groupChats.get().Core.members.map(member => member.name)), JSON.stringify(['builder', 'ops']))
+  assert.equal(gc.$botMeta.get().research.groups.includes('Core'), false)
+  assert.equal(gc.$botMeta.get().builder.groups.includes('Core'), true)
+  assert.equal(gc.$botMeta.get().ops.groups.includes('Core'), true)
+  assert.equal(
+    JSON.stringify(gc.groupChatMemberBots('Core', roster, gc.$botMeta.get()).map(member => member.name)),
+    JSON.stringify(['builder', 'ops'])
+  )
+})
+
+test('existing groups enforce the same member-count bounds as creation', async () => {
+  const gc = load(() => '(pass)')
+
+  await assert.rejects(() => gc.replaceGroupChatMembers('Core', [{ name: 'solo' }]), /require 2/)
+})
+
+test('source contract: Group settings exposes persistent member checkboxes after creation', () => {
+  assert.match(pluginSource, /function GroupChatSettingsDialog\(\{ group, members, roster, open, onClose, onRenamed \}\)/)
+  assert.match(pluginSource, /'aria-label': 'Group members'/)
+  assert.match(pluginSource, /await replaceGroupChatMembers\(finalName, selected\)/)
+  assert.match(pluginSource, /disabled: !name\.trim\(\) \|\| selected\.length < 2/)
 })
 
 test('disband: removes only this membership, room log, workspace, and needs-you state', async () => {

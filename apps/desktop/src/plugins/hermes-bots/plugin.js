@@ -4702,16 +4702,37 @@ function groupLastActivity(room) {
   return log.length ? log[log.length - 1].at || 0 : 0
 }
 
-/** Seat a group's member roster: local bots whose meta names the group, plus
- *  the room record's stored descriptors (remote members can't ride bot-meta).
- *  Prefers the LIVE roster row for a stored descriptor when present. */
+/** Seat a group's member roster. Modern roomId-backed rooms persist every
+ *  source-qualified member, so their non-empty stored roster is authoritative;
+ *  otherwise stale local profile metadata could re-seat a bot removed in Settings.
+ *  Legacy rooms still combine local profile membership with stored remote
+ *  descriptors. Prefers the LIVE roster row when present. */
 function groupChatMemberBots(group, roster, metaByName) {
+  const room = $groupChats.get()[group] || {}
+  const stored = room.members || []
+
+  if (stored.length && room.roomId) {
+    const seated = new Set()
+    const members = []
+
+    for (const descriptor of stored) {
+      const key = botRosterKey(descriptor)
+
+      if (seated.has(key)) {
+        continue
+      }
+
+      seated.add(key)
+      members.push((roster || []).find(bot => botRosterKey(bot) === key) || descriptor)
+    }
+
+    return members
+  }
+
   const local = (roster || []).filter(
     bot => !bot.remoteSource && botGroups(botRosterMeta(bot, metaByName)).includes(group)
   )
-  const stored = ($groupChats.get()[group] || {}).members || []
   const seated = new Set(local.map(botRosterKey))
-  const remote = []
 
   for (const descriptor of stored) {
     const key = botRosterKey(descriptor)
@@ -4721,10 +4742,10 @@ function groupChatMemberBots(group, roster, metaByName) {
     }
 
     seated.add(key)
-    remote.push((roster || []).find(bot => botRosterKey(bot) === key) || descriptor)
+    local.push((roster || []).find(bot => botRosterKey(bot) === key) || descriptor)
   }
 
-  return [...local, ...remote]
+  return local
 }
 
 /** Persist source-qualified identities for every selected member. The active
@@ -4749,6 +4770,52 @@ function durableGroupChatMembers(bots) {
       sourceScoped: true
     }
   })
+}
+
+/** Replace an existing room's complete member set. The durable room roster is
+ *  authoritative; local profile metadata is updated as a compatibility and
+ *  discovery projection, including removal from profiles no longer seated. */
+async function replaceGroupChatMembers(group, bots) {
+  const unique = []
+  const seen = new Set()
+
+  for (const bot of bots || []) {
+    const key = botRosterKey(bot)
+
+    if (!key || seen.has(key)) {
+      continue
+    }
+
+    seen.add(key)
+    unique.push(bot)
+  }
+
+  if (unique.length < 2 || unique.length > GROUP_CHAT_MAX_MEMBERS) {
+    throw new Error(`Group chats require 2–${GROUP_CHAT_MAX_MEMBERS} bots`)
+  }
+
+  const metaByName = $botMeta.get()
+  const nextLocal = new Set(unique.filter(bot => !bot.remoteSource).map(bot => bot.name))
+  const affectedLocal = new Set(nextLocal)
+
+  for (const [name, meta] of Object.entries(metaByName || {})) {
+    if (botGroups(meta).includes(group)) {
+      affectedLocal.add(name)
+    }
+  }
+
+  await Promise.all(
+    [...affectedLocal].map(name =>
+      saveBotMeta(name, groupMembershipPatch($botMeta.get()[name], group, nextLocal.has(name)))
+    )
+  )
+
+  updateGroupChat(group, room => {
+    room.members = durableGroupChatMembers(unique)
+    return room
+  })
+
+  return unique
 }
 
 /** Existing group names, alphabetical — feeds the Manage-groups dialog. */
@@ -9292,14 +9359,31 @@ function GroupDialog({ bot, onClose }) {
   const current = botGroups(meta[bot?.name])
   const groups = knownGroups(meta)
 
-  const setMembership = (group, enabled) => {
-    saveBotMeta(bot.name, groupMembershipPatch(meta[bot.name], group, enabled))
-    host.notify({
-      kind: 'info',
-      message: enabled
-        ? `${displayName(bot, meta[bot.name])} added to “${group}”`
-        : `${displayName(bot, meta[bot.name])} removed from “${group}”`
-    })
+  const setMembership = async (group, enabled) => {
+    try {
+      const room = $groupChats.get()[group]
+
+      if (Array.isArray(room?.members) && room.members.length) {
+        const currentMembers = groupChatMemberBots(group, $lastRoster.get(), $botMeta.get())
+        const botKey = botRosterKey(bot)
+        const nextMembers = enabled
+          ? [...currentMembers.filter(member => botRosterKey(member) !== botKey), bot]
+          : currentMembers.filter(member => botRosterKey(member) !== botKey)
+
+        await replaceGroupChatMembers(group, nextMembers)
+      } else {
+        await saveBotMeta(bot.name, groupMembershipPatch($botMeta.get()[bot.name], group, enabled))
+      }
+
+      host.notify({
+        kind: 'info',
+        message: enabled
+          ? `${displayName(bot, $botMeta.get()[bot.name])} added to “${group}”`
+          : `${displayName(bot, $botMeta.get()[bot.name])} removed from “${group}”`
+      })
+    } catch (error) {
+      host.notifyError(error, `Could not update “${group}” members`)
+    }
   }
 
   return jsx(Dialog, {
@@ -9334,7 +9418,7 @@ function GroupDialog({ bot, onClose }) {
                     children: [
                       jsx(Checkbox, {
                         checked: enabled,
-                        onCheckedChange: checked => setMembership(group, checked === true)
+                        onCheckedChange: checked => void setMembership(group, checked === true)
                       }),
                       jsx('span', { children: group })
                     ]
@@ -9351,7 +9435,7 @@ function GroupDialog({ bot, onClose }) {
             const trimmed = name.trim()
 
             if (trimmed) {
-              setMembership(trimmed, true)
+              void setMembership(trimmed, true)
               setName('')
             }
           },
@@ -9464,21 +9548,45 @@ function GroupImageControls({ image, onImage, seedName, seedMembers }) {
 /** Edit an existing group chat's name and picture. Renames re-key the room
  *  and every local member's membership (renameGroupChat); the picture rides
  *  the room record. Both apply on Save so a cancelled dialog changes nothing. */
-function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }) {
+function GroupChatSettingsDialog({ group, members, roster, open, onClose, onRenamed }) {
   const rooms = useValue($groupChats)
+  const allMeta = useValue($botMeta)
   const current = (rooms[group] || {}).image || null
   const [name, setName] = useState(group)
   const [image, setImage] = useState(current)
+  const [checked, setChecked] = useState({})
+
+  const candidatesByKey = new Map()
+
+  for (const bot of members || []) {
+    candidatesByKey.set(botRosterKey(bot), bot)
+  }
+
+  // Prefer a live roster row over its persisted descriptor while retaining
+  // offline members that exist only in the room record.
+  for (const bot of roster || []) {
+    candidatesByKey.set(botRosterKey(bot), bot)
+  }
+
+  const candidates = [...candidatesByKey.values()]
+  const selected = candidates.filter(bot => checked[botRosterKey(bot)])
+  const atCap = selected.length >= GROUP_CHAT_MAX_MEMBERS
 
   useEffect(() => {
     if (open) {
       setName(group)
       setImage(current)
+      setChecked(Object.fromEntries((members || []).map(bot => [botRosterKey(bot), true])))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, group])
 
   const save = async () => {
+    if (selected.length < 2 || selected.length > GROUP_CHAT_MAX_MEMBERS) {
+      host.notifyError(new Error(`Group chats require 2–${GROUP_CHAT_MAX_MEMBERS} bots`), 'Could not save group')
+      return
+    }
+
     const finalName = await renameGroupChat(group, name, members)
 
     if (finalName === null) {
@@ -9487,6 +9595,13 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }) {
 
     if (image !== current) {
       setGroupChatImage(finalName, image)
+    }
+
+    try {
+      await replaceGroupChatMembers(finalName, selected)
+    } catch (error) {
+      host.notifyError(error, 'Could not save group members')
+      return
     }
 
     onClose()
@@ -9510,7 +9625,7 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }) {
           children: [
             jsx(DialogTitle, { children: 'Group settings' }),
             jsx(DialogDescription, {
-              children: 'Rename the group or set a room picture. Members and history are kept.'
+              children: `Rename the group, set a room picture, or choose 2–${GROUP_CHAT_MAX_MEMBERS} members.`
             })
           ]
         }),
@@ -9533,10 +9648,57 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }) {
             onChange: event => setName(event.target.value)
           })
         }),
+        jsxs('div', {
+          className: 'grid gap-1.5',
+          children: [
+            jsx('div', {
+              className: 'text-xs font-medium text-(--ui-text-secondary)',
+              children: `Members (${selected.length}/${GROUP_CHAT_MAX_MEMBERS})`
+            }),
+            jsx(ScrollArea, {
+              className: 'max-h-52 min-h-0 rounded-md border border-(--ui-border-subtle)',
+              children: jsx('div', {
+                'aria-label': 'Group members',
+                className: 'grid gap-0.5 p-1.5',
+                children: candidates.map(bot => {
+                  const key = botRosterKey(bot)
+                  const isChecked = Boolean(checked[key])
+                  const disabled = !isChecked && atCap
+                  const meta = botRosterMeta(bot, allMeta)
+
+                  return jsxs('label', {
+                    className: cn(
+                      'flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-xs hover:bg-(--chrome-action-hover)',
+                      disabled && 'cursor-not-allowed opacity-50'
+                    ),
+                    children: [
+                      jsx(Checkbox, {
+                        checked: isChecked,
+                        disabled,
+                        onCheckedChange: value => setChecked(prev => ({ ...prev, [key]: Boolean(value) }))
+                      }),
+                      jsx('span', { className: 'min-w-0 flex-1 truncate', children: displayName(bot, meta) }),
+                      bot.remoteSource && bot.connectionLabel
+                        ? jsx('span', {
+                            className: 'truncate text-[0.625rem] text-(--ui-text-quaternary)',
+                            children: bot.connectionLabel
+                          })
+                        : null
+                    ]
+                  }, key)
+                })
+              })
+            })
+          ]
+        }),
         jsxs(DialogFooter, {
           children: [
             jsx(Button, { variant: 'secondary', onClick: onClose, children: 'Cancel' }),
-            jsx(Button, { disabled: !name.trim(), onClick: () => void save(), children: 'Save' })
+            jsx(Button, {
+              disabled: !name.trim() || selected.length < 2,
+              onClick: () => void save(),
+              children: `Save (${selected.length})`
+            })
           ]
         })
       ]
@@ -10160,6 +10322,7 @@ function GroupClarifyCard({ entry, members }) {
 function GroupChatWorkspace({ group, members, onBack, visible = true }) {
   const rooms = useValue($groupChats)
   const allMeta = useValue($botMeta)
+  const roster = useValue($lastRoster)
   const room = rooms[group] || { log: [], running: false }
   const [draft, setDraft] = useState('')
   const [confirmDisband, setConfirmDisband] = useState(false)
@@ -10869,6 +11032,7 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
       jsx(GroupChatSettingsDialog, {
         group,
         members,
+        roster,
         open: settingsOpen,
         onClose: () => setSettingsOpen(false)
       }),

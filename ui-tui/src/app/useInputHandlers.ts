@@ -217,6 +217,9 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return gateway
         .rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: getUiState().sid })
         .then(r => r && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
+        .catch(() => {
+          patchOverlayState({ approval: null })
+        })
     }
 
     if (overlay.sudo || overlay.secret) {

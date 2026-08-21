@@ -718,6 +718,8 @@ export function useMainApp(gw: GatewayClient) {
         }
 
         patchOverlayState({ clarify: null })
+      }).catch(() => {
+        patchOverlayState({ clarify: null })
       })
     },
     [appendMessage, overlay.clarify, rpc]
@@ -992,7 +994,7 @@ export function useMainApp(gw: GatewayClient) {
   slashRef.current = slash
 
   const respondWith = useCallback(
-    (method: string, params: Record<string, unknown>, done: () => void) => rpc(method, params).then(r => r && done()),
+    (method: string, params: Record<string, unknown>, done: () => void) => rpc(method, params).then(r => r && done()).catch(() => done()),
     [rpc]
   )
 

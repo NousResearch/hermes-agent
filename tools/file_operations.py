@@ -1050,13 +1050,29 @@ class ShellFileOperations(FileOperations):
             # lossy text would let a read→edit→write round-trip silently
             # overwrite the original bytes with mojibake. Treat a file whose
             # sample carries the replacement char as binary (read-only) so the
-            # agent can't corrupt it. Legitimate UTF-8 text effectively never
-            # contains U+FFFD.
-            if "\ufffd" in content_sample[:1000]:
+            # agent can't corrupt it.
+            #
+            # A TRAILING run of U+FFFD is the one exception. This heuristic
+            # only runs when ``_sample_file_bytes`` could not use its base64
+            # transport, and the sample is then a fixed BYTE slice
+            # (``head -c 1000``) — so a multibyte character straddling the cut
+            # always decodes to replacement chars at the very end. That is an
+            # artifact of where we cut, not a property of the file. Counting
+            # it made every CJK/emoji document read as binary on backends
+            # without ``base64`` — the same #80308 misclassification that
+            # ``_is_likely_binary_bytes`` fixes for the byte-layer path, still
+            # live on this fallback. Honour the same boundary contract here:
+            # allow one cut-off sequence at the end, keep flagging mid-stream
+            # damage.
+            sample = content_sample[:1000].rstrip("\ufffd")
+            if not sample:
+                # Nothing but replacement chars — no text to salvage.
                 return True
-            non_printable = sum(1 for c in content_sample[:1000]
+            if "\ufffd" in sample:
+                return True
+            non_printable = sum(1 for c in sample
                                if ord(c) < 32 and c not in '\n\r\t')
-            return non_printable / min(len(content_sample), 1000) > 0.30
+            return non_printable / len(sample) > 0.30
         
         return False
     

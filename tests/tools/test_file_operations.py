@@ -804,6 +804,77 @@ class TestByteLayerBinaryDetection:
         result = ops.read_file("/tmp/a.out")
         assert result.is_binary is True
 
+    # --- fallback: legacy text heuristic ----------------------------------
+    #
+    # _sample_file_bytes returns None on backends whose shell has no
+    # `base64` (see test_sample_falls_back_on_* above), and read_file then
+    # classifies from the replace-decoded `head -c 1000` sample. That
+    # fallback must honour the same boundary contract as the byte layer, or
+    # the #80308 misclassification simply moves to base64-less backends.
+
+    def test_fallback_cjk_cut_mid_character_is_text(self, file_ops):
+        # What `head -c 1000` on a CJK file looks like after the transport
+        # decodes it with errors="replace": one trailing U+FFFD.
+        sample = ("汉字" * 400).encode("utf-8")[:1000].decode("utf-8", errors="replace")
+        assert sample.count("\ufffd") == 1 and sample.endswith("\ufffd")
+        assert file_ops._is_likely_binary("notes.txt", sample) is False
+
+    def test_fallback_emoji_cut_at_boundary_is_text(self, file_ops):
+        sample = (b"x" * 998 + "🎉".encode("utf-8"))[:1000].decode("utf-8", errors="replace")
+        assert file_ops._is_likely_binary("notes.txt", sample) is False
+
+    def test_fallback_midstream_damage_still_binary(self, file_ops):
+        # latin-1 body: U+FFFD before the end means the file really is not
+        # UTF-8, so it stays read-only even though the sample also ends on a
+        # cut character.
+        assert file_ops._is_likely_binary("notes.txt", "caf\ufffd au lait\ufffd") is True
+
+    def test_fallback_all_replacement_chars_is_binary(self, file_ops):
+        assert file_ops._is_likely_binary("blob.xyz", "\ufffd" * 64) is True
+
+    def test_fallback_nonprintable_ratio_still_applies(self, file_ops):
+        # 301/1000 control characters — binary by the ratio rule, unchanged.
+        assert file_ops._is_likely_binary("data.xyz", "\x01" * 301 + "a" * 699) is True
+
+    def _dispatch_without_base64(self, cjk_bytes):
+        """Terminal that has no `base64`, forcing the text-sample fallback."""
+
+        def side_effect(command, **kwargs):
+            if command.startswith("if [ -f ") or command.startswith("wc -c"):
+                return {"output": f"{len(cjk_bytes)}\n", "returncode": 0}
+            if command.startswith("head -c") and "| base64" in command:
+                return {"output": "sh: base64: not found", "returncode": 127}
+            if command.startswith("head -c"):
+                # Raw byte slice, decoded by the transport with errors="replace".
+                return {
+                    "output": cjk_bytes[:1000].decode("utf-8", errors="replace"),
+                    "returncode": 0,
+                }
+            if command.startswith("sed -n"):
+                return {"output": cjk_bytes.decode("utf-8", errors="replace"), "returncode": 0}
+            if command.startswith("wc -l"):
+                return {"output": "1\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        return side_effect
+
+    def test_read_file_returns_cjk_content_when_base64_missing(self, mock_env):
+        content = ("汉字测试" * 300).encode("utf-8")  # > 1000 bytes, cut mid-char
+        mock_env.execute.side_effect = self._dispatch_without_base64(content)
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/notes-中文.txt")
+        assert result.is_binary is False
+        assert result.error is None
+        assert "汉字测试" in (result.content or "")
+
+    def test_read_file_without_base64_still_blocks_latin1(self, mock_env):
+        # Mid-stream invalid UTF-8 must stay read-only on the fallback too.
+        content = b"caf\xe9 au lait " * 100
+        mock_env.execute.side_effect = self._dispatch_without_base64(content)
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/menu.txt")
+        assert result.is_binary is True
+
 
 
 class TestEscapeNativeToolArg:

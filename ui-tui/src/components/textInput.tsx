@@ -1344,6 +1344,7 @@ export function TextInput({
   useInput(
     (inp: string, k: Key, event: InputEvent) => {
       const eventRaw = event.keypress.raw
+      const lowerInput = inp.toLowerCase()
 
       // Configured voice shortcut wins over composer-level defaults like
       // paste/copy so users who bind voice to ctrl+v / alt+v / cmd+v
@@ -1360,7 +1361,8 @@ export function TextInput({
         eventRaw === '\x1bv' ||
         eventRaw === '\x1bV' ||
         eventRaw === '\x16' ||
-        (isMac && isActionMod(k) && inp.toLowerCase() === 'v')
+        (isMac && isActionMod(k) && lowerInput === 'v') ||
+        (!isMac && lowerInput === 'v' && (k.ctrl || k.meta))
       ) {
         flushKeyBurst()
 

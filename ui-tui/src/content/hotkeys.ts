@@ -1,7 +1,7 @@
 import { isMac, isRemoteShell } from '../lib/platform.js'
 
 const action = isMac ? 'Cmd' : 'Ctrl'
-const paste = isMac ? 'Cmd' : 'Alt'
+const paste = isMac ? 'Cmd+V / /paste' : 'Ctrl+V / Alt+V / /paste'
 
 const copyHotkeys: [string, string][] = isMac
   ? [
@@ -20,7 +20,7 @@ export const HOTKEYS: [string, string][] = [
   [action + '+D', 'exit'],
   [action + '+G / Alt+G', 'open $EDITOR (Alt+G fallback for VSCode/Cursor)'],
   [action + '+L', 'redraw / repaint'],
-  [paste + '+V / /paste', 'paste text; /paste attaches clipboard image'],
+  [paste, 'paste text; /paste attaches clipboard image'],
   ['Esc Esc', 'discard draft (recall with ↑)'],
   ['Tab', 'apply completion'],
   ['↑/↓', 'completions / queue edit / history'],

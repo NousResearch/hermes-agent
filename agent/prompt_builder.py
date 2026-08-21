@@ -1829,6 +1829,7 @@ def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None,
+    compact_all_categories: bool = False,
     skills_dir_override: "Path | None" = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
@@ -1848,8 +1849,8 @@ def build_skills_system_prompt(
     ``compact_categories`` (e.g. from the coding posture — see
     agent/coding_context.py) demotes whole categories to a names-only line in
     the rendered index. Nothing is ever hidden: every skill name stays
-    visible and loadable via ``skill_view`` / ``skills_list``; only the
-    descriptions are dropped, and a footer note explains the demotion.
+    visible and loadable via ``skill_view`` / ``skills_list``. The guarded
+    profile may set ``compact_all_categories`` to demote every category.
     """
     # Home resolution is EXPLICIT when a caller passes skills_dir_override
     # (the agent knows its own profile home from its session_db path). This
@@ -1882,6 +1883,7 @@ def build_skills_system_prompt(
             available_tools,
             available_toolsets,
             compact_categories,
+            compact_all_categories,
             project_dirs=project_dirs,
         )
     finally:
@@ -1895,6 +1897,7 @@ def _build_skills_system_prompt_inner(
     available_tools: "set[str] | None",
     available_toolsets: "set[str] | None",
     compact_categories: "frozenset[str] | None",
+    compact_all_categories: bool = False,
     project_dirs: "list[Path] | None" = None,
 ) -> str:
     # Include the resolved platform so per-platform disabled-skill lists
@@ -1911,6 +1914,7 @@ def _build_skills_system_prompt_inner(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        bool(compact_all_categories),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -2128,7 +2132,7 @@ def _build_skills_system_prompt_inner(
     # what the index stops showing them. Match on the top-level category
     # segment so nested categories ("social-media/twitter") are demoted with
     # their parent.
-    demoted = frozenset(
+    demoted = frozenset(skills_by_category) if compact_all_categories else frozenset(
         cat for cat in skills_by_category
         if cat.split("/", 1)[0] in (compact_categories or frozenset())
     )
@@ -2136,8 +2140,8 @@ def _build_skills_system_prompt_inner(
     hidden_note = ""
     if demoted:
         hidden_note = (
-            "\n(Categories marked [names only] are outside the current coding "
-            "context, so their descriptions are omitted — the skills work "
+            "\n(Categories marked [names only] omit descriptions to keep the "
+            "current prompt compact — the skills work "
             "normally and load with skill_view(name) as usual.)"
         )
 

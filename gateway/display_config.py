@@ -159,13 +159,15 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # status update as a separate message. Promote to TIER_MEDIUM once
     # Cloud's edit_message lands.
     "whatsapp_cloud":  _TIER_LOW,
-    # Photon (managed iMessage over the gRPC sidecar) and BlueBubbles are both
-    # permanent-message iMessage inboxes with no message-edit support, so both
-    # stay TIER_LOW. This keeps tool progress, interim scratch commentary,
-    # "still working" heartbeats, and busy-ack iteration detail out of the
-    # user's iMessage thread. Without this entry Photon inherited the noisy
-    # global ("all") defaults and compacted/narrated on nearly every turn.
+    # Photon (managed iMessage over the gRPC sidecar), Blooio (managed iMessage
+    # over REST + webhooks), and BlueBubbles are all permanent-message iMessage
+    # inboxes with no message-edit support, so they stay TIER_LOW. This keeps
+    # tool progress, interim scratch commentary, "still working" heartbeats,
+    # and busy-ack iteration detail out of the user's iMessage thread. Without
+    # this entry they'd inherit the noisy global ("all") defaults and
+    # compacted/narrated on nearly every turn.
     "photon":          _TIER_LOW,
+    "blooio":          _TIER_LOW,
     "bluebubbles":     _TIER_LOW,
     "weixin":          _TIER_LOW,
     "wecom":           _TIER_LOW,

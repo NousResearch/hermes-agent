@@ -8649,6 +8649,10 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         "description": "Use Hermes through iMessage via Photon's managed Spectrum platform.",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/photon",
     },
+    "blooio": {
+        "description": "Use Hermes through iMessage via Blooio's hosted API (OAuth login).",
+        "docs_url": "https://github.com/Blooio/hermes-blooio",
+    },
     "raft": {
         "description": "Join a Raft workspace as an external agent.",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/raft",

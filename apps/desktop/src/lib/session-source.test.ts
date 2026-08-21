@@ -33,3 +33,26 @@ describe('photon messaging source registration', () => {
     expect(isMessagingSource(undefined)).toBe(false)
   })
 })
+
+// Blooio (iMessage over the hosted Blooio API) also keeps its own sidebar
+// section — same contract as Photon above.
+describe('blooio messaging source registration', () => {
+  it('treats blooio as a messaging source (own sidebar section)', () => {
+    expect(isMessagingSource('blooio')).toBe(true)
+  })
+
+  it('is case/space insensitive on the source id', () => {
+    expect(isMessagingSource('BLOOIO')).toBe(true)
+    expect(isMessagingSource('  blooio ')).toBe(true)
+  })
+
+  it('exposes the iMessage/messages search aliases so Blooio sessions are findable', () => {
+    const terms = sessionSourceSearchTerms('blooio')
+    expect(terms).toContain('imessage')
+    expect(terms).toContain('messages')
+  })
+
+  it('is registered in the messaging source id list', () => {
+    expect(MESSAGING_SESSION_SOURCE_IDS).toContain('blooio')
+  })
+})

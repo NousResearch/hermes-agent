@@ -2,6 +2,7 @@ import { normalize } from '@/lib/text'
 
 const SOURCE_LABELS: Record<string, string> = {
   api_server: 'API',
+  blooio: 'Blooio',
   bluebubbles: 'iMessage',
   cli: 'CLI',
   codex: 'Codex',
@@ -27,6 +28,7 @@ const SOURCE_LABELS: Record<string, string> = {
 }
 
 const SOURCE_ALIASES: Record<string, string[]> = {
+  blooio: ['imessage', 'messages'],
   bluebubbles: ['apple messages', 'imessage'],
   photon: ['imessage', 'messages'],
   cli: ['terminal'],
@@ -59,6 +61,7 @@ export const MESSAGING_SESSION_SOURCE_IDS = [
   'whatsapp',
   'bluebubbles',
   'photon',
+  'blooio',
   'homeassistant',
   'email',
   'sms',

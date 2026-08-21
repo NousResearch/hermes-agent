@@ -6817,6 +6817,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         state = self._peek_session_state(session_key)
         return state is not None and state.turn.agent is not None
 
+    def session_is_busy(self, session_key: str) -> bool:
+        """Public API: return True when the named session currently holds a
+        running-turn slot in ``_running_agents`` (agent or pending sentinel).
+
+        External callers (plugins, hooks, API consumers) use this to decide
+        whether the session is mid-turn without reaching into private
+        ``SessionState`` internals.
+        """
+        sessions = getattr(self, "_running_agents", None)
+        if sessions is None:
+            return False
+        return session_key in sessions
+
     def _running_agent_items(self) -> List[tuple]:
         """(session_key, agent) pairs for sessions with a running turn
         (including pending sentinels), matching the old ``_running_agents``
@@ -16563,6 +16576,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Hook runs BEFORE auth so plugins can handle unauthorized senders
         # (e.g. customer handover ingest) without triggering the pairing flow.
         if not is_internal:
+            _quick_key = self._session_key_for_source(source)
+            _agent_busy_before = self.session_is_busy(_quick_key)
             try:
                 from hermes_cli.lifecycle import invoke_hook as _invoke_hook
                 _hook_results = _invoke_hook(
@@ -16573,10 +16588,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # object.__new__ without __init__ (pitfall #17), and the
                     # hook must not fail dispatch over a missing attribute.
                     session_store=getattr(self, "session_store", None),
+                    agent_busy_before=_agent_busy_before,
                 )
             except Exception as _hook_exc:
                 logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
                 _hook_results = []
+            _agent_busy_after = self.session_is_busy(_quick_key)
+            if _agent_busy_before != _agent_busy_after:
+                logger.debug(
+                    "agent_busy changed during pre_gateway_dispatch: %s -> %s "
+                    "(session_key=%s)",
+                    _agent_busy_before,
+                    _agent_busy_after,
+                    _quick_key,
+                )
 
             for _result in _hook_results:
                 if not isinstance(_result, dict):

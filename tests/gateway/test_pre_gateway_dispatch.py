@@ -118,3 +118,90 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
     # Hook actually fired (skip short-circuited before auth) with a None store.
     assert seen == {"session_store": None}
     adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hook_receives_agent_busy_before_when_busy(monkeypatch):
+    """When the session holds a running agent, agent_busy_before is True.
+
+    Regression guard: if ``session_is_busy`` reads ``_running_agents`` with a
+    plain attribute access (no getattr fallback), bare-runner tests built via
+    ``object.__new__`` — which never set the attribute — raise and the hook
+    never fires. Plugins that depend on ``agent_busy_before`` to throttle or
+    reject duplicate sends silently stop working.
+    """
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+
+    seen = {}
+
+    def _fake_hook(name, **kwargs):
+        if name == "pre_gateway_dispatch":
+            seen["agent_busy_before"] = kwargs.get("agent_busy_before", "MISSING")
+            return [dict(action="allow")]
+        return []
+
+    async def _capture(event, source, _quick_key, _run_generation):
+        return "ok"
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    runner._handle_message_with_agent = _capture  # noqa: SLF001
+
+    event = _make_event("hi")
+    _busy_key = runner._session_key_for_source(event.source)
+    _state = MagicMock()
+    _state.turn.agent = MagicMock()
+    runner._running_agents[_busy_key] = MagicMock()  # fake busy agent slot
+
+    # busy path: _handle_message may return None (interrupt/queue short-circuit)
+    # since an agent is already running — this test only verifies the hook
+    # received the correct agent_busy_before value, not the dispatch outcome.
+    await runner._handle_message(event)
+    assert seen.get("agent_busy_before") is True
+
+
+@pytest.mark.asyncio
+async def test_hook_receives_agent_busy_before_when_idle(monkeypatch):
+    """When the session is idle, agent_busy_before is False."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+
+    seen = {}
+
+    def _fake_hook(name, **kwargs):
+        if name == "pre_gateway_dispatch":
+            seen["agent_busy_before"] = kwargs.get("agent_busy_before", "MISSING")
+            return [dict(action="allow")]
+        return []
+
+    async def _capture(event, source, _quick_key, _run_generation):
+        return "ok"
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    runner._handle_message_with_agent = _capture  # noqa: SLF001
+
+    result = await runner._handle_message(_make_event("hi"))
+    assert result == "ok"
+    assert seen.get("agent_busy_before") is False
+
+
+@pytest.mark.asyncio
+async def test_session_is_busy_public_api(monkeypatch):
+    """GatewayRunner.session_is_busy(session_key) is a public predicate that
+    mirrors _is_session_running without requiring private-state access."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    key = _make_event().source.chat_id
+
+    # idle -> False
+    assert runner.session_is_busy(key) is False
+
+    # busy -> True
+    runner._running_agents[key] = object()
+    assert runner.session_is_busy(key) is True

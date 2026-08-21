@@ -18,6 +18,7 @@ of the WebUI path silently skipping it.
 from __future__ import annotations
 
 import logging
+from collections import Counter, defaultdict
 from typing import Any, Dict, List
 
 from agent.tool_dispatch_helpers import make_tool_result_message
@@ -39,6 +40,61 @@ def is_interrupted_tool_result(content: Any) -> bool:
     return False
 
 
+def _recovered_tool_result(name: str, call_id: str) -> Dict[str, Any]:
+    """Build a non-executing result for a call lost during persistence."""
+    disposition = "unknown" if tool_may_have_side_effect(name) else "none"
+    content = (
+        "[Orphan recovery: this tool may have executed before Hermes stopped; "
+        "its effect is UNKNOWN. Inspect current state before retrying.]"
+        if disposition == "unknown"
+        else "[Orphan recovery: this read-only tool did not complete and had no effect.]"
+    )
+    return make_tool_result_message(
+        name,
+        content,
+        call_id,
+        effect_disposition=disposition,
+    )
+
+
+def _complete_side_effecting_tool_batch(
+    assistant: Dict[str, Any],
+    tool_results: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return a provider-complete batch without re-executing missing calls."""
+    results_by_id: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for result in tool_results:
+        results_by_id[str(result.get("tool_call_id") or "")].append(result)
+
+    recovered_batch = [assistant]
+    for call in assistant.get("tool_calls") or []:
+        function = call.get("function") or {}
+        name = str(function.get("name") or "unknown")
+        call_id = str(call.get("id") or call.get("call_id") or "")
+        available = results_by_id[call_id]
+        if not available:
+            recovered_batch.append(_recovered_tool_result(name, call_id))
+            continue
+
+        result = available.pop(0)
+        if not is_interrupted_tool_result(result.get("content", "")):
+            recovered_batch.append(result)
+            continue
+
+        recovered = dict(result)
+        recovered["effect_disposition"] = (
+            "unknown" if tool_may_have_side_effect(name) else "none"
+        )
+        recovered["content"] = (
+            "[Orphan recovery: interrupted side-effecting tool may have "
+            "executed; its effect is UNKNOWN. Inspect state before retrying.]"
+            if recovered["effect_disposition"] == "unknown"
+            else "[Orphan recovery: interrupted read-only tool did not complete.]"
+        )
+        recovered_batch.append(recovered)
+    return recovered_batch
+
+
 def strip_interrupted_tool_tails(
     agent_history: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
@@ -47,8 +103,11 @@ def strip_interrupted_tool_tails(
     Older interrupted gateway turns can be followed by a queued real user
     message, so the interrupted assistant/tool block is not necessarily the
     final tail by the time we rebuild replay history.  Remove any contiguous
-    assistant(tool_calls) + tool-result block that contains an interrupted tool
-    result, while preserving successful tool-call sequences intact.
+    assistant(tool_calls) + tool-result block that is interrupted or incomplete,
+    while preserving successful completed tool-call sequences intact. Read-only
+    blocks are safe to erase and retry. A block containing any side-effecting
+    call is completed with non-executing recovery results so unknown effects are
+    preserved without violating provider tool-call/result pairing.
     """
     if not agent_history:
         return agent_history
@@ -64,50 +123,52 @@ def strip_interrupted_tool_tails(
             while j < n and agent_history[j].get("role") == "tool":
                 tool_results.append(agent_history[j])
                 j += 1
-            if tool_results and any(
-                is_interrupted_tool_result(m.get("content", ""))
-                for m in tool_results
-            ):
-                calls = msg.get("tool_calls") or []
+            calls = msg.get("tool_calls") or []
+            call_counts = Counter(
+                str(call.get("id") or call.get("call_id") or "") for call in calls
+            )
+            result_counts = Counter(
+                str(result.get("tool_call_id") or "") for result in tool_results
+            )
+            incomplete = any(
+                result_counts[call_id] < count for call_id, count in call_counts.items()
+            )
+            malformed = result_counts != call_counts
+            interrupted = any(
+                is_interrupted_tool_result(m.get("content", "")) for m in tool_results
+            )
+            if incomplete or interrupted:
                 if any(
                     tool_may_have_side_effect(
                         str((call.get("function") or {}).get("name") or "")
                     )
                     for call in calls
                 ):
-                    call_names = {
-                        str(call.get("id") or call.get("call_id") or ""): str(
-                            (call.get("function") or {}).get("name") or ""
-                        )
-                        for call in calls
-                    }
-                    cleaned.append(msg)
-                    for tool_result in tool_results:
-                        if not is_interrupted_tool_result(tool_result.get("content", "")):
-                            cleaned.append(tool_result)
-                            continue
-                        recovered = dict(tool_result)
-                        name = call_names.get(str(tool_result.get("tool_call_id") or ""), "")
-                        recovered["effect_disposition"] = (
-                            "unknown" if tool_may_have_side_effect(name) else "none"
-                        )
-                        recovered["content"] = (
-                            "[Orphan recovery: interrupted side-effecting tool may have "
-                            "executed; its effect is UNKNOWN. Inspect state before retrying.]"
-                            if recovered["effect_disposition"] == "unknown"
-                            else "[Orphan recovery: interrupted read-only tool did not complete.]"
-                        )
-                        cleaned.append(recovered)
+                    cleaned.extend(
+                        _complete_side_effecting_tool_batch(msg, tool_results)
+                    )
                     i = j
                     continue
                 logger.debug(
-                    "Stripping interrupted read-only assistant→tool replay block "
+                    "Stripping interrupted or incomplete read-only assistant→tool replay block "
                     "(indices %d–%d, tool_results=%d)",
-                    i, j - 1, len(tool_results),
+                    i,
+                    j - 1,
+                    len(tool_results),
                 )
                 i = j
                 continue
-        if msg.get("role") == "tool" and is_interrupted_tool_result(msg.get("content", "")):
+            if malformed:
+                # Every declared call is answered, but surplus, duplicate, or
+                # unknown-ID rows still make the provider payload invalid.
+                # Rebuild from the declaration to retain exactly the first
+                # persisted result for each call in declared-call order.
+                cleaned.extend(_complete_side_effecting_tool_batch(msg, tool_results))
+                i = j
+                continue
+        if msg.get("role") == "tool" and is_interrupted_tool_result(
+            msg.get("content", "")
+        ):
             logger.debug("Stripping orphan interrupted tool result from replay history")
             i += 1
             continue
@@ -154,26 +215,11 @@ def strip_dangling_tool_call_tail(
 
     tool_calls = last.get("tool_calls") or []
     if any(
-        tool_may_have_side_effect(
-            str((call.get("function") or {}).get("name") or "")
-        )
+        tool_may_have_side_effect(str((call.get("function") or {}).get("name") or ""))
         for call in tool_calls
     ):
-        recovered = list(agent_history)
-        for call in tool_calls:
-            function = call.get("function") or {}
-            name = str(function.get("name") or "unknown")
-            call_id = str(call.get("id") or call.get("call_id") or "")
-            disposition = "unknown" if tool_may_have_side_effect(name) else "none"
-            content = (
-                "[Orphan recovery: this tool may have executed before Hermes stopped; "
-                "its effect is UNKNOWN. Inspect current state before retrying.]"
-                if disposition == "unknown"
-                else "[Orphan recovery: this read-only tool did not complete and had no effect.]"
-            )
-            recovered.append(make_tool_result_message(
-                name, content, call_id, effect_disposition=disposition,
-            ))
+        recovered = list(agent_history[:-1])
+        recovered.extend(_complete_side_effecting_tool_batch(last, []))
         logger.warning(
             "Recovered dangling side-effecting tool call(s) as UNKNOWN instead of erasing them"
         )

@@ -432,6 +432,61 @@ class TestSchemaConversion:
         }
         assert schema["required"] == ["command"]
 
+    def test_array_nodes_missing_items_are_filled(self):
+        """Gemini rejects array parameters whose schema lacks an ``items`` key.
+
+        Regression: MCP servers can emit ``type: array`` parameters without an
+        ``items`` subschema (e.g. hound-mcp's ``mcp_smart_fetch`` ``actions``
+        param). Gemini via OpenRouter then fails every request with HTTP 400
+        ``INVALID_ARGUMENT: parameters.properties[actions].items: missing
+        field``. The normalizer must fill a generic placeholder so the schema
+        stays valid on OpenAI, Anthropic, Gemini, and Moonshot in one pass.
+        """
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "description": "Actions to perform",
+                },
+                "nested": {
+                    "type": "object",
+                    "properties": {
+                        "tags": {"type": "array"},
+                    },
+                },
+            },
+            "required": ["actions"],
+        })
+
+        assert schema["properties"]["actions"]["items"] == {"type": "string"}
+        assert schema["properties"]["nested"]["properties"]["tags"]["items"] == {
+            "type": "string"
+        }
+
+    def test_array_nodes_with_items_are_unchanged(self):
+        """Schemas that already declare ``items`` must not be rewritten."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "counts": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                },
+            },
+        })
+
+        assert schema["properties"]["tags"]["items"] == {"type": "string"}
+        assert schema["properties"]["counts"]["items"] == {"type": "integer"}
+
     def test_hyphens_sanitized_to_underscores(self):
         """Hyphens in tool/server names are replaced with underscores for LLM compat."""
         from tools.mcp_tool import _convert_mcp_schema

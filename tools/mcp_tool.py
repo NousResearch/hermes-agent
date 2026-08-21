@@ -6295,6 +6295,10 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
     * ``required`` arrays are pruned to only names that exist in
       ``properties``; otherwise Google AI Studio / Gemini 400s with
       ``property is not defined``.  See PR #4651.
+    * An ``array`` node without an ``items`` subschema gets a generic
+      placeholder (``{"type": "string"}``); Gemini rejects array parameters
+      lacking ``items`` with HTTP 400 ``INVALID_ARGUMENT ... items: missing
+      field``.  See PR #77617.
     * MCP/Pydantic optional fields commonly arrive as
       ``anyOf: [{...}, {"type": "null"}], default: null``.  Anthropic rejects
       nullable branches in tool input schemas, so nullable unions are collapsed
@@ -6380,7 +6384,12 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
         return collapse_const_unions(node)
 
     def _repair_object_shape(node):
-        """Recursively repair object-shaped nodes: fill type, prune required."""
+        """Recursively repair object/array-shaped nodes: fill type, prune required.
+
+        Also fills a generic ``items`` placeholder on ``array`` nodes that
+        lack one, since Gemini rejects array parameters without an ``items``
+        subschema (HTTP 400 ``INVALID_ARGUMENT ... items: missing field``).
+        """
         if isinstance(node, list):
             return [_repair_object_shape(item) for item in node]
         if not isinstance(node, dict):
@@ -6394,6 +6403,13 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
             "properties" in repaired or "required" in repaired
         ):
             repaired["type"] = "object"
+
+        if repaired.get("type") == "array" and (
+            "items" not in repaired or repaired.get("items") is None
+        ):
+            # Generic placeholder: keeps the schema valid on OpenAI, Anthropic,
+            # Gemini, and Moonshot in one pass. See PR #77617.
+            repaired["items"] = {"type": "string"}
 
         if repaired.get("type") == "object":
             # Ensure properties exists so required can reference it safely

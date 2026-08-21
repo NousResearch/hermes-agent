@@ -242,3 +242,12 @@ describe('comboFromEvent — IME composition keydowns never resolve to combos (#
     expect(comboFromEvent(keydown({ code: 'KeyN', isComposing: false, key: 'n', metaKey: true }))).toBe('mod+n')
   })
 })
+
+describe('comboFromEvent — malformed keyboard events', () => {
+  it('returns null when both key and code are absent', async () => {
+    const { comboFromEvent } = await loadCombo('Win32')
+    const event = { code: undefined, key: undefined } as unknown as KeyboardEvent
+
+    expect(comboFromEvent(event)).toBeNull()
+  })
+})

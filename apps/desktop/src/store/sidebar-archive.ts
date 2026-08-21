@@ -1,12 +1,33 @@
 import { atom, computed } from 'nanostores'
 
-import { listAllProfileSessions, type SessionInfo } from '@/hermes'
+import { listAllProfileSessions } from '@/api/sessions'
+import type { SessionInfo } from '@/types/hermes'
 
 import { $sessions } from './session'
 
-// Archived rows are excluded from the sessions query, so the Archived view has
-// to fetch its own set. Capped: it's a lookup surface, not a feed.
-const ARCHIVED_FETCH_LIMIT = 200
+const ARCHIVED_FETCH_PAGE_SIZE = 200
+
+export async function listEveryArchivedSession(): Promise<SessionInfo[]> {
+  const sessions: SessionInfo[] = []
+
+  while (true) {
+    const page = await listAllProfileSessions(
+      ARCHIVED_FETCH_PAGE_SIZE,
+      0,
+      'only',
+      'recent',
+      'all',
+      {},
+      sessions.length
+    )
+
+    sessions.push(...page.sessions)
+
+    if (page.sessions.length === 0 || sessions.length >= page.total) {
+      return sessions
+    }
+  }
+}
 
 export const $archivedSessions = atom<SessionInfo[]>([])
 export const $archivedSessionsLoading = atom(false)
@@ -19,9 +40,7 @@ export async function loadArchivedSessions(): Promise<void> {
   $archivedSessionsLoading.set(true)
 
   try {
-    const result = await listAllProfileSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
-
-    $archivedSessions.set(result.sessions)
+    $archivedSessions.set(await listEveryArchivedSession())
   } catch {
     $archivedSessions.set([])
   } finally {

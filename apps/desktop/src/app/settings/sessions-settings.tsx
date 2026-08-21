@@ -6,7 +6,6 @@ import { Tip } from '@/components/ui/tooltip'
 import {
   deleteSession,
   getHermesConfigRecord,
-  listAllProfileSessions,
   saveHermesConfig,
   setSessionArchived
 } from '@/hermes'
@@ -20,14 +19,13 @@ import { notify, notifyError } from '@/store/notifications'
 import { untombstoneSessions } from '@/store/projects'
 import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd, setSessions } from '@/store/session'
 import { forgetSessionUnread } from '@/store/session-unread'
+import { listEveryArchivedSession } from '@/store/sidebar-archive'
 import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
 import { EmptyState, ListRow, SectionHeading, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 const DEFAULT_AUTO_ARCHIVE_DAYS = 3
-
-const ARCHIVED_FETCH_LIMIT = 200
 
 export function SessionsSettings() {
   const { t } = useI18n()
@@ -40,8 +38,7 @@ export function SessionsSettings() {
     setLoading(true)
 
     try {
-      const result = await listAllProfileSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
-      setLocalSessions(result.sessions)
+      setLocalSessions(await listEveryArchivedSession())
     } catch (err) {
       notifyError(err, s.failedLoad)
     } finally {

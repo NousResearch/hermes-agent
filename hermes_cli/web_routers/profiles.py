@@ -279,8 +279,11 @@ def get_profiles_sessions(
     source_list = [s.strip() for s in (sources or "").split(",") if s.strip()]
     exclude_list = [s.strip() for s in (exclude_sources or "").split(",") if s.strip()]
     # Over-fetch per profile so the merged+sorted window is correct for the
-    # requested page. Capped so a huge profile can't blow up the response.
-    per_profile = min(max(limit + offset, limit), 500)
+    # requested page. ``limit`` is already bounded to 500 by FastAPI; the
+    # offset is caller-controlled pagination state, so include it instead of
+    # capping the source window at 500. Otherwise page 3 of a 577-row profile
+    # is permanently empty even though ``total`` reports the remaining rows.
+    per_profile = limit + offset
 
     merged: List[Dict[str, Any]] = []
     total = 0

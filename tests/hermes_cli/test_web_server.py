@@ -1927,6 +1927,30 @@ class TestWebServerEndpoints:
         assert payload["limit"] == 3
         assert len(payload["sessions"]) == 3
 
+    def test_profiles_sessions_pages_past_500_rows(self):
+        """The aggregate route must not strand rows after its old 500-row
+        per-profile source cap (issue #88438)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for i in range(501):
+                sid = f"archived-page-{i:03d}"
+                db.create_session(session_id=sid, source="cli")
+                db.append_message(session_id=sid, role="user", content="hi")
+                db.set_session_archived(sid, True)
+        finally:
+            db.close()
+
+        resp = self.client.get(
+            "/api/profiles/sessions?limit=1&offset=500&archived=only&profile=default"
+        )
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["total"] == 501
+        assert len(payload["sessions"]) == 1
+        assert payload["offset"] == 500
+
     def test_get_session_messages_rejects_negative_limit(self):
         """limit=-1 previously bypassed the documented 500-row clamp because
         min(-1, 500) == -1, which SQLite treats as 'no limit'."""

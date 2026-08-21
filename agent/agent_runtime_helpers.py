@@ -2218,6 +2218,25 @@ def anthropic_prompt_cache_policy(
     if getattr(agent, "_cache_disabled", False):
         return (False, False)
 
+    # Explicit per-model opt-in: ``model.cache_control_mode`` in config.yaml.
+    # Lets users force cache_control breakpoints on aliased/gateway endpoints
+    # (LiteLLM proxies, custom routes, corporate gateways) whose model names
+    # don't match any known family substring, while the gateway passes the
+    # markers through unchanged. Values map 1:1 to the layout modes the
+    # name-based branches below already produce:
+    #   openrouter_envelope    -> envelope layout (OpenRouter / OpenAI-wire)
+    #   anthropic_inner_block  -> inner-block layout (native Anthropic wire)
+    #   disabled               -> never cache for this model
+    # Unset (None) keeps the existing name-based sniffing. The global
+    # ``prompt_caching.cache_ttl`` disable above still wins (#76297).
+    _cc_mode = getattr(agent, "_cache_control_mode", None)
+    if _cc_mode == "openrouter_envelope":
+        return True, False
+    if _cc_mode == "anthropic_inner_block":
+        return True, True
+    if _cc_mode == "disabled":
+        return False, False
+
     eff_provider = (provider if provider is not None else agent.provider) or ""
     eff_base_url = base_url if base_url is not None else (agent.base_url or "")
     eff_api_mode = api_mode if api_mode is not None else (agent.api_mode or "")

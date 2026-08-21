@@ -1157,6 +1157,29 @@ prompt_caching:
 
 `cache_ttl` selects the breakpoint TTL Hermes attaches for Claude via the native Anthropic API, OpenRouter, and Nous Portal. Only the two Anthropic-supported tiers (`"5m"`, `"1h"`) are honored — any other value is ignored. Providers with their own caps (e.g. Qwen Cloud, which maxes at 5 minutes) still clamp to what the upstream allows.
 
+### Opt-in for aliased / gateway endpoints
+
+Hermes decides whether to attach `cache_control` breakpoints by matching the model name against known families (`claude`, `kimi`, `qwen`, `deepseek`, …). That heuristic fails when the model name is an alias — e.g. a LiteLLM proxy route like `hermes-default` or an internal gateway model ID — even when the upstream model honours the markers and the gateway passes them through unchanged. Such requests silently serve 0% cache hits and re-bill the full prompt every turn.
+
+Set `model.cache_control_mode` to opt in explicitly:
+
+```yaml
+model:
+  provider: custom
+  base_url: http://litellm.internal:4000/v1
+  default: hermes-default
+  cache_control_mode: openrouter_envelope   # or: anthropic_inner_block, disabled
+```
+
+Values map 1:1 to the layout modes Hermes already emits:
+
+- `openrouter_envelope` — envelope-layout markers (OpenRouter / OpenAI-wire proxies).
+- `anthropic_inner_block` — inner-block markers (native Anthropic wire, `api_mode: anthropic_messages` gateways).
+- `disabled` — never emit markers for this model, regardless of its name.
+- unset (default) — keep the existing name-based detection.
+
+The explicit setting overrides name-based sniffing. The global `prompt_caching.cache_ttl` disable (see above) still takes precedence over any opt-in.
+
 ## Auxiliary Models
 
 Hermes uses "auxiliary" models for side tasks like image analysis, web page summarization, browser screenshot analysis, session-title generation, and context compression. By default (`auxiliary.*.provider: "auto"`), Hermes routes every auxiliary task to your **main chat model** — the same provider/model you picked in `hermes model`. You don't need to configure anything to get started, but be aware that on expensive reasoning models (Opus, MiniMax M2.7, etc.) auxiliary tasks add meaningful cost. If you want cheap-and-fast side tasks regardless of your main model, set `auxiliary.<task>.provider` and `auxiliary.<task>.model` explicitly (for example, Gemini Flash on OpenRouter for vision and web extraction).

@@ -878,6 +878,65 @@ class TestExplicitOverrides:
         assert (should, native) == (True, False)
 
 
+class TestCacheControlModeOptIn:
+    """``model.cache_control_mode`` forces cache_control on aliased endpoints
+    whose model names match no known family (LiteLLM proxies, custom routes,
+    corporate gateways) (#76297)."""
+
+    def _make_aliased_agent(self, mode):
+        agent = _make_agent(
+            provider="custom",
+            base_url="http://litellm.internal:4000/v1",
+            api_mode="chat_completions",
+            model="hermes-default",
+        )
+        agent._cache_control_mode = mode
+        return agent
+
+    def test_aliased_endpoint_without_opt_in_does_not_cache(self):
+        # Baseline: the alias matches no family substring -> (False, False).
+        agent = _make_agent(
+            provider="custom",
+            base_url="http://litellm.internal:4000/v1",
+            api_mode="chat_completions",
+            model="hermes-default",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_openrouter_envelope_forces_envelope_layout(self):
+        agent = self._make_aliased_agent("openrouter_envelope")
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_anthropic_inner_block_forces_native_layout(self):
+        agent = self._make_aliased_agent("anthropic_inner_block")
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_disabled_forces_no_caching_even_for_known_family(self):
+        # Explicit opt-out wins over the name-based Claude detection too.
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-sonnet-4.6",
+        )
+        agent._cache_control_mode = "disabled"
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_inner_block_opt_in_via_anthropic_wire_gateway(self):
+        agent = self._make_aliased_agent("anthropic_inner_block")
+        agent.api_mode = "anthropic_messages"
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_unknown_mode_falls_back_to_name_based_sniffing(self):
+        agent = self._make_aliased_agent("bogus_mode")
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_global_cache_disable_wins_over_opt_in(self):
+        agent = self._make_aliased_agent("openrouter_envelope")
+        agent._cache_disabled = True
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Long-lived prefix cache policy (cross-session 1h tier)
 # ─────────────────────────────────────────────────────────────────────

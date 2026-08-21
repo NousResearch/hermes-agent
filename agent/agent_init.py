@@ -985,6 +985,26 @@ def init_agent(
     except Exception:
         pass
 
+    # Explicit prompt-cache opt-in for aliased/gateway endpoints
+    # (``model.cache_control_mode`` in config.yaml). Unset by default — the
+    # name-based policy in anthropic_prompt_cache_policy() decides. When set,
+    # it overrides name-based sniffing so custom model aliases (LiteLLM
+    # proxies, internal routes, corporate gateways) still get cache_control
+    # breakpoints emitted even though the alias matches no known model family.
+    # The global ``prompt_caching.cache_ttl`` disable above takes precedence
+    # over any value here (#76297).
+    agent._cache_control_mode = None
+    try:
+        from hermes_cli.config import load_config_readonly as _load_cc_cfg
+
+        _cc_val = str(
+            (_load_cc_cfg().get("model") or {}).get("cache_control_mode") or ""
+        ).strip().lower()
+        if _cc_val in {"openrouter_envelope", "anthropic_inner_block", "disabled"}:
+            agent._cache_control_mode = _cc_val
+    except Exception:
+        pass
+
     # Iteration budget: the LLM is only notified when it actually exhausts
     # the iteration budget (api_call_count >= max_iterations).  At that
     # point we inject ONE message, allow one final API call, and if the

@@ -544,7 +544,11 @@ class TestProfileScopedGateway:
         data = resp.json()
         assert data["gateway_running"] is False
         assert data["gateway_state"] == "startup_failed"
-        assert data["gateway_exit_reason"] == "telegram: token rejected"
+        # gateway_exit_reason is classified to a bounded category on the
+        # public path (issue #90700, review follow-up) -- the raw
+        # diagnostic text must not survive.
+        assert data["gateway_exit_reason"] == "auth_failed"
+        assert "telegram: token rejected" not in resp.text
         # Fatal entries (root and namespaced) survive; the stale non-fatal is dropped.
         assert set(data["gateway_platforms"]) == {"telegram", "alpha:telegram"}
         assert data["gateway_platforms"]["alpha:telegram"]["error_code"] == "credential_collision"

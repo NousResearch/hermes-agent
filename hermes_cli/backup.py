@@ -1776,6 +1776,104 @@ def restore_cron_jobs_if_emptied(
     return {"restored": True, "job_count": snap_count, "snapshot_id": snapshot_id}
 
 
+def _sibling_profile_homes(invoking_home: Path) -> list[tuple[str, Path]]:
+    """(name, home) for every OTHER profile on this install. Never raises.
+
+    The update's code swap and gateway fleet restart touch every profile,
+    so the pre-update snapshot must too (#66140). The invoking profile is
+    excluded — its snapshot is taken by the existing call.
+    """
+    homes: list[tuple[str, Path]] = []
+    try:
+        from hermes_cli.profiles import (
+            _get_default_hermes_home,
+            _get_profiles_root,
+            _PROFILE_ID_RE,
+        )
+
+        invoking = invoking_home.resolve()
+        default_home = _get_default_hermes_home()
+        if default_home.is_dir() and default_home.resolve() != invoking:
+            homes.append(("default", default_home))
+        root = _get_profiles_root()
+        if root.is_dir():
+            for entry in sorted(root.iterdir()):
+                if (
+                    entry.is_dir()
+                    and entry.name != "default"
+                    and _PROFILE_ID_RE.match(entry.name)
+                    and entry.resolve() != invoking
+                ):
+                    homes.append((entry.name, entry))
+    except Exception as exc:
+        logger.debug("Sibling profile enumeration failed: %s", exc)
+    return homes
+
+
+def create_pre_update_snapshots_all_profiles(
+    invoking_home: Optional[Path] = None,
+    keep: Optional[int] = None,
+    max_file_size: Optional[int] = None,
+) -> Dict[str, str]:
+    """Pre-update quick snapshots for every SIBLING profile (#66140).
+
+    Same snapshot set, same per-file size cap, same keep policy as the
+    invoking profile's snapshot — identical semantics per profile, no
+    partial-tier coherence class. Each sibling's snapshot lands under its
+    OWN ``<home>/state-snapshots/`` so per-profile restore tooling finds
+    it where it expects. Returns ``{profile_name: snapshot_id}`` for the
+    siblings that snapshotted successfully. Never raises.
+    """
+    results: Dict[str, str] = {}
+    home = invoking_home or get_hermes_home()
+    for name, profile_home in _sibling_profile_homes(home):
+        try:
+            snap_id = create_quick_snapshot(
+                label="pre-update",
+                hermes_home=profile_home,
+                keep=keep,
+                max_file_size=max_file_size,
+            )
+            if snap_id:
+                results[name] = snap_id
+        except Exception as exc:
+            logger.debug("Pre-update snapshot for profile %s failed: %s", name, exc)
+    return results
+
+
+def restore_cron_jobs_all_profiles(
+    profile_snapshots: Dict[str, str],
+    invoking_home: Optional[Path] = None,
+) -> list[Dict[str, Any]]:
+    """Run the cron-jobs safety net for every sibling profile (#66140).
+
+    ``profile_snapshots`` is the map returned by
+    :func:`create_pre_update_snapshots_all_profiles`. Each profile's live
+    ``cron/jobs.json`` is compared against ITS OWN snapshot — restores are
+    same-generation by construction (the snapshot was taken minutes ago by
+    this update run). Returns one result dict per restored profile, each
+    with a ``profile`` key added. Never raises.
+    """
+    restored: list[Dict[str, Any]] = []
+    if not profile_snapshots:
+        return restored
+    home = invoking_home or get_hermes_home()
+    by_name = dict(_sibling_profile_homes(home))
+    for name, snap_id in profile_snapshots.items():
+        profile_home = by_name.get(name)
+        if profile_home is None:
+            continue
+        try:
+            result = restore_cron_jobs_if_emptied(snap_id, hermes_home=profile_home)
+        except Exception as exc:
+            logger.debug("Cron restore check for profile %s failed: %s", name, exc)
+            continue
+        if result:
+            result["profile"] = name
+            restored.append(result)
+    return restored
+
+
 def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
     """Remove oldest quick snapshots beyond the keep limit. Returns count deleted."""
     if not root.exists():

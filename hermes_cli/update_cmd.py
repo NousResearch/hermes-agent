@@ -3230,6 +3230,11 @@ def _ensure_acp_launcher() -> None:
         print(f"  ✓ Installed hermes-acp launcher → {acp_cmd}")
 
 _PRE_UPDATE_SNAPSHOT_KEEP = 1
+# Sibling-profile snapshot ids from the current run's pre-update backup
+# ({profile: snapshot_id}) — consumed by the post-update per-profile
+# cron-jobs safety net (#66140). Module-level because the snapshot and the
+# restore run in the same process but far apart in _cmd_update_impl.
+_LAST_SIBLING_SNAPSHOTS: dict = {}
 
 # Per-file size cap for the pre-update quick snapshot. Anything larger is
 # skipped with a warning: the snapshot exists to protect small, hard-to-
@@ -3379,6 +3384,40 @@ def _run_pre_update_backup(args) -> Optional[str]:
                     print()
         if snapshot_id:
             print(f"◆ Pre-update snapshot: {snapshot_id}")
+
+        # #66140: the code swap + fleet restart touch EVERY profile, so
+        # every profile gets the same snapshot (same set, same 1GiB cap,
+        # keep=1) under its own state-snapshots/. Best-effort per profile.
+        try:
+            from hermes_cli.backup import create_pre_update_snapshots_all_profiles
+
+            _sibling_snaps = create_pre_update_snapshots_all_profiles(
+                keep=_PRE_UPDATE_SNAPSHOT_KEEP,
+                max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+            )
+            if _sibling_snaps:
+                print(
+                    f"◆ Sibling profile snapshot(s): "
+                    + ", ".join(sorted(_sibling_snaps))
+                )
+                try:
+                    from hermes_cli.update_receipt import record_step
+
+                    record_step(
+                        "sibling_profile_snapshots",
+                        True,
+                        ", ".join(
+                            f"{k}={v}" for k, v in sorted(_sibling_snaps.items())
+                        ),
+                    )
+                except Exception:
+                    pass
+                global _LAST_SIBLING_SNAPSHOTS
+                _LAST_SIBLING_SNAPSHOTS = _sibling_snaps
+        except Exception as _sib_exc:
+            logging.getLogger(__name__).debug(
+                "Sibling profile snapshots failed: %s", _sib_exc
+            )
     except Exception as exc:
         # Never let a snapshot failure block an update.
         logging.getLogger(__name__).debug("Pre-update snapshot failed: %s", exc)
@@ -6434,6 +6473,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as exc:
             # Never let the cron safety net break an otherwise-good update.
             logger.debug("Cron jobs auto-restore check failed: %s", exc)
+
+        # #66140: run the same cron-jobs safety net for every sibling
+        # profile against ITS OWN pre-update snapshot (same-generation by
+        # construction — both taken by this run).
+        try:
+            from hermes_cli.backup import restore_cron_jobs_all_profiles
+
+            for _restored in restore_cron_jobs_all_profiles(
+                _LAST_SIBLING_SNAPSHOTS
+            ):
+                print()
+                print(
+                    f"  ⚠️  Profile '{_restored['profile']}': cron/jobs.json "
+                    f"lost jobs during this update — restored "
+                    f"{_restored['job_count']} job(s) from pre-update "
+                    f"snapshot {_restored['snapshot_id']}."
+                )
+        except Exception as exc:
+            logger.debug("Sibling cron auto-restore check failed: %s", exc)
 
         _print_update_summary(
             node_failures=node_failures,

@@ -230,3 +230,43 @@ def resolve_public_url() -> str:
     if not cfg_clean:
         _warn_if_malformed("dashboard.public_url in config.yaml", cfg_raw)
     return cfg_clean
+
+
+# ---------------------------------------------------------------------------
+# Client IP resolution
+# ---------------------------------------------------------------------------
+
+
+def client_ip(request) -> str:
+    """Resolve the request's client IP for security-relevant purposes
+    (rate-limiting keys, pending-authorization attribution, audit log
+    entries).
+
+    ``request.client.host`` -- the true peer TCP connection address --
+    is the default: it is never attacker-controlled. X-Forwarded-For is
+    trusted ONLY when the operator has explicitly configured a reverse
+    proxy in front of the dashboard (:func:`resolve_public_url`
+    returning non-empty, via ``HERMES_DASHBOARD_PUBLIC_URL`` /
+    ``dashboard.public_url`` -- the same signal this module already
+    treats as "a trusted proxy sits in front of us" for redirect_uri
+    reconstruction). When trusted, uses the LAST XFF element (the
+    proxy-appended one; the first element(s) are whatever the client
+    itself sent and are not trustworthy even behind a real proxy that
+    APPENDS rather than overwrites).
+
+    Without this gate, any unauthenticated client can spoof XFF to
+    sidestep per-IP rate limits and pending-authorization caps (issue
+    #90702; same weakness family as #55101). Three call sites
+    (routes.py, middleware.py, token_auth.py) previously each defined
+    an identical, vulnerable copy of this function trusting the FIRST
+    XFF element unconditionally -- deduplicated here into one, correct
+    implementation all three now import.
+    """
+    trusted_proxy = bool(resolve_public_url())
+    if trusted_proxy:
+        fwd = request.headers.get("x-forwarded-for", "")
+        if fwd:
+            parts = [p.strip() for p in fwd.split(",") if p.strip()]
+            if parts:
+                return parts[-1]
+    return request.client.host if request.client else ""

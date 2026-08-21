@@ -525,3 +525,108 @@ class TestCookiePathRespectsPrefix:
         assert "Path=/hermes" in at_cookies[0]
         assert "Secure" in at_cookies[0]
         assert "HttpOnly" in at_cookies[0]
+
+
+# ---------------------------------------------------------------------------
+# client_ip() -- XFF spoofing resistance (issue #90702)
+# ---------------------------------------------------------------------------
+
+
+class _FakeRequestForIp:
+    def __init__(self, xff=None, peer_ip="203.0.113.9"):
+        self.headers = {"x-forwarded-for": xff} if xff else {}
+        self.client = type("Client", (), {"host": peer_ip})() if peer_ip else None
+
+
+class TestClientIpXffSpoofingResistance:
+    """Regression for issue #90702: an unauthenticated client could
+    spoof X-Forwarded-For to sidestep per-IP rate limits and pending-
+    authorization caps in the native-login flow (and, since _client_ip
+    was duplicated three times identically, in password-login rate
+    limiting and audit-log attribution too)."""
+
+    def test_no_proxy_configured_ignores_client_supplied_xff(self, monkeypatch):
+        """The default, no-reverse-proxy case: XFF must be completely
+        ignored -- request.client.host (the true peer address, never
+        attacker-controlled) is used unconditionally."""
+        monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+        monkeypatch.setattr(prefix_mod, "_load_dashboard_section", lambda: {})
+
+        req = _FakeRequestForIp(
+            xff="10.0.0.1", peer_ip="203.0.113.9"
+        )
+        assert prefix_mod.client_ip(req) == "203.0.113.9"
+
+    def test_proxy_configured_trusts_the_last_xff_element(self, monkeypatch):
+        """When the operator has explicitly configured a reverse proxy
+        (dashboard.public_url / HERMES_DASHBOARD_PUBLIC_URL set), XFF is
+        trusted -- but using the LAST element (the proxy-appended one),
+        never the first (client-controlled, even behind a real
+        append-only proxy)."""
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_PUBLIC_URL", "https://mission-control.example"
+        )
+
+        req = _FakeRequestForIp(
+            xff="203.0.113.9, 10.0.0.1", peer_ip="10.0.0.1"
+        )
+        assert prefix_mod.client_ip(req) == "10.0.0.1"
+
+    def test_spoofed_xff_cannot_bypass_per_ip_caps_without_a_configured_proxy(
+        self, monkeypatch
+    ):
+        """The exact reported attack: an attacker sending a fresh,
+        fabricated X-Forwarded-For on every request must not be able to
+        mint distinct per-IP-bucket identities -- every request from the
+        same real peer connection resolves to the SAME client_ip when no
+        proxy is configured, regardless of what XFF claims."""
+        monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+        monkeypatch.setattr(prefix_mod, "_load_dashboard_section", lambda: {})
+
+        seen_ips = {
+            prefix_mod.client_ip(_FakeRequestForIp(xff=f"10.0.0.{i}", peer_ip="203.0.113.9"))
+            for i in range(50)
+        }
+        assert seen_ips == {"203.0.113.9"}, (
+            "50 requests spoofing 50 different XFF values from the same "
+            "real connection must all resolve to the same client_ip"
+        )
+
+    def test_no_client_and_no_trusted_proxy_returns_empty_string(self, monkeypatch):
+        monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+        monkeypatch.setattr(prefix_mod, "_load_dashboard_section", lambda: {})
+
+        req = _FakeRequestForIp(xff="10.0.0.1", peer_ip=None)
+        assert prefix_mod.client_ip(req) == ""
+
+    def test_proxy_configured_but_no_xff_header_falls_back_to_peer(
+        self, monkeypatch
+    ):
+        """A configured proxy doesn't guarantee every request carries
+        XFF (e.g. a health check hitting the backend directly) -- must
+        fall back to the peer address, not error or return empty."""
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_PUBLIC_URL", "https://mission-control.example"
+        )
+        req = _FakeRequestForIp(xff=None, peer_ip="203.0.113.9")
+        assert prefix_mod.client_ip(req) == "203.0.113.9"
+
+    def test_routes_middleware_and_token_auth_all_delegate_to_the_shared_implementation(
+        self, monkeypatch
+    ):
+        """Regression against re-introducing the triplicated, vulnerable
+        copy: all three package modules' _client_ip() must call through
+        to prefix.client_ip(), not re-implement XFF parsing locally."""
+        monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+        monkeypatch.setattr(prefix_mod, "_load_dashboard_section", lambda: {})
+
+        from hermes_cli.dashboard_auth import middleware as middleware_mod
+        from hermes_cli.dashboard_auth import routes as routes_mod
+        from hermes_cli.dashboard_auth import token_auth as token_auth_mod
+
+        req = _FakeRequestForIp(xff="10.0.0.1", peer_ip="203.0.113.9")
+        for mod in (routes_mod, middleware_mod, token_auth_mod):
+            assert mod._client_ip(req) == "203.0.113.9", (
+                f"{mod.__name__}._client_ip must delegate to the shared, "
+                f"XFF-spoofing-resistant implementation"
+            )

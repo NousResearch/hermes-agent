@@ -519,6 +519,40 @@ def _extract_text_from_slack_blocks(blocks: list) -> str:
     return "\n".join(parts)
 
 
+def _extract_text_from_block_kit_sections(blocks: list) -> list[str]:
+    """Extract readable lines from *structured* Block Kit blocks.
+
+    :func:`_extract_text_from_slack_blocks` only understands the ``rich_text``
+    blocks a human composer produces. Alert apps (Alertmanager, Grafana, CI,
+    in-house webhooks) instead post ``header``/``section``/``context``/
+    ``actions`` blocks nested inside a legacy attachment — with the message's
+    own ``text`` empty and ``fallback`` set to "[no preview available]", so
+    without this the alert body is invisible to the agent.
+    """
+    lines: list[str] = []
+
+    def _add(value: Any) -> None:
+        """Add a text value, unwrapping ``{"type": "mrkdwn", "text": ...}``."""
+        if isinstance(value, dict):
+            _add(value.get("text"))
+            return
+        text = str(value or "").strip()
+        if text and text not in lines:
+            lines.append(text)
+
+    for block in blocks or []:
+        if not isinstance(block, dict) or block.get("type") == "rich_text":
+            continue
+        _add(block.get("text"))
+        for item in (block.get("fields") or []) + (block.get("elements") or []):
+            _add(item)
+            # Keep a button's target, not just its label.
+            if isinstance(item, dict) and str(item.get("url", "")).startswith("http"):
+                _add(item["url"])
+
+    return lines
+
+
 def _extract_text_from_slack_attachments(attachments: list) -> str:
     """Extract readable text from legacy Slack message ``attachments``.
 
@@ -552,6 +586,7 @@ def _extract_text_from_slack_attachments(attachments: list) -> str:
             block_text = _extract_text_from_slack_blocks(nested)
             if block_text:
                 got.append(block_text)
+            got += _extract_text_from_block_kit_sections(nested)
         # Only use the (often duplicative) fallback when nothing structured exists.
         if not got and att.get("fallback"):
             got.append(str(att["fallback"]))

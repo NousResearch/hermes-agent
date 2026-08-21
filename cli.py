@@ -4924,19 +4924,29 @@ def save_config_value(key_path: str, value: any) -> bool:
 
 
 def _normalize_moa_model(model: Optional[str]) -> tuple[Optional[str], Optional[str]]:
-    """Map a ``moa:<preset>`` model string to ``(provider, preset)``.
+    """Map ``moa`` or ``moa:<preset>`` to ``(provider, preset)``.
 
-    Returns ``("moa", "<preset>")`` when *model* selects the MoA virtual
-    provider, otherwise ``(None, model)`` unchanged. This gives non-interactive
-    ``hermes chat -Q -m moa:<preset>`` the same routing the interactive
-    ``/moa`` command and the model picker already use: ``resolve_runtime_provider``
-    handles ``requested_provider == "moa"`` and ``agent_init`` builds the
-    MoAClient off ``provider == "moa"``. Without this the raw ``moa:<preset>``
-    string is sent to the real provider and rejected with a 401/400 "model not
-    supported" (#56828).
+    A bare ``moa`` selects the configured default preset. Otherwise returns
+    ``(None, model)`` unchanged. This gives non-interactive
+    ``hermes chat -Q -m moa[:<preset>]`` the same routing the model picker uses:
+    ``resolve_runtime_provider`` handles ``requested_provider == "moa"`` and
+    ``agent_init`` builds the MoAClient off ``provider == "moa"``. Without this
+    the raw value is sent to the real provider and rejected as an unknown model.
     """
     if isinstance(model, str):
         stripped = model.strip()
+        if stripped.lower() == "moa":
+            try:
+                from hermes_cli.config import load_config
+                from hermes_cli.moa_config import normalize_moa_config
+
+                preset = normalize_moa_config(
+                    load_config().get("moa") or {}
+                )["default_preset"]
+            except Exception:
+                preset = "default"
+
+            return "moa", preset
         if stripped.lower().startswith("moa:"):
             preset = stripped.split(":", 1)[1].strip()
             if preset:
@@ -5146,11 +5156,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # clobber an explicit override with the session's stored model.
         self._explicit_model_override = bool(model)
         self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
-        # A ``moa:<preset>`` model string selects the MoA virtual provider in
+        # A ``moa`` or ``moa:<preset>`` model string selects the MoA virtual provider in
         # one shot (parity with interactive ``/moa`` and the model picker). Do
         # this before provider resolution so ``-Q -m moa:<preset>`` routes
         # through MoA instead of hitting the real provider with an unknown
-        # model (#56828). A ``moa:`` prefix wins over an explicit ``--provider``.
+        # model (#56828). An MoA selection wins over an explicit ``--provider``.
         _moa_provider_override, self.model = _normalize_moa_model(self.model)
         # Read max_tokens from config (env var override: HERMES_MAX_TOKENS)
         _env_mt = os.environ.get("HERMES_MAX_TOKENS")

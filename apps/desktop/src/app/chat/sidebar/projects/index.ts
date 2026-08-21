@@ -2,6 +2,7 @@
 export { EnteredProjectContent } from './entered-content'
 export {
   orderProjectsByIds,
+  PROJECT_EXPANDED_SESSION_LIMIT,
   PROJECT_PREVIEW_COUNT,
   projectTreeCwd,
   sortProjectsForOverview,

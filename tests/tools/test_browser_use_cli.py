@@ -651,6 +651,63 @@ class TestOwnTabPreamble:
         # and composes with model code
         ast.parse(bu_cli._OWN_TAB_PREAMBLE + "print('x')")
 
+    def test_preamble_stands_down_on_native_tab_isolation(self):
+        """browser-harness 0.1.9+ isolates named daemons on their own tab
+        natively (browser-harness#618); the preamble must detect it and
+        return BEFORE creating any target, or every named session leaks a
+        redundant second tab (#91522). Verified structurally: the version
+        gate's `return` must precede the Target.createTarget call."""
+        import ast
+
+        tree = ast.parse(bu_cli._OWN_TAB_PREAMBLE)
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                  and n.name == "_hermes_ensure_own_tab")
+
+        # Walk statements in source order; find the gate return (inside the
+        # version-check if) and the createTarget call, assert ordering.
+        gate_return_line = None
+        create_target_line = None
+
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Return) and gate_return_line is None:
+                # The first return in the function is the version gate's
+                # stand-down (the marker-file return comes later, guarded by
+                # an os.path.exists check).
+                gate_return_line = node.lineno
+            if isinstance(node, ast.Call):
+                func = node.func
+                # cdp("Target.createTarget", ...).get("targetId") — match the
+                # inner cdp() call by its first positional arg.
+                if isinstance(func, ast.Name) and func.id == "cdp":
+                    for arg in node.args:
+                        if (isinstance(arg, ast.Constant)
+                                and arg.value == "Target.createTarget"):
+                            create_target_line = node.lineno
+        assert gate_return_line is not None, "version-gate return missing"
+        assert create_target_line is not None, "createTarget call missing"
+        assert gate_return_line < create_target_line, (
+            "the native-isolation stand-down must run before any target is "
+            "created, else harness 0.1.9+ gets a redundant tab (#91522)"
+        )
+        # The embedded threshold matches the module-level constant so the
+        # two can't drift apart silently.
+        assert bu_cli._NATIVE_TAB_ISOLATION_SINCE == (0, 1, 9)
+
+    def test_version_prefix_parser(self):
+        """The leading-numeric parser mirrors the preamble's inline parse
+        (same digits-until-nondigit algorithm on the first 3 components)."""
+        parse = bu_cli._parse_version_prefix
+        assert parse("0.1.9") == (0, 1, 9)
+        assert parse("0.1.9rc1") == (0, 1, 9)
+        assert parse("0.2.0") == (0, 2, 0)
+        assert parse("0.1.8") == (0, 1, 8)
+        assert parse("1.0") == (1, 0, 0)
+        assert parse("0.1.8.post1") == (0, 1, 8)
+        # 0.1.9 and above cross the isolation threshold; below does not
+        threshold = bu_cli._NATIVE_TAB_ISOLATION_SINCE
+        assert parse("0.1.9") >= threshold
+        assert parse("0.1.8") < threshold
+
 
 class TestProviderPickerIntegration:
     """The `hermes tools` Browser Automation picker row (browser_backend

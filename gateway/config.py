@@ -1618,6 +1618,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]
                 if "reply_in_thread" in platform_cfg:
                     bridged["reply_in_thread"] = platform_cfg["reply_in_thread"]
+                if plat == Platform.SLACK and "reaction_ack_scope" in platform_cfg:
+                    bridged["reaction_ack_scope"] = platform_cfg["reaction_ack_scope"]
                 if "cron_continuable_surface" in platform_cfg:
                     bridged["cron_continuable_surface"] = platform_cfg["cron_continuable_surface"]
                 if "require_mention" in platform_cfg:

@@ -13,11 +13,17 @@ the safety net in _run_agent discards leaked command text.
 """
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    ProcessingOutcome,
+)
 from gateway.session import SessionSource, build_session_key
 
 
@@ -135,6 +141,20 @@ class TestCommandBypassActiveSession:
 
         assert sk not in adapter._pending_messages
         assert any("handled:approve" in r for r in adapter.sent_responses)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", ["/stop", "/status"])
+    async def test_bypass_commands_finalize_processing_lifecycle(self, command):
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+        complete_hook = AsyncMock()
+        adapter.on_processing_complete = complete_hook
+        event = _make_event(command)
+
+        await adapter.handle_message(event)
+
+        complete_hook.assert_awaited_once_with(event, ProcessingOutcome.SUCCESS)
 
     @pytest.mark.asyncio
     async def test_deny_bypasses_guard(self):

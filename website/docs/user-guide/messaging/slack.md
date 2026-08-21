@@ -601,6 +601,14 @@ slack:
   # must @mention the bot before Hermes will respond.
   strict_mention: false
 
+  # Processing reaction scope. "addressed" (default) preserves the existing
+  # behavior: 👀 → ✅/❌ only for 1:1 DMs and explicit @mentions. "processed"
+  # also reacts to unmentioned messages that pass the normal authorization and
+  # mention gates, which is useful for free-response/project channels. "off"
+  # disables lifecycle ACK reactions. The initial 👀 is dispatched before
+  # thread hydration, attachment downloads, and model work.
+  reaction_ack_scope: addressed
+
   # Ignore messages addressed to another user: when a channel or thread
   # message *opens* by @mentioning someone other than the bot (e.g.
   # "@rasha can you take this?"), stay silent unless the bot is also

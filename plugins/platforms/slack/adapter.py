@@ -1038,6 +1038,10 @@ class SlackAdapter(BasePlatformAdapter):
         # exception between add and finalize would leak them — keep it bounded.
         self._reacting_message_ids: set = set()
         self._REACTING_MESSAGE_IDS_MAX = 5000
+        # ACK API calls are dispatched as soon as an accepted Slack message
+        # clears authorization/mention gates. Keep the task so completion can
+        # await it before swapping 👀 for ✅/❌, preventing an add/remove race.
+        self._reaction_ack_tasks: Dict[Any, asyncio.Task] = {}
         # Track active Assistant statuses by (team_id, channel_id, thread_ts)
         # so cleanup cannot clear an overlapping Slack Connect workspace.
         # Entries are popped when the status clears, but statuses abandoned
@@ -4249,6 +4253,52 @@ class SlackAdapter(BasePlatformAdapter):
         """Check if message reactions are enabled via config/env."""
         return os.getenv("SLACK_REACTIONS", "true").lower() not in {"false", "0", "no"}
 
+    def _reaction_ack_scope(self) -> str:
+        """Return which accepted Slack messages receive lifecycle reactions.
+
+        ``addressed`` is the backward-compatible default: only 1:1 DMs and
+        explicit @mentions. ``processed`` covers every message that survives
+        the adapter's authorization and mention gates. ``off`` disables ACK
+        reactions without changing the legacy ``SLACK_REACTIONS`` switch.
+        """
+        raw = str(self.config.extra.get("reaction_ack_scope", "addressed") or "addressed")
+        scope = raw.strip().lower()
+        return scope if scope in {"addressed", "processed", "off"} else "addressed"
+
+    def _should_ack_processed_message(
+        self, *, is_one_to_one_dm: bool, is_mentioned: bool
+    ) -> bool:
+        if not self._reactions_enabled():
+            return False
+        scope = self._reaction_ack_scope()
+        if scope == "off":
+            return False
+        if scope == "processed":
+            return True
+        # MPIMs remain shared surfaces under the default scope, so an
+        # unmentioned group-DM message does not create visible reaction noise.
+        return is_one_to_one_dm or is_mentioned
+
+    def _start_processing_ack(self, channel: str, timestamp: str, team_id: str = "") -> None:
+        """Dispatch the initial 👀 reaction without delaying message handling."""
+        marker = self._workspace_message_marker(team_id, timestamp)
+        if marker in self._reacting_message_ids:
+            return
+        self._reacting_message_ids.add(marker)
+        task = asyncio.create_task(self._add_reaction(channel, timestamp, "eyes", team_id))
+        self._reaction_ack_tasks[marker] = task
+        if len(self._reacting_message_ids) > self._REACTING_MESSAGE_IDS_MAX:
+            self._discard_oldest_slack_timestamps(
+                self._reacting_message_ids,
+                self._REACTING_MESSAGE_IDS_MAX // 2,
+            )
+            live_markers = self._reacting_message_ids
+            for stale in list(self._reaction_ack_tasks):
+                if stale not in live_markers:
+                    stale_task = self._reaction_ack_tasks.pop(stale)
+                    if not stale_task.done():
+                        stale_task.cancel()
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
         if not self._reactions_enabled():
@@ -4258,6 +4308,8 @@ class SlackAdapter(BasePlatformAdapter):
         marker = self._workspace_message_marker(team_id, ts) if ts else None
         if not ts or marker not in self._reacting_message_ids:
             return
+        if marker in self._reaction_ack_tasks:
+            return  # Already dispatched before preprocessing/model work.
         channel_id = getattr(event.source, "chat_id", None)
         if channel_id:
             await self._add_reaction(channel_id, ts, "eyes", team_id)
@@ -4273,6 +4325,12 @@ class SlackAdapter(BasePlatformAdapter):
         marker = self._workspace_message_marker(team_id, ts) if ts else None
         if not ts or marker not in self._reacting_message_ids:
             return
+        ack_task = self._reaction_ack_tasks.pop(marker, None)
+        if ack_task is not None:
+            try:
+                await ack_task
+            except asyncio.CancelledError:
+                pass
         self._reacting_message_ids.discard(marker)
         channel_id = getattr(event.source, "chat_id", None)
         if not channel_id:
@@ -6275,6 +6333,17 @@ class SlackAdapter(BasePlatformAdapter):
             ):
                 self._register_mentioned_thread(thread_ts, team_id=team_id)
 
+        # Give immediate, non-blocking feedback before thread hydration, file
+        # downloads, or model work. ``addressed`` preserves the historical
+        # DM/@mention-only scope; ``processed`` also ACKs unmentioned messages
+        # that have passed the normal Slack gates (for free-response/project
+        # channels). Ignored messages return above and never receive an ACK.
+        if self._should_ack_processed_message(
+            is_one_to_one_dm=is_one_to_one_dm,
+            is_mentioned=is_mentioned,
+        ):
+            self._start_processing_ack(channel_id, ts, team_id)
+
         # Thread context rules:
         # - First message in a thread session (cold start): hydrate full
         #   context.
@@ -6816,24 +6885,6 @@ class SlackAdapter(BasePlatformAdapter):
                 "slack_thread_ts": thread_ts,
             },
         )
-
-        # Only react when bot is directly addressed (1:1 DM or @mention).
-        # MPIMs are shared surfaces: reacting to every group-DM message (even
-        # when unmentioned) is visible noise to the whole group, so they must
-        # be @mentioned to earn a reaction — same as any channel.
-        _should_react = (is_one_to_one_dm or is_mentioned) and self._reactions_enabled()
-        if _should_react:
-            self._reacting_message_ids.add(
-                self._workspace_message_marker(team_id, ts)
-            )
-            if len(self._reacting_message_ids) > self._REACTING_MESSAGE_IDS_MAX:
-                # Entries embed a Slack message ts (bare or workspace-scoped
-                # tuple) — evict oldest first by the embedded ts.
-                self._discard_oldest_slack_timestamps(
-                    self._reacting_message_ids,
-                    len(self._reacting_message_ids)
-                    - self._REACTING_MESSAGE_IDS_MAX // 2,
-                )
 
         # App-context is per-turn, user-controlled Slack UI state. Surface it
         # with the inbound user message rather than storing it on SessionSource:

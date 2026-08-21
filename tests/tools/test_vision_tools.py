@@ -1004,3 +1004,218 @@ class TestVisionCpuBurstCap:
             f"analyses were serialized to the cap (peak={calls_peak}); only the "
             "encode burst should be bounded, not the whole call"
         )
+
+
+# ---------------------------------------------------------------------------
+# video_analyze model override provider validation (#82419)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveVideoModelOverride:
+    """Provider-safe resolution of the video_analyze model override.
+
+    A per-call ``model=`` must never silently attach a model from provider B
+    to a client selected for provider A. Provider-qualified models and
+    configured aliases resolve to an explicit provider/model pair; ambiguous
+    bare overrides that do not belong to the routed provider are rejected.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_real_aliases_or_config(self):
+        with (
+            patch("hermes_cli.model_switch._ensure_direct_aliases", return_value=None),
+            patch("hermes_cli.model_switch.DIRECT_ALIASES", {}),
+            patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={}),
+        ):
+            yield
+
+    def test_provider_qualified_model_splits_provider_and_model(self):
+        from tools.vision_tools import _resolve_video_model_override
+
+        provider, model, base_url = _resolve_video_model_override(
+            "minimax-cn/MiniMax-M3"
+        )
+        assert provider == "minimax-cn"
+        assert model == "MiniMax-M3"
+        assert base_url is None
+
+    def test_configured_alias_resolves_to_provider_model_pair(self):
+        from hermes_cli.model_switch import DirectAlias
+        from tools.vision_tools import _resolve_video_model_override
+
+        with patch(
+            "hermes_cli.model_switch.DIRECT_ALIASES",
+            {"m3": DirectAlias(model="MiniMax-M3", provider="minimax-cn", base_url="")},
+        ):
+            provider, model, base_url = _resolve_video_model_override("m3")
+        assert provider == "minimax-cn"
+        assert model == "MiniMax-M3"
+        assert base_url is None
+
+    def test_alias_with_custom_base_url_propagates_endpoint(self):
+        from hermes_cli.model_switch import DirectAlias
+        from tools.vision_tools import _resolve_video_model_override
+
+        with patch(
+            "hermes_cli.model_switch.DIRECT_ALIASES",
+            {"local": DirectAlias(
+                model="local-video",
+                provider="custom",
+                base_url="http://localhost:8000/v1",
+            )},
+        ):
+            provider, model, base_url = _resolve_video_model_override("local")
+        assert provider == "custom"
+        assert model == "local-video"
+        assert base_url == "http://localhost:8000/v1"
+
+    def test_bare_model_matching_main_model_is_allowed(self):
+        from tools.vision_tools import _resolve_video_model_override
+
+        with (
+            patch("agent.auxiliary_client._read_main_provider", return_value="openai-codex"),
+            patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.6-sol"),
+        ):
+            provider, model, base_url = _resolve_video_model_override("gpt-5.6-sol")
+        assert provider is None
+        assert model == "gpt-5.6-sol"
+        assert base_url is None
+
+    def test_bare_model_matching_provider_vision_default_is_allowed(self):
+        from tools.vision_tools import _resolve_video_model_override
+
+        with (
+            patch("agent.auxiliary_client._read_main_provider", return_value="xiaomi"),
+            patch("agent.auxiliary_client._read_main_model", return_value="some-chat-model"),
+        ):
+            provider, model, _ = _resolve_video_model_override("mimo-v2.5")
+        assert provider is None
+        assert model == "mimo-v2.5"
+
+    def test_bare_model_matching_configured_vision_model_is_allowed(self):
+        from tools.vision_tools import _resolve_video_model_override
+
+        with (
+            patch(
+                "agent.auxiliary_client._get_auxiliary_task_config",
+                return_value={"provider": "minimax-cn", "model": "MiniMax-M3"},
+            ),
+            patch("agent.auxiliary_client._read_main_provider", return_value="openai-codex"),
+            patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.6-sol"),
+        ):
+            provider, model, _ = _resolve_video_model_override("MiniMax-M3")
+        assert provider is None
+        assert model == "MiniMax-M3"
+
+    def test_cross_provider_bare_model_is_rejected(self):
+        from tools.vision_tools import _resolve_video_model_override
+
+        with (
+            patch("agent.auxiliary_client._read_main_provider", return_value="openai-codex"),
+            patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.6-sol"),
+            pytest.raises(ValueError, match="does not belong to the provider"),
+        ):
+            _resolve_video_model_override("MiniMax-M3")
+
+    def test_unknown_provider_keeps_prior_behavior(self):
+        from tools.vision_tools import _resolve_video_model_override
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value=""):
+            provider, model, base_url = _resolve_video_model_override("MiniMax-M3")
+        assert provider is None
+        assert model == "MiniMax-M3"
+        assert base_url is None
+
+
+class TestVideoAnalyzeToolModelOverride:
+    """video_analyze_tool must never build an invalid provider/model pair."""
+
+    @staticmethod
+    def _mock_response(text="video analysis result"):
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = text
+        mock_response.choices = [mock_choice]
+        return mock_response
+
+    @staticmethod
+    def _patched_env(tmp_path, mock_llm):
+        video = tmp_path / "test.mp4"
+        video.write_bytes(b"\x00" * 64)
+        return (
+            video,
+            [
+                patch("tools.interrupt.is_interrupted", return_value=False),
+                patch("agent.file_safety.raise_if_read_blocked", return_value=None),
+                patch("tools.vision_tools._detect_video_mime_type", return_value="video/mp4"),
+                patch(
+                    "tools.vision_tools._video_to_base64_data_url",
+                    return_value="data:video/mp4;base64,AAAA",
+                ),
+                patch("hermes_cli.config.load_config", return_value={}),
+                patch("tools.vision_tools._load_auxiliary_client", return_value=None),
+                patch("tools.vision_tools.async_call_llm", mock_llm),
+                patch(
+                    "tools.vision_tools.extract_content_or_reasoning",
+                    return_value="red then blue",
+                ),
+                patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={}),
+                patch("agent.auxiliary_client._read_main_provider", return_value="openai-codex"),
+                patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.6-sol"),
+            ],
+        )
+
+    @pytest.mark.asyncio
+    async def test_cross_provider_override_fails_clearly_without_llm_call(self, tmp_path):
+        from tools.vision_tools import video_analyze_tool
+
+        mock_llm = AsyncMock(return_value=self._mock_response())
+        video, patchers = self._patched_env(tmp_path, mock_llm)
+        with ExitStack() as stack:
+            for p in patchers:
+                stack.enter_context(p)
+            result = json.loads(
+                await video_analyze_tool(str(video), "what colors?", "MiniMax-M3")
+            )
+
+        assert result["success"] is False
+        assert "does not belong to the provider" in result["error"]
+        mock_llm.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_provider_qualified_override_routes_to_that_provider(self, tmp_path):
+        from tools.vision_tools import video_analyze_tool
+
+        mock_llm = AsyncMock(return_value=self._mock_response("red then blue"))
+        video, patchers = self._patched_env(tmp_path, mock_llm)
+        with ExitStack() as stack:
+            for p in patchers:
+                stack.enter_context(p)
+            result = json.loads(
+                await video_analyze_tool(
+                    str(video), "what colors?", "minimax-cn/MiniMax-M3"
+                )
+            )
+
+        assert result["success"] is True
+        kwargs = mock_llm.await_args.kwargs
+        assert kwargs["provider"] == "minimax-cn"
+        assert kwargs["model"] == "MiniMax-M3"
+
+    @pytest.mark.asyncio
+    async def test_same_provider_override_still_works(self, tmp_path):
+        from tools.vision_tools import video_analyze_tool
+
+        mock_llm = AsyncMock(return_value=self._mock_response("red then blue"))
+        video, patchers = self._patched_env(tmp_path, mock_llm)
+        with ExitStack() as stack:
+            for p in patchers:
+                stack.enter_context(p)
+            result = json.loads(
+                await video_analyze_tool(str(video), "describe", "gpt-5.6-sol")
+            )
+
+        assert result["success"] is True
+        kwargs = mock_llm.await_args.kwargs
+        assert "provider" not in kwargs
+        assert kwargs["model"] == "gpt-5.6-sol"

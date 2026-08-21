@@ -37,7 +37,7 @@ import logging
 import os
 import uuid
 from pathlib import Path
-from typing import Any, Awaitable, Dict, Optional
+from typing import Any, Awaitable, Dict, Optional, Tuple
 from urllib.parse import urlparse
 import httpx
 
@@ -1947,6 +1947,105 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
     raise last_error
 
 
+def _validate_video_model_override(model: str) -> None:
+    """Raise when a bare ``video_analyze`` model override is ambiguous.
+
+    The vision auto-router resolves the provider from ``auxiliary.vision.
+    provider`` or the active main runtime. A bare model override that belongs
+    to a *different* provider would be attached to that provider's client,
+    producing an invalid provider/model pair that can fail silently and still
+    report ``success: true`` (#82419). Only models that demonstrably belong to
+    the provider the router will use are accepted; anything else is rejected
+    with a clear error before any LLM call is made.
+    """
+    from agent.auxiliary_client import (
+        _PROVIDER_VISION_MODELS,
+        _get_auxiliary_task_config,
+        _read_main_model,
+        _read_main_provider,
+    )
+
+    vision_cfg = _get_auxiliary_task_config("vision") or {}
+    provider = str(vision_cfg.get("provider") or "").strip().lower()
+    if not provider or provider == "auto":
+        provider = _read_main_provider().strip().lower()
+    if not provider or provider in ("auto", "moa"):
+        # Provider cannot be determined (auto-detect / aggregator chain): there
+        # is no fixed provider to contradict, so keep the prior behavior.
+        return
+
+    normalized_model = model.strip().lower()
+    vision_cfg_model = str(vision_cfg.get("model") or "").strip()
+    if vision_cfg_model and vision_cfg_model.lower() == normalized_model:
+        # Matches the explicitly configured auxiliary.vision.model.
+        return
+    main_model = (_read_main_model() or "").strip()
+    main_model_candidates = [main_model]
+    if "/" in main_model:
+        main_model_candidates.append(main_model.rsplit("/", 1)[1])
+    if any(m and m.lower() == normalized_model for m in main_model_candidates):
+        # Override of the active main model on the same provider.
+        return
+    vision_default = _PROVIDER_VISION_MODELS.get(provider)
+    if vision_default and vision_default.lower() == normalized_model:
+        # The provider's dedicated vision model.
+        return
+    raise ValueError(
+        f"video_analyze: model override {model!r} does not belong to the "
+        f"provider ({provider}) that the vision router uses for this call, so "
+        "it cannot be applied without also switching the provider. Use a "
+        f"provider-qualified model (e.g. '{provider}/{model}') or a configured "
+        "model alias (model.aliases) that maps to a provider/model pair, or "
+        "configure auxiliary.vision.provider for the desired provider."
+    )
+
+
+def _resolve_video_model_override(
+    model: str,
+) -> Tuple[Optional[str], str, Optional[str]]:
+    """Resolve a ``video_analyze`` model override to a safe provider/model pair.
+
+    A per-call ``model=`` override must not silently swap the model while
+    keeping the provider chosen by the vision auto-router: that can build an
+    invalid provider/model pair and, depending on the adapter, return a false
+    success (#82419).
+
+    Resolution order:
+      1. Configured model aliases (``model.aliases`` / ``model_aliases``) that
+         map the override to an explicit provider/model/base_url (e.g. ``m3``
+         -> ``minimax-cn/MiniMax-M3``).
+      2. Provider-qualified strings (``provider/model``) — the provider prefix
+         becomes an explicit override (e.g. ``minimax-cn/MiniMax-M3``).
+      3. Bare model names — accepted only when they demonstrably belong to the
+         provider the vision auto-router will use; otherwise rejected with a
+         clear error (see :func:`_validate_video_model_override`).
+
+    Returns ``(provider_override, model, base_url_override)``. The overrides
+    are ``None`` when the auto-router's provider selection may be kept.
+    """
+    # 1. Configured model alias (config model.aliases / model_aliases).
+    try:
+        from hermes_cli import model_switch as _model_switch
+        _model_switch._ensure_direct_aliases()
+        _direct = _model_switch.DIRECT_ALIASES.get(str(model).strip().lower())
+    except Exception:
+        _direct = None
+    if _direct is not None and _direct.provider:
+        return (
+            _direct.provider,
+            _direct.model or model,
+            _direct.base_url or None,
+        )
+    # 2. Provider-qualified string: provider/model.
+    if "/" in model:
+        provider_part, _, bare_model = model.partition("/")
+        if provider_part.strip() and bare_model.strip():
+            return provider_part.strip(), bare_model.strip(), None
+    # 3. Bare model name — reject ambiguous cross-provider overrides.
+    _validate_video_model_override(model)
+    return None, model, None
+
+
 async def video_analyze_tool(
     video_url: str,
     user_prompt: str,
@@ -2075,7 +2174,14 @@ async def video_analyze_tool(
             "timeout": vision_timeout,
         }
         if model:
-            call_kwargs["model"] = model
+            provider_override, model_override, base_url_override = (
+                _resolve_video_model_override(model)
+            )
+            if provider_override:
+                call_kwargs["provider"] = provider_override
+            if base_url_override:
+                call_kwargs["base_url"] = base_url_override
+            call_kwargs["model"] = model_override
 
         _load_auxiliary_client()
         response = await async_call_llm(**call_kwargs)

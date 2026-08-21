@@ -99,6 +99,11 @@ _DM_DISCOVERY_EVERY = 5
 _DEFAULT_POLL_INTERVAL = 4.0
 _MIN_POLL_INTERVAL = 1.0
 _CLI_TIMEOUT = 30.0
+# How long a turn's triggering-message anchor stays eligible as a reply-to
+# fallback for un-anchored sends (interim narration, split chunks, status).
+# Long enough to cover a slow multi-tool turn, short enough that a later
+# proactive/cron broadcast doesn't thread under a stale inbound message.
+_TURN_ANCHOR_TTL = 1800.0
 
 # WebSocket transport (NIP-42 authenticated Nostr subscription).
 # kind 44100 is Buzz's channel-membership event — used for live DM discovery.
@@ -431,6 +436,17 @@ class BuzzAdapter(BasePlatformAdapter):
         # channel_id -> {"chat_type", "last_ts", "seen": OrderedDict[event_id, None]}
         self._channel_state: Dict[str, dict] = {}
         self._channel_names: Dict[str, str] = {}
+        # channel_id -> (triggering_event_id, monotonic_ts) for the message that
+        # opened the current turn. Every send this turn (final reply, interim
+        # narration, split chunks, status) falls back to this anchor so the whole
+        # turn threads under the triggering message instead of scattering to the
+        # channel root. Only the final send passes an explicit reply_to; the
+        # gateway's interim/status paths supply metadata=None for buzz (no
+        # persistent thread_id), which is why they previously landed at root.
+        # Gated by _TURN_ANCHOR_TTL so unrelated proactive/cron sends (which
+        # arrive long after the last inbound) still post at root.
+        self._turn_reply_anchor: Dict[str, tuple[str, float]] = {}
+        self._load_turn_anchors()
         # channel_id -> raw ``channels list`` entry; drives DM-vs-channel
         # classification (see _may_reclassify_as_dm).
         self._channel_meta: Dict[str, dict] = {}
@@ -486,6 +502,7 @@ class BuzzAdapter(BasePlatformAdapter):
             self._set_fatal_error("connect_failed", "buzz users get returned no profile", retryable=True)
             return False
         self._self_pubkey = str(profiles[0]["pubkey"]).lower()
+        _save_buzz_identity(self._self_pubkey)
         self._display_name = str(profiles[0].get("display_name") or "").strip()
         self._self_npub = hex_to_npub(self._self_pubkey) or ""
 
@@ -599,6 +616,74 @@ class BuzzAdapter(BasePlatformAdapter):
 
     # ── Sending ───────────────────────────────────────────────────────────
 
+    def _turn_anchor_path(self) -> Optional[str]:
+        """Where turn anchors persist. None disables persistence entirely."""
+        home = os.environ.get("HERMES_HOME")
+        return os.path.join(home, "buzz_turn_anchors.json") if home else None
+
+    def _save_turn_anchors(self) -> None:
+        """Persist anchors so a gateway restart mid-turn does not lose threading.
+
+        The anchor is otherwise pure process state, so a restart between the
+        triggering message and the final send drops the reply target and the
+        rest of the answer lands at the channel root -- seen as "the reply
+        starts threaded, then jumps to root". Restarts mid-turn are routine
+        (deploys, config reloads), so the anchor has to outlive the process.
+
+        Best-effort: threading is cosmetic and must never break sending.
+        """
+        path = self._turn_anchor_path()
+        if not path:
+            return
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump({k: [v[0], v[1]] for k, v in self._turn_reply_anchor.items()}, fh)
+            os.replace(tmp, path)
+        except Exception:
+            logger.debug("Buzz: could not persist turn anchors", exc_info=True)
+
+    def _load_turn_anchors(self) -> None:
+        """Restore anchors written before a restart, dropping any past TTL."""
+        path = self._turn_anchor_path()
+        if not path or not os.path.exists(path):
+            return
+        try:
+            with open(path, encoding="utf-8") as fh:
+                raw = json.load(fh)
+            now = time.time()
+            restored = {
+                str(k): (str(v[0]), float(v[1]))
+                for k, v in (raw or {}).items()
+                if isinstance(v, (list, tuple)) and len(v) == 2
+                and (now - float(v[1])) <= _TURN_ANCHOR_TTL
+            }
+            self._turn_reply_anchor.update(restored)
+            if restored:
+                logger.info(
+                    "Buzz: restored %d turn reply anchor(s) across restart", len(restored)
+                )
+        except Exception:
+            logger.debug("Buzz: could not load turn anchors", exc_info=True)
+
+    def _fresh_turn_anchor(self, chat_id: str) -> Optional[str]:
+        """Reply-to fallback: the current turn's triggering event, if recent.
+
+        Returns the event id recorded by ``_handle_event`` when the inbound
+        message that opened this turn arrived, but only within
+        ``_TURN_ANCHOR_TTL`` — so a turn's un-anchored sends thread under it,
+        while a much-later proactive/cron broadcast (no live turn) posts at the
+        channel root as before.
+        """
+        entry = self._turn_reply_anchor.get(chat_id)
+        if not entry:
+            return None
+        event_id, ts = entry
+        if (time.time() - ts) > _TURN_ANCHOR_TTL:
+            self._turn_reply_anchor.pop(chat_id, None)
+            return None
+        return event_id
+
     async def send(
         self,
         chat_id: str,
@@ -609,7 +694,30 @@ class BuzzAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
-        reply_target = reply_to or (metadata or {}).get("thread_id")
+        # buzz-cli runs a MENTION PREFLIGHT on --content: any "@token" that does not
+        # uniquely resolve to a CURRENT MEMBER of this channel hard-fails the whole
+        # send (exit 1, user_error) -- and the plain-text fallback keeps the same
+        # text, so it fails identically and the reply is lost with no user-visible
+        # error. Ordinary prose triggers it ("@mentioning", a teammate who left the
+        # channel), and small channels hit it constantly. Supplying any explicit
+        # --mention downgrades unresolved @text to presentation-only, while
+        # uniquely-resolved member names STILL notify. Our own pubkey is the safe
+        # sentinel: it adds no p-tag (self-mentions are excluded) and the poll loop
+        # already skips our own events.
+        if self._self_pubkey:
+            args += ["--mention", self._self_pubkey]
+        # Resolve the reply anchor. Explicit caller intent wins; otherwise honor
+        # the generic ``reply_to_message_id`` some gateway paths carry (Feishu /
+        # relay-Discord already set it), then fall back to this turn's triggering
+        # message so un-anchored interim/status/chunk sends still thread instead
+        # of landing at the channel root.
+        _meta = metadata or {}
+        reply_target = (
+            reply_to
+            or _meta.get("thread_id")
+            or _meta.get("reply_to_message_id")
+            or self._fresh_turn_anchor(str(chat_id))
+        )
         if reply_target:
             args += ["--reply-to", str(reply_target)]
         code, out, err = await self._run_cli(args, input_text=content)
@@ -1042,6 +1150,13 @@ class BuzzAdapter(BasePlatformAdapter):
             logger.debug("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
             return
 
+        # Record this triggering event as the current turn's reply anchor so
+        # every send the agent makes while responding — final reply, interim
+        # narration, overflow-split chunks, status bubbles — threads under it
+        # rather than scattering to the channel root (see _turn_reply_anchor).
+        self._turn_reply_anchor[channel_id] = (event_id, time.time())
+        self._save_turn_anchors()
+
         # Strip a leading @mention so slash commands (@Chip /whoami ->
         # /whoami) and clean prompts are recognized. DM messages often still
         # open with "@Chip" even though no mention is required there, so the
@@ -1356,6 +1471,67 @@ def _env_enablement() -> Optional[dict]:
     return seed
 
 
+def _buzz_state_path(name: str) -> Optional[str]:
+    home = os.environ.get("HERMES_HOME")
+    return os.path.join(home, name) if home else None
+
+
+def _save_buzz_identity(pubkey: str) -> None:
+    """Record our pubkey so _standalone_send can pass --mention.
+
+    That sender runs without a live adapter instance, so it cannot read
+    self._self_pubkey -- but it needs the same mention-preflight escape hatch,
+    or an agent-initiated send containing any unresolved @token is dropped whole.
+    """
+    path = _buzz_state_path("buzz_identity.json")
+    if not path or not pubkey:
+        return
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"pubkey": pubkey}, fh)
+        os.replace(tmp, path)
+    except Exception:
+        logger.debug("Buzz: could not persist identity", exc_info=True)
+
+
+def _load_buzz_identity() -> Optional[str]:
+    path = _buzz_state_path("buzz_identity.json")
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return (json.load(fh) or {}).get("pubkey") or None
+    except Exception:
+        return None
+
+
+def _load_turn_anchor_for(chat_id: str) -> Optional[str]:
+    """Current turn anchor for a channel, read from disk, TTL-checked.
+
+    The adapter keeps anchors in memory AND on disk; the standalone sender has
+    no instance, so it reads the same file. Without this, agent-initiated sends
+    (cross-agent dispatches, notifications) land at channel root while the
+    gateway's own turn replies thread correctly -- the exact split users report
+    as "the lead never uses threads".
+    """
+    path = _buzz_state_path("buzz_turn_anchors.json")
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = json.load(fh) or {}
+        entry = raw.get(str(chat_id))
+        if not entry or len(entry) != 2:
+            return None
+        event_id, ts = str(entry[0]), float(entry[1])
+        if (time.time() - ts) > _TURN_ANCHOR_TTL:
+            return None
+        return event_id
+    except Exception:
+        return None
+
+
 async def _standalone_send(
     pconfig,
     chat_id: str,
@@ -1386,8 +1562,17 @@ async def _standalone_send(
         return {"error": "Buzz standalone send: no target channel (set BUZZ_HOME_CHANNEL)"}
 
     args = ["messages", "send", "--channel", target, "--content", "-"]
-    if thread_id:
-        args += ["--reply-to", str(thread_id)]
+    # Same mention preflight as BuzzAdapter.send: without an explicit --mention,
+    # any "@token" in the body that is not a current member of this channel
+    # fails the whole send (exit 1) and the message is silently lost.
+    _self = _load_buzz_identity()
+    if _self:
+        args += ["--mention", _self]
+    # Fall back to the turn anchor so agent-initiated sends thread under the
+    # message that prompted them instead of landing at the channel root.
+    _anchor = thread_id or _load_turn_anchor_for(target)
+    if _anchor:
+        args += ["--reply-to", str(_anchor)]
     for path in media_files or []:
         args += ["--file", str(path)]
     try:

@@ -104,6 +104,12 @@ def _named_actions(actions: list[ReconcileAction]) -> list[ReconcileAction]:
     return [a for a in actions if a.profile != "default"]
 
 
+def _write_config_yaml(hermes_home: Path, body: str) -> None:
+    """Write a config.yaml at the HERMES_HOME root (where the reconciler
+    resolves the effective multiplex_profiles setting from)."""
+    (hermes_home / "config.yaml").write_text(body)
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -297,6 +303,176 @@ def _write_lifecycle_sentinel(profile_dir: Path, payload: dict) -> None:
     state_dir = profile_dir / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / "gateway.lifecycle.json").write_text(json.dumps(payload))
+
+
+# ---------------------------------------------------------------------------
+# multiplex_profiles resolution — config.yaml is honored, not just the env
+# var (#85413). Before the fix the s6 reconciler read only
+# GATEWAY_MULTIPLEX_PROFILES, so a config-only opt-in left named profile
+# slots auto-started → double-bind against the multiplexer → 100% CPU
+# crash-loop.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clear_multiplex_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure GATEWAY_MULTIPLEX_PROFILES never leaks in from the host env."""
+    monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+
+
+def test_config_only_multiplex_registers_named_slot_down(tmp_path: Path) -> None:
+    """multiplex_profiles: true in config.yaml alone (no env var) must keep
+    named profile slots DOWN, not auto-started — otherwise s6 boots a second
+    multiplex owner and crash-loops (the #85413 report)."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "work", state="running")
+    _write_config_yaml(tmp_path, "multiplex_profiles: true\n")
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    named = _named_actions(actions)
+    assert named == [ReconcileAction(
+        profile="work", prior_state="running", action="registered",
+    )]
+    # Registered-not-started ⇒ a down marker is present, so s6 leaves it down.
+    assert (scandir / "gateway-work" / "down").exists()
+
+
+def test_config_only_nested_gateway_multiplex_honored(tmp_path: Path) -> None:
+    """The nested gateway.multiplex_profiles form (written by
+    ``hermes config set gateway.multiplex_profiles true``) is honored too."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "work", state="running")
+    _write_config_yaml(tmp_path, "gateway:\n  multiplex_profiles: true\n")
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    assert _named_actions(actions) == [ReconcileAction(
+        profile="work", prior_state="running", action="registered",
+    )]
+    assert (scandir / "gateway-work" / "down").exists()
+
+
+def test_multiplex_disabled_by_default_autostarts_named_slot(tmp_path: Path) -> None:
+    """No env var and no config key ⇒ multiplexing off ⇒ a running profile
+    is auto-started exactly as before (no behavior change for the common
+    non-multiplex deploy)."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "work", state="running")
+    # config.yaml present but without the key — must not force multiplexing on.
+    _write_config_yaml(tmp_path, "model:\n  default: gpt-x\n")
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    assert _named_actions(actions) == [ReconcileAction(
+        profile="work", prior_state="running", action="started",
+    )]
+    assert not (scandir / "gateway-work" / "down").exists()
+
+
+def test_env_var_still_wins_over_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The operator override GATEWAY_MULTIPLEX_PROFILES=true keeps working
+    even when config.yaml is absent (backward-compat with the old behavior)."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "work", state="running")
+    monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "true")
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    assert _named_actions(actions) == [ReconcileAction(
+        profile="work", prior_state="running", action="registered",
+    )]
+
+
+def test_env_var_false_overrides_config_true(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit falsy env override wins over a config.yaml opt-in —
+    env > config precedence, matching gateway/config.py."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "work", state="running")
+    _write_config_yaml(tmp_path, "multiplex_profiles: true\n")
+    monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "false")
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    # Falsy env override ⇒ not multiplexing ⇒ running profile auto-starts.
+    assert _named_actions(actions) == [ReconcileAction(
+        profile="work", prior_state="running", action="started",
+    )]
+
+
+def test_blank_env_var_does_not_shadow_config_optin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provisioned-but-empty GATEWAY_MULTIPLEX_PROFILES="" must fall through
+    to config.yaml (unset, not False) — otherwise an empty Fly/Docker secret
+    would silently defeat a config opt-in and reintroduce the crash-loop."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "work", state="running")
+    _write_config_yaml(tmp_path, "multiplex_profiles: true\n")
+    monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "")
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    # Blank env ⇒ config.yaml opt-in stands ⇒ named slot registered, not started.
+    assert _named_actions(actions) == [ReconcileAction(
+        profile="work", prior_state="running", action="registered",
+    )]
+
+
+def test_malformed_config_yaml_fails_open_to_disabled(tmp_path: Path) -> None:
+    """A malformed config.yaml must not wedge boot: multiplex resolution
+    fails open to disabled (the gateway process surfaces the real config
+    error later)."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "work", state="running")
+    _write_config_yaml(tmp_path, "multiplex_profiles: [unterminated\n")
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    # Fail-open ⇒ treated as not multiplexing ⇒ running profile auto-starts.
+    assert _named_actions(actions) == [ReconcileAction(
+        profile="work", prior_state="running", action="started",
+    )]
+
+
+def test_multiplex_profiles_enabled_helper_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Directly exercise the resolver's env > config > default precedence."""
+    from hermes_cli.container_boot import _multiplex_profiles_enabled
+
+    # Default: nothing set.
+    monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    assert _multiplex_profiles_enabled(tmp_path) is False
+
+    # config.yaml opt-in.
+    _write_config_yaml(tmp_path, "multiplex_profiles: true\n")
+    assert _multiplex_profiles_enabled(tmp_path) is True
+
+    # Explicit env override beats config.
+    monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "off")
+    assert _multiplex_profiles_enabled(tmp_path) is False
+    monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "on")
+    assert _multiplex_profiles_enabled(tmp_path) is True
+
 
 
 

@@ -92,6 +92,69 @@ class ReconcileAction:
     prior_exit: str = "unknown"
 
 
+def _multiplex_profiles_enabled(hermes_home: Path) -> bool:
+    """Resolve the effective ``multiplex_profiles`` setting at boot time.
+
+    Mirrors the runtime precedence implemented in ``gateway/config.py``
+    (env override → ``config.yaml`` → default) so the s6 reconciler and the
+    gateway process agree on whether the default gateway multiplexes every
+    profile:
+
+    1. ``GATEWAY_MULTIPLEX_PROFILES`` — an explicit truthy/falsy operator
+       override wins. A blank or unrecognized value is treated as *unset*
+       (returns ``None`` from the shared resolver), NOT as ``False``, so a
+       provisioned-but-empty secret cannot silently shadow a config.yaml
+       opt-in.
+    2. ``config.yaml`` — the documented way to enable multiplexing. Both the
+       top-level ``multiplex_profiles`` key and the nested
+       ``gateway.multiplex_profiles`` form (written by
+       ``hermes config set gateway.multiplex_profiles true``) are honored.
+    3. Default ``False``.
+
+    Before this, the reconciler read ONLY the env var, so a user who enabled
+    multiplexing exactly as documented (editing ``config.yaml`` alone, without
+    also exporting ``GATEWAY_MULTIPLEX_PROFILES``) got named per-profile slots
+    auto-started by s6. Each booted, hit the multiplexer's double-bind guard,
+    exited, and was restarted in a ~100% CPU crash loop (#85413).
+
+    Config resolution is best-effort and fail-open: any error reading
+    ``config.yaml`` falls back to the default so a malformed file never wedges
+    boot (the gateway process surfaces its own config errors later).
+    """
+    from gateway.config import _env_multiplex_profiles_override
+
+    env_override = _env_multiplex_profiles_override()
+    if env_override is not None:
+        return env_override
+
+    from utils import is_truthy_value
+
+    try:
+        import yaml
+
+        config_path = hermes_home / "config.yaml"
+        if not config_path.exists():
+            return False
+        with open(config_path, encoding="utf-8") as f:
+            yaml_cfg = yaml.safe_load(f) or {}
+        if not isinstance(yaml_cfg, dict):
+            return False
+        # Top-level key wins; fall back to the nested gateway.multiplex_profiles
+        # form only when the top-level key is absent (matches gateway/config.py).
+        if "multiplex_profiles" in yaml_cfg:
+            return is_truthy_value(yaml_cfg["multiplex_profiles"])
+        gateway_section = yaml_cfg.get("gateway")
+        if isinstance(gateway_section, dict) and "multiplex_profiles" in gateway_section:
+            return is_truthy_value(gateway_section["multiplex_profiles"])
+    except Exception as e:  # noqa: BLE001 — fail open, never wedge boot
+        log.warning(
+            "Could not resolve multiplex_profiles from config.yaml (%s); "
+            "assuming disabled for s6 reconciliation",
+            e,
+        )
+    return False
+
+
 def reconcile_profile_gateways(
     *,
     hermes_home: Path,
@@ -136,11 +199,7 @@ def reconcile_profile_gateways(
     # for every profile. Named slots must still be registered (so explicit
     # lifecycle management remains available), but booting them from their
     # persisted run intent would create additional multiplex owners.
-    from utils import is_truthy_value
-
-    multiplex_profiles = is_truthy_value(
-        os.environ.get("GATEWAY_MULTIPLEX_PROFILES"),
-    )
+    multiplex_profiles = _multiplex_profiles_enabled(hermes_home)
 
     # Default profile — always register, even if nothing has ever
     # populated the root profile dir. The slot exists so

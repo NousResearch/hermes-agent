@@ -202,6 +202,148 @@ def test_connect_credential_change_invalidates_cache(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Encrypted-only disk cache (secrets-exfiltration hardening)
+# ---------------------------------------------------------------------------
+
+
+def test_disk_cache_is_encrypted_only_no_plaintext(monkeypatch, tmp_path):
+    """The default path must write ONLY op_cache.enc.json — never plaintext."""
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    monkeypatch.setattr(
+        op.subprocess, "run", lambda *a, **k: _ok("secret-value-1")
+    )
+    op._reset_cache_for_tests(tmp_path)
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "0.test-token")
+
+    secrets, _ = op.fetch_onepassword_secrets(
+        references={"K1": "op://V/I/F"}, cache_ttl_seconds=300,
+        binary=fake_op, home_path=tmp_path,
+    )
+    assert secrets == {"K1": "secret-value-1"}
+    enc = op._encrypted_disk_cache_path(tmp_path)
+    plain = op._disk_cache_path(tmp_path)
+    assert enc.exists(), "encrypted cache file must be written"
+    assert not plain.exists(), "plaintext op_cache.json must never be written"
+    # The on-disk payload must not contain the raw secret value.
+    raw = enc.read_text(encoding="utf-8")
+    assert "secret-value-1" not in raw, "secret value must not appear in plaintext on disk"
+
+
+def test_encrypted_cache_round_trip(monkeypatch, tmp_path):
+    """A cached fetch must be served from the encrypted disk cache."""
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    calls = {"n": 0}
+
+    def fake_run(*a, **k):
+        calls["n"] += 1
+        return _ok("v")
+
+    monkeypatch.setattr(op.subprocess, "run", fake_run)
+    op._reset_cache_for_tests(tmp_path)
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "0.test-token")
+
+    for _ in range(2):
+        op.fetch_onepassword_secrets(
+            references={"K": "op://V/I/F"}, cache_ttl_seconds=300,
+            binary=fake_op, home_path=tmp_path,
+        )
+    # L1 serves the second call, but force a fresh process view: clear L1,
+    # keep the disk file, and confirm the encrypted disk cache serves it.
+    op._CACHE.clear()
+    secrets, _ = op.fetch_onepassword_secrets(
+        references={"K": "op://V/I/F"}, cache_ttl_seconds=300,
+        binary=fake_op, home_path=tmp_path,
+    )
+    assert secrets == {"K": "v"}
+    assert calls["n"] == 1  # served from disk, no second op read
+
+
+def test_legacy_plaintext_cache_is_migrated_and_removed(monkeypatch, tmp_path):
+    """A pre-hardening plaintext op_cache.json must be re-encrypted + removed."""
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    op._reset_cache_for_tests(tmp_path)
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "0.test-token")
+
+    # Write a legacy plaintext cache entry exactly as the old DiskCache did.
+    token_value = "0.test-token"
+    cache_key = (
+        op._auth_fingerprint("OP_SERVICE_ACCOUNT_TOKEN"),
+        "",
+        str(tmp_path),
+        op._refs_fingerprint({"K": "op://V/I/F"}),
+    )
+    op._DISK_CACHE.write(
+        cache_key,
+        op.CachedFetch(secrets={"K": "legacy-value"}, fetched_at=time.time()),
+        300,
+        tmp_path,
+    )
+    plain = op._disk_cache_path(tmp_path)
+    assert plain.exists(), "legacy plaintext file must exist before migration"
+
+    secrets, _ = op.fetch_onepassword_secrets(
+        references={"K": "op://V/I/F"}, cache_ttl_seconds=300,
+        binary=fake_op, home_path=tmp_path,
+    )
+    assert secrets == {"K": "legacy-value"}
+    assert not plain.exists(), "legacy plaintext cache must be removed after migration"
+    assert op._encrypted_disk_cache_path(tmp_path).exists()
+
+
+def test_memory_only_mode_removes_legacy_plaintext(monkeypatch, tmp_path):
+    """cache_ttl_seconds=0 must not read plaintext and must remove it."""
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    op._reset_cache_for_tests(tmp_path)
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "0.test-token")
+    monkeypatch.setattr(op.subprocess, "run", lambda *a, **k: _ok("v"))
+
+    cache_key = (
+        op._auth_fingerprint("OP_SERVICE_ACCOUNT_TOKEN"),
+        "",
+        str(tmp_path),
+        op._refs_fingerprint({"K": "op://V/I/F"}),
+    )
+    op._DISK_CACHE.write(
+        cache_key,
+        op.CachedFetch(secrets={"K": "stale"}, fetched_at=time.time()),
+        300,
+        tmp_path,
+    )
+    plain = op._disk_cache_path(tmp_path)
+    assert plain.exists()
+
+    secrets, _ = op.fetch_onepassword_secrets(
+        references={"K": "op://V/I/F"}, cache_ttl_seconds=0,
+        binary=fake_op, home_path=tmp_path,
+    )
+    # memory-only: fresh fetch, no plaintext consulted, legacy file removed
+    assert secrets == {"K": "v"}
+    assert not plain.exists(), "legacy plaintext must not survive memory-only mode"
+    assert not op._encrypted_disk_cache_path(tmp_path).exists()
+
+
+def test_clear_caches_removes_encrypted_file(monkeypatch, tmp_path):
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    monkeypatch.setattr(
+        op.subprocess, "run", lambda *a, **k: _ok("v")
+    )
+    op._reset_cache_for_tests(tmp_path)
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "0.test-token")
+    op.fetch_onepassword_secrets(
+        references={"K": "op://V/I/F"}, cache_ttl_seconds=300,
+        binary=fake_op, home_path=tmp_path,
+    )
+    assert op._encrypted_disk_cache_path(tmp_path).exists()
+    op.clear_caches(tmp_path)
+    assert not op._encrypted_disk_cache_path(tmp_path).exists()
+
+
+# ---------------------------------------------------------------------------
 # find_op
 # ---------------------------------------------------------------------------
 

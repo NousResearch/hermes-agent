@@ -153,8 +153,8 @@ def _bloat(n):
     # Stand-in for the oversized, post-compression "child" transcript that
     # could not be compressed any further (#35809). Alternates roles so the
     # fixture is a valid conversation: load_transcript is a live-replay
-    # restore site and heals alternation violations on load (#64934), so a
-    # degenerate all-user transcript would be merged into one message.
+    # restore site and repairs malformed assistant/tool structure on load
+    # (#64934); alternate roles here to model a normal replayable conversation.
     return [
         {
             "role": "user" if i % 2 == 0 else "assistant",

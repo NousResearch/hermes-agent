@@ -313,6 +313,25 @@ def _(rid, params: dict) -> dict:
         from tools.tts_streaming import mark_speech_interrupted
 
         mark_speech_interrupted()
+
+    raw_submitted_at = params.get("submitted_at")
+    try:
+        explicit_submitted_at = (
+            float(raw_submitted_at)
+            if raw_submitted_at is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        explicit_submitted_at = None
+    raw_message_id = params.get("message_id")
+    explicit_message_id = (
+        str(raw_message_id).strip() if raw_message_id is not None else None
+    ) or None
+    # JSON-RPC request ids are transport-local sequence numbers that may be
+    # reused after reconnect. Only a client-supplied stable source id belongs
+    # in canonical history / SessionDB platform_message_id.
+    message_id = explicit_message_id
+
     session, err = _sess_nowait(params, rid)
     if err:
         return err
@@ -340,12 +359,21 @@ def _(rid, params: dict) -> dict:
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
     # Re-bind to the current client transport for this request. This keeps
     # streaming events on the active websocket even if an earlier disconnect
-    # or fallback moved the session transport to stdio.
-    if (t := current_transport()) is not None:
-        session["transport"] = t
+    # or fallback moved the session transport to stdio. Any matching queued
+    # source is re-homed atomically with the bind: a reconnect retry must not
+    # leave its queue entry pinned to the disconnected websocket.
+    t = current_transport()
     while True:
         busy_transport = None
         with session["history_lock"]:
+            if t is not None:
+                _rebind_session_transport(
+                    session, t, message_id=explicit_message_id
+                )
+            if explicit_message_id is not None and _has_prompt_message_id(
+                session, explicit_message_id
+            ):
+                return _ok(rid, {"status": "duplicate"})
             if session.get("running"):
                 # Don't reject a mid-turn prompt — queue it (and, by default,
                 # interrupt the live turn) so it runs as the next turn. The
@@ -357,6 +385,8 @@ def _(rid, params: dict) -> dict:
         busy_response = _handle_busy_submit(
             rid, sid, session, text, busy_transport,
             queued=bool(params.get("queued")),
+            submitted_at=explicit_submitted_at,
+            message_id=message_id,
         )
         if busy_response is not None:
             return busy_response
@@ -369,6 +399,14 @@ def _(rid, params: dict) -> dict:
     # rowId rebinding (see comment at the assignment site).
     survivor_user_row_ids = None
     with session["history_lock"]:
+        # A Desktop queue entry keeps the same explicit ID across
+        # timeout/resume retries. Acknowledge an already-owned ID instead of
+        # accepting a duplicate turn. Do not dedupe the JSON-RPC request ID
+        # fallback: clients may reuse it after reconnect.
+        if explicit_message_id is not None and _has_prompt_message_id(
+            session, explicit_message_id
+        ):
+            return _ok(rid, {"status": "duplicate"})
         # A watch session's run lives in the PARENT turn, so its own running
         # flag is False — without this, typing mid-run builds a second agent
         # racing the in-flight child on the same stored session (interleaved
@@ -812,7 +850,21 @@ def _(rid, params: dict) -> dict:
                     },
                 )
                 return
-        _run_prompt_submit(rid, sid, session, text, display_kind=display_kind)
+        _run_prompt_submit(
+            rid,
+            sid,
+            session,
+            text,
+            display_kind=display_kind,
+            **{
+                key: value
+                for key, value in (
+                    ("submitted_at", explicit_submitted_at),
+                    ("message_id", message_id),
+                )
+                if value is not None
+            },
+        )
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
     # Keep a handle so session.interrupt can tell a live turn from a stuck

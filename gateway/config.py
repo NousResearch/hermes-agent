@@ -2751,7 +2751,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # config.platforms for start_gateway()'s connect loop to bring it up. The
     # connected-checker (Platform.RELAY in _PLATFORM_CONNECTED_CHECKERS) keys on
     # extra["relay_url"], so mirror the URL into extra here.
-    relay_url_env = os.getenv("GATEWAY_RELAY_URL", "").strip()
+    relay_url_env = getenv("GATEWAY_RELAY_URL", "").strip()
     relay_url_yaml = ""
     existing_relay = config.platforms.get(Platform.RELAY)
     if existing_relay is not None:
@@ -2776,10 +2776,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # Opt-out: GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true keeps direct
     # adapters running beside the relay for deployments that intentionally
     # mix both ingress paths. Like the trigger, it is a deploy-stamp env var,
-    # not a config.yaml setting.
-    allow_direct = os.getenv(
-        "GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS", ""
-    ).strip().lower() in ("1", "true", "yes", "on")
+    # not a config.yaml setting. Both reads go through the profile-scope-aware
+    # getenv so multiplexed profiles see their own values, not the process
+    # globals.
+    allow_direct = is_truthy_value(
+        getenv("GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS", "")
+    )
     if relay_url_env and not allow_direct:
         non_messaging = {Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK}
         for platform, platform_config in config.platforms.items():

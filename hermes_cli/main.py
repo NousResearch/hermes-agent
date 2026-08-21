@@ -590,12 +590,22 @@ def _apply_profile_override() -> None:
             break
         if arg == "--args" and _inside_mcp_add_args(i):
             break
+        # `hermes doctor --profile NAME` is a read-only inspection target,
+        # not the global profile override. The doctor subparser owns that
+        # spelling; retain the historical global override everywhere else.
+        doctor_before = "doctor" in argv[:i]
         if arg in {"--profile", "-p"} and i + 1 < len(argv):
+            if doctor_before:
+                i += 2
+                continue
             profile_name = argv[i + 1]
             consume = 2
             profile_index = i
             break
         if arg.startswith("--profile="):
+            if doctor_before:
+                i += 1
+                continue
             profile_name = arg.split("=", 1)[1]
             consume = 1
             profile_index = i
@@ -5621,6 +5631,29 @@ def cmd_hooks(args):
 
 def cmd_doctor(args):
     """Check configuration and dependencies."""
+    if getattr(args, "json", False) and not (
+        getattr(args, "profile", None) is not None
+        or getattr(args, "all_profiles", False)
+    ):
+        raise SystemExit("--json requires --profile NAME or --all-profiles")
+    if (
+        getattr(args, "profile", None) is not None
+        or getattr(args, "all_profiles", False)
+        or getattr(args, "json", False)
+    ):
+        from hermes_cli.profile_doctor import render_profile_doctor_report
+
+        try:
+            output = render_profile_doctor_report(
+                profile=getattr(args, "profile", None),
+                all_profiles=getattr(args, "all_profiles", False),
+                as_json=getattr(args, "json", False),
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(output)
+        return
+
     from hermes_cli.doctor import run_doctor
 
     run_doctor(args)

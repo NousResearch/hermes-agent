@@ -812,11 +812,26 @@ Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-relo
 
 ```bash
 hermes doctor [--fix]
+hermes doctor --profile NAME [--json]
+hermes doctor --all-profiles [--json]
 ```
+
+The default invocation remains the full configuration and dependency
+diagnostics. The profile-report modes are read-only and only expose composition
+metadata (never dotenv values, secrets, or message/session content). The
+`--json` option is valid with `--profile` or `--all-profiles`; it does not
+change the output format of the existing full doctor.
+
+The global `--profile NAME` form before the command continues to select the
+runtime profile for existing commands. The `hermes doctor --profile NAME` form
+is a non-mutating inspection of a named profile.
 
 | Option | Description |
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
+| `--profile NAME` | Report one named profile's composition. |
+| `--all-profiles` | Report the default profile and all discovered named profiles. |
+| `--json` | Emit deterministic, machine-readable JSON for the profile report. |
 
 ## `hermes dump`
 

@@ -278,8 +278,15 @@ def _record_codex_app_server_compaction(
     if not force:
         try:
             from agent.conversation_compression import COMPACTION_STATUS
+            from agent.context_engine import automatic_compaction_status_message
 
-            agent._emit_status(COMPACTION_STATUS)
+            status = automatic_compaction_status_message(
+                getattr(agent, "context_compressor", None),
+                phase="codex_native",
+                default_message=COMPACTION_STATUS,
+            )
+            if status:
+                agent._emit_status(status)
         except Exception:
             pass
 
@@ -307,6 +314,7 @@ def _record_codex_app_server_compaction(
             compressor.awaiting_real_usage_after_compression = True
 
     agent._last_compaction_in_place = False
+    agent._last_compaction_boundary = True
     try:
         if getattr(agent, "event_callback", None):
             agent.event_callback(

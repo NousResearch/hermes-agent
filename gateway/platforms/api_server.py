@@ -2208,6 +2208,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
+            ("GET", "/api/sessions/{session_id}/context", self._handle_session_context),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
@@ -2783,6 +2784,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        status_callback=None,
         gateway_session_key: Optional[str] = None,
         requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None,
@@ -3096,6 +3098,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "tool_progress_callback": tool_progress_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
+            "status_callback": status_callback,
             "session_db": self._ensure_session_db(),
             "fallback_model": fallback_model,
             "reasoning_config": reasoning_config,
@@ -3320,6 +3323,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "model_options": True,
                 "session_chat": True,
                 "session_chat_streaming": True,
+                "session_context_usage": True,
+                "session_compaction_events": True,
                 "session_fork": True,
                 "session_model_lock": True,
                 "admin_config_rw": False,
@@ -3379,6 +3384,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
                 "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
                 "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
+                "session_context": {"method": "GET", "path": "/api/sessions/{session_id}/context"},
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
@@ -4148,6 +4154,20 @@ class APIServerAdapter(BasePlatformAdapter):
         return payload
 
     @staticmethod
+    def _context_usage_from_session(session: Dict[str, Any]) -> Dict[str, Any]:
+        from agent.context_usage import build_context_usage
+
+        return build_context_usage(
+            used_tokens=session.get("context_used_tokens"),
+            context_window_tokens=session.get("context_window_tokens"),
+            compression_threshold_tokens=session.get("compression_threshold_tokens"),
+            compression_count=session.get("compression_count", 0),
+            compression_enabled=bool(session.get("context_compression_enabled", 1)),
+            compacted=bool(session.get("context_compacted", 0)),
+            updated_at=session.get("context_usage_updated_at") or 0.0,
+        )
+
+    @staticmethod
     def _message_response(message: Dict[str, Any]) -> Dict[str, Any]:
         message = _project_client_message(message)
         safe_keys = (
@@ -4188,6 +4208,31 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
+
+    async def _handle_session_context(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id}/context — latest context gauge."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        requested_session_id = request.match_info["session_id"]
+        session, err = await self._get_existing_session_or_404(requested_session_id)
+        if err:
+            return err
+        db = await self._ensure_session_db_async()
+        resolved_session_id = await asyncio.to_thread(
+            db.resolve_resume_session_id, requested_session_id
+        )
+        if resolved_session_id != requested_session_id:
+            resolved = await asyncio.to_thread(db.get_session, resolved_session_id)
+            if resolved:
+                session = resolved
+            else:
+                resolved_session_id = requested_session_id
+        return web.json_response({
+            "object": "hermes.session.context",
+            "session_id": resolved_session_id,
+            "context": self._context_usage_from_session(session),
+        })
 
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
         """GET /api/sessions — list persisted Hermes sessions."""
@@ -4753,6 +4798,21 @@ class APIServerAdapter(BasePlatformAdapter):
                 event_name = event_type.replace("tool.", "tool.")
                 _enqueue(event_name, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
+        def _status(kind: str, text: str = None) -> None:
+            from agent.context_engine import AutomaticCompactionStatus
+
+            is_compaction = isinstance(text, AutomaticCompactionStatus) or kind in {
+                "compacting",
+                "compacted",
+            }
+            message = str(text if text is not None else kind)
+            event_name = (
+                "context.compaction"
+                if is_compaction
+                else "lifecycle.status"
+            )
+            _enqueue(event_name, {"kind": str(kind), "message": message})
+
         async def _run_and_signal() -> None:
             try:
                 await queue.put(_event_payload("run.started", {
@@ -4769,6 +4829,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id,
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
+                    status_callback=_status,
                     active_run_id=run_id,
                     gateway_session_key=gateway_session_key,
                     route=route,
@@ -7130,6 +7191,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        status_callback=None,
         agent_ref: Optional[list] = None,
         active_run_id: Optional[str] = None,
         gateway_session_key: Optional[str] = None,
@@ -7205,6 +7267,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_progress_callback=tool_progress_callback,
                         tool_start_callback=tool_start_callback,
                         tool_complete_callback=tool_complete_callback,
+                        status_callback=status_callback,
                         gateway_session_key=gateway_session_key,
                         requested_model=requested_model,
                         requested_provider=requested_provider,
@@ -7259,6 +7322,41 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                     if _compacted_in_place or _session_rotated:
                         result["_compressed"] = True
+                    _compaction_boundary = bool(
+                        getattr(agent, "_last_compaction_boundary", False)
+                    )
+                    from agent.context_usage import build_context_usage
+
+                    context_usage = build_context_usage(
+                        engine=getattr(agent, "context_compressor", None),
+                        compression_enabled=getattr(agent, "compression_enabled", True),
+                        compacted=bool(
+                            _compacted_in_place
+                            or _session_rotated
+                            or _compaction_boundary
+                        ),
+                    )
+                    result["context"] = context_usage
+                    usage["context"] = dict(context_usage)
+                    try:
+                        db = self._ensure_session_db()
+                        if db is not None and isinstance(_eff_sid, str) and _eff_sid:
+                            db.update_session_context_usage(
+                                _eff_sid,
+                                used_tokens=context_usage["used_tokens"],
+                                context_window_tokens=context_usage["context_window_tokens"],
+                                compression_threshold_tokens=context_usage["compression_threshold_tokens"],
+                                compression_count=context_usage["compression_count"],
+                                compression_enabled=context_usage["compression_enabled"],
+                                compacted=context_usage["compacted"],
+                                updated_at=context_usage["updated_at"],
+                            )
+                    except Exception:
+                        logger.warning(
+                            "Failed to persist context usage for session=%s",
+                            _eff_sid or session_id or "",
+                            exc_info=True,
+                        )
                     include_runtime = bool(
                         requested_runtime
                         or route

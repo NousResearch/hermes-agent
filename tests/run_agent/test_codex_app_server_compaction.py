@@ -5,6 +5,7 @@ import pytest
 
 from agent.codex_runtime import _record_codex_app_server_compaction
 from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS, compress_context
+from agent.context_engine import AutomaticCompactionStatus
 from agent.transports.codex_app_server_session import TurnResult
 
 
@@ -121,6 +122,7 @@ def test_codex_app_server_compaction_heartbeat_refreshes_activity_while_waiting(
         agent._codex_session.result,
         agent.touch_calls,
     )
+    agent.context_compressor.emit_automatic_compaction_status = False
     messages = [{"role": "user", "content": "hi"}]
 
     returned, prompt = compress_context(
@@ -138,6 +140,8 @@ def test_codex_app_server_compaction_heartbeat_refreshes_activity_while_waiting(
     assert "context compression started" in agent.touch_calls
     assert "context compression in progress" in agent.touch_calls
     assert agent.touch_calls[-1] == "context compression completed"
+    assert agent.status_events[0] == ("lifecycle", COMPACTION_STATUS)
+    assert agent.status_events[-1] == ("compacted", COMPACTION_DONE_STATUS)
     from agent.session_activity import ActivityProvenance
 
     assert agent.touch_provenances
@@ -178,5 +182,23 @@ def test_codex_native_boundary_clears_stale_hermes_fallback_streak():
     )
 
     assert _record_codex_app_server_compaction(agent, turn) is True
+    assert agent._last_compaction_boundary is True
+    assert isinstance(agent.status_events[0][1], AutomaticCompactionStatus)
     assert compressor._fallback_compression_streak == 0
     assert compressor._verify_compaction_cleared_threshold is True
+
+
+def test_codex_native_compaction_respects_automatic_status_suppression():
+    agent = DummyAgent(
+        TurnResult(thread_id="thread-1", turn_id="normal-turn-1")
+    )
+    agent.context_compressor.emit_automatic_compaction_status = False
+    turn = TurnResult(
+        thread_id="thread-1",
+        turn_id="normal-turn-1",
+        compacted=True,
+    )
+
+    assert _record_codex_app_server_compaction(agent, turn) is True
+    assert agent._last_compaction_boundary is True
+    assert agent.status_events == []

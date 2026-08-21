@@ -6864,6 +6864,44 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
         self._execute_write(_do)
 
+    def update_session_context_usage(
+        self,
+        session_id: str,
+        *,
+        used_tokens: Optional[int],
+        context_window_tokens: Optional[int],
+        compression_threshold_tokens: Optional[int],
+        compression_count: int,
+        compression_enabled: bool,
+        compacted: bool,
+        updated_at: float,
+    ) -> None:
+        """Persist the latest current-window context gauge for a session."""
+        if not session_id:
+            return
+
+        def _do(conn):
+            conn.execute(
+                """UPDATE sessions SET
+                       context_used_tokens = ?, context_window_tokens = ?,
+                       compression_threshold_tokens = ?, compression_count = ?,
+                       context_compression_enabled = ?, context_compacted = ?,
+                       context_usage_updated_at = ?
+                   WHERE id = ?""",
+                (
+                    used_tokens,
+                    context_window_tokens,
+                    compression_threshold_tokens,
+                    max(0, int(compression_count or 0)),
+                    int(bool(compression_enabled)),
+                    int(bool(compacted)),
+                    float(updated_at),
+                    session_id,
+                ),
+            )
+
+        self._execute_write(_do)
+
     def update_system_prompt(
         self, session_id: str, system_prompt: Optional[str]
     ) -> None:

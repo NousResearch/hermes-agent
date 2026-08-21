@@ -4031,10 +4031,19 @@ def _compress_context_via_codex_app_server(
         len(messages),
         f"{approx_tokens:,}" if approx_tokens else "unknown",
     )
-    try:
-        agent._emit_status(COMPACTION_STATUS)
-    except Exception:
-        pass
+    _compaction_status = COMPACTION_STATUS
+    if not force:
+        _compaction_status = automatic_compaction_status_message(
+            agent.context_compressor,
+            phase="codex_hermes",
+            default_message=_compaction_status,
+        )
+    _compaction_status_emitted = bool(_compaction_status)
+    if _compaction_status:
+        try:
+            agent._emit_status(_compaction_status)
+        except Exception:
+            pass
 
     _compaction_done_emitted = False
 
@@ -4043,7 +4052,8 @@ def _compress_context_via_codex_app_server(
         if _compaction_done_emitted:
             return
         _compaction_done_emitted = True
-        _emit_compaction_done(agent)
+        if _compaction_status_emitted:
+            _emit_compaction_done(agent)
 
     _activity_heartbeat: Optional[_CompressionActivityHeartbeat] = None
     try:

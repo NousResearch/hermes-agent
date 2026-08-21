@@ -381,7 +381,10 @@ class TestAgentExecution:
         # here doesn't set an explicit session_id string so the guard skips
         # the annotation — header will fall back to the provided session_id.
         assert result["final_response"] == "ok"
-        assert usage == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+        assert usage["input_tokens"] == 1
+        assert usage["output_tokens"] == 2
+        assert usage["total_tokens"] == 3
+        assert isinstance(usage.get("context"), dict)
         create_kwargs = mock_create_agent.call_args.kwargs
         assert create_kwargs["requested_model"] == "MiniMax-M3"
         assert create_kwargs["requested_provider"] == "minimax"

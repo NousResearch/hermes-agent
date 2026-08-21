@@ -53,6 +53,10 @@ def sanitize_memory_context(memory_context: str) -> str:
     )
 
 
+class AutomaticCompactionStatus(str):
+    """Text carrying a structural automatic-compaction marker."""
+
+
 def automatic_compaction_status_message(
     engine: Any,
     *,
@@ -83,7 +87,7 @@ def automatic_compaction_status_message(
     if message is None:
         return None
     message = str(message).strip()
-    return message or None
+    return AutomaticCompactionStatus(message) if message else None
 
 
 class ContextEngine(ABC):

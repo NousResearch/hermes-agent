@@ -1700,6 +1700,39 @@ def test_public_index_uses_force_redaction_and_title_fallback() -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_projects_latest_safe_becky_response_without_tool_payloads() -> None:
+    store = FakeStore()
+    store.transcripts["session-1"] = [
+        {
+            "role": "user",
+            "content": "Can you check the reading?",
+            "timestamp": 1_755_104_400.0,
+        },
+        {
+            "role": "assistant",
+            "content": '{"output":"raw tool data", "exit_code":0}',
+            "timestamp": 1_755_104_450.0,
+        },
+        {
+            "role": "assistant",
+            "content": "The reading is ready to review.",
+            "timestamp": 1_755_104_460.0,
+        },
+    ]
+    server = BeckyLoopsBridgeServer(
+        config=config(), store=store, summarizer=FakeSummarizer()
+    )
+
+    result = await server._method("becky.loops.list", {})
+
+    item = result["loops"][0]
+    assert item["last_becky_response"] == "The reading is ready to review."
+    assert item["last_becky_response_at"] == "2025-08-13T17:01:00+00:00"
+    assert "session_id" not in item
+    assert "raw tool data" not in json.dumps(item)
+
+
+@pytest.mark.asyncio
 async def test_bridge_never_advertises_unproven_topic_control_or_identifiers() -> None:
     store = FakeStore()
     store.rows[0]["thread_id"] = "thread-9"

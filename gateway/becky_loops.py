@@ -25,8 +25,13 @@ from gateway.becky_loop_summarizer import (
     LoopSummary,
     LoopSummarizer,
     SummaryUnavailable,
+    _TOOL_ENVELOPE_PATTERN,
     _ConversationTooLarge,
     _SummaryValidationError,
+    _is_tool_result_json,
+    _is_visible_entry,
+    _parse_timestamp,
+    _remove_embedded_tool_result_json,
 )
 from gateway.becky_loop_reply import (
     AsyncAuxiliaryReplyProvider,
@@ -326,6 +331,27 @@ def _redact(value: str) -> str:
     return text
 
 
+def _latest_public_becky_response(
+    transcript: list[dict[str, Any]], hidden_values: set[str]
+) -> tuple[str | None, datetime | None]:
+    """Return the newest safe assistant turn without exposing tool output."""
+    for message in reversed(transcript):
+        if not _is_visible_entry(message) or message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        cleaned = _TOOL_ENVELOPE_PATTERN.sub(" ", content)
+        cleaned = _remove_embedded_tool_result_json(cleaned).strip()
+        if not cleaned or _is_tool_result_json(cleaned):
+            continue
+        response = _safe_public_text(cleaned, hidden_values, 2_000)
+        if not response or response == "[REDACTED]":
+            continue
+        return response, _parse_timestamp(message.get("timestamp"))
+    return None, None
+
+
 def source_ref_for(*, chat_id: str, thread_id: str) -> str:
     digest = hashlib.sha256(f"telegram\0{chat_id}\0{thread_id}".encode()).digest()
     encoded = base64.urlsafe_b64encode(digest).decode().rstrip("=")
@@ -394,6 +420,28 @@ class SessionDBBeckyLoopsStore:
                 continue
             ref = source_ref_for(chat_id=str(chat_id), thread_id=thread_id)
             transcript = self.transcript(session_id)
+            hidden_values = {
+                str(chat_id),
+                session_id,
+                thread_id,
+                ref,
+            }
+            for message in transcript:
+                for key in (
+                    "id",
+                    "platform_message_id",
+                    "telegram_message_id",
+                    "chat_id",
+                    "thread_id",
+                    "session_id",
+                    "user_id",
+                ):
+                    value = message.get(key)
+                    if value not in (None, ""):
+                        hidden_values.add(str(value))
+            last_response, last_response_at = _latest_public_becky_response(
+                transcript, hidden_values
+            )
             revision_input = {**raw, "source_ref": ref}
             source_state = "active" if raw.get("ended_at") is None else "closed"
             item = {
@@ -413,6 +461,8 @@ class SessionDBBeckyLoopsStore:
                 "telegram_url": None,
                 "session_id": session_id,
                 "thread_id": thread_id,
+                "last_becky_response": last_response,
+                "last_becky_response_at": last_response_at,
                 "_revision_input": revision_input,
             }
             if ref in self._source_rows:
@@ -1164,12 +1214,44 @@ class BeckyLoopsBridgeServer:
             str(row.get("thread_id") or ""),
             str(row.get("source_ref") or ""),
         }
+        if "last_becky_response" in row:
+            last_response = row.get("last_becky_response")
+            last_response_at = row.get("last_becky_response_at")
+        else:
+            session_id = str(row.get("session_id") or "")
+            transcript = self.store.transcript(session_id) if session_id else []
+            for message in transcript:
+                for key in (
+                    "id",
+                    "platform_message_id",
+                    "telegram_message_id",
+                    "chat_id",
+                    "thread_id",
+                    "session_id",
+                    "user_id",
+                ):
+                    value = message.get(key)
+                    if value not in (None, ""):
+                        hidden_values.add(str(value))
+            last_response, last_response_at = _latest_public_becky_response(
+                transcript, hidden_values
+            )
         title = (
             _safe_public_text(row.get("title") or "Telegram loop", hidden_values, 128)
             or "Telegram loop"
         )
         if title == "[REDACTED]" or title.startswith("«redacted"):
             title = "Telegram loop"
+        if isinstance(last_response, str):
+            last_response = _safe_public_text(last_response, hidden_values, 2_000)
+            if not last_response or last_response == "[REDACTED]":
+                last_response = None
+        else:
+            last_response = None
+        if isinstance(last_response_at, datetime):
+            response_at = last_response_at.isoformat()
+        else:
+            response_at = None
         return {
             "source_ref": row["source_ref"],
             "title": title,
@@ -1179,6 +1261,8 @@ class BeckyLoopsBridgeServer:
             "created_at": _utc_datetime(row.get("created_at")).isoformat(),
             "updated_at": _utc_datetime(row.get("updated_at")).isoformat(),
             "telegram_url": None,
+            "last_becky_response": last_response,
+            "last_becky_response_at": response_at,
         }
 
     def _public_summary(

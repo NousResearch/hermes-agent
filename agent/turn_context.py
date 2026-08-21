@@ -337,6 +337,25 @@ def _compression_warrants_another_preflight_pass(
     )
 
 
+def _preflight_block_outlived_its_request(
+    blocked_at_tokens: int, current_tokens: int
+) -> bool:
+    """Whether an "insufficient progress" verdict still describes this request.
+
+    The verdict above is a statement about one request shape: compacting *that*
+    transcript did not pay for itself. A turn keeps appending tool results
+    afterwards, and once the request has grown materially past the size that
+    produced the verdict it is a different transcript — one with new bulk that
+    was never offered to the compressor. Left armed, the block keeps the
+    pre-API gate dark for the rest of the turn while the request runs at the
+    window edge, where providers clip and models start returning empty turns.
+
+    Growth is judged with the same 5% materiality margin the shrink test uses,
+    so the gate re-arms on exactly the scale of change it took to keep it open.
+    """
+    return blocked_at_tokens > 0 and current_tokens > blocked_at_tokens * 1.05
+
+
 def _should_run_preflight_estimate(
     messages: List[Dict[str, Any]],
     protect_first_n: int,
@@ -426,6 +445,9 @@ class TurnContext:
     ext_prefetch_cache: str = ""
     # Turn-start preflight already proved an immediate retry ineffective.
     preflight_compression_blocked: bool = False
+    # Request size that verdict was made about, so the loop can tell when the
+    # transcript has grown into a different one and the block should lift.
+    preflight_blocked_at_tokens: int = 0
 
 
 def build_turn_context(
@@ -864,6 +886,7 @@ def build_turn_context(
     # issue #27405 (a few very large messages slipping past the count gate).
     _preflight_compressed = False
     _preflight_compression_blocked = False
+    _preflight_blocked_at_tokens = 0
     agent._turn_received_provider_response = False
     agent._turn_preflight_display_snapshot = None
     if agent.compression_enabled and _should_run_preflight_estimate(
@@ -1045,6 +1068,7 @@ def build_turn_context(
                     _orig_len, len(messages), _orig_tokens, _preflight_tokens
                 ):
                     _preflight_compression_blocked = True
+                    _preflight_blocked_at_tokens = _preflight_tokens
                     break  # Cannot compress further: neither rows nor tokens moved
                 conversation_history = conversation_history_after_compression(
                     agent, messages, conversation_history
@@ -1062,6 +1086,7 @@ def build_turn_context(
                     _compressor.threshold_tokens,
                 ):
                     _preflight_compression_blocked = True
+                    _preflight_blocked_at_tokens = _preflight_tokens
                     logger.warning(
                         "Preflight compression made insufficient progress: "
                         "~%s -> ~%s request tokens; skipping additional passes",
@@ -1465,4 +1490,5 @@ def build_turn_context(
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,
         preflight_compression_blocked=_preflight_compression_blocked,
+        preflight_blocked_at_tokens=_preflight_blocked_at_tokens,
     )

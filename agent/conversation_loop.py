@@ -41,6 +41,7 @@ from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_metadata import append_message
 from agent.turn_context import (
     _compression_warrants_another_preflight_pass,
+    _preflight_block_outlived_its_request,
     build_turn_context,
     compose_user_api_content,
     reanchor_current_turn_user_idx,
@@ -1907,6 +1908,7 @@ def run_conversation(
     max_compression_attempts = getattr(agent, "max_compression_attempts", 3)
     _last_preflight_pressure: Optional[int] = None
     _preflight_compression_blocked = _ctx.preflight_compression_blocked
+    _preflight_blocked_at_tokens = _ctx.preflight_blocked_at_tokens
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
     # Last composed answer intentionally held back by a verification gate. If
     # that continuation consumes the remaining budget, this is the best
@@ -2570,6 +2572,20 @@ def run_conversation(
         # system text.
         _previous_preflight_pressure = _last_preflight_pressure
         _last_preflight_pressure = None
+        if _preflight_compression_blocked and _preflight_block_outlived_its_request(
+            _preflight_blocked_at_tokens, request_pressure_tokens
+        ):
+            # The verdict was about a smaller request. Everything appended
+            # since was never offered to the compressor, so re-arm the gate
+            # rather than ride the window edge until the provider complains.
+            logger.info(
+                "Pre-API compression re-armed: request grew ~%s -> ~%s "
+                "request tokens since the insufficient-progress verdict",
+                f"{_preflight_blocked_at_tokens:,}",
+                f"{request_pressure_tokens:,}",
+            )
+            _preflight_compression_blocked = False
+            _preflight_blocked_at_tokens = 0
         if (
             _previous_preflight_pressure is not None
             and request_pressure_tokens >= _preflight_threshold
@@ -2584,6 +2600,7 @@ def run_conversation(
             # request truly does not fit, its error handler may still compact
             # with that stronger signal.
             _preflight_compression_blocked = True
+            _preflight_blocked_at_tokens = request_pressure_tokens
             logger.warning(
                 "Pre-API compression made insufficient progress: ~%s -> "
                 "~%s request tokens; skipping additional preflight passes",
@@ -4126,6 +4143,7 @@ def run_conversation(
                         # later pressure spike would grow unchecked until the
                         # provider's overflow handler fired.
                         _preflight_compression_blocked = False
+                        _preflight_blocked_at_tokens = 0
                         _last_preflight_pressure = None
 
                     # Stash this response's canonical usage so the post-turn
@@ -6601,6 +6619,7 @@ def run_conversation(
             # call (#84733). Hoisted here (the single consumer) so every
             # activation site — including ones added later — gets it.
             _preflight_compression_blocked = False
+            _preflight_blocked_at_tokens = 0
             continue
 
         if _retry.restart_with_length_continuation:

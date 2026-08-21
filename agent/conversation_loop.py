@@ -4602,6 +4602,17 @@ def run_conversation(
                     # every subsequent message queued behind the stuck turn —
                     # the P1 in issue #21160. The 404 passes the 4xx gate below.
                     "no endpoints found that support image input",
+                    # Text-only serving endpoints (Crusoe serverless, vLLM
+                    # deployments of text-only checkpoints, various
+                    # OpenAI-compatible hosts) reject any request whose
+                    # history contains an image with HTTP 400
+                    # "<model-id> is not a multimodal model". Without this
+                    # phrase the image stays in history, every retry fails
+                    # identically, and the session is poisoned until manual
+                    # intervention. Observed live by block/buzz on
+                    # crusoeai/GLM-5.2-NVFP4 (block/buzz#5318: 8 wedged
+                    # trials, 12.7h aggregate idle-after-poison).
+                    "not a multimodal model",
                 )
                 _err_lower = _err_body.lower()
                 _looks_like_image_rejection = any(

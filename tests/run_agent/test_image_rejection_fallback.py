@@ -139,6 +139,7 @@ class TestImageRejectionPhraseIsolation:
         "model does not support image",
         "image_url'. expected",
         "no endpoints found that support image input",
+        "not a multimodal model",
     )
 
     def _matches(self, body: str) -> bool:
@@ -154,6 +155,33 @@ class TestImageRejectionPhraseIsolation:
             "image too large: 6291456 bytes > 5242880 limit",
             "image_too_large",
             "image size exceeds per-request limit",
+        ]
+        for body in bodies:
+            assert self._matches(body) is False, f"false positive on: {body}"
+
+    def test_text_only_endpoint_multimodal_rejection_trips(self):
+        """Crusoe/vLLM text-only endpoints reject imaged history with
+        "<model-id> is not a multimodal model" (HTTP 400). This must route
+        to the strip-images fallback or the session poisons permanently —
+        observed live by block/buzz on crusoeai/GLM-5.2-NVFP4
+        (block/buzz#5318: 8 wedged benchmark trials).
+        """
+        bodies = [
+            "400: crusoeai/GLM-5.2-NVFP4 is not a multimodal model",
+            "Error: my-org/text-model-v2 is not a multimodal model.",
+        ]
+        for body in bodies:
+            assert self._matches(body) is True, f"missed rejection: {body}"
+
+    def test_multimodal_tool_content_shapes_do_not_trip(self):
+        # From agent/error_classifier.py _MULTIMODAL_TOOL_CONTENT_PATTERNS —
+        # these mean "tool message content must be a string", recovered by
+        # downgrading tool content to text, NOT by stripping all images
+        # session-wide.
+        bodies = [
+            "tool message content must be a string",
+            "expected string, got list",
+            "text is not set",
         ]
         for body in bodies:
             assert self._matches(body) is False, f"false positive on: {body}"

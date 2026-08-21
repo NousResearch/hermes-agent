@@ -167,3 +167,75 @@ class TestSanitizeGeminiToolParameters:
         assert "1440" in aad["description"]
         # And the string-enum sibling is untouched.
         assert cleaned["properties"]["action"]["enum"] == ["create_thread"]
+
+
+class TestNoTypelessNodes:
+    """Gemini's FunctionDeclaration validator rejects a Schema with no type.
+
+    A property whose entire definition is an unsupported keyword ($ref to a
+    $defs entry, a const-only node) lost every key to the allow-list and
+    collapsed to {}. One such property failed the whole GenerateContentRequest
+    with HTTP 400 before any token was produced.
+    """
+
+    def test_ref_property_degrades_to_a_typed_node(self):
+        out = sanitize_gemini_schema(
+            {
+                "type": "object",
+                "properties": {"cfg": {"$ref": "#/$defs/Cfg"}},
+                "required": ["cfg"],
+            }
+        )
+        cfg = out["properties"]["cfg"]
+        assert cfg != {}
+        assert cfg["type"] == "object"
+        assert cfg["properties"] == {}
+
+    def test_const_only_property_degrades_to_a_typed_node(self):
+        out = sanitize_gemini_schema(
+            {"type": "object", "properties": {"k": {"const": "fixed"}}}
+        )
+        assert "type" in out["properties"]["k"]
+
+    def test_oneof_is_translated_to_anyof(self):
+        """oneOf is not in Gemini's subset; its branches must not be dropped."""
+        out = sanitize_gemini_schema(
+            {
+                "type": "object",
+                "properties": {
+                    "v": {"oneOf": [{"type": "string"}, {"type": "integer"}]}
+                },
+                "required": ["v"],
+            }
+        )
+        assert out["properties"]["v"]["anyOf"] == [
+            {"type": "string"},
+            {"type": "integer"},
+        ]
+
+    def test_allof_is_translated_to_anyof(self):
+        out = sanitize_gemini_schema(
+            {"type": "object", "properties": {"v": {"allOf": [{"type": "string"}]}}}
+        )
+        assert out["properties"]["v"]["anyOf"] == [{"type": "string"}]
+
+    def test_existing_anyof_wins_over_oneof(self):
+        out = sanitize_gemini_schema(
+            {
+                "anyOf": [{"type": "string"}],
+                "oneOf": [{"type": "integer"}],
+            }
+        )
+        assert out["anyOf"] == [{"type": "string"}]
+
+    def test_ordinary_schema_is_unchanged(self):
+        schema = {
+            "type": "object",
+            "properties": {"p": {"type": "string", "description": "d"}},
+            "required": ["p"],
+        }
+        assert sanitize_gemini_schema(schema) == schema
+
+    def test_array_items_unchanged(self):
+        schema = {"type": "array", "items": {"type": "string"}}
+        assert sanitize_gemini_schema(schema) == schema

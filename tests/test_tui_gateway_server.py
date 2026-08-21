@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -339,6 +340,38 @@ def test_compute_host_explicit_images_do_not_clear_later_attachment(monkeypatch)
 
     assert response["result"]["status"] == "streaming"
     assert session["attached_images"] == ["/tmp/c.png"]
+
+
+def test_prompt_submit_unknown_session_logs_warning(caplog):
+    """A submit against a reaped runtime id must leave a diagnosable trace.
+
+    Regression for #90428: messages sent into a session whose in-memory
+    runtime was detached on WS disconnect and orphan-reaped vanished
+    silently — the 4001 was never logged, so "request arrived and was
+    rejected" was indistinguishable from "request never arrived".
+    """
+    for session in list(server._sessions.values()):
+        server._teardown_session(session)
+    server._sessions.clear()
+
+    with caplog.at_level(logging.WARNING, logger="tui_gateway.server"):
+        resp = _dispatch_sync(
+            {
+                "id": "r1",
+                "method": "prompt.submit",
+                "params": {"session_id": "gone-sid", "text": "hello"},
+            }
+        )
+
+    assert resp == {
+        "jsonrpc": "2.0",
+        "id": "r1",
+        "error": {"code": 4001, "message": "session not found"},
+    }
+    assert any(
+        "session-scoped RPC rejected" in rec.message and "gone-sid" in rec.message
+        for rec in caplog.records
+    )
 
 
 def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monkeypatch):

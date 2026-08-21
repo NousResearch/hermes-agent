@@ -1193,9 +1193,23 @@ class WeixinAdapter(BasePlatformAdapter):
         self._poll_task: Optional[asyncio.Task] = None
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
 
-        self._account_id = str(extra.get("account_id") or _wx_secret("WEIXIN_ACCOUNT_ID", "")).strip()
-        self._token = str(config.token or extra.get("token") or _wx_secret("WEIXIN_TOKEN", "")).strip()
-        self._base_url = str(extra.get("base_url") or _wx_secret("WEIXIN_BASE_URL", ILINK_BASE_URL)).strip().rstrip("/")
+        self._account_id = str(
+            extra.get("account_id")
+            or ("" if extra.get("_disable_env_credentials") else _wx_secret("WEIXIN_ACCOUNT_ID", ""))
+        ).strip()
+        self._shared_dm_session = str(extra.get("shared_dm_session") or "").strip()
+        self._shared_dm_users = set(self._coerce_list(extra.get("shared_dm_users")))
+        self._shared_dm_sender_name = str(extra.get("shared_dm_sender_name") or "").strip()
+        self._token = str(
+            config.token
+            or extra.get("token")
+            or ("" if extra.get("_disable_env_credentials") else _wx_secret("WEIXIN_TOKEN", ""))
+        ).strip()
+        self._base_url = str(
+            extra.get("base_url")
+            or ("" if extra.get("_disable_env_credentials") else _wx_secret("WEIXIN_BASE_URL", ILINK_BASE_URL))
+            or ILINK_BASE_URL
+        ).strip().rstrip("/")
         self._cdn_base_url = str(
             extra.get("cdn_base_url") or _wx_secret("WEIXIN_CDN_BASE_URL", WEIXIN_CDN_BASE_URL)
         ).strip().rstrip("/")
@@ -1294,6 +1308,17 @@ class WeixinAdapter(BasePlatformAdapter):
         if isinstance(value, (list, tuple, set)):
             return [str(item).strip() for item in value if str(item).strip()]
         return [str(value).strip()] if str(value).strip() else []
+
+    def _shared_session_id_for_sender(self, sender_id: str) -> Optional[str]:
+        """Return the configured shared DM identity for an authorized sender."""
+        if self._shared_dm_session and sender_id in self._shared_dm_users:
+            return self._shared_dm_session
+        return None
+
+    def _display_name_for_sender(self, sender_id: str) -> str:
+        if self._shared_session_id_for_sender(sender_id) and self._shared_dm_sender_name:
+            return self._shared_dm_sender_name
+        return sender_id
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not check_weixin_requirements():
@@ -1518,8 +1543,14 @@ class WeixinAdapter(BasePlatformAdapter):
             chat_id=effective_chat_id,
             chat_type=chat_type,
             user_id=sender_id,
-            user_name=sender_id,
+            user_name=self._display_name_for_sender(sender_id),
         )
+        source.shared_session_id = (
+            self._shared_session_id_for_sender(sender_id)
+            if chat_type == "dm"
+            else None
+        )
+        source.transport_account_id = self._account_id
         event = MessageEvent(
             text=text,
             message_type=_message_type_from_media(media_types, text),
@@ -2348,6 +2379,196 @@ class WeixinAdapter(BasePlatformAdapter):
         return _wrap_copy_friendly_lines_for_weixin(_normalize_markdown_blocks(content))
 
 
+
+
+class WeixinMultiAccountAdapter(BasePlatformAdapter):
+    """Run multiple independent iLink accounts behind one Hermes session store.
+
+    Each child owns its own token, long-poll loop, context-token cache, and
+    outbound transport. The gateway sees one Weixin platform adapter, while
+    the child's transport reference keeps replies on the account that received
+    the message.
+    """
+
+    def __init__(self, config: PlatformConfig):
+        super().__init__(config, Platform.WEIXIN)
+        raw_accounts = (config.extra or {}).get("accounts") or []
+        if not isinstance(raw_accounts, list) or not raw_accounts:
+            raise ValueError("Weixin multi-account configuration requires a non-empty accounts list")
+        account_ids = [
+            str((account or {}).get("account_id") or "").strip()
+            for account in raw_accounts
+            if isinstance(account, dict)
+        ]
+        if len(account_ids) != len(set(account_ids)):
+            raise ValueError("Weixin multi-account configuration contains duplicate account_id values")
+        self._children: List[WeixinAdapter] = [
+            WeixinAdapter(self._child_config(config, account))
+            for account in raw_accounts
+            if isinstance(account, dict)
+        ]
+        if not self._children:
+            raise ValueError("Weixin multi-account configuration contains no valid account entries")
+        self._share_runtime_state()
+
+    @staticmethod
+    def _child_config(parent: PlatformConfig, account: Dict[str, Any]) -> PlatformConfig:
+        parent_extra = dict(parent.extra or {})
+        parent_extra.pop("accounts", None)
+        for key in ("account_id", "token", "base_url", "cdn_base_url"):
+            parent_extra.pop(key, None)
+        child_extra = dict(parent_extra)
+        nested_extra = account.get("extra")
+        if isinstance(nested_extra, dict):
+            child_extra.update(nested_extra)
+        for key in (
+            "account_id",
+            "token",
+            "base_url",
+            "cdn_base_url",
+            "dm_policy",
+            "group_policy",
+            "allow_from",
+            "group_allow_from",
+            "shared_dm_session",
+            "shared_dm_users",
+            "shared_dm_sender_name",
+        ):
+            if key in account:
+                child_extra[key] = account[key]
+        token = account.get("token") or child_extra.get("token")
+        account_id = str(child_extra.get("account_id") or "").strip()
+        if not account_id:
+            raise ValueError("Each Weixin account entry requires account_id")
+        if Path(account_id).name != account_id:
+            raise ValueError("Weixin account_id must be a single filename-safe identifier")
+        child_extra["_disable_env_credentials"] = True
+        if not token and account_id:
+            saved = load_weixin_account(str(get_hermes_home()), account_id) or {}
+            token = saved.get("token")
+            if not child_extra.get("base_url") and saved.get("base_url"):
+                child_extra["base_url"] = saved["base_url"]
+        return PlatformConfig(
+            enabled=True,
+            token=str(token) if token else None,
+            reply_to_mode=parent.reply_to_mode,
+            gateway_restart_notification=parent.gateway_restart_notification,
+            typing_indicator=parent.typing_indicator,
+            typing_status_text=parent.typing_status_text,
+            extra=child_extra,
+        )
+
+    @property
+    def name(self) -> str:
+        return f"Weixin ({len(self._children)} accounts)"
+
+    def _share_runtime_state(self) -> None:
+        for child in self._children:
+            child._active_sessions = self._active_sessions
+            child._pending_messages = self._pending_messages
+            child._session_tasks = self._session_tasks
+
+    def _propagate(self, method: str, *args: Any) -> None:
+        for child in self._children:
+            getattr(child, method)(*args)
+
+    def set_message_handler(self, handler: Any) -> None:
+        super().set_message_handler(handler)
+        self._propagate("set_message_handler", handler)
+
+    def set_fatal_error_handler(self, handler: Any) -> None:
+        super().set_fatal_error_handler(handler)
+        self._propagate("set_fatal_error_handler", handler)
+
+    def set_session_store(self, session_store: Any) -> None:
+        super().set_session_store(session_store)
+        self._propagate("set_session_store", session_store)
+
+    def set_busy_session_handler(self, handler: Any) -> None:
+        super().set_busy_session_handler(handler)
+        self._propagate("set_busy_session_handler", handler)
+
+    def set_reaction_handler(self, handler: Any) -> None:
+        super().set_reaction_handler(handler)
+        self._propagate("set_reaction_handler", handler)
+
+    def set_topic_recovery_fn(self, fn: Any) -> None:
+        super().set_topic_recovery_fn(fn)
+        self._propagate("set_topic_recovery_fn", fn)
+
+    def set_authorization_check(self, callback: Any) -> None:
+        super().set_authorization_check(callback)
+        self._propagate("set_authorization_check", callback)
+
+    def set_platform_event_handler(self, handler: Any) -> None:
+        super().set_platform_event_handler(handler)
+        self._propagate("set_platform_event_handler", handler)
+
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        runner = getattr(self, "gateway_runner", None)
+        for child in self._children:
+            child.gateway_runner = runner
+            child._gateway_transport_child = True
+            child._busy_text_mode = self._busy_text_mode
+        results = await asyncio.gather(
+            *(child.connect(is_reconnect=is_reconnect) for child in self._children),
+            return_exceptions=True,
+        )
+        failures = [result for result in results if isinstance(result, Exception)]
+        for failure in failures:
+            logger.error("[%s] child account failed to connect: %s", self.name, failure)
+        self._running = all(result is True for result in results)
+        if not self._running:
+            await self.disconnect()
+        return self._running
+
+    async def cancel_background_tasks(self) -> None:
+        await super().cancel_background_tasks()
+        await asyncio.gather(
+            *(child.cancel_background_tasks() for child in self._children),
+            return_exceptions=True,
+        )
+
+    async def disconnect(self) -> None:
+        await asyncio.gather(
+            *(child.disconnect() for child in self._children),
+            return_exceptions=True,
+        )
+        self._running = False
+
+    def _child_for_metadata(self, metadata: Optional[Dict[str, Any]]) -> Optional[WeixinAdapter]:
+        account_id = str((metadata or {}).get("weixin_account_id") or "").strip()
+        if not account_id:
+            return None
+        return next(
+            (child for child in self._children if child._account_id == account_id),
+            None,
+        )
+
+    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
+                   metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        child = self._child_for_metadata(metadata)
+        if child is None:
+            return SendResult(
+                success=False,
+                error="Weixin multi-account send requires transport account provenance",
+            )
+        return await child.send(chat_id, content, reply_to, metadata)
+
+    async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+        child = self._child_for_metadata(metadata)
+        if child is not None:
+            await child.send_typing(chat_id, metadata)
+
+    async def stop_typing(self, chat_id: str) -> None:
+        # Typing calls from inbound processing run on the child adapter. The
+        # wrapper cannot safely guess an account when no source is available.
+        return None
+
+    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+        raise RuntimeError("Weixin multi-account get_chat_info requires an account selector")
+
+
 async def send_weixin_direct(
     *,
     extra: Dict[str, Any],
@@ -2361,6 +2582,13 @@ async def send_weixin_direct(
 
     This bypasses the long-poll adapter lifecycle and uses the raw API directly.
     """
+    if isinstance(extra.get("accounts"), list) and extra.get("accounts"):
+        return {
+            "error": (
+                "Weixin has multiple iLink accounts configured; direct sends require "
+                "an inbound account context and are not supported without an account selector."
+            )
+        }
     account_id = str(extra.get("account_id") or _wx_secret("WEIXIN_ACCOUNT_ID", "")).strip()
     base_url = str(extra.get("base_url") or _wx_secret("WEIXIN_BASE_URL", ILINK_BASE_URL)).strip().rstrip("/")
     cdn_base_url = str(extra.get("cdn_base_url") or _wx_secret("WEIXIN_CDN_BASE_URL", WEIXIN_CDN_BASE_URL)).strip().rstrip("/")

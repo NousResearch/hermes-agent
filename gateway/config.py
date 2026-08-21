@@ -880,9 +880,36 @@ def _has_usable_api_server_key(key: object) -> bool:
     return has_usable_secret(key, min_length=16)
 
 
+def _weixin_accounts_configured(config: PlatformConfig) -> bool:
+    """Return True when every configured iLink account has saved credentials."""
+    accounts = (config.extra or {}).get("accounts")
+    if not isinstance(accounts, list) or not accounts:
+        return False
+    account_dir = get_hermes_home() / "weixin" / "accounts"
+    seen_ids: set[str] = set()
+    for account in accounts:
+        if not isinstance(account, dict):
+            return False
+        account_id = str(account.get("account_id") or "").strip()
+        if not account_id or Path(account_id).name != account_id or account_id in seen_ids:
+            return False
+        seen_ids.add(account_id)
+        if account.get("token") or (account.get("extra") or {}).get("token"):
+            continue
+        saved = account_dir / f"{account_id}.json"
+        try:
+            payload = json.loads(saved.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return False
+        if not isinstance(payload, dict) or not str(payload.get("token") or "").strip():
+            return False
+    return True
+
+
 _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] = {
-    Platform.WEIXIN: lambda cfg: bool(
-        cfg.extra.get("account_id") and (cfg.token or cfg.extra.get("token"))
+    Platform.WEIXIN: lambda cfg: (
+        bool(cfg.extra.get("account_id") and (cfg.token or cfg.extra.get("token")))
+        or _weixin_accounts_configured(cfg)
     ),
     Platform.WHATSAPP_CLOUD: lambda cfg: bool(
         cfg.extra.get("phone_number_id") and cfg.extra.get("access_token")
@@ -1034,8 +1061,8 @@ class GatewayConfig:
         # the generic token branch doesn't let it through without account_id).
         if platform == Platform.WEIXIN:
             return bool(
-                config.extra.get("account_id")
-                and (config.token or config.extra.get("token"))
+                (config.extra.get("account_id") and (config.token or config.extra.get("token")))
+                or _weixin_accounts_configured(config)
             )
 
         # Generic token/api_key auth covers Telegram, Discord, Slack, etc.

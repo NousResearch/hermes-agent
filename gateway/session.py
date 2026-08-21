@@ -182,6 +182,13 @@ class SessionSource:
     # None => the gateway's active/default profile. Drives both session-key
     # namespacing and the per-turn config/credential scope.
     profile: Optional[str] = None
+    # Configured multi-user session identity. This is intentionally separate
+    # from ``chat_id``: DMs still route replies to the actual sender while
+    # selected users share one conversation context.
+    shared_session_id: Optional[str] = None
+    # Stable transport account used to route deferred/recovered replies after
+    # the in-process adapter weak reference is gone.
+    transport_account_id: Optional[str] = None
     # Transport-local fail-closed signal for an explicit profile route whose
     # target is not served. Excluded from repr/equality and wire serialization.
     profile_route_rejected: bool = field(default=False, repr=False, compare=False)
@@ -279,6 +286,10 @@ class SessionSource:
             d["message_id"] = self.message_id
         if self.profile:
             d["profile"] = self.profile
+        if self.shared_session_id:
+            d["shared_session_id"] = self.shared_session_id
+        if self.transport_account_id:
+            d["transport_account_id"] = self.transport_account_id
         if self.auto_thread_created:
             d["auto_thread_created"] = True
         if self.auto_thread_initial_name:
@@ -306,6 +317,8 @@ class SessionSource:
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
             profile=data.get("profile"),
+            shared_session_id=data.get("shared_session_id"),
+            transport_account_id=data.get("transport_account_id"),
             auto_thread_created=bool(data.get("auto_thread_created", False)),
             auto_thread_initial_name=data.get("auto_thread_initial_name"),
             prospective_thread_id=data.get("prospective_thread_id"),
@@ -1060,6 +1073,12 @@ def is_shared_multi_user_session(
       - Non-thread group/channel sessions are shared unless
         ``group_sessions_per_user`` is True (default: True = isolated).
     """
+    if (
+        getattr(source, "shared_session_id", None)
+        and source.platform == Platform.WEIXIN
+        and source.chat_type == "dm"
+    ):
+        return True
     if source.chat_type == "dm":
         return False
     if source.thread_id:
@@ -1127,6 +1146,15 @@ def build_session_key(
     """
     ns = _session_key_namespace(profile)
     platform = source.platform.value
+    if (
+        getattr(source, "shared_session_id", None)
+        and source.platform == Platform.WEIXIN
+        and source.chat_type == "dm"
+    ):
+        return ":".join(
+            str(part)
+            for part in (ns, platform, "dm", "shared", source.shared_session_id)
+        )
     slack_scope_id = (
         str(source.scope_id)
         if source.platform == Platform.SLACK and source.scope_id

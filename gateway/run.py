@@ -15856,11 +15856,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return SignalAdapter(config)
 
         elif platform == Platform.WEIXIN:
-            from gateway.platforms.weixin import WeixinAdapter, check_weixin_requirements
+            from gateway.platforms.weixin import (
+                WeixinAdapter,
+                WeixinMultiAccountAdapter,
+                check_weixin_requirements,
+            )
             if not check_weixin_requirements():
                 logger.warning("Weixin: aiohttp/cryptography not installed")
                 return None
-            return WeixinAdapter(config)
+            if isinstance(config.extra.get("accounts"), list) and config.extra.get("accounts"):
+                adapter = WeixinMultiAccountAdapter(config)
+            else:
+                adapter = WeixinAdapter(config)
+            adapter.gateway_runner = self
+            return adapter
 
         elif platform == Platform.API_SERVER:
             from gateway.platforms.api_server import APIServerAdapter, check_api_server_requirements

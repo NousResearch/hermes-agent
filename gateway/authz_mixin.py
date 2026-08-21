@@ -167,8 +167,29 @@ class GatewayAuthorizationMixin:
         adapter_ref = getattr(source, "_transport_adapter_ref", None)
         adapter = adapter_ref() if callable(adapter_ref) else None
         platform = getattr(source, "platform", None)
+        if adapter is None and platform == Platform.WEIXIN:
+            account_id = str(getattr(source, "transport_account_id", "") or "")
+            if account_id:
+                for candidate in (getattr(self, "adapters", None) or {}).values():
+                    for child in getattr(candidate, "_children", ()):
+                        if (
+                            getattr(child, "_gateway_transport_child", False)
+                            and getattr(child, "gateway_runner", None) is self
+                            and getattr(child, "_account_id", "") == account_id
+                        ):
+                            return child
         if adapter is None or platform is None:
             return None
+        # A multi-account Weixin adapter keeps child transports outside the
+        # runner's one-adapter-per-platform registry. They are still trusted
+        # only when created by the live runner and explicitly marked by the
+        # multi-account wrapper.
+        if (
+            getattr(adapter, "_gateway_transport_child", False)
+            and getattr(adapter, "gateway_runner", None) is self
+            and getattr(adapter, "platform", None) == platform
+        ):
+            return adapter
         if adapter is (getattr(self, "adapters", None) or {}).get(platform):
             return adapter
         profile_maps = getattr(self, "_profile_adapters", None) or {}

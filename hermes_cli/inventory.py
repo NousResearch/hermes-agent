@@ -882,8 +882,9 @@ def _apply_pricing(
             # Sale chrome is Nous Portal-only. Other providers (OpenRouter,
             # Novita, …) never get discount_percent / was_* even if a nested
             # pricing.original somehow appeared in their catalog. Free / $0
-            # models never get sale chrome either — even if original leaked.
-            if slug == "nous" and not is_free:
+            # models get flat -100% chrome (was_* only when the gateway
+            # served an original).
+            if slug == "nous":
                 sale = compute_sale_discount(
                     inp_raw, out_raw, p.get("original")
                 )

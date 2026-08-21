@@ -97,6 +97,7 @@ export class JsonRpcGatewayClient {
   private pending = new Map<GatewayRequestId, PendingCall>()
   private socket: WebSocketLike | null = null
   private state: ConnectionState = 'idle'
+  private cancelConnect: (() => void) | null = null
   private readonly eventHandlers = new Map<string, Set<(event: GatewayEvent) => void>>()
   private readonly stateHandlers = new Set<(state: ConnectionState) => void>()
   private readonly options: Required<Omit<GatewayClientOptions, 'socketFactory'>> &
@@ -187,6 +188,11 @@ export class JsonRpcGatewayClient {
 
         socket.removeEventListener('open', onOpen)
         socket.removeEventListener('error', onError)
+        socket.removeEventListener('close', onClose)
+
+        if (this.cancelConnect === onClose) {
+          this.cancelConnect = null
+        }
       }
 
       const onOpen = () => {
@@ -211,8 +217,20 @@ export class JsonRpcGatewayClient {
         reject(new Error(this.options.connectErrorMessage))
       }
 
+      const onClose = () => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        cleanup()
+        reject(new Error(this.options.closedErrorMessage))
+      }
+
+      this.cancelConnect = onClose
       socket.addEventListener('open', onOpen, { once: true })
       socket.addEventListener('error', onError, { once: true })
+      socket.addEventListener('close', onClose, { once: true })
 
       if (this.options.connectTimeoutMs > 0) {
         timer = setTimeout(() => {
@@ -248,6 +266,8 @@ export class JsonRpcGatewayClient {
     if (!socket) {
       return
     }
+
+    this.cancelConnect?.()
 
     try {
       socket.close()

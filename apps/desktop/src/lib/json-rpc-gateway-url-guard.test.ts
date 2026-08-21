@@ -20,6 +20,32 @@ class FakeSocket {
   send = vi.fn()
 }
 
+class PendingSocket {
+  static OPEN = 1
+  readyState = 0
+  private listeners = new Map<string, Set<() => void>>()
+
+  addEventListener = vi.fn((type: string, handler: () => void) => {
+    const handlers = this.listeners.get(type) ?? new Set()
+    handlers.add(handler)
+    this.listeners.set(type, handlers)
+  })
+
+  removeEventListener = vi.fn((type: string, handler: () => void) => {
+    this.listeners.get(type)?.delete(handler)
+  })
+
+  emitClose = () => {
+    for (const handler of this.listeners.get('close') ?? []) {
+      handler()
+    }
+  }
+
+  close = vi.fn(() => this.emitClose())
+
+  send = vi.fn()
+}
+
 describe('JsonRpcGatewayClient connect() URL guard', () => {
   beforeEach(() => {
     vi.stubGlobal('WebSocket', FakeSocket) // jsdom has none; class reads WebSocket.OPEN
@@ -61,6 +87,30 @@ describe('JsonRpcGatewayClient connect() URL guard', () => {
       await client.connect(url)
       expect(client.connectionState).toBe('open')
     }
+  })
+
+  it.each([
+    ['the client closes', (client: JsonRpcGatewayClient, _socket: PendingSocket) => client.close()],
+    ['the peer closes', (_client: JsonRpcGatewayClient, socket: PendingSocket) => socket.emitClose()]
+  ])('settles an in-flight connect immediately when %s', async (_label, close) => {
+    vi.stubGlobal('WebSocket', PendingSocket)
+
+    const socket = new PendingSocket()
+
+    const client = new JsonRpcGatewayClient({
+      connectTimeoutMs: 15_000,
+      socketFactory: () => socket as unknown as WebSocket
+    })
+
+    const outcome = Promise.race([
+      client.connect('ws://127.0.0.1:1234/api/ws').catch(error => error),
+      new Promise(resolve => setTimeout(() => resolve('still pending'), 50))
+    ])
+
+    close(client, socket)
+
+    await expect(outcome).resolves.toEqual(new Error('WebSocket closed'))
+    expect(client.connectionState).toBe('closed')
   })
 })
 

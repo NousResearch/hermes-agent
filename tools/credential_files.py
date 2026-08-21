@@ -24,7 +24,7 @@ import logging
 import os
 import posixpath
 from contextvars import ContextVar
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional
 from hermes_cli.config import cfg_get
 
@@ -508,7 +508,10 @@ def from_agent_visible_cache_path(
     if os.environ.get("TERMINAL_ENV", "local") != "docker":
         return container_path
 
-    path = Path(container_path)
+    # The container path is POSIX by definition; parse it as such even on a
+    # Windows host, where Path() is a WindowsPath whose str() would mangle
+    # the separators and break the mount-relative comparison (#85406).
+    path = PurePosixPath(container_path)
     for mount in get_cache_directory_mounts(container_base=container_base):
         try:
             rel = path.relative_to(mount["container_path"])

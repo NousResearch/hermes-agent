@@ -230,6 +230,39 @@ class TestExecReadSafety:
 
 
     @pytest.mark.asyncio
+    async def test_exec_read_uses_posix_path_on_windows_host(self, tmp_path, monkeypatch):
+        """#85406: on a Windows host Path() is a WindowsPath whose str() renders
+        POSIX separators as backslashes. The container exec-read must be built
+        from the POSIX form (p.as_posix()), or the command targets a filename
+        that does not exist inside the Linux container.
+        """
+        from pathlib import PureWindowsPath
+
+        home = tmp_path / "hermes"
+        isrc = _reload(monkeypatch, home)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        captured = {}
+
+        def fake_execute(cmd, **kw):
+            captured["cmd"] = cmd
+            return {"returncode": 0, "output": base64.b64encode(PNG).decode()}
+
+        # Simulate the Windows-host path object (PureWindowsPath str() mangles
+        # POSIX separators exactly like WindowsPath; WindowsPath itself cannot
+        # be instantiated on a POSIX host).
+        windows_path = PureWindowsPath("/workspace/vision_test.png")
+        assert "\\" in str(windows_path)  # sanity: reproduces the reported shape
+        with patch("tools.image_source._get_active_env",
+                   return_value=SimpleNamespace(execute=fake_execute)):
+            res = await isrc._resolve_container_fallback(
+                windows_path, isrc.ResolveContext(task_id="t1"),
+                "/workspace/vision_test.png")
+        assert f"< /workspace/vision_test.png" in captured["cmd"]
+        assert "\\workspace" not in captured["cmd"]
+        assert res.data == PNG
+        assert res.origin == "container"
+
+    @pytest.mark.asyncio
     async def test_exec_read_nonzero_returncode_raises(self, tmp_path, monkeypatch):
         home = tmp_path / "hermes"
         isrc = _reload(monkeypatch, home)

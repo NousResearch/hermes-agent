@@ -473,6 +473,50 @@ class TestToAgentVisiblePathPerBackend:
         assert to_agent_visible_cache_path("/etc/hosts") == "/etc/hosts"
 
 
+class TestFromAgentVisibleCachePath:
+    """#85406: container->host cache translation must parse the container path
+    as POSIX (PurePosixPath) — on a Windows host Path() is a WindowsPath whose
+    str() renders POSIX separators as backslashes, breaking the mount-relative
+    comparison and the host path join."""
+
+    def test_translates_posix_container_path_to_host(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        (hermes_home / "cache" / "images").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        from tools.credential_files import from_agent_visible_cache_path
+
+        assert (
+            from_agent_visible_cache_path("/root/.hermes/cache/images/x.png")
+            == str(hermes_home / "cache" / "images" / "x.png")
+        )
+
+    def test_posix_parsing_with_windows_style_host_mounts(self, tmp_path, monkeypatch):
+        """Simulate a Windows host: mount host_paths use backslash separators
+        while the container path is POSIX. PurePosixPath parsing must still
+        resolve the mount-relative remainder and join it onto the host path.
+        """
+        import tools.credential_files as cf
+
+        hermes_home = tmp_path / ".hermes"
+        (hermes_home / "cache" / "images").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+        win_mounts = [
+            {
+                # Backslash host path, exactly as a Windows host would produce.
+                "host_path": str(hermes_home / "cache" / "images").replace("/", "\\"),
+                "container_path": "/root/.hermes/cache/images",
+            }
+        ]
+        monkeypatch.setattr(cf, "get_cache_directory_mounts", lambda **kw: win_mounts)
+
+        translated = cf.from_agent_visible_cache_path("/root/.hermes/cache/images/x.png")
+        # The POSIX remainder joins cleanly onto the backslash host mount.
+        assert translated.replace("\\", "/").endswith("/.hermes/cache/images/x.png")
+
+
 class TestIterCacheFiles:
     """Tests for iter_cache_files()."""
 

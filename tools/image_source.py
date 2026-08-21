@@ -257,7 +257,9 @@ def _permitted_host_read_target(p: Path, ctx: ResolveContext) -> Optional[Path]:
 
     from tools.credential_files import from_agent_visible_cache_path
 
-    host_candidate = Path(from_agent_visible_cache_path(str(p)))
+    # Pass the POSIX form (#85406): on a Windows host str(p) renders
+    # backslashes, which would break the container->host cache translation.
+    host_candidate = Path(from_agent_visible_cache_path(p.as_posix()))
     try:
         real = host_candidate.resolve()
     except Exception:  # noqa: BLE001 — cannot resolve -> not a safe host read
@@ -338,7 +340,7 @@ async def _resolve_container_fallback(
     env = _get_active_env(ctx.task_id)
     if env is None:
         raise SourceNotFound(
-            f"'{p}' is not reachable inside the sandbox and no active sandbox "
+            f"'{p.as_posix()}' is not reachable inside the sandbox and no active sandbox "
             f"session is available to read it",
             src=src, origin="container")
 
@@ -350,7 +352,11 @@ async def _resolve_container_fallback(
     # -w0 is GNU-only, so pipe through tr -d for BusyBox.
     # env.execute is a blocking backend exec; keep it off the event loop so a
     # multi-MB base64 read doesn't stall every other coroutine.
-    qp = shlex.quote(str(p))
+    # Build the command from the POSIX form of the path (#85406): on a Windows
+    # host Path() is a WindowsPath whose str() renders POSIX separators as
+    # backslashes, which would point the Linux container at a filename that
+    # does not exist. as_posix() is a no-op on POSIX hosts.
+    qp = shlex.quote(p.as_posix())
     cmd = f"head -c {_MAX_INGEST_BYTES + 1} < {qp} | base64 | tr -d '\\n'"
 
     last_res: dict = {"returncode": 1, "output": ""}
@@ -370,12 +376,12 @@ async def _resolve_container_fallback(
         first = next((ln.strip() for ln in diag if ln.strip()), "")
         suffix = f" ({first[:200]})" if first else ""
         raise SourceNotFound(
-            f"could not read '{p}' inside the sandbox{suffix}",
+            f"could not read '{p.as_posix()}' inside the sandbox{suffix}",
             src=src, origin="container")
     try:
         data = base64.b64decode(last_res.get("output", ""), validate=True)
     except Exception as exc:
-        raise NotAnImage(f"sandbox returned non-image data for '{p}': {exc}", src=src)
+        raise NotAnImage(f"sandbox returned non-image data for '{p.as_posix()}': {exc}", src=src)
     if len(data) > _MAX_INGEST_BYTES:
         raise SourceTooLarge("media exceeds size limit", src=src, origin="container")
     return _finalize(data, "", "container", src, permitted)

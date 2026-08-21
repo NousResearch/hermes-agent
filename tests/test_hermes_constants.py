@@ -138,6 +138,90 @@ class TestGetHermesHome:
 
         assert get_hermes_home() == local_appdata / "hermes"
 
+    def test_warn_once_latch_engages_on_first_check_even_without_warning(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression for issue #90065: the latch was only set on the
+        WARNING branch, so in the common case (no active_profile file, or
+        it reads "default") the one-shot check the function's own name
+        and docstring promise never actually engaged -- every subsequent
+        get_hermes_home() call re-did the platform-default resolution,
+        an exists() stat, and a possible read_text(), from a function
+        called at module-import time from 30+ sites."""
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", False)
+        # No active_profile file at all -- the common, non-warning case.
+        monkeypatch.setattr(
+            hermes_constants, "_get_platform_default_hermes_home", lambda: tmp_path
+        )
+
+        get_hermes_home()
+        assert hermes_constants._profile_fallback_warned is True, (
+            "the one-shot latch must engage on the first check, "
+            "regardless of whether it found anything to warn about"
+        )
+
+    def test_expensive_resolution_only_happens_once_across_many_calls(
+        self, tmp_path, monkeypatch
+    ):
+        """Direct behavioral proof of the fix's actual performance claim:
+        _get_platform_default_hermes_home() (the expensive path inside
+        _warn_profile_fallback_once) must be invoked at most once across
+        many get_hermes_home() calls when HERMES_HOME stays unset --
+        not once per call."""
+        from unittest.mock import patch
+
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", False)
+
+        real = hermes_constants._get_platform_default_hermes_home
+        calls = []
+
+        def counting(*a, **kw):
+            calls.append(1)
+            return real(*a, **kw)
+
+        with patch.object(
+            hermes_constants, "_get_platform_default_hermes_home", counting
+        ):
+            for _ in range(50):
+                get_hermes_home()
+
+        # One EXTRA call comes from _warn_profile_fallback_once (now
+        # latched after its first invocation); the rest come from
+        # _hermes_home_from_env()'s own, separate, always-needed
+        # resolution of the actual return value, once per
+        # get_hermes_home() call -- that part is unaffected by this fix
+        # and correctly still runs every time.
+        assert len(calls) == 51, (
+            f"expected exactly 51 calls (50 from the always-needed path "
+            f"resolution, once per get_hermes_home() call, + 1 from the "
+            f"now-latched warn check firing only on the first call), got "
+            f"{len(calls)} -- if this is 100 the warn-check latch "
+            f"regressed back to firing on every call"
+        )
+
+    def test_warn_still_fires_correctly_when_a_non_default_profile_is_active(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Sanity: the fix must not break the actual warning it exists
+        to produce -- when a non-default profile genuinely is active,
+        the warning still fires (on the first check, matching the
+        one-shot contract)."""
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", False)
+        (tmp_path / "active_profile").write_text("work", encoding="utf-8")
+        monkeypatch.setattr(
+            hermes_constants, "_get_platform_default_hermes_home", lambda: tmp_path
+        )
+
+        get_hermes_home()
+
+        assert hermes_constants._profile_fallback_warned is True
+        captured = capsys.readouterr()
+        assert "HERMES_HOME fallback" in captured.err
+        assert "'work'" in captured.err
+
 
 class TestGetProcessHermesHome:
     """Tests for get_process_hermes_home() — process launch scope.

@@ -83,6 +83,16 @@ def _warn_profile_fallback_once() -> None:
     global _profile_fallback_warned
     if _profile_fallback_warned:
         return
+    # Latch unconditionally, on the FIRST check regardless of outcome --
+    # matching the "one-shot" contract this function's own name/docstring
+    # already promise. Previously the latch was only set on the warning
+    # branch, so in the common case (no active_profile file, or it reads
+    # "default") the check silently re-ran on every single call: a fresh
+    # _get_platform_default_hermes_home() + exists() + possible read_text()
+    # from a function called at module-import time from 30+ sites (issue
+    # #90065). A profile activated mid-process after the first call is out
+    # of scope for a one-shot startup-time check either way.
+    _profile_fallback_warned = True
     try:
         fallback_home = _get_platform_default_hermes_home()
         active_path = fallback_home / "active_profile"
@@ -90,7 +100,6 @@ def _warn_profile_fallback_once() -> None:
     except (UnicodeDecodeError, OSError):
         active = ""
     if active and active != "default":
-        _profile_fallback_warned = True
         # Write directly to stderr.  We intentionally do NOT route this
         # through ``logging`` because (a) this function is called at
         # module-import time from 30+ sites, often before logging is

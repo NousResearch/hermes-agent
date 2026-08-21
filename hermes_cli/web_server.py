@@ -5525,20 +5525,69 @@ async def get_action_status(name: str, lines: int = 200):
     }
 
 
-# Per-row fields that no session LIST consumer reads but that dominate the
-# payload. ``system_prompt`` is the fully rendered prompt — tens of KB per
-# row — and made a 21-row /api/sessions response 528KB (96% dead weight),
-# re-fetched by the desktop sidebar on every refresh. The desktop's
-# SessionInfo type doesn't declare either field and the web UI never touches
-# them; ``GET /api/sessions/{id}`` detail reads stay complete. List callers
-# that genuinely need the full rows can pass ``?full=1``.
-_SESSION_LIST_HEAVY_FIELDS = ("system_prompt", "model_config")
+# Explicit public response shapes. SessionDB rows also contain user/chat/thread
+# identities, routing keys, origin_json, rendered prompts, model config, backend
+# URLs, and compression diagnostics. Projecting from an allowlist prevents a
+# future schema column from becoming an API field by accident.
+_SESSION_LIST_RESPONSE_FIELDS = (
+    "id",
+    "source",
+    "model",
+    "title",
+    "started_at",
+    "ended_at",
+    "last_active",
+    "is_active",
+    "message_count",
+    "tool_call_count",
+    "input_tokens",
+    "output_tokens",
+    "estimated_cost_usd",
+    "actual_cost_usd",
+    "preview",
+    "parent_session_id",
+    "archived",
+    "pinned",
+    "unread",
+    "cwd",
+    "git_branch",
+    "git_repo_root",
+    "_lineage_root_id",
+    "handoff_platform",
+    "handoff_state",
+    "profile",
+    "is_default_profile",
+)
+
+_SESSION_DETAIL_RESPONSE_FIELDS = (
+    *_SESSION_LIST_RESPONSE_FIELDS,
+    "end_reason",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "reasoning_tokens",
+    "estimated_cost_usd",
+    "actual_cost_usd",
+    "cost_status",
+    "api_call_count",
+    "rewind_count",
+)
 
 
-def _strip_session_list_rows(sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    for s in sessions:
-        for key in _SESSION_LIST_HEAVY_FIELDS:
-            s.pop(key, None)
+def _project_session_response(
+    session: Dict[str, Any],
+    *,
+    detail: bool = False,
+) -> Dict[str, Any]:
+    """Build a new public session DTO from an explicit field allowlist."""
+    fields = _SESSION_DETAIL_RESPONSE_FIELDS if detail else _SESSION_LIST_RESPONSE_FIELDS
+    return {key: session[key] for key in fields if key in session}
+
+
+def _strip_session_list_rows(
+    sessions: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Replace list rows in place with explicit public response DTOs."""
+    sessions[:] = [_project_session_response(session) for session in sessions]
     return sessions
 
 

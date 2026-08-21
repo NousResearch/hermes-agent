@@ -244,8 +244,8 @@ def get_profiles_sessions(
     interacts (sends a message). A user with a single (default) profile gets the
     same rows as ``/api/sessions``, just tagged ``profile="default"``.
 
-    Rows omit ``system_prompt``/``model_config`` unless ``full=1`` — same
-    list projection as ``/api/sessions``.
+    Rows use the same explicit public allowlist as ``/api/sessions``.
+    ``full=1`` does not change that allowlist or return raw DB rows.
     """
     if archived not in ("exclude", "only", "include"):
         raise HTTPException(status_code=400, detail="archived must be one of: exclude, only, include")
@@ -316,8 +316,8 @@ def get_profiles_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
-                # Same SQL-level blob skip as /api/sessions (see above).
-                compact_rows=not full,
+                # Same full=1 behavior as /api/sessions (see above).
+                compact_rows=True,
                 include_pinned=True,
             )
             profile_total = db.session_count(
@@ -355,8 +355,7 @@ def get_profiles_sessions(
     if len(merged) > offset + limit:
         seen = {id(s) for s in window}
         window.extend(s for s in merged[offset + limit:] if s.get("pinned") and id(s) not in seen)
-    if not full:
-        _strip_session_list_rows(window)
+    _strip_session_list_rows(window)
     return {
         "sessions": window,
         "total": total,

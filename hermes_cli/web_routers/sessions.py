@@ -48,6 +48,7 @@ _prune_sessions = late("_prune_sessions")
 _read_session_import_body = late("_read_session_import_body")
 _session_latest_descendant = late("_session_latest_descendant")
 _strip_session_list_rows = late("_strip_session_list_rows")
+_project_session_response = late("_project_session_response")
 
 
 @list_router.get("/api/sessions")
@@ -79,8 +80,10 @@ def get_sessions(
     chain). ``recent`` keeps a long-running conversation on the first page
     after it auto-compresses into a fresh continuation id.
 
-    Rows omit ``system_prompt``/``model_config`` (the payload-dominating
-    fields no list UI reads) unless ``full=1`` is passed.
+    All rows use an explicit public field allowlist. ``full=1`` is retained
+    for compatibility but does not change the metadata allowlist or expose
+    prompts, model config, routing identities, backend URLs, raw handoff
+    errors, or future database columns.
     """
     if archived not in ("exclude", "only", "include"):
         raise HTTPException(
@@ -123,10 +126,9 @@ def get_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
-                # SQL-level projection: when the caller didn't ask for full
-                # rows, skip the system_prompt blob inside SQLite too (pairs
-                # with the API-level _strip_session_list_rows below).
-                compact_rows=not full,
+                # Always skip the rendered system prompt at SQL level. full=1
+                # is not a raw-row escape.
+                compact_rows=True,
                 include_pinned=True,
             )
             total = db.session_count(
@@ -154,8 +156,7 @@ def get_sessions(
                 # SQLite stores the flag as 0/1; expose a real JSON boolean.
                 s["archived"] = bool(s.get("archived"))
                 s["pinned"] = bool(s.get("pinned"))
-            if not full:
-                _strip_session_list_rows(sessions)
+            _strip_session_list_rows(sessions)
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()
@@ -570,7 +571,24 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
             _cron_profile_home(profile)[0] if profile else _cron_default_profile()
         )
         session["is_default_profile"] = session["profile"] == "default"
-        return session
+        # ``get_session`` selects ``s.*``; last_active is computed over the
+        # messages table, so enrich it from the same rich-row source the list
+        # endpoints use. Without it, a long-lived session with recent activity
+        # would read as inactive here while every list endpoint read active.
+        rich_rows = db._get_session_rich_rows_batch({sid}, compact_rows=True)
+        rich_row = rich_rows.get(sid) if rich_rows else None
+        if rich_row and "last_active" in rich_row:
+            session["last_active"] = rich_row["last_active"]
+        session["archived"] = bool(session.get("archived"))
+        session["pinned"] = bool(session.get("pinned"))
+        session["is_active"] = (
+            session.get("ended_at") is None
+            and (
+                time.time()
+                - session.get("last_active", session.get("started_at", 0))
+            ) < 300
+        )
+        return _project_session_response(session, detail=True)
     finally:
         db.close()
 

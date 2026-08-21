@@ -129,6 +129,63 @@ class TestSidebarScope:
         assert _slice_ids(payload, "messaging") == {"default-telegram", "worker-telegram"}
         assert {row["profile"] for row in payload["messaging"]["sessions"]} == {"default", "worker"}
 
+    def test_sidebar_slices_use_explicit_public_allowlist(self, client, profiles_on_disk):
+        """Every slice projects from the shared list allowlist.
+
+        A synthetic future sessions column plus existing routing/internal
+        fields must not reach the sidebar payload (the projection gap that
+        reappeared when the routes were extracted out of web_server.py).
+        """
+        import sqlite3
+
+        _seed_session(profiles_on_disk["default"], "default-chat", source="cli")
+        _seed_session(profiles_on_disk["default"], "default-cron", source="cron")
+        _seed_session(profiles_on_disk["default"], "default-telegram", source="telegram")
+
+        db_path = profiles_on_disk["default"] / "state.db"
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("ALTER TABLE sessions ADD COLUMN future_private_field TEXT")
+            conn.execute(
+                "UPDATE sessions SET future_private_field = ?, system_prompt = ?, "
+                "session_key = ?, billing_base_url = ? "
+                "WHERE id IN ('default-chat', 'default-cron', 'default-telegram')",
+                (
+                    "future private value",
+                    "private rendered prompt",
+                    "discord:example-route",
+                    "https://backend.invalid/v1",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        payload = client.get(
+            "/api/profiles/sessions/sidebar",
+            params={"recents_profile": "default", "recents_exclude": "cron,telegram", "messaging_exclude": "cli,cron"},
+        ).json()
+
+        assert payload["errors"] == []
+        private_fields = {
+            "system_prompt",
+            "model_config",
+            "session_key",
+            "user_id",
+            "billing_base_url",
+            "handoff_error",
+            "future_private_field",
+        }
+        for slice_name in ("recents", "cron", "messaging"):
+            rows = payload[slice_name]["sessions"]
+            assert rows, f"{slice_name} slice unexpectedly empty"
+            for row in rows:
+                assert not (private_fields & row.keys()), (
+                    f"{slice_name} row leaked private fields: "
+                    f"{sorted(private_fields & row.keys())}"
+                )
+                assert {"id", "source", "is_active", "profile"} <= row.keys()
+
 
 class TestCrossProfileProjectTree:
 

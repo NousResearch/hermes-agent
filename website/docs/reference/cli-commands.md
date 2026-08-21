@@ -1617,8 +1617,9 @@ Import a **Claude Code** (`~/.claude`) or **OpenAI Codex CLI** (`~/.codex`) setu
 | `--dry-run` | Preview only — write nothing. |
 | `--overwrite` | Replace conflicting MCP servers / skills (default: skip). |
 | `--yes`, `-y` | Skip confirmation prompts. |
+| `--sync` | Re-import every previously imported source whose files changed since the last import. Prompt-free; combine with `--dry-run` to preview. |
 
-See the **[import guide](../user-guide/import-from-other-agents.md)** for the full mapping tables.
+Every successful import registers its source in `~/.hermes/import-sync.json`; `hermes import-agent --sync` then re-imports any registered source whose files changed (a cron-friendly way to keep an imported Claude Code / Codex setup current). See the **[import guide](../user-guide/import-from-other-agents.md)** for the full mapping tables.
 
 ## `hermes serve`
 

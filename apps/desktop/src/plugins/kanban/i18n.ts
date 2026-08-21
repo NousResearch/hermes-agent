@@ -596,7 +596,17 @@ const pl: KanbanMessages = {
   profileDescriptionsHint:
     'Opisy pomagają agentowi rozkładającemu zadania wybrać właściwy profil. Wygeneruj je automatycznie modelem pomocniczym albo napisz własne.',
   profileGoodAt: 'W czym ten profil jest dobry?',
-  auto: 'Automatycznie'
+  auto: 'Automatycznie',
+  notify: {
+    completedTitle: 'Zadanie ukończone',
+    blockedTitle: 'Zadanie zablokowane — wymaga Twojej reakcji',
+    blockLoopTitle: 'Zadanie przeniesione do Wstępnych — wymaga decyzji',
+    gaveUpTitle: 'Zadanie przerwane po wyczerpaniu prób',
+    crashedTitle: 'Wykonawca uległ awarii — zadanie zostanie ponowione',
+    timedOutTitle: 'Przekroczono czas zadania — zostanie ponowione',
+    openKanban: 'Otwórz Kanban',
+    artifacts: (n: number) => `Artefakty: ${n}`
+  }
 }
 
 const ja: KanbanMessages = {

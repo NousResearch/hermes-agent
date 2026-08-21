@@ -817,11 +817,6 @@ const plTranslatedOverrides = {
       envOverride: 'nadpisane przez zmienne środowiskowe',
       intro:
         'Hermes Desktop domyślnie uruchamia własną bramę lokalną. Użyj bramy zdalnej, jeśli aplikacja ma sterować działającym już backendem Hermesa na innym komputerze lub za zaufanym serwerem proxy. Wybierz profil poniżej, aby przypisać mu osobny host zdalny.',
-      appliesTo: 'Dotyczy',
-      allProfiles: 'Wszystkie profile',
-      defaultConnection: 'Domyślne połączenie dla każdego profilu bez własnego ustawienia.',
-      profileConnection: profile =>
-        `Połączenie używane tylko wtedy, gdy aktywny jest profil „${profile}”. Wybierz tryb lokalny, aby odziedziczyć ustawienie domyślne.`,
       envOverrideTitle: 'Bieżącą sesją aplikacji Hermes Desktop sterują zmienne środowiskowe.',
       envOverrideDesc:
         'Usuń HERMES_DESKTOP_REMOTE_URL i HERMES_DESKTOP_REMOTE_TOKEN ze środowiska, aby użyć ustawienia zapisanego poniżej.',
@@ -3202,7 +3197,6 @@ const plMissingOverrides = {
   },
   findInPage: { next: 'Następne dopasowanie', previous: 'Poprzednie dopasowanie' },
   settings: {
-    nav: { connections: 'Połączenia' },
     plugins: {
       agent: {
         title: 'Wtyczki agenta',
@@ -3324,11 +3318,7 @@ const plMissingOverrides = {
       plainTextConfirmAction: 'Zapisz jako zwykły tekst',
       plainTextStoredTitle: 'Token zapisany jako zwykły tekst',
       plainTextStoredDesc:
-        'Bezpieczny magazyn jest niedostępny, dlatego zapisany token znajduje się bez szyfrowania w pliku ustawień połączeń aplikacji na tym komputerze. Zainstaluj lub włącz GNOME Keyring albo KWallet, aby go zaszyfrować.',
-      inheritTitle: 'Użyj domyślnej bramy',
-      inheritDesc: 'Usuń zastąpienie dla tego profilu i użyj domyślnego połączenia.',
-      sshRemoteProfileTitle: 'Zdalny profil (opcjonalnie)',
-      sshRemoteProfileDesc: 'Nazwa profilu na zdalnym hoście. Pozostaw puste, aby użyć nazwy profilu Desktop.'
+        'Bezpieczny magazyn jest niedostępny, dlatego zapisany token znajduje się bez szyfrowania w pliku ustawień połączeń aplikacji na tym komputerze. Zainstaluj lub włącz GNOME Keyring albo KWallet, aby go zaszyfrować.'
     },
     toolsets: {
       activeBackend: 'Aktywny',
@@ -3593,6 +3583,194 @@ const plMissingOverrides = {
   }
 } satisfies TranslationOverrides
 
-export const plOverrides = mergeLocaleOverrides(plTranslatedOverrides, plMissingOverrides)
+const plCurrentMainOverrides = {
+  fileMenu: {
+    download: 'Pobierz',
+    downloadSaved: 'Zapisano',
+    downloadFailed: 'Nie udało się pobrać'
+  },
+  boot: {
+    steps: { retryingRemoteBackend: 'Ponowne łączenie ze zdalnym backendem Hermesa…' }
+  },
+  titlebar: {
+    unreadSessions: count => (count === 1 ? '1 nieprzeczytana sesja' : `${count} nieprzeczytanych sesji`)
+  },
+  keybinds: {
+    actions: { 'view.showBrowser': 'Otwórz przeglądarkę' }
+  },
+  settings: {
+    plugins: {
+      agent: { appliesTo: 'Dotyczy:' },
+      installModal: {
+        title: 'Zainstaluj wtyczkę',
+        description: 'Przed instalacją sprawdź, co zawiera to repozytorium.',
+        repoLabel: 'Repozytorium',
+        includesHeading: 'Ten pakiet zawiera',
+        agentLabel: 'Wtyczkę agenta',
+        desktopLabel: 'Interfejs Desktop',
+        agentTargetLocal: profile => `Instaluje w backendzie profilu ${profile} (~/.hermes/plugins/)`,
+        agentTargetRemote: profile => `Instaluje w połączonym backendzie profilu ${profile}`,
+        desktopTarget: 'Instaluje w lokalnym folderze desktop-plugins tej aplikacji',
+        desktopOnlyNote: 'Pakiety tylko dla Desktop nie instalują wtyczki agenta w backendzie.',
+        insecureWarning:
+          'Ten adres URL używa niezabezpieczonego lub lokalnego schematu. W środowisku produkcyjnym wybierz https:// albo git@.',
+        securityHeading: 'Przed instalacją',
+        securityIntro:
+          'Instaluj wyłącznie z zaufanych źródeł — jeśli chcesz sprawdzić, co zostanie dodane, przejrzyj poniższe repozytorium.',
+        sourceHeading: 'Kod źródłowy',
+        viewRepository: 'Wyświetl repozytorium',
+        viewPluginFiles: 'Wyświetl pliki wtyczki',
+        gitCloneLabel: 'URL do klonowania Git',
+        enableAgent: 'Włącz wtyczkę agenta po instalacji',
+        forceReinstall: 'Wymuś ponowną instalację (zastąp już zainstalowaną)',
+        install: 'Zainstaluj',
+        installing: 'Instalowanie…',
+        probing: 'Sprawdzanie repozytorium…',
+        probeUnavailable: 'Sprawdzanie wtyczek jest niedostępne w tym środowisku.',
+        desktopUnavailable: 'Instalowanie wtyczek Desktop jest niedostępne w tym środowisku.',
+        selectComponent: 'Wybierz co najmniej jeden składnik do zainstalowania.',
+        agentSuccess: name => `Zainstalowano wtyczkę agenta ${name}`,
+        desktopSuccess: name => `Zainstalowano wtyczkę Desktop ${name}`,
+        agentFailed: 'Nie udało się zainstalować wtyczki agenta',
+        desktopFailed: 'Nie udało się zainstalować wtyczki Desktop',
+        missingEnv: vars => `Brakujące zmienne środowiskowe: ${vars}. Dodaj je w Ustawienia → Klucze.`
+      }
+    },
+    appearance: {
+      translucencyGlassDesc:
+        'Matowe szkło: pulpit prześwituje przez płynne rozmycie, a tekst pozostaje ostry. Ustawienia są osobne dla jasnego i ciemnego motywu.',
+      translucencyModeClear: 'Przezroczysty',
+      translucencyModeGlass: 'Szkło',
+      translucencyTintTitle: 'Odcień',
+      translucencyFadeTitle: 'Wygaszenie',
+      translucencyFrostTitle: 'Zmatowienie',
+      translucencyFrost: {
+        'under-window': 'Głębokie',
+        popover: 'Miękkie',
+        titlebar: 'Jasne',
+        header: 'Połysk'
+      },
+      translucencyScopeTitle: 'Obszar',
+      translucencyScope: { window: 'Całe okno', sidebar: 'Tylko pasek boczny' },
+      introSplashTitle: 'Ekran powitalny',
+      introSplashDesc: 'Logotyp i podpowiedź wyświetlane w pustym czacie.'
+    },
+    about: {
+      bundleOutOfSync: 'Kompilacja aplikacji jest nieaktualna',
+      bundleOutOfSyncDesc:
+        'Środowisko uruchomieniowe Hermesa zostało zaktualizowane, ale aplikacja Desktop nadal jest starszą kompilacją — nowe funkcje interfejsu (np. Tryb bota) będą niedostępne do czasu aktualizacji. Uruchom poniższą aktualizację, aby przebudować aplikację. Jeśli ostrzeżenie nie zniknie, zainstaluj ponownie najnowszy instalator Desktop.',
+      bundleOutOfSyncAction: 'Pobierz instalator'
+    },
+    connections: {
+      launchModeTitle: 'Przy uruchomieniu wróć do Sesji na ostatnio używanej bramie',
+      launchModeDesc: 'Gdy opcja jest wyłączona, Sesje otwierają się na bramie głównej.',
+      searchPlaceholder: 'Szukaj bram…',
+      noSearchResults: 'Żadna brama nie pasuje do wyszukiwania.',
+      currentPill: 'Bieżąca',
+      headersTitle: 'Dodatkowe nagłówki bramy',
+      headersDesc:
+        'Wysyłane z każdym żądaniem HTTP i WebSocket do tej bramy — dla serwerów proxy kontroli dostępu, takich jak Cloudflare Access (CF-Access-Client-Id / CF-Access-Client-Secret). Wartości są przechowywane w postaci zaszyfrowanej. Nagłówki zarządzane przez Hermesa (Authorization, Cookie, Host…) są ignorowane.',
+      headerValuePlaceholder: 'Wartość',
+      headerValueSaved: 'Zapisano — pozostaw puste, aby zachować',
+      headerAdd: 'Dodaj nagłówek',
+      headerRemove: 'Usuń',
+      duplicateLocal: 'Ta aplikacja zarządza już połączeniem lokalnym — może istnieć tylko jedno.',
+      duplicateUrl: label => `Połączenie z tym adresem URL bramy już istnieje („${label}”).`,
+      duplicateSsh: label => `Połączenie z tym hostem SSH już istnieje („${label}”).`,
+      sameBackendHint: label => `Ten sam backend co „${label}”`,
+      localAddHint:
+        'Połączenie lokalne jest niedostępne: zarządzane połączenie lokalne już istnieje (zawsze jest tylko jedno).',
+      cloudAddHint:
+        'Wskazówka: logowanie do usługi Hermes Cloud powyżej automatycznie wykrywa agentów — tego formularza używaj tylko do ręcznej rejestracji znanego adresu URL instancji.'
+    },
+    search: { placeholder: 'Szukaj we wszystkich ustawieniach…', pill: 'Szukaj' },
+    profileScope: {
+      appliesTo: 'Dotyczy',
+      editsProfile: profile => `Zmiany na tej stronie dotyczą profilu „${profile}”.`
+    }
+  },
+  commandCenter: {
+    openBrowser: 'Otwórz przeglądarkę',
+    reloadWindow: 'Wczytaj ponownie okno'
+  },
+  profiles: {
+    switchToConnection: name => `Przełącz na ${name}`,
+    switchConnectionFailed: name => `Nie udało się połączyć z ${name}`,
+    displayNameTitle: 'Nazwij tego agenta',
+    displayNameDesc:
+      'Ustawia nazwę wyświetlaną w całej aplikacji. Wewnętrzny identyfikator profilu pozostaje „default”.',
+    displayNameLabel: 'Nazwa wyświetlana'
+  },
+  sidebar: {
+    projects: {
+      worktreeStaleBackend:
+        'Zaktualizuj backend Hermesa, aby tworzyć drzewa robocze przez to połączenie zdalne — powstało przed interfejsem API git worktree.'
+    }
+  },
+  composer: { voiceControls: 'Głos' },
+  statusStack: {
+    coding: { agentShipUnavailable: 'Czat, do którego należą te zmiany, nie jest obecnie wyświetlany.' }
+  },
+  updates: {
+    clientAlsoBehindTitle: 'Aplikacja Desktop jest nieaktualna',
+    clientAlsoBehindMessage:
+      'Backend jest aktualny, ale aplikacja Desktop nadal ma starszą wersję. Zaktualizuj ją, aby otrzymać najnowsze poprawki.',
+    clientAlsoBehindAction: 'Zaktualizuj aplikację Desktop',
+    everythingDispatched: 'Wysłano aktualizację',
+    everythingSkipped: 'Pominięto',
+    everythingRowFailed: 'Aktualizacja nie powiodła się',
+    everythingFanoutFailedTitle: 'Nie udało się zaktualizować innych instancji'
+  },
+  shell: { gatewayMenu: { reconnectGateway: 'Połącz bramę ponownie' } },
+  preview: {
+    web: {
+      remoteLoopback:
+        'Ten adres wskazuje komputer, na którym działa agent, a nie ten komputer. Panel przeglądarki wczytuje strony lokalnie, więc zdalny serwer deweloperski wymaga przekierowania portu albo osiągalnej nazwy hosta.',
+      goBack: 'Wstecz',
+      goForward: 'Dalej',
+      reload: 'Wczytaj stronę ponownie',
+      address: 'Adres',
+      addressPlaceholder: 'Wpisz adres',
+      blankPageBody: 'Wpisz adres powyżej, aby przeglądać, albo poproś Hermesa o otwarcie strony.'
+    }
+  },
+  zones: {
+    showStripTab: title => `Pokaż ${title}`,
+    hideStripTab: title => `Ukryj ${title}`,
+    lastTabKeptTitle: 'Ostatnia karta pozostaje widoczna',
+    lastTabKeptBody:
+      'Ta strefa wymaga co najmniej jednej widocznej karty. Najpierw pokaż inną kartę albo zwiń cały pasek boczny.',
+    toggleStripTab: title => `Przełącz kartę ${title}`
+  },
+  contextMenu: {
+    link: {
+      openInApp: 'Otwórz we wbudowanej przeglądarce',
+      openExternal: 'Otwórz w zewnętrznej przeglądarce',
+      copyUrl: 'Kopiuj URL',
+      copyResolvedUrl: 'Kopiuj rozwiązany URL'
+    },
+    image: {
+      copyImage: 'Kopiuj obraz',
+      copyImageAddress: 'Kopiuj adres obrazu',
+      saveImageAs: 'Zapisz obraz jako…'
+    },
+    edit: {
+      cut: 'Wytnij',
+      paste: 'Wklej',
+      selectAll: 'Zaznacz wszystko',
+      addToDictionary: 'Dodaj do słownika'
+    },
+    page: { copyPageUrl: 'Kopiuj URL strony', inspectElement: 'Zbadaj element' }
+  },
+  assistant: {
+    clarify: {
+      confirmAndContinueLabel: 'Potwierdź i kontynuuj',
+      answeredBadge: 'Odpowiedziano',
+      questionProgress: (answered, total) => `Odpowiedziano na ${answered} z ${total}`
+    }
+  }
+} satisfies TranslationOverrides
+
+export const plOverrides = mergeLocaleOverrides(plTranslatedOverrides, plMissingOverrides, plCurrentMainOverrides)
 
 export const pl = defineLocale(plOverrides)

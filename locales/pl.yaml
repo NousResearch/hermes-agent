@@ -276,6 +276,7 @@ gateway:
     none_found: "Nie znaleziono punktów kontrolnych dla {cwd}"
     invalid_number: "Nieprawidłowy numer punktu kontrolnego. Użyj 1-{max}."
     restored: "✅ Przywrócono stan z punktu kontrolnego {hash}: {reason}\nAutomatycznie zapisano migawkę sprzed wycofania zmian."
+    kept_user_edits: "↷ Zachowano ręczne zmiany w plikach: {files}\nUżyj /rollback <N> --all, aby przywrócić również je."
     restore_failed: "❌ {error}"
 
   diff:

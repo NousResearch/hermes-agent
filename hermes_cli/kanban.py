@@ -2687,6 +2687,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
             "auto_assigned_default": res.auto_assigned_default,
+            "reconciled_orphans": res.reconciled_orphans,
+            "respawn_guarded": [
+                {"task_id": tid, "reason": reason}
+                for (tid, reason) in res.respawn_guarded
+            ],
+            "rate_limited": res.rate_limited,
+            "skipped_locked": res.skipped_locked,
         }, indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -2724,6 +2731,16 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
+    if res.reconciled_orphans:
+        print(f"Reconciled orphans: {', '.join(res.reconciled_orphans)}")
+    if res.respawn_guarded:
+        print("Respawn-guarded:")
+        for tid, reason in res.respawn_guarded:
+            print(f"  - {tid} ({reason})")
+    if res.rate_limited:
+        print(f"Rate-limited: {', '.join(res.rate_limited)}")
+    if res.skipped_locked:
+        print("Skipped (dispatch lock held): yes")
     return 0
 
 

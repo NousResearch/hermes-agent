@@ -3982,7 +3982,18 @@ class SessionStore:
         child session.
         """
         if not self._db:
-            return []
+            # Degraded mode: the default/global state.db was corrupt or
+            # unavailable at gateway startup, so this SessionStore has no DB
+            # handle (JSONL routing fallback). Under multiplexed profile
+            # routes the AIAgent's own lazily-opened SessionDB points at the
+            # PROFILE's state.db (see AIAgent._get_session_db_for_recall),
+            # which is where the transcript was written. load_transcript is
+            # called from inside the profile scope, so opening a fresh
+            # SessionDB() here resolves to that same profile DB and can
+            # recover the conversation instead of returning [] and making the
+            # next turn amnesiac (regression: Telegram chats "don't remember
+            # prior turns").
+            return self._load_transcript_scoped_fallback(session_id)
         # Follow the write-side reroute chain (cycle-guarded, same shape as
         # append_to_transcript).
         reroutes = getattr(self, "_transcript_reroutes", None) or {}
@@ -4016,6 +4027,57 @@ class SessionStore:
                 session_id, e,
             )
             return []
+
+    def _load_transcript_scoped_fallback(self, session_id: str) -> List[Dict[str, Any]]:
+        """Read a transcript from the profile-scoped SessionDB when ``_db`` is None.
+
+        Only used in the degraded state where ``self._db`` is unavailable
+        (corrupt/unreadable default state.db at gateway startup). A fresh
+        ``SessionDB()`` resolves through the current HERMES_HOME override —
+        under multiplexed profile routes this is the profile's own state.db,
+        the same DB the AIAgent lazily opened and wrote the transcript to.
+        """
+        try:
+            from hermes_state import SessionDB
+            scoped_db = SessionDB()
+        except Exception as e:
+            logger.warning(
+                "Transcript read failed for session %s (scoped SessionDB "
+                "unavailable; returning empty; downstream must not treat "
+                "this as data loss): %s",
+                session_id, e,
+            )
+            return []
+        try:
+            # Same reroute-chain + compression-tip handling as the primary
+            # path above.
+            reroutes = getattr(self, "_transcript_reroutes", None) or {}
+            seen = set()
+            target_id = session_id
+            while target_id in reroutes and target_id not in seen:
+                seen.add(target_id)
+                target_id = reroutes[target_id]
+            try:
+                tip = scoped_db.get_compression_tip(target_id)
+                if tip:
+                    target_id = tip
+            except Exception:
+                pass
+            return scoped_db.get_messages_as_conversation(
+                target_id, repair_alternation=True
+            )
+        except Exception as e:
+            logger.warning(
+                "Transcript read failed for session %s (returning empty; "
+                "downstream must not treat this as data loss): %s",
+                session_id, e,
+            )
+            return []
+        finally:
+            try:
+                scoped_db.close()
+            except Exception:
+                pass
 
     def rewind_session(self, session_id: str, n: int = 1) -> Optional[Dict[str, Any]]:
         """Back up ``n`` user turns via soft-delete, keeping rows for audit.

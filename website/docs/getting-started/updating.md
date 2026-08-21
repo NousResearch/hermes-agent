@@ -44,9 +44,12 @@ If your local checkout is on a different branch, Hermes auto-stashes any uncommi
 
 ### Checkout parked on a feature branch
 
-If the source checkout was left sitting on a feature branch (by tooling, a worktree experiment, or a manual checkout), `hermes update` only switches it back to the update target automatically when that is provably safe: the working tree is clean **and** every commit on the parked branch is already contained in `origin/main` (`git cherry` reports nothing unmerged). In that case the update says so — `Checkout was parked on '<branch>' (fully merged) — switched back to main` — and stays on `main` afterwards.
+If the source checkout was left sitting on a feature branch (by tooling, a worktree experiment, or a manual checkout), `hermes update` switches it back to the update target automatically whenever the working tree is clean:
 
-When the parked branch has uncommitted changes or unmerged commits, Hermes does **not** touch it. The code update is marked **SKIPPED** with a loud warning naming the branch, how far behind `origin/main` it is, and the exact commands to resolve — instead of pretending the update succeeded. The completion line always shows the actual branch and HEAD (`✓ Update complete! [main @ 30fcf9580]`) so drift is visible at a glance. Set `updates.auto_switch_parked_branch: false` in `config.yaml` to disable the auto-switch entirely (the skip warning still fires).
+- **Branch fully merged** (every commit already contained in `origin/main` — `git cherry` reports nothing unmerged): the update says so — `Checkout was parked on '<branch>' (fully merged) — switched back to main` — and stays on `main` afterwards.
+- **Branch has unmerged commits** but the tree is clean: the update still switches to `main` so the update can proceed — this is what non-interactive callers (the desktop update button, gateway `/update`, cron) rely on, since they have no way to resolve a skip. Your commits are untouched: `git checkout` never discards committed work, and the update prints a loud notice naming the branch and commit count, plus the `git checkout <branch>` command to pick the work back up later.
+
+When the parked branch has **uncommitted changes** (dirty tree), Hermes does **not** touch it. The code update is marked **SKIPPED** with a loud warning naming the branch, how far behind `origin/main` it is, and the exact commands to resolve — instead of pretending the update succeeded. The completion line always shows the actual branch and HEAD (`✓ Update complete! [main @ 30fcf9580]`) so drift is visible at a glance. Set `updates.auto_switch_parked_branch: false` in `config.yaml` to disable the auto-switch entirely (the skip warning still fires).
 
 ### Local changes on non-interactive updates
 

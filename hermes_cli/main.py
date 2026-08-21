@@ -4902,6 +4902,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_print_curator_first_run_notice",
         "_print_curator_recent_run_notice",
         "_print_fts_optimize_available_notice",
+        "_print_parked_branch_kept_notice",
         "_print_parked_branch_skip_warning",
         "_print_stash_cleanup_guidance",
         "_print_update_completion",

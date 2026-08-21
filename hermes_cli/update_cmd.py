@@ -1004,14 +1004,23 @@ def _assess_parked_branch_switch(
     autostashed, ran its post-update steps and printed "✓ Code updated!"
     while the running code stayed days behind main. The guard's contract:
 
-    - safe (True, "") only when the working tree + index are clean AND every
-      commit on the parked branch is already contained in
-      ``origin/<target_branch>`` (``git cherry`` reports no ``+`` lines).
-    - anything else — dirty tree, unmerged commits, git errors, or the
-      ``updates.auto_switch_parked_branch: false`` config opt-out — returns
-      (False, <reason>) and the caller must NOT touch the branch.
+    - (True, "") when the working tree + index are clean AND every commit on
+      the parked branch is already contained in ``origin/<target_branch>``
+      (``git cherry`` reports no ``+`` lines).
+    - (True, "unmerged:<count>") when the tree is clean but the branch has
+      commits not yet in the target. Switching is safe — ``git checkout``
+      never discards committed work and the branch keeps the commits — but
+      the caller must print a LOUD notice naming the branch and count so the
+      work is not forgotten. This is what non-interactive callers (desktop
+      update button, gateway /update, cron) rely on: they have no way to
+      resolve a skip, so a clean checkout must always reach the target.
+    - (False, <reason>) — dirty tree, git errors, or the
+      ``updates.auto_switch_parked_branch: false`` config opt-out — and the
+      caller must NOT touch the branch. A dirty tree is the one genuinely
+      unsafe case: uncommitted work would have to ride an autostash across
+      branches, which is how the 2026-08-17 incident started.
 
-    Reasons: "disabled", "dirty", "unmerged:<count>", "unverifiable".
+    Block reasons: "disabled", "dirty", "unverifiable".
     """
     try:
         from hermes_cli.config import load_config
@@ -1047,7 +1056,10 @@ def _assess_parked_branch_switch(
         line for line in cherry.stdout.splitlines() if line.startswith("+")
     ]
     if unmerged:
-        return False, f"unmerged:{len(unmerged)}"
+        # Clean tree: switching is safe (checkout keeps the commits on the
+        # branch). The reason string tells the caller to print the loud
+        # "branch kept with N unmerged commit(s)" notice.
+        return True, f"unmerged:{len(unmerged)}"
     return True, ""
 
 
@@ -1074,12 +1086,6 @@ def _print_parked_branch_skip_warning(
 
     if reason == "dirty":
         why = "the working tree has uncommitted changes"
-    elif reason.startswith("unmerged:"):
-        count = reason.split(":", 1)[1]
-        why = (
-            f"the branch has {count} commit(s) not merged into "
-            f"origin/{target_branch}"
-        )
     elif reason == "disabled":
         why = "updates.auto_switch_parked_branch is set to false in config.yaml"
     else:
@@ -1106,6 +1112,35 @@ def _print_parked_branch_skip_warning(
         "  (commit or stash your work on the branch first if you want to "
         "keep it)"
     )
+    print(bar)
+
+
+def _print_parked_branch_kept_notice(
+    current_branch: str, target_branch: str, unmerged_count: str
+) -> None:
+    """LOUD notice printed when a clean parked branch with unmerged commits
+    is auto-switched back to the update target.
+
+    Non-interactive callers (desktop update button, gateway /update, cron)
+    cannot resolve a skip, so a clean checkout always proceeds to the
+    target — but the unmerged work must be impossible to miss.  The commits
+    are untouched: ``git checkout`` never discards committed work; the
+    branch keeps them until the user returns.
+    """
+    bar = "=" * 68
+    print()
+    print(bar)
+    print(
+        f"⚠ Checkout was parked on '{current_branch}' with "
+        f"{unmerged_count} commit(s) not merged into origin/{target_branch}."
+    )
+    print(
+        f"  Switching to {target_branch} so the update can proceed — your "
+        f"commit(s) are safe on '{current_branch}'."
+    )
+    print()
+    print("  To pick the work back up later:")
+    print(f"    git checkout {current_branch}")
     print(bar)
 
 
@@ -5482,10 +5517,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Parked-branch guard (2026-08-17 live incident): the checkout can be
         # left parked on a stale feature branch by earlier tooling. Blindly
         # stash-switch-pull-switch-back "updates" main while the running code
-        # stays days behind, then prints "✓ Code updated!". Only auto-switch
-        # when the parked branch is clean AND fully merged into the target;
-        # otherwise warn loudly, mark the code update SKIPPED, and stop
-        # before the post-update steps reinforce the stale tree.
+        # stays days behind, then prints "✓ Code updated!". A CLEAN parked
+        # branch always switches to the target (committed work is safe on
+        # the branch; unmerged commits get a loud "kept" notice) — this is
+        # what non-interactive callers (desktop update button, gateway
+        # /update, cron) rely on. Only a dirty tree / opt-out / git failure
+        # warns loudly, marks the code update SKIPPED, and stops before the
+        # post-update steps reinforce the stale tree.
         parked_branch_switched = False
         if current_branch != branch:
             if current_branch != "HEAD":
@@ -5510,10 +5548,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     )
                     sys.exit(1)
                 parked_branch_switched = True
-                print(
-                    f"  ⚠ Checkout was parked on '{current_branch}' "
-                    f"(fully merged) — switching back to {branch}..."
-                )
+                if switch_block_reason.startswith("unmerged:"):
+                    _m()._print_parked_branch_kept_notice(
+                        current_branch,
+                        branch,
+                        switch_block_reason.split(":", 1)[1],
+                    )
+                else:
+                    print(
+                        f"  ⚠ Checkout was parked on '{current_branch}' "
+                        f"(fully merged) — switching back to {branch}..."
+                    )
             else:
                 print(
                     f"  ⚠ Currently on detached HEAD — switching to {branch} "
@@ -5624,10 +5669,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     input_fn=gw_input_fn,
                 )
             if parked_branch_switched:
-                print(
-                    f"  ✓ Checkout was parked on '{current_branch}' (fully "
-                    f"merged) — switched back to {branch}."
-                )
+                if switch_block_reason.startswith("unmerged:"):
+                    _count = switch_block_reason.split(":", 1)[1]
+                    print(
+                        f"  ✓ Checkout was parked on '{current_branch}' — "
+                        f"switched back to {branch}; {_count} unmerged "
+                        f"commit(s) kept on '{current_branch}'."
+                    )
+                else:
+                    print(
+                        f"  ✓ Checkout was parked on '{current_branch}' (fully "
+                        f"merged) — switched back to {branch}."
+                    )
             elif current_branch not in {branch, "HEAD"}:
                 subprocess.run(
                     git_cmd + ["checkout", current_branch],

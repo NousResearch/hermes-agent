@@ -420,10 +420,23 @@ def _iter_referenced_shell_scripts(
         # Resolving it walks to the filesystem root and fails the
         # regular-file check below, hard-blocking innocent .py scripts
         # (#77131). Skip pure-separator tokens.
+        #
+        # The "bare path" branch (tokens without a leading shell executable)
+        # used to yield any token containing a slash, which surfaced
+        # directory assignments (`SRC=/tmp/tabjoy-e2e`), heredoc-echoed
+        # status strings, and comment fragments — and the resulting
+        # `_read_referenced_script` returned unsafe=True for directories,
+        # hard-blocking innocent cron preflight scripts that name any
+        # path-like string in their body. Yield only when the resolved
+        # path points at a real file: directories, missing entries, and
+        # other non-regular paths cannot be shell-script references by
+        # construction. The cloud-placeholder branch upstream of
+        # `_read_referenced_script` already fails closed safely for any
+        # yielded path that turns out to be a FileProvider placeholder.
         if executable.strip("/"):
             if "/" in executable or executable.endswith((".sh", ".bash", ".zsh")):
                 resolved = _resolve_terminal_script_path(executable, cwd)
-                if resolved is not None:
+                if resolved is not None and resolved.is_file():
                     yield resolved
 
 

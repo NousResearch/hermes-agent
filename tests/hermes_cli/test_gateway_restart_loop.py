@@ -761,6 +761,81 @@ class TestLifecycleGuardModule:
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("daily ops", str(script))
 
+    def test_preflight_script_with_directory_assignment_not_blocked(self):
+        """Regression: a cron preflight .sh script whose body contains
+        ``SRC=/tmp/tabjoy-e2e`` (a directory assignment, not an executable
+        reference) and heredoc-echoed status strings used to be hard-blocked
+        because the bare-path walker yielded any token containing a slash
+        and ``_read_referenced_script`` returned unsafe=True for directories.
+        The walker is now restricted to known shell-script extensions, so
+        the innocent preflight is allowed through. The actual preflight
+        script is the canonical repro — kept here as a regression guard."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        preflight = "/home/hermes/.hermes/scripts/tabjoy-e2e-preflight.sh"
+        import os
+        if not os.path.isfile(preflight):
+            pytest.skip(f"{preflight} not present in this environment")
+        result = contains_gateway_lifecycle_command_or_referenced_script(
+            f"sh {preflight}", cwd="/home/hermes"
+        )
+        assert result is False
+
+    def test_shell_script_with_directory_assignment_and_lifecycle_still_blocked(
+        self, tmp_path
+    ):
+        """Regression: the extension-only restriction must NOT silently
+        disable the walker for genuine threats. A .sh script that assigns a
+        path to a variable AND invokes a direct lifecycle command is still
+        caught by the direct regex scan on the script body. This proves
+        the fix narrows the walker without weakening the guard."""
+        from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+        script = tmp_path / "ops.sh"
+        script.write_text(
+            "#!/bin/bash\n"
+            "SRC=/tmp/tabjoy-e2e\n"
+            "hermes gateway restart\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(GatewayLifecycleBlocked):
+            check_gateway_lifecycle("daily ops", str(script))
+
+    def test_bare_path_walker_only_yields_real_files(self, tmp_path):
+        """Regression: the bare-path branch of ``_iter_referenced_shell_scripts``
+        (tokens without a leading shell executable) must only yield paths
+        that resolve to a real regular file. Directory tokens,
+        path-shaped strings in heredocs/comments, and bare ``./`` paths
+        pointing at non-existent entries are skipped — they cannot be
+        shell-script references by construction. A real file with any
+        name (including no extension) IS yielded so the upstream
+        cloud-placeholder branch can fail closed on it."""
+        from cron.lifecycle_guard import _iter_referenced_shell_scripts
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "real.sh").write_text("#!/bin/bash\necho hi\n")
+        (scripts_dir / "noext").write_text("#!/bin/bash\necho noext\n")
+        # A directory that the walker used to yield and crash on:
+        dir_token = tmp_path / "src-dir"
+        dir_token.mkdir()
+        command = (
+            "#!/usr/bin/env bash\n"
+            f"SRC={dir_token}\n"
+            "./real.sh\n"               # bare path, real script
+            "./noext\n"                # bare path, real file no extension
+            "./missing\n"               # bare path, missing
+            "cat <<EOF\n"
+            "missing/incomplete: $x\n"
+            "EOF\n"
+        )
+        yielded = list(
+            _iter_referenced_shell_scripts(command, cwd=str(scripts_dir))
+        )
+        names = sorted(p.name for p in yielded)
+        # Real files are yielded (any name); directory / missing / heredoc
+        # tokens are skipped.
+        assert names == ["noext", "real.sh"]
+
     def test_cloud_backed_symlink_fails_closed_without_opening_target(
         self, tmp_path, monkeypatch
     ):

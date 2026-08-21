@@ -3866,6 +3866,21 @@ def _stop_process_trees(pids: list[int]) -> None:
     """
     for pid in pids:
         try:
+            # USER PATCH 2026-08-18 (BSOD 0xEF fix): never taskkill a PID that
+            # does not belong to a Hermes process - a stale/recycled PID could
+            # be svchost.exe and killing it blue-screens (0xEF).
+            _probe = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 f"$p=Get-CimInstance Win32_Process -Filter \"ProcessId={int(pid)}\" -ErrorAction SilentlyContinue;"
+                 "if($p -and ($p.CommandLine -match 'hermes' -or $p.ExecutablePath -match 'hermes')){'1'}else{'0'}"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if not _probe.stdout.strip().endswith("1"):
+                logger.debug("Skipping taskkill of non-Hermes PID %s (USER PATCH guard)", pid)
+                continue
             subprocess.run(
                 ["taskkill", "/PID", str(int(pid)), "/T", "/F"],
                 check=False,

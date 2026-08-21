@@ -156,6 +156,24 @@ class TestOutboundMentions:
             "@alice:example.org</a>, please check this."
         )
 
+    @pytest.mark.asyncio
+    async def test_send_preserves_inline_code_inside_markdown_link(self):
+        text = (
+            "Branch: "
+            "[`feat/clear-path-landing-refresh`]"
+            "(https://github.com/example/repo/tree/feat/clear-path-landing-refresh)"
+        )
+
+        result = await self.adapter.send("!room1:example.org", text)
+
+        assert result.success is True
+        content = self._sent_content(self.mock_client)
+        assert content["body"] == text
+        assert "MENTION_PROTECTED" not in content["formatted_body"]
+        assert "<code>feat/clear-path-landing-refresh</code>" in content[
+            "formatted_body"
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Require-mention gating in _on_room_message

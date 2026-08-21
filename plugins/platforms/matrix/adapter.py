@@ -4881,8 +4881,13 @@ class MatrixAdapter(BasePlatformAdapter):
             protected,
         )
 
-        for idx, original in enumerate(placeholders):
-            linked = linked.replace(f"\x00MENTION_PROTECTED{idx}\x00", original)
+        # Markdown regions can nest after protection (for example, inline code
+        # inside a link label). Restore the outer/latest placeholders first so
+        # inner placeholders are present when their turn is reached.
+        for idx in reversed(range(len(placeholders))):
+            linked = linked.replace(
+                f"\x00MENTION_PROTECTED{idx}\x00", placeholders[idx]
+            )
 
         return linked
 

@@ -752,6 +752,9 @@ class CLIAgentSetupMixin:
         """
         from cli import CLI_CONFIG, _record_output_history_entry, _strip_reasoning_tags, _suspend_output_history
         from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
+        from agent.skill_commands import describe_skill_invocation
+        from agent.compaction_display import project_compaction_message_for_display
+        from agent.context_compressor import is_compaction_summary_message
         display_history = getattr(self, "_resume_display_history", self.conversation_history)
         if not display_history:
             return
@@ -773,6 +776,24 @@ class CLIAgentSetupMixin:
         _last_asst_idx = None       # index of last assistant entry
         _last_asst_full = None      # un-truncated display text for last assistant
         for msg in display_history:
+            if is_compaction_summary_message(msg):
+                # Model-only compaction carrier (handoff boilerplate,
+                # inherited tool_calls/reasoning) — every other client-facing
+                # history surface (tui_gateway, gateway/run.py, the
+                # OpenAI-compatible api_server, the dashboard) already
+                # projects this away via project_compaction_message_for_
+                # display(); this recap builds its own history independently
+                # and never picked up an equivalent projection. A standalone
+                # handoff has no real content and is dropped entirely
+                # (mirrors display_kind == "hidden" below); a merged handoff
+                # keeps only the real prior-tail content that precedes the
+                # internal summary delimiter, with inherited
+                # tool_calls/reasoning stripped.
+                projected = project_compaction_message_for_display(msg)
+                if projected is None:
+                    continue
+                msg = projected
+
             role = msg.get("role", "")
             display_kind = msg.get("display_kind")
             content = msg.get("content")
@@ -789,6 +810,33 @@ class CLIAgentSetupMixin:
             if display_kind == "auto_continue":
                 entries.append(("event", "resumed interrupted turn"))
                 continue
+
+            # Gateway bookkeeping notices (personality change/clear) are
+            # persisted as role=user "[System: ...]" rows so strict
+            # OpenAI-compatible providers accept them mid-history — they are
+            # model-facing runtime metadata, not a user turn. The model-switch
+            # marker carries display_kind="model_switch" and is handled above;
+            # the personality marker carries no display_kind and would
+            # otherwise fall through to the role=="user" branch below and
+            # render as a fake "You: [System: ...]" bubble. Mirrors
+            # tui_gateway/server.py::_is_display_hidden_marker — keep both in
+            # sync if the marker wording/role ever changes.
+            if role == "user" and str(content or "").lstrip().startswith("[System:"):
+                continue
+
+            # A /skill invocation is persisted expanded — activation note plus
+            # the entire skill body — so without this it recaps as if the
+            # user had typed the skill's own prose (same class as the
+            # tui_gateway/server.py::_history_to_messages projection that
+            # every OTHER surface — desktop, TUI, web — already reads through;
+            # this CLI recap builds its own history independently and never
+            # picked up an equivalent projection). Render the invocation the
+            # user actually typed instead, e.g. "/work — fix the leak".
+            if role == "user" and isinstance(content, str):
+                invocation = describe_skill_invocation(content)
+                if invocation:
+                    entries.append(("event", f"skill invoked: {invocation}"))
+                    continue
 
             if role == "system":
                 continue

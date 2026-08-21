@@ -150,7 +150,173 @@ class TestDisplayResumedHistory:
         assert "You:" not in output
         assert "opaque" not in output
 
+    def test_personality_change_marker_hidden_not_shown_as_user_message(self):
+        """The personality-change/clear bookkeeping notice (tui_gateway.server's
+        _set_personality) is persisted as role=user "[System: ...]" with NO
+        display_kind — unlike the model-switch marker, there is no "◈ event"
+        branch to catch it, so it must be dropped outright rather than
+        rendered as a fake "You:" bubble (#71916-adjacent gap)."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "What's up?"},
+            {
+                "role": "user",
+                "content": (
+                    "[System: The user has changed the assistant's personality. "
+                    "From this point forward, adopt the following persona and "
+                    "respond accordingly: grumpy pirate]"
+                ),
+            },
+            {"role": "assistant", "content": "Not much, arr."},
+        ]
 
+        output = self._capture_display(cli)
+
+        assert "[System:" not in output
+        assert "grumpy pirate" not in output
+        assert "What's up?" in output
+        assert "Not much, arr." in output
+
+    def test_personality_cleared_marker_hidden(self):
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "user",
+                "content": (
+                    "[System: The user has cleared the personality overlay. "
+                    "From this point forward, respond in your normal default style.]"
+                ),
+            },
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+        output = self._capture_display(cli)
+
+        assert "[System:" not in output
+        assert "cleared the personality" not in output
+
+    def test_skill_invocation_collapsed_not_shown_as_expanded_body(self):
+        """A /skill turn is persisted EXPANDED — activation note plus the
+        entire skill body. tui_gateway/server.py::_history_to_messages (the
+        desktop/TUI/web display projection) already collapses this onto the
+        invocation the user typed; the CLI's _display_resumed_history builds
+        its recap independently and never picked up an equivalent projection,
+        so it rendered the whole skill body as if the user had written it."""
+        cli = _make_cli()
+        scaffolded = (
+            '[IMPORTANT: The user has invoked the "work" skill, indicating they '
+            "want you to follow its instructions. The full skill content is "
+            "loaded below.]\n\n"
+            "# /work\n\nSPIN UP A WORKTREE, never the primary checkout.\n\n"
+            "The user has provided the following instruction alongside the skill "
+            "invocation: fix the title leak"
+        )
+        cli.conversation_history = [
+            {"role": "user", "content": scaffolded},
+            {"role": "assistant", "content": "on it"},
+        ]
+
+        output = self._capture_display(cli)
+
+        assert "SPIN UP A WORKTREE" not in output
+        assert "IMPORTANT: The user has invoked" not in output
+        assert "You:" not in output
+        assert "◈ skill invoked: /work" in output
+        assert "fix the title leak" in output
+
+    def test_bare_skill_invocation_collapsed_to_command(self):
+        cli = _make_cli()
+        scaffolded = (
+            '[IMPORTANT: The user has invoked the "work" skill, indicating they '
+            "want you to follow its instructions. The full skill content is "
+            "loaded below.]\n\n# /work\n\nSPIN UP A WORKTREE."
+        )
+        cli.conversation_history = [{"role": "user", "content": scaffolded}]
+
+        output = self._capture_display(cli)
+
+        assert "SPIN UP A WORKTREE" not in output
+        assert "◈ skill invoked: /work" in output
+
+    def test_standalone_compaction_handoff_dropped_not_shown_as_user_message(self):
+        """A standalone compaction-summary handoff (role=user, the full
+        "[CONTEXT COMPACTION — REFERENCE ONLY] ..." boilerplate) must not
+        render as a fake "You:" bubble — every other client-facing history
+        surface (tui_gateway, gateway/run.py, the OpenAI-compatible
+        api_server, the dashboard) already drops/hides this via
+        project_compaction_message_for_display(); this recap builds its own
+        history independently and never picked up an equivalent projection."""
+        from agent.context_compressor import (
+            HISTORICAL_TASK_HEADING,
+            SUMMARY_PREFIX,
+            _SUMMARY_END_MARKER,
+        )
+
+        standalone_summary = (
+            f"{SUMMARY_PREFIX}\n\n"
+            f"{HISTORICAL_TASK_HEADING}\nold work\n\n"
+            f"{_SUMMARY_END_MARKER}"
+        )
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": standalone_summary},
+            {"role": "user", "content": "test the browser controller again"},
+            {"role": "assistant", "content": "on it"},
+        ]
+
+        output = self._capture_display(cli)
+
+        assert "CONTEXT COMPACTION" not in output
+        assert "REFERENCE ONLY" not in output
+        assert "old work" not in output
+        assert "test the browser controller again" in output
+        assert "on it" in output
+
+    def test_merged_compaction_carrier_shows_only_real_prior_content(self):
+        """A merged compaction carrier (a real assistant reply with an
+        inherited handoff summary appended, plus stale tool_calls from the
+        pre-compaction turn) must show only the real prior-tail text — not
+        the internal summary delimiter/boilerplate, and not the inherited
+        tool_calls as if they were a live action in this turn."""
+        from agent.context_compressor import (
+            HISTORICAL_TASK_HEADING,
+            SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+            _SUMMARY_END_MARKER,
+        )
+
+        standalone_summary = (
+            f"{SUMMARY_PREFIX}\n\n"
+            f"{HISTORICAL_TASK_HEADING}\nold work\n\n"
+            f"{_SUMMARY_END_MARKER}"
+        )
+        merged_carrier = (
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
+            "Refactor complete.\n\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n\n"
+            f"{standalone_summary}"
+        )
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "how's the refactor going?"},
+            {
+                "role": "assistant",
+                "content": merged_carrier,
+                "tool_calls": [{"id": "stale-prior-call"}],
+            },
+        ]
+
+        output = self._capture_display(cli)
+
+        assert "Refactor complete." in output
+        assert "PRIOR CONTEXT" not in output
+        assert "CONTEXT COMPACTION" not in output
+        assert "REFERENCE ONLY" not in output
+        assert "old work" not in output
+        assert "tool call" not in output
+        assert "stale-prior-call" not in output
 
     def test_tool_only_message_skipped_by_default(self):
         """Assistant messages with only tool_calls (no text) are skipped when

@@ -223,6 +223,10 @@ VALID_HOOKS: Set[str] = {
     "on_skill_lifecycle",
     "subagent_start",
     "subagent_stop",
+    # Resolve an operator-defined delegation route before a child agent is
+    # constructed. Callbacks return a non-secret {provider, model} mapping;
+    # the core runtime remains responsible for credential resolution.
+    "resolve_subagent_route",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
     # after the internal-event guard but BEFORE auth/pairing and agent
     # dispatch. Plugins may return a dict to influence flow:

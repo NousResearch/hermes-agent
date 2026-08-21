@@ -3592,12 +3592,72 @@ def _validate_batch_tasks(task_list: List[Dict[str, Any]]) -> Optional[str]:
                 "exactly what to do."
             )
     return None
+def _resolve_delegation_route(
+    *,
+    route: Optional[str],
+    goal: str,
+    context: Optional[str],
+    task_index: int,
+    parent_agent,
+) -> Optional[Dict[str, str]]:
+    """Resolve a plugin-defined route to a non-secret provider/model pair.
+
+    The hook is deliberately narrow: plugins may select an already-configured
+    provider and model, while credential lookup remains inside Hermes core.
+    No route preserves the legacy delegation path without invoking plugins.
+    """
+    route_name = str(route or "").strip()
+    if not route_name:
+        return None
+
+    from hermes_cli.plugins import invoke_hook
+
+    results = invoke_hook(
+        "resolve_subagent_route",
+        route=route_name,
+        goal=goal,
+        context=context,
+        task_index=task_index,
+        parent_provider=getattr(parent_agent, "provider", None),
+        parent_model=getattr(parent_agent, "model", None),
+    )
+    if not results:
+        raise ValueError(
+            f"No enabled plugin resolved delegation route {route_name!r}."
+        )
+    if len(results) > 1:
+        raise ValueError(
+            f"Multiple plugins resolved delegation route {route_name!r}; "
+            "enable exactly one delegation router."
+        )
+
+    result = results[0]
+    if not isinstance(result, dict):
+        raise ValueError(
+            "Delegation route hook must return a mapping with non-empty "
+            "'provider' and 'model'."
+        )
+    allowed_fields = {"provider", "model"}
+    unsupported = sorted(set(result) - allowed_fields)
+    if unsupported:
+        raise ValueError(
+            "Delegation route hook returned unsupported fields: "
+            + ", ".join(unsupported)
+        )
+    provider = str(result.get("provider") or "").strip()
+    model = str(result.get("model") or "").strip()
+    if not provider or not model:
+        raise ValueError(
+            "Delegation route hook must return non-empty 'provider' and 'model'."
+        )
+    return {"provider": provider, "model": model}
 
 
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
+    route: Optional[str] = None,
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
@@ -3611,9 +3671,9 @@ def delegate_task(
     Spawn one or more child agents to handle delegated tasks, or control
     already-running ones.
 
-    Spawn modes (action='spawn' or omitted):
-      - Single: provide goal (+ optional context and role)
-      - Batch:  provide tasks array [{goal, context, role}, ...]
+    Supports two modes:
+      - Single: provide goal (+ optional context, route, role)
+      - Batch:  provide tasks array [{goal, context, route, role}, ...]
 
     Control modes (synchronous, never backgrounded):
       - action='list'  -> live children of this conversation's spawn tree
@@ -3733,6 +3793,8 @@ def delegate_task(
         single_task: Dict[str, Any] = {"goal": goal, "context": context, "role": top_role}
         if output_schema is not None:
             single_task["output_schema"] = output_schema
+        if route:
+            single_task["route"] = route
         task_list = [single_task]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -3838,6 +3900,25 @@ def delegate_task(
 
             _child_context = append_output_contract(_child_context, _task_schema)
         try:
+            route_target = _resolve_delegation_route(
+                route=t.get("route"),
+                goal=t["goal"],
+                context=t.get("context"),
+                task_index=i,
+                parent_agent=parent_agent,
+            )
+        except ValueError as exc:
+            return tool_error(str(exc))
+        if route_target is None:
+            task_creds = creds  # default creds, resolved above
+        else:
+            # Hooks return selectors only; core resolves credentials.
+            try:
+                task_creds = _resolve_delegation_credentials(route_target, parent_agent)
+            except ValueError as exc:
+                return tool_error(str(exc))
+
+        try:
             child = _build_child_preserving_parent_tools(
                 task_index=i,
                 goal=t["goal"],
@@ -3845,18 +3926,18 @@ def delegate_task(
                 # Subagents always inherit the parent's toolsets; the model
                 # cannot choose or narrow them (no model-facing toolsets arg).
                 toolsets=None,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_request_overrides=creds.get("request_overrides"),
-                override_max_tokens=creds.get("max_output_tokens"),
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
+                override_request_overrides=task_creds.get("request_overrides"),
+                override_max_tokens=task_creds.get("max_output_tokens"),
+                override_acp_command=task_creds.get("command"),
+                override_acp_args=task_creds.get("args"),
                 role=effective_role,
             )
         except ValueError as exc:
@@ -3871,10 +3952,6 @@ def delegate_task(
             except Exception:
                 logger.debug("Could not attach output schema to child %d", i)
         # Tee the child's progress events into its live transcript log.
-        # wrap_progress_callback preserves the inner callback contract
-        # (including the _flush attribute) and never lets writer failures
-        # reach the agent loop. When no parent display exists the inner
-        # callback is None and the wrapper still records events.
         _writer = live_writers[i] if i < len(live_writers) else None
         if _writer is not None:
             child.tool_progress_callback = wrap_progress_callback(
@@ -4241,6 +4318,12 @@ def delegate_task(
             return tuple(parts), in_tool
 
         _goals = [t["goal"] for t in task_list]
+        _effective_models = {
+            str(getattr(child, "model", "") or "") for _, _, child in children
+        }
+        _batch_model = (
+            next(iter(_effective_models)) if len(_effective_models) == 1 else "mixed"
+        )
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
             context=context,
@@ -4248,7 +4331,7 @@ def delegate_task(
             # parent's toolsets (no model-facing toolsets arg).
             toolsets=None,
             role=top_role,
-            model=creds["model"],
+            model=_batch_model,
             session_key=_session_key,
             origin_ui_session_id=_origin_ui_session_id,
             origin_session_id=_wake_sid,
@@ -4761,6 +4844,15 @@ DELEGATE_TASK_SCHEMA = {
                     "specific you are, the better the subagent performs."
                 ),
             },
+            "route": {
+                "type": "string",
+                "description": (
+                    "Optional operator-approved delegation route resolved by an "
+                    "enabled plugin. The plugin selects provider/model; Hermes "
+                    "core resolves credentials. Omit to preserve normal model "
+                    "inheritance or delegation.model behavior."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -4770,6 +4862,13 @@ DELEGATE_TASK_SCHEMA = {
                         "context": {
                             "type": "string",
                             "description": "Task-specific context",
+                        },
+                        "route": {
+                            "type": "string",
+                            "description": (
+                                "Per-task operator-approved delegation route. "
+                                "Omit to use normal delegation model behavior."
+                            ),
                         },
                         "role": {
                             "type": "string",
@@ -4911,6 +5010,7 @@ registry.register(
         goal=args.get("goal"),
         context=args.get("context"),
         tasks=_strip_model_hidden_task_fields(args.get("tasks")),
+        route=args.get("route"),
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),

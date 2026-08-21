@@ -1116,12 +1116,14 @@ def _handle_comment(args: dict, **kw) -> str:
 
 
 def _handle_attach(args: dict, **kw) -> str:
-    """Attach an inline (base64) file to a task.
+    """Attach a file to a task — either inline (base64) or from a local path.
 
-    Mirrors the dashboard's upload endpoint for the agent surface: decode
-    the payload, enforce the shared size cap, write it under the per-task
+    Mirrors the dashboard's upload endpoint for the agent surface: read the
+    bytes (decoded from ``content_base64``, or straight off disk via
+    ``path``), enforce the shared size cap, write it under the per-task
     attachments dir, and record the metadata row — all via
-    ``kanban_db.store_attachment_bytes`` so the three surfaces stay in lockstep.
+    ``kanban_db.store_attachment_bytes`` so the three surfaces stay in
+    lockstep. Exactly one of ``content_base64`` / ``path`` is required.
     """
     from hermes_cli import kanban_db as kb
 
@@ -1137,17 +1139,45 @@ def _handle_attach(args: dict, **kw) -> str:
     if ownership_err:
         return ownership_err
     filename = args.get("filename")
-    if not filename or not str(filename).strip():
-        return tool_error("filename is required")
     content_b64 = args.get("content_base64")
-    if not content_b64 or not str(content_b64).strip():
-        return tool_error("content_base64 is required")
-    import base64
-    import binascii
-    try:
-        data = base64.b64decode(str(content_b64), validate=True)
-    except (binascii.Error, ValueError) as e:
-        return tool_error(f"content_base64 is not valid base64: {e}")
+    path_arg = args.get("path")
+    if content_b64 and path_arg:
+        return tool_error("pass exactly one of content_base64 or path, not both")
+    if not content_b64 and not path_arg:
+        return tool_error("one of content_base64 or path is required")
+
+    if path_arg:
+        # Local-path branch: read the file directly off disk, server-side —
+        # the analog of kanban_attach_url for files that already exist
+        # locally. Large files never round-trip through the model's output,
+        # so there is no silent-truncation risk.
+        import os as _os
+
+        src_path = _os.path.expanduser(str(path_arg).strip())
+        if not filename or not str(filename).strip():
+            filename = _os.path.basename(src_path) or "attachment"
+        if not _os.path.isfile(src_path):
+            return tool_error(f"path does not exist or is not a regular file: {src_path}")
+        size = _os.path.getsize(src_path)
+        if size > kb.KANBAN_ATTACHMENT_MAX_BYTES:
+            return tool_error(
+                f"file at {src_path} is {size} bytes, exceeds the "
+                f"{kb.KANBAN_ATTACHMENT_MAX_BYTES}-byte attachment limit"
+            )
+        with open(src_path, "rb") as f:
+            data = f.read()
+    else:
+        # Inline branch: decode the base64 payload.
+        if not filename or not str(filename).strip():
+            return tool_error("filename is required")
+        if not content_b64 or not str(content_b64).strip():
+            return tool_error("content_base64 is required")
+        import base64
+        import binascii
+        try:
+            data = base64.b64decode(str(content_b64), validate=True)
+        except (binascii.Error, ValueError) as e:
+            return tool_error(f"content_base64 is not valid base64: {e}")
     content_type = args.get("content_type")
     board = args.get("board")
     try:
@@ -2036,12 +2066,14 @@ KANBAN_COMMENT_SCHEMA = {
 KANBAN_ATTACH_SCHEMA = {
     "name": "kanban_attach",
     "description": (
-        "Attach a file to a task by passing its bytes inline (base64). "
-        "Use for genuine file artifacts the next worker or a human should "
-        "be able to download — generated reports, images, exports. The "
-        "file is stored as a real attachment (not a comment link) under "
-        "the task's attachments dir, capped at 25 MB. Prefer "
-        "kanban_attach_url when you only have a URL."
+        "Attach a file to a task, either inline as base64 bytes "
+        "(content_base64) or by pointing at a file already on disk (path). "
+        "Prefer path whenever the file exists locally — it is read "
+        "server-side, so large files are never round-tripped through the "
+        "model's output (no truncation risk); prefer kanban_attach_url when "
+        "you only have a URL. Exactly one of content_base64 or path is "
+        "required. The file is stored as a real attachment (not a comment "
+        "link) under the task's attachments dir, capped at 25 MB."
     ),
     "parameters": {
         "type": "object",
@@ -2054,12 +2086,26 @@ KANBAN_ATTACH_SCHEMA = {
                 "type": "string",
                 "description": (
                     "File name to store it under (e.g. 'report.pdf'). "
-                    "Directory components are stripped; only the leaf is kept."
+                    "Directory components are stripped; only the leaf is kept. "
+                    "Required with content_base64; defaults to the path's "
+                    "basename when using path."
                 ),
             },
             "content_base64": {
                 "type": "string",
-                "description": "The file contents, base64-encoded. Max 25 MB decoded.",
+                "description": (
+                    "The file contents, base64-encoded. Max 25 MB decoded. "
+                    "Mutually exclusive with path."
+                ),
+            },
+            "path": {
+                "type": "string",
+                "description": (
+                    "Path to a file already on disk to attach — read "
+                    "server-side, so the bytes never pass through the model's "
+                    "output. '~' is expanded. Mutually exclusive with "
+                    "content_base64."
+                ),
             },
             "content_type": {
                 "type": "string",
@@ -2067,7 +2113,7 @@ KANBAN_ATTACH_SCHEMA = {
             },
             "board": _board_schema_prop(),
         },
-        "required": ["filename", "content_base64"],
+        "required": [],
     },
 }
 

@@ -1134,3 +1134,101 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# kanban_attach — local-path option (read file server-side)
+# ---------------------------------------------------------------------------
+
+
+def test_attach_from_local_path_happy_path(worker_env, tmp_path):
+    """path reads the file server-side; filename defaults to the basename."""
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    src = tmp_path / "report.pdf"
+    payload = b"%PDF-1.7 fake report bytes"
+    src.write_bytes(payload)
+
+    out = kt._handle_attach({"path": str(src)})
+    d = json.loads(out)
+    assert d.get("ok") is True, out
+    assert d["size"] == len(payload)
+
+    conn = kb.connect()
+    try:
+        atts = kb.list_attachments(conn, worker_env)
+        assert [a.filename for a in atts] == ["report.pdf"]
+        assert Path(atts[0].stored_path).read_bytes() == payload
+    finally:
+        conn.close()
+
+
+def test_attach_from_local_path_explicit_filename(worker_env, tmp_path):
+    """filename overrides the basename when provided alongside path."""
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    src = tmp_path / "source.bin"
+    src.write_bytes(b"bytes")
+
+    out = kt._handle_attach({"path": str(src), "filename": "stored.bin"})
+    d = json.loads(out)
+    assert d.get("ok") is True, out
+
+    conn = kb.connect()
+    try:
+        atts = kb.list_attachments(conn, worker_env)
+        assert [a.filename for a in atts] == ["stored.bin"]
+    finally:
+        conn.close()
+
+
+def test_attach_path_and_content_base64_mutually_exclusive(worker_env, tmp_path):
+    from tools import kanban_tools as kt
+
+    src = tmp_path / "a.txt"
+    src.write_bytes(b"x")
+
+    out = kt._handle_attach(
+        {"filename": "a.txt", "content_base64": "eA==", "path": str(src)}
+    )
+    d = json.loads(out)
+    assert "error" in d, out
+    assert "not both" in d["error"]
+
+
+def test_attach_requires_content_base64_or_path(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_attach({"filename": "a.txt"})
+    d = json.loads(out)
+    assert "error" in d, out
+    assert "required" in d["error"]
+
+
+def test_attach_path_missing_file(worker_env, tmp_path):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_attach({"path": str(tmp_path / "does-not-exist.txt")})
+    d = json.loads(out)
+    assert "error" in d, out
+    assert "does not exist" in d["error"]
+
+
+def test_attach_path_over_size_cap(worker_env, tmp_path, monkeypatch):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(kb, "KANBAN_ATTACHMENT_MAX_BYTES", 64)
+    src = tmp_path / "big.bin"
+    src.write_bytes(b"z" * 128)
+
+    out = kt._handle_attach({"path": str(src)})
+    d = json.loads(out)
+    assert "error" in d, out
+    assert "exceeds" in d["error"]

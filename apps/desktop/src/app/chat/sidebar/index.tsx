@@ -257,7 +257,7 @@ const HEADER_NAV_BTN =
 
 // FTS results cover sessions that aren't in the loaded page; synthesize a
 // minimal SessionInfo so they render in the same row component (resume works
-// by id; the snippet stands in for the preview).
+// by id; the snippet stands in for the preview when the row has no title).
 
 // The backend's FTS layer wraps matched terms in literal '>>>' / '<<<'
 // highlight markers (sqlite snippet() delimiters — see hermes_state_search.py).
@@ -268,7 +268,7 @@ export function stripFtsMarkers(snippet: string): string {
   return snippet.replaceAll('>>>', '').replaceAll('<<<', '')
 }
 
-function searchResultToSession(result: SessionSearchResult): SessionInfo {
+export function searchResultToSession(result: SessionSearchResult): SessionInfo {
   const ts = result.session_started ?? Date.now() / 1000
 
   return {
@@ -286,7 +286,9 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
     preview: stripFtsMarkers(result.snippet ?? '').trim() || null,
     source: result.source ?? null,
     started_at: ts,
-    title: null,
+    // Surface the conversation's own title (user/LLM assigned) instead of
+    // forcing null and showing only the content snippet.
+    title: result.title ?? null,
     tool_call_count: 0
   }
 }

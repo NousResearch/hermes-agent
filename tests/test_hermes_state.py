@@ -3824,6 +3824,52 @@ class TestSessionIdSearch:
         assert [s["id"] for s in db.search_sessions_by_id("20260603")] == ["20260603_090200_abcd12"]
         assert [s["id"] for s in db.search_sessions_by_id("ABCD12")] == ["20260603_090200_abcd12"]
 
+    def test_search_sessions_by_title_matches_titled_sessions_case_insensitively(self, db):
+        """A user-named session is findable by its title, not just its id or
+        message content. The FTS index does not cover sessions.title, so this is
+        the path that makes "Arby's Faribault, MN" show up for that string."""
+        db.create_session(session_id="20260811_125725_5d4fac", source="desktop", model="test-model")
+        db.set_session_title("20260811_125725_5d4fac", "Arby's Faribault, MN")
+        db.append_message(session_id="20260811_125725_5d4fac", role="user", content="run buyer discovery")
+
+        db.create_session(session_id="20260811_125726_prefix", source="desktop", model="test-model")
+        db.set_session_title("20260811_125726_prefix", "Arby's Faribault, MN - diligence")
+        db.append_message(session_id="20260811_125726_prefix", role="user", content="title-only prefix match")
+
+        db.create_session(session_id="20260811_125727_substring", source="desktop", model="test-model")
+        db.set_session_title("20260811_125727_substring", "Diligence for Arby's Faribault, MN")
+        db.append_message(session_id="20260811_125727_substring", role="user", content="title-only substring match")
+
+        db.create_session(session_id="20260814_144119_a9d5d1", source="desktop", model="test-model")
+        db.set_session_title("20260814_144119_a9d5d1", "Arby's Antioch")
+        db.append_message(session_id="20260814_144119_a9d5d1", role="user", content="run buyer discovery")
+
+        # Untitled session must NOT match (no title).
+        db.create_session(session_id="20260818_100000_untitled", source="desktop", model="test-model")
+        db.append_message(session_id="20260818_100000_untitled", role="user", content="Faribault appears in content only")
+
+        # Exact title, title-prefix, then loose title-substring is the ranking
+        # contract used by Desktop before falling through to content hits.
+        exact = [s["id"] for s in db.search_sessions_by_title("Arby's Faribault, MN")]
+        assert exact == [
+            "20260811_125725_5d4fac",
+            "20260811_125726_prefix",
+            "20260811_125727_substring",
+        ]
+
+        # Case-insensitive substring matches every title containing the query.
+        all_arbys = [s["id"] for s in db.search_sessions_by_title("arby's")]
+        assert set(all_arbys) == {
+            "20260811_125725_5d4fac",
+            "20260811_125726_prefix",
+            "20260811_125727_substring",
+            "20260814_144119_a9d5d1",
+        }
+
+        # Word present only in message content, not in a title, does not match.
+        content_only = db.search_sessions_by_title("Faribault appears in content")
+        assert content_only == []
+
 
 
 

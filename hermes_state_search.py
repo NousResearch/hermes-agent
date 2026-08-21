@@ -2339,6 +2339,65 @@ class SessionSearchMixin:
         )
         return [row for _, row in ranked[:limit]]
 
+    def search_sessions_by_title(
+        self,
+        query: str,
+        limit: int = 20,
+        include_archived: bool = True,
+        source: str = None,
+        sources: List[str] = None,
+        exclude_sources: List[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Search surfaced sessions by case-insensitive title substring.
+
+        Desktop search uses this so a user-named session (e.g. "Arby's Faribault,
+        MN") can be found by typing its title — the FTS content index does not
+        cover ``sessions.title``, and the id matcher only matches the raw id
+        string. This fills that gap by reusing ``list_sessions_rich``'s
+        ``search_query`` filter, which already matches title (and id) across
+        each conversation's forward compression chain, so a titled compression
+        root still resolves to its live continuation.
+        """
+        needle = (query or "").strip().lower()
+        if not needle or limit <= 0:
+            return []
+
+        # SQL-bounded like the id matcher: list_sessions_rich pushes the title
+        # LIKE filter into the query (matching the row's title AND every title
+        # in its forward compression chain), so we only materialize matching
+        # rows instead of scanning every session.
+        candidates = self.list_sessions_rich(
+            source=source,
+            sources=sources,
+            exclude_sources=exclude_sources,
+            limit=max(limit * 4, limit),
+            offset=0,
+            include_archived=include_archived,
+            order_by_last_active=True,
+            search_query=needle,
+        )
+
+        # Prefer exact-title and prefix-title matches over loose substrings so
+        # "Faribault" ranks a session literally titled "Arby's Faribault, MN"
+        # ahead of one where the word merely appears mid-title.
+        def score(row: Dict[str, Any]) -> int:
+            title = str(row.get("title") or "").lower()
+            if not title:
+                return 3
+            if title == needle:
+                return 0
+            if title.startswith(needle):
+                return 1
+            if needle in title:
+                return 2
+            return 3
+
+        ranked = sorted(
+            enumerate(candidates),
+            key=lambda item: (score(item[1]), item[0]),
+        )
+        return [row for _, row in ranked[:limit]]
+
     def _fts_table_exists(self, name: str) -> bool:
         """True if an FTS5 virtual table is queryable in this DB."""
         try:

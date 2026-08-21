@@ -354,6 +354,37 @@ async def search_sessions(
             # Over-fetch so lineage dedup can still surface `limit` distinct
             # conversations even when several hits collapse onto one root.
             fetch_limit = max(safe_limit * 5, 50)
+
+            # Title matches next: a user-named session (e.g. "Arby's Faribault,
+            # MN") is found by typing its title. The FTS index only covers
+            # message content, and the id matcher only matches the raw session
+            # id string — neither sees sessions.title. search_sessions_by_title
+            # is SQL-bounded (reuses list_sessions_rich's search_query filter)
+            # and runs after exact-id hits so a conversation that matches both
+            # collapses onto its lineage root exactly once.
+            for row in db.search_sessions_by_title(
+                q,
+                limit=safe_limit,
+                include_archived=True,
+                source=source_filter,
+                sources=source_list or None,
+                exclude_sources=exclude_list or None,
+            ):
+                sid = row.get("id")
+                preview = (row.get("preview") or "").strip()
+                title = (row.get("title") or "").strip()
+                snippet = preview or title or f"Session ID: {sid}"
+                add_lineage_result(
+                    sid,
+                    {
+                        "snippet": snippet,
+                        "role": None,
+                        "source": row.get("source"),
+                        "model": row.get("model"),
+                        "session_started": row.get("started_at"),
+                    },
+                )
+
             matches = db.search_messages(
                 query=prefix_query,
                 source_filter=include_sources,

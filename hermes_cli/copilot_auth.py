@@ -50,6 +50,19 @@ COPILOT_ENV_VARS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
 _DEVICE_CODE_POLL_INTERVAL = 5  # seconds
 _DEVICE_CODE_POLL_SAFETY_MARGIN = 3  # seconds
 
+# ─── Copilot CLI Identity (single source of truth) ─────────────────────────
+# Present ONE coherent @github/copilot CLI identity on every request path
+# (inference, token-exchange, device-OAuth). These are hardcoded module
+# constants, not env vars, per AGENTS.md (no new HERMES_* vars for non-secret
+# config). ``copilot-developer-cli`` is the real Copilot CLI's
+# Copilot-Integration-Id; the User-Agent and Editor-Version mirror the CLI
+# build so all paths advertise the same client instead of the previous mix of
+# HermesAgent/1.0, vscode-chat, and vscode/1.104.1.
+COPILOT_CLI_VERSION = "1.0.81-6"
+COPILOT_INTEGRATION_ID = "copilot-developer-cli"
+COPILOT_USER_AGENT = f"GitHubCopilotChat/{COPILOT_CLI_VERSION}"
+COPILOT_EDITOR_VERSION = f"copilot/{COPILOT_CLI_VERSION}"
+
 
 def validate_copilot_token(token: str) -> tuple[bool, str]:
     """Validate that a token is usable with the Copilot API.
@@ -254,7 +267,7 @@ def copilot_device_code_login(
         headers={
             "Accept": "application/json",
             "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "HermesAgent/1.0",
+            "User-Agent": COPILOT_USER_AGENT,
         },
     )
 
@@ -300,7 +313,7 @@ def copilot_device_code_login(
             headers={
                 "Accept": "application/json",
                 "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": "HermesAgent/1.0",
+                "User-Agent": COPILOT_USER_AGENT,
             },
         )
 
@@ -353,10 +366,10 @@ def copilot_device_code_login(
 _jwt_cache: dict[str, tuple[str, float, Optional[str]]] = {}
 _JWT_REFRESH_MARGIN_SECONDS = 120  # refresh 2 min before expiry
 
-# Token exchange endpoint and headers (matching VS Code / Copilot CLI)
+# Token exchange endpoint and headers (matching the @github/copilot CLI)
 _TOKEN_EXCHANGE_URL = "https://api.github.com/copilot_internal/v2/token"
-_EDITOR_VERSION = "vscode/1.104.1"
-_EXCHANGE_USER_AGENT = "GitHubCopilotChat/0.26.7"
+_EDITOR_VERSION = COPILOT_EDITOR_VERSION
+_EXCHANGE_USER_AGENT = COPILOT_USER_AGENT
 
 # Transient-failure hardening for the token exchange. Gateway startup often
 # races network readiness (launchd relaunch, DHCP/VPN settling); a single-shot
@@ -724,9 +737,9 @@ def copilot_request_headers(
     Replicates the header set used by opencode and the Copilot CLI.
     """
     headers: dict[str, str] = {
-        "Editor-Version": "vscode/1.104.1",
-        "User-Agent": "HermesAgent/1.0",
-        "Copilot-Integration-Id": "vscode-chat",
+        "Editor-Version": COPILOT_EDITOR_VERSION,
+        "User-Agent": COPILOT_USER_AGENT,
+        "Copilot-Integration-Id": COPILOT_INTEGRATION_ID,
         "Openai-Intent": "conversation-edits",
         "x-initiator": "agent" if is_agent_turn else "user",
     }

@@ -37,7 +37,15 @@ _HERMES_USER_AGENT = f"hermes-cli/{_HERMES_VERSION}"
 
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
 COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
-COPILOT_EDITOR_VERSION = "vscode/1.104.1"
+# Coherent @github/copilot CLI identity, kept in lockstep with the canonical
+# constants in hermes_cli.copilot_auth so every request path (inference,
+# token-exchange, device-OAuth) advertises the same client. Hardcoded here as
+# a fallback for when copilot_auth cannot be imported (see
+# copilot_default_headers below); not a new env var, per AGENTS.md.
+COPILOT_CLI_VERSION = "1.0.81-6"
+COPILOT_INTEGRATION_ID = "copilot-developer-cli"
+COPILOT_USER_AGENT = f"GitHubCopilotChat/{COPILOT_CLI_VERSION}"
+COPILOT_EDITOR_VERSION = f"copilot/{COPILOT_CLI_VERSION}"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 
@@ -4594,7 +4602,8 @@ def copilot_default_headers(*, is_agent_turn: bool = True) -> dict[str, str]:
     except ImportError:
         return {
             "Editor-Version": COPILOT_EDITOR_VERSION,
-            "User-Agent": "HermesAgent/1.0",
+            "User-Agent": COPILOT_USER_AGENT,
+            "Copilot-Integration-Id": COPILOT_INTEGRATION_ID,
             "Openai-Intent": "conversation-edits",
             "x-initiator": "agent" if is_agent_turn else "user",
         }

@@ -4867,6 +4867,15 @@ class APIServerAdapter(BasePlatformAdapter):
             "X-Accel-Buffering": "no",
             "X-Hermes-Session-Id": session_id,
         }
+        # CORS middleware can't inject headers into StreamResponse after
+        # prepare() flushes them, so resolve CORS headers up front — same as
+        # _write_sse_chat_completion. Without this a cross-origin browser
+        # client gets a 200 it is forbidden to read: the request succeeds and
+        # the agent runs, but the caller sees only a generic fetch error.
+        origin = request.headers.get("Origin", "")
+        cors = self._cors_headers_for_origin(origin) if origin else None
+        if cors:
+            headers.update(cors)
         if gateway_session_key:
             headers["X-Hermes-Session-Key"] = gateway_session_key
         response = web.StreamResponse(status=200, headers=headers)
@@ -7953,14 +7962,19 @@ class APIServerAdapter(BasePlatformAdapter):
         q = self._run_streams[run_id]
         self._run_stream_subscribers.add(run_id)
 
-        response = web.StreamResponse(
-            status=200,
-            headers={
-                "Content-Type": "text/event-stream",
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
-        )
+        sse_headers = {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        }
+        # Same up-front CORS resolution as _write_sse_chat_completion: the
+        # middleware cannot amend a StreamResponse after prepare(), and
+        # /v1/capabilities advertises run_events_sse to browser clients.
+        origin = request.headers.get("Origin", "")
+        cors = self._cors_headers_for_origin(origin) if origin else None
+        if cors:
+            sse_headers.update(cors)
+        response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
 
         try:

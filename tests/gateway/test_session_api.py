@@ -891,3 +891,85 @@ async def test_patch_session_still_rejects_unknown_fields(adapter, session_db):
         resp = await cli.patch(f"/api/sessions/{session_id}", json={"nonsense": 1})
         assert resp.status == 400, await resp.text()
         assert (await resp.json())["error"]["code"] == "unsupported_session_field"
+
+
+# ── CORS on streaming responses ──────────────────────────────────────────────
+# The CORS middleware cannot amend a StreamResponse after prepare() flushes
+# its headers, so SSE handlers must resolve CORS up front (the pattern
+# _write_sse_chat_completion and _write_sse_responses already follow). Two SSE
+# exits shipped without it — POST /api/sessions/{id}/chat/stream and
+# GET /v1/runs/{id}/events — so a cross-origin browser client received a 200
+# it was forbidden to read: the request succeeded, the agent ran and billed
+# tokens, but the caller saw only a generic fetch error. /v1/capabilities
+# advertises both surfaces (session_chat_streaming, run_events_sse) to
+# browser clients, so they must actually be browser-readable.
+
+
+@pytest.fixture
+def cors_adapter(session_db):
+    adapter = APIServerAdapter(
+        PlatformConfig(enabled=True, extra={"cors_origins": "https://app.example"})
+    )
+    adapter._session_db = session_db
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_carries_cors_headers(cors_adapter, session_db):
+    session_id = session_db.create_session("cors-stream", "api_server")
+
+    async def fake_run(**kwargs):
+        return {"final_response": "ok", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(cors_adapter)
+    with patch.object(cors_adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "hi"},
+                headers={"Origin": "https://app.example"},
+            )
+            assert resp.status == 200
+            assert resp.headers.get("Access-Control-Allow-Origin") == "https://app.example"
+            assert resp.headers.get("Content-Type", "").startswith("text/event-stream")
+            await resp.text()
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_without_origin_adds_no_cors(cors_adapter, session_db):
+    """Non-browser callers keep exactly the old header surface."""
+    session_id = session_db.create_session("no-origin", "api_server")
+
+    async def fake_run(**kwargs):
+        return {"final_response": "ok", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(cors_adapter)
+    with patch.object(cors_adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream", json={"message": "hi"}
+            )
+            assert resp.status == 200
+            assert "Access-Control-Allow-Origin" not in resp.headers
+            await resp.text()
+
+
+@pytest.mark.asyncio
+async def test_run_events_sse_carries_cors_headers(cors_adapter):
+    import asyncio as _asyncio
+
+    run_id = "run_cors_events"
+    q: "_asyncio.Queue" = _asyncio.Queue()
+    cors_adapter._run_streams[run_id] = q
+    q.put_nowait(None)  # terminate the stream right after the headers
+
+    app = web.Application()
+    app.router.add_get("/v1/runs/{run_id}/events", cors_adapter._handle_run_events)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(
+            f"/v1/runs/{run_id}/events",
+            headers={"Origin": "https://app.example"},
+        )
+        assert resp.status == 200
+        assert resp.headers.get("Access-Control-Allow-Origin") == "https://app.example"
+        await resp.text()

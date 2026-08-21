@@ -71,8 +71,12 @@ def _patch_oauth_flow(
         def __exit__(self, *_exc):
             return False
 
-        def read(self):
-            return self._body
+        def read(self, size: int = -1):
+            if capture_token_request is not None:
+                capture_token_request.setdefault("read_sizes", []).append(size)
+            if size is None or size < 0:
+                return self._body
+            return self._body[:size]
 
     def fake_urlopen(req, *_a, **_kw):
         if capture_token_request is not None:
@@ -176,7 +180,10 @@ def test_login_token_exchange_uses_platform_claude_host(monkeypatch, tmp_path):
 
     monkeypatch.setattr(builtins, "input", fake_input)
 
-    from agent.anthropic_adapter import run_hermes_oauth_login_pure
+    from agent.anthropic_adapter import (
+        _OAUTH_TOKEN_RESPONSE_BODY_MAX_BYTES,
+        run_hermes_oauth_login_pure,
+    )
 
     result = run_hermes_oauth_login_pure()
 
@@ -185,8 +192,9 @@ def test_login_token_exchange_uses_platform_claude_host(monkeypatch, tmp_path):
         "login token exchange must target platform.claude.com first, not the "
         "dead console.anthropic.com host (regression of #45250 / #49821)"
     )
-
-
+    assert captured_token["read_sizes"] == [
+        _OAUTH_TOKEN_RESPONSE_BODY_MAX_BYTES + 1
+    ]
 
 
 def test_callback_state_mismatch_aborts(monkeypatch, tmp_path, caplog):

@@ -695,5 +695,46 @@ def test_status_falls_through_to_generic_dispatcher_for_catalog_only_provider():
     assert out["has_refresh_token"] is True
 
 
+def test_anthropic_dashboard_token_exchange_bounds_response(monkeypatch):
+    from agent.anthropic_adapter import _OAUTH_TOKEN_RESPONSE_BODY_MAX_BYTES
+    from hermes_cli import web_server as ws
+
+    sid, sess = ws._new_oauth_session("anthropic", "pkce")
+    sess.update({"verifier": "verifier", "state": "state"})
+    read_sizes = []
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self, size=-1):
+            read_sizes.append(size)
+            return b"x" * size
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_a, **_kw: _Response())
+    monkeypatch.setattr(
+        ws,
+        "_save_anthropic_oauth_creds",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            AssertionError("oversized response must not be persisted")
+        ),
+    )
+
+    try:
+        result = ws._submit_anthropic_pkce(sid, "code#state")
+    finally:
+        ws._oauth_sessions.pop(sid, None)
+
+    assert result["ok"] is False
+    assert read_sizes == [
+        _OAUTH_TOKEN_RESPONSE_BODY_MAX_BYTES + 1,
+        _OAUTH_TOKEN_RESPONSE_BODY_MAX_BYTES + 1,
+    ]
+    assert "exceeded" in result["message"]
+
+
 
 

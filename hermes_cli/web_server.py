@@ -10937,6 +10937,7 @@ try:
         _OAUTH_REDIRECT_URI as _ANTHROPIC_OAUTH_REDIRECT_URI,
         _OAUTH_SCOPES as _ANTHROPIC_OAUTH_SCOPES,
         _generate_pkce as _generate_pkce_pair,
+        _read_oauth_json_response as _read_anthropic_oauth_json_response,
     )
     _ANTHROPIC_OAUTH_AVAILABLE = True
 except ImportError:
@@ -11128,7 +11129,7 @@ def _submit_anthropic_pkce(
         )
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:
-                result = json.loads(resp.read().decode())
+                result = _read_anthropic_oauth_json_response(resp)
             break
         except Exception as e:
             last_exc = e

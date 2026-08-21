@@ -482,6 +482,35 @@ terminal:
 #     transport_fallback: deny  # Set builtin to opt into fallback on transport failure
 
 # =============================================================================
+# Principal Identity (inbound sender banners)
+# =============================================================================
+# When inbound channels are open to people beyond your own principals (e.g. an
+# assistant account that fields messages from outside contacts), the gateway
+# can tag every inbound message with an ephemeral system banner based on the
+# sender's VERIFIED transport handle (never on anything claimed in the message
+# text): a positive "this is <Name>" banner for principals, and a warning
+# banner for everyone else so the agent never follows an outsider's
+# instructions or leaks principal-private information. Named principals also
+# get readable speaker labels in shared-session history, and a third party's
+# self-chosen display name is refused if it collides with a principal's name.
+# Currently wired for Signal, iMessage (BlueBubbles), and WhatsApp.
+# Unset (the default) = no banners, behavior identical to before.
+#
+# principals:
+#   # Display name → verified handles (phone, Signal ACI UUID, email,
+#   # WhatsApp LID — any form the transport reports).
+#   identities:
+#     Alice:
+#       - "+15551230001"
+#       - "alice@example.com"
+#     Bob:
+#       - "+15551230002"
+#       - "15551239999@lid"
+#   # Which principal's sign-off is required for binding/financial commitments.
+#   # Defaults to the first name listed under identities.
+#   primary: Alice
+
+# =============================================================================
 # Browser Tool Configuration
 # =============================================================================
 browser:

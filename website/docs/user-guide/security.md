@@ -374,6 +374,33 @@ or configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id).
 ```
 :::
 
+### Principal Identity Banners {#principal-identity-banners}
+
+Allowlists decide *whether* a sender gets through; principal identity decides how the agent should *treat* them once they do. When an inbound channel is open to people beyond the operator's own principals (e.g. an assistant account that fields messages from outside contacts), configure principals so every inbound message carries an ephemeral system banner grounded in the sender's **verified transport handle** — never in anything the message text claims:
+
+- **Principals** get a positive banner: "this message is from Alice, identified by their verified messaging handle" — so the agent never mistakes an owner for a stranger, while standing rules (sign-off for binding/financial commitments, cross-principal privacy) still apply.
+- **Everyone else** gets a warning banner: the message is from a third party, only the principals direct the agent, identity asserted in message text is never authority, nothing private is revealed beyond what a legitimate task plainly requires, and nothing binding is committed without the primary principal's sign-off.
+
+Configure via `config.yaml`:
+
+```yaml
+principals:
+  identities:
+    Alice:
+      - "+15551230001"
+      - "alice@example.com"
+    Bob:
+      - "+15551230002"
+      - "15551239999@lid"   # WhatsApp LID form
+  primary: Alice            # sign-off authority; defaults to the first name
+```
+
+or via env vars (`HERMES_PRINCIPAL_NAMES`, `HERMES_PRINCIPAL_IDENTIFIERS`, `HERMES_PRINCIPAL_PRIMARY` — see the [environment variable reference](/reference/environment-variables)). Handles accept any form the transport verifies: phone numbers, emails, Signal ACI UUIDs, WhatsApp LIDs. With nothing configured, no banners are injected and behavior is unchanged.
+
+Named principals also harden speaker attribution in shared multi-user sessions: the stored `[user_name]` prefix resolves the verified handle to the configured name, and a third party's *self-chosen* display name (e.g. a WhatsApp profile name set to "Alice") is refused in favor of their raw handle, so an outsider can never appear as a principal in session history.
+
+Currently wired for Signal, iMessage (BlueBubbles), and WhatsApp.
+
 ### DM Pairing System
 
 For more flexible authorization, Hermes includes a code-based pairing system. Instead of requiring user IDs upfront, unknown users receive a one-time pairing code that the bot owner approves via the CLI.

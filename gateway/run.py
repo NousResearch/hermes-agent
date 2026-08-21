@@ -2559,6 +2559,34 @@ if _config_path.exists():
                 os.environ["HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT"] = str(
                     _gateway_cfg["platform_connect_timeout"]
                 )
+        # Principal identity (gateway/principals.py): bridge the `principals:`
+        # block to the env vars the banner/display-name helpers read.
+        # `identities` maps a display name to the verified transport handles
+        # (phone, Signal ACI UUID, email, WhatsApp LID) that identify that
+        # principal; `primary` names the principal with binding/financial
+        # authority. config.yaml is the documented path for these settings, so
+        # it is authoritative over .env (same semantics as the agent.* bridge
+        # above).
+        _principals_cfg = _cfg.get("principals", {})
+        if isinstance(_principals_cfg, dict):
+            _identities = _principals_cfg.get("identities")
+            if isinstance(_identities, dict):
+                _groups = []
+                for _pname, _handles in _identities.items():
+                    if isinstance(_handles, (str, int)):
+                        _handles = [_handles]
+                    if not isinstance(_handles, (list, tuple)):
+                        continue
+                    _joined = "|".join(
+                        str(_h).strip() for _h in _handles if str(_h).strip()
+                    )
+                    if str(_pname).strip() and _joined:
+                        _groups.append(f"{str(_pname).strip()}={_joined}")
+                if _groups:
+                    os.environ["HERMES_PRINCIPAL_NAMES"] = ";".join(_groups)
+            _principals_primary = str(_principals_cfg.get("primary") or "").strip()
+            if _principals_primary:
+                os.environ["HERMES_PRINCIPAL_PRIMARY"] = _principals_primary
     except Exception as _bridge_err:
         # Previously this was silent (`except Exception: pass`), which
         # hid partial bridge failures and let .env defaults shadow

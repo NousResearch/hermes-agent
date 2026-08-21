@@ -285,7 +285,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
-from gateway.whatsapp_identity import to_whatsapp_jid
+from gateway.principals import display_name_for, principal_channel_banner
+from gateway.whatsapp_identity import expand_whatsapp_aliases, to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -1478,13 +1479,22 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             is_group = data.get("isGroup", False)
             chat_type = "group" if is_group else "dm"
             
+            # Resolve the sender against configured principals using all alias
+            # forms of the handle (the bridge may surface the same person as a
+            # bare phone JID or a LID), so principals are never mis-flagged as
+            # outsiders just because the other alias was configured.
+            sender_id = str(data.get("senderId") or data.get("from") or "")
+            sender_candidates = [sender_id, *expand_whatsapp_aliases(sender_id)]
+
             # Build source
             source = self.build_source(
                 chat_id=data.get("chatId", ""),
                 chat_name=data.get("chatName"),
                 chat_type=chat_type,
                 user_id=data.get("senderId"),
-                user_name=data.get("senderName"),
+                user_name=display_name_for(
+                    *sender_candidates, fallback=data.get("senderName")
+                ),
             )
             
             # Download media URLs to the local cache so agent tools
@@ -1637,6 +1647,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 text=body,
                 message_type=msg_type,
                 source=source,
+                channel_prompt=principal_channel_banner(*sender_candidates),
                 raw_message=data,
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,

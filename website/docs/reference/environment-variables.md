@@ -534,6 +534,9 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `MESSAGING_CWD` | Deprecated compatibility fallback for gateway working directory. Prefer `terminal.cwd` in `config.yaml`. |
 | `GATEWAY_ALLOWED_USERS` | Comma-separated user IDs allowed across all platforms |
 | `GATEWAY_ALLOW_ALL_USERS` | Allow all users without allowlists (`true`/`false`, default: `false`) |
+| `HERMES_PRINCIPAL_IDENTIFIERS` | Comma-separated verified handles (phone, email, Signal ACI UUID, WhatsApp LID) that mark a sender as a principal. Enables [principal identity banners](/user-guide/security#principal-identity-banners) on inbound messages; unset (with `HERMES_PRINCIPAL_NAMES` also unset) = no banners. |
+| `HERMES_PRINCIPAL_NAMES` | Named principal handles, `Name=handle\|handle;Name=handle\|...`. Names the sender in banners and speaker labels; listing someone here also marks them a principal (union with `HERMES_PRINCIPAL_IDENTIFIERS`). Also configurable via `principals.identities` in `config.yaml` (config wins). |
+| `HERMES_PRINCIPAL_PRIMARY` | Name of the principal whose explicit sign-off is required for binding/financial commitments. Defaults to the first name in `HERMES_PRINCIPAL_NAMES`. Also configurable via `principals.primary` in `config.yaml` (config wins). |
 
 ### Web Dashboard & Hermes Desktop
 

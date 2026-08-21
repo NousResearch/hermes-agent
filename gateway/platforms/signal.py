@@ -44,6 +44,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.helpers import redact_phone
 from gateway.platforms.media_cache import DEFAULT_EXT_TO_MIME, mime_for_ext
+from gateway.principals import display_name_for, principal_channel_banner
 from tools.audio_container import CONTAINER_TO_EXT, sniff_container
 from gateway.platforms.signal_format import markdown_to_signal
 from gateway.platforms.signal_rate_limit import (
@@ -710,7 +711,7 @@ class SignalAdapter(BasePlatformAdapter):
             chat_name=group_info.get("groupName") if group_info else sender_name,
             chat_type=chat_type,
             user_id=sender,
-            user_name=sender_name or sender,
+            user_name=display_name_for(sender, sender_uuid, fallback=sender_name or sender),
             user_id_alt=sender_uuid if sender_uuid else None,
             chat_id_alt=group_id if is_group else None,
         )
@@ -748,6 +749,7 @@ class SignalAdapter(BasePlatformAdapter):
             source=source,
             text=text or "",
             message_type=msg_type,
+            channel_prompt=principal_channel_banner(sender, sender_uuid),
             media_urls=media_urls,
             media_types=media_types,
             timestamp=timestamp,

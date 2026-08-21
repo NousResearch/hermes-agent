@@ -65,22 +65,22 @@ from plugins.web.tavily.provider import (  # noqa: F401 — backward-compat name
     _normalize_tavily_search_results,
     _tavily_request,
 )
-# Parallel + Exa clients re-exported for backward-compat with existing
+# Parallel + Exa client helpers re-exported for backward-compat with existing
 # unit tests (tests/tools/test_web_tools_config.py imports _get_parallel_client
-# / _get_async_parallel_client / _get_exa_client directly).
+# / _get_async_parallel_client / _get_exa_client directly). The async Parallel
+# helper is a factory; its caller owns and closes each returned client.
 from plugins.web.parallel.provider import (  # noqa: F401 — backward-compat names
     _get_async_parallel_client,
     _get_parallel_client,
 )
 from plugins.web.exa.provider import _get_exa_client  # noqa: F401
 
-# Module-level cache slots for the per-vendor clients. The plugins read/write
-# these via tools.web_tools so unit tests that reset
+# Module-level cache slots for reusable synchronous vendor clients. The
+# plugins read/write these via tools.web_tools so unit tests that reset
 # ``tools.web_tools._<vendor>_client = None`` between cases keep working.
 _firecrawl_client: Optional[Any] = None
 _firecrawl_client_config: Optional[Any] = None
 _parallel_client: Optional[Any] = None
-_async_parallel_client: Optional[Any] = None
 _exa_client: Optional[Any] = None
 
 from tools.debug_helpers import DebugSession

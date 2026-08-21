@@ -3,8 +3,8 @@
 Subclasses :class:`agent.web_search_provider.WebSearchProvider`. Uses two
 distinct Parallel SDK clients:
 
-- ``Parallel`` (sync)        — for :meth:`search`
-- ``AsyncParallel`` (async)  — for :meth:`extract`
+- ``Parallel`` (sync, cached)                — for :meth:`search`
+- ``AsyncParallel`` (async, request-scoped)  — for :meth:`extract`
 
 This is the first plugin to exercise the **async-extract** code path in
 the ABC: :meth:`extract` is declared ``async def``, and the dispatcher
@@ -36,11 +36,11 @@ from agent.web_search_provider import WebSearchProvider
 
 logger = logging.getLogger(__name__)
 
-# Module-level note: the canonical cache slots ``_parallel_client`` and
-# ``_async_parallel_client`` live on :mod:`tools.web_tools` so tests that do
-# ``tools.web_tools._parallel_client = None`` between cases see fresh state.
-# The plugin reads/writes through that public module (see
-# :func:`_get_sync_client` / :func:`_get_async_client`).
+# Module-level note: the canonical sync cache slot ``_parallel_client`` lives
+# on :mod:`tools.web_tools` so tests that reset it between cases see fresh
+# state. Async clients are deliberately request-scoped: httpx transports are
+# bound to the event loop that first uses them and cannot be shared safely by
+# the per-thread loops used for concurrent tool execution.
 
 
 def _ensure_parallel_sdk_installed() -> None:
@@ -91,16 +91,13 @@ def _get_sync_client() -> Any:
 
 
 def _get_async_client() -> Any:
-    """Lazy-load + cache the async Parallel client.
+    """Create an async Parallel client owned by the current extraction.
 
-    Cache lives on :mod:`tools.web_tools` (as ``_async_parallel_client``).
+    The caller must close the client on the same event loop that uses it.
+    Caching this process-wide lets concurrent tool workers race to publish
+    loop-affine clients; losing clients can then be finalized from
+    prompt_toolkit's loop after their worker loops have died.
     """
-    import tools.web_tools as _wt
-
-    cached = getattr(_wt, "_async_parallel_client", None)
-    if cached is not None:
-        return cached
-
     from agent.web_search_provider import get_provider_env
 
     api_key = get_provider_env("PARALLEL_API_KEY")
@@ -113,21 +110,17 @@ def _get_async_client() -> Any:
     _ensure_parallel_sdk_installed()
     from parallel import AsyncParallel  # noqa: WPS433 — deliberately lazy
 
-    client = AsyncParallel(api_key=api_key)
-    _wt._async_parallel_client = client
-    return client
+    return AsyncParallel(api_key=api_key)
 
 
 def _reset_clients_for_tests() -> None:
-    """Drop both cached clients so tests can re-instantiate cleanly.
+    """Drop the cached sync client so tests can re-instantiate cleanly.
 
-    Clears the canonical slots on :mod:`tools.web_tools` (where
-    :func:`_get_sync_client` / :func:`_get_async_client` read/write them).
+    The async client is request-scoped and therefore has no cache to reset.
     """
     import tools.web_tools as _wt
 
     _wt._parallel_client = None
-    _wt._async_parallel_client = None
 
 
 # Backward-compatible aliases for the names that lived in tools.web_tools
@@ -274,10 +267,41 @@ class ParallelWebSearchProvider(WebSearchProvider):
                 )
 
             logger.info("Parallel extract: %d URL(s)", len(urls))
-            response = await _get_async_client().beta.extract(
-                urls=urls,
-                full_content=True,
-            )
+            client = _get_async_client()
+            try:
+                response = await client.beta.extract(
+                    urls=urls,
+                    full_content=True,
+                )
+            finally:
+                # AsyncParallel owns an httpx connection pool whose transports
+                # are tied to this running loop. Drain it here, before the
+                # concurrent-tool worker and its loop go out of scope.
+                #
+                # Never let a teardown failure destroy an otherwise successful
+                # extraction: ``close()`` funnels into ``httpx.aclose()`` ->
+                # ``transport.aclose()``, which can raise (a mid-shutdown TLS
+                # error, or the very RuntimeError this cleanup exists to
+                # prevent). Without this guard that exception propagates out
+                # of ``finally``, past the response handling below, and the
+                # outer ``except Exception`` rewrites every URL into an error
+                # result even though the content was already fetched.
+                #
+                # Masked from the caller, but NOT from operators: a failed
+                # close can leave partial resources behind, and an "Event loop
+                # is closed" here would mean this ownership fix regressed, so
+                # it must stay visible. ``except Exception`` deliberately lets
+                # ``CancelledError`` (BaseException since 3.8) propagate so
+                # cancellation semantics are preserved.
+                try:
+                    await client.close()
+                except Exception as close_exc:  # noqa: BLE001 — cleanup is best-effort
+                    logger.warning(
+                        "Parallel async client close failed; preserving "
+                        "extraction result: %s: %s",
+                        type(close_exc).__name__,
+                        close_exc,
+                    )
 
             results: List[Dict[str, Any]] = []
             for result in response.results or []:

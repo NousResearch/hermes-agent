@@ -84,6 +84,28 @@ class TestPlatformConfigRoundtrip:
         assert restored.gateway_restart_notification is False
 
 
+    def test_lifecycle_chat_id_roundtrip(self):
+        pc = PlatformConfig(enabled=True, lifecycle_chat_id="-1003940233719")
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.lifecycle_chat_id == "-1003940233719"
+
+    def test_lifecycle_chat_id_defaults_to_none(self):
+        restored = PlatformConfig.from_dict(PlatformConfig(enabled=True).to_dict())
+        assert restored.lifecycle_chat_id is None
+
+    def test_lifecycle_chat_id_resolved_from_extra(self):
+        # Same bridge route as gateway_restart_notification: the shared-key
+        # loop in load_gateway_config copies a nested platforms.<plat> value
+        # into extra.
+        restored = PlatformConfig.from_dict(
+            {"extra": {"lifecycle_chat_id": "-1003940233719"}}
+        )
+        assert restored.lifecycle_chat_id == "-1003940233719"
+
+    def test_lifecycle_chat_id_coerced_to_str(self):
+        restored = PlatformConfig.from_dict({"lifecycle_chat_id": -1003940233719})
+        assert restored.lifecycle_chat_id == "-1003940233719"
+
     def test_typing_status_text_resolved_from_extra(self):
         # Same bridge route as typing_indicator: the shared-key loop copies a
         # nested platforms.<plat> value into extra.

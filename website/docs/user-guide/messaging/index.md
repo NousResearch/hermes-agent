@@ -705,6 +705,22 @@ gateway:
 
 Disable it on noisy or low-priority platforms while leaving it on for your primary chat. The notification is sent once per restart, regardless of how many sessions were in flight.
 
+#### Dedicated alerts channel
+
+If you want to keep the lifecycle pings but move them out of your conversational home channel, set a dedicated `lifecycle_chat_id` for the platform. When set, the "♻️ Gateway online", "♻ Gateway restarted" and home-channel "Gateway shutting down / restarting" notifications go to that chat instead of the home channel — while cron deliveries, reminders and normal chat stay on the home channel:
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      home_channel:
+        chat_id: "123456789"           # conversational home (cron, reminders)
+      lifecycle_chat_id: "-1003940233719"  # dedicated low-noise alerts channel
+      gateway_restart_notification: true   # keep lifecycle pings on
+```
+
+When `lifecycle_chat_id` is omitted (the default), behavior is unchanged: lifecycle pings go to the home channel, still toggled by `gateway_restart_notification`. A platform with `lifecycle_chat_id` but no home channel still receives the lifecycle pings. Make sure the bot is a member of the alerts channel, or the pings will fail to deliver.
+
 ### Typing indicators
 
 While the agent is processing a message, the gateway shows a live typing status on platforms that support it — a "typing…" bubble on Telegram/Discord/Signal, or the "is thinking…" assistant status on Slack. This is controlled per-platform by the `typing_indicator` flag in `gateway-config.yaml`, which defaults to `true`:

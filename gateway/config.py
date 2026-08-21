@@ -656,6 +656,16 @@ class PlatformConfig:
     # noise; keep True for back-channels where the operator wants them.
     gateway_restart_notification: bool = True
 
+    # Optional dedicated chat for gateway lifecycle (up/down/restart)
+    # notifications, separate from the home channel. When set, "♻️ Gateway
+    # online", "♻ Gateway restarted" and the home-channel "Gateway shutting
+    # down / restarting" broadcasts are sent here instead of the platform's
+    # home channel, keeping operator telemetry out of the conversational
+    # surface (cron deliveries, reminders, normal chat). When unset (None),
+    # behavior is unchanged: lifecycle pings go to the home channel, still
+    # toggled by ``gateway_restart_notification``. #76780.
+    lifecycle_chat_id: Optional[str] = None
+
     # Whether the gateway shows a "typing…" / "is thinking…" status indicator
     # while the agent processes a message on this platform. Default True
     # preserves prior behavior. Set False on platforms where the indicator is
@@ -688,6 +698,8 @@ class PlatformConfig:
             "gateway_restart_notification": self.gateway_restart_notification,
             "typing_indicator": self.typing_indicator,
         }
+        if self.lifecycle_chat_id is not None:
+            result["lifecycle_chat_id"] = self.lifecycle_chat_id
         if self.typing_status_text is not None:
             result["typing_status_text"] = self.typing_status_text
         if self.token:
@@ -725,6 +737,12 @@ class PlatformConfig:
         if _typing is None:
             _typing = extra.get("typing_indicator")
 
+        # lifecycle_chat_id takes the same two routes (top-level or bridged
+        # into extra by the shared-key loop in load_gateway_config()).
+        _lifecycle = data.get("lifecycle_chat_id")
+        if _lifecycle is None:
+            _lifecycle = extra.get("lifecycle_chat_id")
+
         # typing_status_text takes the same two routes (top-level or bridged
         # into extra); string passthrough, no coercion.
         _typing_text = data.get("typing_status_text")
@@ -747,6 +765,7 @@ class PlatformConfig:
             gateway_restart_notification=_coerce_bool(_grn, True),
             typing_indicator=_coerce_bool(_typing, True),
             typing_status_text=_typing_text,
+            lifecycle_chat_id=str(_lifecycle) if _lifecycle is not None else None,
             channel_overrides=channel_overrides,
             extra=extra,
         )
@@ -1664,6 +1683,8 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                if "lifecycle_chat_id" in platform_cfg:
+                    bridged["lifecycle_chat_id"] = platform_cfg["lifecycle_chat_id"]
                 if "typing_indicator" in platform_cfg:
                     bridged["typing_indicator"] = platform_cfg["typing_indicator"]
                 if "typing_status_text" in platform_cfg:

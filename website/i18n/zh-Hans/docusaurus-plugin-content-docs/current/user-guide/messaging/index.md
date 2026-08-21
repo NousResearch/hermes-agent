@@ -504,6 +504,22 @@ gateway:
 
 在嘈杂或低优先级的平台上禁用，同时在主要聊天上保持启用。无论有多少会话正在进行，每次重启只发送一次通知。
 
+#### 专用告警频道
+
+如果希望保留生命周期通知，但将它们移出日常对话的主频道，可以为平台设置专用的 `lifecycle_chat_id`。设置后，"♻️ Gateway online"、"♻ Gateway restarted" 以及主频道的"Gateway shutting down / restarting"通知将发送到该聊天，而不是主频道——cron 投递、提醒和正常对话仍留在主频道：
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      home_channel:
+        chat_id: "123456789"           # 对话主频道（cron、提醒）
+      lifecycle_chat_id: "-1003940233719"  # 专用低噪告警频道
+      gateway_restart_notification: true   # 保持生命周期通知开启
+```
+
+未设置 `lifecycle_chat_id`（默认）时行为不变：生命周期通知发送到主频道，仍由 `gateway_restart_notification` 控制。只有 `lifecycle_chat_id` 而没有主频道的平台仍会收到生命周期通知。请确保机器人是告警频道的成员，否则通知将无法送达。
+
 ### 正在输入指示器
 
 当 agent 正在处理消息时，网关会在支持的平台上显示实时的输入状态——Telegram/Discord/Signal 上的"正在输入……"气泡，或 Slack 上的"is thinking…"助手状态。这由 `gateway-config.yaml` 中每个平台的 `typing_indicator` 标志控制，默认为 `true`：

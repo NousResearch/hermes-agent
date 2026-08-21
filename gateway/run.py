@@ -10840,11 +10840,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # ``RuntimeError: dictionary changed size during iteration`` —
         # observed in a user report during gateway shutdown.
         for platform, adapter in list(self.adapters.items()):
+            platform_cfg = self.config.platforms.get(platform)
+            lifecycle_chat_id = (
+                platform_cfg.lifecycle_chat_id if platform_cfg is not None else None
+            )
             home = self.config.get_home_channel(platform)
-            if not home or not home.chat_id:
+            # Lifecycle pings target the dedicated alerts channel when one is
+            # configured, falling back to the home channel. A platform with
+            # only lifecycle_chat_id (no home channel) still gets the ping —
+            # the alerts channel is the operator's dedicated surface for it.
+            if lifecycle_chat_id:
+                target_chat_id = str(lifecycle_chat_id)
+                target_thread_id = None
+            elif home and home.chat_id:
+                target_chat_id = str(home.chat_id)
+                target_thread_id = home.thread_id
+            else:
                 continue
 
-            platform_cfg = self.config.platforms.get(platform)
             if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
                 logger.info(
                     "Shutdown notification suppressed for home channel: %s has gateway_restart_notification=false",
@@ -10852,26 +10865,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 continue
 
-            dedup_key = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)
+            dedup_key = (platform.value, target_chat_id, target_thread_id)
             if dedup_key in notified:
                 continue
 
             try:
                 metadata = self._thread_metadata_for_target(
                     platform,
-                    home.chat_id,
-                    home.thread_id,
+                    target_chat_id,
+                    target_thread_id,
                     adapter=adapter,
                 )
                 if metadata:
-                    result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
+                    result = await adapter.send(target_chat_id, msg, metadata=metadata)
                 else:
-                    result = await adapter.send(str(home.chat_id), msg)
+                    result = await adapter.send(target_chat_id, msg)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to home channel %s:%s: %s",
                         platform.value,
-                        home.chat_id,
+                        target_chat_id,
                         getattr(result, "error", "send returned success=False"),
                     )
                     continue
@@ -10880,13 +10893,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.info(
                     "Sent shutdown notification to home channel %s:%s",
                     platform.value,
-                    home.chat_id,
+                    target_chat_id,
                 )
             except Exception as e:
                 logger.debug(
                     "Failed to send shutdown notification to home channel %s:%s: %s",
                     platform.value,
-                    home.chat_id,
+                    target_chat_id,
                     e,
                 )
 
@@ -24076,7 +24089,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return True
 
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
-        """Notify the chat that initiated /restart that the gateway is back."""
+        """Notify the chat that initiated /restart that the gateway is back.
+
+        When the platform configures a dedicated ``lifecycle_chat_id``, the
+        confirmation is redirected there instead (see #76780); otherwise it
+        replies to the originating chat.
+        """
         notify_path = _hermes_home / ".restart_notify.json"
         if not notify_path.exists():
             return None
@@ -24109,15 +24127,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return None
 
+            # A dedicated alerts channel (lifecycle_chat_id) takes the restart
+            # ping too, so the confirmation lands where the operator watches
+            # lifecycle telemetry instead of the chat that typed /restart.
+            # The reply anchor is dropped because the message moves to a
+            # different chat than the one that initiated the restart.
+            lifecycle_chat_id = (
+                platform_cfg.lifecycle_chat_id if platform_cfg is not None else None
+            )
+            if lifecycle_chat_id:
+                deliver_chat_id = str(lifecycle_chat_id)
+                deliver_thread_id: Optional[str] = None
+                deliver_reply_to = None
+                deliver_chat_type: Optional[str] = None
+            else:
+                deliver_chat_id = str(chat_id)
+                deliver_thread_id = thread_id
+                deliver_reply_to = message_id
+                deliver_chat_type = chat_type
+
             metadata = self._thread_metadata_for_target(
                 platform,
-                chat_id,
-                thread_id,
-                chat_type=chat_type,
-                reply_to_message_id=message_id,
+                deliver_chat_id,
+                deliver_thread_id,
+                chat_type=deliver_chat_type,
+                reply_to_message_id=deliver_reply_to,
                 adapter=transport.adapter,
             )
-            if data.get("delivered_via_upstream_relay") is True:
+            if data.get("delivered_via_upstream_relay") is True and not lifecycle_chat_id:
                 metadata = dict(metadata or {})
                 if data.get("user_id"):
                     metadata["user_id"] = str(data["user_id"])
@@ -24125,7 +24162,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     metadata["scope_id"] = str(data["scope_id"])
             result = await transport.send(
                 platform,
-                str(chat_id),
+                deliver_chat_id,
                 "♻ Gateway restarted successfully. Your session continues.",
                 metadata=_non_conversational_metadata(metadata, platform=platform),
             )
@@ -24137,7 +24174,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning(
                     "Restart notification to %s:%s was not delivered: %s",
                     platform_str,
-                    chat_id,
+                    deliver_chat_id,
                     getattr(result, "error", "send returned success=False"),
                 )
                 return None
@@ -24145,9 +24182,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.info(
                 "Sent restart notification to %s:%s",
                 platform_str,
-                chat_id,
+                deliver_chat_id,
             )
-            return str(platform_str), str(chat_id), str(thread_id) if thread_id else None
+            return str(platform_str), str(deliver_chat_id), deliver_thread_id
         except Exception as e:
             logger.warning("Restart notification failed: %s", e)
             return None
@@ -24170,8 +24207,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         message = "♻️ Gateway online — Hermes is back and ready."
 
         for platform, platform_cfg in self.config.platforms.items():
+            # Lifecycle pings target the dedicated alerts channel when one is
+            # configured, falling back to the home channel. A platform with
+            # only lifecycle_chat_id (no home channel) still gets the ping —
+            # the alerts channel is the operator's dedicated surface for it.
+            lifecycle_chat_id = platform_cfg.lifecycle_chat_id
             home = platform_cfg.home_channel
-            if not home or not home.chat_id:
+            if lifecycle_chat_id:
+                target_chat_id = str(lifecycle_chat_id)
+                target_thread_id: Optional[str] = None
+            elif home and home.chat_id:
+                target_chat_id = str(home.chat_id)
+                target_thread_id = home.thread_id
+            else:
                 continue
 
             transport = resolve_delivery_transport(platform, self.config, self.adapters)
@@ -24185,38 +24233,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 continue
 
-            target = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)
+            target = (platform.value, target_chat_id, target_thread_id)
             if target in skipped or target in delivered:
                 continue
 
             try:
                 metadata = self._thread_metadata_for_target(
                     platform,
-                    home.chat_id,
-                    home.thread_id,
+                    target_chat_id,
+                    target_thread_id,
                     adapter=transport.adapter,
                 )
                 if transport.is_relay:
                     metadata = dict(metadata or {})
-                    if home.user_id:
-                        metadata["user_id"] = home.user_id
-                    if home.scope_id:
-                        metadata["scope_id"] = home.scope_id
+                    # Logical-owner metadata only applies to the home channel:
+                    # a bare lifecycle_chat_id has no user/scope provenance.
+                    if not lifecycle_chat_id:
+                        if home.user_id:
+                            metadata["user_id"] = home.user_id
+                        if home.scope_id:
+                            metadata["scope_id"] = home.scope_id
                 send_metadata = _non_conversational_metadata(metadata, platform=platform)
                 if send_metadata is not None or transport.is_relay:
                     result = await transport.send(
                         platform,
-                        str(home.chat_id),
+                        target_chat_id,
                         message,
                         metadata=send_metadata,
                     )
                 else:
-                    result = await transport.adapter.send(str(home.chat_id), message)
+                    result = await transport.adapter.send(target_chat_id, message)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.warning(
                         "Home-channel startup notification failed for %s:%s: %s",
                         platform.value,
-                        home.chat_id,
+                        target_chat_id,
                         getattr(result, "error", "send returned success=False"),
                     )
                     continue
@@ -24225,13 +24276,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.info(
                     "Sent home-channel startup notification to %s:%s",
                     platform.value,
-                    home.chat_id,
+                    target_chat_id,
                 )
             except Exception as exc:
                 logger.warning(
                     "Home-channel startup notification failed for %s:%s: %s",
                     platform.value,
-                    home.chat_id,
+                    target_chat_id,
                     exc,
                 )
 

@@ -247,6 +247,114 @@ async def test_relay_fronted_logical_home_gets_startup_notification(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_startup_notification_redirects_to_lifecycle_chat_id(tmp_path, monkeypatch):
+    """lifecycle_chat_id takes the startup ping away from the home channel."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    runner.config.platforms[Platform.TELEGRAM].lifecycle_chat_id = "-1003940233719"
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="startup"))
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == {("telegram", "-1003940233719", None)}
+    adapter.send.assert_called_once_with(
+        "-1003940233719",
+        "♻️ Gateway online — Hermes is back and ready.",
+    )
+    # The home channel must NOT receive the ping.
+    assert "home-42" not in [c.args[0] for c in adapter.send.call_args_list]
+
+
+@pytest.mark.asyncio
+async def test_startup_notification_sends_with_lifecycle_chat_only(tmp_path, monkeypatch):
+    """A lifecycle_chat_id without a home channel still gets the startup ping."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].lifecycle_chat_id = "-1003940233719"
+    assert runner.config.platforms[Platform.TELEGRAM].home_channel is None
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="startup"))
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == {("telegram", "-1003940233719", None)}
+    adapter.send.assert_called_once_with(
+        "-1003940233719",
+        "♻️ Gateway online — Hermes is back and ready.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_shutdown_home_broadcast_redirects_to_lifecycle_chat_id():
+    """The home-channel shutdown broadcast goes to lifecycle_chat_id when set."""
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    runner.config.platforms[Platform.TELEGRAM].lifecycle_chat_id = "-1003940233719"
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="shutdown"))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_awaited_once_with(
+        "-1003940233719",
+        "⚠️ Gateway shutting down — Your current task will be interrupted.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_shutdown_home_broadcast_sends_with_lifecycle_chat_only():
+    """A lifecycle_chat_id without a home channel still gets the shutdown ping."""
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].lifecycle_chat_id = "-1003940233719"
+    assert runner.config.platforms[Platform.TELEGRAM].home_channel is None
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="shutdown"))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_awaited_once_with(
+        "-1003940233719",
+        "⚠️ Gateway shutting down — Your current task will be interrupted.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_restart_notification_redirects_to_lifecycle_chat_id(tmp_path, monkeypatch):
+    """The /restart confirmation lands in the alerts channel when configured."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+        "chat_type": "dm",
+        "message_id": "m1",
+    }))
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].lifecycle_chat_id = "-1003940233719"
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="restart"))
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("telegram", "-1003940233719", None)
+    adapter.send.assert_awaited_once_with(
+        "-1003940233719",
+        "♻ Gateway restarted successfully. Your session continues.",
+        metadata=None,
+    )
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_relay_restart_notification_uses_logical_platform_and_owner(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     notify_path = tmp_path / ".restart_notify.json"

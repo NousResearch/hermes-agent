@@ -4381,6 +4381,13 @@ def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
         "unrecognized request argument",
         "unrecognized parameter",
         "invalid parameter",
+        # Bedrock Converse phrases the rejection as a deprecation, e.g.
+        # "`temperature` is deprecated for this model" (Claude Opus 4.7+/5.x).
+        # Match it so the reactive retry-without-param net still fires when the
+        # proactive guard misses the model (e.g. an opaque application-
+        # inference-profile ARN that carries no "claude" substring).
+        "is deprecated",
+        "deprecated for this model",
     ))
 
 

@@ -1055,7 +1055,12 @@ def build_converse_kwargs(
 
     from agent.anthropic_adapter import _forbids_sampling_params
 
-    if not _forbids_sampling_params(model):
+    # Resolve inference-profile ARNs/IDs to the underlying foundation model so
+    # the name-based guard can classify them. An application-inference-profile
+    # ARN carries no "claude" substring, so without this the guard misses it
+    # and temperature is sent to a model that rejects it as deprecated.
+    _guard_model = _resolve_inference_profile_model(model)
+    if not _forbids_sampling_params(_guard_model):
         if temperature is not None:
             kwargs["inferenceConfig"]["temperature"] = temperature
 
@@ -1347,6 +1352,63 @@ def _extract_provider_from_arn(arn: str) -> str:
     """
     match = re.search(r"foundation-model/([^.]+)", arn)
     return match.group(1) if match else ""
+
+
+# Cache for resolved inference-profile → underlying foundation model ID.
+_inference_profile_model_cache: Dict[str, str] = {}
+
+
+def _resolve_inference_profile_model(model_id: str) -> str:
+    """Resolve an application/system inference profile to its foundation model ID.
+
+    Application-inference-profile ARNs (and opaque profile IDs) carry no model
+    version/family substring, so guards that key on the model name — e.g.
+    ``_forbids_sampling_params`` / ``_is_claude_model`` — can't classify them.
+    This calls the Bedrock control-plane ``GetInferenceProfile`` API to discover
+    the underlying foundation model, caching both hits and misses so we probe
+    the API at most once per distinct ``model_id``.
+
+    Returns the foundation model ID (e.g. ``anthropic.claude-opus-5``) or the
+    original ``model_id`` unchanged when it isn't a profile or resolution fails.
+    """
+    if not model_id:
+        return model_id
+    # Fast path: only profiles need resolving. A plain foundation-model id or a
+    # region-prefixed id (e.g. eu.anthropic.claude-...) already carries family.
+    is_profile = (
+        "application-inference-profile" in model_id
+        or "inference-profile" in model_id
+        or (model_id.startswith("arn:aws:bedrock:") and "foundation-model" not in model_id)
+    )
+    if not is_profile:
+        return model_id
+    if model_id in _inference_profile_model_cache:
+        return _inference_profile_model_cache[model_id]
+    try:
+        region = None
+        if model_id.startswith("arn:aws:bedrock:"):
+            parts = model_id.split(":")
+            if len(parts) >= 4:
+                region = parts[3]
+        if not region:
+            region = resolve_bedrock_region()
+        client = _get_bedrock_control_client(region)
+        response = client.get_inference_profile(inferenceProfileIdentifier=model_id)
+        models = response.get("models", [])
+        if models:
+            model_arn = models[0].get("modelArn", "")
+            match = re.search(r"foundation-model/(.+)$", model_arn)
+            if match:
+                resolved = match.group(1)
+                _inference_profile_model_cache[model_id] = resolved
+                logger.debug("Resolved inference profile %s → %s", model_id, resolved)
+                return resolved
+    except Exception as e:
+        logger.debug("Failed to resolve inference profile %s: %s", model_id, e)
+    # Cache the failure so we don't re-probe on every call.
+    _inference_profile_model_cache[model_id] = model_id
+    return model_id
+
 # ---------------------------------------------------------------------------
 # Error classification — Bedrock-specific exceptions
 # ---------------------------------------------------------------------------

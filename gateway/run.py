@@ -2808,6 +2808,8 @@ _CONVERSATION_SCOPED_STATE: tuple = (
 
 # Sentinel for "caller did not pass metadata" vs "caller passed None".
 _UNSET = object()
+# Sentinel for "use the source message id" vs an explicit no-reply tombstone.
+_REPLY_ANCHOR_UNSET = object()
 
 
 def _resolve_runtime_agent_kwargs() -> dict:
@@ -4193,18 +4195,40 @@ def _preserve_queued_followup_history_offset(
     return merged
 
 
-def _propagate_pending_stt_reply_anchor(pending_event, followup_result: dict) -> dict:
-    """Carry the latest queued transcript echo back to outer platform delivery."""
+def _propagate_pending_stt_reply_anchor(
+    pending_event,
+    followup_result: dict,
+    *,
+    effective_anchor: object = _REPLY_ANCHOR_UNSET,
+) -> dict:
+    """Carry the deepest queued event's effective reply anchor outward."""
     if not isinstance(followup_result, dict):
         return followup_result
-    if followup_result.get("_gateway_stt_reply_anchor"):
+    anchor_key = "_gateway_stt_reply_anchor"
+    if anchor_key in followup_result:
         return followup_result
-    anchor = getattr(pending_event, "_gateway_stt_reply_anchor", None)
-    if not anchor:
-        return followup_result
+
+    if effective_anchor is _REPLY_ANCHOR_UNSET:
+        anchor = getattr(pending_event, anchor_key, None)
+        if not anchor:
+            anchor = getattr(pending_event, "message_id", None)
+    else:
+        anchor = effective_anchor
+
     merged = dict(followup_result)
-    merged["_gateway_stt_reply_anchor"] = str(anchor)
+    merged[anchor_key] = str(anchor) if anchor is not None else None
     return merged
+
+
+def _consume_pending_stt_reply_anchor(event, agent_result: dict) -> None:
+    """Transfer a queued reply anchor to the event without exposing its private key."""
+    if not isinstance(agent_result, dict):
+        return
+    anchor_key = "_gateway_stt_reply_anchor"
+    if anchor_key not in agent_result:
+        return
+    anchor = agent_result.pop(anchor_key)
+    setattr(event, anchor_key, str(anchor) if anchor is not None else None)
 
 
 async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None:
@@ -20193,14 +20217,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=event.message_type,
             )
-            if isinstance(agent_result, dict):
-                _queued_reply_anchor = agent_result.get("_gateway_stt_reply_anchor")
-                if _queued_reply_anchor:
-                    setattr(
-                        event,
-                        "_gateway_stt_reply_anchor",
-                        str(_queued_reply_anchor),
-                    )
+            _consume_pending_stt_reply_anchor(event, agent_result)
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
             # Stop persistent typing indicator now that the agent is done.
@@ -20805,10 +20822,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         _foot_adapter = self._adapter_for_source(source)
                         if _foot_adapter:
+                            _footer_reply_to = self._reply_anchor_for_event(event)
                             await _foot_adapter.send(
                                 source.chat_id,
                                 _footer_line,
-                                metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                                reply_to=_footer_reply_to,
+                                metadata=self._thread_metadata_for_source(
+                                    source,
+                                    _footer_reply_to,
+                                ),
                             )
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
@@ -22282,12 +22304,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # stale inspected content), not an attachment request.
             adapter.extract_images(cleaned)
 
+            _reply_to = self._reply_anchor_for_event(event)
+
             _thread_meta = (
                 dict(thread_metadata)
                 if thread_metadata is not None
                 else self._thread_metadata_for_source(
                     event.source,
-                    self._reply_anchor_for_event(event),
+                    _reply_to,
                 )
             )
 
@@ -22312,10 +22336,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
+                    _batch_kwargs = {
+                        "chat_id": event.source.chat_id,
+                        "images": images,
+                        "metadata": _thread_meta,
+                    }
+                    try:
+                        _batch_params = inspect.signature(
+                            adapter.send_multiple_images
+                        ).parameters
+                        _batch_accepts_reply_to = (
+                            "reply_to" in _batch_params
+                            or any(
+                                param.kind is inspect.Parameter.VAR_KEYWORD
+                                for param in _batch_params.values()
+                            )
+                        )
+                    except (TypeError, ValueError):
+                        _batch_accepts_reply_to = False
+                    if _batch_accepts_reply_to:
+                        _batch_kwargs["reply_to"] = _reply_to
                     await adapter.send_multiple_images(
-                        chat_id=event.source.chat_id,
-                        images=images,
-                        metadata=_thread_meta,
+                        **_batch_kwargs,
                     )
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
@@ -22327,18 +22369,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
+                            reply_to=_reply_to,
                             metadata=_thread_meta,
                         )
                     elif ext in _VIDEO_EXTS:
                         await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
+                            reply_to=_reply_to,
                             metadata=_thread_meta,
                         )
                     else:
                         await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=media_path,
+                            reply_to=_reply_to,
                             metadata=_thread_meta,
                         )
                 except Exception as e:
@@ -22399,6 +22444,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await adapter.send(
                         source.chat_id,
                         text_content,
+                        reply_to=event_message_id,
                         metadata=metadata,
                     )
 
@@ -23703,15 +23749,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _thread_metadata_for_source(
         self,
         source,
-        reply_to_message_id: Optional[str] = None,
+        reply_to_message_id: Any = _REPLY_ANCHOR_UNSET,
     ) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
+        reply_anchor = (
+            getattr(source, "message_id", None)
+            if reply_to_message_id is _REPLY_ANCHOR_UNSET
+            else reply_to_message_id
+        )
         metadata = self._thread_metadata_for_target(
             getattr(source, "platform", None),
             getattr(source, "chat_id", None),
             getattr(source, "thread_id", None),
             chat_type=getattr(source, "chat_type", None),
-            reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None),
+            reply_to_message_id=reply_anchor,
         )
         if getattr(source, "platform", None) == Platform.SLACK:
             # Per-turn egress identity (R3-5, connector PR gateway-gateway#210).
@@ -29666,6 +29717,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 followup_result = _propagate_pending_stt_reply_anchor(
                     pending_event,
                     followup_result,
+                    effective_anchor=next_message_id,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

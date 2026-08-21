@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.run import _propagate_pending_stt_reply_anchor
@@ -160,6 +161,171 @@ def test_deeper_queued_transcript_anchor_wins_over_earlier_followup():
     )
 
     assert result["_gateway_stt_reply_anchor"] == "transcript-echo-9"
+
+
+def test_one_level_queued_text_uses_ordinary_message_id():
+    pending_event = MessageEvent(
+        text="latest text",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="1",
+            chat_type="dm",
+        ),
+        message_id="text-message-9",
+    )
+
+    result = _propagate_pending_stt_reply_anchor(
+        pending_event,
+        {"final_response": "queued answer"},
+    )
+
+    assert result["_gateway_stt_reply_anchor"] == "text-message-9"
+
+
+def test_queued_turn_preserves_effective_none_reply_anchor():
+    """Platform-specific top-level/topic routing must survive queued recursion."""
+    pending_event = MessageEvent(
+        text="latest text",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="1",
+            chat_type="group",
+            thread_id="42",
+        ),
+        message_id="topic-message-9",
+    )
+
+    result = _propagate_pending_stt_reply_anchor(
+        pending_event,
+        {"final_response": "queued answer"},
+        effective_anchor=None,
+    )
+
+    assert "_gateway_stt_reply_anchor" in result
+    assert result["_gateway_stt_reply_anchor"] is None
+
+
+@pytest.mark.parametrize(
+    "echo_result",
+    [
+        SendResult(success=False, error="echo failed"),
+        SendResult(success=True, message_id=None),
+    ],
+    ids=["failed", "missing-message-id"],
+)
+@pytest.mark.asyncio
+async def test_one_level_unanchored_voice_echo_uses_ordinary_message_id(echo_result):
+    runner = _make_runner(stt_enabled=True)
+    transcript_adapter = AsyncMock()
+    transcript_adapter.config = PlatformConfig(
+        enabled=True,
+        token="test-token",
+        extra={"reply_to_transcript": True},
+    )
+    transcript_adapter.send.return_value = echo_result
+    runner.adapters = {Platform.TELEGRAM: transcript_adapter}
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="1",
+        chat_type="dm",
+    )
+    pending_event = _voice_event()
+    pending_event.message_id = "voice-message-9"
+
+    await runner._echo_pending_stt_transcripts_once(
+        pending_event,
+        transcript_adapter,
+        source,
+        ["latest voice"],
+    )
+    result = _propagate_pending_stt_reply_anchor(
+        pending_event,
+        {"final_response": "queued answer"},
+    )
+
+    assert not hasattr(pending_event, "_gateway_stt_reply_anchor")
+    assert result["_gateway_stt_reply_anchor"] == "voice-message-9"
+
+
+def test_multilevel_deeper_failed_echo_discards_earlier_successful_echo():
+    earlier_event = _voice_event()
+    earlier_event.message_id = "voice-message-8"
+    setattr(earlier_event, "_gateway_stt_reply_anchor", "transcript-echo-8")
+    deepest_event = _voice_event()
+    deepest_event.message_id = "voice-message-9"
+
+    deepest_result = _propagate_pending_stt_reply_anchor(
+        deepest_event,
+        {"final_response": "deepest queued answer"},
+    )
+    result = _propagate_pending_stt_reply_anchor(earlier_event, deepest_result)
+
+    assert result["_gateway_stt_reply_anchor"] == "voice-message-9"
+
+
+def test_multilevel_deepest_text_discards_earlier_successful_echo():
+    earlier_event = _voice_event()
+    earlier_event.message_id = "voice-message-8"
+    setattr(earlier_event, "_gateway_stt_reply_anchor", "transcript-echo-8")
+    deepest_event = MessageEvent(
+        text="deepest text",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="1",
+            chat_type="dm",
+        ),
+        message_id="text-message-9",
+    )
+
+    deepest_result = _propagate_pending_stt_reply_anchor(
+        deepest_event,
+        {"final_response": "deepest queued answer"},
+    )
+    result = _propagate_pending_stt_reply_anchor(earlier_event, deepest_result)
+
+    assert result["_gateway_stt_reply_anchor"] == "text-message-9"
+
+
+def test_consumed_queued_anchor_does_not_leak_in_agent_result():
+    event = _voice_event()
+    result = {
+        "final_response": "deepest queued answer",
+        "_gateway_stt_reply_anchor": "text-message-9",
+    }
+
+    consume_anchor = getattr(
+        gateway_run,
+        "_consume_pending_stt_reply_anchor",
+        None,
+    )
+    assert consume_anchor is not None
+    consume_anchor(event, result)
+
+    assert getattr(event, "_gateway_stt_reply_anchor") == "text-message-9"
+    assert result == {"final_response": "deepest queued answer"}
+
+
+def test_consumed_anchor_tombstone_clears_stale_outer_anchor():
+    event = _voice_event()
+    setattr(event, "_gateway_stt_reply_anchor", "transcript-echo-8")
+    result = {
+        "final_response": "deepest queued answer",
+        "_gateway_stt_reply_anchor": None,
+    }
+
+    consume_anchor = getattr(
+        gateway_run,
+        "_consume_pending_stt_reply_anchor",
+        None,
+    )
+    assert consume_anchor is not None
+    consume_anchor(event, result)
+
+    assert getattr(event, "_gateway_stt_reply_anchor") is None
+    assert result == {"final_response": "deepest queued answer"}
 
 
 # ---------------------------------------------------------------------------

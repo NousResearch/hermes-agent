@@ -7720,6 +7720,7 @@ class TelegramAdapter(BasePlatformAdapter):
         images: List[tuple],
         metadata: Optional[Dict[str, Any]] = None,
         human_delay: float = 0.0,
+        reply_to: Optional[str] = None,
     ) -> None:
         """Send a batch of images natively via Telegram's media group API.
 
@@ -7744,7 +7745,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] InputMediaPhoto unavailable, falling back to per-image send: %s",
                 self.name, exc,
             )
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            await super().send_multiple_images(
+                chat_id,
+                images,
+                metadata,
+                human_delay,
+                reply_to=reply_to,
+            )
             return
 
         # Peel off animations — they need send_animation, not send_media_group
@@ -7759,7 +7766,11 @@ class TelegramAdapter(BasePlatformAdapter):
         # Animations: route through the base default (per-image send_animation)
         if animations:
             await super().send_multiple_images(
-                chat_id, animations, metadata, human_delay=human_delay,
+                chat_id,
+                animations,
+                metadata,
+                human_delay=human_delay,
+                reply_to=reply_to,
             )
 
         if not photos:
@@ -7802,7 +7813,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] Sending media group of %d photo(s) (chunk %d/%d)",
                     self.name, len(media), chunk_idx + 1, len(chunks),
                 )
-                reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
+                reply_to_id = self._reply_to_message_id_for_send(
+                    reply_to,
+                    metadata,
+                    reply_to_mode=self._reply_to_mode,
+                )
                 thread_kwargs = self._thread_kwargs_for_send(
                     chat_id,
                     _thread,
@@ -7841,7 +7856,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 # Fallback: send each photo in this chunk individually
                 await super().send_multiple_images(
-                    chat_id, chunk, metadata, human_delay=human_delay,
+                    chat_id,
+                    chunk,
+                    metadata,
+                    human_delay=human_delay,
+                    reply_to=reply_to,
                 )
             finally:
                 for fh in opened_files:

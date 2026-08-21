@@ -3,6 +3,7 @@ import { getSession } from '@/hermes'
 import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
+import { parseErrorSurface } from '@/lib/error-surface'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -146,6 +147,9 @@ const COMPARED_FIELDS = [
   'role',
   'pending',
   'error',
+  // Structured failure layer — drives the error card's title and action row,
+  // so a change (e.g. resume replay attaching the descriptor) must repaint.
+  'errorSurface',
   'hidden',
   'branchGroupId',
   'interim',
@@ -254,6 +258,11 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
     a.role !== b.role ||
     a.pending !== b.pending ||
     a.error !== b.error ||
+    // Structural compare — the descriptor arrives as a fresh object per
+    // resume/replay, so identity comparison would repaint forever.
+    (a.errorSurface?.layer ?? null) !== (b.errorSurface?.layer ?? null) ||
+    (a.errorSurface?.code ?? null) !== (b.errorSurface?.code ?? null) ||
+    (a.errorSurface?.retryable ?? null) !== (b.errorSurface?.retryable ?? null) ||
     a.hidden !== b.hidden ||
     a.branchGroupId !== b.branchGroupId ||
     a.timestamp !== b.timestamp ||
@@ -742,6 +751,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   // the terminal frame may have been lost to a disconnect) — surface the
   // failure on the projected row instead of rendering the partial as healthy.
   const inflightError = projection.inflight?.error?.trim() ?? ''
+  const inflightErrorSurface = parseErrorSurface(projection.inflight?.error_surface)
   const queuedUser = projection.queued?.user?.trim() ?? ''
 
   if (
@@ -904,7 +914,8 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
         role: 'assistant',
         parts: inflightAssistant ? [assistantTextPart(inflightAssistant)] : [],
         pending: inflightStreaming,
-        ...(inflightError ? { error: inflightError } : {})
+        ...(inflightError ? { error: inflightError } : {}),
+        ...(inflightError && inflightErrorSurface ? { errorSurface: inflightErrorSurface } : {})
       })
     }
 

@@ -409,6 +409,26 @@ another profile's agent plugins without switching the whole app (the backend
 
 ## Troubleshooting
 
+### Failed turns name the failing layer
+
+When a turn fails, the chat renders an error card that names **which layer
+failed** — provider/model, custom endpoint, streaming connection,
+authentication, billing, gateway, local runtime, or disk — instead of a
+generic error toast. The card offers recovery actions matched to the failure:
+
+- **Retry** — re-runs the failed turn in place (hidden when retrying would
+  deterministically reproduce the failure, e.g. a content-policy rejection).
+- **Switch provider** — jumps to Settings → Models for provider, endpoint,
+  auth, and billing failures.
+- **Open logs** — opens `HERMES_HOME/logs` in your file manager.
+- **Copy diagnostics** — copies a compact plain-text summary (layer, code,
+  provider/model, error message) you can paste into a bug report or Discord.
+
+The layer comes from the same error classifier the agent's retry loop uses,
+so it reflects the real failure semantics, not a guess from the message text.
+Older backends that predate the descriptor still render the card with a
+generic title and the Retry / Open logs / Copy diagnostics actions.
+
 Boot logs land in `HERMES_HOME/logs/desktop.log` (it includes backend output and recent Python tracebacks) — check it first if the app reports a boot failure. You can also tail it from the CLI:
 
 ```bash

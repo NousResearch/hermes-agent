@@ -2648,6 +2648,24 @@ export interface Translations {
       branchNewChat: string
       react: string
       dismissError: string
+      /** Layer titles for the structured error card (agent/error_surface.py).
+       *  `generic` is the fallback when the backend sent no descriptor. */
+      errorLayers: {
+        auth: string
+        billing: string
+        disk: string
+        endpoint: string
+        gateway: string
+        generic: string
+        provider: string
+        runtime: string
+        streaming: string
+      }
+      errorRetry: string
+      errorSwitchProvider: string
+      errorOpenLogs: string
+      errorOpenLogsFailed: string
+      errorCopyDiagnostics: string
       filesChanged: (count: number) => string
       reviewChanges: string
       readAloudFailed: string

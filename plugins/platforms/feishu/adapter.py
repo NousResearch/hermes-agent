@@ -2054,6 +2054,21 @@ class FeishuAdapter(BasePlatformAdapter):
     _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
     _EA_CMD_BUDGET = 3000
 
+    @staticmethod
+    def _card_action_chat_type(session_key: str, chat_id: str) -> str:
+        """Return ``dm`` only for a matching canonical Feishu DM session."""
+        parts = str(session_key or "").split(":")
+        if (
+            len(parts) >= 5
+            and parts[0] == "agent"
+            and bool(parts[1])
+            and parts[2] == "feishu"
+            and parts[3] == "dm"
+            and parts[4] == str(chat_id or "")
+        ):
+            return "dm"
+        return "group"
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -2121,6 +2136,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     "session_key": session_key,
                     "message_id": result.message_id or "",
                     "chat_id": chat_id,
+                    "chat_type": self._card_action_chat_type(session_key, chat_id),
                 }
             return result
         except Exception as exc:
@@ -2189,6 +2205,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     "session_key": session_key,
                     "message_id": result.message_id or "",
                     "chat_id": chat_id,
+                    "chat_type": self._card_action_chat_type(session_key, chat_id),
                 }
             return result
         except Exception as exc:
@@ -2778,6 +2795,23 @@ class FeishuAdapter(BasePlatformAdapter):
             return True
         return "*" in allowed_ids or normalized in allowed_ids
 
+    def _is_card_action_operator_authorized(
+        self,
+        *,
+        open_id: str,
+        state: Dict[str, str],
+        user_id: str = "",
+    ) -> bool:
+        """Authorize a card operator without applying group policy to DMs."""
+        if state.get("chat_type") == "dm":
+            return self._is_interactive_operator_authorized(open_id)
+        sender_id = SimpleNamespace(open_id=open_id, user_id=user_id)
+        return self._allow_group_message(
+            sender_id,
+            state.get("chat_id", ""),
+            is_bot=False,
+        )
+
     def _handle_approval_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
         """Schedule approval resolution and build the synchronous callback response."""
         approval_id = action_value.get("approval_id")
@@ -2792,8 +2826,12 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
-        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+        user_id = str(getattr(operator, "user_id", "") or "")
+        if not self._is_card_action_operator_authorized(
+            open_id=open_id,
+            user_id=user_id,
+            state=state,
+        ):
             logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -2852,8 +2890,12 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
-        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+        user_id = str(getattr(operator, "user_id", "") or "")
+        if not self._is_card_action_operator_authorized(
+            open_id=open_id,
+            user_id=user_id,
+            state=state,
+        ):
             logger.warning("[Feishu] Unauthorized update prompt click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -2905,7 +2947,10 @@ class FeishuAdapter(BasePlatformAdapter):
         if not state:
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
             return
-        if not self._is_interactive_operator_authorized(open_id):
+        if not self._is_card_action_operator_authorized(
+            open_id=open_id,
+            state=state,
+        ):
             logger.warning("[Feishu] Unauthorized approval click by %s for approval %s", open_id or "<unknown>", approval_id)
             return
         expected_chat_id = str(state.get("chat_id", "") or "")
@@ -2960,8 +3005,10 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] Update prompt %s already resolved or unknown", prompt_id)
             return
         if open_id:
-            sender_id = SimpleNamespace(open_id=open_id, user_id="")
-            if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+            if not self._is_card_action_operator_authorized(
+                open_id=open_id,
+                state=state,
+            ):
                 logger.warning("[Feishu] Unauthorized update prompt click by %s for prompt %s", open_id, prompt_id)
                 return
         expected_chat_id = str(state.get("chat_id", "") or "")

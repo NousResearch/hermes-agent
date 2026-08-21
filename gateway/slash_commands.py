@@ -4805,6 +4805,7 @@ class GatewaySlashCommandsMixin:
                 source=user_source,
                 session_key=None if widen else session_key,
                 limit=10,
+                order_by_last_active=True,
             )
             return [s for s in sessions if s.get("title")][:10]
 

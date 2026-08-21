@@ -156,6 +156,7 @@ interface StaleAuxWarningProps {
 // $0-balance provider after switching main away from it) and offers the
 // existing one-click reset rather than auto-clearing legitimate pins.
 function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarningProps) {
+  const { t } = useI18n()
   if (!slots.length) {
     return null
   }
@@ -168,11 +169,10 @@ function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarnin
     <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
       <AlertTriangle className="size-3.5 shrink-0" />
       <span className="grow">
-        {slots.length} auxiliary task{slots.length === 1 ? '' : 's'} ({names}) still run on{' '}
-        <span className="font-mono">{allSameProvider ? provider : 'other providers'}</span>, not your main model.
+        {t.settings.model.staleAuxWarning(slots.length, names, allSameProvider ? provider : 'other providers')}
       </span>
       <Button disabled={applying} onClick={onReset} size="sm" variant="textStrong">
-        Reset all to main
+        {t.settings.model.resetAllToMain}
       </Button>
     </div>
   )

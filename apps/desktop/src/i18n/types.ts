@@ -5,7 +5,7 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar'
+export type Locale = 'en' | 'fr' | 'zh' | 'zh-hant' | 'ja' | 'ar'
 
 export type ToolTitleKey =
   | 'browser_click'
@@ -50,6 +50,10 @@ interface AuxTaskCopy {
 
 export interface Translations {
   common: {
+    right: string
+    bottom: string
+    left: string
+    top: string
     apply: string
     back: string
     save: string
@@ -888,6 +892,7 @@ export interface Translations {
       defaultsFailed: string
       auxiliaryTitle: string
       resetAllToMain: string
+      staleAuxWarning: (count: number, names: string, provider: string) => string
       auxiliaryDesc: string
       setToMain: string
       change: string
@@ -2850,6 +2855,23 @@ export interface Translations {
       systemNote: (platform: string) => string
       failed: (error: string) => string
       timedOut: string
+    }
+  }
+
+  uninstall: {
+    dangerZone: string
+    checking: string
+    confirmTitle: string
+    confirmBody: (consequence: string) => string
+    uninstalling: string
+    yesUninstall: string
+    cancel: string
+    uninstallHermes: string
+    uninstallDescription: string
+    options: {
+      gui: { title: string; description: string; consequence: string }
+      lite: { title: string; description: string; consequence: string }
+      full: { title: string; description: string; consequence: string }
     }
   }
 

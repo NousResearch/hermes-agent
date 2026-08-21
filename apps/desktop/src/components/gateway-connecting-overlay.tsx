@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import { DecodeText } from '@/components/ui/decode-text'
 import { prefersReducedMotion } from '@/hooks/use-media-query'
 import { cn } from '@/lib/utils'
@@ -10,7 +11,6 @@ import { $gatewayState } from '@/store/session'
 
 // Decode mechanics live in the shared <DecodeText> primitive
 // (components/ui/decode-text.tsx). "CONN" stays legible via prefix={4}.
-const TEXT = 'CONNECTING'
 
 // Exit choreography (ms): text fades down + out, hold, then the overlay fades.
 const TEXT_OUT_MS = 360
@@ -37,6 +37,8 @@ function forcedPreview(): boolean {
 }
 
 export function GatewayConnectingOverlay() {
+  const { t } = useI18n()
+  const TEXT = t.common.connecting.toUpperCase()
   const gatewayState = useStore($gatewayState)
   const boot = useStore($desktopBoot)
   const gatewaySwitching = useStore($gatewaySwitching)

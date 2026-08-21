@@ -2965,11 +2965,9 @@ def init_agent(
             agent._ollama_num_ctx,
         )
 
-    # Codex gpt-5.x autoraise notice: show at most once per profile/config
-    # state. Without the persisted marker the notice re-fires on every agent
-    # init — and the gateway rebuilds the agent per inbound message, so Discord
-    # etc. saw it repeatedly (#54432). A change in the raised threshold (or the
-    # autoraised model) updates the marker state and re-notifies once. The
+    # Codex gpt-5.x autoraise notice: CLI-only and shown at most once per
+    # profile/config state. Gateway agents are rebuilt per inbound message and
+    # must not replay this internal lifecycle hint into a user's chat (#54432).
     # config display gate (compression.codex_gpt55_autoraise_notice) still
     # suppresses the banner entirely without disabling the threshold autoraise.
     _autoraise = getattr(agent, "_compression_threshold_autoraised", None) or {}
@@ -2977,6 +2975,7 @@ def init_agent(
         bool(_autoraise)
         and compression_enabled
         and _codex_gpt55_autoraise_notice
+        and (agent.platform or "cli") == "cli"
         and not _codex_gpt55_autoraise_notice_seen(_autoraise)
     )
 
@@ -2995,22 +2994,18 @@ def init_agent(
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(_active_threshold_pct*100)}% = {agent.context_compressor.threshold_tokens:,}{_cap_note})")
         else:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
-        # Notice with the exact opt-back-out command. Printed inline at startup
-        # for CLI users; gateway users get the same text replayed via
-        # _compression_warning on turn 1 (set below).
+        # Notice with the exact opt-back-out command. Printed inline for CLI
+        # users only; gateway conversations intentionally receive no auto-raise
+        # lifecycle notice.
         if _show_autoraise_notice:
             print(_build_codex_gpt5_autoraise_notice(
                 _autoraise,
                 context_length=getattr(agent.context_compressor, "context_length", None),
             ))
 
-    # Check immediately so CLI users see the warning at startup.
-    # Gateway status_callback is not yet wired, so any warning is stored
-    # in _compression_warning and replayed in the first run_conversation().
+    # Check immediately so CLI users see the warning at startup. Gateway status
+    # callbacks are wired later, but gateway agents keep this slot empty.
     agent._compression_warning = None
-    # Gateway parity for the Codex gpt-5.x autoraise notice: the startup print
-    # above only reaches the CLI, so stash the same text here to be replayed
-    # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
     if _show_autoraise_notice:
         agent._compression_warning = _build_codex_gpt5_autoraise_notice(
             _autoraise,

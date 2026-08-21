@@ -317,8 +317,10 @@ VALID_HOOKS: Set[str] = {
     #   exit_kind: "clean_exit" | "rate_limited" | "nonzero_exit"
     #              | "signaled" | "unknown",
     #   exit_code: int | None,
-    #   outcome: "crashed" | "rate_limited",
-    #   retry_status: str  (the phase the task was released back to).
+    #   outcome: "blocked" | "crashed" | "rate_limited",
+    #   retry_status: str  (the durable task phase after exit handling).
+    # ``blocked`` is emitted when Control A observes a clean worker exit with
+    # no terminal kanban event, including the explicit stale-running backfill.
     "on_kanban_worker_exited",
     # on_kanban_worker_stale_claim fires when release_stale_claims reclaims
     # a TTL-expired claim, after the reclaim txn commits. Live-PID claim

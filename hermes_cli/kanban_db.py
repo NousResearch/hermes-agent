@@ -122,7 +122,9 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # ``BLOCK_RECURRENCE_LIMIT``) escalates them to ``triage`` if a cron keeps
 # unblocking them only to have the worker re-block for the same reason.
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
-VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+VALID_BLOCK_KINDS = {
+    "dependency", "needs_input", "capability", "transient", "worker_protocol",
+}
 
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
@@ -8778,75 +8780,308 @@ def _error_fingerprint(error_text: str) -> str:
     return fp.lower().strip()
 
 
-# Empirically ~96% of "clean exit without a terminal tool call" tasks complete
-# on a later run (a goal-mode finalize nudge, or the model simply emitting the
-# tool call next time), so a protocol violation is NOT deterministic — give it a
-# bounded retry before the breaker trips instead of blocking on the first hit.
-#
-# The budget is a violation-only STREAK, not a share of the unified
-# ``consecutive_failures`` counter: it counts consecutive clean-exit protocol
-# violations (derived from run history by ``_protocol_violation_streak``), so
-# earlier timeouts / nonzero exits neither consume nor extend it, and a
-# below-budget violation does not tick the unified counter either. A per-task
-# ``max_retries`` overrides this bound — the same "task override wins"
-# precedence ``_record_task_failure`` documents for every other failure kind.
-_PROTOCOL_VIOLATION_FAILURE_LIMIT = 3
-
-# How far back to walk a task's closed runs when counting the violation
-# streak. The streak trips at a handful of violations, so anything beyond a
-# few dozen rows (violations interleaved with neutral rate-limited requeues)
-# can only mean "way past the bound" anyway.
-_PROTOCOL_VIOLATION_SCAN_LIMIT = 50
+_MISSING_TERMINAL_REASON = (
+    "Worker exited successfully without kanban_complete or kanban_block; "
+    "dispatcher auto-blocked the task."
+)
+_STALE_RUNNING_REASON = (
+    "Worker is no longer running and no terminal event was observed; "
+    "one-time stale-task reaper auto-blocked the task."
+)
 
 
-def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
-    """Count the task's trailing run of clean-exit protocol violations.
+def _missing_terminal_payload(
+    *,
+    trigger: str,
+    exit_kind: str,
+    exit_code: Optional[int],
+    worker_pid: Optional[int],
+    last_heartbeat_at: Optional[int],
+) -> dict:
+    """Build the allowlisted, secret-safe Control A event payload."""
+    return {
+        "reason_code": "worker_exited_without_terminal_event",
+        "reason": (
+            _MISSING_TERMINAL_REASON
+            if exit_kind == "clean_exit"
+            else _STALE_RUNNING_REASON
+        ),
+        "kind": "worker_protocol",
+        "auto_blocked": True,
+        "trigger": trigger,
+        "terminal_event_observed": False,
+        "exit_kind": exit_kind,
+        "exit_code": exit_code,
+        "worker_pid": worker_pid,
+        "last_heartbeat_at": last_heartbeat_at,
+    }
 
-    Walks the task's closed runs newest-first — including the violation run
-    ``detect_crashed_workers`` just closed — and counts how many in a row were
-    clean-exit protocol violations:
 
-    * ``rate_limited`` runs are neutral and skipped: a quota wall says nothing
-      about the task, exactly as it is neutral for the unified
-      ``consecutive_failures`` counter.
-    * Any other closed run (completed, plain crash, timeout, spawn failure,
-      reclaim, …) breaks the streak, so the bounded retry budget counts ONLY
-      protocol violations — mixed failure kinds can neither consume nor
-      extend it.
+def _auto_block_missing_terminal_event_in_txn(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    expected_run_id: Optional[int],
+    expected_pid: int,
+    expected_claim_lock: Optional[str],
+    last_heartbeat_at: Optional[int],
+    exit_kind: str,
+    exit_code: Optional[int],
+    trigger: str,
+) -> Optional[int]:
+    """CAS one observed dead-worker run to ``blocked`` inside a write txn.
 
-    Violation runs are recognized by the ``protocol_violation`` marker that
-    ``detect_crashed_workers`` stamps into the run metadata; the violation
-    error text is matched as a fallback for runs recorded before the marker
-    existed.
+    The exact run, pid, and claim are part of the compare-and-swap guard. A
+    concurrent terminal transition or reaper therefore makes this a no-op.
+    Returns the linked run id on success, otherwise ``None``.
     """
-    streak = 0
+    payload = _missing_terminal_payload(
+        trigger=trigger,
+        exit_kind=exit_kind,
+        exit_code=exit_code,
+        worker_pid=expected_pid,
+        last_heartbeat_at=last_heartbeat_at,
+    )
+    cur = conn.execute(
+        """
+        UPDATE tasks
+           SET status = 'blocked',
+               claim_lock = NULL,
+               claim_expires = NULL,
+               worker_pid = NULL,
+               block_kind = 'worker_protocol',
+               block_recurrences = CASE
+                   WHEN block_kind = 'worker_protocol'
+                   THEN block_recurrences + 1 ELSE 1 END,
+               last_failure_error = ?
+         WHERE id = ?
+           AND status = 'running'
+           AND current_run_id IS ?
+           AND worker_pid = ?
+           AND claim_lock IS ?
+           AND NOT EXISTS (
+               SELECT 1 FROM task_events
+                WHERE task_id = ?
+                  AND run_id IS ?
+                  AND kind IN ('completed', 'blocked')
+           )
+        """,
+        (
+            payload["reason"], task_id, expected_run_id,
+            expected_pid, expected_claim_lock, task_id, expected_run_id,
+        ),
+    )
+    if cur.rowcount != 1:
+        return None
+
+    run_id = _end_run(
+        conn,
+        task_id,
+        outcome="blocked",
+        status="blocked",
+        error=payload["reason"],
+        metadata=dict(payload),
+    )
+    if run_id is None:
+        run_id = _synthesize_ended_run(
+            conn,
+            task_id,
+            outcome="blocked",
+            error=payload["reason"],
+            metadata=dict(payload),
+        )
+    _append_event(conn, task_id, "blocked", payload, run_id=run_id)
+    return run_id
+
+
+def _fire_missing_terminal_hooks(
+    task_id: str,
+    *,
+    assignee: Optional[str],
+    run_id: Optional[int],
+    worker_pid: int,
+    exit_kind: str,
+    exit_code: Optional[int],
+) -> None:
+    """Notify lifecycle observers only after the database transaction commits."""
+    board = get_current_board()
+    if _kanban_observer_consumed("kanban_task_blocked"):
+        _fire_kanban_lifecycle_hook(
+            "kanban_task_blocked",
+            task_id,
+            board=board,
+            assignee=assignee,
+            run_id=run_id,
+            reason=_missing_terminal_payload(
+                trigger="missing_terminal_event",
+                exit_kind=exit_kind,
+                exit_code=exit_code,
+                worker_pid=worker_pid,
+                last_heartbeat_at=None,
+            )["reason"],
+        )
+    if _kanban_observer_consumed("on_kanban_worker_exited"):
+        _fire_kanban_lifecycle_hook(
+            "on_kanban_worker_exited",
+            task_id,
+            board=board,
+            assignee=assignee,
+            run_id=run_id,
+            worker_pid=worker_pid,
+            exit_kind=exit_kind,
+            exit_code=exit_code,
+            outcome="blocked",
+            retry_status="blocked",
+        )
+
+
+def _auto_block_missing_terminal_event(
+    conn: sqlite3.Connection,
+    **observed,
+) -> Optional[int]:
+    """Transactional wrapper used by explicit reapers and race tests."""
+    assignee_row = conn.execute(
+        "SELECT assignee FROM tasks WHERE id = ?", (observed["task_id"],),
+    ).fetchone()
+    with write_txn(conn):
+        run_id = _auto_block_missing_terminal_event_in_txn(conn, **observed)
+    if run_id is not None:
+        _fire_missing_terminal_hooks(
+            observed["task_id"],
+            assignee=assignee_row["assignee"] if assignee_row else None,
+            run_id=run_id,
+            worker_pid=observed["expected_pid"],
+            exit_kind=observed["exit_kind"],
+            exit_code=observed["exit_code"],
+        )
+    return run_id
+
+
+def preview_stale_running_workers(conn: sqlite3.Connection) -> list[dict]:
+    """Read-only preview for the one-time Control A stale-running backfill.
+
+    The forward dispatcher path handles known clean exits. This explicit
+    preview additionally includes dead workers whose exit status is no longer
+    available after a dispatcher restart (``unknown``). Known non-zero,
+    signaled, and rate-limited exits remain on their existing branches.
+    """
     rows = conn.execute(
-        "SELECT outcome, error, metadata FROM task_runs "
-        "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY id DESC LIMIT ?",
-        (task_id, _PROTOCOL_VIOLATION_SCAN_LIMIT),
+        "SELECT id, worker_pid, claim_lock, started_at, assignee, "
+        "last_heartbeat_at, current_run_id FROM tasks "
+        "WHERE status = 'running' AND worker_pid IS NOT NULL ORDER BY id"
     ).fetchall()
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+    preview: list[dict] = []
     for row in rows:
-        outcome = row["outcome"] or ""
-        if outcome == "rate_limited":
+        lock = row["claim_lock"] or ""
+        if not lock.startswith(host_prefix):
             continue
-        if outcome == "crashed":
-            is_violation = False
-            raw_meta = row["metadata"]
-            if raw_meta:
-                try:
-                    is_violation = bool(
-                        json.loads(raw_meta).get("protocol_violation")
-                    )
-                except (ValueError, TypeError):
-                    is_violation = False
-            if not is_violation:
-                is_violation = "protocol violation" in (row["error"] or "")
-            if is_violation:
-                streak += 1
+        started_at = row["started_at"]
+        if started_at is not None:
+            grace = _resolve_crash_grace_seconds()
+            if time.time() - started_at < grace:
                 continue
-        break
-    return streak
+        pid = int(row["worker_pid"])
+        if _pid_alive(pid):
+            continue
+        exit_kind, exit_code = _classify_worker_exit(pid)
+        if exit_kind not in {"clean_exit", "unknown"}:
+            continue
+        preview.append({
+            "task_id": row["id"],
+            "expected_run_id": row["current_run_id"],
+            "expected_pid": pid,
+            "expected_claim_lock": row["claim_lock"],
+            "last_heartbeat_at": row["last_heartbeat_at"],
+            "exit_kind": exit_kind,
+            "exit_code": exit_code,
+            "worker_pid": pid,
+            "assignee": row["assignee"],
+        })
+    return preview
+
+
+def reap_stale_running_workers(conn: sqlite3.Connection) -> list[str]:
+    """Run the explicitly-invoked, idempotent Control A stale-task backfill."""
+    touched: list[str] = []
+    for row in preview_stale_running_workers(conn):
+        observed = {
+            "task_id": row["task_id"],
+            "expected_run_id": row["expected_run_id"],
+            "expected_pid": row["expected_pid"],
+            "expected_claim_lock": row["expected_claim_lock"],
+            "last_heartbeat_at": row["last_heartbeat_at"],
+            "exit_kind": row["exit_kind"],
+            "exit_code": row["exit_code"],
+            "trigger": "stale_running_backfill",
+        }
+        if _auto_block_missing_terminal_event(conn, **observed) is not None:
+            touched.append(row["task_id"])
+    return touched
+
+
+def _auto_block_clean_exits_before_recovery(
+    conn: sqlite3.Connection,
+) -> list[str]:
+    """Block only known-clean dead workers before recovery erases evidence.
+
+    This narrow pre-pass exists solely for the missing-terminal protocol case.
+    Non-zero, signaled, unknown, and rate-limited exits are deliberately left
+    untouched so TTL/orphan/stale recovery retains its historical precedence;
+    normal crash detection handles any survivors afterward.
+    """
+    auto_blocked: list[str] = []
+    hook_payloads: list[dict] = []
+    with write_txn(conn):
+        rows = conn.execute(
+            "SELECT id, worker_pid, claim_lock, started_at, assignee, "
+            "last_heartbeat_at, current_run_id FROM tasks "
+            "WHERE status = 'running' AND worker_pid IS NOT NULL"
+        ).fetchall()
+        host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+        for row in rows:
+            lock = row["claim_lock"] or ""
+            if not lock.startswith(host_prefix):
+                continue
+            started_at = row["started_at"]
+            if started_at is not None:
+                grace = _resolve_crash_grace_seconds()
+                if time.time() - started_at < grace:
+                    continue
+            pid = int(row["worker_pid"])
+            if _pid_alive(pid):
+                continue
+            kind, code = _classify_worker_exit(pid)
+            if kind != "clean_exit":
+                continue
+            run_id = _auto_block_missing_terminal_event_in_txn(
+                conn,
+                task_id=row["id"],
+                expected_run_id=row["current_run_id"],
+                expected_pid=pid,
+                expected_claim_lock=row["claim_lock"],
+                last_heartbeat_at=row["last_heartbeat_at"],
+                exit_kind=kind,
+                exit_code=code,
+                trigger="missing_terminal_event",
+            )
+            if run_id is None:
+                continue
+            auto_blocked.append(row["id"])
+            hook_payloads.append({
+                "task_id": row["id"],
+                "assignee": row["assignee"],
+                "run_id": run_id,
+                "worker_pid": pid,
+                "exit_kind": kind,
+                "exit_code": code,
+            })
+
+    for hook_fields in hook_payloads:
+        hook_fields = dict(hook_fields)
+        task_id = hook_fields.pop("task_id")
+        _fire_missing_terminal_hooks(task_id, **hook_fields)
+    return auto_blocked
 
 
 def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
@@ -8879,21 +9114,21 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """
     crashed: list[str] = []
     rate_limited: list[str] = []
+    auto_blocked: list[str] = []
     # Per-crash details collected inside the main txn, used after it
     # closes to run ``_record_task_failure`` (which needs its own
-    # write_txn so can't nest). ``protocol_violation`` flags the
-    # clean-exit-but-still-running case, which is accounted against its
-    # own bounded violation streak instead of the unified failure
-    # counter (see the post-txn loop below).
-    crash_details: list[tuple[str, int, str, bool, str]] = []
-    # (task_id, pid, claimer, protocol_violation, error_text)
+    # write_txn so can't nest). Clean exits are not crashes: they are
+    # atomically blocked in the main transaction and never enter this list.
+    crash_details: list[tuple[str, int, str, str]] = []
+    # (task_id, pid, claimer, error_text)
     # Worker-exit observer payloads (RFC #58548), collected inside the main
     # txn and fired only after every reclaim/accounting txn has committed.
     exited_hook_payloads: list[dict] = []
+    blocked_hook_payloads: list[dict] = []
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at, assignee "
-            "FROM tasks "
+            "SELECT id, worker_pid, claim_lock, started_at, assignee, "
+            "last_heartbeat_at, current_run_id FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -8917,32 +9152,32 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
             if kind == "clean_exit":
-                # Worker subprocess returned 0 but its task is still
-                # ``running`` in the DB — it exited without calling
-                # ``kanban_complete`` / ``kanban_block``. Overwhelmingly the
-                # work itself succeeded and only the paperwork was skipped, so
-                # a retry usually completes; the corrective sentence below is
-                # surfaced to the retry worker via the prior-attempt error in
-                # ``build_worker_context`` (guidance approach from #61817).
-                protocol_violation = True
-                error_text = (
-                    "worker exited cleanly (rc=0) without calling "
-                    "kanban_complete or kanban_block — protocol violation. "
-                    "If the prior run already did the work, verify it and "
-                    "report the result via kanban_complete; a run that ends "
-                    "without a terminal kanban call counts as failed no "
-                    "matter what it did."
+                # A clean exit with no terminal transition is a protocol
+                # failure, not a crash. Block atomically on the first
+                # observation so the board cannot advertise retryable work
+                # that the worker has already abandoned.
+                run_id = _auto_block_missing_terminal_event_in_txn(
+                    conn,
+                    task_id=row["id"],
+                    expected_run_id=row["current_run_id"],
+                    expected_pid=pid,
+                    expected_claim_lock=row["claim_lock"],
+                    last_heartbeat_at=row["last_heartbeat_at"],
+                    exit_kind=kind,
+                    exit_code=code,
+                    trigger="missing_terminal_event",
                 )
-                event_kind = "protocol_violation"
-                event_payload = {
-                    "pid": pid,
-                    "claimer": row["claim_lock"],
-                    "exit_code": code,
-                    # Durable marker for _protocol_violation_streak: _end_run
-                    # copies this payload into the run metadata, which is how
-                    # the violation-only retry budget is derived later.
-                    "protocol_violation": True,
-                }
+                if run_id is not None:
+                    auto_blocked.append(row["id"])
+                    blocked_hook_payloads.append({
+                        "task_id": row["id"],
+                        "assignee": row["assignee"],
+                        "run_id": run_id,
+                        "worker_pid": pid,
+                        "exit_kind": kind,
+                        "exit_code": code,
+                    })
+                continue
             elif kind == "rate_limited":
                 # Worker bailed because the provider rate-limited / exhausted
                 # quota (EX_TEMPFAIL sentinel). This is NOT a task failure —
@@ -8951,7 +9186,6 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 # quota window clears, and crucially do NOT count a failure
                 # (skip ``_record_task_failure``) so a long quota window can't
                 # trip the circuit breaker and permanently block the card.
-                protocol_violation = False
                 rate_limited_exit = True
                 error_text = (
                     f"pid {pid} exited rate-limited (quota wall) — "
@@ -8964,7 +9198,6 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     "exit_code": code,
                 }
             else:
-                protocol_violation = False
                 if kind == "nonzero_exit":
                     error_text = f"pid {pid} exited with code {code}"
                 elif kind == "signaled":
@@ -9024,93 +9257,21 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     )
                     rate_limited.append(row["id"])
                 else:
-                    if protocol_violation:
-                        # Stamp the failure error now: a below-budget
-                        # violation never reaches ``_record_task_failure``
-                        # (which stamps this column for every other failure
-                        # kind), yet the board UI and the retry worker's
-                        # context still need the violation message + the
-                        # corrective guidance it carries.
-                        conn.execute(
-                            "UPDATE tasks SET last_failure_error = ? "
-                            "WHERE id = ?",
-                            (error_text[:500], row["id"]),
-                        )
                     crashed.append(row["id"])
                     crash_details.append(
-                        (row["id"], pid, row["claim_lock"],
-                         protocol_violation, error_text)
+                        (row["id"], pid, row["claim_lock"], error_text)
                     )
-    # Outside the main txn: account each crashed task and maybe trip the
-    # breaker (the retried task transitions to blocked with a ``gave_up`` event
-    # on top of the event we already emitted).
-    #
-    # Protocol-violation crashes (clean exit, no terminal tool call) get a
-    # BOUNDED retry, not an immediate trip: empirically ~96% of these tasks
-    # complete on a later run (a goal-mode finalize nudge, or the model simply
-    # emitting kanban_complete/kanban_block next time), so blocking on the first
-    # occurrence just churned them through the respawn cycle. The retry budget
-    # is a violation-only streak (``_protocol_violation_streak``): earlier
-    # timeouts / nonzero exits neither consume nor extend it, and a
-    # below-budget violation does not tick the unified
-    # ``consecutive_failures`` counter, so the two budgets stay independent.
-    # A per-task ``max_retries`` overrides the violation bound with the same
-    # top precedence it has for every other failure kind. Systemic same-error
-    # crashes still trip immediately.
-    auto_blocked: list[str] = []
+    # Outside the main txn: account real crashes and maybe trip the breaker
+    # (the retried task transitions to blocked with a ``gave_up`` event on top
+    # of the crash event already emitted). Clean protocol exits were already
+    # blocked atomically above and never enter the crash counter.
     if crash_details:
         # Fingerprint errors to detect systemic failures.
         _fp_counts: dict[str, int] = {}
-        for _, _, _, _, err_text in crash_details:
+        for _, _, _, err_text in crash_details:
             fp = _error_fingerprint(err_text)
             _fp_counts[fp] = _fp_counts.get(fp, 0) + 1
-        for tid, pid, claimer, protocol_violation, error_text in crash_details:
-            if protocol_violation:
-                streak = _protocol_violation_streak(conn, tid)
-                trow = conn.execute(
-                    "SELECT max_retries FROM tasks WHERE id = ?", (tid,),
-                ).fetchone()
-                if trow is None:
-                    continue  # task deleted mid-loop
-                task_override = (
-                    trow["max_retries"] if "max_retries" in trow.keys() else None
-                )
-                violation_limit = (
-                    int(task_override)
-                    if task_override is not None
-                    else _PROTOCOL_VIOLATION_FAILURE_LIMIT
-                )
-                if streak < violation_limit:
-                    # Below budget: the task is already back at ``ready``
-                    # (respawn allowed) with ``last_failure_error`` stamped.
-                    # Deliberately no ``_record_task_failure`` call — a
-                    # below-budget violation must not consume the unified
-                    # failure budget, just as other failure kinds don't
-                    # consume this one.
-                    continue
-                # Streak reached the bound: trip the breaker. ``force_trip``
-                # skips the threshold resolution inside
-                # ``_record_task_failure`` because the decision — including
-                # the per-task ``max_retries`` override — was already made
-                # against the violation streak above.
-                tripped = _record_task_failure(
-                    conn, tid,
-                    error=error_text,
-                    outcome="crashed",
-                    failure_limit=violation_limit,
-                    force_trip=True,
-                    release_claim=False,
-                    end_run=False,
-                    event_payload_extra={
-                        "pid": pid,
-                        "claimer": claimer,
-                        "protocol_violations": streak,
-                        "protocol_violation_limit": violation_limit,
-                    },
-                )
-                if tripped:
-                    auto_blocked.append(tid)
-                continue
+        for tid, pid, claimer, error_text in crash_details:
             fp = _error_fingerprint(error_text)
             is_systemic = _fp_counts.get(fp, 0) >= 3
             tripped = _record_task_failure(
@@ -9132,7 +9293,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # Same side-channel for rate-limited requeues — these did NOT count a
     # failure and are NOT crashes, so they stay out of the ``crashed`` return.
     detect_crashed_workers._last_rate_limited = rate_limited  # type: ignore[attr-defined]
-    # Worker-lifecycle observer (RFC #58548): exit events are tick-derived
+    # Missing-terminal hooks are fired only after the atomic block commits.
+    for hook_fields in blocked_hook_payloads:
+        hook_fields = dict(hook_fields)
+        task_id = hook_fields.pop("task_id")
+        _fire_missing_terminal_hooks(task_id, **hook_fields)
+    # Worker-lifecycle observer (RFC #58548): other exit events are tick-derived
     # from this reclaim pass — fired only now, after the main reclaim txn
     # AND the breaker accounting above have committed, so subscribers always
     # observe fully durable board state.
@@ -9196,13 +9362,9 @@ def _record_task_failure(
       3. ``DEFAULT_FAILURE_LIMIT``
 
     ``force_trip=True`` trips the breaker unconditionally, skipping the
-    counter-vs-threshold comparison (the resolution order above is then
-    only reported in the ``gave_up`` payload, not re-evaluated). Callers
-    use it when they have already applied their own bounded-retry policy
-    — e.g. the clean-exit protocol-violation streak in
-    ``detect_crashed_workers``, which resolves the per-task
-    ``max_retries`` override against the violation streak itself. The
-    failure is still counted into ``consecutive_failures``.
+    counter-vs-threshold comparison. Callers use it only when an independent
+    bounded-failure policy has already made the blocking decision. The failure
+    is still counted into ``consecutive_failures``.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -9905,11 +10067,13 @@ def _dispatch_once_locked(
     """Run one dispatcher tick.
 
     Steps:
-      1. Reclaim stale running tasks (TTL expired).
-      2. Reclaim stale running tasks (no recent heartbeat).
-      3. Reclaim crashed running tasks (host-local PID no longer alive).
-      3. Promote todo -> ready where all parents are done.
-      4. For each ready task with an assignee, atomically claim and call
+      1. Classify only known-clean exited workers before stale-claim recovery
+         can erase their run/PID evidence.
+      2. Preserve the existing recovery order: TTL reclaim, orphan recovery,
+         then stale-heartbeat recovery.
+      3. Run normal crash detection for surviving non-clean exits.
+      4. Promote todo -> ready where all parents are done.
+      5. For each ready task with an assignee, atomically claim and call
          ``spawn_fn(task, workspace_path, board) -> Optional[int]``. The
          return value (if any) is recorded as ``worker_pid`` so subsequent
          ticks can detect crashes before the TTL expires.
@@ -9942,6 +10106,11 @@ def _dispatch_once_locked(
     reap_worker_zombies()
 
     result = DispatchResult()
+    # Control A's only pre-recovery exception is a known clean exit without a
+    # terminal event. All non-clean exit kinds retain the historical recovery
+    # precedence below and reach normal crash detection only if still running.
+    result.auto_blocked.extend(_auto_block_clean_exits_before_recovery(conn))
+
     result.reclaimed = release_stale_claims(conn)
     if reconcile_orphans:
         # Orphaned-card reconciliation: requeue 'running' cards whose claim
@@ -9951,6 +10120,7 @@ def _dispatch_once_locked(
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )
+
     result.crashed = detect_crashed_workers(conn)
     # detect_crashed_workers stashes protocol-violation auto-blocks on
     # itself so the public list-return stays stable. Pull them into the
@@ -9968,6 +10138,7 @@ def _dispatch_once_locked(
     )
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
+
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 

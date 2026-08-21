@@ -48,6 +48,57 @@ describe('createSlashHandler', () => {
     expect(getOverlayState().sessions).toBe(false)
   })
 
+  it.each(['list', 'delete archived --yes', 'rename archived New title', 'prune --days 30 --yes'])(
+    'routes /sessions %s through the slash worker',
+    async arg => {
+      patchUiState({ sid: 'sid-abc' })
+      const ctx = buildCtx()
+      ctx.gateway.gw.request.mockResolvedValue({ output: 'session command complete' })
+
+      expect(createSlashHandler(ctx)(`/sessions ${arg}`)).toBe(true)
+      expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
+        command: `sessions ${arg}`,
+        session_id: 'sid-abc'
+      })
+      await vi.waitFor(() => expect(ctx.transcript.sys).toHaveBeenCalledWith('session command complete'))
+    }
+  )
+
+  it.each(['delete archived', 'prune --days 30'])('requires --yes before forwarding /sessions %s', arg => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)(`/sessions ${arg}`)).toBe(true)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('confirmation required: rerun with --yes')
+  })
+
+  it.each(['sessions', 'session', 'switch', 'resume'])('routes /%s manager commands through the slash worker', async name => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+    ctx.gateway.gw.request.mockResolvedValue({ output: 'session command complete' })
+
+    expect(createSlashHandler(ctx)(`/${name} prune --days 30 --yes`)).toBe(true)
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
+      command: 'sessions prune --days 30 --yes',
+      session_id: 'sid-abc'
+    })
+    await vi.waitFor(() => expect(ctx.transcript.sys).toHaveBeenCalledWith('session command complete'))
+  })
+
+  it.each(['ls', 'browse'])('routes /sessions %s through the slash worker', async subcommand => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+    ctx.gateway.gw.request.mockResolvedValue({ output: 'session list' })
+
+    expect(createSlashHandler(ctx)(`/sessions ${subcommand}`)).toBe(true)
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
+      command: `sessions ${subcommand}`,
+      session_id: 'sid-abc'
+    })
+    await vi.waitFor(() => expect(ctx.transcript.sys).toHaveBeenCalledWith('session list'))
+  })
+
   it('opens the unified sessions overlay locally even when the current session is busy', () => {
     patchUiState({ busy: true, sid: 'sid-abc' })
     const ctx = buildCtx()

@@ -10039,7 +10039,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint("  Use /resume with no arguments to see available sessions.")
             return True
 
-        self._handle_resume_command(f"/resume {index}")
+        # Resume the immutable ID from the displayed snapshot. Re-resolving a
+        # number can select a different session when ordering changes, and
+        # `/sessions` intentionally exposes more rows than bare `/resume`.
+        self._handle_resume_command(f"/resume {pending[index - 1]['id']}")
         return True
 
 

@@ -176,6 +176,19 @@ def _reload_config_modules() -> None:
     ``hermes_cli.config``, and ``hermes_cli.config_migrations`` from disk
     so subsequent imports read the UPDATED code.
 
+    It also reloads ``hermes_cli.config``'s direct ``hermes_cli`` import
+    surface (``colors``, ``secret_prompt``, ``cli_output``,
+    ``route_identity``, ``default_soul``, ``personality``) BEFORE
+    ``config`` itself. ``importlib.reload`` re-executes the module's
+    imports, but ``from X import Y`` resolves against the *cached* ``X``
+    — so reloading a freshly-pulled ``config`` against a stale cached
+    dependency asks the old module for new symbols and dies with
+    ``ImportError``. That is exactly the #90535 failure: ``d0132b582``
+    added ``from hermes_cli.cli_output import line_input`` to
+    ``config.py``, and the pre-pull updater process aborted its gateway
+    auto-restart with "cannot import name 'line_input'" because the
+    cached ``cli_output`` predated the symbol.
+
     It also reloads ``hermes_cli._subprocess_compat`` and
     ``hermes_cli.dashboard_procs`` so that post-update dashboard cleanup
     (``_finish_dashboard_update_cleanup`` → ``_scan_dashboard_processes``)
@@ -187,7 +200,16 @@ def _reload_config_modules() -> None:
     import importlib
 
     importlib.invalidate_caches()
+    # Dependency order matters: modules imported BY hermes_cli.config must
+    # reload first, or config's re-executed imports resolve against stale
+    # cached objects (#90535).
     for mod_name in (
+        "hermes_cli.colors",
+        "hermes_cli.secret_prompt",
+        "hermes_cli.cli_output",
+        "hermes_cli.route_identity",
+        "hermes_cli.default_soul",
+        "hermes_cli.personality",
         "hermes_cli.config_defaults",
         "hermes_cli.config",
         "hermes_cli.config_migrations",

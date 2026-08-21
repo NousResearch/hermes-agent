@@ -769,3 +769,55 @@ class TestPostUpdateStaleModuleReload:
 
         assert "hermes_cli._subprocess_compat" in reloaded
         assert "hermes_cli.dashboard_procs" in reloaded
+
+    def test_config_reload_covers_config_import_surface_in_dependency_order(self):
+        """#90535: reloading a freshly-pulled config against a stale cached
+        dependency dies with ImportError when config gained a new `from X
+        import Y` and the cached X predates the symbol. Every hermes_cli
+        module config imports at module level must reload BEFORE config
+        itself."""
+        from hermes_cli import update_cmd
+
+        reloaded: list[str] = []
+        with patch("importlib.reload", side_effect=lambda m: reloaded.append(m.__name__)):
+            update_cmd._reload_config_modules()
+
+        for mod in (
+            "hermes_cli.colors",
+            "hermes_cli.secret_prompt",
+            "hermes_cli.cli_output",
+            "hermes_cli.route_identity",
+            "hermes_cli.default_soul",
+            "hermes_cli.personality",
+        ):
+            assert mod in reloaded, f"{mod} must reload with the config set"
+            assert reloaded.index(mod) < reloaded.index("hermes_cli.config"), (
+                f"{mod} must reload BEFORE hermes_cli.config — config's "
+                "re-executed `from X import Y` resolves against the cached X"
+            )
+
+    def test_config_reload_restores_stale_cli_output_symbol(self):
+        """The #90535 reproduction shape: the pre-pull process caches a
+        hermes_cli.cli_output that predates `line_input`; the pulled
+        config.py imports it at module level. After the reload pass the
+        cached cli_output must carry the symbol from disk, so the
+        subsequent config reload (and gateway restart) succeeds."""
+        import hermes_cli.cli_output as cli_output
+        from hermes_cli import update_cmd
+
+        assert hasattr(cli_output, "line_input")
+        try:
+            delattr(cli_output, "line_input")
+            assert not hasattr(cli_output, "line_input")
+
+            update_cmd._reload_config_modules()
+
+            fresh = sys.modules["hermes_cli.cli_output"]
+            assert hasattr(fresh, "line_input"), (
+                "stale cached cli_output survived the reload pass — a "
+                "freshly-pulled config importing line_input would die "
+                "with ImportError inside the pre-pull updater process"
+            )
+        finally:
+            importlib.reload(sys.modules["hermes_cli.cli_output"])
+            importlib.reload(sys.modules["hermes_cli.config"])

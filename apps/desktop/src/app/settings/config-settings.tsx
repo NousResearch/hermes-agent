@@ -231,6 +231,8 @@ function ConfigSettingsInner({
         if (ok) {
           applyConfig(next)
         }
+      }).catch(() => {
+        // confirm() rejected unexpectedly — treat as cancellation, do not apply
       })
 
       return

@@ -333,6 +333,53 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_events_stream_preserves_interim_event_before_completion(self, adapter):
+        """A tool-progress event fired from the executor thread immediately
+        before run_conversation returns must still appear in the SSE
+        stream, ahead of run.completed.
+
+        Regression test for a race where an interim event's
+        call_soon_threadsafe-scheduled queue put was still pending when
+        run.completed (enqueued directly on the loop thread right after
+        run_in_executor returned) overtook it -- silently dropping or
+        misordering the interim event.
+        """
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+
+                def _run_conversation(user_message=None, conversation_history=None, task_id=None):
+                    # Fire the tool-progress callback from the executor
+                    # thread, exactly like a real tool call would, right
+                    # before run_conversation returns and the run coroutine
+                    # resumes on the loop thread to enqueue run.completed.
+                    tool_progress_callback = mock_create.call_args.kwargs["tool_progress_callback"]
+                    tool_progress_callback(
+                        "tool.completed", tool_name="shell", duration=0.01
+                    )
+                    return {"final_response": "done"}
+
+                mock_agent.run_conversation.side_effect = _run_conversation
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                body = await events_resp.text()
+
+        tool_idx = body.find("tool.completed")
+        completed_idx = body.find("run.completed")
+        assert tool_idx != -1, "interim tool.completed event missing from SSE stream"
+        assert completed_idx != -1
+        assert tool_idx < completed_idx
 
     @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):
@@ -800,3 +847,125 @@ class TestRunsProviderAuthFailure:
                 assert status["status"] == "failed"
                 assert status["error"] == "⚠️ Provider authentication failed: No credentials found for provider 'nous'"
                 assert status["last_event"] == "run.failed"
+
+
+# ---------------------------------------------------------------------------
+# _enqueue_run_event — thread-safe ordering guarantee
+# ---------------------------------------------------------------------------
+
+
+class TestEnqueueRunEventOrdering:
+    """Regression tests for the executor-thread/event-loop race where a
+    ``call_soon_threadsafe``-scheduled queue put for an interim event could
+    still be unapplied when run.completed/the closing sentinel were
+    enqueued directly on the loop thread right after ``run_in_executor``
+    returned, silently dropping (or misordering) the interim event in the
+    SSE stream.
+
+    ``_enqueue_run_event`` closes that window by blocking the calling
+    (executor) thread until the loop has actually run the given ``put_fn``,
+    so the interim event is guaranteed to be queued before the caller can
+    proceed toward run completion.
+    """
+
+    @pytest.mark.asyncio
+    async def test_blocks_until_applied_when_called_off_loop_thread(self, adapter):
+        loop = asyncio.get_running_loop()
+        loop_thread_id = threading.get_ident()
+        q: "asyncio.Queue" = asyncio.Queue()
+        observed_size_on_return = []
+
+        def _executor_thread_worker() -> None:
+            adapter._enqueue_run_event(
+                loop, loop_thread_id, lambda: q.put_nowait({"event": "interim"})
+            )
+            # By the time the call above returns, the loop must already
+            # have run put_fn -- this is the happens-before guarantee that
+            # keeps a subsequently-enqueued run.completed/sentinel (put
+            # directly on the loop thread) from overtaking it.
+            observed_size_on_return.append(q.qsize())
+
+        await loop.run_in_executor(None, _executor_thread_worker)
+
+        assert observed_size_on_return == [1]
+        assert q.get_nowait() == {"event": "interim"}
+
+    @pytest.mark.asyncio
+    async def test_synchronous_put_when_already_on_loop_thread(self, adapter):
+        """Callers already on the loop thread must not spawn a wait they
+        could deadlock on -- put_fn runs synchronously and inline.
+        """
+        loop = asyncio.get_running_loop()
+        loop_thread_id = threading.get_ident()
+        q: "asyncio.Queue" = asyncio.Queue()
+
+        adapter._enqueue_run_event(
+            loop, loop_thread_id, lambda: q.put_nowait({"event": "same-thread"})
+        )
+
+        assert q.get_nowait() == {"event": "same-thread"}
+
+    @pytest.mark.asyncio
+    async def test_preserves_order_against_a_racing_direct_put(self, adapter):
+        """Several interim events enqueued back-to-back from the executor
+        thread must land on the queue in submission order, even though each
+        crosses the thread boundary independently via call_soon_threadsafe.
+        """
+        loop = asyncio.get_running_loop()
+        loop_thread_id = threading.get_ident()
+        q: "asyncio.Queue" = asyncio.Queue()
+
+        def _executor_thread_worker() -> None:
+            for i in range(5):
+                adapter._enqueue_run_event(
+                    loop, loop_thread_id, lambda i=i: q.put_nowait({"event": f"interim-{i}"})
+                )
+
+        await loop.run_in_executor(None, _executor_thread_worker)
+
+        # Simulates the loop thread enqueueing run.completed + the closing
+        # sentinel directly, right after run_in_executor resolves.
+        q.put_nowait({"event": "run.completed"})
+        q.put_nowait(None)
+
+        drained = [q.get_nowait() for _ in range(7)]
+        assert drained == [
+            {"event": "interim-0"},
+            {"event": "interim-1"},
+            {"event": "interim-2"},
+            {"event": "interim-3"},
+            {"event": "interim-4"},
+            {"event": "run.completed"},
+            None,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_respects_put_event_if_active_staleness_guard(self, adapter):
+        """``_text_cb`` wires ``_enqueue_run_event`` around
+        ``_put_event_if_active`` (not a bare ``q.put_nowait``), which drops
+        the event once the run's stream has been replaced/removed from
+        ``self._run_streams``. The ack-wait wrapper must not bypass that
+        guard: put_fn's own logic decides whether the put happens at all.
+        """
+        loop = asyncio.get_running_loop()
+        loop_thread_id = threading.get_ident()
+        run_id = "run_test_stale_guard"
+        q: "asyncio.Queue" = asyncio.Queue()
+        adapter._run_streams[run_id] = q
+
+        def _put_event_if_active(event) -> None:
+            if adapter._run_streams.get(run_id) is q:
+                q.put_nowait(event)
+
+        # Simulate the stream being replaced/removed before the interim
+        # event's put_fn actually runs on the loop thread.
+        adapter._run_streams.pop(run_id, None)
+
+        def _executor_thread_worker() -> None:
+            adapter._enqueue_run_event(
+                loop, loop_thread_id, lambda: _put_event_if_active({"event": "interim"})
+            )
+
+        await loop.run_in_executor(None, _executor_thread_worker)
+
+        assert q.qsize() == 0

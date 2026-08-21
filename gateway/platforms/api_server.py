@@ -59,7 +59,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 # Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
 # names a profile this gateway does not serve (→ 404). Distinct from None
@@ -7398,8 +7398,60 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_statuses[run_id] = current
         return current
 
+    @staticmethod
+    def _enqueue_run_event(
+        loop: "asyncio.AbstractEventLoop",
+        loop_thread_id: int,
+        put_fn: "Callable[[], None]",
+    ) -> None:
+        """Run ``put_fn`` on the event loop thread, preserving ordering across
+        the executor-thread/event-loop boundary.
+
+        Interim run events (tool progress, message deltas) are produced on
+        the executor thread that runs ``agent.run_conversation`` while the
+        event loop thread is otherwise free to run other coroutines.
+        ``call_soon_threadsafe`` only *schedules* ``put_fn``; it doesn't wait
+        for the loop to actually execute it. Once ``run_in_executor``
+        returns, the run coroutine resumes on the loop thread and enqueues
+        ``run.completed``/``run.failed`` and the closing ``None`` sentinel
+        directly via ``put_nowait`` on that same thread. A still-pending
+        scheduled ``put_fn`` for an interim event can lose that race and
+        land after ``run.completed``, or after the SSE consumer has already
+        seen the sentinel and stopped reading -- silently dropping the
+        interim event from the ``/v1/runs/{run_id}/events`` stream.
+        Observed on Python 3.13.
+
+        Blocking the calling (executor) thread here until the loop has
+        actually run ``put_fn`` closes that window: an interim callback
+        cannot return -- and therefore the executor thread cannot proceed
+        toward run completion -- until its event is durably queued ahead of
+        anything the loop thread does afterward. This is a synchronous
+        no-op passthrough when already called from the loop thread (avoids
+        a deadlock: the loop thread can't block waiting on itself).
+        """
+        if threading.get_ident() == loop_thread_id:
+            put_fn()
+            return
+        applied = threading.Event()
+
+        def _apply() -> None:
+            try:
+                put_fn()
+            finally:
+                applied.set()
+
+        try:
+            loop.call_soon_threadsafe(_apply)
+        except Exception:
+            return
+        # Bound the wait so loop shutdown/errors cannot strand the executor
+        # thread indefinitely.
+        applied.wait(timeout=2.0)
+
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
+        loop_thread_id = threading.get_ident()
+
         def _push(event: Dict[str, Any]) -> None:
             self._set_run_status(
                 run_id,
@@ -7410,7 +7462,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if q is None:
                 return
             try:
-                loop.call_soon_threadsafe(q.put_nowait, event)
+                self._enqueue_run_event(loop, loop_thread_id, lambda: q.put_nowait(event))
             except Exception:
                 pass
 
@@ -7588,6 +7640,7 @@ class APIServerAdapter(BasePlatformAdapter):
         approval_session_key = run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
+        loop_thread_id = threading.get_ident()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
         created_at = time.time()
         self._run_streams[run_id] = q
@@ -7607,13 +7660,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 return
             if run_id not in self._run_streams:
                 return
+            event = {
+                "event": "message.delta",
+                "run_id": run_id,
+                "timestamp": time.time(),
+                "delta": delta,
+            }
             try:
-                loop.call_soon_threadsafe(_put_event_if_active, {
-                    "event": "message.delta",
-                    "run_id": run_id,
-                    "timestamp": time.time(),
-                    "delta": delta,
-                })
+                self._enqueue_run_event(loop, loop_thread_id, lambda: _put_event_if_active(event))
             except Exception:
                 pass
 

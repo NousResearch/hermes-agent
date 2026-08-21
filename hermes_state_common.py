@@ -288,8 +288,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
         f"WHERE _act_s.id = {session_id_expr})"
     )
     started = (
-        f"(SELECT started_at FROM sessions _act_s "
-        f"WHERE _act_s.id = {session_id_expr})"
+        f"(SELECT started_at FROM sessions _act_s WHERE _act_s.id = {session_id_expr})"
     )
     return (
         f"COALESCE("
@@ -302,7 +301,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     )
 
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
@@ -503,6 +502,51 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     delivery_claim TEXT,
     delivery_claimed_at REAL
 );
+
+CREATE TABLE IF NOT EXISTS retry_ledger_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    repo TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    head_sha TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    objective_id TEXT NOT NULL,
+    authority_mode TEXT NOT NULL CHECK (authority_mode IN ('R0', 'R1')),
+    loop_iteration INTEGER NOT NULL CHECK (loop_iteration >= 0),
+    attempt_number INTEGER NOT NULL CHECK (attempt_number >= 1),
+    strategy_mode TEXT NOT NULL CHECK (strategy_mode IN ('same_strategy', 'fresh_context', 'different_strategy', 'human_escalated')),
+    check_name TEXT NOT NULL,
+    check_type TEXT NOT NULL CHECK (check_type IN ('test', 'lint', 'type', 'policy', 'build', 'custom')),
+    result_state TEXT NOT NULL CHECK (result_state IN ('pass', 'fail', 'blocked', 'skipped', 'timeout')),
+    error_class TEXT NOT NULL CHECK (error_class IN ('none', 'validation_schema', 'policy_safety', 'auth_permission', 'scope_or_authority', 'rate_limit', 'transient_network', 'timeout', 'duplicate_fingerprint')),
+    error_fingerprint TEXT NOT NULL CHECK (error_fingerprint GLOB 'efp/v1:[0-9a-f]*'),
+    decision TEXT NOT NULL CHECK (decision IN ('stop', 'retry', 'escalate')),
+    decision_reason TEXT NOT NULL,
+    tool_calls_count INTEGER NOT NULL CHECK (tool_calls_count >= 0),
+    tokens_used_input INTEGER CHECK (tokens_used_input IS NULL OR tokens_used_input >= 0),
+    tokens_used_output INTEGER CHECK (tokens_used_output IS NULL OR tokens_used_output >= 0),
+    estimated_cost_usd REAL CHECK (estimated_cost_usd IS NULL OR estimated_cost_usd >= 0),
+    duration_ms INTEGER NOT NULL CHECK (duration_ms >= 0),
+    changed_paths TEXT NOT NULL CHECK (json_valid(changed_paths) AND json_type(changed_paths) = 'array'),
+    stop_reason TEXT NOT NULL CHECK (stop_reason IN ('none', 'terminal_pass', 'validation_schema', 'policy_safety', 'auth_permission', 'scope_or_authority', 'rate_limit_retry_limit', 'transient_network_retry_limit', 'timeout_retry_limit', 'duplicate_second', 'duplicate_third_hard_stop', 'iteration_cap', 'wall_clock_cap', 'input_tokens_cap', 'output_tokens_cap')),
+    created_at REAL NOT NULL
+);
+
+CREATE TRIGGER IF NOT EXISTS retry_ledger_events_no_update
+BEFORE UPDATE ON retry_ledger_events
+BEGIN
+    SELECT RAISE(ABORT, 'retry_ledger_events is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS retry_ledger_events_no_delete
+BEFORE DELETE ON retry_ledger_events
+BEGIN
+    SELECT RAISE(ABORT, 'retry_ledger_events is append-only');
+END;
+
+CREATE INDEX IF NOT EXISTS idx_retry_ledger_events_run_check
+    ON retry_ledger_events(run_id, check_name, attempt_number, id);
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);

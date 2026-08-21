@@ -7387,8 +7387,16 @@ def run_conversation(
 
                 if getattr(agent, "_last_tool_calls_all_end_turn", False):
                     _turn_exit_reason = "end_turn_tool_batch"
-                    messages.append(agent._build_empty_assistant_placeholder())
                     clean = agent._strip_think_blocks(turn_content).strip()
+                    closing = agent._build_empty_assistant_placeholder()
+                    if clean:
+                        # Persist the delivered handoff text, not the
+                        # provider-safe "(empty)" closer. Finalization only
+                        # skips append when the tail is already assistant, so
+                        # leaving "(empty)" here would become the durable
+                        # resume history instead of ``clean``.
+                        closing["content"] = clean
+                    messages.append(closing)
                     if (
                         clean
                         and getattr(agent, "interim_assistant_callback", None) is not None

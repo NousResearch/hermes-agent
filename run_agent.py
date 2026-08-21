@@ -7793,7 +7793,15 @@ class AIAgent:
 
     @staticmethod
     def _build_empty_assistant_placeholder() -> dict:
-        """Return a synthetic assistant message used only to keep history valid."""
+        """Return a persistable assistant closer for an end_turn tool batch.
+
+        After tool results the next user turn must not land as ``tool → user``.
+        This closer keeps that sequence valid. It is not the empty-response
+        failure sentinel: do not set ``_empty_terminal_sentinel``, which
+        ``_drop_trailing_empty_response_scaffolding`` strips and then rewinds
+        the tool batch. Visible handoff text overwrites ``content`` before
+        append; silent batches keep the provider-safe ``(empty)`` body.
+        """
         return {
             "role": "assistant",
             "content": "(empty)",

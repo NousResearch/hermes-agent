@@ -271,3 +271,52 @@ def test_final_response_fill_invalidates_flush_scan_cursor():
     )
 
     assert agent._db_flush_scan_prefix is None
+
+
+def test_final_response_replaces_empty_placeholder_tail(monkeypatch):
+    """Role-only skip must not keep the end_turn ``(empty)`` closer.
+
+    conversation_loop used to append ``_build_empty_assistant_placeholder()``
+    and return ``clean`` separately. Finalization then saw an assistant tail
+    and skipped append, so persist/resume stored ``(empty)`` instead of the
+    delivered handoff text.
+    """
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [
+        {"role": "user", "content": "please hand over"},
+        {
+            "role": "assistant",
+            "content": "I'll hand this over.",
+            "tool_calls": [
+                {"id": "call-1", "function": {"name": "trigger_handover", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "name": "trigger_handover", "content": "ok"},
+        {"role": "assistant", "content": "(empty)", "finish_reason": "stop"},
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response="I'll hand this over.",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="please hand over",
+        original_user_message="please hand over",
+        _should_review_memory=False,
+        _turn_exit_reason="end_turn_tool_batch",
+    )
+
+    assert result["messages"][-1]["role"] == "assistant"
+    assert result["messages"][-1]["content"] == "I'll hand this over."
+    assert agent.persisted_messages is not None
+    assert agent.persisted_messages[-1]["content"] == "I'll hand this over."
+    assert not any(
+        m.get("role") == "assistant" and m.get("content") == "(empty)"
+        for m in agent.persisted_messages
+    )

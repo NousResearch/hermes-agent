@@ -3141,7 +3141,10 @@ class TestRunConversation:
         assert result["api_calls"] == 1
         assert result["final_response"] == "Let me check with my side and come back to you shortly."
         assert result["messages"][-1]["role"] == "assistant"
-        assert result["messages"][-1]["content"] == "(empty)"
+        assert result["messages"][-1]["content"] == (
+            "Let me check with my side and come back to you shortly."
+        )
+        assert result["messages"][-1].get("_empty_terminal_sentinel") is not True
         assert not any("nudging to continue" in m.lower() for m in status_messages)
 
     def test_end_turn_tool_in_mixed_batch_stops_without_followup_nudge(self, agent):
@@ -3179,7 +3182,10 @@ class TestRunConversation:
         assert result["api_calls"] == 1
         assert result["final_response"] == "I checked the details and will hand this over now."
         assert result["messages"][-1]["role"] == "assistant"
-        assert result["messages"][-1]["content"] == "(empty)"
+        assert result["messages"][-1]["content"] == (
+            "I checked the details and will hand this over now."
+        )
+        assert result["messages"][-1].get("_empty_terminal_sentinel") is not True
         assert not any("nudging to continue" in m.lower() for m in status_messages)
 
     def test_mixed_batch_with_end_turn_suppresses_empty_response_nudge(self, agent):
@@ -3250,6 +3256,113 @@ class TestRunConversation:
             result = agent.run_conversation("search for something")
 
         assert any("nudging to continue" in m.lower() for m in status_messages)
+
+    def test_empty_assistant_placeholder_is_persistable_closer(self, agent):
+        """The end_turn closer must not use the failure sentinel flag.
+
+        ``_empty_terminal_sentinel`` is stripped before persist and then
+        rewinds the tool batch. The helper has to survive that drop so a
+        silent handover stays ``tool → assistant`` on resume.
+        """
+        closer = agent._build_empty_assistant_placeholder()
+        assert closer["role"] == "assistant"
+        assert closer["content"] == "(empty)"
+        assert closer.get("_empty_terminal_sentinel") is not True
+
+        replay = [
+            {"role": "user", "content": "handover"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "type": "function",
+                     "function": {"name": "trigger_handover", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": '{"ok": true}'},
+            dict(closer),
+        ]
+        agent._drop_trailing_empty_response_scaffolding(replay)
+        assert any(m.get("role") == "tool" for m in replay)
+        assert replay[-1]["content"] == "(empty)"
+
+    def test_end_turn_visible_handoff_persists_clean_text(self, agent):
+        """Visible handoff text must be the durable closer, not ``(empty)``."""
+        self._setup_agent(agent)
+        handoff = "Let me check with my side and come back to you shortly."
+        tc = _mock_tool_call(name="trigger_handover", arguments="{}", call_id="c1")
+        resp1 = _mock_response(
+            content=handoff,
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+        )
+        agent.client.chat.completions.create.return_value = resp1
+
+        persisted = []
+
+        def _capture_persist(messages, conversation_history):
+            persisted.append([dict(m) for m in messages])
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"ok": true}'),
+            patch("tools.registry.registry.is_end_turn", return_value=True),
+            patch.object(agent, "_persist_session", side_effect=_capture_persist),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("please hand this over")
+
+        assert result["final_response"] == handoff
+        assert result["turn_exit_reason"] == "end_turn_tool_batch"
+        assert persisted, "end_turn turn must persist a transcript"
+        closer = persisted[-1][-1]
+        assert closer["role"] == "assistant"
+        assert closer["content"] == handoff
+        assert closer.get("_empty_terminal_sentinel") is not True
+
+        replay = [dict(m) for m in persisted[-1]]
+        agent._drop_trailing_empty_response_scaffolding(replay)
+        assert replay[-1]["content"] == handoff
+        assert any(m.get("role") == "tool" for m in replay)
+
+    def test_silent_end_turn_batch_keeps_persistable_closer(self, agent):
+        """Silent end_turn batches keep a persistable closer through replay drop."""
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="trigger_handover", arguments="{}", call_id="c1")
+        resp1 = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+        )
+        agent.client.chat.completions.create.return_value = resp1
+
+        persisted = []
+
+        def _capture_persist(messages, conversation_history):
+            persisted.append([dict(m) for m in messages])
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"ok": true}'),
+            patch("tools.registry.registry.is_end_turn", return_value=True),
+            patch.object(agent, "_persist_session", side_effect=_capture_persist),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("handover")
+
+        assert result["final_response"] == ""
+        assert result["turn_exit_reason"] == "end_turn_tool_batch"
+        assert persisted, "silent end_turn turn must persist a transcript"
+        closer = persisted[-1][-1]
+        assert closer["role"] == "assistant"
+        assert closer["content"] == "(empty)"
+        assert closer.get("_empty_terminal_sentinel") is not True
+        assert any(m.get("role") == "tool" for m in persisted[-1])
+
+        replay = [dict(m) for m in persisted[-1]]
+        agent._drop_trailing_empty_response_scaffolding(replay)
+        assert any(m.get("role") == "tool" for m in replay)
+        assert replay[-1]["content"] == "(empty)"
 
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)

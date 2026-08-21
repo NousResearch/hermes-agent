@@ -143,8 +143,14 @@ def test_manual_focus_topic_redacted_before_summary_prompt():
         )
 
     assert result is not None
-    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    # Cache-aware assembly: the instruction (with the focus topic) is the
+    # FINAL message; the replayed region precedes it as real messages.
+    messages = mock_call.call_args.kwargs["messages"]
+    assert messages[-1]["role"] == "user"
+    prompt = messages[-1]["content"]
     _assert_clean(prompt)
+    # The region is replayed structurally, not flattened into the prompt.
+    assert messages[0]["content"] == "Summarize safely"
 
 
 def test_auto_focus_topic_redacted():
@@ -178,7 +184,7 @@ def test_previous_summary_redacted_before_iterative_prompt_reentry():
         )
 
     assert result is not None
-    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    prompt = mock_call.call_args.kwargs["messages"][-1]["content"]
     assert "PREVIOUS SUMMARY:" in prompt
     _assert_clean(prompt)
     # After generation, _previous_summary holds the new (clean) LLM output —
@@ -218,6 +224,6 @@ def test_resumed_handoff_summary_redacted_before_iterative_prompt():
     ) as mock_call:
         c.compress(messages)
 
-    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    prompt = mock_call.call_args.kwargs["messages"][-1]["content"]
     assert "PREVIOUS SUMMARY:" in prompt
     _assert_clean(prompt)

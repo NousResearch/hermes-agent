@@ -121,7 +121,7 @@ class TestSummaryBudgetEnvelope:
         assert out is not None
         assert "max_tokens" not in captured
         # The budget still lands as prompt guidance, within the envelope.
-        prompt = captured["messages"][0]["content"]
+        prompt = captured["messages"][-1]["content"]
         import re
         m = re.search(r"Target ~(\d+) tokens", prompt)
         assert m, "prompt-level token target guidance missing"

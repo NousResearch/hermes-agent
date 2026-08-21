@@ -177,13 +177,23 @@ def test_resume_handoff_after_default_protected_head_decays_initial_turns():
     with patch("agent.context_compressor.call_llm", return_value=_response("fresh summary")) as mock_call:
         result = compressor.compress(_messages_with_default_handoff(old_summary))
 
-    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    prompt = mock_call.call_args.kwargs["messages"][-1]["content"]
     assert "PREVIOUS SUMMARY:" in prompt
     assert prompt.count(old_summary) == 1
-    assert "original task before first compaction" in prompt
-    assert "original answer before first compaction" in prompt
-    assert "original follow-up before first compaction" in prompt
-    assert f"[ASSISTANT]: {SUMMARY_PREFIX}" not in prompt
+    # Cache-aware assembly: the decayed head + region are replayed as REAL
+    # messages ahead of the instruction, not flattened into the prompt.
+    replayed = "\n".join(
+        str(m.get("content") or "")
+        for m in mock_call.call_args.kwargs["messages"][:-1]
+        if m.get("role") != "system"
+    )
+    assert "original task before first compaction" in replayed
+    assert "original answer before first compaction" in replayed
+    assert "original follow-up before first compaction" in replayed
+    # The handoff rides only the instruction's PREVIOUS SUMMARY block, and no
+    # flattened [ROLE]: labels survive in the replay.
+    assert f"[ASSISTANT]: {SUMMARY_PREFIX}" not in replayed
+    assert "[ASSISTANT]:" not in replayed
     # Grounding (761a0b124e) may prepend a deterministic task-snapshot
     # section — pin the contract, not the exact stored string.
     stored_summary = compressor._previous_summary or ""

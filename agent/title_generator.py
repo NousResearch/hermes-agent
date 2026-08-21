@@ -410,6 +410,15 @@ def generate_title(
             timeout=timeout,
             main_runtime=main_runtime,
             extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
+            # Thinking OFF, enforced for every thinking-capable model (DeepSeek
+            # V4 family, Kimi, Qwen, OpenRouter reasoning tiers, Anthropic
+            # Messages, ...). A titler must not spend its 64-token budget on
+            # reasoning_content: the JSON-schema response would come back
+            # truncated or empty and the session stays named by the instant
+            # derived title. Maps through the same per-provider reasoning
+            # hooks as the main request (e.g. the DeepSeek profile emits
+            # extra_body.thinking={"type": "disabled"} for deepseek-v4-*).
+            reasoning_config={"enabled": False},
         )
         content = response.choices[0].message.content or ""
         title = _clean_title(_extract_title_text(content))

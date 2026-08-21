@@ -54,7 +54,7 @@ def test_memory_context_injected_into_initial_summary_prompt_with_focus():
     prompts = []
 
     def mock_call_llm(**kwargs):
-        prompts.append(kwargs["messages"][0]["content"])
+        prompts.append(kwargs["messages"][-1]["content"])
         return _summary_response()
 
     with patch("agent.context_compressor.call_llm", mock_call_llm):
@@ -80,7 +80,7 @@ def test_memory_context_injected_into_iterative_summary_prompt():
     prompts = []
 
     def mock_call_llm(**kwargs):
-        prompts.append(kwargs["messages"][0]["content"])
+        prompts.append(kwargs["messages"][-1]["content"])
         return _summary_response("## Goal\nMigration updated.")
 
     with patch("agent.context_compressor.call_llm", mock_call_llm):
@@ -107,7 +107,7 @@ def test_memory_context_is_strictly_redacted_before_summary_llm(monkeypatch):
     prompts = []
 
     def mock_call_llm(**kwargs):
-        prompts.append(kwargs["messages"][0]["content"])
+        prompts.append(kwargs["messages"][-1]["content"])
         return _summary_response()
 
     monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
@@ -155,7 +155,7 @@ def test_whitespace_memory_context_is_not_injected():
     prompts = []
 
     def mock_call_llm(**kwargs):
-        prompts.append(kwargs["messages"][0]["content"])
+        prompts.append(kwargs["messages"][-1]["content"])
         return _summary_response()
 
     with patch("agent.context_compressor.call_llm", mock_call_llm):

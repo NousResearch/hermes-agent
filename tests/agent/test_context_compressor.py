@@ -2911,7 +2911,7 @@ class TestSummaryPromptBounding:
         with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
             summary = c._generate_summary(messages)
 
-        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        prompt = mock_call.call_args.kwargs["messages"][-1]["content"]
         assert summary.startswith(SUMMARY_PREFIX)
         # previous summary block + new-turns block each capped, plus the
         # fixed template: well under 3x the cap (unbounded would be ~800K).

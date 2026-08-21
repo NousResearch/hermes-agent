@@ -1386,6 +1386,7 @@ def _supported_compression_kwargs(
     focus_topic: Optional[str],
     force: bool,
     memory_context: str,
+    tools: Optional[list] = None,
 ) -> dict:
     """Return only compression kwargs accepted by an engine callable.
 
@@ -1401,6 +1402,11 @@ def _supported_compression_kwargs(
     }
     if memory_context:
         candidates["memory_context"] = memory_context
+    if tools:
+        # The request's tool schemas, replayed ahead of the summarizer prefix
+        # so the auxiliary compression call is a genuine prefix of the last
+        # routed request (cache-aware compaction).
+        candidates["tools"] = tools
     try:
         parameters = inspect.signature(compress_fn).parameters
     except (TypeError, ValueError):
@@ -2944,12 +2950,25 @@ def compress_context(
                 pass
 
         compress_fn = agent.context_compressor.compress
+        # The live tool schemas ride along so the summarizer call replays the
+        # request's own prefix (cache-aware compaction). agent.tools is the
+        # exact list sent on the last routed request; a copy is taken inside
+        # the compressor so a later toolset swap cannot mutate the replayed
+        # schemas mid-call.
+        _compress_tools = None
+        try:
+            _agent_tools = getattr(agent, "tools", None)
+            if _agent_tools:
+                _compress_tools = list(_agent_tools)
+        except Exception:
+            _compress_tools = None
         compress_kwargs = _supported_compression_kwargs(
             compress_fn,
             current_tokens=approx_tokens,
             focus_topic=focus_topic,
             force=force,
             memory_context=memory_context,
+            tools=_compress_tools,
         )
         if memory_context.strip() and "memory_context" not in compress_kwargs:
             engine_name = getattr(

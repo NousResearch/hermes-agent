@@ -46,6 +46,35 @@ class TestGenerateTitle:
         assert captured_kwargs["task"] == "title_generation"
         assert captured_kwargs["timeout"] is None
 
+    def test_forces_thinking_off(self):
+        """Title calls must disable thinking for every thinking-capable model.
+
+        A titler must not spend its 64-token budget on reasoning_content: the
+        JSON-schema title would come back truncated or empty. reasoning_config
+        maps through the same per-provider hooks as the main request (DeepSeek
+        profile → extra_body.thinking={"type": "disabled"} for deepseek-v4-*;
+        Anthropic adapters → native thinking off; generic wires →
+        extra_body.reasoning={"enabled": false}).
+        """
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Thinking-Off Title"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title("help me fix this import") == "Thinking-Off Title"
+
+        assert captured_kwargs["reasoning_config"] == {"enabled": False}
+        # Minimal input: the user message alone (already the contract), plus a
+        # strict output cap and the caller-owned timeout.
+        assert len(captured_kwargs["messages"]) == 2
+        assert captured_kwargs["messages"][1]["role"] == "user"
+        assert captured_kwargs["max_tokens"] == 64
+
 
 
     def test_strips_think_blocks(self):

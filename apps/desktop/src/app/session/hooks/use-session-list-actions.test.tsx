@@ -302,6 +302,28 @@ describe('refreshSessions batches slices into one request', () => {
     expect($messagingSessions.get().map(s => s.id)).toEqual(['m1'])
   })
 
+  it('routes a registered plugin source into messaging instead of recents', async () => {
+    const messaging = [
+      row('raft-run', { source: 'raft', title: 'Raft chat' }),
+      row('custom-run', { source: 'custom_platform', title: 'Custom chat' })
+    ]
+
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }, [], messaging))
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect(listSidebarSessions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recentsExclude: expect.arrayContaining(['raft'])
+      })
+    )
+    expect($messagingSessions.get().map(s => s.id)).toEqual(['raft-run'])
+  })
+
   it('forwards the active profile scope + section limits to the batched call', async () => {
     listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'work' }))

@@ -5551,6 +5551,59 @@ def _get_usage(agent) -> dict:
             usage["context_max"] = ctx_max
             usage["context_percent"] = max(0, min(100, round(last_prompt / ctx_max * 100)))
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
+    # Resolve context_max from the model's configured context_length.
+    # This covers three cases the compressor block above misses:
+    #   1. Compressor absent (resumed session) — context_max was never set.
+    #   2. No turn has run yet — last_prompt_tokens is 0, so the block above
+    #      intentionally omits context_max. We fill in only the denominator
+    #      so the bar shows "0/262K" instead of the cumulative fallback.
+    #   3. Model switched mid-session but no turn has run on the new model yet
+    #      — the compressor still holds the OLD model's context_length. We
+    #      override with the NEW model's resolved context_length so the bar
+    #      doesn't show impossible readings like "167K/131K 100%".
+    #
+    # We NEVER override a context_max the compressor reported for the CURRENT
+    # model — a legitimate reading (e.g. 120K for a 120K-window model) must
+    # not be replaced by the resolver's generic default for an unrelated
+    # model string. Override only when there is no context_max yet, or when
+    # the compressor is holding the previous model's value after a switch.
+    #
+    # Cache the resolved value on the agent so the per-tick polling path
+    # doesn't re-resolve (and potentially block on an unreachable endpoint)
+    # every few seconds. Re-resolve only when the model changes.
+    try:
+        from agent.context_breakdown import _resolve_model_context_length
+
+        _cache_key = getattr(agent, "model", "") or ""
+        _cached = getattr(agent, "_cached_context_max", None)
+        _cached_key = getattr(agent, "_cached_context_max_key", None)
+        if _cached is not None and _cached_key == _cache_key and _cached > 0:
+            _resolved_max = _cached
+        else:
+            _resolved_max = _resolve_model_context_length(agent)
+            if _resolved_max:
+                agent._cached_context_max = _resolved_max
+                agent._cached_context_max_key = _cache_key
+
+        if _resolved_max:
+            _existing_max = usage.get("context_max", 0) or 0
+            _compressor_model = (
+                str(getattr(comp, "model", "") or "") if comp else ""
+            )
+            _agent_model = str(getattr(agent, "model", "") or "")
+            # Override only when the compressor is absent, hasn't reported a
+            # context_max, or is holding the PREVIOUS model's value after a
+            # switch. A current-model compressor value is authoritative.
+            if not _existing_max or (
+                _compressor_model and _compressor_model != _agent_model
+            ):
+                usage["context_max"] = _resolved_max
+                # Do NOT recalculate context_percent here: context_used may
+                # be stale from the previous model. Omit percent until a real
+                # measurement on the current model arrives via the compressor.
+                usage.pop("context_percent", None)
+    except Exception:
+        pass
     # Live count of background/async subagents still running (delegate_task
     # batches + background single delegations). Mirrors the classic CLI status
     # bar's ⛓ indicator; sourced from the same async_delegation registry.

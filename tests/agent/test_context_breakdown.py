@@ -126,3 +126,43 @@ def test_details_lines_caps_listing():
     assert any("… and 5 more" in line for line in lines)
 
 
+# ── Fallback when compressor is absent or has context_length=0 ──────────────
+
+
+def test_breakdown_falls_back_when_compressor_absent():
+    """A resumed session has no context_compressor; the breakdown should
+    still report a real context_max resolved from the model config."""
+    agent, parts = _make_agent()
+    agent.context_compressor = None  # simulate resumed session
+
+    with (
+        patch("agent.system_prompt.build_system_prompt_parts", return_value=parts),
+        patch(
+            "agent.context_breakdown._resolve_model_context_length",
+            return_value=262_144,
+        ),
+    ):
+        data = compute_session_context_breakdown(agent, [])
+
+    assert data["context_max"] == 262_144
+    assert data["context_percent"] >= 0
+
+
+def test_breakdown_falls_back_when_compressor_context_length_is_zero():
+    """A freshly-built compressor may report context_length=0 before its
+    first lazy resolution; the breakdown should fall back to the model
+    config rather than showing 0/0."""
+    agent, parts = _make_agent(context_length=0)
+
+    with (
+        patch("agent.system_prompt.build_system_prompt_parts", return_value=parts),
+        patch(
+            "agent.context_breakdown._resolve_model_context_length",
+            return_value=131_072,
+        ),
+    ):
+        data = compute_session_context_breakdown(agent, [])
+
+    assert data["context_max"] == 131_072
+
+

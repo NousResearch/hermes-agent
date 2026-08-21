@@ -17875,6 +17875,46 @@ def test_get_usage_reports_real_current_occupancy():
     assert usage["context_percent"] == 50
 
 
+def test_get_usage_overrides_stale_context_max_after_model_switch():
+    """After a model switch with no turn run yet, the compressor still holds
+    the PREVIOUS model's context_length. The resolver should override it with
+    the current model's resolved context_length, and NOT fabricate a percent
+    from the previous model's context_used."""
+    agent = types.SimpleNamespace(
+        model="new-model-1m",
+        session_total_tokens=1_900_000,
+        context_compressor=types.SimpleNamespace(
+            model="old-model-131k",
+            last_prompt_tokens=167_000,
+            context_length=131_072,
+            compression_count=2,
+        ),
+    )
+    usage = server._get_usage(agent)
+    assert usage["context_used"] == 167_000
+    assert usage["context_max"] != 131_072  # overridden to the new model's window
+    assert "context_percent" not in usage  # stale percent dropped
+
+
+def test_get_usage_keeps_current_model_compressor_context_max():
+    """A legitimate compressor context_max for the CURRENT model is
+    authoritative and must not be replaced by the resolver's generic default
+    for an unrelated model string."""
+    agent = types.SimpleNamespace(
+        model="120k-model",
+        session_total_tokens=1_900_000,
+        context_compressor=types.SimpleNamespace(
+            model="120k-model",
+            last_prompt_tokens=60_000,
+            context_length=120_000,
+            compression_count=2,
+        ),
+    )
+    usage = server._get_usage(agent)
+    assert usage["context_max"] == 120_000
+    assert usage["context_percent"] == 50
+
+
 def test_get_usage_clamps_post_compression_sentinel():
     """Right after a compression, last_prompt_tokens is the -1 sentinel
     (conversation_compression sets it until the next real usage report). It is

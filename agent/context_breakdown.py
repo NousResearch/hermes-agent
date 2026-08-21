@@ -34,6 +34,31 @@ def _chars_to_tokens(text: str) -> int:
     return (len(text) + 3) // 4
 
 
+def _resolve_model_context_length(agent: Any) -> int:
+    """Resolve the model's context window when the context compressor is
+    absent or hasn't resolved yet.
+
+    Uses the same ``get_model_context_length`` resolver the compressor itself
+    uses on first access, reading the agent's model/provider/base_url and the
+    explicit ``_config_context_length`` / ``_custom_providers`` attributes that
+    ``agent_init`` sets. Returns 0 if resolution fails — the caller treats 0
+    as "unknown" and omits the gauge rather than fabricating a number.
+    """
+    try:
+        from agent.model_metadata import get_model_context_length
+
+        return get_model_context_length(
+            model=str(getattr(agent, "model", "") or ""),
+            base_url=str(getattr(agent, "base_url", "") or ""),
+            api_key=str(getattr(agent, "api_key", "") or ""),
+            config_context_length=getattr(agent, "_config_context_length", None),
+            provider=str(getattr(agent, "provider", "") or ""),
+            custom_providers=getattr(agent, "_custom_providers", None),
+        )
+    except Exception:
+        return 0
+
+
 def _json_tokens(value: Any) -> int:
     if not value:
         return 0
@@ -129,6 +154,12 @@ def compute_session_context_breakdown(
 
     comp = getattr(agent, "context_compressor", None)
     context_max = int(getattr(comp, "context_length", 0) or 0) if comp else 0
+    # Fall back to the model's configured context_length when the compressor
+    # is absent (resumed session) or hasn't resolved yet. Without this, a
+    # resumed or freshly-opened session reports context_max=0 and the desktop
+    # panel shows "0/0 tokens, No context data yet" until a turn runs.
+    if not context_max:
+        context_max = _resolve_model_context_length(agent)
     measured_used = int(getattr(comp, "last_prompt_tokens", 0) or 0) if comp else 0
     context_used = measured_used if measured_used > 0 else estimated_total
     context_percent = (

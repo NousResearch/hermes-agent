@@ -6,7 +6,6 @@ import { HermesGateway, setApiRequestConnection } from '@/hermes'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
-import { reconcileBusyStatesOnReconnect } from '@/store/session-states'
 
 // ── Multi-profile gateway routing ──────────────────────────────────────────
 // Concurrent sessions across profiles need concurrent sockets: the renderer's
@@ -388,8 +387,12 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
     // armed forever (#53902/#73082 stale-flag half). Scoped: only runtimes
     // whose events arrived on this connection are reconciled; live work on
     // other sockets is untouched, and a genuinely live turn here re-asserts
-    // busy on its next event.
-    reconcileBusyStatesOnReconnect(entry.scope)
+    // busy on its next event. Lazy import: a static edge here closes a module
+    // cycle (session-states → … → gateway) that leaves nanostores atoms
+    // undefined at init for whichever module loads second.
+    void import('@/store/session-states').then(({ reconcileBusyStatesOnReconnect }) =>
+      reconcileBusyStatesOnReconnect(entry.scope)
+    )
   } catch (error) {
     // The registry no longer knows this connection (removed while we were
     // backing off), or Electron's deletion guard reports the profile itself

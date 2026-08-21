@@ -283,6 +283,25 @@ class TestBuildSkillsSystemPrompt:
 
 
 
+    def test_skills_are_broadly_discoverable_without_automatic_side_work(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "partially relevant to the workflow" in result
+        assert "Err on the side of loading supporting skills" in result
+        assert "Do not create or patch a skill as side work" in result
+        assert "Do not load skills merely because they are partially relevant" not in result
+        assert "none are relevant to the task" in result
+        assert "skill_manage(action='patch')" not in result
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"
@@ -1056,5 +1075,3 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-

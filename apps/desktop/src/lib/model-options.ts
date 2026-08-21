@@ -3,10 +3,12 @@ import type { ModelOptionProvider } from '@/types/hermes'
 
 /**
  * True only when a persisted **manual** composer pick has been removed from the
- * catalog (its provider still ships models, but no longer this one) — so a new
- * chat would keep 404'ing the dead model. Deliberately conservative to never
- * clobber a still-valid pick: an unknown/absent provider, an empty model list
- * (re-auth / unconfigured), or a not-yet-loaded catalog all return false.
+ * catalog — either the model was dropped from a still-present provider, or the
+ * provider itself was renamed/removed in config (so the cached slug no longer
+ * matches any catalog entry). A deauthed/re-auth provider still appears with
+ * models: [], so that case correctly returns false. An empty model list,
+ * a not-yet-loaded catalog (undefined/empty providers), or no pick at all
+ * also return false to never clobber a still-valid or ambiguous pick.
  */
 export function manualPickRemoved(
   providers: ModelOptionProvider[] | undefined,
@@ -20,7 +22,14 @@ export function manualPickRemoved(
   const row = providers.find(p => p.slug === provider || p.name === provider)
 
   if (!row) {
-    return false
+    // The provider itself is no longer in the catalog — it was renamed
+    // or removed in config (e.g. a native provider replaced by a custom
+    // provider entry with a different slug). A deauthed / re-auth provider
+    // still appears in the catalog with models: [], so this branch only
+    // fires on genuine removal/rename, not temporary unavailability.
+    // Failing to invalidate here leaves the stale pick overriding the
+    // config default (see #81922).
+    return true
   }
 
   const models = row.models ?? []

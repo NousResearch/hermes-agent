@@ -150,8 +150,12 @@ describe('manualPickRemoved', () => {
     expect(manualPickRemoved(providers, 'OpenRouter', 'gone')).toBe(true)
   })
 
-  it('never clobbers when the provider is absent (ambiguous / deauth)', () => {
-    expect(manualPickRemoved(providers, 'anthropic', 'claude-sonnet-4.6')).toBe(false)
+  it('invalidates when the provider was removed/renamed in config', () => {
+    // A provider present in the catalog with models: [] is a deauth/re-auth
+    // case (covered below). A provider entirely absent from a loaded catalog
+    // was renamed or removed — the cached slug is stale (see #81922).
+    expect(manualPickRemoved(providers, 'anthropic', 'claude-sonnet-4.6')).toBe(true)
+    expect(manualPickRemoved(providers, 'nvidia', 'z-ai/glm-5.2')).toBe(true)
   })
 
   it('never clobbers when the provider has an empty model list (re-auth)', () => {

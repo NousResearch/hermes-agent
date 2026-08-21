@@ -562,7 +562,8 @@ export function useMessageStream({
       text: string,
       responsePreviewed?: boolean,
       failure?: { error: string; partial: boolean },
-      occurredAt = Date.now() / 1000
+      occurredAt = Date.now() / 1000,
+      interrupted = false
     ) => {
       let shouldHydrate = false
 
@@ -769,12 +770,16 @@ export function useMessageStream({
         void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId)
       }
 
-      dispatchNativeNotification({
-        body: text.slice(0, 140) || translateNow('notifications.native.turnDoneBody'),
-        kind: 'turnDone',
-        sessionId,
-        title: translateNow('notifications.native.turnDoneTitle')
-      })
+      if (!interrupted) {
+        // A cancelled turn is not a "turn done" — suppress the fanfare
+        // notification so the user is not told work finished when it stopped.
+        dispatchNativeNotification({
+          body: text.slice(0, 140) || translateNow('notifications.native.turnDoneBody'),
+          kind: 'turnDone',
+          sessionId,
+          title: translateNow('notifications.native.turnDoneTitle')
+        })
+      }
     },
     [hydrateFromStoredSession, scheduleSessionsRefresh, updateSessionState]
   )

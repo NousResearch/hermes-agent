@@ -174,6 +174,7 @@ from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock
 )
 from agent.process_bootstrap import _get_proxy_from_env  # noqa: F401
 from agent.message_sanitization import (  # noqa: F401
+    INTERRUPTED_TOOL_TAIL_KEY,
     _SURROGATE_RE,
     _sanitize_surrogates,
     _sanitize_structure_surrogates,
@@ -2212,6 +2213,17 @@ class AIAgent:
                 if _is_ephemeral_scaffolding(msg):
                     continue
                 if msg.get(_DB_PERSISTED_MARKER):
+                    # Already-durable tool rows marked interrupted at finalize
+                    # time still need the durable provenance column stamped —
+                    # they were batch-flushed before the marker existed.
+                    if (
+                        msg.get("role") == "tool"
+                        and msg.get(INTERRUPTED_TOOL_TAIL_KEY) is True
+                    ):
+                        self._session_db.mark_tool_tail_interrupted(
+                            self.session_id,
+                            msg.get("tool_call_id"),
+                        )
                     continue
                 # Already-durable messages: either carried over from the loaded
                 # history copy, or seeded by a caller. Stamp them so future

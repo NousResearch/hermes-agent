@@ -291,9 +291,9 @@ Configure per-platform overrides in `~/.hermes/gateway.json`:
 }
 ```
 
-## Per-Channel Model & System Prompt Overrides
+## Per-Channel Model, System Prompt & Toolset Overrides
 
-Different channels can run different models and personas from a **single gateway** — e.g. a cheap fast model in `#daily` and a frontier model with a specialist prompt in `#dev`. Configure `channel_overrides` under the platform in `~/.hermes/gateway-config.yaml`:
+Different channels can run different models, personas, and **tool surfaces** from a **single gateway** — e.g. a cheap fast model in `#daily`, a specialist prompt in `#dev`, or a private BlueBubbles household desk with full tools while group capture rooms stay locked down. Configure `channel_overrides` under the platform in `config.yaml`:
 
 ```yaml
 platforms:
@@ -306,14 +306,26 @@ platforms:
         system_prompt: "You are the #dev channel code-review specialist."
       "987654321098765432":
         model: openai/gpt-5-mini
+  bluebubbles:
+    enabled: true
+    channel_overrides:
+      "any;+;DESK-CHAT-GUID":
+        system_prompt: "You are the private household desk. Answer questions."
+        # Replaces platform_toolsets.bluebubbles for THIS chat only
+        enabled_toolsets: [terminal, file, web, skills, todo, kanban]
+      "any;+;CAPTURE-GROUP-GUID":
+        system_prompt: "Observe and route only. End unmentioned turns with NO_REPLY."
+        enabled_toolsets: [skills, todo, kanban, no_mcp]
 ```
 
 Details:
 
-- All three keys are optional — set only `model`, only `system_prompt`, or any combination. Unset fields fall back to the global defaults.
+- Keys are optional — set only `model`, only `system_prompt`, only `enabled_toolsets`, or any combination. Unset fields fall back to global / platform defaults.
 - Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
+- **`enabled_toolsets`**: when set to a non-empty list, **replaces** `platform_toolsets.<platform>` for that channel only (same validation path as webhook route toolsets). Empty/absent = platform defaults. Adapter-level `toolsets_for_source` (webhooks) still wins over channel overrides when present.
+- Toolset changes participate in the agent cache signature (rebuild on mismatch; no silent mid-turn tool schema swap).
 
 ## Security
 

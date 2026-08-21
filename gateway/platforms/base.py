@@ -7234,6 +7234,10 @@ class BasePlatformAdapter(ABC):
         ``terminal`` without widening every webhook route's default-safe
         toolset). See ``platforms.webhook.extra.routes.<name>.toolsets`` and
         the ``toolsets`` key in ``webhook_subscriptions.json``.
+
+        Config ``channel_overrides.<id>.enabled_toolsets`` is resolved by the
+        gateway after this hook returns None, so messaging platforms can pin
+        per-chat tool surfaces without a custom adapter method.
         """
         return None
     

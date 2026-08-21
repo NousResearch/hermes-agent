@@ -22403,13 +22403,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> list:
         """Resolve enabled toolsets for an agent run, honoring per-source overrides.
 
-        Asks the receiving adapter for a ``toolsets_for_source()`` override
-        (e.g. per-route webhook toolsets). When present, the override list is
-        validated through the SAME ``_get_platform_tools`` path as normal
-        platform config — by substituting it as the platform's toolset list —
-        so unknown names and platform-restricted toolsets are dropped rather
-        than trusted. When absent, falls back to standard
-        ``platform_toolsets.<platform>`` resolution.
+        Resolution order (first hit wins):
+
+        1. Receiving adapter ``toolsets_for_source()`` (e.g. per-route webhook
+           toolsets).
+        2. ``platforms.<platform>.channel_overrides[<chat>].enabled_toolsets``
+           when set to a non-empty list (BlueBubbles desk chats, Discord
+           channels, Telegram topics, etc.).
+        3. Standard ``platform_toolsets.<platform>`` resolution.
+
+        Override lists are validated through the SAME ``_get_platform_tools``
+        path as normal platform config — by substituting them as the
+        platform's toolset list — so unknown names and platform-restricted
+        toolsets are dropped rather than trusted.
         """
         from hermes_cli.tools_config import _get_platform_tools
 
@@ -22421,12 +22427,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             override = None
 
+        if not (override and isinstance(override, list)):
+            # Channel-level toolset pin (config channel_overrides).
+            try:
+                gw_config = getattr(self, "config", None)
+                platform = getattr(source, "platform", None)
+                chat_id = getattr(source, "chat_id", None)
+                if gw_config is not None and platform is not None and chat_id is not None:
+                    ch = _get_channel_override(
+                        gw_config,
+                        platform,
+                        str(chat_id),
+                        thread_id=(
+                            str(source.thread_id)
+                            if getattr(source, "thread_id", None) is not None
+                            else None
+                        ),
+                        parent_id=(
+                            str(source.parent_id)
+                            if getattr(source, "parent_id", None) is not None
+                            else None
+                        ),
+                    )
+                    if ch is not None and getattr(ch, "enabled_toolsets", None):
+                        override = list(ch.enabled_toolsets)
+            except Exception:
+                pass
+
         if override and isinstance(override, list):
-            cfg = dict(user_config)
-            pts = dict(cfg.get("platform_toolsets") or {})
-            pts[platform_key] = [str(t) for t in override]
-            cfg["platform_toolsets"] = pts
-            return sorted(_get_platform_tools(cfg, platform_key))
+            cleaned = [str(t).strip() for t in override if str(t).strip()]
+            if cleaned:
+                cfg = dict(user_config)
+                pts = dict(cfg.get("platform_toolsets") or {})
+                pts[platform_key] = cleaned
+                cfg["platform_toolsets"] = pts
+                return sorted(_get_platform_tools(cfg, platform_key))
 
         return sorted(_get_platform_tools(user_config, platform_key))
 

@@ -588,15 +588,21 @@ class SessionResetPolicy:
 @dataclass
 class ChannelOverride:
     """
-    Per-channel override for model, provider, and system prompt.
+    Per-channel override for model, provider, system prompt, and toolsets.
 
     Used in config under platforms.<name>.channel_overrides[channel_id].
-    Enables different channels (e.g. Discord #daily vs #dev) to use different
-    models and personas without running separate gateway instances.
+    Enables different channels (e.g. Discord #daily vs #dev, or a private
+    BlueBubbles desk chat vs group capture rooms) to use different models,
+    personas, and tool surfaces without running separate gateway instances.
     """
     model: Optional[str] = None
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
+    # When set to a non-empty list, REPLACES platform_toolsets.<platform> for
+    # this channel only (same validation path as webhook route toolsets).
+    # None / absent = use platform defaults. Empty list is treated as absent
+    # (no override) so a mistaken empty key does not strip all tools.
+    enabled_toolsets: Optional[List[str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
@@ -606,16 +612,28 @@ class ChannelOverride:
             out["provider"] = self.provider
         if self.system_prompt is not None:
             out["system_prompt"] = self.system_prompt
+        if self.enabled_toolsets is not None:
+            out["enabled_toolsets"] = list(self.enabled_toolsets)
         return out
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ChannelOverride":
         if not data:
             return cls()
+        raw_tools = data.get("enabled_toolsets")
+        enabled_toolsets = None
+        if isinstance(raw_tools, list):
+            cleaned = [str(t).strip() for t in raw_tools if str(t).strip()]
+            enabled_toolsets = cleaned if cleaned else None
+        elif isinstance(raw_tools, str) and raw_tools.strip():
+            # Allow comma-separated string form for env/YAML convenience.
+            cleaned = [p.strip() for p in raw_tools.split(",") if p.strip()]
+            enabled_toolsets = cleaned if cleaned else None
         return cls(
             model=data.get("model"),
             provider=data.get("provider"),
             system_prompt=data.get("system_prompt"),
+            enabled_toolsets=enabled_toolsets,
         )
 
 

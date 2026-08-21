@@ -81,8 +81,10 @@ def take_speech_interrupted() -> bool:
     at, _interrupted_at = _interrupted_at, None
     return at is not None and time.monotonic() - at < _INTERRUPT_TTL_S
 
-# Sentence boundary: after .!? followed by whitespace, or a blank line.
-SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|(?:\n\n)")
+# Sentence boundary: after .!? followed by whitespace, a blank line, or
+# after CJK sentence-ending punctuation (。！？…).  CJK punctuation is NOT
+# followed by whitespace, so we use a zero-width lookbehind alternative.
+SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|(?<=[。！？…])|(?:\n\n)")
 _THINK_BLOCK_RE = re.compile(r"<think[\s>].*?</think>", flags=re.DOTALL)
 
 
@@ -106,15 +108,20 @@ class SentenceChunker:
         if "<think" in self.buf and "</think>" not in self.buf:
             return []  # open think tag — the closing tag may arrive next delta
         out: List[str] = []
-        start = 0  # skip boundaries that would leave the head too short
-        while m := SENTENCE_BOUNDARY_RE.search(self.buf, start):
-            head = self.buf[: m.end()]
-            if len(head.strip()) < self.min_len:
-                start = m.end()
-                continue
-            out.append(head)
-            self.buf = self.buf[m.end():]
-            start = 0
+        # Walk boundaries via finditer so zero-width lookbehinds (CJK
+        # punctuation) always advance the search position, avoiding an
+        # infinite loop that the old search(buf, start) approach suffered.
+        cut = True
+        while cut:
+            cut = False
+            for m in SENTENCE_BOUNDARY_RE.finditer(self.buf):
+                head = self.buf[: m.end()]
+                if len(head.strip()) < self.min_len:
+                    continue  # too short: merge into the following sentence
+                out.append(head)
+                self.buf = self.buf[m.end():]
+                cut = True
+                break  # restart finditer on the shortened buffer
         return out
 
     def flush(self) -> List[str]:

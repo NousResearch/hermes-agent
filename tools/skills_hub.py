@@ -118,8 +118,11 @@ class _ResolvedDynamicPath(Path):
     """
 
     # Python <3.12 requires concrete Path subclasses to provide the platform
-    # flavour; newer versions harmlessly retain it.
-    _flavour = getattr(type(Path()), "_flavour")
+    # flavour. Python 3.13 removed ``_flavour`` from concrete Path classes
+    # because ``Path`` itself is subclassable, so only copy it when present.
+    _path_flavour = getattr(type(Path()), "_flavour", None)
+    if _path_flavour is not None:
+        _flavour = _path_flavour
 
 
 # _override lets a test-injected real module attribute (patch.object/monkeypatch

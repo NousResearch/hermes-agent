@@ -2748,9 +2748,7 @@ def list_authenticated_providers(
     # (when current provider is lmstudio) > 127.0.0.1 default.
     # On auth rejection or unreachable server, fall back to the caller-supplied
     # current model so the picker still shows something when offline / mis-keyed.
-    if "lmstudio" not in curated and (
-        os.environ.get("LM_API_KEY") or os.environ.get("LM_BASE_URL") or current_provider.strip().lower() == "lmstudio"
-    ):
+    if "lmstudio" not in curated:
         from hermes_cli.models import fetch_lmstudio_models
         from hermes_cli.auth import AuthError
         is_current_lmstudio = current_provider.strip().lower() == "lmstudio"
@@ -2761,7 +2759,7 @@ def list_authenticated_providers(
         )
         try:
             live = fetch_lmstudio_models(
-                api_key=os.environ.get("LM_API_KEY", ""),
+                api_key=os.environ.get("LM_API_KEY", "") or os.environ.get("LMSTUDIO_API_KEY", ""),
                 base_url=lm_base,
                 timeout=1.5, # Smaller timeout for picker
             )
@@ -2867,6 +2865,12 @@ def list_authenticated_providers(
 
         # Check if any env var is set
         has_creds = any(os.environ.get(ev) for ev in env_vars)
+        # LM Studio is a local keyless endpoint — treat as authenticated if
+        # the native probe succeeded (curated has models) even without API key.
+        # This fixes Telegram /model picker hiding LM Studio when not current.
+        if not has_creds and hermes_id == "lmstudio":
+            if curated.get("lmstudio"):
+                has_creds = True
         if not has_creds:
             try:
                 from hermes_cli.auth import _load_auth_store

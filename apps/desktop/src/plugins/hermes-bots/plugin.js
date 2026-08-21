@@ -3393,7 +3393,10 @@ function petFrameIcon(spriteUrl) {
       new Promise(resolve => {
         petFetchQueue.push(async () => {
           try {
-            const resp = await fetch(spriteUrl, { signal: AbortSignal.timeout(15000) })
+            const resp = await fetch(spriteUrl, {
+              signal: AbortSignal.timeout(15000),
+              headers: { 'User-Agent': 'hermes-agent-petdex' }
+            })
             const blob = await resp.blob()
             // Crop frame 0 during decode — never materialize the full sheet.
             const bitmap = await createImageBitmap(blob, 0, 0, PET_FRAME_W, PET_FRAME_H)

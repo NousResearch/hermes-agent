@@ -47,6 +47,12 @@ function load(fetchImpl) {
   return { context, fetches }
 }
 
+test('regression: pet sprites send the Petdex user agent', async () => {
+  const { context, fetches } = load(async () => ({ blob: async () => new Blob() }))
+  await context.__api.petFrameIcon('https://pets.example/user-agent.webp')
+  assert.equal(fetches[0].opts.headers['User-Agent'], 'hermes-agent-petdex')
+})
+
 test('unit: a failed pet fetch is not stuck in the cache', async () => {
   let n = 0
   const { context, fetches } = load(async () => {

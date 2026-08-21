@@ -744,7 +744,15 @@ class CDPSupervisor:
         targets = resp.get("result", {}).get("targetInfos", [])
         page_target = next((t for t in targets if t.get("type") == "page"), None)
         if page_target is None:
-            created = await self._cdp("Target.createTarget", {"url": "about:blank"})
+            # Create the initial tab in the BACKGROUND so the browser window
+            # is never raised on the user's desktop (Windows focus steal).
+            # See 3xstanbrain 2026-06-03 cdp-windows-focus-steal + 2026-08-02
+            # enforcement pass: every Target.createTarget MUST pass
+            # background: True unless a task explicitly needs foreground.
+            created = await self._cdp(
+                "Target.createTarget",
+                {"url": "about:blank", "background": True},
+            )
             target_id = created["result"]["targetId"]
         else:
             target_id = page_target["targetId"]

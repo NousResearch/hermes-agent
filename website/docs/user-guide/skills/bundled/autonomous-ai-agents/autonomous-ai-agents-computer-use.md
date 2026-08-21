@@ -44,9 +44,8 @@ Hermes drives [cua-driver](https://github.com/trycua/cua) under the hood.
 This wrapper skill teaches the Hermes `computer_use` workflow and action
 vocabulary. Call the actions documented below instead of raw cua-driver MCP
 tools. For driver internals and platform-specific behavior, follow the Cua
-skill installed by `cua-driver skills install`. Hermes autodetection is a
-planned cua-driver follow-up, so currently point Hermes at the resulting
-`~/.cua-driver/skills/cua-driver` directory or symlink it into your skill space.
+skill installed by `cua-driver skills install`. The command links the pack into
+the standard Hermes skill directory at `~/.hermes/skills/cua-driver`.
 
 ## The canonical workflow
 
@@ -388,6 +387,7 @@ These are platform deep dives, not duplicates — when the user reports
 `WINDOWS.md` for the UIA / UWP context that explains why and what to
 do differently.
 
-Hermes autodetection is a planned follow-up in trycua/cua. For now, the command
-installs the pack under `~/.cua-driver/skills/cua-driver`; point Hermes at that
-directory or symlink it into the user's skill space.
+The command installs the pack under `~/.cua-driver/skills/cua-driver` and links
+it into the standard Hermes skill directory at
+`~/.hermes/skills/cua-driver`. Start a new Hermes session after installation so
+it loads the linked guidance.

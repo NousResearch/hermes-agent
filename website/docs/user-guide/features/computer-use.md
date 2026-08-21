@@ -72,12 +72,11 @@ under your control, so Hermes reports the incompatibility and leaves it
 unchanged.
 
 If you install Cua Driver first, `cua-driver skills install` installs Cua's
-skill pack under `~/.cua-driver/skills/cua-driver`. Hermes autodetection is a
-planned cua-driver follow-up, so currently point Hermes at that directory or
-symlink it into your skill space. You can also register raw Cua MCP tools as a
-custom MCP server, but that is an alternative for users who need the low-level
-interface. The built-in toolset provides Hermes actions, configuration,
-approvals, and diagnostics.
+skill pack under `~/.cua-driver/skills/cua-driver` and links it into the
+standard Hermes skill directory at `~/.hermes/skills/cua-driver`. You can also
+register raw Cua MCP tools as a custom MCP server, but that is an alternative
+for users who need the low-level interface. The built-in toolset provides
+Hermes actions, configuration, approvals, and diagnostics.
 
 After installing, regardless of which path you took, grant the
 platform-appropriate prereqs:
@@ -236,11 +235,10 @@ maintains directly:
 cua-driver skills install
 ```
 
-The command installs the pack under `~/.cua-driver/skills/cua-driver`. Hermes
-autodetection is a planned cua-driver follow-up, so currently point Hermes at
-that directory or symlink it into your skill space. The wrapper remains the
-workflow layer and points to Cua's installed skill for driver behavior. The
-pack contains:
+The command installs the pack under `~/.cua-driver/skills/cua-driver` and
+links it into the standard Hermes skill directory at
+`~/.hermes/skills/cua-driver`. The wrapper remains the workflow layer and
+points to Cua's installed skill for driver behavior. The pack contains:
 
 | File | Topic |
 |---|---|
@@ -259,11 +257,9 @@ explains why and what to do differently.
 
 `cua-driver skills status` shows what's installed and which agent
 harnesses it's linked into. Today the autodetect list covers Claude
-Code, Codex, OpenCode, OpenClaw, and Antigravity; **Hermes
-autodetection is planned as a follow-up in `trycua/cua`** — until
-then, run `cua-driver skills install` once and point your harness at
-the resulting `~/.cua-driver/skills/cua-driver` directory (or symlink
-it into your usual skill space).
+Code, Codex, Prime Agent, OpenClaw, OpenCode, Antigravity, and Hermes.
+Run `cua-driver skills install` once, then start a new Hermes session so it
+loads the linked guidance.
 
 ## Quick example
 
@@ -578,9 +574,8 @@ autostart pattern — see
   (macOS no-foreground contract, Windows UIA + Session 0, Linux AT-SPI
   + X11/Wayland, recording, browser pages), run
   `cua-driver skills install` and read `MACOS.md` / `WINDOWS.md` /
-  `LINUX.md` / `RECORDING.md` / `WEB_APPS.md`. Hermes autodetection is a
-  planned follow-up; currently point Hermes at the installed pack directory
-  or symlink it into your skill space.
+  `LINUX.md` / `RECORDING.md` / `WEB_APPS.md`. The command links the pack
+  into the standard Hermes skill directory automatically.
 - **cua.ai/docs** — the cua-driver project's documentation:
   - [What is computer use?](https://cua.ai/docs/explanation/what-is-computer-use) — concept intro
   - [The no-foreground contract](https://cua.ai/docs/explanation/the-no-foreground-contract) — *why* background mode matters

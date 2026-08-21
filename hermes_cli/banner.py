@@ -710,6 +710,48 @@ def _format_update_notice(behind: int) -> str:
     return line
 
 
+def _prompt_toolkit_app_running() -> bool:
+    """True when an interactive prompt_toolkit ``Application`` owns the terminal."""
+    try:
+        from prompt_toolkit.application import get_app_or_none
+        app = get_app_or_none()
+    except Exception:
+        return False
+    return app is not None and getattr(app, "_is_running", False)
+
+
+def _emit_update_notice(console: "Console", markup: str) -> None:
+    r"""Print the update notice so colors survive prompt_toolkit's stdout proxy.
+
+    While the interactive chat loop runs, stdout is prompt_toolkit's
+    ``StdoutProxy``, whose ``Vt100_Output.write()`` replaces every ``\x1b``
+    with ``?`` "for safely writing text". A plain ``console.print()`` from the
+    deferred-notice thread therefore renders as literal ``?[1;33m…`` instead of
+    a colored line. Capture Rich's render and hand it to ``cprint``, which
+    routes through prompt_toolkit's own ANSI parser, when an application is
+    running; otherwise print straight to the console as before.
+    """
+    if not _prompt_toolkit_app_running():
+        console.print(markup)
+        return
+    try:
+        import io
+        from rich.console import Console as _RichConsole
+
+        buf = io.StringIO()
+        _RichConsole(
+            file=buf,
+            force_terminal=True,
+            color_system="truecolor",
+            highlight=False,
+            width=shutil.get_terminal_size((80, 24)).columns,
+        ).print(markup)
+        for line in buf.getvalue().rstrip("\n").split("\n"):
+            cprint(line)
+    except Exception:
+        console.print(markup)
+
+
 _deferred_update_notice_started = False
 
 
@@ -731,7 +773,7 @@ def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
             behind = _update_result
             if behind is None or behind == 0:
                 return
-            console.print(_format_update_notice(behind))
+            _emit_update_notice(console, _format_update_notice(behind))
         except Exception:
             pass  # never break the session over an update notice
 

@@ -322,6 +322,28 @@ class TestMemoryToolDispatcher:
         assert result["success"] is True
         assert "added via new_text" in store.memory_entries
 
+    def test_new_text_alias_used_when_content_serialized_empty(self, store):
+        # Runtimes that materialize an omitted optional string as "" (#90468)
+        # used to bypass the alias and fail 'content is required'.
+        store.add("memory", "fact A")
+        result = json.loads(
+            memory_tool(
+                action="replace",
+                old_text="fact A",
+                content="",
+                new_text="fact A refined",
+                store=store,
+            )
+        )
+        assert result["success"] is True
+        assert "fact A refined" in store.memory_entries
+
+        result_add = json.loads(
+            memory_tool(action="add", content="", new_text="added despite empty", store=store)
+        )
+        assert result_add["success"] is True
+        assert "added despite empty" in store.memory_entries
+
     def test_content_wins_when_both_content_and_new_text_set(self, store):
         result = json.loads(
             memory_tool(action="add", content="the real one", new_text="ignored", store=store)

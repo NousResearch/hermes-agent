@@ -28,6 +28,7 @@ import socket
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
 import ssl
+import time
 import uuid
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
@@ -550,6 +551,7 @@ class EmailAdapter(BasePlatformAdapter):
         # misleading ``[Errno 8] nodename nor servname`` (an unresolvable name)
         # instead of an obvious "host not set" error.
         extra = config.extra or {}
+        self._config_extra = extra
         self._address = (_get_secret("EMAIL_ADDRESS", "") or extra.get("address", "")).strip()
         self._password = _get_secret("EMAIL_PASSWORD", "")
         self._imap_host = (_get_secret("EMAIL_IMAP_HOST", "") or extra.get("imap_host", "")).strip()
@@ -1155,6 +1157,76 @@ class EmailAdapter(BasePlatformAdapter):
             return self._address.rsplit("@", 1)[-1] or "localhost"
         return "localhost"
 
+    def _sent_folder(self) -> str:
+        """Resolve the mailbox folder used to store sent-message copies.
+
+        Priority: explicit config (``platforms.email.sent_folder`` or the
+        ``EMAIL_SENT_FOLDER`` env var) → auto-detect via IMAP LIST → a small
+        fallback list of common names. Roundcube defaults to ``Sent``, but
+        other servers use ``Sent Items`` / ``Sent Messages``, so we probe.
+        """
+        extra = getattr(self, "_config_extra", {}) or {}
+        explicit = (extra.get("sent_folder") or _get_secret("EMAIL_SENT_FOLDER", "")).strip()
+        if explicit:
+            return explicit
+
+        candidates = ["Sent", "Sent Items", "Sent Messages", "INBOX.Sent"]
+        try:
+            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+            try:
+                imap.login(self._address, self._password)
+                _send_imap_id(imap)
+                status, data = imap.list()
+                if status == "OK" and data:
+                    folders = []
+                    for item in data:
+                        if not isinstance(item, (bytes, bytearray)):
+                            continue
+                        # LIST returns b'(\\HasNoChildren) "/" "Sent"'
+                        name = item.decode("utf-8", "replace").split('"')[-2] if '"' in item.decode("utf-8", "replace") else ""
+                        if name:
+                            folders.append(name)
+                    for cand in candidates:
+                        if cand in folders:
+                            return cand
+            finally:
+                _close_imap(imap)
+        except Exception as e:
+            logger.debug("[Email] Sent-folder auto-detect failed: %s", e)
+
+        # Fall back to the most common default; APPEND will surface an error
+        # in the log if the folder does not exist on this server.
+        return "Sent"
+
+    def _append_to_sent(self, raw_bytes: bytes) -> None:
+        """Store a copy of a sent message in the Sent folder via IMAP APPEND.
+
+        SMTP only transmits the message; it does not persist a copy in the
+        mailbox, so Roundcube/other IMAP clients show an empty Sent folder
+        even though the mail was delivered. This APPENDs the exact bytes we
+        handed to SMTP (with the ``\\Seen`` flag so it renders as read) so the
+        sent copy is visible in the webmail UI. Best-effort: a failure here
+        must never fail the send itself.
+        """
+        try:
+            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+            try:
+                imap.login(self._address, self._password)
+                _send_imap_id(imap)
+                folder = self._sent_folder()
+                # Create the folder if it does not exist yet (some servers
+                # only materialize Sent on first use).
+                try:
+                    imap.create(folder)
+                except Exception:
+                    pass
+                imap.append(folder, "\\Seen", imaplib.Time2Internaldate(time.time()), raw_bytes)
+                logger.info("[Email] Appended sent copy to %r", folder)
+            finally:
+                _close_imap(imap)
+        except Exception as e:
+            logger.warning("[Email] Failed to append sent copy to Sent folder: %s", e)
+
     def _send_email(
         self,
         to_addr: str,
@@ -1195,6 +1267,7 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
+        self._append_to_sent(msg.as_bytes())
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id
 
@@ -1321,6 +1394,7 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
+        self._append_to_sent(msg.as_bytes())
         logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
         return msg_id
 
@@ -1399,6 +1473,7 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
+        self._append_to_sent(msg.as_bytes())
         return msg_id
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

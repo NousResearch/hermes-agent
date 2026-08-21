@@ -122,6 +122,20 @@ Replies are sent via SMTP with proper email threading:
 - **Message-ID** generated with the agent's domain
 - Responses are sent as plain text (UTF-8)
 
+### Sent Folder Copy
+
+SMTP only transmits a message — it does not store a copy in the mailbox, so
+webmail clients (Roundcube, etc.) would otherwise show an empty Sent folder
+even though the mail was delivered. After each successful send, the adapter
+APPENDs a copy of the exact bytes it handed to SMTP to the Sent folder via
+IMAP, flagged `\Seen` so it renders as read.
+
+- The Sent folder is auto-detected from the mailbox (tries `Sent`,
+  `Sent Items`, `Sent Messages`, `INBOX.Sent`) and created if missing.
+- Override the folder with `EMAIL_SENT_FOLDER` (or `platforms.email.sent_folder`
+  in `config.yaml`) if your server uses a non-standard name.
+- The copy is best-effort: a failed APPEND is logged but never fails the send.
+
 ### File Attachments
 
 The agent can send file attachments in replies. Include `MEDIA:/path/to/file` in the response and the file is attached to the outgoing email.
@@ -196,3 +210,4 @@ Email access is stricter by default than chat-style platforms:
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |
+| `EMAIL_SENT_FOLDER` | No | auto-detected | Mailbox folder for sent-message copies (e.g., `Sent`) |

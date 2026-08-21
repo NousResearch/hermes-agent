@@ -37,3 +37,7 @@ optional_env:
     description: "Default address for cron / notification delivery"
     prompt: "Home address"
     password: false
+  - name: EMAIL_SENT_FOLDER
+    description: "Mailbox folder for sent-message copies (default: auto-detected)"
+    prompt: "Sent folder"
+    password: false

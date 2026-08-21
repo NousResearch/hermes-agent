@@ -143,6 +143,22 @@ class FailingAgent:
         }
 
 
+class SlowActivityAgent(ProgressAgent):
+    """Stays alive long enough for a long-running heartbeat to fire."""
+
+    def get_activity_summary(self):
+        return {
+            "api_call_count": 3,
+            "max_iterations": 60,
+            "current_tool": "terminal",
+            "last_activity_desc": "running terminal",
+        }
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        time.sleep(0.15)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -204,6 +220,157 @@ def _install_fakes(
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_terse_long_running_heartbeat_hides_tool_name(monkeypatch, tmp_path):
+    """busy_ack_detail=false must leave only elapsed time in the heartbeat."""
+    adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch,
+        SlowActivityAgent,
+        cleanup_on=False,
+        cleanup_platform=Platform.DISCORD,
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.05")
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {
+            "display": {
+                "platforms": {
+                    "discord": {
+                        "tool_progress": False,
+                        "long_running_notifications": True,
+                        "busy_ack_detail": False,
+                    }
+                }
+            }
+        },
+    )
+
+    source = SessionSource(platform=Platform.DISCORD, chat_id="discord-thread")
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-terse-heartbeat",
+        session_key="agent:main:discord:channel:discord-thread",
+    )
+
+    assert result["final_response"] == "done"
+    heartbeats = [
+        item["content"]
+        for item in adapter.sent
+        if item["content"].startswith("⏳ Working —")
+    ]
+    assert heartbeats
+    assert set(heartbeats) == {"⏳ Working — 0 min"}
+
+
+@pytest.mark.asyncio
+async def test_detailed_heartbeat_keeps_iteration_and_current_tool(monkeypatch, tmp_path):
+    adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch,
+        SlowActivityAgent,
+        cleanup_on=False,
+        cleanup_platform=Platform.DISCORD,
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.05")
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {
+            "display": {
+                "platforms": {
+                    "discord": {
+                        "tool_progress": False,
+                        "long_running_notifications": True,
+                        "busy_ack_detail": True,
+                    }
+                }
+            }
+        },
+    )
+
+    source = SessionSource(platform=Platform.DISCORD, chat_id="discord-thread")
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-detailed-heartbeat",
+        session_key="agent:main:discord:channel:discord-thread",
+    )
+
+    assert result["final_response"] == "done"
+    heartbeats = [
+        item["content"]
+        for item in adapter.sent
+        if item["content"].startswith("⏳ Working —")
+    ]
+    assert set(heartbeats) == {"⏳ Working — 0 min — iteration 3/60, terminal"}
+
+
+@pytest.mark.asyncio
+async def test_detailed_heartbeat_falls_back_to_last_activity(monkeypatch, tmp_path):
+    class LastActivityAgent(SlowActivityAgent):
+        def get_activity_summary(self):
+            summary = super().get_activity_summary()
+            summary["current_tool"] = None
+            return summary
+
+    adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch,
+        LastActivityAgent,
+        cleanup_on=False,
+        cleanup_platform=Platform.DISCORD,
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.05")
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {
+            "display": {
+                "platforms": {
+                    "discord": {
+                        "tool_progress": False,
+                        "long_running_notifications": True,
+                        "busy_ack_detail": True,
+                    }
+                }
+            }
+        },
+    )
+
+    source = SessionSource(platform=Platform.DISCORD, chat_id="discord-thread")
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-last-activity-heartbeat",
+        session_key="agent:main:discord:channel:discord-thread",
+    )
+
+    assert result["final_response"] == "done"
+    heartbeats = [
+        item["content"]
+        for item in adapter.sent
+        if item["content"].startswith("⏳ Working —")
+    ]
+    assert set(heartbeats) == {
+        "⏳ Working — 0 min — iteration 3/60, running terminal"
+    }
 
 
 @pytest.mark.asyncio

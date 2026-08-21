@@ -28827,13 +28827,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ):
                     break
                 _elapsed_mins = int((time.time() - _notify_start) // 60)
-                # Include agent activity context if available. Default
-                # heartbeat is terse: elapsed + current tool. Verbose
-                # iteration counter is gated on busy_ack_detail so users
-                # who want it can opt in per platform.
+                # Include agent activity context only when the platform opts
+                # into busy_ack_detail. The terse heartbeat is elapsed time
+                # only, so tool names and activity descriptions stay out of
+                # compact/shared chat surfaces.
                 _agent_ref = agent_holder[0]
                 _status_detail = ""
-                _want_iteration_detail = bool(
+                _want_activity_detail = bool(
                     resolve_display_setting(
                         user_config,
                         platform_key,
@@ -28845,13 +28845,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         _a = _agent_ref.get_activity_summary()
                         _parts = []
-                        if _want_iteration_detail:
+                        if _want_activity_detail:
                             _parts.append(
                                 f"iteration {_a['api_call_count']}/{_a['max_iterations']}"
                             )
-                        _action = _a.get("current_tool") or _a.get("last_activity_desc")
-                        if _action:
-                            _parts.append(str(_action))
+                            _action = _a.get("current_tool") or _a.get("last_activity_desc")
+                            if _action:
+                                _parts.append(str(_action))
                         if _parts:
                             _status_detail = " — " + ", ".join(_parts)
                     except Exception:

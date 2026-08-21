@@ -262,6 +262,18 @@ export async function runRewindSubmit(
     resolvedMessageId = undefined
   }
 
+  // Durable id present (#88082, #89244): drop the client ordinal. Renderer
+  // ordinals and gateway tip ordinals are different spaces — tail-only
+  // prefetch (window-relative), in-place compact (display-lineage scrollback
+  // vs tip, prefix_user_count structurally 0), and any later visibility
+  // skew. The cut is aimed by the resolved durable id; sending a divergent
+  // ordinal trips the gateway's 4030 cross-check. Unknown ids still fail
+  // closed at 4018. The ordinal is only a tripwire, and it is calibrated in
+  // a space the gateway cannot reliably compute.
+  if (wantsTruncation && hasDurableAddress) {
+    resolvedOrdinal = undefined
+  }
+
   const interrupt = async () => {
     try {
       await requestGateway('session.interrupt', { session_id: liveSessionId })
@@ -278,13 +290,11 @@ export async function runRewindSubmit(
         text,
         ...truncateSubmitParams(resolvedOrdinal, resolvedMessageId, resolvedRowId),
         // A first-turn rewind resolves to an empty transcript, which the
-        // gateway additionally gates behind confirm_empty_truncate. In
-        // resolved-row-id mode the ordinal was dropped (see above), so carry
-        // the flag from the caller's ordinal-0 belief: required when right,
-        // ignored by the gateway when the cut isn't actually empty.
-        ...(resolvedRowId !== undefined && resolvedOrdinal === undefined && truncateOrdinal === 0
-          ? { confirm_empty_truncate: true }
-          : {})
+        // gateway additionally gates behind confirm_empty_truncate. When the
+        // client ordinal is dropped (durable-id path), carry the flag from
+        // the caller's ordinal-0 belief: required when right, ignored by the
+        // gateway when the cut isn't actually empty.
+        ...(resolvedOrdinal === undefined && truncateOrdinal === 0 ? { confirm_empty_truncate: true } : {})
       },
       PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
     )

@@ -418,31 +418,42 @@ def _request_agent_overrides(
     return overrides
 
 
-def _message_text_prefix(content: Any) -> str:
-    if isinstance(content, str):
-        return content[:128]
-    if not isinstance(content, list):
-        return ""
-    parts: List[str] = []
-    for item in content[:4]:
-        if isinstance(item, str):
-            parts.append(item)
-        elif isinstance(item, dict):
-            text = item.get("text")
-            if isinstance(text, str):
-                parts.append(text)
-        if sum(len(part) for part in parts) >= 128:
-            break
-    return "\n".join(parts)[:128]
-
-
 def _is_compressed_summary_message(message: Any) -> bool:
+    """Recognize every model-side compaction carrier shape.
+
+    SessionDB does not persist the in-process metadata marker, so client
+    projections must share the compressor's content classifier rather than a
+    prefix-only approximation that misses merge-into-tail carriers.
+    """
     if not isinstance(message, dict):
         return False
-    if message.get(_COMPRESSED_SUMMARY_METADATA_KEY):
-        return True
-    prefix = _message_text_prefix(message.get("content"))
-    return prefix.startswith("[CONTEXT COMPACTION") or prefix.startswith("[CONTEXT SUMMARY]:")
+    from agent.context_compressor import is_compaction_summary_message
+
+    return is_compaction_summary_message(message)
+
+
+def _project_client_message(message: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove model-only compaction scaffolding from a client message.
+
+    Standalone handoffs have no transcript content and remain as hidden empty
+    rows so clients can reconcile stable message identities. Merged handoffs
+    preserve only the real prior-tail content that precedes the internal
+    summary delimiter. Tool calls are dropped from both shapes because a
+    carrier's inherited calls are historical context, not live client output.
+    """
+    from agent.compaction_display import (
+        _COMPACTION_INTERNAL_FIELDS,
+        project_compaction_message_for_display,
+    )
+
+    projected = project_compaction_message_for_display(message)
+    if projected is None:
+        projected = message.copy()
+        for internal_key in _COMPACTION_INTERNAL_FIELDS:
+            projected.pop(internal_key, None)
+        projected["content"] = ""
+        projected["display_kind"] = "hidden"
+    return projected
 
 
 def _auto_truncate_response_history(
@@ -3358,10 +3369,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _message_response(message: Dict[str, Any]) -> Dict[str, Any]:
+        message = _project_client_message(message)
         safe_keys = (
             "id", "session_id", "role", "content", "tool_call_id", "tool_calls",
             "tool_name", "timestamp", "token_count", "finish_reason", "reasoning",
-            "reasoning_content",
+            "reasoning_content", "display_kind",
         )
         return {key: message.get(key) for key in safe_keys if key in message}
 
@@ -6185,6 +6197,12 @@ class APIServerAdapter(BasePlatformAdapter):
             if not isinstance(msg, dict):
                 continue
             if msg.get("role") not in {"assistant", "tool"}:
+                continue
+            if _is_compressed_summary_message(msg):
+                projected = cls._message_response(msg)
+                if projected.get("display_kind") == "hidden":
+                    continue
+                out.append(projected)
                 continue
             out.append(cls._message_response(msg))
         return out

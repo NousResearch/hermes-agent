@@ -1934,6 +1934,27 @@ def resolve_runtime_provider(
         explicit_base_url=explicit_base_url,
     )
     model_cfg = _get_model_config()
+
+    # OpenCode Zen free tier (*-free slugs, e.g. x-preview-f-free /
+    # "Ox Alpha"): served ANONYMOUSLY on the Zen relay ONLY. Any bearer the
+    # relay doesn't recognize is a 401 — and the Go relay doesn't serve the
+    # free tier at all ("Model x is not supported"), so a valid OpenCode GO
+    # subscription key still fails. Route free slugs through the keyless Zen
+    # runtime BEFORE the credential-pool / explicit / api_key paths so they
+    # work with any OpenCode credential state, including none.
+    from hermes_cli.models import (
+        opencode_provider_family as _oc_family_fn,
+        opencode_zen_free_runtime as _oc_free_runtime_fn,
+    )
+    if _oc_family_fn(provider) is not None:
+        _oc_model = str(
+            target_model or model_cfg.get("default") or model_cfg.get("model") or ""
+        ).strip()
+        _free_runtime = _oc_free_runtime_fn(provider, _oc_model)
+        if _free_runtime is not None:
+            _free_runtime["requested_provider"] = requested_provider
+            return _free_runtime
+
     explicit_runtime = _resolve_explicit_runtime(
         provider=provider,
         requested_provider=requested_provider,

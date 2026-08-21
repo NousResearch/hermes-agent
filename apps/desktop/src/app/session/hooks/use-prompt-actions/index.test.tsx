@@ -2517,7 +2517,6 @@ describe('usePromptActions restoreToMessage', () => {
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
         confirm_truncate: true,
-        truncate_before_user_ordinal: 0,
         truncate_before_message_id: 'u1',
         confirm_empty_truncate: true
       },
@@ -2587,7 +2586,6 @@ describe('usePromptActions restoreToMessage', () => {
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
         confirm_truncate: true,
-        truncate_before_user_ordinal: 0,
         truncate_before_message_id: 'u1',
         confirm_empty_truncate: true
       },
@@ -2635,7 +2633,6 @@ describe('usePromptActions restoreToMessage', () => {
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
         confirm_truncate: true,
-        truncate_before_user_ordinal: 0,
         truncate_before_message_id: 'u1',
         confirm_empty_truncate: true
       },
@@ -5372,8 +5369,10 @@ describe('usePromptActions editMessage stale-target recovery (#82462)', () => {
     // First attempt only — no plain resubmit that drops truncate_before_user_ordinal.
     expect(submitCalls).toHaveLength(1)
     expect(submitCalls[0]?.[1]).toMatchObject({
-      truncate_before_user_ordinal: 0,
       confirm_truncate: true
     })
+    expect(
+      (submitCalls[0]?.[1] as { truncate_before_user_ordinal?: unknown } | undefined)?.truncate_before_user_ordinal
+    ).toBeUndefined()
   })
 })

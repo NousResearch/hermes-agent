@@ -1292,3 +1292,152 @@ class TestExpandedOverflowPatterns:
         assert result.reason == FailoverReason.context_overflow
 
 
+class TestServerInjectedParameterRejection:
+    """A 400 blaming a parameter the client never sent is a server-side flake.
+
+    The Codex backend (chatgpt.com/backend-api/codex) intermittently adds
+    ``prompt_cache_retention`` to its own upstream call and then rejects it,
+    so an identical request succeeds on retry ~80% of the time.  Hermes never
+    sends that field on this route, so the 400 is not a deterministic
+    request-shape error and must stay retryable instead of aborting the turn.
+    """
+
+    RETENTION_BODY = {
+        "message": "prompt_cache_retention is not supported on this model",
+        "type": "invalid_request_error",
+        "param": "prompt_cache_retention",
+        "code": "invalid_parameter",
+    }
+
+    def test_codex_retention_400_is_retryable_server_error(self):
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'message': 'prompt_cache_retention "
+            "is not supported on this model', 'type': 'invalid_request_error', "
+            "'param': 'prompt_cache_retention', 'code': 'invalid_parameter'}}",
+            status_code=400,
+            body=dict(self.RETENTION_BODY),
+        )
+        result = classify_api_error(
+            e,
+            provider="openai-codex",
+            model="gpt-5.6-sol",
+            approx_tokens=546912,
+            context_length=272000,
+            num_messages=576,
+        )
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+        # Retrying the identical request is the recovery — do NOT enter the
+        # compression loop (the context was never the problem).
+        assert result.should_compress is False
+
+    def test_codex_retention_400_nested_error_body_is_retryable(self):
+        """The same rejection arrives wrapped in an ``error`` envelope too."""
+        e = MockAPIError(
+            "prompt_cache_retention is not supported on this model",
+            status_code=400,
+            body={"error": dict(self.RETENTION_BODY)},
+        )
+        result = classify_api_error(
+            e, provider="openai-codex", model="gpt-5.6-sol",
+        )
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_codex_gateway_terse_retention_400_is_retryable(self):
+        """The Codex gateway's own validator uses a bare ``detail`` body."""
+        e = MockAPIError(
+            "Unsupported parameter: prompt_cache_retention",
+            status_code=400,
+            body={"detail": "Unsupported parameter: prompt_cache_retention"},
+        )
+        result = classify_api_error(
+            e, provider="openai-codex", model="gpt-5.6-sol",
+        )
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_small_session_retention_400_is_still_retryable(self):
+        """Must not depend on the context-size heuristic — a tiny request
+        gets the identical spontaneous rejection (reproduced live)."""
+        e = MockAPIError(
+            "prompt_cache_retention is not supported on this model",
+            status_code=400,
+            body=dict(self.RETENTION_BODY),
+        )
+        result = classify_api_error(
+            e,
+            provider="openai-codex",
+            model="gpt-5.6-sol",
+            approx_tokens=50,
+            num_messages=1,
+        )
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_other_unsupported_parameter_400_stays_non_retryable(self):
+        """Boundary: a genuine client-sent bad parameter is deterministic and
+        must keep failing fast as a format_error (the existing behaviour)."""
+        e = MockAPIError(
+            "Unsupported parameter: 'max_tokens' is not supported with this "
+            "model. Use 'max_completion_tokens' instead.",
+            status_code=400,
+            body={
+                "message": "Unsupported parameter: 'max_tokens' is not supported.",
+                "type": "invalid_request_error",
+                "param": "max_tokens",
+                "code": "unsupported_parameter",
+            },
+        )
+        result = classify_api_error(
+            e, provider="openai-codex", model="gpt-5.6-sol",
+        )
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
+    def test_retention_rejection_from_meta_host_stays_non_retryable(self):
+        """Boundary: on api.meta.ai / Bedrock Mantle Hermes DOES send
+        ``prompt_cache_retention`` deliberately, so a rejection there is a
+        real client-side request error and must not be retried blindly."""
+        e = MockAPIError(
+            "prompt_cache_retention is not supported on this model",
+            status_code=400,
+            body=dict(self.RETENTION_BODY),
+        )
+        result = classify_api_error(
+            e, provider="meta-ai", model="muse-spark-1.2",
+        )
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
+    @pytest.mark.parametrize("status_code", [500, 502])
+    def test_retention_rejection_via_5xx_proxy_is_retryable(self, status_code):
+        """Sibling path: a proxy in front of the route can surface the same
+        injected-parameter rejection as 5xx, where the request-validation
+        guard would also wrongly fail it fast as a format_error."""
+        e = MockAPIError(
+            "Unsupported parameter: prompt_cache_retention",
+            status_code=status_code,
+            body={"error": dict(self.RETENTION_BODY)},
+        )
+        result = classify_api_error(
+            e, provider="openai-codex", model="gpt-5.6-sol",
+        )
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    @pytest.mark.parametrize("status_code", [500, 502])
+    def test_other_bad_parameter_via_5xx_stays_non_retryable(self, status_code):
+        """Boundary for the sibling path: the codex.nekos.me 502-on-bad-param
+        behaviour must keep failing fast (regression guard for that fix)."""
+        e = MockAPIError(
+            "Unknown parameter: 'frequency_penalty'",
+            status_code=status_code,
+            body={"error": {"message": "Unknown parameter: 'frequency_penalty'",
+                            "code": "unknown_parameter"}},
+        )
+        result = classify_api_error(e, provider="custom", model="m")
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
+

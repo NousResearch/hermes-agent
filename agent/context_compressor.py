@@ -7978,8 +7978,24 @@ def reference_handoff_would_drive_next_model_call(
     for index, message in enumerate(messages):
         if not is_compaction_summary_message(message):
             continue
-        if _handoff_carries_live_user_content(message):
-            # Embedded live ask — this row is not a sole-handoff driver.
+        merged_completed_assistant = (
+            isinstance(message, dict)
+            and message.get("role") == "assistant"
+            and ContextCompressor.classify_summary_content(
+                message.get("content")
+            )
+            == "merged"
+            and message.get("finish_reason") == "stop"
+            and not message.get("tool_calls")
+        )
+        if (
+            _handoff_carries_live_user_content(message)
+            and not merged_completed_assistant
+        ):
+            # Embedded live ask — this row is not a sole-handoff driver. A
+            # completed merged assistant carrier preserves the assistant's own
+            # prose, not a fresh user request. A carrier with pending tool_calls
+            # remains live regardless of an earlier completed assistant turn.
             continue
         last_driving_handoff = index
 

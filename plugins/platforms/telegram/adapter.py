@@ -10158,9 +10158,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         Describe a Telegram sticker via vision analysis, with caching.
 
-        For static stickers (WEBP), we download, analyze with vision, and cache
-        the description by file_unique_id. For animated/video stickers, we inject
-        a placeholder noting the emoji.
+        Static stickers and Telegram-provided animated/video thumbnails are
+        analyzed with vision. TGS stickers additionally get local best-effort
+        frame extraction, with parsed animation metadata as a final fallback.
         """
         from gateway.sticker_cache import (
             get_cached_description,
@@ -10174,28 +10174,80 @@ class TelegramAdapter(BasePlatformAdapter):
         emoji = sticker.emoji or ""
         set_name = sticker.set_name or ""
 
-        # Animated and video stickers can't be analyzed as static images
-        if sticker.is_animated or sticker.is_video:
-            event.text = build_animated_sticker_injection(emoji)
-            return
-
         # Check the cache first
         cached = get_cached_description(sticker.file_unique_id)
         if cached:
             event.text = build_sticker_injection(
-                cached["description"], cached.get("emoji", emoji), cached.get("set_name", set_name)
+                cached["description"],
+                cached.get("emoji", emoji),
+                cached.get("set_name", set_name),
             )
             logger.info("[Telegram] Sticker cache hit: %s", sticker.file_unique_id)
             return
 
         # Cache miss -- download and analyze
+        metadata_description = None
         try:
-            file_obj = await sticker.get_file()
-            image_bytes = await file_obj.download_as_bytearray()
-            cached_path = cache_image_from_bytes(bytes(image_bytes), ext=".webp")
+            image_bytes = None
+            image_ext = ".webp"
+
+            if sticker.is_animated:
+                from plugins.platforms.telegram.tgs import extract_tgs_frame
+
+                try:
+                    file_obj = await sticker.get_file()
+                    tgs_bytes = bytes(await file_obj.download_as_bytearray())
+                    frame_result = await asyncio.to_thread(extract_tgs_frame, tgs_bytes)
+                except Exception as exc:
+                    logger.info(
+                        "[Telegram] TGS frame extraction unavailable: %s",
+                        _redact_telegram_error_text(exc),
+                    )
+                else:
+                    image_bytes = frame_result.image_bytes
+                    metadata_description = frame_result.metadata_description
+                    image_ext = ".png"
+
+            # Telegram exposes a WEBP/JPG thumbnail for animated and video
+            # stickers. It is the dependency-free representative-frame path.
+            if image_bytes is None and (sticker.is_animated or sticker.is_video):
+                thumbnail = getattr(sticker, "thumbnail", None)
+                if thumbnail is not None:
+                    try:
+                        thumbnail_file = await thumbnail.get_file()
+                        image_bytes = bytes(
+                            await thumbnail_file.download_as_bytearray()
+                        )
+                        if image_bytes.startswith(b"\xff\xd8\xff"):
+                            image_ext = ".jpg"
+                        elif image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+                            image_ext = ".png"
+                        else:
+                            image_ext = ".webp"
+                    except Exception as exc:
+                        logger.info(
+                            "[Telegram] Sticker thumbnail unavailable: %s",
+                            _redact_telegram_error_text(exc),
+                        )
+
+            if image_bytes is None and not (sticker.is_animated or sticker.is_video):
+                file_obj = await sticker.get_file()
+                image_bytes = bytes(await file_obj.download_as_bytearray())
+
+            if image_bytes is None:
+                if metadata_description:
+                    event.text = build_sticker_injection(
+                        metadata_description, emoji, set_name
+                    )
+                else:
+                    event.text = build_animated_sticker_injection(emoji)
+                return
+
+            cached_path = cache_image_from_bytes(image_bytes, ext=image_ext)
             logger.info("[Telegram] Analyzing sticker at %s", cached_path)
 
             from tools.vision_tools import vision_analyze_tool
+
             result_json = await vision_analyze_tool(
                 image_url=cached_path,
                 user_prompt=STICKER_VISION_PROMPT,
@@ -10204,20 +10256,38 @@ class TelegramAdapter(BasePlatformAdapter):
 
             if result.get("success"):
                 description = result.get("analysis", "a sticker")
-                cache_sticker_description(sticker.file_unique_id, description, emoji, set_name)
+                cache_sticker_description(
+                    sticker.file_unique_id, description, emoji, set_name
+                )
                 event.text = build_sticker_injection(description, emoji, set_name)
             else:
-                # Vision failed -- use emoji as fallback
+                if metadata_description:
+                    event.text = build_sticker_injection(
+                        metadata_description, emoji, set_name
+                    )
+                elif sticker.is_animated or sticker.is_video:
+                    event.text = build_animated_sticker_injection(emoji)
+                else:
+                    fallback = f"a sticker with emoji {emoji}" if emoji else "a sticker"
+                    event.text = build_sticker_injection(fallback, emoji, set_name)
+        except Exception as e:
+            logger.warning(
+                "[Telegram] Sticker analysis error: %s",
+                _redact_telegram_error_text(e),
+                exc_info=True,
+            )
+            if metadata_description:
+                event.text = build_sticker_injection(
+                    metadata_description, emoji, set_name
+                )
+            elif sticker.is_animated or sticker.is_video:
+                event.text = build_animated_sticker_injection(emoji)
+            else:
                 event.text = build_sticker_injection(
                     f"a sticker with emoji {emoji}" if emoji else "a sticker",
-                    emoji, set_name,
+                    emoji,
+                    set_name,
                 )
-        except Exception as e:
-            logger.warning("[Telegram] Sticker analysis error: %s", _redact_telegram_error_text(e), exc_info=True)
-            event.text = build_sticker_injection(
-                f"a sticker with emoji {emoji}" if emoji else "a sticker",
-                emoji, set_name,
-            )
 
     def _reload_dm_topics_from_config(self) -> None:
         """Re-read dm_topics from config.yaml and load any new thread_ids into cache.

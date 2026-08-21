@@ -73,6 +73,20 @@ _DISCOVER_SEARCH_FIELDS = (
     "session_started",
 )
 
+# Message-count ceiling for the live context window of the CURRENT session.
+# The live window is token-bounded, so this is a conservative upper bound on
+# how many of the session's most recent active rows can still be inside it.
+# In a long live session the early turns fall out of the window WITHOUT any
+# archival mark (active=1, compacted=0 — the prune path never flips the
+# compaction flag), so "active" alone cannot tell in-context from
+# out-of-context. Discovery surfaces same-session hits older than this bound
+# (#90939); hits within the newest rows are assumed in-context and skipped,
+# preserving the original "the current session IS the current context"
+# behavior for short sessions. Well above the compressor's protected tail
+# (protect_last_n=20) and typical small-window tails, so normal sessions
+# never hit the escape hatch.
+_LIVE_CONTEXT_WINDOW_MESSAGES = 200
+
 # Prefixes that identify generated context-compaction handoff summaries.
 # These are inserted by agent/context_compressor.py as normal user/assistant
 # messages but contain machine-generated summary metadata — not user content.
@@ -254,6 +268,54 @@ def _is_compacted_message(db, message_id) -> bool:
     """
     state = _get_message_storage_state(db, message_id)
     return state is not None and state["active"] == 0 and state["compacted"] == 1
+
+
+def _live_context_floor_id(db, session_id: str) -> Optional[int]:
+    """Return the oldest message id that can still be inside the live window.
+
+    The live context window is built from the newest rows of the session, so
+    only the most recent ``_LIVE_CONTEXT_WINDOW_MESSAGES`` active messages can
+    possibly still be in live context. This helper returns the id of the
+    oldest row within that bound (the "floor"): any hit with a smaller id is
+    provably outside the live window, even though its row is still
+    ``active=1`` — long live sessions drop early turns out of context WITHOUT
+    any archival mark, so ``active`` alone cannot tell in-context from
+    out-of-context (#90939).
+
+    Returns ``None`` when the session has fewer active messages than the
+    window bound (everything could still be in context) or on any error — the
+    caller then falls back to the safe default (skip same-session hits).
+    """
+    if not session_id:
+        return None
+    try:
+        with db._lock:
+            cursor = db._conn.execute(
+                "SELECT id FROM messages "
+                "WHERE session_id = ? AND active = 1 "
+                "ORDER BY id DESC "
+                "LIMIT 1 OFFSET ?",
+                (session_id, _LIVE_CONTEXT_WINDOW_MESSAGES - 1),
+            )
+            row = cursor.fetchone()
+    except Exception:
+        logging.debug(
+            "live-context floor lookup failed for %s", session_id, exc_info=True
+        )
+        return None
+    return int(row["id"]) if row is not None else None
+
+
+def _is_below_live_context_floor(db, session_id: str, message_id) -> bool:
+    """True when *message_id* is older than the current session's live window.
+
+    See :func:`_live_context_floor_id`. Returns False on any error so callers
+    fall back to the safe default (treat the message as still in context).
+    """
+    if not message_id:
+        return False
+    floor = _live_context_floor_id(db, session_id)
+    return floor is not None and int(message_id) < floor
 
 
 def _annotate_rebuild_status(db, payload: Dict[str, Any]) -> None:
@@ -571,9 +633,11 @@ def _scroll(
 
     # Locate the anchor before applying the current-lineage guard. Discovery
     # intentionally surfaces same-lineage history that is no longer in live
-    # context: in-place compacted rows, compression-ended parents, and
-    # /new-reset predecessors. Scroll must preserve that distinction instead
-    # of rejecting the discovery result it just returned.
+    # context: in-place compacted rows, compression-ended parents, /new-reset
+    # predecessors, and — for long live sessions — the current session's own
+    # early turns that fell out of the live window (#90939). Scroll must
+    # preserve that distinction instead of rejecting the discovery result it
+    # just returned.
     anchor_state = _get_message_storage_state(db, around_message_id)
     owning_session_id = (
         anchor_state.get("session_id") if anchor_state is not None else None
@@ -598,7 +662,12 @@ def _scroll(
                 not is_inactive_non_compacted_anchor
                 and _session_left_live_context(db, anchor_session_id)
             )
-            if not (is_compacted_anchor or is_out_of_context_history):
+            is_below_live_floor = (
+                not is_inactive_non_compacted_anchor
+                and anchor_session_id == current_session_id
+                and _is_below_live_context_floor(db, current_session_id, around_message_id)
+            )
+            if not (is_compacted_anchor or is_out_of_context_history or is_below_live_floor):
                 return tool_error(
                     "scroll rejected: anchor lives in the current session lineage (already in your active context)",
                     success=False,
@@ -789,6 +858,14 @@ def _discover(
     # within each class.
     raw_results = _order_for_recall(raw_results)
 
+    # Live-context floor of the current session, computed once per discovery.
+    # None when the session is short enough that every active row could still
+    # be inside the live window.
+    current_live_floor = (
+        _live_context_floor_id(db, current_session_id)
+        if current_session_id else None
+    )
+
     if not raw_results and not title_result:
         _empty_payload = {
             "success": True,
@@ -837,16 +914,27 @@ def _discover(
         # current session, but the matched message row is an archived
         # (active=0, compacted=1) row. The live-context load filters active=1,
         # so that content is no longer in context — let it through.
+        #
+        # Long live sessions: the current session's OWN early turns leave the
+        # live window without any archival mark (active=1, compacted=0 — the
+        # prune path never flips the compaction flag). Blanket-skipping them
+        # hid the whole session, so terms unique to its early content returned
+        # 0 results (#90939). Active hits older than the live-context floor
+        # are provably outside the window — let them through too.
         is_compacted_hit = _is_compacted_message(db, r.get("id"))
         is_ended_session = _session_left_live_context(db, raw_sid)
-        if current_lineage_root and resolved_sid == current_lineage_root:
+        is_current_session_hit = bool(current_session_id and raw_sid == current_session_id)
+        if is_current_session_hit:
             if not (is_ended_session or is_compacted_hit):
-                continue
-        if current_session_id and raw_sid == current_session_id:
-            # Same-session hit: only skip if the matched message is still live
-            # (active=1). Archived/compacted rows are pre-compaction content
-            # that's been summarised away — let them through.
-            if not is_compacted_hit:
+                # Active row on the current session: skip only while it can
+                # still be inside the live window (no floor = short session,
+                # everything in context).
+                if current_live_floor is None or (r.get("id") or 0) >= current_live_floor:
+                    continue
+        elif current_lineage_root and resolved_sid == current_lineage_root:
+            # Other same-lineage sessions (compression parents, /new-reset
+            # predecessors, delegation children): unchanged lineage escape.
+            if not (is_ended_session or is_compacted_hit):
                 continue
         if resolved_sid not in seen_sessions:
             row = dict(r)

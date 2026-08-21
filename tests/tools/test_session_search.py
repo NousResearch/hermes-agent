@@ -17,6 +17,7 @@ import pytest
 from hermes_state import SessionDB
 from tools.session_search_tool import (
     SESSION_SEARCH_SCHEMA,
+    _LIVE_CONTEXT_WINDOW_MESSAGES,
     _format_timestamp,
     _is_compacted_message,
     _is_compression_ended,
@@ -1144,3 +1145,116 @@ class TestNewResetLineageBrowse:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_legacy_child" in sids
 
+
+
+# =========================================================================
+# Current-session early context in long live sessions (#90939)
+#
+# In a long live session the early turns fall out of the live context window
+# WITHOUT any archival mark (active=1, compacted=0 — the prune path never
+# flips the compaction flag). The same-session skip assumed "active ⇒ in live
+# context" and hid the whole session, so terms unique to the current
+# session's own early content returned `count: 0, sessions_searched: 0` and
+# the agent had to fall back to raw SQL. The live window is bounded (newest
+# _LIVE_CONTEXT_WINDOW_MESSAGES active rows), so hits below that floor are
+# provably out of context and must surface — while hits inside the window,
+# compacted archives, rewind rows, and foreign-session dedup all stay as
+# before.
+# =========================================================================
+
+class TestCurrentSessionEarlyContext:
+    """Long live session: early content outside the live window is recallable."""
+
+    def _seed_long_current_session(self, db, sid="s_long", needle="gamelandia"):
+        db.create_session(sid, source="telegram")
+        db.append_message(sid, role="user",
+                          content=f"{needle} and battle academy are the storefronts to review")
+        db.append_message(sid, role="assistant",
+                          content=f"Noted: checking {needle} first.")
+        # Grow the session far past the live-window ceiling; the needle stays
+        # only in the earliest messages (no compaction ever runs, so the rows
+        # remain active=1, compacted=0 — exactly the #90939 storage shape).
+        for i in range(_LIVE_CONTEXT_WINDOW_MESSAGES + 40):
+            db.append_message(sid, role="user", content=f"follow-up step {i}")
+            db.append_message(sid, role="assistant", content=f"step {i} done")
+        db._conn.commit()
+
+    def test_early_current_session_hits_surface_after_window_growth(self, db):
+        """The core regression: a term that exists ONLY in the current
+        session's early messages must surface once the session outgrew the
+        live window — no compaction archive involved."""
+        self._seed_long_current_session(db)
+
+        result = json.loads(session_search(
+            query="gamelandia", db=db, current_session_id="s_long",
+        ))
+        assert result["success"] is True
+        assert result["count"] >= 1
+        sids = [r["session_id"] for r in result["results"]]
+        assert "s_long" in sids
+        hit = result["results"][sids.index("s_long")]
+        # The surfaced anchor is one of the two early needle rows (id 1 or 2),
+        # far below the live-context floor.
+        assert hit["match_message_id"] in (1, 2)
+        assert "gamelandia" in (hit["snippet"] or "")
+
+    def test_foreign_session_hits_still_dedupe_by_lineage(self, db):
+        """A foreign-session hit must still surface AND dedupe by lineage —
+        the long-session escape must not disturb foreign-session handling."""
+        self._seed_long_current_session(db)
+        # Foreign session with the needle in TWO messages → one lineage entry.
+        db.create_session("s_foreign", source="telegram")
+        db.append_message("s_foreign", role="user", content="gamelandia stock report")
+        db.append_message("s_foreign", role="assistant", content="gamelandia restocked today")
+        db._conn.commit()
+
+        result = json.loads(session_search(
+            query="gamelandia", db=db, current_session_id="s_long",
+        ))
+        assert result["success"] is True
+        sids = [r["session_id"] for r in result["results"]]
+        assert "s_long" in sids
+        assert "s_foreign" in sids
+        # Both lineages surface exactly once: the two foreign hits dedupe into
+        # a single s_foreign result, the early current-session hits into one
+        # s_long result.
+        assert result["count"] == 2
+        assert result["sessions_searched"] == 2
+
+    def test_recent_tail_hits_still_filtered_on_current_session(self, db):
+        """The escape must not widen to the whole session: a hit inside the
+        newest window rows is still in live context and stays filtered."""
+        db.create_session("s_long", source="telegram")
+        db.append_message("s_long", role="user", content="first mention of verdant hollow")
+        for i in range(_LIVE_CONTEXT_WINDOW_MESSAGES + 40):
+            db.append_message("s_long", role="user", content=f"bulk {i}")
+            db.append_message("s_long", role="assistant", content=f"bulk reply {i}")
+        # The needle lives only in the two most recent rows (inside the live
+        # tail → still in context → filtered).
+        db.append_message("s_long", role="user", content="lucerne valley final check")
+        db.append_message("s_long", role="assistant", content="lucerne valley confirmed")
+        db._conn.commit()
+
+        result = json.loads(session_search(
+            query="lucerne valley", db=db, current_session_id="s_long",
+        ))
+        assert result["count"] == 0
+
+    def test_scroll_accepts_below_floor_anchor_on_current_session(self, db):
+        """Discovery may hand back a below-floor current-session anchor; the
+        follow-up scroll must not reject it as 'already in your active
+        context'."""
+        self._seed_long_current_session(db)
+
+        result = json.loads(session_search(
+            query="gamelandia", db=db, current_session_id="s_long",
+        ))
+        hit = next(r for r in result["results"] if r["session_id"] == "s_long")
+
+        scroll = json.loads(session_search(
+            session_id="s_long", around_message_id=hit["match_message_id"],
+            db=db, current_session_id="s_long",
+        ))
+        assert scroll["success"] is True
+        assert scroll["mode"] == "scroll"
+        assert scroll["around_message_id"] == hit["match_message_id"]

@@ -1860,30 +1860,16 @@ def _repair_ledger_path(db_path: Path) -> Path:
 
 
 def _db_fingerprint(db_path: Path) -> "Optional[str]":
-    """Cheap identity for a damaged DB file: device + inode + size.
+    """Cheap identity for a damaged DB file: size + mtime_ns.
 
     Hashing a multi-GB corrupt file on every open is exactly the kind of
-    repeated cost this ledger exists to avoid.
-
-    ``mtime_ns`` was the original third component, justified as "stable for a
-    file nothing can successfully write to".  That premise is false, and it
-    is the defect that let the 2026-08-18/19 incident run unbounded: on FTS
-    corruption this module deliberately keeps "canonical writes enabled with
-    FTS detached", so the gateway kept writing and mtime churned.  Every
-    repair pass re-keyed the ledger and reset the counter to 1 — three real
-    passes (00:14, 00:35, 00:45) each recorded ``failed_attempts: 1``, so the
-    cap could never be reached and the damaging surgery could retry forever.
-
-    Device+inode is stable across those writes.  ``size`` is retained so an
-    in-place restore that reuses the inode still reads as a different file.
-    In WAL mode commits land in the ``-wal`` sidecar, so the main database's
-    size holds steady between checkpoints — a checkpoint that grows the file
-    grants a fresh budget, which is the intended "the file materially
-    changed" signal rather than the per-write churn that broke the cap.
+    repeated cost this ledger exists to avoid; size+mtime is stable for a
+    file nothing can successfully write to, and any successful repair,
+    truncation or manual restore changes it (resetting the attempt count).
     """
     try:
         st = db_path.stat()
-        return f"{st.st_dev}:{st.st_ino}:{st.st_size}"
+        return f"{st.st_size}:{st.st_mtime_ns}"
     except OSError:
         return None
 
@@ -2206,76 +2192,6 @@ def _reapply_durability_barriers(conn: sqlite3.Connection) -> bool:
         return False
 
 
-def verify_state_db_integrity(
-    db_path: Path,
-    *,
-    max_bytes: int = 2 << 30,
-) -> Dict[str, Any]:
-    """Proactively verify ``db_path``.  Returns a report; never raises.
-
-    Repair has only ever run *reactively* — when a caller already hit a
-    malformed error on open.  A database torn in pages that no query happens
-    to touch stays live and keeps accepting writes until something finally
-    lands on the damage.  On 2026-08-19 that gap was 11 hours: the tear
-    landed in pages holding rows written at 02:18-02:22 and was not seen
-    until 13:36, across two gateway restarts that both reported a clean start.
-
-    ``PRAGMA integrity_check`` walks every page, so it is O(file size) — the
-    same reason :func:`hermes_cli.backup.verify_sqlite_integrity` caps it.
-    Above ``max_bytes`` this degrades to an O(1) structural probe rather than
-    pegging a CPU for minutes at gateway startup.
-
-    Report keys:
-      ``ok``        — False only on positive evidence of damage.
-      ``problems``  — integrity_check rows that were not "ok".
-      ``checked``   — "full" | "probe" | "absent" | "error".
-    """
-    report: Dict[str, Any] = {"ok": True, "problems": [], "checked": "absent"}
-    try:
-        if not db_path.is_file():
-            return report
-        size = db_path.stat().st_size
-        if size == 0:
-            # A zero-byte file is handled by the dedicated zeroed-DB path.
-            return report
-    except OSError as exc:
-        report["checked"] = "error"
-        report["problems"] = [f"stat failed: {exc}"]
-        return report
-
-    conn = None
-    try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
-        if size > max_bytes:
-            report["checked"] = "probe"
-            conn.execute("PRAGMA schema_version").fetchone()
-            conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
-            return report
-        report["checked"] = "full"
-        rows = conn.execute("PRAGMA integrity_check").fetchall()
-        problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != "ok"]
-        if problems:
-            report["ok"] = False
-            report["problems"] = problems
-    except sqlite3.DatabaseError as exc:
-        # The DB refused to open or parse — positive evidence of damage.
-        report["ok"] = False
-        report["checked"] = "error"
-        report["problems"] = [str(exc)]
-    except Exception as exc:
-        # Environmental (permissions, locks): not proof of corruption, so do
-        # not claim damage — but do not claim health either.
-        report["checked"] = "error"
-        report["problems"] = [str(exc)]
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-    return report
-
-
 def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     """Probe a DB on a fresh connection. Returns None if healthy, else a reason.
 
@@ -2416,6 +2332,16 @@ def _live_writer_holds_db(db_path: Path) -> bool:
     Fails **open** (returns False) on anything other than a positive
     busy/locked signal: refusing to repair a database that nobody is actually
     holding would strand the very self-heal path this guard protects.
+
+    Scope: the WAL-index exclusive lock is what makes this detect a holder, so
+    the guard is effective in WAL mode. On SQLite builds carrying the WAL-reset
+    bug and on NFS/SMB, Hermes deliberately runs ``state.db`` in
+    ``journal_mode=DELETE`` (see :func:`apply_wal_with_fallback`); there a held
+    reader takes only a SHARED lock, ``BEGIN IMMEDIATE`` still acquires
+    RESERVED, and this probe returns False. In that mode repair is serialised
+    only by the cross-process repairer lock rather than by this holder probe.
+    The 2026-08 incident that motivated the guard was in WAL mode, which this
+    covers; broadening detection to DELETE mode is left to a follow-up.
     """
     probe = None
     try:

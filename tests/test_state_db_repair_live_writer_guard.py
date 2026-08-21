@@ -1,40 +1,31 @@
-"""Regression: the state.db repair path must be bounded and must never run
-surgery against a database another connection is still writing.
+"""Regression: the state.db repair path must never run surgery against a
+database another connection is still writing.
 
 Incident (2026-08-18/19): FTS5 shadow-table corruption escalated into b-tree
 page damage across `system_prompts`, `session_model_usage` and the `sessions`
-index. Two defects in this module turned a contained, rebuildable FTS fault
-into unrecoverable data loss (292 `delivery_obligations` rows):
+index. `repair_state_db_schema` ran its REINDEX/FTS-rebuild strategies while
+other connections still held the database open. The caller closes only its own
+`self._conn`; the incident process held seven descriptors on state.db.
+Rewriting b-tree pages under concurrent writers is what spread the damage out
+of the FTS shadow tables and into the canonical tables.
 
-1. `_db_fingerprint` keyed the persistent attempt ledger on ``size:mtime_ns``,
-   documented as "stable for a file nothing can successfully write to". That
-   premise is false: on FTS corruption hermes_state deliberately keeps
-   "canonical writes enabled with FTS detached", so the gateway kept writing
-   and mtime churned. Every repair pass re-keyed the ledger and reset the
-   counter to 1 — three real passes (00:14, 00:35, 00:45) all recorded
-   ``failed_attempts: 1``, so `_MAX_PERSISTENT_REPAIR_ATTEMPTS` could never
-   be reached and the damaging surgery could retry forever.
-
-2. `repair_state_db_schema` ran its REINDEX/FTS-rebuild strategies while other
-   connections still held the database open. The caller closes only its own
-   `self._conn`; the incident process held seven descriptors on state.db.
-   Rewriting b-tree pages under concurrent writers is what spread the damage
-   out of the FTS shadow tables and into the canonical tables.
+(The companion repair-attempt-ledger fingerprint fix — keying the budget on
+something stable across ongoing writes so the cap can actually be reached — is
+tracked separately in the fingerprint/repair-loop salvage PR #88425, which
+preserves @jirathip-k's #88224 diagnosis and credit. This file covers only the
+live-writer guard.)
 """
 
 from __future__ import annotations
 
 import sqlite3
-import time
 import uuid
 from pathlib import Path
 
+import pytest
+
 from hermes_state import (
     SessionDB,
-    _MAX_PERSISTENT_REPAIR_ATTEMPTS,
-    _db_fingerprint,
-    _persistent_repair_attempts_exhausted,
-    _record_repair_outcome,
     repair_state_db_schema,
 )
 
@@ -58,71 +49,28 @@ def _make_wal_db(tmp_path: Path) -> Path:
     return db
 
 
-def _write_once(db: Path) -> None:
-    """Simulate the gateway's ongoing canonical writes (FTS detached)."""
-    handle = SessionDB(db_path=db)
-    sid = handle.create_session(session_id=str(uuid.uuid4()), source="cli")
-    handle.append_message(sid, role="user", content="canonical write")
-    handle.close()
-
-
 # ---------------------------------------------------------------------------
-# Defect 1: the ledger fingerprint must survive ongoing writes
+# Repair must refuse to operate under a live writer
 # ---------------------------------------------------------------------------
 
 
-def test_fingerprint_is_stable_while_the_gateway_keeps_writing(tmp_path):
-    """Identity must track the FILE, not its mtime/contents.
-
-    A corrupt state.db still accepts canonical writes, so a mtime- or
-    content-derived fingerprint changes constantly and silently re-keys the
-    attempt ledger.
-    """
-    db = _make_wal_db(tmp_path)
-    before = _db_fingerprint(db)
-
-    time.sleep(0.01)
-    _write_once(db)
-
-    assert _db_fingerprint(db) == before
-
-
-def test_repair_budget_is_exhausted_despite_ongoing_writes(tmp_path):
-    """Three failed passes must exhaust the budget even with writes between.
-
-    This is the exact incident shape: three real repair attempts, each
-    separated by gateway writes, all recorded ``failed_attempts: 1``.
-    """
-    db = _make_wal_db(tmp_path)
-
-    for _ in range(_MAX_PERSISTENT_REPAIR_ATTEMPTS):
-        _record_repair_outcome(db, repaired=False)
-        time.sleep(0.01)
-        _write_once(db)
-
-    assert _persistent_repair_attempts_exhausted(db) is True
-
-
-def test_successful_repair_still_clears_the_budget(tmp_path):
-    """A healed database must not inherit a spent budget."""
-    db = _make_wal_db(tmp_path)
-
-    for _ in range(_MAX_PERSISTENT_REPAIR_ATTEMPTS):
-        _record_repair_outcome(db, repaired=False)
-    assert _persistent_repair_attempts_exhausted(db) is True
-
-    _record_repair_outcome(db, repaired=True)
-
-    assert _persistent_repair_attempts_exhausted(db) is False
-
-
-# ---------------------------------------------------------------------------
-# Defect 2: repair must refuse to operate under a live writer
-# ---------------------------------------------------------------------------
-
-
+@pytest.mark.requires_wal
 def test_repair_refuses_while_another_connection_holds_the_db(tmp_path):
-    """Surgery under concurrent writers is what spread the corruption."""
+    """Surgery under concurrent writers is what spread the corruption.
+
+    Gated on ``requires_wal``: ``_live_writer_holds_db`` detects an
+    out-of-process holder via ``PRAGMA locking_mode=EXCLUSIVE`` + a
+    ``BEGIN IMMEDIATE`` that a concurrent connection makes fail with
+    SQLITE_BUSY through the WAL index. On SQLite builds carrying the
+    WAL-reset bug (and on NFS/SMB) Hermes deliberately runs ``state.db`` in
+    ``journal_mode=DELETE``, where a held reader takes only a SHARED lock and
+    ``BEGIN IMMEDIATE`` can still acquire RESERVED — so the probe cannot see
+    the holder and the guard fails open. In DELETE mode repair is instead
+    serialised only by the cross-process repairer lock (see
+    ``_live_writer_holds_db``'s docstring). The conftest auto-skips this test
+    where WAL is unusable rather than assert a guarantee the runtime doesn't
+    make there.
+    """
     db = _make_wal_db(tmp_path)
 
     holder = sqlite3.connect(str(db))

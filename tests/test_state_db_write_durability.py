@@ -1,5 +1,4 @@
-"""Regression: state.db repair-path writes must be durable on macOS, and a
-torn database must be detected proactively rather than 11 hours later.
+"""Regression: state.db repair-path writes must be durable on macOS.
 
 Incident (2026-08-19, recurrence of 2026-08-18/19): `state.db` was recovered
 clean at 01:02, tore again in the pages holding rows written 02:18-02:22, and
@@ -11,22 +10,21 @@ integrity_check` on the file reported the torn-b-tree signature:
     Tree 5 page 60788 cell 4: Rowid 34637 out of order
     Page 50549..52587: never used
 
-Two defects:
+The defect: hermes_state already knows macOS `fsync()` does not guarantee
+write ordering, and mitigates it with `synchronous=FULL` +
+`checkpoint_fullfsync=1` (see `_enforce_macos_synchronous_full`, whose
+docstring names this exact failure: "a WAL checkpoint race with process
+termination ... can leave the main DB with half-written btree pages").
+Those pragmas are per-connection and were applied only via
+`apply_wal_with_fallback()`. The repair path opened `state.db` with a bare
+`sqlite3.connect()` five times and then ran REINDEX, VACUUM and
+`writable_schema` surgery through it — the operations that rewrite nearly
+every page of the file — with no barrier at all.
 
-1. hermes_state already knows macOS `fsync()` does not guarantee write
-   ordering, and mitigates it with `synchronous=FULL` +
-   `checkpoint_fullfsync=1` (see `_enforce_macos_synchronous_full`, whose
-   docstring names this exact failure: "a WAL checkpoint race with process
-   termination ... can leave the main DB with half-written btree pages").
-   Those pragmas are per-connection and were applied only via
-   `apply_wal_with_fallback()`. The repair path opened `state.db` with a bare
-   `sqlite3.connect()` five times and then ran REINDEX, VACUUM and
-   `writable_schema` surgery through it — the operations that rewrite nearly
-   every page of the file — with no barrier at all.
-
-2. Repair only ran reactively, when a caller already hit a malformed error
-   (`SessionDB` open). Nothing checked the file proactively, so a torn
-   database stayed live and accepted writes for hours before anyone noticed.
+(The proactive `verify_state_db_integrity()` gate the original PR #90747 also
+carried is deferred to the follow-up that wires it into gateway startup —
+PR #91754 — since it ships as dead code without that caller. This file covers
+only the repair-connection durability half.)
 """
 
 from __future__ import annotations
@@ -42,7 +40,6 @@ import hermes_state
 from hermes_state import (
     _connect_repair_durable,
     repair_state_db_schema,
-    verify_state_db_integrity,
 )
 
 
@@ -148,63 +145,3 @@ def test_repair_still_works_through_durable_connection(tmp_path: Path) -> None:
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
     finally:
         conn.close()
-
-
-# ── Defect 2: proactive verification gate ───────────────────────────────
-
-
-def test_verify_state_db_integrity_passes_on_healthy_db(tmp_path: Path) -> None:
-    db = _make_db(tmp_path)
-    result = verify_state_db_integrity(db)
-    assert result["ok"] is True
-    assert result["problems"] == []
-
-
-def test_verify_state_db_integrity_detects_torn_btree(tmp_path: Path) -> None:
-    """A torn database must be reported, not silently accepted."""
-    db = _make_db(tmp_path)
-    # Grow past one page, then corrupt an interior/leaf page directly — the
-    # same class of damage as "2nd reference to page" / "never used".
-    conn = sqlite3.connect(str(db))
-    conn.execute("PRAGMA journal_mode=DELETE")
-    conn.executemany(
-        "INSERT INTO messages (body) VALUES (?)",
-        [(f"row-{i}" * 40,) for i in range(500)],
-    )
-    conn.commit()
-    conn.close()
-
-    page_size = 4096
-    raw = bytearray(db.read_bytes())
-    # Scribble over a data page (page 3+), leaving the header page intact so
-    # the file still opens — that is what makes this class so long-lived.
-    start = page_size * 4
-    raw[start:start + page_size] = b"\xff" * page_size
-    db.write_bytes(bytes(raw))
-
-    result = verify_state_db_integrity(db)
-    assert result["ok"] is False
-    assert result["problems"], "torn pages reported no problems"
-
-
-def test_verify_state_db_integrity_skips_pragma_when_oversized(
-    tmp_path: Path,
-) -> None:
-    """Must degrade to an O(1) probe rather than pegging a CPU for minutes.
-
-    `PRAGMA integrity_check` walks every page, so an unbounded check at
-    startup would hang the gateway on a multi-GB state.db.
-    """
-    db = _make_db(tmp_path)
-    result = verify_state_db_integrity(db, max_bytes=1)
-    assert result["ok"] is True
-    assert result["checked"] == "probe"
-
-
-def test_verify_state_db_integrity_missing_file_is_not_a_failure(
-    tmp_path: Path,
-) -> None:
-    """A first run has no state.db yet; that must not look like corruption."""
-    result = verify_state_db_integrity(tmp_path / "absent.db")
-    assert result["ok"] is True
-    assert result["checked"] == "absent"

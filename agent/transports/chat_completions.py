@@ -285,6 +285,10 @@ class ChatCompletionsTransport(ProviderTransport):
           ``Extra inputs are not permitted, field: 'messages[N].tool_name'``.
           Permissive providers (OpenRouter, MiniMax) silently ignore the
           field, which masked the bug for months.
+        - ``reasoning_details`` only when the caller has learned that the
+          active model deployment rejects structured reasoning replay. The
+          transport deliberately receives only this boolean capability
+          decision; it does not know about agent state or backend identity.
         - Hermes-internal scaffolding markers — any top-level message key
           starting with ``_`` (e.g. ``_empty_recovery_synthetic``,
           ``_empty_terminal_sentinel``, ``_thinking_prefill``). These are
@@ -299,6 +303,7 @@ class ChatCompletionsTransport(ProviderTransport):
         strip_extra_content = not _model_consumes_thought_signature(
             kwargs.get("model")
         )
+        strip_reasoning_details = bool(kwargs.get("strip_reasoning_details"))
         needs_sanitize = False
         for msg in messages:
             if not isinstance(msg, dict):
@@ -310,6 +315,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "effect_disposition" in msg
                 or "timestamp" in msg  # #47868 — strict providers reject this
                 or "api_content" in msg  # persist-what-you-send sidecar
+                or (strip_reasoning_details and "reasoning_details" in msg)
             ):
                 needs_sanitize = True
                 break
@@ -381,6 +387,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "effect_disposition" in msg
                 or "timestamp" in msg  # #47868 — leak into strict providers
                 or "api_content" in msg  # persist-what-you-send sidecar
+                or (strip_reasoning_details and "reasoning_details" in msg)
             ):
                 out_msg = mutable_msg()
                 out_msg.pop("codex_reasoning_items", None)
@@ -389,6 +396,8 @@ class ChatCompletionsTransport(ProviderTransport):
                 out_msg.pop("effect_disposition", None)
                 out_msg.pop("timestamp", None)  # #47868 — leak into strict providers
                 out_msg.pop("api_content", None)  # persist-what-you-send sidecar
+                if strip_reasoning_details:
+                    out_msg.pop("reasoning_details", None)
 
 
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
@@ -500,11 +509,17 @@ class ChatCompletionsTransport(ProviderTransport):
             extra_body_additions: dict | None
             supports_prompt_cache_key: bool — explicit endpoint capability for
                 the top-level Chat Completions request field; defaults off.
+            strip_reasoning_details: bool — deployment rejected structured
+                reasoning replay; remove it from request-local message copies.
         """
         # Codex sanitization: drop reasoning_items / call_id / response_item_id.
         # Pass model so the Gemini thought_signature (extra_content) is kept for
         # Gemini targets and stripped for strict non-Gemini providers.
-        sanitized = self.convert_messages(messages, model=model)
+        sanitized = self.convert_messages(
+            messages,
+            model=model,
+            strip_reasoning_details=bool(params.get("strip_reasoning_details")),
+        )
 
         # ── Provider profile: single-path when present ──────────────────
         _profile = params.get("provider_profile")

@@ -4116,6 +4116,60 @@ class TestRunConversation:
         assert result["final_response"] == "Recovered after compression"
         assert result["completed"] is True
 
+    def test_unsupported_reasoning_details_retries_without_mutating_history(self, agent):
+        """A strict target gets a stripped retry while canonical history stays signed."""
+        self._setup_agent(agent)
+        agent.provider = "custom:groq"
+        agent.model = "strict-model"
+        reasoning_details = [
+            {"type": "thinking", "thinking": "private", "signature": "signed"}
+        ]
+        history = [
+            {"role": "user", "content": "previous question"},
+            {
+                "role": "assistant",
+                "content": "previous answer",
+                "reasoning_details": reasoning_details,
+            },
+        ]
+        unsupported = Exception(
+            "'messages.2' property 'reasoning_details' is unsupported"
+        )
+        unsupported.status_code = 400
+        recovered = _mock_response(content="Recovered", finish_reason="stop")
+        wire_payloads = []
+
+        def send(**kwargs):
+            wire_payloads.append(json.loads(json.dumps(kwargs["messages"])))
+            if len(wire_payloads) == 1:
+                raise unsupported
+            return recovered
+
+        agent.client.chat.completions.create.side_effect = send
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "next question", conversation_history=history
+            )
+
+        calls = agent.client.chat.completions.create.call_args_list
+        first_wire, retry_wire = wire_payloads
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered"
+        assert len(calls) == 2
+        assert any("reasoning_details" in message for message in first_wire)
+        assert all("reasoning_details" not in message for message in retry_wire)
+        assert history[1]["reasoning_details"] is reasoning_details
+        assert any(
+            message.get("reasoning_details") is reasoning_details
+            for message in result["messages"]
+        )
+
 
 
     def test_length_finish_reason_requests_continuation(self, agent):

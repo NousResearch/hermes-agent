@@ -1959,6 +1959,12 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
 
     # ── chat_completions (default) ─────────────────────────────────────
     _ct = agent._get_transport()
+    from agent.reasoning_replay import (
+        reasoning_details_rejected_for_current_backend,
+    )
+    _strip_reasoning_details = reasoning_details_rejected_for_current_backend(
+        agent
+    )
 
     # Provider detection flags
     _is_qwen = agent._is_qwen_portal()
@@ -2060,6 +2066,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             anthropic_max_output=_ant_max,
             supports_reasoning=agent._supports_reasoning_extra_body(),
             qwen_session_metadata=_qwen_meta,
+            strip_reasoning_details=_strip_reasoning_details,
         )
 
     # ── Legacy flag path ────────────────────────────────────────────
@@ -2108,6 +2115,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
         anthropic_max_output=_ant_max,
         provider_name=agent.provider,
+        strip_reasoning_details=_strip_reasoning_details,
     )
 
 
@@ -2949,6 +2957,31 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         # _thinking_prefill must survive until here so the drop pass can
         # recognize stubs after reasoning fields are stripped.
         api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
+
+        # This path hand-builds a Chat Completions request and therefore does
+        # not pass through build_api_kwargs(). Reuse the same deployment
+        # capability decision and the transport's copy-on-write conversion so
+        # a learned rejection cannot leak through the iteration summary.
+        if agent.api_mode == "chat_completions":
+            from agent.reasoning_replay import (
+                reasoning_details_rejected_for_current_backend,
+            )
+            from agent.transports.chat_completions import (
+                ChatCompletionsTransport,
+            )
+
+            # Use the concrete request-boundary converter directly.  The
+            # transport returned by ``_get_transport()`` is also used later
+            # to normalize the response, and tests/extensions may provide a
+            # narrow normalize-only adapter there; summary serialization must
+            # not enlarge that existing contract.
+            api_messages = ChatCompletionsTransport().convert_messages(
+                api_messages,
+                model=agent.model,
+                strip_reasoning_details=(
+                    reasoning_details_rejected_for_current_backend(agent)
+                ),
+            )
 
         # Strip all remaining underscore-prefixed scaffolding keys before the
         # wire. The summary path calls chat.completions.create() directly,

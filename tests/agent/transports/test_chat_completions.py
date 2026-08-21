@@ -146,6 +146,58 @@ class TestChatCompletionsBasic:
         msgs = [{"role": "user", "content": "hi"}]
         assert transport.convert_messages(msgs) is msgs
 
+    def test_convert_messages_strips_reasoning_details_only_when_requested(
+        self, transport
+    ):
+        details = [
+            {
+                "type": "thinking",
+                "thinking": "private",
+                "signature": "signed",
+                "nested": {"keep": ["shared"]},
+            }
+        ]
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "answer",
+                "reasoning_details": details,
+            }
+        ]
+
+        unchanged = transport.convert_messages(
+            msgs, model="model-a", strip_reasoning_details=False
+        )
+        stripped = transport.convert_messages(
+            msgs, model="model-a", strip_reasoning_details=True
+        )
+
+        assert unchanged is msgs
+        assert stripped is not msgs
+        assert stripped[0] is not msgs[0]
+        assert "reasoning_details" not in stripped[0]
+        assert msgs[0]["reasoning_details"] is details
+        assert details[0]["nested"]["keep"] == ["shared"]
+
+    def test_build_kwargs_forwards_reasoning_details_strip_flag(self, transport):
+        details = [{"type": "thinking", "signature": "signed"}]
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "answer",
+                "reasoning_details": details,
+            }
+        ]
+
+        kwargs = transport.build_kwargs(
+            model="model-a",
+            messages=msgs,
+            strip_reasoning_details=True,
+        )
+
+        assert "reasoning_details" not in kwargs["messages"][0]
+        assert msgs[0]["reasoning_details"] is details
+
     def test_convert_messages_strips_internal_scaffolding_markers(self, transport):
         """Hermes-internal ``_``-prefixed markers must never reach the wire.
 

@@ -30,6 +30,7 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
+from agent.backend_identity import BackendIdentity
 from agent.context_compressor import ContextCompressor
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import StreamingContextScrubber
@@ -683,6 +684,10 @@ def init_agent(
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
     agent.provider = provider_name or ""
+    # Negative capability knowledge is intentionally process/session-local.
+    # A reconstructed agent may probe once again, while model switches on this
+    # agent retain deployment-specific schema knowledge.
+    agent._reasoning_details_rejected_backends: set[BackendIdentity] = set()
     agent.requested_provider = (
         requested_provider.strip().lower()
         if isinstance(requested_provider, str) and requested_provider.strip()

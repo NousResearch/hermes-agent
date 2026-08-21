@@ -4897,13 +4897,9 @@ def run_conversation(
 
                 # Thinking block signature recovery.
                 #
-                # Anthropic signs thinking blocks against the full turn
-                # content. Any upstream mutation (context compression,
-                # session truncation, message merging) invalidates the
-                # signature and the API replies HTTP 400 ("invalid
-                # signature" or "cannot be modified"). Recovery strips
-                # ``reasoning_details`` so the retry sends no thinking
-                # blocks at all. One-shot per outer loop.
+                # Anthropic can reject mutated signed thinking blocks. Recover
+                # by stripping reasoning_details from request-local copies and
+                # retrying once.
                 #
                 # The strip targets ``api_messages``, which is the
                 # API-call-time list that ``_build_api_kwargs`` consumes
@@ -4928,11 +4924,12 @@ def run_conversation(
                     and not _retry.thinking_sig_retry_attempted
                 ):
                     _retry.thinking_sig_retry_attempted = True
-                    _api_stripped = 0
-                    for _m in api_messages:
-                        if isinstance(_m, dict) and "reasoning_details" in _m:
-                            _m.pop("reasoning_details", None)
-                            _api_stripped += 1
+                    from agent.agent_runtime_helpers import (
+                        strip_reasoning_details_from_api_messages,
+                    )
+                    _api_stripped = strip_reasoning_details_from_api_messages(
+                        api_messages
+                    )
                     agent._vprint(
                         f"{agent.log_prefix}⚠️  Thinking block signature invalid, "
                         f"stripped reasoning_details from api_messages for retry...",
@@ -4945,6 +4942,59 @@ def run_conversation(
                         agent.log_prefix, _api_stripped,
                     )
                     continue
+
+                # Strict Chat Completions schema recovery. Learn only from an
+                # explicit 400/422 rejection whose actual failed outbound
+                # payload contained reasoning_details. The next build uses the
+                # recorded BackendIdentity to ask the transport for a
+                # copy-on-write strip; canonical history remains untouched.
+                if (
+                    classified.reason
+                    == FailoverReason.reasoning_details_unsupported
+                    and not _retry.reasoning_details_retry_attempted
+                ):
+                    from agent.reasoning_replay import (
+                        outbound_messages_contain_reasoning_details,
+                        remember_reasoning_details_rejection,
+                    )
+
+                    if outbound_messages_contain_reasoning_details(api_kwargs):
+                        _identity, _learned = (
+                            remember_reasoning_details_rejection(
+                                agent, model=api_kwargs.get("model")
+                            )
+                        )
+                        if _learned:
+                            _retry.reasoning_details_retry_attempted = True
+                            agent._vprint(
+                                f"{agent.log_prefix}⚠️  Provider rejected reasoning_details "
+                                f"replay — learned this model deployment and retrying...",
+                                force=True,
+                            )
+                            logger.warning(
+                                "%sReasoning replay capability recovery: "
+                                "provider=%s model=%s base_url=%s "
+                                "(canonical messages unchanged)",
+                                agent.log_prefix,
+                                _identity.provider,
+                                _identity.model,
+                                _identity.base_url,
+                            )
+                            continue
+                        logger.info(
+                            "%sIgnored reasoning_details rejection classification: "
+                            "could not identify a concrete provider/model/endpoint",
+                            agent.log_prefix,
+                        )
+                        # Do not repeat the same payload when no concrete
+                        # capability entry can make the retry different.
+                        _retry.reasoning_details_retry_attempted = True
+                    else:
+                        logger.info(
+                            "%sIgnored reasoning_details rejection classification: "
+                            "failed outbound messages did not contain the field",
+                            agent.log_prefix,
+                        )
 
                 # ── Invalid encrypted reasoning replay recovery ───────
                 # OpenAI Responses API surfaces (and some compatible relays)

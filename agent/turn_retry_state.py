@@ -4,8 +4,8 @@ The inner retry loop in ``run_conversation`` (``while retry_count <
 max_retries``) makes several distinct recovery attempts on a single model API
 call: a credential-pool 429 retry, a per-provider OAuth refresh (codex,
 anthropic, nous, copilot), a long-context compression restart, a length-
-continuation restart, and a handful of format-recovery branches (thinking-
-signature stripping, multimodal-tool-content stripping, llama.cpp grammar
+continuation restart, and a handful of format-recovery branches (reasoning-
+details stripping, multimodal-tool-content stripping, llama.cpp grammar
 fallback, image shrink, invalid-encrypted-content, 1M-beta header).
 
 Each of those branches is guarded by a one-shot boolean so it fires at most
@@ -57,6 +57,9 @@ class TurnRetryState:
 
     # ── Format / payload recovery guards ─────────────────────────────────
     thinking_sig_retry_attempted: bool = False
+    # Separate from signed-thinking recovery: an unsupported-property retry
+    # records deployment capability and rebuilds through the transport.
+    reasoning_details_retry_attempted: bool = False
     invalid_encrypted_content_retry_attempted: bool = False
     native_compaction_reject_retry_attempted: bool = False
     image_shrink_retry_attempted: bool = False

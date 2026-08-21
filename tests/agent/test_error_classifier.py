@@ -63,7 +63,8 @@ class TestFailoverReason:
             "multimodal_tool_content_unsupported",
             "provider_policy_blocked",
             "content_policy_blocked",
-            "thinking_signature", "long_context_tier",
+            "thinking_signature", "reasoning_details_unsupported",
+            "long_context_tier",
             "oauth_long_context_beta_forbidden",
             "llama_cpp_grammar_pattern",
             "unknown",
@@ -532,6 +533,54 @@ class TestClassifyApiError:
     # ── Provider-specific: Anthropic thinking signature ──
 
 
+    @pytest.mark.parametrize("status_code", [400, 422])
+    @pytest.mark.parametrize(
+        "schema_rejection",
+        [
+            "property 'reasoning_details' is unsupported",
+            "Extra inputs are not permitted, field: reasoning_details",
+            "Extra inputs not permitted, field: reasoning_details",
+            "unknown property reasoning_details",
+        ],
+    )
+    def test_unsupported_reasoning_details_uses_replay_recovery(
+        self, status_code, schema_rejection
+    ):
+        e = MockAPIError(
+            f"'messages.2' : for 'role:assistant' {schema_rejection}",
+            status_code=status_code,
+        )
+        result = classify_api_error(e, provider="custom:groq")
+        assert result.reason == FailoverReason.reasoning_details_unsupported
+        assert result.retryable is False
+        assert result.should_compress is False
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "messages.2.reasoning_details must be an array",
+            "reasoning_details items must be objects",
+            "reasoning_details signature is invalid",
+        ],
+    )
+    def test_malformed_reasoning_details_is_not_treated_as_unsupported(
+        self, message
+    ):
+        e = MockAPIError(
+            message,
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="openrouter")
+        assert result.reason == FailoverReason.format_error
+
+    @pytest.mark.parametrize("status_code", [200, 401, 409, 429, 500])
+    def test_reasoning_details_schema_text_requires_400_or_422(self, status_code):
+        e = MockAPIError(
+            "property reasoning_details is unsupported",
+            status_code=status_code,
+        )
+        result = classify_api_error(e, provider="custom")
+        assert result.reason != FailoverReason.reasoning_details_unsupported
 
 
 
@@ -1290,5 +1339,3 @@ class TestExpandedOverflowPatterns:
         )
         result = classify_api_error(e, provider="openrouter", model="m")
         assert result.reason == FailoverReason.context_overflow
-
-

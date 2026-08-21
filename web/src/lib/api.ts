@@ -79,6 +79,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/messaging/platforms",
   "/api/messaging/telegram/onboarding",
   "/api/messaging/whatsapp/onboarding",
+  "/api/webhooks",
   "/api/model/info",
   "/api/model/set",
   "/api/model/auxiliary",

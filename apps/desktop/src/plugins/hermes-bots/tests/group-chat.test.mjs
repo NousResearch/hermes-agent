@@ -1014,7 +1014,7 @@ test('fan-out class: a room write is mirrored to every reachable default-profile
     { connectionId: 'gw-b', profile: 'default' },
     { connectionId: 'gw-b', profile: 'other' }
   ]
-  gc.host.requestProfile = async (route, method, params) => {
+  gc.host.requestProfile = async (route, method) => {
     remoteRequests.push({ connectionId: route.connectionId, method })
     if (method === 'profiles.list') {
       return { profiles: [{ name: 'default', ui_meta: {}, ui_meta_revisions: {} }] }

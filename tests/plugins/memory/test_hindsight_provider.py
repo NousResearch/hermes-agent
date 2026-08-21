@@ -1561,3 +1561,107 @@ class TestClientAutoUpgradeRoutesThroughLazyDeps:
         assert len(calls) == 1  # attempted exactly once, init still completed
         assert any("runtime installs are disabled" in r.getMessage()
                    for r in caplog.records)
+
+
+class TestBankConfigPropagation:
+    """bank_mission / bank_retain_mission / bank_observations_mission were
+    read from config but never pushed to the Hindsight server — dead config.
+    initialize() must forward all three via update_bank_config()."""
+
+    def _init_with_missions(self, tmp_path, monkeypatch, **overrides):
+        config = {
+            "mode": "cloud",
+            "apiKey": "test-key",
+            "api_url": "http://localhost:9999",
+            "bank_id": "test-bank",
+            "budget": "mid",
+            "memory_mode": "hybrid",
+        }
+        config.update(overrides)
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+
+        captured = {}
+
+        class _Client:
+            def update_bank_config(self, bank_id, **updates):
+                captured["bank_id"] = bank_id
+                captured["updates"] = updates
+
+        _client = _Client()
+
+        def _fake_get_client(self):
+            return _client
+
+        monkeypatch.setattr(
+            HindsightMemoryProvider, "_get_client", _fake_get_client
+        )
+        p = HindsightMemoryProvider()
+        p.initialize(session_id="s", hermes_home=str(tmp_path), platform="cli")
+        return p, captured
+
+    def test_missions_are_pushed_to_the_server(self, tmp_path, monkeypatch):
+        p, captured = self._init_with_missions(
+            tmp_path, monkeypatch,
+            bank_mission="reflect framing",
+            bank_retain_mission="retain framing",
+            bank_observations_mission="observation framing",
+        )
+        assert captured["bank_id"] == "test-bank"
+        assert captured["updates"] == {
+            "reflect_mission": "reflect framing",
+            "retain_mission": "retain framing",
+            "observations_mission": "observation framing",
+        }
+
+    def test_no_missions_means_no_server_write(self, tmp_path, monkeypatch):
+        p, captured = self._init_with_missions(tmp_path, monkeypatch)
+        assert captured == {}
+
+    def test_partial_missions_forward_only_what_is_set(self, tmp_path, monkeypatch):
+        p, captured = self._init_with_missions(
+            tmp_path, monkeypatch, bank_retain_mission="retain only"
+        )
+        assert captured["updates"] == {"retain_mission": "retain only"}
+
+
+class TestSyncTurnContentFilter:
+    """Opt-in sync_turn_filter skips ephemeral/operational turns."""
+
+    def test_filter_off_by_default_retains_short_turns(self, provider_with_config):
+        p = provider_with_config(retain_async=False)
+        p.sync_turn("hello", "hi there")
+        p._retain_queue.join()
+        p._client.aretain_batch.assert_called_once()
+
+    def test_filter_on_skips_acknowledgment_turns(self, provider_with_config):
+        p = provider_with_config(retain_async=False, sync_turn_filter=True)
+        p.sync_turn(
+            "please run the deployment",
+            "Done. The deployment task was dispatched to the worker queue.",
+        )
+        p._retain_queue.join()
+        p._client.aretain_batch.assert_not_called()
+
+    def test_filter_on_retains_substantive_turns(self, provider_with_config):
+        p = provider_with_config(retain_async=False, sync_turn_filter=True)
+        p.sync_turn(
+            "what did we decide about the database migration?",
+            "We decided to postpone the migration until the replication "
+            "lag issue is fixed; the plan is documented in runbook 7.",
+        )
+        p._retain_queue.join()
+        p._client.aretain_batch.assert_called_once()
+
+    def test_filter_on_skips_tool_output_only_turns(self, provider_with_config):
+        p = provider_with_config(retain_async=False, sync_turn_filter=True)
+        p.sync_turn(
+            "what is the status of the backup job?",
+            '{"status": "ok", "output": "backup completed at 03:00"}',
+        )
+        p._retain_queue.join()
+        p._client.aretain_batch.assert_not_called()

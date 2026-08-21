@@ -861,7 +861,11 @@ class HindsightMemoryProvider(MemoryProvider):
         # Bank
         self._bank_mission = ""
         self._bank_retain_mission: str | None = None
+        self._bank_observations_mission: str | None = None
         self._bank_id_template = ""
+        # Optional content-quality gate for sync_turn (off by default: every
+        # turn keeps being retained unless the user opts in).
+        self._sync_turn_filter = False
 
     @property
     def name(self) -> str:
@@ -1180,9 +1184,11 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "bank_id_template", "description": "Optional template to derive bank_id dynamically. Placeholders: {profile}, {workspace}, {platform}, {user}, {session}. Example: hermes-{profile}", "default": ""},
             {"key": "bank_mission", "description": "Mission/purpose description for the memory bank"},
             {"key": "bank_retain_mission", "description": "Custom extraction prompt for memory retention"},
+            {"key": "bank_observations_mission", "description": "Custom mission for observation consolidation"},
             {"key": "recall_budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
             {"key": "memory_mode", "description": "Memory integration mode", "default": "hybrid", "choices": ["hybrid", "context", "tools"]},
             {"key": "recall_prefetch_method", "description": "Auto-recall method", "default": "recall", "choices": ["recall", "reflect"]},
+            {"key": "sync_turn_filter", "description": "Skip retaining ephemeral/operational turns (short acknowledgments, status updates, tool-output-only turns)", "default": False},
             {"key": "retain_tags", "description": "Default tags applied to retained memories (comma-separated)", "default": ""},
             {"key": "observation_scopes", "description": "How observations are scoped during consolidation: 'combined' (default — one pass over all tags), 'per_tag' (one isolated observation per tag), 'all_combinations' (every tag subset — expensive), or a JSON list of tag-lists for explicit custom scopes. Empty uses Hindsight's 'combined' default.", "default": ""},
             {"key": "retain_source", "description": "Metadata source value attached to retained memories (identifies the client that stored them)", "default": _DEFAULT_RETAIN_SOURCE},
@@ -1670,6 +1676,8 @@ class HindsightMemoryProvider(MemoryProvider):
         # Bank options
         self._bank_mission = self._config.get("bank_mission", "")
         self._bank_retain_mission = self._config.get("bank_retain_mission") or None
+        self._bank_observations_mission = self._config.get("bank_observations_mission") or None
+        self._sync_turn_filter = bool(self._config.get("sync_turn_filter", False))
 
         # Tags
         self._retain_tags = _normalize_retain_tags(
@@ -1746,6 +1754,27 @@ class HindsightMemoryProvider(MemoryProvider):
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,
                      self._retain_async, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
                      self._tags, self._recall_tags)
+
+        # Ensure bank-level mission/extraction config is applied to the server.
+        # The _bank_mission/_bank_retain_mission fields were read from config
+        # but never propagated to the Hindsight API (dead-config bug). This
+        # call pushes them on every initialize so the server uses them during
+        # fact extraction and observation synthesis.
+        if self._bank_retain_mission or self._bank_mission or self._bank_observations_mission:
+            try:
+                client = self._get_client()
+                updates = {}
+                if self._bank_retain_mission:
+                    updates["retain_mission"] = self._bank_retain_mission
+                if self._bank_mission:
+                    updates["reflect_mission"] = self._bank_mission
+                if self._bank_observations_mission:
+                    updates["observations_mission"] = self._bank_observations_mission
+                if updates:
+                    client.update_bank_config(self._bank_id, **updates)
+                    logger.info("Applied bank config from config.json: %s", list(updates.keys()))
+            except Exception as e:
+                logger.warning("Failed to apply bank config from config.json: %s", e)
 
         # For local mode, start the embedded daemon in the background so it
         # doesn't block the chat. Redirect stdout/stderr to a log file to
@@ -2048,6 +2077,30 @@ class HindsightMemoryProvider(MemoryProvider):
             kwargs["observation_scopes"] = self._observation_scopes
         return kwargs
 
+    def _is_retainable_turn(self, user_content: str, assistant_content: str) -> bool:
+        """Content quality gate: return False for ephemeral/operational turns.
+
+        Filters out short acknowledgments, status updates, and tool-output-only
+        turns that should not be retained in durable memory.
+        """
+        combined = (user_content or "") + (assistant_content or "")
+        # Skip very short exchanges (< 50 chars combined)
+        if len(combined.strip()) < 50:
+            return False
+        # Skip turns where the assistant response is just a short acknowledgment
+        ack_patterns = (
+            "done.", "ok.", "understood.", "will do.", "got it.",
+            "noted.", "sure.", "yes.", "no.", "(empty)",
+            "dispatched to", "it's running",
+        )
+        ac_lower = (assistant_content or "").strip().lower()
+        if len(ac_lower) < 100 and any(ac_lower.startswith(p) for p in ack_patterns):
+            return False
+        # Skip pure tool-output turns (assistant content is mostly JSON/code)
+        if assistant_content and assistant_content.strip().startswith(("{\"output\":", "{\"status\":")):
+            return False
+        return True
+
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Enqueue a retain for the current turn. Non-blocking.
 
@@ -2061,6 +2114,13 @@ class HindsightMemoryProvider(MemoryProvider):
             return
         if self._shutting_down.is_set():
             logger.debug("sync_turn: skipped (shutting down)")
+            return
+
+        # Content quality gate — skip ephemeral/operational turns when the
+        # user opted in (sync_turn_filter). Default off: retention behavior
+        # is unchanged for existing setups.
+        if self._sync_turn_filter and not self._is_retainable_turn(user_content, assistant_content):
+            logger.debug("sync_turn: skipped (content quality gate)")
             return
 
         if session_id:

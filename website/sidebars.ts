@@ -258,6 +258,15 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'omarchy',
+                  key: 'skills-bundled-omarchy',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/bundled/omarchy/omarchy-omarchy',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'productivity',
                   key: 'skills-bundled-productivity',
                   collapsed: true,

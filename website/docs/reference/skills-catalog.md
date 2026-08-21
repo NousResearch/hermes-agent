@@ -95,6 +95,12 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 |-------|-------------|------|
 | [`obsidian`](/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian) | Read, search, create, and edit notes in the Obsidian vault. | `note-taking/obsidian` |
 
+## omarchy
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`omarchy`](/docs/user-guide/skills/bundled/omarchy/omarchy-omarchy) | Customize Omarchy Linux desktops and system configuration. | `omarchy` |
+
 ## productivity
 
 | Skill | Description | Path |

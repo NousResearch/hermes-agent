@@ -164,10 +164,14 @@ class TestPoolRotationCycle:
         for i in range(pool_entries):
             e = MagicMock(name=f"entry_{i}")
             e.id = f"cred-{i}"
+            # Healthy by default — the first-429 fast-rotate path counts
+            # non-exhausted siblings via pool.entries().
+            e.last_status = None
             entries.append(e)
 
         pool = MagicMock()
         pool.has_credentials.return_value = True
+        pool.entries.return_value = entries
         # Must be set explicitly — MagicMock.provider returns a truthy
         # child mock, which would trigger the provider-mismatch guard.
         pool.provider = ""
@@ -192,9 +196,39 @@ class TestPoolRotationCycle:
 
         return agent, pool, entries
 
-    def test_first_429_sets_retry_flag_no_rotation(self):
-        """First 429 should just set has_retried_429=True, no rotation."""
-        agent, pool, _ = self._make_agent_with_pool(3)
+    def test_first_429_multi_entry_rotates_immediately(self):
+        """First 429 on a MULTI-entry pool rotates now — no retry-same-credential.
+
+        Waiting out a provider Retry-After (up to 10 min) on a drained
+        credential while healthy siblings sit idle stalls interactive
+        sessions (2026-08-04 incident: one-word reply took 10.4 min).
+        """
+        agent, pool, entries = self._make_agent_with_pool(3)
+        recovered, has_retried = agent._recover_with_credential_pool(
+            status_code=429, has_retried_429=False
+        )
+        assert recovered is True
+        assert has_retried is False
+        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=429, error_context=None, api_key_hint="test-api-key")
+        agent._swap_credential.assert_called_once_with(entries[1])
+
+    def test_first_429_single_entry_sets_retry_flag_no_rotation(self):
+        """First 429 on a SINGLE-entry pool keeps retry-first behavior —
+        there is nothing to rotate to, so honoring Retry-After is correct."""
+        agent, pool, _ = self._make_agent_with_pool(1)
+        recovered, has_retried = agent._recover_with_credential_pool(
+            status_code=429, has_retried_429=False
+        )
+        assert recovered is False
+        assert has_retried is True
+        pool.mark_exhausted_and_rotate.assert_not_called()
+
+    def test_first_429_all_siblings_exhausted_sets_retry_flag(self):
+        """First 429 when every OTHER entry is already exhausted behaves like
+        a single-entry pool: retry-first, no futile rotation."""
+        agent, pool, entries = self._make_agent_with_pool(3)
+        for e in entries[1:]:
+            e.last_status = "exhausted"
         recovered, has_retried = agent._recover_with_credential_pool(
             status_code=429, has_retried_429=False
         )

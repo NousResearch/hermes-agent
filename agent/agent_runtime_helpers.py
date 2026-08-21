@@ -1161,7 +1161,31 @@ def recover_with_credential_pool(
                 or "usage limit has been reached" in context_message
             )
         if not has_retried_429 and not usage_limit_reached:
-            return False, True
+            # Multi-entry pool: rotate NOW on the first 429 instead of
+            # retrying the same drained credential. Providers like Anthropic
+            # send Retry-After values of up to 10 minutes; honoring that on a
+            # credential while sibling accounts sit idle stalls interactive
+            # sessions for the full window (observed 2026-08-04: a one-word
+            # reply took 10.4 min because the session's baked-in token hit
+            # its rate limit and the retry napped through Retry-After=626s
+            # with two healthy accounts in the pool). Retry-same-credential
+            # remains the behavior for single-entry pools, where rotation
+            # has nothing to rotate to.
+            try:
+                _available_siblings = [
+                    e
+                    for e in pool.entries()
+                    if getattr(e, "last_status", None) != STATUS_EXHAUSTED
+                ]
+            except Exception:
+                _available_siblings = []
+            if len(_available_siblings) <= 1:
+                return False, True
+            _ra().logger.info(
+                "Rate limited with %d available pool entries — rotating "
+                "immediately instead of retrying the drained credential",
+                len(_available_siblings),
+            )
         rotate_status = status_code if status_code is not None else 429
         next_entry = _rotate_failed_credential(rotate_status)
         if next_entry is not None:

@@ -2622,6 +2622,10 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # Auto-block after the same review correction is requested this many
+        # times in a row. Distinct feedback resets the streak so normal iterative
+        # review remains unbounded. Set to 0 to disable this loop breaker.
+        "repeated_review_changes_limit": 3,
         # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
         # the historical 2 MiB + one-backup behavior; long-running workers can
         # raise these to keep more early failure evidence.

@@ -999,6 +999,12 @@ def _handle_request_changes(args: dict, **kw) -> str:
                 tid,
                 reason=reason,
                 expected_run_id=_worker_run_id(tid),
+                changes_limit=int(cfg_get(
+                    load_config(),
+                    "kanban",
+                    "repeated_review_changes_limit",
+                    default=kb.DEFAULT_REPEATED_REVIEW_CHANGES_LIMIT,
+                )),
             )
             if not ok:
                 return tool_error(

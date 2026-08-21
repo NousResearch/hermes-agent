@@ -644,6 +644,162 @@ def _failures(conn, task_id: str) -> int:
     ).fetchone()[0])
 
 
+def test_repeated_changes_requests_trip_independent_review_breaker(conn) -> None:
+    task_id = kb.create_task(conn, title="stuck review", assignee="builder")
+    implementation = kb.claim_task(conn, task_id, claimer="builder:1")
+    assert implementation is not None
+
+    for attempt in range(1, 4):
+        assert kb.request_review(
+            conn,
+            task_id,
+            summary=f"attempt {attempt}",
+            reviewer="reviewer" if attempt == 1 else None,
+            expected_run_id=implementation.current_run_id,
+        )
+        review = kb.claim_review_task(conn, task_id, claimer=f"reviewer:{attempt}")
+        assert review is not None
+        assert kb.request_changes(
+            conn,
+            task_id,
+            reason="Fix the unchanged boundary.",
+            expected_run_id=review.current_run_id,
+            changes_limit=3,
+        ) == (True, "builder")
+
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        if attempt < 3:
+            assert task.status == "ready"
+            implementation = kb.claim_task(
+                conn, task_id, claimer=f"builder:{attempt + 1}"
+            )
+            assert implementation is not None
+        else:
+            assert task.status == "blocked"
+
+    detected = _event(kb.list_events(conn, task_id), "review_loop_detected")
+    assert detected.payload == {
+        "repeat_count": 3,
+        "limit": 3,
+        "implementer": "builder",
+        "reviewer": "reviewer",
+    }
+    assert _failures(conn, task_id) == 0
+
+
+def test_distinct_review_feedback_does_not_trip_repeat_breaker(conn) -> None:
+    task_id = kb.create_task(conn, title="iterative review", assignee="builder")
+    implementation = kb.claim_task(conn, task_id, claimer="builder:1")
+    assert implementation is not None
+
+    for attempt in range(1, 5):
+        assert kb.request_review(
+            conn,
+            task_id,
+            summary=f"attempt {attempt}",
+            reviewer="reviewer" if attempt == 1 else None,
+            expected_run_id=implementation.current_run_id,
+        )
+        review = kb.claim_review_task(conn, task_id, claimer=f"reviewer:{attempt}")
+        assert review is not None
+        assert kb.request_changes(
+            conn,
+            task_id,
+            reason=f"Address review concern {attempt}.",
+            expected_run_id=review.current_run_id,
+            changes_limit=3,
+        ) == (True, "builder")
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "ready"
+        implementation = kb.claim_task(
+            conn, task_id, claimer=f"builder:{attempt + 1}"
+        )
+        assert implementation is not None
+
+    assert not any(
+        event.kind == "review_loop_detected"
+        for event in kb.list_events(conn, task_id)
+    )
+
+
+def test_rework_context_foregrounds_latest_review_instruction(conn) -> None:
+    task_id = kb.create_task(
+        conn,
+        title="correct the export",
+        body="Original task description that is now background context.",
+        assignee="builder",
+    )
+    implementation = kb.claim_task(conn, task_id, claimer="builder:1")
+    assert implementation is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        summary="first review handoff",
+        reviewer="reviewer",
+        expected_run_id=implementation.current_run_id,
+    )
+    review = kb.claim_review_task(conn, task_id, claimer="reviewer:1")
+    assert review is not None
+    assert kb.request_changes(
+        conn,
+        task_id,
+        reason="Change the exact boundary check, not the heading.",
+        expected_run_id=review.current_run_id,
+    ) == (True, "builder")
+    retry = kb.claim_task(conn, task_id, claimer="builder:2")
+    assert retry is not None
+
+    context = kb.build_worker_context(conn, task_id)
+    current = context.index("## Current review instruction")
+    original = context.index("## Body")
+    history = context.index("## Prior attempts on this task")
+    assert current < original < history
+    assert "Change the exact boundary check, not the heading." in context
+    assert "The Body below is the original task, not a replacement" in context
+
+
+def test_rework_context_keeps_instruction_foregrounded_after_crash(
+    conn, monkeypatch
+) -> None:
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    task_id = kb.create_task(
+        conn,
+        title="retry the correction",
+        body="Original task description.",
+        assignee="builder",
+    )
+    implementation = kb.claim_task(conn, task_id)
+    assert implementation is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        summary="ready for review",
+        reviewer="reviewer",
+        expected_run_id=implementation.current_run_id,
+    )
+    review = kb.claim_review_task(conn, task_id, claimer="reviewer:1")
+    assert review is not None
+    assert kb.request_changes(
+        conn,
+        task_id,
+        reason="Fix the exact boundary.",
+        expected_run_id=review.current_run_id,
+    ) == (True, "builder")
+
+    retry = kb.claim_task(conn, task_id)
+    assert retry is not None
+    kb._set_worker_pid(conn, task_id, 98765)
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    assert kb.detect_crashed_workers(conn) == [task_id]
+    assert kb.claim_task(conn, task_id) is not None
+
+    context = kb.build_worker_context(conn, task_id)
+    assert context.index("## Current review instruction") < context.index("## Body")
+    assert "Fix the exact boundary." in context
+
+
 def test_review_transitions_preserve_consecutive_failures(conn) -> None:
     """M2 regression: review transitions neither reset nor increment the
     circuit-breaker counter.

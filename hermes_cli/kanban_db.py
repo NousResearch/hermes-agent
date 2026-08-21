@@ -132,6 +132,10 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # spirit (default 2) but counts a different signal: manual unblock recurrences,
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
+# Review rework is a successful lifecycle transition, so it is intentionally
+# independent from crash/spawn failure accounting. Bound repeated autonomous
+# review cycles separately; callers may override or disable this with 0.
+DEFAULT_REPEATED_REVIEW_CHANGES_LIMIT = 3
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 
@@ -6655,6 +6659,7 @@ def request_changes(
     *,
     reason: str,
     expected_run_id: Optional[int] = None,
+    changes_limit: int = DEFAULT_REPEATED_REVIEW_CHANGES_LIMIT,
 ) -> tuple[bool, Optional[str]]:
     """Finish an active review run and route the task back for rework.
 
@@ -6667,6 +6672,8 @@ def request_changes(
     reason = str(redact_review_value(reason or "")).strip()
     if not reason:
         return False, "reason is required"
+    if changes_limit < 0:
+        raise ValueError("changes_limit must be non-negative")
 
     with write_txn(conn):
         task_row = conn.execute(
@@ -6727,7 +6734,23 @@ def request_changes(
         else:
             reviewer = None
 
-        new_status = _landing_status_after_parents(conn, task_id)
+        prior_changes = conn.execute(
+            "SELECT summary FROM task_runs "
+            "WHERE task_id = ? AND outcome = 'changes_requested' "
+            "ORDER BY id DESC",
+            (task_id,),
+        ).fetchall()
+        repeat_count = 1
+        for prior in prior_changes:
+            if str(prior["summary"] or "").strip() != reason:
+                break
+            repeat_count += 1
+        review_loop_detected = changes_limit > 0 and repeat_count >= changes_limit
+        new_status = (
+            "blocked"
+            if review_loop_detected
+            else _landing_status_after_parents(conn, task_id)
+        )
         # NOTE: consecutive_failures is deliberately PRESERVED (neither
         # reset nor incremented). Review transitions are not evidence the
         # pathology cleared — only complete_task's success path resets the
@@ -6739,10 +6762,17 @@ def request_changes(
                    assignee = COALESCE(?, assignee),
                    claim_lock = NULL,
                    claim_expires = NULL,
-                   worker_pid = NULL
+                   worker_pid = NULL,
+                   block_kind = CASE WHEN ? THEN 'needs_input' ELSE block_kind END
              WHERE id = ? AND status = 'running' AND current_run_id = ?
             """,
-            (new_status, implementer, task_id, int(current_run_id)),
+            (
+                new_status,
+                implementer,
+                int(review_loop_detected),
+                task_id,
+                int(current_run_id),
+            ),
         )
         if cur.rowcount != 1:
             return False, "task changed during review handoff"
@@ -6765,6 +6795,34 @@ def request_changes(
             },
             run_id=run_id,
         )
+        if review_loop_detected:
+            loop_payload = {
+                "repeat_count": repeat_count,
+                "limit": changes_limit,
+                "implementer": implementer,
+                "reviewer": reviewer,
+            }
+            _append_event(
+                conn,
+                task_id,
+                "review_loop_detected",
+                loop_payload,
+                run_id=run_id,
+            )
+            _append_event(
+                conn,
+                task_id,
+                "blocked",
+                {
+                    "reason": (
+                        "review changes limit reached "
+                        f"({repeat_count}/{changes_limit} repeated instructions)"
+                    ),
+                    "kind": "needs_input",
+                    "source_status": "review",
+                },
+                run_id=run_id,
+            )
     return True, implementer
 
 
@@ -11006,18 +11064,19 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
 
     Order:
       1. Task title (mandatory).
-      2. Task body (optional opening post, capped at 8 KB).
-      3. Prior attempts on THIS task (most recent ``_CTX_MAX_PRIOR_ATTEMPTS``
+      2. The latest review correction when this is a rework run.
+      3. Task body (optional opening post, capped at 8 KB).
+      4. Prior attempts on THIS task (most recent ``_CTX_MAX_PRIOR_ATTEMPTS``
          shown; older attempts collapsed into a one-line summary).
          Each attempt's ``summary`` / ``error`` / ``metadata`` capped at
          ``_CTX_MAX_FIELD_BYTES`` each.
-      4. Structured handoff results of every done parent task. Prefers
+      5. Structured handoff results of every done parent task. Prefers
          ``run.summary`` / ``run.metadata`` when the parent was executed
          via a run; falls back to ``task.result`` for older data. Same
          per-field cap.
-      5. Cross-task role history for the assignee (most recent 5
+      6. Cross-task role history for the assignee (most recent 5
          completed runs on other tasks).
-      6. Comment thread (most recent ``_CTX_MAX_COMMENTS`` shown, older
+      7. Comment thread (most recent ``_CTX_MAX_COMMENTS`` shown, older
          collapsed).
 
     All caps exist so worker prompts stay bounded even on pathological
@@ -11063,6 +11122,32 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         lines.append(f"Branch:   {task.branch_name}")
     lines.append("")
 
+    # A retry spawned immediately after review must treat the correction as its
+    # current instruction. Keep this block ahead of the original task body and
+    # outside the bounded attempt history so it cannot be buried or omitted.
+    all_prior = [r for r in list_runs(conn, task_id) if r.ended_at is not None]
+    latest_review_transition = next(
+        (
+            run
+            for run in reversed(all_prior)
+            if run.outcome in {"review_requested", "changes_requested"}
+        ),
+        None,
+    )
+    if (
+        latest_review_transition is not None
+        and latest_review_transition.outcome == "changes_requested"
+        and latest_review_transition.summary
+        and latest_review_transition.summary.strip()
+    ):
+        lines.append("## Current review instruction")
+        lines.append(
+            "Address this correction before requesting review again. The Body "
+            "below is the original task, not a replacement for this instruction."
+        )
+        lines.append(_cap(latest_review_transition.summary))
+        lines.append("")
+
     if task.body and task.body.strip():
         lines.append("## Body")
         lines.append(_cap(task.body, _CTX_MAX_BODY_BYTES))
@@ -11092,7 +11177,6 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     # Cap at _CTX_MAX_PRIOR_ATTEMPTS most-recent closed runs; older
     # attempts get collapsed into a one-line marker so the worker knows
     # more exist without bloating the prompt.
-    all_prior = [r for r in list_runs(conn, task_id) if r.ended_at is not None]
     # list_runs returns ascending by started_at; "most recent" = last N
     if len(all_prior) > _CTX_MAX_PRIOR_ATTEMPTS:
         omitted = len(all_prior) - _CTX_MAX_PRIOR_ATTEMPTS

@@ -26,6 +26,7 @@ from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
+from hermes_cli.config import cfg_get, load_config
 
 
 # ---------------------------------------------------------------------------
@@ -2478,6 +2479,12 @@ def _cmd_request_changes(args: argparse.Namespace) -> int:
             tid,
             reason=reason,
             expected_run_id=_worker_run_id_for(tid),
+            changes_limit=int(cfg_get(
+                load_config(),
+                "kanban",
+                "repeated_review_changes_limit",
+                default=kb.DEFAULT_REPEATED_REVIEW_CHANGES_LIMIT,
+            )),
         )
         if not ok:
             print(

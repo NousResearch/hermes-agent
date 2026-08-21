@@ -1217,25 +1217,32 @@ def run_doctor(args):
         ("httpx", "HTTPX"),
     ]
     
+    # (import module, display name, pip install spec). The pip spec is spelled
+    # out because the install name diverges from the import name for some
+    # packages (discord -> discord.py, telegram -> python-telegram-bot), so a
+    # naive `pip install <module>` would install the wrong package.
     optional_packages = [
-        ("croniter", "Croniter (cron expressions)"),
-        ("telegram", "python-telegram-bot"),
-        ("discord", "discord.py"),
+        ("croniter", "Croniter (cron expressions)", "croniter"),
+        ("telegram", "python-telegram-bot", "python-telegram-bot"),
+        ("discord", "discord.py", "discord.py"),
     ]
-    
+
     for module, name in required_packages:
         try:
             __import__(module)
             check_ok(name)
         except ImportError:
             _fail_and_issue(name, "(missing)", f"Install {name}: {_python_install_cmd()} {module}", issues)
-    
-    for module, name in optional_packages:
+
+    for module, name, pip_spec in optional_packages:
         try:
             __import__(module)
             check_ok(name, "(optional)")
         except ImportError:
-            check_warn(name, "(optional, not installed)")
+            check_warn(
+                name,
+                f"(optional, not installed) — install with: {_python_install_cmd()} {pip_spec}",
+            )
     
     _section("Configuration Files")
     # Managed scope (administrator-pinned config/env), when present.

@@ -23,7 +23,7 @@ def _setup_doctor_env(monkeypatch, tmp_path, venv_name="venv"):
     venv_bin_dir = project / venv_name / "bin"
     venv_bin_dir.mkdir(parents=True, exist_ok=True)
     hermes_bin = venv_bin_dir / "hermes"
-    hermes_bin.write_text("#!/usr/bin/env python\n# entry point\n")
+    hermes_bin.write_text("#!/usr/bin/env python\n# entry point\n", encoding="utf-8")
     hermes_bin.chmod(0o755)
 
     monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
@@ -82,7 +82,7 @@ class TestDoctorCommandInstallation:
         cmd_link_dir.mkdir(parents=True)
         cmd_link = cmd_link_dir / "hermes"
         wrong_target = tmp_path / "wrong_hermes"
-        wrong_target.write_text("#!/usr/bin/env python\n")
+        wrong_target.write_text("#!/usr/bin/env python\n", encoding="utf-8")
         cmd_link.symlink_to(wrong_target)
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -131,6 +131,25 @@ class TestDoctorCommandInstallation:
         assert "Venv entry point not found" in out
 
 
+
+    def test_missing_optional_package_shows_install_command(self, monkeypatch, tmp_path):
+        """A not-installed optional package warns WITH an actionable install
+        command spelled with its real pip name (discord -> discord.py)."""
+        _setup_doctor_env(monkeypatch, tmp_path)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        # Force `__import__("discord")` to raise regardless of the host env.
+        monkeypatch.setitem(sys.modules, "discord", None)
+
+        out = _run_doctor(fix=False)
+        assert "discord.py" in out
+        # The warning line must carry the install hint with the pip package
+        # name, not a bare "(optional, not installed)". Locate discord's own
+        # line: other optional packages may legitimately be missing in CI too,
+        # so their "install with:" hints can precede discord's in the output.
+        discord_hint = [
+            ln for ln in out.splitlines() if "install with:" in ln and "discord.py" in ln
+        ]
+        assert discord_hint, f"no discord install hint found in output:\n{out}"
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
     def test_termux_uses_prefix_bin(self, monkeypatch, tmp_path):

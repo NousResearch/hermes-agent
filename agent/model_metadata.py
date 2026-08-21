@@ -544,9 +544,11 @@ DEFAULT_CONTEXT_LENGTHS = {
     # so these fallbacks keep token budgeting / compression from probing down
     # to the 128k default. Ids are matched longest-first, so dated variants
     # (e.g. solar-pro3-250127) resolve via their family prefix.
-    # Sources: Solar Pro 3 = 128K, Solar Pro 2 = 64K, Solar Mini = 32K,
-    # Solar Open 2 = 256K.
+    # Sources: Solar Pro 4 = 512K, Solar Pro 3 = 128K, Solar Pro 2 = 64K,
+    # Solar Mini = 32K, Solar Open 2 = 256K, Syn Pro = 64K.
     "solar-open2": 262144,  # 256K
+    "solar-pro4": 524288,  # 512K
+    "syn-pro": 65536,
     "solar-pro3": 131072,
     "solar-pro2": 65536,
     "solar-mini": 32768,

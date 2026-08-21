@@ -3629,6 +3629,34 @@ def _platform_config_key(platform: "Platform") -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
+def _is_external_correspondent(user_config: Dict[str, Any], source: SessionSource) -> bool:
+    """Return whether this authenticated peer is a correspondent, not an operator."""
+    platform_key = _platform_config_key(source.platform)
+    platform_cfg = (user_config.get("platforms") or {}).get(platform_key) or {}
+    extra = platform_cfg.get("extra") or {} if isinstance(platform_cfg, dict) else {}
+    configured = extra.get("external_correspondents", [])
+    if isinstance(configured, str):
+        configured = configured.split(",")
+    allowed = {
+        str(value).strip().lower()
+        for value in configured
+        if str(value).strip()
+    }
+    return str(source.user_id or "").strip().lower() in allowed
+
+
+def _external_agent_isolation_kwargs(
+    user_config: Dict[str, Any], source: SessionSource
+) -> Dict[str, bool]:
+    """Single construction contract for untrusted external correspondents."""
+    isolated = _is_external_correspondent(user_config, source)
+    return {
+        "skip_memory": isolated,
+        "skip_context_files": isolated,
+        "load_soul_identity": not isolated,
+    }
+
+
 def _teams_pipeline_plugin_enabled() -> bool:
     """Return True when the standalone Teams pipeline plugin is enabled."""
     config = _load_gateway_config()
@@ -5749,6 +5777,9 @@ class TurnRunner:
 
         if agent is None:
             # Config changed or first message — create fresh agent
+            isolation_kwargs = _external_agent_isolation_kwargs(
+                ctx.user_config, ctx.source
+            )
             agent = ctx.AIAgent(
                 model=turn_route["model"],
                 **turn_route["runtime"],
@@ -5782,10 +5813,11 @@ class TurnRunner:
                 session_db=getattr(self._runner._session_db, "_db", self._runner._session_db),
                 # Reload from disk — do not reuse the startup snapshot (#60955).
                 fallback_model=self._runner._refresh_fallback_model(),
-                skip_context_files=skip_context_files,
-                # Keep the persona even with minimal context: soul identity is
-                # a single small file, not part of the expensive walk.
-                load_soul_identity=True,
+                skip_memory=isolation_kwargs["skip_memory"],
+                skip_context_files=(
+                    skip_context_files or isolation_kwargs["skip_context_files"]
+                ),
+                load_soul_identity=isolation_kwargs["load_soul_identity"],
             )
             if _cache_lock and _cache is not None:
                 with _cache_lock:
@@ -22413,6 +22445,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         from hermes_cli.tools_config import _get_platform_tools
 
+        if _is_external_correspondent(user_config, source):
+            return []
+
         override = None
         try:
             adapter = self._adapter_for_source(source)
@@ -22471,6 +22506,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             enabled_toolsets = self._resolve_enabled_toolsets_for_source(
                 user_config, source, platform_key
             )
+            isolation_kwargs = _external_agent_isolation_kwargs(user_config, source)
             agent_cfg = user_config.get("agent") or {}
             from agent.skill_utils import parse_config_string_list
 
@@ -22510,6 +22546,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
+                    **isolation_kwargs,
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
                     reasoning_config=reasoning_config,
@@ -28098,10 +28135,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
+        external_correspondent = _is_external_correspondent(user_config, source)
 
         enabled_toolsets = self._resolve_enabled_toolsets_for_source(
             user_config, source, platform_key
         )
+        if external_correspondent:
+            history = []
+            context_prompt = ""
+            channel_prompt = ""
         agent_cfg_local = user_config.get("agent") or {}
         from agent.skill_utils import parse_config_string_list
 

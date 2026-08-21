@@ -153,6 +153,24 @@ Email access is stricter by default than chat-style platforms:
 **Use a dedicated inbox and configure `EMAIL_ALLOWED_USERS` for normal operation.** Email pairing is opt-in because shared inboxes often contain unrelated unread messages, and Hermes should not reply to those contacts by default.
 :::
 
+### Isolating external correspondents
+
+Allowed operators normally share the gateway's configured tools, memory, persona, and
+conversation context. For an address that should be able to correspond with the agent
+without receiving those private operator surfaces, list it as an external correspondent:
+
+```yaml
+platforms:
+  email:
+    extra:
+      external_correspondents:
+        - outside@example.com
+```
+
+Matching is case-insensitive. These correspondents receive a fresh-context turn with no
+model tools, memory, context files, channel prompt, persona, or prior transcript. They
+must still pass the normal Email allowlist or pairing policy.
+
 ---
 
 ## Troubleshooting

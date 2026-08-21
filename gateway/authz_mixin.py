@@ -480,15 +480,75 @@ class GatewayAuthorizationMixin:
             # triggered group messages (_apply_telegram_group_observe_attribution),
             # so the env-var-only check above misses config.yaml-configured
             # allowlists.  Read the live adapter's config.extra as a fallback.
+            #
+            # Under multiplex_profiles the routed source can carry a secondary
+            # profile name while the transport adapter is registered under the
+            # default profile, so _adapter_for_source fails closed and returns
+            # None (correct for reply egress). For this READ-ONLY consultation
+            # of the documented config allowlist, fall back to the gateway's
+            # own platform config — the same values that gated intake — so a
+            # config.yaml allowlist isn't silently erased by profile routing
+            # (#87830).
             try:
                 adapter = self._adapter_for_source(source)
-                if adapter is not None:
-                    extra = getattr(getattr(adapter, "config", None), "extra", None) or {}
+                extra = (
+                    getattr(getattr(adapter, "config", None), "extra", None)
+                    if adapter is not None
+                    else None
+                )
+                if not isinstance(extra, dict) or not extra:
+                    config = getattr(self, "config", None)
+                    platform_cfg = (
+                        config.platforms.get(source.platform)
+                        if config is not None and hasattr(config, "platforms")
+                        else None
+                    )
+                    extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+                if isinstance(extra, dict):
                     adapter_group_allowed = extra.get("group_allowed_chats")
                     if adapter_group_allowed:
                         allowed = _coerce_allow_set(adapter_group_allowed)
                         if "*" in allowed or source.chat_id in allowed:
                             return True
+                    # WhatsApp's chat allowlist key is group_allow_from —
+                    # entries are GROUP JIDs matched against chat_id at
+                    # intake (_is_group_allowed), not sender user IDs. A
+                    # mention-triggered group message arrives with
+                    # user_id=None (shared-transcript observe path), so
+                    # honoring the documented whatsapp.group_allow_from
+                    # config here mirrors intake semantics. Gate on the
+                    # effective group_policy actually being "allowlist":
+                    # under "open"/"disabled" the list carries no
+                    # operator-configured restriction signal (#87830).
+                    if source.platform in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:
+                        wa_policy = (
+                            self._adapter_group_policy(
+                                source.platform,
+                                profile=getattr(source, "profile", None),
+                            )
+                            or str(extra.get("group_policy") or "").strip().lower()
+                        )
+                        wa_allow = extra.get("group_allow_from") or extra.get("groupAllowFrom")
+                        if wa_policy == "allowlist" and wa_allow:
+                            allowed = _coerce_allow_set(wa_allow)
+                            if "*" in allowed or source.chat_id in allowed:
+                                return True
+                            # Resolve phone↔LID/JID aliases like intake does
+                            # so either configured form matches.
+                            try:
+                                from gateway.whatsapp_identity import (
+                                    expand_whatsapp_aliases,
+                                    normalize_whatsapp_identifier,
+                                )
+
+                                candidate_aliases = expand_whatsapp_aliases(source.chat_id)
+                                for entry in allowed:
+                                    if normalize_whatsapp_identifier(entry) in candidate_aliases:
+                                        return True
+                                    if expand_whatsapp_aliases(entry) & candidate_aliases:
+                                        return True
+                            except Exception:
+                                pass
             except Exception:
                 pass
 

@@ -1095,6 +1095,8 @@ class TestEnvWriteDenylist:
             "HERMES_CONFIG_PATH",
             "HERMES_ENV_PATH",
             "HERMES_OPTIONAL_MCPS",
+            "HERMES_COPILOT_ACP_COMMAND",
+            "HERMES_COPILOT_ACP_ARGS",
             "HERMES_YOLO_MODE",
             "HERMES_ACCEPT_HOOKS",
             "HERMES_REDACT_SECRETS",
@@ -1133,6 +1135,8 @@ class TestEnvWriteDenylist:
             ("Path", "PATH"),
             ("Hermes_Yolo_Mode", "HERMES_YOLO_MODE"),
             ("Hermes_Optional_Mcps", "HERMES_OPTIONAL_MCPS"),
+            ("Hermes_Copilot_Acp_Command", "HERMES_COPILOT_ACP_COMMAND"),
+            ("Hermes_Copilot_Acp_Args", "HERMES_COPILOT_ACP_ARGS"),
         ],
     )
     def test_windows_policy_names_are_case_insensitive(self, key, expected):
@@ -1154,9 +1158,18 @@ class TestEnvWriteDenylist:
         assert not _env_line_defines_key(line, "PATH", is_windows=False)
 
     @pytest.mark.windows_only
-    def test_windows_writer_rejects_mixed_case_protected_name(self):
+    @pytest.mark.parametrize(
+        "protected_key",
+        [
+            "Hermes_Yolo_Mode",
+            "Hermes_Optional_Mcps",
+            "Hermes_Copilot_Acp_Command",
+            "Hermes_Copilot_Acp_Args",
+        ],
+    )
+    def test_windows_writer_rejects_mixed_case_protected_name(self, protected_key):
         with pytest.raises(ValueError, match="denylist"):
-            save_env_value("Hermes_Yolo_Mode", "1")
+            save_env_value(protected_key, "1")
 
 
 

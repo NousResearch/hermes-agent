@@ -219,6 +219,9 @@ _ENV_VAR_NAME_DENYLIST: frozenset[str] = frozenset({
     # MCP catalog trust root. Package-manager wrappers may still provide this
     # in the process environment; only generic persistence writes are blocked.
     "HERMES_OPTIONAL_MCPS",
+    # Local ACP subprocess selection. Existing operator/package-manager values
+    # remain readable; generic writers cannot acquire executable/argv authority.
+    "HERMES_COPILOT_ACP_COMMAND", "HERMES_COPILOT_ACP_ARGS",
     # Hermes security policy / approval-routing context. These remain available
     # through their dedicated CLI/config/session controls, but a generic
     # credential writer must not persist them for the next process startup.

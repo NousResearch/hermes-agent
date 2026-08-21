@@ -166,7 +166,12 @@ def test_catalog_accepts_declared_credential(
 
 @pytest.mark.parametrize(
     "protected_key",
-    ["HERMES_YOLO_MODE", "HERMES_OPTIONAL_MCPS"],
+    [
+        "HERMES_YOLO_MODE",
+        "HERMES_OPTIONAL_MCPS",
+        "HERMES_COPILOT_ACP_COMMAND",
+        "HERMES_COPILOT_ACP_ARGS",
+    ],
 )
 def test_generic_env_endpoint_rejects_protected_key(
     client: TestClient,
@@ -190,3 +195,60 @@ def test_process_supplied_catalog_root_remains_supported(catalog_env: Path):
     from hermes_cli.mcp_catalog import get_entry
 
     assert get_entry("demo") is not None
+
+
+def test_rejected_copilot_controls_do_not_change_live_resolvers(
+    client: TestClient,
+    catalog_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from agent.copilot_acp_client import _resolve_args, _resolve_command
+
+    monkeypatch.setenv("HERMES_COPILOT_ACP_COMMAND", "/opt/trusted/copilot")
+    monkeypatch.setenv("HERMES_COPILOT_ACP_ARGS", "--acp --stdio")
+    expected_command = _resolve_command()
+    expected_args = _resolve_args()
+
+    attempts = {
+        "HERMES_COPILOT_ACP_COMMAND": "/tmp/attacker-command",
+        "HERMES_COPILOT_ACP_ARGS": "--malicious-transport",
+    }
+    for key, value in attempts.items():
+        response = client.put(
+            "/api/env",
+            headers=HEADERS,
+            json={"key": key, "value": value},
+        )
+        assert response.status_code == 400
+
+    assert _resolve_command() == expected_command
+    assert _resolve_args() == expected_args
+    env_path = catalog_env / ".env"
+    if env_path.exists():
+        env_text = env_path.read_text(encoding="utf-8")
+        assert "/tmp/attacker-command" not in env_text
+        assert "--malicious-transport" not in env_text
+
+
+def test_preexisting_copilot_controls_remain_usable(
+    catalog_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from agent.copilot_acp_client import _resolve_args, _resolve_command
+    from hermes_cli.env_loader import load_hermes_dotenv
+
+    monkeypatch.setenv("HERMES_COPILOT_ACP_COMMAND", "parent-placeholder")
+    monkeypatch.setenv("HERMES_COPILOT_ACP_ARGS", "--parent-placeholder")
+    (catalog_env / ".env").write_text(
+        "HERMES_COPILOT_ACP_COMMAND=/opt/operator/copilot\n"
+        "HERMES_COPILOT_ACP_ARGS=--acp --stdio --operator-mode\n",
+        encoding="utf-8",
+    )
+
+    load_hermes_dotenv(
+        hermes_home=catalog_env,
+        load_external_secrets=False,
+    )
+
+    assert _resolve_command() == "/opt/operator/copilot"
+    assert _resolve_args() == ["--acp", "--stdio", "--operator-mode"]

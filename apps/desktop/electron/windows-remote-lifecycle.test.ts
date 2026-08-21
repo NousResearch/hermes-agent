@@ -9,6 +9,7 @@ import {
   encodedPowerShell,
   helperCommand,
   powerShellCommand,
+  probeWindowsRemote,
   psLiteral,
   reusableWindowsLock,
   validLock
@@ -52,6 +53,29 @@ test('platform detection preserves POSIX and falls back to Windows PowerShell', 
   assert.match(calls[1], /EncodedCommand/)
 })
 
+test('Windows probe selects a validated Hermes and Python runtime pair', async () => {
+  let script = ''
+  const runtime = await probeWindowsRemote(
+    sshWith(async command => {
+      script = Buffer.from(command.split(' ').pop()!, 'base64').toString('utf16le')
+
+      return JSON.stringify({
+        os: 'Windows',
+        arch: 'AMD64',
+        hermesHome: 'C:\\Users\\me\\AppData\\Local\\hermes',
+        hermesPath: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\hermes.exe',
+        python: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe'
+      })
+    })
+  )
+
+  assert.match(script, /\$runtime=\$candidates\|ForEach-Object/)
+  assert.match(script, /Test-Path -LiteralPath \$hermes -PathType Leaf/)
+  assert.match(script, /Test-Path -LiteralPath \$python -PathType Leaf/)
+  assert.ok(script.indexOf('$runtime=$candidates') < script.indexOf('$hermes=$runtime.hermes'))
+  assert.match(runtime.python, /venv\\Scripts\\python\.exe$/)
+})
+
 test('platform detection surfaces transport failures as themselves, not unsupported-platform', async () => {
   // A dead/unauthorized host is a connectivity verdict; only a host that answers
   // neither probe is an unsupported platform.
@@ -78,6 +102,24 @@ test('platform detection surfaces transport failures as themselves, not unsuppor
       })
     ),
     (err: any) => err.kind === 'unsupported-platform' && /Hermes is not installed/.test(err.message)
+  )
+
+  await assert.rejects(
+    detectRemotePlatform(
+      sshWith(async command => {
+        if (command.startsWith('uname ')) {
+          throw new Error('not recognized')
+        }
+
+        throw new Error(
+          '#< CLIXML <Objs><S S="progress">module load</S><S S="Error">The remote Hermes Python runtime was not found._x000D__x000A_</S></Objs>'
+        )
+      })
+    ),
+    (err: any) =>
+      err.kind === 'unsupported-platform' &&
+      /probe: The remote Hermes Python runtime was not found\./.test(err.message) &&
+      !/CLIXML|module load/.test(err.message)
   )
 })
 

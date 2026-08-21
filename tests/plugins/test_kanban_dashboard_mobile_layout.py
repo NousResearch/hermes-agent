@@ -34,8 +34,7 @@ def _task(task_id: str, status: str, *, assignee: str = "alpha", tenant: str = "
 def app_fixture(tmp_path: Path) -> Path:
     """Bundle React into a tiny host, then execute the shipped plugin unchanged."""
     repo = Path(__file__).resolve().parents[2]
-    shared = repo.parent.parent
-    node_modules = shared / "node_modules"
+    node_modules = repo / "node_modules"
     playwright = node_modules / "playwright"
     esbuild = node_modules / "esbuild" / "bin" / "esbuild"
     if not playwright.exists() or not esbuild.exists():
@@ -96,7 +95,7 @@ window.__HERMES_PLUGINS__ = {register(_name, Component) { createRoot(document.qu
     subprocess.run(
         [str(esbuild), str(entry), "--bundle", "--format=iife", f"--outfile={bundle}"],
         check=True,
-        cwd=shared,
+        cwd=repo,
         env={**os.environ, "NODE_PATH": str(node_modules)},
         capture_output=True,
         text=True,
@@ -118,7 +117,7 @@ window.__HERMES_PLUGINS__ = {register(_name, Component) { createRoot(document.qu
 
 def _run_browser(page: Path, width: int, screenshot: Path | None = None) -> dict[str, Any]:
     repo = Path(__file__).resolve().parents[2]
-    playwright = repo.parent.parent / "node_modules" / "playwright"
+    playwright = repo / "node_modules" / "playwright"
     probe = page.parent / f"probe-{width}.cjs"
     probe.write_text(
         """const { chromium } = require(process.argv[2]);

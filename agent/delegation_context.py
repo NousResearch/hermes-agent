@@ -154,13 +154,17 @@ def delegated_child_subprocess_env(
     Most subprocess call sites historically used ``env=None`` to inherit the
     process environment.  In a ``delegate_task`` child, inheriting as-is leaks
     parent dispatcher ``HERMES_KANBAN_*`` vars while losing the ContextVar in
-    the new process.  This helper preserves normal ``env=None`` semantics for
-    non-delegated calls, and only materializes a scrubbed env when the lineage
-    marker must be propagated across a child-process boundary.
+    the new process.  For delegated calls this materializes a scrubbed copy of
+    ``os.environ``; for non-delegated calls it returns a copy of the inherited
+    environment (or of *env*) with any stale lineage marker stripped, so a
+    marker that leaked into ``os.environ`` can never cross a subprocess
+    boundary (#87650).
     """
     if not is_delegated_child_process_context():
         if env is None:
-            return None
+            import os
+
+            env = os.environ
         cleaned = dict(env)
         cleaned.pop(DELEGATED_CHILD_ENV_MARKER, None)
         return cleaned

@@ -799,6 +799,44 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
+async def _unarchive_session_on_activity(session_db: Any, session_id: str) -> bool:
+    """Resurface an archived session when real user activity arrives (#89325).
+
+    Archiving is a soft hide: the session row keeps every message and inbound
+    delivery still routes to it, but the archived flag hides it from the
+    default session list on every surface (desktop sidebar, TUI, CLI). A
+    conversation that receives a real user message from ANY platform channel
+    must come back — otherwise a chat you are actively using on WhatsApp,
+    BlueBubbles, Photon, Telegram, ... stays hidden on the desktop UI forever
+    while messages pile up invisibly.
+
+    The caller gates this on real (non-internal) inbound only: cron
+    deliveries, background-process completions, and startup-restore replays
+    are system traffic, not user activity, and must not un-archive a session
+    the user deliberately hid.
+
+    ``session_db`` is the async session DB door (``AsyncSessionDB``); both
+    calls offload to threads so the event loop never blocks on SQLite.
+    Returns True when the session was archived and is now visible again.
+    """
+    if session_db is None or not session_id:
+        return False
+    try:
+        row = await session_db.get_session(session_id)
+    except Exception:
+        logger.debug("auto-unarchive: read failed for %s", session_id, exc_info=True)
+        return False
+    if not row or not row.get("archived"):
+        return False
+    try:
+        await session_db.set_session_archived(session_id, False)
+    except Exception:
+        logger.debug("auto-unarchive: write failed for %s", session_id, exc_info=True)
+        return False
+    logger.info("Auto-unarchived session %s on inbound activity", session_id)
+    return True
+
+
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to chat surfaces.
 
@@ -18934,6 +18972,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry)
                 except Exception:
                     logger.debug("Failed to record Telegram topic binding", exc_info=True)
+        # Auto-unarchive on real user activity (#89325): archiving is a soft
+        # hide, so a conversation that receives a message from any channel
+        # (WhatsApp, BlueBubbles, Photon, Telegram, ...) must resurface in the
+        # default session list. Internal/system events (cron deliveries,
+        # background-process completions, startup-restore replays) are not
+        # user activity — they keep the archive flag, matching the
+        # touch_activity gate used at session resolution above.
+        if not bool(getattr(event, "internal", False)):
+            await _unarchive_session_on_activity(
+                self._session_db, session_entry.session_id
+            )
         # Capture and immediately consume was_auto_reset so it does not
         # re-fire on subsequent messages — preventing the cleanup from
         # wiping model/reasoning overrides set between turns (Closes #48031).

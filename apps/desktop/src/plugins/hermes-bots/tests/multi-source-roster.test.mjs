@@ -636,6 +636,20 @@ test('gateway sections are progressive: flat for one or filtered, foldable for s
   assert.equal(sections(rows.slice(1), options, 'work').sectioned, false)
 })
 
+test('gateway section status stays beside its name while the count stays at the edge', () => {
+  const start = source.indexOf('function RosterSectionHeader(')
+  const end = source.indexOf('function GatewaySectionHeading(', start)
+  const heading = source.slice(start, end)
+  const label = heading.indexOf('children: label')
+  const status = heading.indexOf("name: 'debug-disconnect'")
+  const spacer = heading.indexOf("'aria-hidden': true")
+  const count = heading.indexOf('children: count')
+
+  assert.ok(label >= 0 && status > label, 'the disconnected state follows the gateway name')
+  assert.ok(spacer > status && count > spacer, 'a flexible spacer keeps the count on the far edge')
+  assert.match(heading, /className: 'sr-only', children: status\.label/)
+})
+
 test('gateway and activity filters preserve exact source rows', () => {
   const { __filterBotsByGateway: byGateway, __rosterActivityMatches: activity } = runtime()
   const roster = [

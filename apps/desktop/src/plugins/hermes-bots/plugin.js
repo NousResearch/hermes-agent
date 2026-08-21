@@ -11227,7 +11227,7 @@ function BotsHomeView() {
                 unavailable ? 'text-amber-700 dark:text-amber-300' : 'text-(--ui-text-tertiary)'
               ),
               children: unavailable
-                ? `${gateway} is ${status.label.toLowerCase()}. This bot remains selected; retry when the gateway is available.`
+                ? `${gateway} is unavailable. Retry when it is back online.`
                 : bot.remoteSource
                   ? `This bot lives on ${gateway}. Mention @${handle} from a Bot Chat to send it a message.`
                   : 'Open this bot’s continuous chat. Its background work keeps running when you switch away.'
@@ -11617,17 +11617,26 @@ function RosterSectionHeader({ collapsed, count, icon, label, onToggle, status, 
     children: [
       jsx(Codicon, { name: collapsed ? 'chevron-right' : 'chevron-down', className: 'shrink-0' }),
       jsx(Codicon, { name: icon, className: 'shrink-0' }),
-      jsx('span', { className: 'min-w-0 flex-1 truncate', children: label }),
+      jsxs('span', {
+        className: 'flex min-w-0 items-center gap-1',
+        children: [
+          jsx('span', { className: 'min-w-0 truncate', children: label }),
+          status && !status.available
+            ? jsxs('span', {
+                className: 'shrink-0 text-amber-600 dark:text-amber-300',
+                children: [
+                  jsx(Codicon, { name: 'debug-disconnect' }),
+                  jsx('span', { className: 'sr-only', children: status.label })
+                ]
+              })
+            : null
+        ]
+      }),
+      jsx('span', { className: 'min-w-0 flex-1', 'aria-hidden': true }),
       jsx('span', {
         className: 'shrink-0 font-normal tabular-nums text-(--ui-text-quaternary)',
         children: count
-      }),
-      status && !status.available
-        ? jsx(Codicon, {
-            name: 'debug-disconnect',
-            className: 'shrink-0 text-amber-600 dark:text-amber-300'
-          })
-        : null
+      })
     ]
   })
 
@@ -11807,7 +11816,8 @@ function BotsPane() {
   const rosterItemCount = roster.length + groupNames.length
   const allBotsHidden =
     !hasRosterConstraint && visibleRoster.length === 0 && groupNames.length === 0 && hiddenBots.length > 0
-  const showRosterSearch = rosterItemCount >= BOT_ROSTER_SEARCH_THRESHOLD || Boolean(query.trim())
+  const showRosterSearch =
+    gatewayOptions.length > 1 || rosterItemCount >= BOT_ROSTER_SEARCH_THRESHOLD || Boolean(query.trim())
   const showRosterFilters =
     gatewayOptions.length > 1 ||
     groupNames.length > 0 ||
@@ -12064,9 +12074,9 @@ function BotsPane() {
               showRosterSearch
                 ? jsx(SearchField, {
                     'aria-label': 'Search bots and group chats',
-                    containerClassName: 'min-w-0 flex-1',
+                    containerClassName: 'min-w-0 flex-1 opacity-100!',
                     inputClassName:
-                      'w-full text-[0.75rem] placeholder:text-(--ui-text-tertiary)',
+                      'w-full text-[0.75rem] placeholder:text-(--ui-text-secondary)',
                     placeholder: 'Search bots and group chats…',
                     value: query,
                     onChange: setQuery

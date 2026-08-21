@@ -725,7 +725,8 @@ test('an unavailable owner offers retry instead of a dead Open chat button', () 
   // Retry re-polls the roster; it must not activate or route anything.
   assert.match(view, /queryClient\.invalidateQueries\(\{ queryKey: ROSTER_KEY \}\)/)
   assert.doesNotMatch(view, /ensureAgent|requestProfile|newChat/)
-  assert.match(view, /This bot remains selected; retry when the gateway is available\./)
+  assert.match(view, /\$\{gateway\} is unavailable\. Retry when it is back online\./)
+  assert.doesNotMatch(view, /This bot remains selected/)
   assert.doesNotMatch(view, /its work keeps running on that gateway/)
 })
 

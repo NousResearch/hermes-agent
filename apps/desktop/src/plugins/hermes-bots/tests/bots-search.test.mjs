@@ -80,7 +80,13 @@ test('blank bot search returns the existing roster reference', () => {
 })
 
 test('Bot pane renders the canonical search field and no-match state', () => {
+  assert.match(
+    source,
+    /const showRosterSearch =\s*gatewayOptions\.length > 1 \|\| rosterItemCount >= BOT_ROSTER_SEARCH_THRESHOLD/
+  )
   assert.match(source, /jsx\(SearchField,\s*\{[\s\S]*?placeholder: 'Search bots and group chats…'/)
+  assert.match(source, /containerClassName: 'min-w-0 flex-1 opacity-100!'/)
+  assert.match(source, /placeholder:text-\(--ui-text-secondary\)/)
   assert.match(source, /'aria-live': 'polite'/)
   assert.match(source, /No bots or group chats match “\$\{query\.trim\(\)\}”/)
   assert.match(source, /const initialRosterLoading = !data && !error && roster\.length === 0/)

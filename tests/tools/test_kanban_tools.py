@@ -579,6 +579,93 @@ def test_kanban_guidance_orchestrator_decision_ownership():
     assert "workers cannot see sibling context" in KANBAN_GUIDANCE
 
 
+def test_kanban_guidance_sweeper_idempotency_contract():
+    """KANBAN_GUIDANCE must encode the worktree-sweeper's three equivalent
+    sticky markers so workers recognise already-swept cards and don't
+    re-push, re-PR, or re-complete them. The original spec called for an
+    `auto-pushed` tag; the live schema has no tags column, so the sentinel
+    comment is the durable marker — but the contract must call out both.
+
+    These are the three markers the prototype worktree-sweeper (t_2e093970)
+    actually emits; if you change them, update the sweeper in lockstep.
+    """
+    import re
+
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    # 1. Sentinel-comment regex (sweeper:auto-pushed:<UTC_TS>:<PR_URL>)
+    assert "Sweeper idempotency contract" in KANBAN_GUIDANCE
+    sent_re = re.compile(r"sweeper:auto-pushed:\\d\{10,\}:https://github\\.com/.+/pull/\\d\+")
+    sent_match = sent_re.search(KANBAN_GUIDANCE)
+    assert sent_match, "KANBAN_GUIDANCE must document the sentinel-comment regex"
+
+    # 2. PR-URL regex (matches sweeper's PR_URL_RE so grep semantics align)
+    url_re = re.compile(r"https://github\\.com/[^\\s\)]+/pull/\\d\+")
+    url_match = url_re.search(KANBAN_GUIDANCE)
+    assert url_match, "KANBAN_GUIDANCE must document the PR-URL regex"
+
+    # 3. PR: <URL> summary line convention
+    assert "PR: <URL>" in KANBAN_GUIDANCE
+
+    # Negative guidance: workers must NOT re-do sweeper work
+    assert "do NOT re-push" in KANBAN_GUIDANCE
+    assert "do NOT open a new PR" in KANBAN_GUIDANCE
+    assert "do NOT re-complete" in KANBAN_GUIDANCE
+
+    # Deviation from the original `auto-pushed` tag spec — must be acknowledged
+    # so a future reader doesn't go hunting for a tags column that doesn't exist.
+    assert "auto-pushed" in KANBAN_GUIDANCE
+    assert "tags column" in KANBAN_GUIDANCE
+
+
+def test_kanban_guidance_sweeper_regexes_match_sweeper_script():
+    """Cross-file invariant: the regex strings baked into KANBAN_GUIDANCE must
+    actually match what the prototype worktree-sweeper script emits and tests.
+    If you change either side, change the other — or re-sweeps and re-completions
+    will diverge.
+    """
+    import re
+
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    # Pull the two regex source-of-truth strings out of KANBAN_GUIDANCE.
+    # They appear inside backtick-quoted fragments. Use indexOf to grab
+    # the token between a known anchor and the next backtick — robust
+    # against the doubled-backslash semantics of the underlying triple-
+    # quoted string.
+    def _grab(anchor: str) -> str:
+        i = KANBAN_GUIDANCE.find(anchor)
+        assert i != -1, f"KANBAN_GUIDANCE missing anchor {anchor!r}"
+        start = i
+        end = KANBAN_GUIDANCE.find("`", i)
+        assert end != -1, f"KANBAN_GUIDANCE anchor {anchor!r} not closed by backtick"
+        return KANBAN_GUIDANCE[start:end]
+
+    sentinel_token = _grab("sweeper:auto-pushed:")
+    url_token = _grab("https://github\\.com/")
+
+    sentinel_re = re.compile(sentinel_token)
+    url_re = re.compile(url_token)
+
+    # (a) a typical sentinel comment the sweeper writes (from t_2e093970)
+    typical_sentinel = "sweeper:auto-pushed:1786739000:https://github.com/veroscale/smilemap/pull/1141"
+    assert sentinel_re.fullmatch(typical_sentinel), "sentinel regex must match the script's typical output"
+
+    # (b) a body/result PR URL the sweeper would observe on a previously-swept card
+    body_with_pr = (
+        "Auto-pushed by worktree-sweeper and opened PR. Card reviewed, branch clean.\n"
+        "PR: https://github.com/veroscale/smilemap/pull/1141"
+    )
+    assert url_re.search(body_with_pr), "PR-URL regex must match the script's typical completion-note output"
+
+    # (c) trailing punctuation must NOT swallow the URL
+    assert url_re.search("(see https://github.com/veroscale/smilemap/pull/1141).") is not None
+
+    # (d) a wrong-shape comment must NOT match (catches accidental regex rot)
+    assert sentinel_re.fullmatch("sweeper:auto-pushed:not-a-ts:https://github.com/x/y/pull/1") is None
+    assert url_re.search("see https://example.com/no-such-pr/123") is None
+
+
 # ---------------------------------------------------------------------------
 # Worker task-ownership enforcement (regression tests for #19534)
 # ---------------------------------------------------------------------------

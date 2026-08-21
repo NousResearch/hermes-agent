@@ -1113,7 +1113,98 @@ Runs are exposed on the dashboard (Run History section in the drawer, one colour
 
 ### Forward compatibility
 
-Two nullable columns on `tasks` are reserved for v2 workflow routing: `workflow_template_id` (which template this task belongs to) and `current_step_key` (which step in that template is active). The v1 kernel ignores them for routing but lets clients write them, so a v2 release can add the routing machinery without another schema migration.
+Two nullable columns on `tasks` are reserved for workflow routing: `workflow_template_id` (which template this task belongs to) and `current_step_key` (which step in that template is active). They are written by `hermes kanban create --workflow-template-id <id> --step-key <key>` and read by `hermes kanban list --workflow-template-id <id>` for filtering. The v1 kernel does not dispatch on them — gating comes from parent links and the ship-card sticky block (see [Workflow templates](#workflow-templates)) — but they identify chain members cleanly for tooling and dashboards.
+
+## Workflow templates
+
+Workflow templates codify multi-step remediation chains (a scout issue card → recon → reproduce+patch → regression test → approval-gated ship). The template spec is the single source of truth: `hermes_cli/kanban_templates/<template-id>.md` is a markdown file with a YAML frontmatter (machine contract) followed by prose (human rationale). The implementer parses the frontmatter; the spec prose documents the contract.
+
+### Commands
+
+```
+hermes kanban workflow list
+hermes kanban workflow show <template>
+hermes kanban workflow <template> <card-ref> [--dry-run] [--force] \
+    [--assignee KEY=PROFILE]... [--json]
+```
+
+* `list` — enumerate every template on disk.
+* `show <template>` — print the parsed contract (frontmatter + steps).
+* `<template> <card-ref> <flags>` — instantiate the template against a source card. `<card-ref>` is a task id (`t_…`) or a VULN-id (`VULN-XX-NNN`).
+
+### Flags
+
+* `--dry-run` — full validation + assignee resolution + plan rendering without writing. Exit 0 on success, 2 on validation failure.
+* `--force` — bypass the pre-flight stop when an existing chain is found. **Not** a gate bypass: the ship card is still created sticky-blocked.
+* `--assignee KEY=PROFILE` (repeatable) — override the resolved assignee for a single step. The profile is validated against `hermes profile list` + every assignee ever seen on the board before any card is created.
+* `--json` — machine-readable output.
+
+### Built-in: `sec-vuln-remediation`
+
+The canonical SEC vulnerability remediation template. Takes one SEC severity-tagged scout issue card and instantiates a 4-step chain:
+
+| # | Step | Gate | Assignee (fallback) |
+|---|---|---|---|
+| 1 | `corpus-recon` — corpus-first recon, no code | auto | `default` |
+| 2 | `repro-patch` — reproduce + minimal fix | auto | `calcifer` (`default`) |
+| 3 | `regression-test` — red-green tests | auto | `default` |
+| 4 | `ship-pr` — open PR against `origin/main` | **approval** | `calcifer` (`default`) |
+
+**Input contract.** The referenced card must satisfy ALL of:
+
+* **Scout-issue predicate.** `created_by='scout'`, OR `idempotency_key` starts with `scout:`, OR title starts with `[gh]`.
+* **SEC severity-tagged predicate.** `[SEC]` in title (case-insensitive) OR `[SEC]` anywhere in the body, AND a parseable severity (`[SEC][<SEVERITY>]` in title or `severity <SEVERITY>` in body). Valid severities: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`.
+* **Required fields:** `vuln_id`, `severity`, `component`, `body`, `evidence_links` (≥1 entry), `source_card_id`.
+
+A non-scout, non-SEC, or missing-field card is rejected with exit code 2 and a field-level error message — no cards created.
+
+### The ship card and the approval gate
+
+The ship card is **parked at the approval gate from creation**. Steps 1–3 run automatically when their parents are `done`. Step 4 is sticky-blocked (`block_kind=needs_input`) and cannot dispatch until you explicitly approve:
+
+```
+hermes kanban unblock <ship-card-id>
+```
+
+Approving authorizes ONLY: opening a scoped PR against `origin/main` with evidence (gates 1–4 in the card body). **Auto-merge and auto-deploy are FORBIDDEN** anywhere in the chain — those remain Sab actions outside the workflow.
+
+### Hard prohibitions (carry through the chain)
+
+* No auto-merge — no worker in any step may invoke `gh pr merge` or complete the chain on a merged state it caused.
+* No auto-deploy — no step may trigger a deployment (Kamal/CF push, deploy hooks, restart of live services) as part of the chain. A vulnerability whose remediation includes a deploy gets a separate `[Sab action]` deploy card (gate G2).
+
+### Idempotency and re-runs
+
+* Every child carries `idempotency_key = sec-vuln-remediation:<VULN_ID>:<STEP_KEY>` (the `create_task` dedupe returns the existing id instead of duplicating).
+* Before any create, the command pre-flights the source card's children with `workflow_template_id` set — if any exist, the command prints `chain already exists: <ids>` and exits 0 (use `--force` to bypass; still not a gate bypass).
+* Re-running against an existing chain is a no-op: cards are never rewritten. Partial chains (some steps exist, some missing) are filled in by re-running with `--force`.
+
+### Exit codes
+
+* `0` — chain created, no-op on existing chain, or dry-run success.
+* `2` — usage/validation (unknown template, unknown card, not a scout issue, not SEC-tagged, missing severity/fields, unknown assignee, bad flag). Error text enumerates failures. No cards created.
+* `1` — runtime/DB failure. Creation happens in one transaction so partial writes are impossible.
+
+### Example
+
+```bash
+$ hermes kanban workflow sec-vuln-remediation t_5302ec53 --dry-run
+Dry-run for VULN-TST-001 (HIGH):
+  (would create)  VULN-TST-001 child 1/4: corpus-recon  assignee=default       parents=t_5302ec53                                      gate=auto
+  (would create)  VULN-TST-001 child 2/4: reproduce + patch  assignee=calcifer  parents=t_5302ec53, <id-of-step-1-would-be-created>     gate=auto
+  (would create)  VULN-TST-001 child 3/4: regression test  assignee=default     parents=t_5302ec53, <id-of-step-2-would-be-created>     gate=auto
+  (would create)  VULN-TST-001 child 4/4: ship + open PR  assignee=calcifer    parents=t_5302ec53, <id-of-step-3-would-be-created>     gate=approval
+
+$ hermes kanban workflow sec-vuln-remediation t_5302ec53
+Created chain for VULN-TST-001 (HIGH):
+  t_…  VULN-TST-001 child 1/4: corpus-recon           assignee=default   parents=t_5302ec53         gate=auto
+  t_…  VULN-TST-001 child 2/4: reproduce + patch      assignee=calcifer  parents=t_5302ec53, t_…     gate=auto
+  t_…  VULN-TST-001 child 3/4: regression test        assignee=default   parents=t_5302ec53, t_…     gate=auto
+  t_…  VULN-TST-001 child 4/4: ship + open PR          assignee=calcifer  parents=t_5302ec53, t_…     gate=APPROVAL
+
+Ship card parked at approval gate: t_…
+Unblock with:  hermes kanban unblock t_…
+```
 
 ## Event reference
 

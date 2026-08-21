@@ -250,6 +250,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     # --- init ---
     sub.add_parser("init", help="Create kanban.db if missing (idempotent)")
 
+    # --- workflow (built early so it appears under `kanban --help`) ---
+    from hermes_cli import kanban_workflow as _kw
+    _kw.build_parser(sub)
+
     # --- boards (new in v2: multi-project support) ---
     p_boards = sub.add_parser(
         "boards",
@@ -399,6 +403,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Initial card status. Use 'blocked' for cards "
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
+    p_create.add_argument(
+        "--workflow-template-id", default=None, metavar="ID",
+        help="Record this template id on the task (informational; "
+             "used by `hermes kanban workflow <template>` to identify chain "
+             "members and by `kanban list --workflow-template-id` to filter)."
+    )
+    p_create.add_argument(
+        "--step-key", default=None, dest="current_step_key", metavar="KEY",
+        help="Record this step key on the task (informational; "
+             "used by `kanban list --step-key` to filter)."
+    )
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- swarm ---
@@ -741,6 +756,83 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         nargs="+",
         default=None,
         help="Permanently delete already-archived task ids from the board",
+    )
+
+    # --- issue-triage-fanout (t_053fea1a) ---
+    p_fanout = sub.add_parser(
+        "issue-triage-fanout",
+        help="Fan a scout card's GitHub issue links out into one per-issue child card",
+    )
+    p_fanout.add_argument("board", help="Board slug (positional; required)")
+    p_fanout.add_argument(
+        "scout_card_id",
+        nargs="?",
+        default=None,
+        help="Scout batch card id (e.g. t_12cc81c6). Omit only with --scan-all-scouts.",
+    )
+    p_fanout.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Build titles + bodies, print planned summary, no creates.",
+    )
+    p_fanout.add_argument(
+        "--max-issues",
+        type=int,
+        default=None,
+        help="Cap number of issues processed.",
+    )
+    p_fanout.add_argument(
+        "--skip-existing",
+        dest="skip_existing",
+        action="store_true",
+        default=True,
+        help="Skip if child already exists (default).",
+    )
+    p_fanout.add_argument(
+        "--no-skip-existing",
+        dest="skip_existing",
+        action="store_false",
+        help="Force re-create (still hits idempotency_key).",
+    )
+    p_fanout.add_argument(
+        "--scan-all-scouts",
+        action="store_true",
+        help="Scan all done scout cards on <board> (dry-run only; for cron).",
+    )
+    p_fanout.add_argument(
+        "--gh-path",
+        default="gh",
+        help="Path to gh CLI (default: gh).",
+    )
+    p_fanout.add_argument(
+        "--keys-db",
+        default=None,
+        help="Override path to the idempotency key DB (default: ~/.hermes/hermes-agent/issue_fanout_keys.sqlite).",
+    )
+    p_fanout.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON summary.",
+    )
+    p_fanout.add_argument(
+        "--exclude-issues",
+        dest="exclude_issues",
+        default=None,
+        help=(
+            "Comma-separated issue ids to exclude from fan-out, in addition to "
+            "any awareness-only / do-not-file markers parsed from the scout "
+            "body (e.g. '898,899,900'). t_b17ae9d3 GAP 1 follow-up."
+        ),
+    )
+    p_fanout.add_argument(
+        "--repo-map",
+        dest="repo_map",
+        default=None,
+        help=(
+            "Comma-separated repo=owner overrides for bare-ref scouts "
+            "(e.g. 'smilemap=veroscale,aurora=acme'). Merged on top of the "
+            "built-in REPO_OWNER_MAP. t_b17ae9d3 GAP 2 follow-up."
+        ),
     )
 
     # --- tail ---
@@ -1151,6 +1243,8 @@ def kanban_command(args: argparse.Namespace) -> int:
             "specify":  _cmd_specify,
             "decompose":  _cmd_decompose,
             "gc":       _cmd_gc,
+            "workflow": _cmd_workflow,
+            "issue-triage-fanout": _cmd_issue_triage_fanout,
         }
         handler = handlers.get(action)
         if not handler:
@@ -1586,6 +1680,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            workflow_template_id=getattr(args, "workflow_template_id", None),
+            current_step_key=getattr(args, "current_step_key", None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -3132,6 +3228,61 @@ def _cmd_specify(args: argparse.Namespace) -> int:
     return 0 if (ok_count > 0 or not ids) else 1
 
 
+def _cmd_issue_triage_fanout(args: argparse.Namespace) -> int:
+    """Fan a scout card's GitHub issue links out into one per-issue
+    child card. Thin wrapper over ``issue_triage_fanout.main``.
+
+    The standalone module owns all the orchestration (parsing,
+    title/body builders, idempotency store, JSON summary, exit
+    codes); this handler only translates argparse into ``main()``
+    argv so a single source of truth covers both the CLI and the
+    standalone ``python -m hermes_cli.issue_triage_fanout`` entry.
+
+    Spec: t_9bbc7ec3 / issue-triage-fanout-spec.md §7 (CLI surface).
+    """
+    from hermes_cli import issue_triage_fanout as itf
+
+    argv: list[str] = [args.board]
+
+    if getattr(args, "scan_all_scouts", False):
+        # Cron entry point — no scout_card_id positional.
+        argv.append("--scan-all-scouts")
+    else:
+        scout = getattr(args, "scout_card_id", None)
+        if not scout:
+            print(
+                "kanban: issue-triage-fanout requires <scout_card_id> "
+                "(or pass --scan-all-scouts)",
+                file=sys.stderr,
+            )
+            return 2
+        argv.append(scout)
+
+    if getattr(args, "dry_run", False):
+        argv.append("--dry-run")
+    max_issues = getattr(args, "max_issues", None)
+    if max_issues is not None:
+        argv.extend(["--max-issues", str(max_issues)])
+    if getattr(args, "skip_existing", True) is False:
+        argv.append("--no-skip-existing")
+    if getattr(args, "json", False):
+        argv.append("--json")
+    gh_path = getattr(args, "gh_path", None)
+    if gh_path:
+        argv.extend(["--gh-path", gh_path])
+    keys_db = getattr(args, "keys_db", None)
+    if keys_db:
+        argv.extend(["--keys-db", keys_db])
+    exclude_issues = getattr(args, "exclude_issues", None)
+    if exclude_issues:
+        argv.extend(["--exclude-issues", exclude_issues])
+    repo_map = getattr(args, "repo_map", None)
+    if repo_map:
+        argv.extend(["--repo-map", repo_map])
+
+    return int(itf.main(argv) or 0)
+
+
 def _cmd_decompose(args: argparse.Namespace) -> int:
     """Fan a triage task (or all of them) out into a graph of child
     tasks via the auxiliary LLM, routed to specialist profiles by
@@ -3263,6 +3414,16 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     print(f"GC complete: {removed_ws} workspace(s), "
           f"{removed_events} event row(s), {removed_logs} log file(s) removed")
     return 0
+
+
+def _cmd_workflow(args: argparse.Namespace) -> int:
+    """``hermes kanban workflow …`` — delegate to kanban_workflow.cmd_workflow.
+
+    Implemented in hermes_cli.kanban_workflow so the template spec
+    (hermes_cli/kanban_templates/<id>.md) and its parser live together.
+    """
+    from hermes_cli import kanban_workflow as _kw
+    return _kw.cmd_workflow(args)
 
 
 def _cmd_repair(args: argparse.Namespace) -> int:

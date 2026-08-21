@@ -17,12 +17,19 @@
 #   changed   systemd.services         -> systemd.user.services or
 #                                        launchd.agents
 #   changed   system.activationScripts -> home.activation
-#   changed   addToSystemPackages      -> installPackage and
+#   changed   addToSystemPackages      -> programs.hermes-agent.enable and
 #                                        home.sessionVariables
+#   added     programs.hermes-agent    the CLI and the desktop application,
+#                                      because Home Manager separates an
+#                                      installation from a daemon
 #   changed   stateDir (+ "/.hermes")  -> hermesHome, set directly
 #
 # To use the module:
 #   imports = [ hermes-agent.homeManagerModules.default ];
+#   programs.hermes-agent = {
+#     enable = true;          # the hermes CLI on your PATH
+#     desktop.enable = true;  # the Electron application and a launcher
+#   };
 #   services.hermes-agent = {
 #     enable = true;
 #     gateway.enable = true;
@@ -48,6 +55,7 @@
 
     let
       cfg = config.services.hermes-agent;
+      cfgPrograms = config.programs.hermes-agent;
       common = import ./moduleCommon.nix { inherit lib; };
 
       effectivePackage = common.effectivePackage cfg;
@@ -62,6 +70,52 @@
         managedSystem = "home-manager";
       };
       unitPath = lib.makeBinPath (common.processPath { inherit pkgs cfg; });
+
+      # ── The desktop launcher ───────────────────────────────────────────
+      # A GUI launcher reads no shell profile, so home.sessionVariables does
+      # not reach it, and the application would open ~/.hermes while the
+      # services use hermesHome. Thus the launcher carries the value itself.
+      #
+      # HERMES_MANAGED rides along only when the services are enabled. That
+      # variable makes the CLI refuse a configuration change and name the
+      # rebuild command. A person who enables `programs.` alone has no
+      # activation and no managed configuration, so the application must not
+      # claim one and refuse an edit that nothing else owns.
+      desktopEnvironment = {
+        HERMES_HOME = cfg.hermesHome;
+      }
+      // lib.optionalAttrs cfg.enable {
+        inherit (processEnvironment) HERMES_MANAGED;
+      }
+      // lib.optionalAttrs desktopUsesService {
+        HERMES_DESKTOP_REMOTE_URL = "http://${cfg.backend.host}:${toString cfg.backend.port}";
+      };
+
+      # The application reaches the backend of the service only when there is
+      # a backend to reach AND a shared token to present with. Without the
+      # token the desktop resolver throws ("HERMES_DESKTOP_REMOTE_URL is set
+      # but HERMES_DESKTOP_REMOTE_TOKEN is not"), so the two variables travel
+      # together or not at all.
+      desktopUsesService = cfg.enable && cfg.backend.mode != "none" && cfg.backend.sessionTokenFile != null;
+
+      # The token is read at start time and never with `--set`. makeWrapper
+      # writes a --set value into the Nix store, which all users can read.
+      desktopRun = lib.optional desktopUsesService ''
+        if [ -r ${lib.escapeShellArg cfg.backend.sessionTokenFile} ]; then
+          HERMES_DESKTOP_REMOTE_TOKEN="$(tr -d '\r\n' < ${lib.escapeShellArg cfg.backend.sessionTokenFile})"
+          export HERMES_DESKTOP_REMOTE_TOKEN
+        else
+          echo "hermes-desktop: cannot read the session token at ${cfg.backend.sessionTokenFile}." >&2
+          echo "hermes-desktop: the application starts its own backend instead of the one of the service." >&2
+        fi
+      '';
+
+      # `override`, and not `overrideAttrs`: the values go into the wrapper
+      # that the installPhase writes, and not into a derivation attribute.
+      desktopPackage = cfgPrograms.desktop.package.override {
+        extraEnv = desktopEnvironment;
+        extraRun = desktopRun;
+      };
 
       # The systemd unit that the gateway and the backend both start from.
       mkUnit =
@@ -124,6 +178,73 @@
 
     in
     {
+      # ── programs.hermes-agent — the installation ───────────────────────
+      # Home Manager separates "install this application for me" from "run
+      # this daemon". Hermes needs both, and a person can want one without
+      # the other: an application with no gateway, or a headless gateway on
+      # a machine with no display.
+      #
+      # `services.hermes-agent` stays the authority for the state and the
+      # configuration. This module reads hermesHome and the backend address
+      # from it, and never the reverse.
+      options.programs.hermes-agent = {
+        enable = lib.mkEnableOption ''
+          the Hermes Agent command line application.
+
+          This adds `hermes` to home.packages, and exports HERMES_HOME with
+          home.sessionVariables. An interactive shell then uses the same
+          state as `services.hermes-agent`
+        '';
+
+        package = lib.mkOption {
+          type = lib.types.package;
+          default = effectivePackage;
+          defaultText = lib.literalExpression "config.services.hermes-agent.package";
+          description = ''
+            The hermes-agent package to install.
+
+            The default follows `services.hermes-agent.package`, and applies
+            `extraPythonPackages` and `extraDependencyGroups` from that
+            module. Thus the command line and the services are one build,
+            and a plugin that the services can load is a plugin that your
+            shell can load.
+          '';
+        };
+
+        desktop = {
+          enable = lib.mkEnableOption ''
+            the Hermes Desktop application (Electron).
+
+            This adds `hermes-desktop` to home.packages, with an XDG
+            launcher entry on Linux. The launcher starts the same Hermes
+            runtime that `package` gives, and reads the HERMES_HOME of
+            `services.hermes-agent`. Thus the application, the interactive
+            shell and the services share one state directory.
+
+            The Electron application carries its own Hermes runtime with
+            the usual distribution. This module gives it the Nix package
+            instead, with HERMES_DESKTOP_HERMES. It installs no second copy
+            of Hermes, and it downloads nothing on the first start
+          '';
+
+          package = lib.mkOption {
+            type = lib.types.package;
+            default = cfgPrograms.package.hermesDesktop;
+            defaultText = lib.literalExpression "config.programs.hermes-agent.package.hermesDesktop";
+            description = ''
+              The hermes-desktop package to use.
+
+              The default follows `package`, and thus also
+              `services.hermes-agent.extraPythonPackages` and
+              `extraDependencyGroups`, because the desktop application is a
+              passthru of the agent package. A package that you set here
+              carries its own Hermes runtime, and this module cannot make
+              it agree with the services.
+            '';
+          };
+        };
+      };
+
       options.services.hermes-agent =
         common.sharedOptions {
           defaultPackage = hermes-agent;
@@ -149,125 +270,159 @@
             example = "/home/alice/.hermes-work";
           };
 
+          # `installPackage` moved to `programs.hermes-agent.enable`. The
+          # option is dead, but it must not be silent: it defaulted to true,
+          # so a person who never named it still got the command line, and a
+          # quiet removal gives them a machine with no `hermes` and no
+          # message. mkOption with an assertion, and not
+          # mkRemovedOptionModule, because the message must name the exact
+          # replacement for the value they set.
           installPackage = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
+            type = lib.types.nullOr lib.types.bool;
+            default = null;
+            visible = false;
             description = ''
-              Add the hermes CLI to home.packages, and export HERMES_HOME
-              with home.sessionVariables. Interactive shells then use the
-              same state as the services.
-
-              The equivalent NixOS option, `addToSystemPackages`, exports
-              HERMES_HOME with environment.variables. That variable applies
-              to the full system and replaces the HERMES_HOME of each other
-              user. This module exports the variable for one user session
-              only, which is the reason to use Home Manager.
+              Removed. Use `programs.hermes-agent.enable` instead.
             '';
           };
 
           gateway.enable = lib.mkEnableOption "the messaging gateway service (Telegram, Discord, Slack, ...)";
         };
 
-      config = lib.mkIf cfg.enable (
-        lib.mkMerge [
+      config = lib.mkMerge [
 
-          # ── Merge MCP servers into settings ────────────────────────────
-          (lib.mkIf (cfg.mcpServers != { }) {
-            services.hermes-agent.settings.mcp_servers = common.mcpServersToConfig cfg.mcpServers;
-          })
+        # ── programs.hermes-agent — the installation ──────────────────────
+        # Outside the `services.enable` guard on purpose. A person can want
+        # the command line or the application on a machine that runs no
+        # daemon at all.
+        (lib.mkIf cfgPrograms.enable {
+          home.packages = [ cfgPrograms.package ];
+          home.sessionVariables.HERMES_HOME = cfg.hermesHome;
+        })
 
-          {
-            assertions =
-              common.pluginNameAssertions {
-                inherit cfg;
-                optionPath = "services.hermes-agent";
-              }
-              ++ common.workspaceFilesAssertions {
-                inherit cfg;
-                opt = options.services.hermes-agent.workingDirectory;
-                optionPath = "services.hermes-agent";
-              }
-              ++ common.backendBindAssertions {
-                inherit cfg;
-                optionPath = "services.hermes-agent";
-              }
-              ++ [
-                {
-                  # The interface poll reads `ip`, which iproute2 supplies on
-                  # Linux only.
-                  assertion = !isDarwin || cfg.backend.waitFor != "interface";
-                  message = "services.hermes-agent.backend.waitFor = \"interface\" works on Linux only. Use \"hostname\" on Darwin.";
+        # A launcher from the desktop menu reads no shell profile, so the
+        # HERMES_HOME that `programs.enable` exports does not reach it. Home
+        # Manager writes only systemd.user.sessionVariables into
+        # environment.d, and this module does not put HERMES_HOME there,
+        # because that file applies to each user unit. Thus the launcher
+        # carries the value itself. See desktopEnvironment above.
+        (lib.mkIf cfgPrograms.desktop.enable {
+          home.packages = [ desktopPackage ];
+        })
+
+        {
+          assertions = [
+            {
+              # `installPackage` was removed in favour of the programs/services
+              # split. It defaulted to true, so a quiet removal leaves a person
+              # with no `hermes` on the PATH and no message.
+              assertion = cfg.installPackage == null;
+              message = common.installPackageRemovedMessage cfg.installPackage;
+            }
+          ];
+        }
+
+        (lib.mkIf cfg.enable (
+          lib.mkMerge [
+
+            # ── Merge MCP servers into settings ────────────────────────────
+            (lib.mkIf (cfg.mcpServers != { }) {
+              services.hermes-agent.settings.mcp_servers = common.mcpServersToConfig cfg.mcpServers;
+            })
+
+            {
+              assertions =
+                common.pluginNameAssertions {
+                  inherit cfg;
+                  optionPath = "services.hermes-agent";
                 }
-              ];
-          }
-
-          # ── Packages and interactive-shell environment ─────────────────
-          (lib.mkIf cfg.installPackage {
-            home.packages = [ effectivePackage ] ++ cfg.extraPackages;
-            home.sessionVariables.HERMES_HOME = cfg.hermesHome;
-          })
-
-          # ── Activation: directories, config, secrets, documents ────────
-          {
-            # The activation runs after writeBoundary, when the home.file
-            # symlinks are in place. It also runs after linkGeneration, when
-            # Home Manager completes the switch. A secret that the activation
-            # entry of sops-nix writes exists at that point.
-            home.activation.hermesAgentSetup =
-              lib.hm.dag.entryAfter
-                [
-                  "writeBoundary"
-                  "linkGeneration"
-                ]
-                (
-                  common.mkStateScript {
-                    inherit pkgs cfg;
-                    inherit (cfg) hermesHome workingDirectory;
-                    run = "$DRY_RUN_CMD ";
-                    stateDirs = common.stateSubdirs;
-                    managedSystem = "home-manager";
-                    # This state has one user. No group needs access to it.
-                    modes = {
-                      config = "0600";
-                      env = "0600";
-                      managed = "0600";
-                      auth = "0600";
-                      document = "0600";
-                    };
+                ++ common.workspaceFilesAssertions {
+                  inherit cfg;
+                  opt = options.services.hermes-agent.workingDirectory;
+                  optionPath = "services.hermes-agent";
+                }
+                ++ common.backendBindAssertions {
+                  inherit cfg;
+                  optionPath = "services.hermes-agent";
+                }
+                ++ [
+                  {
+                    # The interface poll reads `ip`, which iproute2 supplies on
+                    # Linux only.
+                    assertion = !isDarwin || cfg.backend.waitFor != "interface";
+                    message = "services.hermes-agent.backend.waitFor = \"interface\" works on Linux only. Use \"hostname\" on Darwin.";
                   }
-                );
-          }
+                ];
+            }
 
-          # ── Linux: systemd user services ───────────────────────────────
-          (lib.mkIf (isLinux && cfg.gateway.enable) {
-            systemd.user.services.hermes-agent = mkUnit {
-              description = "Hermes Agent Gateway";
-              argv = common.gatewayArgv cfg;
-            };
-          })
+            # The agent runs these tools, so they belong on the PATH of the
+            # person as well as in the unit.
+            (lib.mkIf cfgPrograms.enable {
+              home.packages = cfg.extraPackages;
+            })
 
-          (lib.mkIf (isLinux && cfg.backend.mode != "none") {
-            systemd.user.services.hermes-backend = mkUnit {
-              description = common.backendDescription cfg;
-              argv = common.backendArgv { inherit pkgs cfg; };
-            };
-          })
+            # ── Activation: directories, config, secrets, documents ────────
+            {
+              # The activation runs after writeBoundary, when the home.file
+              # symlinks are in place. It also runs after linkGeneration, when
+              # Home Manager completes the switch. A secret that the activation
+              # entry of sops-nix writes exists at that point.
+              home.activation.hermesAgentSetup =
+                lib.hm.dag.entryAfter
+                  [
+                    "writeBoundary"
+                    "linkGeneration"
+                  ]
+                  (
+                    common.mkStateScript {
+                      inherit pkgs cfg;
+                      inherit (cfg) hermesHome workingDirectory;
+                      run = "$DRY_RUN_CMD ";
+                      stateDirs = common.stateSubdirs;
+                      managedSystem = "home-manager";
+                      # This state has one user. No group needs access to it.
+                      modes = {
+                        config = "0600";
+                        env = "0600";
+                        managed = "0600";
+                        auth = "0600";
+                        document = "0600";
+                      };
+                    }
+                  );
+            }
 
-          # ── Darwin: launchd agents ─────────────────────────────────────
-          (lib.mkIf (isDarwin && cfg.gateway.enable) {
-            launchd.agents.hermes-agent = mkAgent {
-              argv = common.gatewayArgv cfg;
-              logName = "hermes-agent";
-            };
-          })
+            # ── Linux: systemd user services ───────────────────────────────
+            (lib.mkIf (isLinux && cfg.gateway.enable) {
+              systemd.user.services.hermes-agent = mkUnit {
+                description = "Hermes Agent Gateway";
+                argv = common.gatewayArgv cfg;
+              };
+            })
 
-          (lib.mkIf (isDarwin && cfg.backend.mode != "none") {
-            launchd.agents.hermes-backend = mkAgent {
-              argv = common.backendArgv { inherit pkgs cfg; };
-              logName = "hermes-backend";
-            };
-          })
-        ]
-      );
+            (lib.mkIf (isLinux && cfg.backend.mode != "none") {
+              systemd.user.services.hermes-backend = mkUnit {
+                description = common.backendDescription cfg;
+                argv = common.backendArgv { inherit pkgs cfg; };
+              };
+            })
+
+            # ── Darwin: launchd agents ─────────────────────────────────────
+            (lib.mkIf (isDarwin && cfg.gateway.enable) {
+              launchd.agents.hermes-agent = mkAgent {
+                argv = common.gatewayArgv cfg;
+                logName = "hermes-agent";
+              };
+            })
+
+            (lib.mkIf (isDarwin && cfg.backend.mode != "none") {
+              launchd.agents.hermes-backend = mkAgent {
+                argv = common.backendArgv { inherit pkgs cfg; };
+                logName = "hermes-backend";
+              };
+            })
+          ]
+        ))
+      ];
     };
 }

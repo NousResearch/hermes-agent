@@ -1,0 +1,8 @@
+name: freemaxxing
+kind: model-provider
+version: "0.2.0"
+description: "Authenticated local failover across proven-free model routes"
+author: Axl Ibiza
+license: MIT
+homepage: "https://github.com/NousResearch/hermes-agent"
+tags: [free, failover, routing, local, authenticated]

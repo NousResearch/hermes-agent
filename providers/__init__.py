@@ -36,6 +36,7 @@ import importlib
 import importlib.util
 import logging
 import sys
+import types
 from pathlib import Path
 
 from providers.base import OMIT_TEMPERATURE, ProviderProfile  # noqa: F401
@@ -123,7 +124,22 @@ def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
     # multiple HERMES_HOME profiles don't alias each other.
     safe_name = plugin_dir.name.replace("-", "_")
     if source == "bundled":
-        module_name = f"plugins.model_providers.{safe_name}"
+        # ``model-providers`` is not an importable Python package name. Build
+        # the documented synthetic parent explicitly so both relative imports
+        # inside a bundled plugin and later canonical imports through
+        # ``plugins.model_providers.<name>`` resolve in every import topology
+        # (including pytest, where tests/plugins may own the root namespace).
+        parent_name = "plugins.model_providers"
+        parent = sys.modules.get(parent_name)
+        if parent is None:
+            parent = types.ModuleType(parent_name)
+            parent.__package__ = parent_name
+            parent.__path__ = [str(_BUNDLED_PLUGINS_DIR)]
+            sys.modules[parent_name] = parent
+        root = sys.modules.get("plugins")
+        if root is not None:
+            setattr(root, "model_providers", parent)
+        module_name = f"{parent_name}.{safe_name}"
     else:
         module_name = f"_hermes_user_provider_{safe_name}"
 

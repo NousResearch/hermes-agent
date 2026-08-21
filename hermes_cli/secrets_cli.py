@@ -636,10 +636,14 @@ def _token_validation_status(
     capture = io.StringIO()
     probe_console = Console(file=capture, record=True, width=200)
     projects = _list_projects(binary, token, probe_console, server_url=server_url)
+    # The probe stays quiet unless something is wrong, so surface whatever it
+    # printed either way.  A rejected server_url is reported even when the probe
+    # then succeeds against the bws default — the endpoint changed under the
+    # user, and a silent fallback is exactly what they must not be left with.
+    details = probe_console.export_text(styles=False).strip()
+    if details:
+        messages.extend(line.rstrip() for line in details.splitlines())
     if projects is None:
-        details = probe_console.export_text(styles=False).strip()
-        if details:
-            messages.extend(line.rstrip() for line in details.splitlines())
         return "[red]failed[/red]", messages
     return "[green]passed[/green]", messages
 
@@ -654,8 +658,9 @@ def _list_projects(
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
     env["BWS_ACCESS_TOKEN"] = token
     env.setdefault("NO_COLOR", "1")
-    if server_url:
-        env["BWS_SERVER_URL"] = server_url
+    dropped = bw.apply_server_url_to_env(env, server_url)
+    if dropped:
+        console.print(f"  [yellow]{dropped}[/yellow]")
     try:
         res = subprocess.run(
             [str(binary), "project", "list", "--output", "json"],
@@ -722,24 +727,42 @@ def _resolve_server_url(
 
     Returns the chosen URL as a string (empty string = bws default,
     i.e. US Cloud).  Returns None if the user aborted with an empty
-    custom URL.
+    custom URL, or if a non-interactive source supplied a URL that fails
+    :func:`bw.validate_server_url` — setup must not persist an endpoint the
+    fetch path will refuse to use, and the access token is about to be sent
+    there.
     """
+    def _checked(candidate: str, origin: str) -> Optional[str]:
+        try:
+            return bw.validate_server_url(candidate)
+        except ValueError as exc:
+            console.print(f"  [red]✗ {origin}: {exc}[/red]")
+            return None
+
     if args.server_url and args.server_url.strip():
-        return args.server_url.strip()
+        return _checked(args.server_url.strip(), "--server-url")
 
     env_url = os.environ.get("BWS_SERVER_URL", "").strip()
     if env_url:
         console.print(
             f"  Detected [cyan]BWS_SERVER_URL[/cyan]={env_url} in your shell — using it."
         )
-        return env_url
+        return _checked(env_url, "BWS_SERVER_URL")
 
     existing = str(secrets_cfg.get("server_url", "") or "").strip()
     if existing:
-        console.print(
-            f"  Existing config: [cyan]{existing}[/cyan]. "
-            "Press Enter to keep, or pick a different option below."
-        )
+        try:
+            bw.validate_server_url(existing)
+        except ValueError as exc:
+            # A stored bad value shouldn't dead-end setup — that is what the
+            # user came here to fix.  Drop it and fall through to the menu.
+            console.print(f"  [yellow]Ignoring stored server_url: {exc}[/yellow]")
+            existing = ""
+        else:
+            console.print(
+                f"  Existing config: [cyan]{existing}[/cyan]. "
+                "Press Enter to keep, or pick a different option below."
+            )
 
     table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
     table.add_column("#", style="cyan", width=4)
@@ -776,10 +799,10 @@ def _resolve_server_url(
             if not custom:
                 console.print("  [red]Empty URL, aborting.[/red]")
                 return None
-            if not custom.startswith(("http://", "https://")):
-                console.print(
-                    "  [yellow]Warning: URL doesn't start with http:// or "
-                    "https:// — bws may reject it.[/yellow]"
-                )
-            return custom
+            try:
+                return bw.validate_server_url(custom)
+            except ValueError as exc:
+                # Interactive: let them try again instead of aborting setup.
+                console.print(f"  [red]{exc}[/red]")
+                continue
         console.print(f"  [red]Out of range — pick 1-{custom_idx}.[/red]")

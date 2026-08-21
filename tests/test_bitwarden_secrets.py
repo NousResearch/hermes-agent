@@ -31,6 +31,11 @@ if str(ROOT) not in sys.path:
 from agent.secret_sources import bitwarden as bw  # noqa: E402
 
 
+# BSM project ids are UUIDs and the fetch path rejects anything else, so the
+# fixtures use a well-formed one rather than a placeholder name.
+PROJECT_ID = "3f1a2b4c-5d6e-4f70-8192-a3b4c5d6e7f8"
+
+
 @pytest.fixture(autouse=True)
 def _reset_caches():
     bw._reset_cache_for_tests()
@@ -202,7 +207,7 @@ def test_fetch_server_url_sets_env(monkeypatch, tmp_path):
 
     bw.fetch_bitwarden_secrets(
         access_token="0.t",
-        project_id="p",
+        project_id=PROJECT_ID,
         binary=fake_binary,
         use_cache=False,
         server_url="https://vault.bitwarden.eu",
@@ -249,7 +254,7 @@ def test_env_loader_calls_bsm_when_enabled(tmp_path, monkeypatch):
         "secrets:\n"
         "  bitwarden:\n"
         "    enabled: true\n"
-        "    project_id: 'proj-1'\n"
+        f"    project_id: '{PROJECT_ID}'\n"
         "    access_token_env: 'BWS_ACCESS_TOKEN'\n"
         "    cache_ttl_seconds: 0\n"
         "    override_existing: false\n"
@@ -263,7 +268,7 @@ def test_env_loader_calls_bsm_when_enabled(tmp_path, monkeypatch):
 
     def fake_fetch(**kwargs):
         called["n"] += 1
-        assert kwargs["project_id"] == "proj-1"
+        assert kwargs["project_id"] == PROJECT_ID
         return {"MY_BSM_KEY": "from-bsm"}, []
 
     monkeypatch.setattr(
@@ -321,7 +326,7 @@ def test_disk_cache_key_mismatch_triggers_refetch(monkeypatch, tmp_path):
     }))
 
     secrets, _ = bw.fetch_bitwarden_secrets(
-        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        access_token="0.t", project_id=PROJECT_ID, binary=fake_binary,
         cache_ttl_seconds=300, home_path=home,
     )
     # We must NOT have used the foreign cache entry
@@ -350,7 +355,7 @@ def test_encrypted_cache_writes_without_plaintext(monkeypatch, tmp_path):
     bw._reset_cache_for_tests(home)
     # A successful encrypted write must remove a pre-existing legacy plaintext
     # cache from the migration path.
-    legacy_key = (bw._token_fingerprint("0.t"), "proj-1", "")
+    legacy_key = (bw._token_fingerprint("0.t"), PROJECT_ID, "")
     bw._DISK_CACHE.write(
         legacy_key,
         bw._CachedFetch(secrets={"K1": "legacy"}, fetched_at=time.time()),
@@ -360,7 +365,7 @@ def test_encrypted_cache_writes_without_plaintext(monkeypatch, tmp_path):
     assert bw._disk_cache_path(home).exists()
 
     secrets, warnings = bw.fetch_bitwarden_secrets(
-        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        access_token="0.t", project_id=PROJECT_ID, binary=fake_binary,
         cache_ttl_seconds=0, encrypted_cache_enabled=True,
         encrypted_cache_max_stale_seconds=604800, home_path=home,
     )
@@ -410,7 +415,7 @@ def test_encrypted_cache_falls_back_on_network_error(monkeypatch, tmp_path):
     bw._reset_cache_for_tests(home)
 
     first, _ = bw.fetch_bitwarden_secrets(
-        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        access_token="0.t", project_id=PROJECT_ID, binary=fake_binary,
         cache_ttl_seconds=0, encrypted_cache_enabled=True,
         encrypted_cache_max_stale_seconds=604800, home_path=home,
     )
@@ -418,7 +423,7 @@ def test_encrypted_cache_falls_back_on_network_error(monkeypatch, tmp_path):
     bw._CACHE.clear()
 
     second, warnings = bw.fetch_bitwarden_secrets(
-        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        access_token="0.t", project_id=PROJECT_ID, binary=fake_binary,
         cache_ttl_seconds=0, encrypted_cache_enabled=True,
         encrypted_cache_max_stale_seconds=604800, home_path=home,
     )
@@ -438,7 +443,7 @@ def test_encrypted_cache_falls_back_on_network_error(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _seed_stale_disk_cache(home, *, secrets, age_seconds, project_id="proj-1",
+def _seed_stale_disk_cache(home, *, secrets, age_seconds, project_id=PROJECT_ID,
                            access_token="0.t", server_url=""):
     """Populate the disk cache as if a successful fetch happened `age_seconds`
     ago. Writes the JSON payload directly (same shape the shared DiskCache
@@ -477,7 +482,7 @@ def test_stale_disk_cache_returned_when_bws_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(bw.subprocess, "run", fail_run)
 
     secrets, warnings = bw.fetch_bitwarden_secrets(
-        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        access_token="0.t", project_id=PROJECT_ID, binary=fake_binary,
         cache_ttl_seconds=300, home_path=home,
     )
     assert secrets == {"OPENAI_API_KEY": "sk-old"}
@@ -514,10 +519,210 @@ def test_stale_fallback_skipped_on_auth_failure(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError, match="unauthorized"):
         bw.fetch_bitwarden_secrets(
-            access_token="0.t", project_id="proj-1", binary=fake_binary,
+            access_token="0.t", project_id=PROJECT_ID, binary=fake_binary,
             cache_ttl_seconds=300, home_path=home,
         )
 
 
 
 
+# ---------------------------------------------------------------------------
+# Validation of the values that reach the bws child
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "",
+        "https://vault.bitwarden.com",
+        "https://vault.bitwarden.eu",
+        "https://vault.example.com:8443/path",
+        # Loopback is the one place plaintext has nothing to leak to.
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+    ],
+)
+def test_validate_server_url_accepts(url):
+    assert bw.validate_server_url(url) == url
+
+
+@pytest.mark.parametrize(
+    "url,reason",
+    [
+        ("http://vault.example.com", "plaintext http"),
+        ("http://10.0.0.5:8080", "plaintext http"),
+        ("https://user:pw@vault.example.com", "must not embed credentials"),
+        ("ftp://vault.example.com", "must be an https:// URL"),
+        ("file:///etc/passwd", "must be an https:// URL"),
+        ("vault.example.com", "must be an https:// URL"),
+        ("https://", "has no host"),
+    ],
+)
+def test_validate_server_url_rejects(url, reason):
+    with pytest.raises(ValueError, match=reason):
+        bw.validate_server_url(url)
+
+
+def test_validate_server_url_strips_surrounding_whitespace():
+    assert bw.validate_server_url("  https://vault.bitwarden.eu  ") == (
+        "https://vault.bitwarden.eu"
+    )
+
+
+@pytest.mark.parametrize(
+    "project_id",
+    ["", "   ", "proj-1", "aaaa-bbbb", "--help", "-o /tmp/x", PROJECT_ID + "x"],
+)
+def test_validate_project_id_rejects(project_id):
+    with pytest.raises(ValueError):
+        bw.validate_project_id(project_id)
+
+
+def test_validate_project_id_accepts_uuid():
+    assert bw.validate_project_id(f"  {PROJECT_ID.upper()}  ") == PROJECT_ID.upper()
+
+
+def test_fetch_rejects_plaintext_server_url(monkeypatch, tmp_path):
+    """A phished/committed http:// endpoint must not receive the token."""
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("", encoding="utf-8")
+
+    def explode(*a, **kw):  # pragma: no cover - must never run
+        raise AssertionError("bws must not be spawned for a rejected server_url")
+
+    monkeypatch.setattr(bw.subprocess, "run", explode)
+
+    with pytest.raises(RuntimeError, match="plaintext http"):
+        bw.fetch_bitwarden_secrets(
+            access_token="0.t",
+            project_id=PROJECT_ID,
+            binary=fake_binary,
+            use_cache=False,
+            server_url="http://attacker.example",
+        )
+
+
+def test_fetch_rejects_non_uuid_project_id(monkeypatch, tmp_path):
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("", encoding="utf-8")
+
+    def explode(*a, **kw):  # pragma: no cover - must never run
+        raise AssertionError("bws must not be spawned for a rejected project_id")
+
+    monkeypatch.setattr(bw.subprocess, "run", explode)
+
+    with pytest.raises(RuntimeError, match="not a project UUID"):
+        bw.fetch_bitwarden_secrets(
+            access_token="0.t",
+            project_id="--config=/tmp/evil.toml",
+            binary=fake_binary,
+            use_cache=False,
+        )
+
+
+def test_project_id_passed_after_argv_terminator(monkeypatch, tmp_path):
+    """`--` keeps the project id a positional, whatever it contains."""
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("", encoding="utf-8")
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        return mock.Mock(returncode=0, stdout=_fake_bws_payload([]), stderr="")
+
+    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+
+    bw.fetch_bitwarden_secrets(
+        access_token="0.t",
+        project_id=PROJECT_ID,
+        binary=fake_binary,
+        use_cache=False,
+    )
+
+    cmd = captured["cmd"]
+    assert cmd[-2:] == ["--", PROJECT_ID]
+
+
+# ---------------------------------------------------------------------------
+# Ambient BWS_SERVER_URL inherited from the parent environment
+# ---------------------------------------------------------------------------
+
+
+def _run_with_source_env(monkeypatch, tmp_path, source_env, **fetch_kwargs):
+    """Run a fetch with `source_env` as the parent env; return (env, warnings)."""
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("", encoding="utf-8")
+    captured_env = {}
+
+    def fake_run(cmd, **kwargs):
+        captured_env.update(kwargs["env"])
+        return mock.Mock(returncode=0, stdout=_fake_bws_payload([]), stderr="")
+
+    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+    monkeypatch.setattr(bw, "get_source_environment", lambda: dict(source_env))
+
+    _secrets, warnings = bw.fetch_bitwarden_secrets(
+        access_token="0.t",
+        project_id=PROJECT_ID,
+        binary=fake_binary,
+        use_cache=False,
+        **fetch_kwargs,
+    )
+    return captured_env, warnings
+
+
+def test_inherited_plaintext_server_url_is_dropped(monkeypatch, tmp_path):
+    """An exported http:// override must not redirect the token either."""
+    env, warnings = _run_with_source_env(
+        monkeypatch, tmp_path, {"BWS_SERVER_URL": "http://attacker.example"}
+    )
+    assert "BWS_SERVER_URL" not in env
+    assert any("Ignoring BWS_SERVER_URL" in w for w in warnings)
+
+
+def test_inherited_https_server_url_still_works(monkeypatch, tmp_path):
+    """A valid shell override keeps working — this is a documented escape hatch."""
+    env, warnings = _run_with_source_env(
+        monkeypatch, tmp_path, {"BWS_SERVER_URL": "https://vault.bitwarden.eu"}
+    )
+    assert env["BWS_SERVER_URL"] == "https://vault.bitwarden.eu"
+    assert warnings == []
+
+
+def test_configured_server_url_wins_over_inherited(monkeypatch, tmp_path):
+    env, _warnings = _run_with_source_env(
+        monkeypatch,
+        tmp_path,
+        {"BWS_SERVER_URL": "https://vault.bitwarden.eu"},
+        server_url="https://vault.example.com",
+    )
+    assert env["BWS_SERVER_URL"] == "https://vault.example.com"
+
+
+# ---------------------------------------------------------------------------
+# apply_server_url_to_env is the only writer of BWS_SERVER_URL, so it validates
+# explicit values too — callers that never went through fetch_bitwarden_secrets
+# (the CLI's `bws project list` path) must not be able to skip the check.
+# ---------------------------------------------------------------------------
+
+
+def test_explicit_plaintext_server_url_is_dropped():
+    env = {}
+    warning = bw.apply_server_url_to_env(env, "http://attacker.example")
+    assert "BWS_SERVER_URL" not in env
+    assert warning and "Ignoring the configured Bitwarden server_url" in warning
+
+
+def test_explicit_invalid_server_url_does_not_leave_an_inherited_value():
+    """A rejected explicit value must not fall through to the ambient one."""
+    env = {"BWS_SERVER_URL": "https://vault.bitwarden.eu"}
+    warning = bw.apply_server_url_to_env(env, "http://attacker.example")
+    assert "BWS_SERVER_URL" not in env
+    assert warning is not None
+
+
+def test_explicit_valid_server_url_is_applied_stripped():
+    env = {}
+    assert bw.apply_server_url_to_env(env, "  https://vault.bitwarden.eu  ") is None
+    assert env["BWS_SERVER_URL"] == "https://vault.bitwarden.eu"

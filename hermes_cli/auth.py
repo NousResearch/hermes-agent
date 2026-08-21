@@ -489,7 +489,10 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="OpenCode Free",
         auth_type="api_key",
         inference_base_url="https://opencode.ai/zen/v1",
-        api_key_env_vars=("OPENCODE_FREE_API_KEY",),
+        # Deliberately NO api_key_env_vars: the free tier is served
+        # anonymously (any unrecognized bearer is a 401), so there is no
+        # secret to configure. Select via `hermes model` / `/model free`.
+        api_key_env_vars=(),
     ),
     "kilocode": ProviderConfig(
         id="kilocode",
@@ -7292,16 +7295,6 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     if not api_key and provider_id == "lmstudio":
         api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
         key_source = key_source or "default"
-
-    # OpenCode Free: the free tier historically accepted unauthenticated
-    # requests, so OPENCODE_FREE_API_KEY was used only for provider
-    # auto-detection and its value was never sent as a Bearer token.  The tier
-    # has since changed: requests without a real account API key are rejected
-    # with 401 AuthError, and third-party clients that don't identify as the
-    # opencode client get 429 FreeUsageLimitError.  Preserve the keyless
-    # fallback only when no usable key is configured.
-    if provider_id == "opencode-free" and not has_usable_secret(api_key):
-        api_key = ""
 
     env_url = ""
     if pconfig.base_url_env_var:

@@ -1,4 +1,10 @@
-"""Tests for OpenCode Free provider — registration, env var detection, aliases, fallback."""
+"""Tests for OpenCode Free provider — registration, keyless contract, aliases.
+
+The provider is KEYLESS: OpenCode's free tier is served anonymously and
+rejects any unrecognized Authorization bearer with 401, so the provider
+declares no env vars and every request goes out with an empty Authorization
+header (see hermes_cli.models.opencode_zen_free_runtime).
+"""
 
 import os
 from unittest.mock import patch
@@ -18,11 +24,18 @@ class TestOpenCodeFreeProviderRegistration:
         profile = get_provider_profile("opencode-free")
         assert profile.base_url == "https://opencode.ai/zen/v1"
 
-    def test_provider_has_no_env_vars_requirement(self):
-        """OPENCODE_FREE_API_KEY is declared but empty string is acceptable."""
+    def test_provider_is_keyless(self):
+        """No env vars declared — the free tier requires no credential."""
         from providers import get_provider_profile
         profile = get_provider_profile("opencode-free")
-        assert "OPENCODE_FREE_API_KEY" in profile.env_vars
+        assert profile.env_vars == ()
+
+    def test_provider_headers_override_sdk_bearer(self):
+        """The profile's default headers blank Authorization so the SDK's
+        Bearer never reaches the wire (the free tier 401s unknown bearers)."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("opencode-free")
+        assert profile.default_headers.get("Authorization") == ""
 
     def test_provider_uses_chat_completions_mode(self):
         from providers import get_provider_profile
@@ -51,48 +64,57 @@ class TestOpenCodeFreeAuthAlias:
 
     def test_resolve_provider_free_alias(self):
         from hermes_cli.auth import resolve_provider
-        # "free" should resolve to "opencode-free" without needing the env var
+        # "free" should resolve to "opencode-free" without any credential
         result = resolve_provider("free")
         assert result == "opencode-free"
 
 
-class TestOpenCodeFreeFallbackModels:
-    """Verify fallback models are registered in _DEFAULT_PROVIDER_MODELS."""
+class TestOpenCodeFreeModelLists:
+    """Curated keyless model lists exist and stay in sync."""
 
     def test_fallback_models_exist(self):
         from hermes_cli.setup import _DEFAULT_PROVIDER_MODELS
         assert "opencode-free" in _DEFAULT_PROVIDER_MODELS
 
-    def test_fallback_models_content(self):
+    def test_setup_list_matches_curated_catalog(self):
+        """setup.py sample list must be a subset of the curated catalog
+        (behavior contract, not a frozen snapshot)."""
+        from hermes_cli.models import _PROVIDER_MODELS
         from hermes_cli.setup import _DEFAULT_PROVIDER_MODELS
-        models = _DEFAULT_PROVIDER_MODELS["opencode-free"]
-        assert "big-pickle" in models
-        assert "deepseek-v4-flash-free" in models
-        assert "mimo-v2.5-free" in models
-        assert "nemotron-3-super-free" in models
-        assert len(models) == 4
+        curated = set(_PROVIDER_MODELS["opencode-free"])
+        assert set(_DEFAULT_PROVIDER_MODELS["opencode-free"]) <= curated
+
+    def test_every_curated_model_is_keyless(self):
+        """Every model in the opencode-free catalog must satisfy the keyless
+        predicate — a paid slug here would route with no auth and 401."""
+        from hermes_cli.models import _PROVIDER_MODELS, is_opencode_zen_free_model
+        for mid in _PROVIDER_MODELS["opencode-free"]:
+            assert is_opencode_zen_free_model(mid), mid
+
+    def test_ox_alpha_is_listed(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "x-preview-f-free" in _PROVIDER_MODELS["opencode-free"]
 
 
-class TestOpenCodeFreeEnvVarDetection:
-    """Verify env var triggers auto-detection."""
+class TestOpenCodeFreeRuntimeKeyless:
+    """The runtime resolver pins every opencode-free model keyless."""
 
-    def test_auto_detect_with_env_var(self):
-        from hermes_cli.auth import resolve_provider
-        with patch.dict(os.environ, {"OPENCODE_FREE_API_KEY": "test-key"}):
-            result = resolve_provider("auto")
-            assert result == "opencode-free"
+    def test_free_provider_any_model_routes_keyless(self):
+        from hermes_cli.models import (
+            OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER,
+            opencode_zen_free_runtime,
+        )
+        rt = opencode_zen_free_runtime("opencode-free", "big-pickle")
+        assert rt is not None
+        assert rt["api_key"] == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER
+        assert rt["base_url"] == "https://opencode.ai/zen/v1"
+        assert rt["default_headers"]["Authorization"] == ""
 
-    def test_no_auto_detect_without_env_var(self):
-        from hermes_cli.auth import resolve_provider
-        # Remove the env var if present
-        env = os.environ.copy()
-        env.pop("OPENCODE_FREE_API_KEY", None)
-        with patch.dict(os.environ, env, clear=True):
-            # Without the env var, auto-detect should NOT return opencode-free
-            # (it may return another provider or raise)
-            try:
-                result = resolve_provider("auto")
-                assert result != "opencode-free"
-            except Exception:
-                # Expected — no provider configured
-                pass
+    def test_free_provider_muse_routes_responses(self):
+        """opencode-free inherits Zen's per-model endpoint routing."""
+        from hermes_cli.models import opencode_zen_free_runtime
+        rt = opencode_zen_free_runtime(
+            "opencode-free", "muse-spark-1.2-contributor-free"
+        )
+        assert rt is not None
+        assert rt["api_mode"] == "codex_responses"

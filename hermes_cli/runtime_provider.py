@@ -2334,24 +2334,13 @@ def resolve_runtime_provider(
         # an explicitly configured fallback chain). LM Studio's no-auth path
         # supplies a non-empty placeholder in the credential resolver above.
         if not has_usable_secret(creds.get("api_key")):
-            # OpenCode Free: when no account key is configured, fall through to
-            # the keyless runtime below (the client strips the SDK's empty
-            # Authorization header — see agent_runtime_helpers).  With a real
-            # key configured, resolve_api_key_provider_credentials returns it
-            # and it is sent normally (the tier rejects keyless requests with
-            # 401).  A credential-pool exhaustion (429 from the provider) must
-            # not surface the misleading "Set OPENCODE_FREE_API_KEY" message;
-            # fall through to the keyless runtime below.
-            if provider == "opencode-free":
-                creds["api_key"] = ""
-            else:
-                env_names = ", ".join(pconfig.api_key_env_vars)
-                hint = f" Set {env_names}." if env_names else ""
-                raise AuthError(
-                    f"No usable credentials found for provider '{provider}'.{hint}",
-                    provider=provider,
-                    code="missing_api_key",
-                )
+            env_names = ", ".join(pconfig.api_key_env_vars)
+            hint = f" Set {env_names}." if env_names else ""
+            raise AuthError(
+                f"No usable credentials found for provider '{provider}'.{hint}",
+                provider=provider,
+                code="missing_api_key",
+            )
         # Honour model.base_url from config.yaml when the configured provider
         # matches this provider — mirrors the Anthropic path above.  Without
         # this, users who set model.base_url to e.g. api.minimaxi.com/anthropic

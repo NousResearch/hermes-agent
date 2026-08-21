@@ -2826,17 +2826,23 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
-    # Check / prompt for API key
-    existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
+    # OpenCode Free is keyless — the tier is served anonymously and any
+    # unrecognized bearer 401s, so there is no key to prompt for.
+    if provider_id == "opencode-free":
+        print("  OpenCode Free is keyless — no API key or account needed.")
+        existing_key = ""
+    else:
+        # Check / prompt for API key
+        existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
 
-    existing_key, abort = _prompt_api_key(
-        pconfig,
-        existing_key,
-        provider_id=provider_id,
-        existing_source=existing_source,
-    )
-    if abort:
-        return
+        existing_key, abort = _prompt_api_key(
+            pconfig,
+            existing_key,
+            provider_id=provider_id,
+            existing_source=existing_source,
+        )
+        if abort:
+            return
 
     # Gemini free-tier gate: free-tier daily quotas (<= 250 RPD for Flash)
     # are exhausted in a handful of agent turns, so refuse to wire up the
@@ -3006,42 +3012,15 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                         f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
                     )
     elif provider_id == "opencode-free":
-        # OpenCode Free: fetch from models.dev with same filter as
-        # opencode CLI — cost.input == 0 AND status != "deprecated".
-        from agent.models_dev import fetch_models_dev as _fetch_mdev
-
-        try:
-            _mdev = _fetch_mdev()
-            _pd = _mdev.get("opencode", {})
-            _mmodels = _pd.get("models", {}) if isinstance(_pd, dict) else {}
-            if isinstance(_mmodels, dict):
-                model_list = sorted(
-                    mid for mid, m in _mmodels.items()
-                    if isinstance(m, dict)
-                    and isinstance(m.get("cost"), dict)
-                    and m["cost"].get("input") == 0
-                    and m.get("status") != "deprecated"
-                )
-                if model_list:
-                    print(f"  Found {len(model_list)} model(s) for OpenCode Free")
-                else:
-                    model_list = _PROVIDER_MODELS.get(provider_id, [])
-                    if model_list:
-                        print(
-                            "  Using curated model list — models.dev had no free models."
-                        )
-            else:
-                model_list = _PROVIDER_MODELS.get(provider_id, [])
-                if model_list:
-                    print(
-                        f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
-                    )
-        except Exception:
-            model_list = _PROVIDER_MODELS.get(provider_id, [])
-            if model_list:
-                print(
-                    f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
-                )
+        # Keyless free tier: the curated list is synced against anonymous
+        # live probes (models.dev's cost.input==0 filter lags reality —
+        # e.g. deepseek-v4-flash-free stayed "free" there after its promo
+        # ended and the relay started 401ing it keyless).
+        model_list = _PROVIDER_MODELS.get(provider_id, [])
+        if model_list:
+            print(
+                f'  Showing {len(model_list)} keyless free models — use "Enter custom model name" for others.'
+            )
     else:
         curated = _PROVIDER_MODELS.get(provider_id, [])
 

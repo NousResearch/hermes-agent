@@ -1308,12 +1308,17 @@ def _write_claude_code_credentials(
         }
         if scopes is not None:
             oauth_data["scopes"] = scopes
-        elif "claudeAiOauth" in existing and "scopes" in existing["claudeAiOauth"]:
-            # Preserve previously-stored scopes when the refresh response
-            # does not include a scope field.
-            oauth_data["scopes"] = existing["claudeAiOauth"]["scopes"]
 
-        existing["claudeAiOauth"] = oauth_data
+        # Merge instead of replacing the object wholesale: real Claude Code
+        # credential files carry keys Hermes does not manage
+        # (refreshTokenExpiresAt, subscriptionType, rateLimitTier). Replacing
+        # the whole object dropped them, silently downgrading Claude Code
+        # from subscription to API-key mode (#83338). Update only the fields
+        # Hermes manages and keep everything else intact.
+        existing_oauth = existing.get("claudeAiOauth")
+        merged = dict(existing_oauth) if isinstance(existing_oauth, dict) else {}
+        merged.update(oauth_data)
+        existing["claudeAiOauth"] = merged
 
         cred_path.parent.mkdir(parents=True, exist_ok=True)
         # Per-process random suffix avoids collisions between concurrent

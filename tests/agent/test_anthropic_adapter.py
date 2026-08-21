@@ -474,11 +474,52 @@ class TestWriteClaudeCodeCredentials:
         cred_dir = tmp_path / ".claude"
         cred_dir.mkdir()
         cred_file = cred_dir / ".credentials.json"
+        # Seed a realistic Claude Code credential file: managed keys plus the
+        # unmanaged keys Hermes does not touch (refreshTokenExpiresAt,
+        # subscriptionType, rateLimitTier) and a sibling top-level key.
+        cred_file.write_text(json.dumps({
+            "otherField": "keep-me",
+            "claudeAiOauth": {
+                "accessToken": "old-tok",
+                "refreshToken": "old-ref",
+                "expiresAt": 1,
+                "refreshTokenExpiresAt": 2,
+                "scopes": ["user:inference"],
+                "subscriptionType": "max",
+                "rateLimitTier": "max",
+            },
+        }))
+        _write_claude_code_credentials("new-tok", "new-ref", 99999)
+        data = json.loads(cred_file.read_text())
+        # Sibling top-level keys survive.
+        assert data["otherField"] == "keep-me"
+        # Managed fields are updated...
+        assert data["claudeAiOauth"]["accessToken"] == "new-tok"
+        assert data["claudeAiOauth"]["refreshToken"] == "new-ref"
+        assert data["claudeAiOauth"]["expiresAt"] == 99999
+        # ...and unmanaged keys inside claudeAiOauth survive the refresh.
+        # Regression for #83338: replacing the object wholesale dropped
+        # subscriptionType, downgrading Claude Code to API-key mode.
+        assert data["claudeAiOauth"]["refreshTokenExpiresAt"] == 2
+        assert data["claudeAiOauth"]["subscriptionType"] == "max"
+        assert data["claudeAiOauth"]["rateLimitTier"] == "max"
+        # Pre-existing scopes survive when the refresh omits them.
+        assert data["claudeAiOauth"]["scopes"] == ["user:inference"]
+
+    def test_creates_oauth_object_when_file_has_none(self, tmp_path, monkeypatch):
+        """A file without a claudeAiOauth object behaves as before: the object
+        is created from scratch and sibling keys survive."""
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        cred_dir = tmp_path / ".claude"
+        cred_dir.mkdir()
+        cred_file = cred_dir / ".credentials.json"
         cred_file.write_text(json.dumps({"otherField": "keep-me"}))
         _write_claude_code_credentials("new-tok", "new-ref", 99999)
         data = json.loads(cred_file.read_text())
         assert data["otherField"] == "keep-me"
         assert data["claudeAiOauth"]["accessToken"] == "new-tok"
+        assert data["claudeAiOauth"]["refreshToken"] == "new-ref"
+        assert data["claudeAiOauth"]["expiresAt"] == 99999
 
     @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
     def test_credentials_file_created_with_0o600(self, tmp_path, monkeypatch):

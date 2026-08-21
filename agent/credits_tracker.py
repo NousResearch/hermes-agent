@@ -226,12 +226,15 @@ def is_free_tier_model(model: str, base_url: str = "") -> bool:
     1. The ``:free`` suffix — the canonical Nous free SKU marker (e.g.
        ``nvidia/nemotron-3-ultra:free``). Free by construction on the API side
        (spend is forced to 0 for ``:free`` ids).
-    2. A peek into the in-process pricing cache in ``hermes_cli.models``
+    2. The ``stealth/`` prefix — Nous stealth-preview SKUs (e.g.
+       ``stealth/ox-alpha``) are free-tier but carry no ``:free`` suffix.  Spend
+       is forced to zero server-side, so these are also free by construction.
+    3. A peek into the in-process pricing cache in ``hermes_cli.models``
        (populated when the model picker fetched ``/v1/models`` pricing for
        *base_url*). PEEK ONLY — a cache miss never triggers a fetch. This is
        CLI/TUI-session best-effort: gateway sessions never run the picker's
        pricing fetch, so suppression there rests entirely on the ``:free``
-       suffix (which all Nous free SKUs carry).
+       suffix and ``stealth/`` prefix.
 
     Fail-open to False (the depleted notice still shows) on any error: wrongly
     showing the warning is recoverable noise; wrongly hiding it on a paid model
@@ -240,6 +243,15 @@ def is_free_tier_model(model: str, base_url: str = "") -> bool:
     if not model:
         return False
     if model.endswith(":free"):
+        return True
+    # Stealth-preview SKUs (e.g. stealth/ox-alpha) are free-tier but carry no
+    # ``:free`` suffix.  Spend is forced to zero server-side, so a ``paid_access:
+    # false`` header on these models is a false positive for the depleted banner.
+    # The ``stealth/`` prefix is the Nous naming convention for these SKUs and
+    # is checked here as a zero-network signal, same design as the ``:free``
+    # suffix above.  Fail-open to False (the banner still shows) if the prefix
+    # ever changes — recoverable noise, never a masked depletion on a paid model.
+    if model.startswith("stealth/"):
         return True
     if not base_url:
         return False

@@ -18813,7 +18813,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _add(getattr(result, "continuation_message_ids", None))
         raw = getattr(result, "raw_response", None)
         if isinstance(raw, dict):
+            _add(raw.get("continuation_message_ids"))
             _add(raw.get("message_ids"))
+            _add(raw.get("last_message_id"))
         _add(getattr(result, "message_id", None))
         return ids
 

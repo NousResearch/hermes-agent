@@ -116,18 +116,17 @@ async def test_audio_attachment_context_note_format():
 
 
 @pytest.mark.asyncio
-async def test_mixed_audio_and_document_route_by_attachment_mime():
+async def test_mixed_audio_and_document_route_by_attachment_mime(tmp_path):
     """An AUDIO message must not label its document attachment as audio."""
     runner = _make_runner(stt_enabled=True)
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm")
+    audio_path = tmp_path / "cache_12345_my_song.mp3"
+    document_path = tmp_path / "cache_67890_notes.pdf"
     event = MessageEvent(
         text="Compare these files",
         message_type=MessageType.AUDIO,
         source=source,
-        media_urls=[
-            "/tmp/cache_12345_my_song.mp3",
-            "/tmp/cache_67890_notes.pdf",
-        ],
+        media_urls=[str(audio_path), str(document_path)],
         media_types=["audio/mpeg", "application/pdf"],
     )
 

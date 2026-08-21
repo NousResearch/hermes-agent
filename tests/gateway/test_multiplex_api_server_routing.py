@@ -11,6 +11,7 @@ from typing import Any, cast
 from gateway.config import GatewayConfig, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
+    _PROFILE_CONFLICT,
     _PROFILE_REJECTED,
     _api_request_profile,
 )
@@ -33,8 +34,13 @@ def _make_adapter(
 
 
 class _FakeReq:
-    def __init__(self, profile=None):
+    def __init__(self, profile=None, header_profile=None):
         self.match_info = {"profile": profile} if profile is not None else {}
+        self.headers = (
+            {"X-Hermes-Profile": header_profile}
+            if header_profile is not None
+            else {}
+        )
 
 
 class TestApiServerProfileResolution:
@@ -60,6 +66,46 @@ class TestApiServerProfileResolution:
             adapter._resolve_request_profile(cast(Any, _FakeReq("restricted")))
             is _PROFILE_REJECTED
         )
+
+    def test_header_selects_served_profile(self, monkeypatch):
+        adapter = _make_adapter(multiplex=True, allowlist=["worker"])
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex, profile_allowlist=None: [
+                ("default", "/profiles/default"),
+                ("worker", "/profiles/worker"),
+            ],
+        )
+
+        assert adapter._resolve_request_profile(
+            cast(Any, _FakeReq(header_profile="worker"))
+        ) == "worker"
+        assert adapter._resolve_request_profile(
+            cast(Any, _FakeReq(header_profile="restricted"))
+        ) is _PROFILE_REJECTED
+
+    def test_conflicting_prefix_and_header_are_rejected(self):
+        adapter = _make_adapter(multiplex=True)
+        assert adapter._resolve_request_profile(
+            cast(Any, _FakeReq("worker", "reviewer"))
+        ) is _PROFILE_CONFLICT
+
+    def test_prefix_and_header_are_compared_after_normalization(self, monkeypatch):
+        adapter = _make_adapter(multiplex=True)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex, profile_allowlist=None: [
+                ("default", "/profiles/default"),
+                ("worker", "/profiles/worker"),
+            ],
+        )
+
+        assert adapter._resolve_request_profile(
+            cast(Any, _FakeReq("worker", "Worker"))
+        ) == "worker"
+        assert adapter._resolve_request_profile(
+            cast(Any, _FakeReq(header_profile="WORKER"))
+        ) == "worker"
 
 
 class TestApiServerRouteTable:

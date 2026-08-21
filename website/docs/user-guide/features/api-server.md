@@ -519,17 +519,28 @@ Authorization: Bearer ***
 
 Configure the key via `API_SERVER_KEY` env var. If you need a browser to call Hermes directly, also set `API_SERVER_CORS_ORIGINS` to an explicit allowlist.
 
-### Multi-profile routing (`/p/<profile>/…`)
+### Multi-profile routing
 
 When [multi-profile gateway routing](/user-guide/multi-profile-gateways) is
 enabled (`gateway.multiplex_profiles`), the shared listener serves every
-profile through a `/p/<profile>/` URL prefix — and **authentication is bound
-to the routed profile**:
+profile through either a `/p/<profile>/` URL prefix or the
+`X-Hermes-Profile: <profile>` request header. The two forms are equivalent,
+and **authentication is bound to the routed profile**:
 
-- Requests to `/p/<profile>/v1/...` must present that profile's own
+```bash
+curl -X POST http://localhost:8642/api/sessions/my-session/chat \
+  -H 'X-Hermes-Profile: coder' \
+  -H 'Authorization: Bearer <coder-profile-key>' \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Continue the task"}'
+```
+
+- Requests selected by prefix or header must present that profile's own
   `API_SERVER_KEY` (from `~/.hermes/profiles/<profile>/.env`). The default
-  listener's key is rejected on named-profile prefixes.
+  listener's key is rejected for named profiles.
 - Unprefixed routes and `/p/default/...` keep using the default profile's key.
+- If a URL prefix and `X-Hermes-Profile` are both present, they must name the
+  same profile; conflicting selectors return `400`.
 - A named profile with no `API_SERVER_KEY` of its own fails closed — its
   prefix is unreachable until you set one.
 

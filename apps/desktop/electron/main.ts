@@ -3516,6 +3516,9 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
         // bb/gui (or any non-main) install off-branch. Mirror the GUI
         // button's contract: append --branch <current> for non-main
         // checkouts, keep it bare for main so the card stays clean.
+        // --stay-on-branch (PR #80041) guarantees a desktop product update
+        // ends on main even when the checkout started on a feature branch —
+        // without it the update can strand the desktop on stale code.
         let command = 'hermes update'
 
         try {
@@ -3526,7 +3529,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
             const branch = await resolveHealedBranch(updateRoot, current)
 
             if (branch !== 'main') {
-              command = `hermes update --branch ${branch}`
+              command = `hermes update --branch ${branch} --stay-on-branch`
             }
           }
         } catch {
@@ -4028,20 +4031,58 @@ async function applyUpdatesPosixHandoff(opts: any) {
   // ── Pre-flight state.db integrity guard (#68474) ──
   preflightStateDb(HERMES_HOME, rememberLog)
 
-  // Branch-pin so a non-main checkout doesn't get switched to main (and
-  // self-heal to main when the pinned branch no longer exists on origin).
-  let branch = 'main'
-
-  try {
-    const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
-    const current = (head.stdout || '').trim()
-
-    if (head.code === 0 && current && current !== 'HEAD') {
-      branch = await resolveHealedBranch(updateRoot, current)
-    }
-  } catch {
-    // best effort
+  // Put the Hermes-managed Node and the venv on PATH so `hermes desktop`'s
+  // npm build can find them on a machine with no system Node. Windows portable
+  // Node lives directly under %LOCALAPPDATA%\\hermes\\node, not node\\bin.
+  // PYTHONUNBUFFERED: `hermes update` writes to a pipe here, so CPython
+  // block-buffers stdout and long quiet steps (the pre-update backup can zip
+  // multi-GB archives for minutes) stream nothing to the progress UI — users
+  // read the silence as a hang and cancel a healthy update.
+  const env: Record<string, string> = {
+    HERMES_HOME,
+    PYTHONUNBUFFERED: '1',
+    PATH: pathWithHermesManagedNode(path.join(updateRoot, 'venv', 'bin'))
   }
+
+  // `hermes update` reaps stale `hermes serve` backends (a code update
+  // leaves the running process serving old Python against the freshly-updated
+  // JS bundle). But OUR backend is one of those processes, and killing it
+  // mid-update produces the boot→kill→crash loop in #37532 — the desktop
+  // already restarts its own backend via the rebuild+relaunch below, so the
+  // reap must spare it. Hand the live backend's PID to the update process;
+  // _kill_stale_dashboard_processes reads HERMES_DESKTOP_CHILD_PID and excludes
+  // it while still reaping any genuinely-orphaned backends. (#37532)
+  // Exclude every desktop-managed backend (primary + all pool profiles) from
+  // the update reaper. _kill_stale_dashboard_processes accepts a comma-separated
+  // list (a single int still parses for back-compat).
+  const desktopChildPids = []
+  const hermesProcess = backendConnectionState.getProcess()
+
+  if (hermesProcess && Number.isInteger(hermesProcess.pid)) {
+    desktopChildPids.push(hermesProcess.pid)
+  }
+
+  for (const entry of backendPool.values()) {
+    if (entry.process && Number.isInteger(entry.process.pid)) {
+      desktopChildPids.push(entry.process.pid)
+    }
+  }
+
+  if (desktopChildPids.length) {
+    env.HERMES_DESKTOP_CHILD_PID = desktopChildPids.join(',')
+  }
+
+  // Track the configured update branch (default main) and stay on it after the
+  // update. Historical behavior pinned --branch to whatever branch the checkout
+  // was on, which stranded desktop users whose checkout sat on a feature branch:
+  // `hermes update` refreshed main, switched BACK to the feature branch, and the
+  // post-update `hermes desktop --build-only` rebuild then packaged the stale
+  // feature-branch code — the desktop never moved past the old version while the
+  // CLI claimed "already up to date". A product update must end on the tracked
+  // branch, so always pass the tracked branch explicitly and --stay-on-branch.
+  const { branch: configuredBranch } = readDesktopUpdateConfig()
+  const branch = await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
+  const branchArgs = ['--branch', branch, '--stay-on-branch']
 
   const args = [...handoff.args, '--install-root', updateRoot, '--branch', branch, '--desktop-pid', String(process.pid)]
   const updateStartedAt = Math.floor(Date.now() / 1000)

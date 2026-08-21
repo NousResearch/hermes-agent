@@ -1975,6 +1975,18 @@ def _build_child_agent(
                 iteration_budget=None,  # fresh budget per subagent
                 **child_optional_kwargs,
             )
+            # A request-scoped model lock is an execution contract, not just a
+            # root-agent hint.  Propagate the marker so nested orchestrators
+            # also inherit the same model transport and cannot activate a
+            # delegation-level provider override.
+            child._runtime_model_locked = (
+                getattr(parent_agent, "_runtime_model_locked", False) is True
+            )
+            child._runtime_model_lock_source = getattr(
+                parent_agent,
+                "_runtime_model_lock_source",
+                "",
+            )
         except BaseException:
             # Construction failed: the dedicated handle has no owner and no
             # child close() will ever run — release it here so the sqlite fds
@@ -4352,6 +4364,12 @@ def _resolve_child_credential_pool(
     ``custom:<name>`` pool key derived from the base_url) and only share the
     parent's pool when both resolve to the *same* custom endpoint.
     """
+    if getattr(parent_agent, "_runtime_model_locked", False) is True:
+        # A locked request carries one fixed credential snapshot. Never attach
+        # a profile-scoped pool that could rotate the child onto a different
+        # key or endpoint after a provider error.
+        return None
+
     if not effective_provider:
         return getattr(parent_agent, "_credential_pool", None)
 
@@ -4435,6 +4453,25 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
     Raises ValueError with a user-friendly message on credential failure.
     """
+    if getattr(parent_agent, "_runtime_model_locked", False) is True:
+        # The parent was admitted with an immutable request/session runtime.
+        # Returning no override values makes _build_child_agent inherit the
+        # parent's model, provider, endpoint, key, API mode, request options,
+        # token ceiling, and empty fallback chain verbatim.  This also prevents
+        # a process-global delegation.* config from crossing tenant/model
+        # boundaries in a hosted API server.
+        return {
+            "model": getattr(parent_agent, "model", None),
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+            "request_overrides": None,
+            "max_output_tokens": None,
+            "command": None,
+            "args": [],
+        }
+
     configured_model = str(cfg.get("model") or "").strip() or None
     configured_provider = str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None

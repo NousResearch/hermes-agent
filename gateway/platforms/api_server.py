@@ -95,6 +95,12 @@ from gateway.platforms.base import (
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
+from gateway.request_model_runtime import (
+    MODEL_API_KEY_HEADER,
+    RequestModelRuntime,
+    RequestModelRuntimeError,
+    parse_request_model_runtime,
+)
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
@@ -1423,6 +1429,12 @@ class APIServerAdapter(BasePlatformAdapter):
         self._direct_model_requests: bool = _coerce_request_bool(
             extra.get("direct_model_requests"), default=False
         )
+        # External control planes may supply an immutable model transport for
+        # one /v1/runs execution.  Off by default because this grants an
+        # authenticated caller control over the upstream HTTP destination.
+        self._allow_request_model_runtime: bool = _coerce_request_bool(
+            extra.get("allow_request_model_runtime"), default=False
+        )
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -2661,6 +2673,7 @@ class APIServerAdapter(BasePlatformAdapter):
         route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None,
         confirmed_runtime_lock: bool = False,
+        request_model_runtime: Optional[RequestModelRuntime] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -2694,6 +2707,11 @@ class APIServerAdapter(BasePlatformAdapter):
         session ``/model`` override, disables the global fallback model
         chain, and fails closed if the locked provider's credentials cannot
         be resolved.
+
+        ``request_model_runtime`` is an authenticated, request-scoped model
+        transport accepted only by ``/v1/runs``.  It is already complete and
+        validated, so it bypasses profile/global provider resolution and is
+        always treated as a confirmed runtime lock.
         """
         from run_agent import AIAgent
         from gateway.run import (
@@ -2706,31 +2724,40 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         from hermes_cli.tools_config import _get_platform_tools
 
-        # Catch RuntimeError ONLY around this call, not the wider
-        # _create_agent()+run_conversation() span --
-        # _resolve_runtime_agent_kwargs() is the sole raiser of
-        # RuntimeError(format_runtime_provider_error(...)) for provider
-        # auth/credential failure.  Re-raising as
-        # _ProviderAuthResolutionError lets _run_agent() (and
-        # _handle_runs()) distinguish this from an unrelated RuntimeError
-        # elsewhere in the call graph.
-        try:
-            runtime_kwargs = _resolve_runtime_agent_kwargs()
-        except RuntimeError as exc:
-            raise _ProviderAuthResolutionError(str(exc)) from exc
-        model = _resolve_gateway_model()
+        if request_model_runtime is not None:
+            # This path must not touch the profile's provider catalog or
+            # fallback chain.  A hosted control plane is the source of truth
+            # for this run, and requiring a second local model configuration
+            # would defeat request-scoped execution.
+            runtime_kwargs = request_model_runtime.agent_kwargs()
+            model = request_model_runtime.model
+            confirmed_runtime_lock = True
+        else:
+            # Catch RuntimeError ONLY around this call, not the wider
+            # _create_agent()+run_conversation() span --
+            # _resolve_runtime_agent_kwargs() is the sole raiser of
+            # RuntimeError(format_runtime_provider_error(...)) for provider
+            # auth/credential failure.  Re-raising as
+            # _ProviderAuthResolutionError lets _run_agent() (and
+            # _handle_runs()) distinguish this from an unrelated RuntimeError
+            # elsewhere in the call graph.
+            try:
+                runtime_kwargs = _resolve_runtime_agent_kwargs()
+            except RuntimeError as exc:
+                raise _ProviderAuthResolutionError(str(exc)) from exc
+            model = _resolve_gateway_model()
 
-        # When the primary provider's auth fails (expired token / 429 quota
-        # cap), _resolve_runtime_agent_kwargs() falls through to the fallback
-        # provider chain, whose runtime dict carries its own ``model`` key.
-        # Pop it and let it override the config model, mirroring the native
-        # gateway path (_resolve_session_agent_runtime in run.py). Otherwise
-        # the explicit ``model=model`` below collides with the ``**runtime_kwargs``
-        # spread → "got multiple values for keyword argument 'model'", 500ing
-        # every /v1/chat/completions request while a fallback is active.
-        runtime_model = runtime_kwargs.pop("model", None)
-        if runtime_model:
-            model = runtime_model
+            # When the primary provider's auth fails (expired token / 429 quota
+            # cap), _resolve_runtime_agent_kwargs() falls through to the fallback
+            # provider chain, whose runtime dict carries its own ``model`` key.
+            # Pop it and let it override the config model, mirroring the native
+            # gateway path (_resolve_session_agent_runtime in run.py). Otherwise
+            # the explicit ``model=model`` below collides with the ``**runtime_kwargs``
+            # spread → "got multiple values for keyword argument 'model'", 500ing
+            # every /v1/chat/completions request while a fallback is active.
+            resolved_runtime_model = runtime_kwargs.pop("model", None)
+            if resolved_runtime_model:
+                model = resolved_runtime_model
 
         request_reasoning_config = _request_reasoning_config(model_options)
         request_service_tier = _request_service_tier(model_options)
@@ -2795,7 +2822,12 @@ class APIServerAdapter(BasePlatformAdapter):
         # override > session-persisted model > global) — the rule 7dd00bb47d
         # had to re-fix here after it diverged from gateway/run.py.
         from hermes_cli.model_switch import resolve_effective_model
-        if session_override:
+        if request_model_runtime is not None:
+            # The validated request runtime is the complete execution contract.
+            # Never let a prior /model switch, persisted session model, static
+            # route, or process-global default replace any part of it.
+            pass
+        elif session_override:
             override_model = resolve_effective_model(session_override, None, model)
             session_provider = _clean_request_string(session_override.get("provider"))
             current_provider = _clean_request_string(runtime_kwargs.get("provider"))
@@ -2907,23 +2939,24 @@ class APIServerAdapter(BasePlatformAdapter):
         # (/v1/responses, /v1/runs when no explicit session is supplied).
         # Keying on session_id would leave one permanent dict entry per
         # stateless request, growing unbounded for the life of the process.
-        _resolved_key = gateway_session_key or ""
-        if not model:
-            _recovered = (self._last_resolved_model.get(_resolved_key)
-                          or self._last_resolved_model.get("*"))
-            if _recovered and _recovered != self._model_name:
-                logger.warning(
-                    "Empty model resolved for session=%s — recovering "
-                    "last-known-good model %s (config read likely returned "
-                    "empty; see #35314)",
-                    _resolved_key, _recovered,
-                )
-                model = _recovered
-        elif model:
-            if model != self._model_name:
-                if _resolved_key:
-                    self._last_resolved_model[_resolved_key] = model
-                self._last_resolved_model["*"] = model
+        if request_model_runtime is None:
+            _resolved_key = gateway_session_key or ""
+            if not model:
+                _recovered = (self._last_resolved_model.get(_resolved_key)
+                              or self._last_resolved_model.get("*"))
+                if _recovered and _recovered != self._model_name:
+                    logger.warning(
+                        "Empty model resolved for session=%s — recovering "
+                        "last-known-good model %s (config read likely returned "
+                        "empty; see #35314)",
+                        _resolved_key, _recovered,
+                    )
+                    model = _recovered
+            elif model:
+                if model != self._model_name:
+                    if _resolved_key:
+                        self._last_resolved_model[_resolved_key] = model
+                    self._last_resolved_model["*"] = model
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -2949,6 +2982,8 @@ class APIServerAdapter(BasePlatformAdapter):
         reasoning_config = (
             request_reasoning_config
             if request_reasoning_config is not None
+            else None
+            if request_model_runtime is not None
             else GatewayRunner._load_reasoning_config(model)
         )
 
@@ -2976,11 +3011,23 @@ class APIServerAdapter(BasePlatformAdapter):
             agent_kwargs["service_tier"] = request_service_tier
 
         agent = AIAgent(**agent_kwargs)
+        # Subagents consult this marker before applying delegation-level model
+        # overrides.  It is deliberately runtime-only and never persisted.
+        agent._runtime_model_locked = bool(confirmed_runtime_lock)
+        agent._runtime_model_lock_source = (
+            "request_runtime"
+            if request_model_runtime is not None
+            else "session_model_lock"
+            if confirmed_runtime_lock
+            else ""
+        )
         agent._hermes_api_runtime = {
             "provider": runtime_kwargs.get("provider") or getattr(agent, "provider", "") or "",
             "model": getattr(agent, "model", None) or model,
             "route_source": (
-                "session_model_lock"
+                "request_runtime"
+                if request_model_runtime is not None
+                else "session_model_lock"
                 if confirmed_runtime_lock
                 else "session_model_override"
                 if session_override
@@ -3185,6 +3232,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_stop": True,
                 "run_steer": True,
                 "run_approval_response": True,
+                "run_request_model_runtime": self._allow_request_model_runtime,
+                "run_request_model_credential_header": (
+                    MODEL_API_KEY_HEADER if self._allow_request_model_runtime else None
+                ),
                 "tool_progress_events": True,
                 "approval_events": True,
                 "session_resources": True,
@@ -6697,6 +6748,65 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
 
+        request_model_runtime: Optional[RequestModelRuntime] = None
+        runtime_requested = body.get("runtime_model") is not None
+        runtime_credential = request.headers.get(MODEL_API_KEY_HEADER)
+        if runtime_requested or runtime_credential:
+            if not self._allow_request_model_runtime:
+                return web.json_response(
+                    _openai_error(
+                        "Request-scoped model runtimes are disabled on this API server",
+                        code="request_model_runtime_disabled",
+                        param="runtime_model",
+                    ),
+                    status=403,
+                )
+            # connect() requires a strong API_SERVER_KEY, but direct handler
+            # wiring in embedders/tests can bypass startup.  Dynamic upstream
+            # routing must never become available on that unauthenticated path.
+            if not self._expected_api_key():
+                return web.json_response(
+                    _openai_error(
+                        "Request-scoped model runtimes require API_SERVER_KEY authentication",
+                        code="request_model_runtime_requires_auth",
+                        param="runtime_model",
+                    ),
+                    status=403,
+                )
+            if body.get("require_model_lock") is not None and not _coerce_request_bool(
+                body.get("require_model_lock"), default=True
+            ):
+                return web.json_response(
+                    _openai_error(
+                        "runtime_model is always model-locked; require_model_lock cannot be false",
+                        code="request_model_runtime_requires_lock",
+                        param="require_model_lock",
+                    ),
+                    status=400,
+                )
+            try:
+                request_model_runtime = parse_request_model_runtime(
+                    body,
+                    api_key_header=runtime_credential,
+                )
+            except RequestModelRuntimeError as exc:
+                return web.json_response(
+                    _openai_error(str(exc), code=exc.code, param=exc.param),
+                    status=400,
+                )
+            if request_model_runtime is not None and (
+                request_model_runtime.model == self._model_name
+                or self._resolve_route(request_model_runtime.model) is not None
+            ):
+                return web.json_response(
+                    _openai_error(
+                        "runtime_model requires a concrete model id, not a model_routes alias",
+                        code="request_model_runtime_alias_conflict",
+                        param="model",
+                    ),
+                    status=400,
+                )
+
         raw_input = body.get("input")
         if not raw_input:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
@@ -6753,7 +6863,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
         session_id = body.get("session_id") or stored_session_id
-        route = self._resolve_route(body.get("model"))
+        route = (
+            None
+            if request_model_runtime is not None
+            else self._resolve_route(body.get("model"))
+        )
         agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
         selection_error = self._request_route_conflict_error(
             session_id=session_id,
@@ -6809,7 +6923,11 @@ class APIServerAdapter(BasePlatformAdapter):
             "queued",
             created_at=created_at,
             session_id=session_id,
-            model=body.get("model", self._model_name),
+            model=(
+                request_model_runtime.model
+                if request_model_runtime is not None
+                else body.get("model", self._model_name)
+            ),
         )
 
         # Background task outlives the HTTP response (and thus the middleware
@@ -6842,6 +6960,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         requested_provider=agent_overrides.get("requested_provider"),
                         model_options=agent_overrides.get("model_options"),
                         route=route,
+                        confirmed_runtime_lock=request_model_runtime is not None,
+                        request_model_runtime=request_model_runtime,
                     )
                 self._active_run_agents[run_id] = agent
 

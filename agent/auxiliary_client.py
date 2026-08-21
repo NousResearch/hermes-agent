@@ -3449,6 +3449,7 @@ def set_runtime_main(
     auth_mode: str = "",
     session_id: str = "",
     cache_scope: str = "",
+    model_locked: bool = False,
 ) -> contextvars.Token:
     """Record the current context's live main runtime for auxiliary routing.
 
@@ -3477,6 +3478,7 @@ def set_runtime_main(
         "auth_mode": (auth_mode or "").strip().lower(),
         "session_id": (session_id or "").strip(),
         "cache_scope": (cache_scope or "").strip(),
+        "model_locked": model_locked is True,
     }
     # Publish authoritative context before updating locked compatibility
     # mirrors; concurrent sessions never read those mirrors at runtime.
@@ -3950,7 +3952,10 @@ _AUTO_PROVIDER_LABELS = {
 }
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
-_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider",)
+_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + (
+    "requested_provider",
+    "model_locked",
+)
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -3975,6 +3980,12 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     normalized: Dict[str, Any] = {}
     for field in _MAIN_RUNTIME_CONTEXT_FIELDS:
         value = main_runtime.get(field)
+        if field == "model_locked":
+            # Only an explicit boolean True activates the fail-closed route.
+            # Truthy mocks/strings must not silently enable auxiliary policy.
+            if value is True:
+                normalized[field] = True
+            continue
         # Preserve a callable api_key (Entra ID bearer provider) unchanged.
         if field == "api_key" and callable(value) and not isinstance(value, str):
             normalized[field] = value
@@ -5893,6 +5904,7 @@ def _resolve_auto_route(
     runtime_base_url = str(runtime.get("base_url") or "")
     runtime_api_key = runtime.get("api_key", "")
     runtime_api_mode = str(runtime.get("api_mode") or "")
+    runtime_model_locked = runtime.get("model_locked") is True
 
     # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
     #    provider (not 'custom').  This catches the common "env poisoning"
@@ -5929,7 +5941,12 @@ def _resolve_auto_route(
     # frontier reasoning model costs seconds per new session. This remains an
     # opt-in because every settings surface defines "auto" as using the main
     # model; silently overriding that choice makes the selected model cosmetic.
-    if _task_prefers_fast_model(task) and main_provider and main_provider not in {"auto", ""}:
+    if (
+        not runtime_model_locked
+        and _task_prefers_fast_model(task)
+        and main_provider
+        and main_provider not in {"auto", ""}
+    ):
         fast_model = _get_aux_model_for_provider(main_provider, prefer_fast=True)
         if fast_model and fast_model != main_model:
             logger.debug(
@@ -6024,6 +6041,17 @@ def _resolve_auto_route(
                 logger.info("Auxiliary auto-detect: using main provider %s (%s)",
                             main_provider, resolved or main_model)
                 return client, resolved or main_model, resolved_provider
+
+    # A model-locked run is an externally supplied, immutable execution
+    # boundary. If that exact runtime cannot be resolved, fail closed instead
+    # of consulting task config, the profile fallback chain, or ambient
+    # provider credentials.
+    if runtime_model_locked:
+        logger.warning(
+            "Auxiliary %s: locked main runtime is unavailable; fallback disabled",
+            task or "call",
+        )
+        return None, None, ""
 
     # ── Step 2: user-configured fallback policy ─────────────────────────
     # In auto mode, respect the task-specific fallback chain first, then the
@@ -7540,10 +7568,15 @@ def _client_cache_key(
     model: Optional[str] = None,
 ) -> tuple:
     runtime = _normalize_main_runtime(main_runtime)
-    runtime_key = tuple(
-        _runtime_cache_discriminator(field, runtime.get(field, ""))
-        for field in _MAIN_RUNTIME_FIELDS
-    ) if provider == "auto" else ()
+    runtime_key = (
+        tuple(
+            _runtime_cache_discriminator(field, runtime.get(field, ""))
+            for field in _MAIN_RUNTIME_FIELDS
+        )
+        + (("model_locked",) if runtime.get("model_locked") is True else ())
+        if provider == "auto"
+        else ()
+    )
     # `auto` can now resolve through task-specific or main fallback policy,
     # so the task participates in the cache key. Non-auto providers keep the
     # old cache shape because the explicit provider/model tuple is sufficient.
@@ -9338,15 +9371,31 @@ def _call_llm_impl(
     # concurrent /model switch produce a key for one runtime and a client for
     # another.
     main_runtime = _normalize_main_runtime(main_runtime)
-    resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        task, provider, model, base_url, api_key)
-    if api_mode:
+    runtime_model_locked = main_runtime.get("model_locked") is True
+    if runtime_model_locked:
+        # Ignore per-task and explicit auxiliary model routes: a locked run's
+        # exact main runtime is the sole model authority for every nested LLM
+        # operation. ``auto`` resolves only that snapshot in the locked path.
+        resolved_provider = "auto"
+        resolved_model = str(main_runtime.get("model") or "") or None
+        resolved_base_url = None
+        resolved_api_key = None
+        resolved_api_mode = str(main_runtime.get("api_mode") or "") or None
+    else:
+        (
+            resolved_provider,
+            resolved_model,
+            resolved_base_url,
+            resolved_api_key,
+            resolved_api_mode,
+        ) = _resolve_task_provider_model(task, provider, model, base_url, api_key)
+    if api_mode and not runtime_model_locked:
         resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
     effective_provider = resolved_provider
 
-    if task == "vision":
+    if task == "vision" and not runtime_model_locked:
         effective_provider, client, final_model = resolve_vision_provider_client(
             provider=resolved_provider if resolved_provider != "auto" else provider,
             model=resolved_model or model,
@@ -9386,6 +9435,10 @@ def _call_llm_impl(
             client, resolved_provider,
         )
         if client is None:
+            if runtime_model_locked:
+                raise RuntimeError(
+                    f"Locked model runtime is unavailable for auxiliary task={task}"
+                )
             # When the user explicitly chose a non-OpenRouter provider but no
             # credentials were found, honor the task fallback_chain before
             # raising.  Missing raw env keys are recoverable for auxiliary
@@ -9677,6 +9730,21 @@ def _call_llm_impl(
                 if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
                     raise
                 first_err = retry_err
+
+        if runtime_model_locked:
+            # Parameter-shaping retries above stay on the exact same client.
+            # Everything below may change model, endpoint, or credential
+            # (catalog healing, pool rotation, configured/global fallback),
+            # which is forbidden for an immutable request runtime.
+            if _is_connection_error(first_err):
+                try:
+                    _evict_cached_client_instance(client)
+                except Exception:
+                    logger.debug(
+                        "Auxiliary: locked-runtime cache eviction failed",
+                        exc_info=True,
+                    )
+            raise first_err
 
         # ── Stale-model self-heal (Nous Portal recommendation drift) ───
         # A long-lived process can pin a Portal-recommended model that has
@@ -10163,13 +10231,26 @@ async def _async_call_llm_impl(
     # Keep every async phase on the same runtime identity, even if another
     # session switches models while this task is awaiting network I/O.
     main_runtime = _normalize_main_runtime(main_runtime)
-    resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        task, provider, model, base_url, api_key)
+    runtime_model_locked = main_runtime.get("model_locked") is True
+    if runtime_model_locked:
+        resolved_provider = "auto"
+        resolved_model = str(main_runtime.get("model") or "") or None
+        resolved_base_url = None
+        resolved_api_key = None
+        resolved_api_mode = str(main_runtime.get("api_mode") or "") or None
+    else:
+        (
+            resolved_provider,
+            resolved_model,
+            resolved_base_url,
+            resolved_api_key,
+            resolved_api_mode,
+        ) = _resolve_task_provider_model(task, provider, model, base_url, api_key)
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
     effective_provider = resolved_provider
 
-    if task == "vision":
+    if task == "vision" and not runtime_model_locked:
         effective_provider, client, final_model = resolve_vision_provider_client(
             provider=resolved_provider if resolved_provider != "auto" else provider,
             model=resolved_model or model,
@@ -10210,6 +10291,10 @@ async def _async_call_llm_impl(
             client, resolved_provider,
         )
         if client is None:
+            if runtime_model_locked:
+                raise RuntimeError(
+                    f"Locked model runtime is unavailable for auxiliary task={task}"
+                )
             _explicit = (resolved_provider or "").strip().lower()
             if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
                 fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
@@ -10423,6 +10508,17 @@ async def _async_call_llm_impl(
                 if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
                     raise
                 first_err = retry_err
+
+        if runtime_model_locked:
+            if _is_connection_error(first_err):
+                try:
+                    _evict_cached_client_instance(client)
+                except Exception:
+                    logger.debug(
+                        "Auxiliary (async): locked-runtime cache eviction failed",
+                        exc_info=True,
+                    )
+            raise first_err
 
         # ── Stale-model self-heal (Nous Portal recommendation drift) ───
         # See the sync call_llm() path for the rationale: a long-lived process

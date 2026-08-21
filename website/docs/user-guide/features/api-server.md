@@ -252,7 +252,9 @@ Returns a machine-readable description of the API server's stable surface for ex
     "run_submission": true,
     "run_status": true,
     "run_events_sse": true,
-    "run_stop": true
+    "run_stop": true,
+    "run_request_model_runtime": false,
+    "run_request_model_credential_header": null
   }
 }
 ```
@@ -321,6 +323,66 @@ Example:
   ]
 }
 ```
+
+## Request-scoped model runtimes for `/v1/runs`
+
+Hosted control planes can keep model endpoints and credentials in their own
+database while using Hermes only as the execution runtime. Enable the opt-in
+API-server boundary:
+
+```yaml
+gateway:
+  platforms:
+    api_server:
+      allow_request_model_runtime: true
+```
+
+Then submit a concrete model/provider plus a `runtime_model` transport. The
+upstream credential uses a dedicated header because `Authorization` already
+authenticates the caller to Hermes:
+
+```bash
+curl -X POST http://127.0.0.1:8642/v1/runs \
+  -H "Authorization: Bearer $API_SERVER_KEY" \
+  -H "X-Hermes-Model-Api-Key: $UPSTREAM_MODEL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "Inspect this repository and summarize its state.",
+    "model": "my-model",
+    "provider": "custom",
+    "model_options": {"reasoning_effort": "high"},
+    "runtime_model": {
+      "base_url": "https://models.example.com/v1",
+      "api_mode": "chat_completions",
+      "max_tokens": 8192,
+      "request_overrides": {
+        "temperature": 0.2,
+        "top_p": 0.9
+      }
+    }
+  }'
+```
+
+This contract is intentionally narrow:
+
+- it is accepted only on `POST /v1/runs` and only when explicitly enabled;
+- `model` must be a concrete provider model id, not a `model_routes` alias;
+- `base_url` must be HTTP(S), while arbitrary SDK kwargs are rejected;
+- the runtime is immutable for the run and always model-locked;
+- session `/model` overrides, profile defaults, and the global fallback chain
+  cannot replace it;
+- auxiliary LLM work such as title generation and compression uses the same
+  model transport; task-specific fast models, credential pools, and provider
+  fallbacks are disabled for the locked run;
+- delegated subagents inherit the same model transport even if
+  `delegation.provider` is configured globally;
+- the upstream credential is never added to run status, events, response
+  payloads, or persisted model configuration.
+
+Enabling this option lets an authenticated caller choose an upstream network
+destination. Treat `API_SERVER_KEY` as a privileged control-plane credential,
+keep the API server on a trusted network, and apply outbound network policy at
+the deployment boundary when only specific model hosts should be reachable.
 
 ### GET /health
 

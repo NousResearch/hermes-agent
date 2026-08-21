@@ -21070,60 +21070,81 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
     def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:
-        """Return True if this /restart is a Telegram re-delivery we already handled.
+        """Return True when a chat /restart event was already processed.
 
-        The previous gateway wrote ``.restart_last_processed.json`` with the
-        triggering platform + update_id when it processed the /restart.  If
-        we now see a /restart on the same platform with an update_id <= that
-        recorded value, it is a redelivery when this process booted from that
-        restart. Otherwise the marker must still be recent (< 5 minutes).
+        Every adapter may expose a stable ``message_id``.  An exact match with
+        the durable restart marker is unambiguous across gateway processes and
+        prevents startup sync/replay from executing the same destructive
+        command twice (notably Matrix initial sync).
 
-        Only applies to Telegram today (the only platform that exposes a
-        numeric cross-session update ordering); other platforms return False.
+        Telegram additionally exposes a numeric ``platform_update_id``.  Keep
+        the older same-or-lower update ordering guard and its bounded fallback
+        for PTB shutdown-ACK failures where no stable message marker survived.
         """
         if event is None or event.source is None:
             return False
-        if event.platform_update_id is None:
-            return False
         if event.source.platform is None:
             return False
-        # Only Telegram populates platform_update_id currently; be explicit
-        # so future platforms aren't accidentally gated by this check.
         try:
             platform_value = event.source.platform.value
         except Exception:
             return False
-        if platform_value != "telegram":
-            return False
 
+        marker_path = _hermes_home / ".restart_last_processed.json"
         try:
-            marker_path = _hermes_home / ".restart_last_processed.json"
-            if not marker_path.exists():
-                # Belt-and-suspenders for when the dedup marker goes missing
-                # (manually cleaned up, or the previous cycle's write failed).
-                # Without a marker the update_id comparison below can't run, so
-                # a redelivered /restart would sail through and re-restart the
-                # gateway — an infinite loop (issue #18528).
-                #
-                # Suppress ONLY when we can independently confirm we just came
-                # out of a restart cycle: this process booted from a
-                # chat-originated /restart (_booted_from_restart) AND is still
-                # within a short post-boot window. This never swallows a
-                # genuine first /restart on a fresh boot (no restart marker on
-                # boot → flag stays False). Consume the flag one-shot so a
-                # legitimate /restart sent later in the same session is honored.
-                if (
-                    getattr(self, "_booted_from_restart", False)
-                    and time.time() - getattr(self, "_startup_time", 0.0) < 60
-                ):
-                    self._booted_from_restart = False
-                    return True
-                return False
-            data = json.loads(marker_path.read_text(encoding="utf-8"))
+            marker_exists = marker_path.exists()
+            data = (
+                json.loads(marker_path.read_text(encoding="utf-8"))
+                if marker_exists
+                else None
+            )
         except Exception:
             return False
 
-        if data.get("platform") != platform_value:
+        if isinstance(data, dict) and data.get("platform") == platform_value:
+            recorded_message_id = data.get("message_id")
+            event_message_id = getattr(event, "message_id", None)
+            if (
+                isinstance(recorded_message_id, str)
+                and recorded_message_id
+                and isinstance(event_message_id, str)
+                and event_message_id == recorded_message_id
+            ):
+                # The immutable platform event itself is the idempotency key.
+                # Consume the boot hint when present; exact-ID matching does
+                # not need a wall-clock trust window.
+                if getattr(self, "_booted_from_restart", False):
+                    self._booted_from_restart = False
+                return True
+
+        # Only Telegram has ordered update IDs.  Other platforms are safely
+        # handled by exact event/message ID above.
+        if platform_value != "telegram" or event.platform_update_id is None:
+            return False
+
+        if not marker_exists:
+            # Belt-and-suspenders for when the dedup marker goes missing
+            # (manually cleaned up, or the previous cycle's write failed).
+            # Without a marker the update_id comparison below can't run, so
+            # a redelivered /restart would sail through and re-restart the
+            # gateway — an infinite loop (issue #18528).
+            #
+            # Suppress ONLY when we can independently confirm we just came
+            # out of a restart cycle: this process booted from a
+            # chat-originated /restart (_booted_from_restart) AND is still
+            # within a short post-boot window. This never swallows a
+            # genuine first /restart on a fresh boot (no restart marker on
+            # boot → flag stays False). Consume the flag one-shot so a
+            # legitimate /restart sent later in the same session is honored.
+            if (
+                getattr(self, "_booted_from_restart", False)
+                and time.time() - getattr(self, "_startup_time", 0.0) < 60
+            ):
+                self._booted_from_restart = False
+                return True
+            return False
+
+        if not isinstance(data, dict) or data.get("platform") != platform_value:
             return False
         recorded_uid = data.get("update_id")
         if not isinstance(recorded_uid, int):

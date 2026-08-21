@@ -1,7 +1,7 @@
 """Behavior tests for the skill review / combined review prompts.
 
-The review prompts steer the background review agent toward actively updating
-the skill library after most sessions, with a strong bias toward:
+The review prompts steer the background review agent toward evidence-backed
+updates to the skill library, with a strong bias toward:
   1. Patching currently-loaded skills first,
   2. Patching existing umbrellas next,
   3. Adding references/ files under an existing umbrella,
@@ -14,6 +14,7 @@ These tests assert behavioral *instructions* are present — they do NOT
 snapshot the full prompt text (change-detector).
 """
 
+from agent.background_review import _DURABLE_PROCEDURE_GATE
 from run_agent import AIAgent
 
 
@@ -21,15 +22,24 @@ from run_agent import AIAgent
 # _SKILL_REVIEW_PROMPT
 # ---------------------------------------------------------------------------
 
-def test_skill_review_prompt_biases_toward_active_updates():
-    """Prompt must frame updating as the default stance, not something rare."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "ACTIVE" in prompt or "active" in prompt.lower(), (
-        "must tell the reviewer to be active"
+def _assert_noop_is_successful(prompt: str, label: str) -> None:
+    """A review with no durable procedure must be allowed to finish cleanly."""
+    lower = prompt.lower()
+    assert "nothing to save" in lower, f"{label}: must offer a no-op"
+    assert "successful review" in lower or "successful review outcome" in lower, (
+        f"{label}: must treat no-op as successful"
     )
-    # "missed learning opportunity" or equivalent framing for not acting
-    assert "missed" in prompt.lower() or "opportunity" in prompt.lower(), (
-        "must frame inaction as a miss, not a neutral outcome"
+    assert "missed learning opportunity" not in lower, (
+        f"{label}: must not penalize no-op"
+    )
+
+
+def test_review_prompts_treat_noop_as_successful_outcome():
+    _assert_noop_is_successful(
+        AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT"
+    )
+    _assert_noop_is_successful(
+        AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT"
     )
 
 
@@ -74,6 +84,53 @@ def test_combined_review_prompt_has_memory_section():
     prompt = AIAgent._COMBINED_REVIEW_PROMPT
     assert "**Memory**" in prompt
     assert "memory tool" in prompt
+
+
+def test_durable_procedure_gate_is_shared_by_both_prompts():
+    """Both skill-capable prompts must embed the same gate text.
+
+    Inclusion of the shared constant is the anti-drift contract. Copy edits
+    that preserve the gate live in one place and do not require dual updates.
+    """
+    assert _DURABLE_PROCEDURE_GATE
+    assert _DURABLE_PROCEDURE_GATE in AIAgent._SKILL_REVIEW_PROMPT
+    assert _DURABLE_PROCEDURE_GATE in AIAgent._COMBINED_REVIEW_PROMPT
+
+
+def test_durable_procedure_gate_requires_procedural_evidence():
+    """The shared gate encodes the policy; surrounding prompt prose may vary."""
+    lower = _DURABLE_PROCEDURE_GATE.lower()
+    assert "durable procedure" in lower
+    assert "correction" in lower
+    assert "verified" in lower
+    assert "complexity" in lower or "tool-call" in lower
+    assert "facts or reports" in lower or "documentation" in lower
+
+
+def _assert_reference_and_protected_home_boundaries(prompt: str, label: str) -> None:
+    """References and protected skills must not manufacture adjacent skills."""
+    lower = prompt.lower()
+    assert "reference" in lower and "justify" in lower, (
+        f"{label}: references must remain subordinate to a procedure"
+    )
+    assert "class-level" in lower and "evidence" in lower, (
+        f"{label}: broad naming must not substitute for evidence"
+    )
+    assert "adjacent umbrella" in lower, (
+        f"{label}: a protected canonical home must stop taxonomy duplication"
+    )
+
+
+def test_skill_review_prompt_keeps_write_boundaries():
+    _assert_reference_and_protected_home_boundaries(
+        AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT"
+    )
+
+
+def test_combined_review_prompt_keeps_write_boundaries():
+    _assert_reference_and_protected_home_boundaries(
+        AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT"
+    )
 
 
 

@@ -3935,6 +3935,49 @@ def _defer_update_for_self_lock(loaded: list[str]) -> None:
     _m()._write_update_incomplete_marker()
 
 
+_HOLDER_VALUE_FLAGS_FALLBACK = frozenset(
+    {
+        "--profile", "-p", "--config",
+        "--model", "-m", "--provider", "--reasoning",
+        "--toolsets", "-t", "--skills", "-s",
+        "--continue", "-c", "--resume", "-r",
+        "--oneshot", "-z", "--in", "--usage-file",
+    }
+)
+_holder_value_flags_cache: frozenset | None = None
+
+
+def _holder_value_flags() -> frozenset:
+    """Top-level CLI flags that consume a value — derived from the REAL parser.
+
+    Introspects ``build_top_level_parser()`` (every option with nargs != 0)
+    so the holder classifier can never drift from the argparse surface
+    (#91869 review: a handwritten subset misparsed ``--reasoning high
+    serve`` as subcommand ``high`` and ``-m dashboard serve`` as
+    ``dashboard`` — recreating the wrong-hint class). The pre-argparse
+    profile selectors (``--profile``/``-p``, ``--config``) are added
+    explicitly since they are stripped before argparse sees argv. Falls
+    back to a static snapshot when the parser cannot be imported (the
+    updater must classify holders even mid-upgrade on a broken tree).
+    Cached per process.
+    """
+    global _holder_value_flags_cache
+    if _holder_value_flags_cache is not None:
+        return _holder_value_flags_cache
+    flags: set[str] = {"--profile", "-p", "--config"}
+    try:
+        from hermes_cli._parser import build_top_level_parser
+
+        parser = build_top_level_parser()[0]
+        for action in parser._actions:
+            if action.option_strings and action.nargs != 0:
+                flags.update(action.option_strings)
+        _holder_value_flags_cache = frozenset(flags)
+    except Exception:
+        _holder_value_flags_cache = _HOLDER_VALUE_FLAGS_FALLBACK
+    return _holder_value_flags_cache
+
+
 def _hermes_holder_subcommand(cmdline: str) -> str | None:
     """The actual Hermes SUBCOMMAND a venv-holder argv runs, or None.
 
@@ -3966,12 +4009,13 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
     if entry_idx is None:
         return None
 
-    value_flags = {"--profile", "-p", "--config", "--model", "--provider"}
+    value_flags = _holder_value_flags()
     i = entry_idx + 1
     while i < len(tokens):
         token = tokens[i]
-        if token in value_flags:
-            i += 2
+        if token in value_flags or token.split("=", 1)[0] in value_flags:
+            # --flag value consumes two tokens; --flag=value consumes one.
+            i += 1 if "=" in token else 2
             continue
         if token.startswith("-"):
             i += 1

@@ -137,21 +137,31 @@ def _headers_dict(msg: dict) -> dict[str, str]:
 
 
 def _extract_message_body(msg: dict) -> str:
-    body = ""
+    # Recursively walk the MIME tree. Gmail nests bodies arbitrarily deep,
+    # e.g. multipart/mixed -> multipart/related -> multipart/alternative ->
+    # text/plain. The previous implementation only inspected the first level
+    # of ``payload["parts"]`` and returned an empty body for any message whose
+    # text/plain (or text/html) part lived deeper — common for HTML and
+    # marketing mail. Prefer text/plain anywhere in the tree, then fall back
+    # to text/html anywhere in the tree.
     payload = msg.get("payload", {})
+
+    def _walk(part: dict, want: str) -> str:
+        if part.get("mimeType") == want and part.get("body", {}).get("data"):
+            return base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
+        for sub in part.get("parts", []) or []:
+            found = _walk(sub, want)
+            if found:
+                return found
+        return ""
+
     if payload.get("body", {}).get("data"):
-        body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
-    elif payload.get("parts"):
-        for part in payload["parts"]:
-            if part.get("mimeType") == "text/plain" and part.get("body", {}).get("data"):
-                body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
-                break
-        if not body:
-            for part in payload["parts"]:
-                if part.get("mimeType") == "text/html" and part.get("body", {}).get("data"):
-                    body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
-                    break
-    return body
+        return base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
+    for want in ("text/plain", "text/html"):
+        found = _walk(payload, want)
+        if found:
+            return found
+    return ""
 
 
 def _extract_doc_text(doc: dict) -> str:

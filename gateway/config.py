@@ -1683,7 +1683,7 @@ def load_gateway_config() -> GatewayConfig:
                         if _bridge_key in platform_cfg and _bridge_key not in platform_cfg.get("extra", {}):
                             bridged[_bridge_key] = platform_cfg[_bridge_key]
                 if plat == Platform.API_SERVER:
-                    for _bridge_key in ("port", "host"):
+                    for _bridge_key in ("port", "host", "key", "cors_origins", "model_name"):
                         if _bridge_key in platform_cfg and _bridge_key not in platform_cfg.get("extra", {}):
                             bridged[_bridge_key] = platform_cfg[_bridge_key]
                 has_channel_overrides = "channel_overrides" in platform_cfg

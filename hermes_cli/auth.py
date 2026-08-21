@@ -2154,6 +2154,16 @@ def resolve_provider(
         return "openrouter"
     if normalized == "custom":
         return "custom"
+    # Named custom providers (``custom:<name>`` from ``custom_providers``) are a
+    # valid runtime identity that never appears in PROVIDER_REGISTRY. Mirror the
+    # check in ``is_runtime_provider_routable`` (see the ``startswith`` branch
+    # above) so MoA reference/aggregator entries and fallback_providers pointing
+    # at a named custom provider don't raise "Unknown provider".
+    # The name is returned verbatim rather than collapsed to bare "custom" so
+    # callers that key off the specific entry (runtime_provider.py) keep routing
+    # to that provider's own base_url/api_key instead of the generic path.
+    if normalized.startswith("custom:") and normalized[len("custom:"):].strip():
+        return normalized
     if normalized in PROVIDER_REGISTRY:
         return normalized
     if normalized != "auto":

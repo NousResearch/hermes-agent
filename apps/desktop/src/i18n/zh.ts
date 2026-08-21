@@ -45,6 +45,18 @@ export const zh: Translations = {
     off: '关'
   },
 
+  petBubble: {
+    approvalTitle: '需要审批',
+    approvalFallback: '待审批操作',
+    approveOnce: '批准一次',
+    deny: '拒绝',
+    processing: '处理中…',
+    runLines: ['正在处理…', '我来看看…', '正在执行…', '我需要处理一下…'],
+    reviewLines: ['正在思考…', '我发现了一些线索…', '正在检查…', '我需要确认一下…'],
+    failedLines: ['遇到问题了', '这里需要处理', '执行失败了'],
+    waitingLines: ['需要你的操作', '等你确认', '轮到你啦']
+  },
+
   fileMenu: {
     revealFinder: '在访达中显示',
     revealExplorer: '在文件资源管理器中显示',

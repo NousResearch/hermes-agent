@@ -1,8 +1,10 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import { AlertCircle, Clock, type IconComponent } from '@/lib/icons'
 import { $petActivity, $petState, type PetState } from '@/store/pet'
+import { $petOverlayApproval } from '@/store/pet-overlay'
 
 /**
  * Speech bubble + status glyph for the popped-out pet overlay — the
@@ -25,52 +27,34 @@ interface Spec {
   tone?: Tone
 }
 
-// Phrasings per mood, picked at random (no immediate repeat) for a bit of life.
-// Keep them short — the bubble is tiny and never wraps.
-const SPECS: Partial<Record<PetState, Spec>> = {
-  run: {
-    lines: [
-      'working…',
-      'on it…',
-      'crunching…',
-      'tinkering…',
-      'cooking…',
-      'in the weeds…',
-      'wiring it up…',
-      'making moves…',
-      'heads down…',
-      'hammering away…'
-    ]
-  },
-  review: {
-    lines: [
-      'thinking…',
-      'reading…',
-      'reviewing…',
-      'pondering…',
-      'connecting dots…',
-      'sizing it up…',
-      'tracing it…',
-      'mulling…',
-      'scheming…',
-      'hmm…'
-    ]
-  },
-  failed: {
-    glyph: AlertCircle,
-    lines: ['hit a snag', 'welp', 'that broke', 'oof', 'snagged'],
-    tone: 'error'
-  },
-  waiting: {
-    glyph: Clock,
-    lines: ['your turn', 'all yours', 'over to you', 'ball’s in your court', 'awaiting orders'],
-    tone: 'wait'
+function petSpecs(copy: ReturnType<typeof useI18n>['t']['petBubble']): Partial<Record<PetState, Spec>> {
+  return {
+    run: {
+      lines: copy.runLines
+    },
+    review: {
+      lines: copy.reviewLines
+    },
+    failed: {
+      glyph: AlertCircle,
+      lines: copy.failedLines,
+      tone: 'error'
+    },
+    waiting: {
+      glyph: Clock,
+      lines: copy.waitingLines,
+      tone: 'wait'
+    }
   }
 }
 
 const TONE_COLOR: Record<Tone, string> = {
   error: 'var(--ui-red)',
   wait: 'var(--ui-yellow)'
+}
+
+export function summarizePetApproval(command: string, description: string, fallback: string): string {
+  return command.trim() || description.trim() || fallback
 }
 
 // Random pick that avoids repeating the line we're already showing.
@@ -89,21 +73,26 @@ function pick(lines: string[], prev: string): string {
 }
 
 export function PetBubble() {
+  const { t } = useI18n()
+  const copy = t.petBubble
+  const specs = petSpecs(copy)
   const state = useStore($petState)
   const activity = useStore($petActivity)
+  const approval = useStore($petOverlayApproval)
   const [line, setLine] = useState('')
+  const [submitting, setSubmitting] = useState<'deny' | 'once' | null>(null)
 
   // Finish beats are carried by the sprite/mail icon; idle only speaks up when
   // it's actually the user's turn. Everything else maps to a mood spec.
   const specKey: null | PetState =
-    state in SPECS ? state : state === 'idle' && activity.awaitingInput ? 'waiting' : null
+    state in specs ? state : state === 'idle' && activity.awaitingInput ? 'waiting' : null
 
   const rotating = specKey === 'run' || specKey === 'review'
 
   // Pick a fresh line on every mood change, then keep rotating (random, no
   // repeat) only while the agent is actively working/thinking.
   useEffect(() => {
-    const spec = specKey ? SPECS[specKey] : null
+    const spec = specKey ? specs[specKey] : null
 
     if (!spec) {
       setLine('')
@@ -122,7 +111,88 @@ export function PetBubble() {
     return () => window.clearInterval(id)
   }, [specKey, rotating])
 
-  const spec = specKey ? SPECS[specKey] : null
+  const respond = (choice: 'deny' | 'once') => {
+    if (!approval || submitting) {
+      return
+    }
+
+    setSubmitting(choice)
+    window.hermesDesktop?.petOverlay?.control({
+      choice,
+      sessionId: approval.sessionId,
+      type: 'approval'
+    })
+  }
+
+  // A new or cleared approval resets any in-flight submit state, so a follow-up
+  // request never inherits a stale disabled button.
+  useEffect(() => {
+    setSubmitting(null)
+  }, [approval])
+
+  // The store only clears the approval after the gateway confirms success and
+  // deliberately keeps the prompt on failure. Release the buttons again after a
+  // short window so a failed respond leaves the overlay actionable instead of
+  // permanently disabled.
+  useEffect(() => {
+    if (!submitting) {
+      return
+    }
+
+    const id = window.setTimeout(() => setSubmitting(null), 5000)
+
+    return () => window.clearTimeout(id)
+  }, [submitting])
+
+  if (approval) {
+    return (
+      <div
+        style={{
+          background: 'var(--ui-bg-elevated)',
+          border: '1px solid var(--ui-stroke-secondary)',
+          borderRadius: 10,
+          boxShadow: '0 4px 14px rgba(0,0,0,0.22)',
+          color: 'var(--foreground)',
+          display: 'flex',
+          flexDirection: 'column',
+          fontSize: 11,
+          gap: 6,
+          maxWidth: 250,
+          padding: '7px 9px',
+          pointerEvents: 'auto'
+        }}
+      >
+        <strong>{copy.approvalTitle}</strong>
+        <pre
+          style={{
+            background: 'var(--ui-chat-surface-background)',
+            border: '1px solid var(--ui-stroke-tertiary)',
+            borderRadius: 6,
+            fontFamily: 'var(--font-mono)',
+            lineHeight: 1.35,
+            margin: 0,
+            maxHeight: 120,
+            overflow: 'auto',
+            padding: '5px 6px',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word'
+          }}
+        >
+          {summarizePetApproval(approval.command, approval.description, copy.approvalFallback)}
+        </pre>
+        <span style={{ display: 'flex', gap: 6 }}>
+          <button disabled={Boolean(submitting)} onClick={() => respond('once')} type="button">
+            {submitting === 'once' ? copy.processing : copy.approveOnce}
+          </button>
+          <button disabled={Boolean(submitting)} onClick={() => respond('deny')} type="button">
+            {submitting === 'deny' ? copy.processing : copy.deny}
+          </button>
+        </span>
+      </div>
+    )
+  }
+
+  const spec = specKey ? specs[specKey] : null
 
   if (!spec) {
     return null

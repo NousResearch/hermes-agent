@@ -45,6 +45,18 @@ export const en: Translations = {
     off: 'Off'
   },
 
+  petBubble: {
+    approvalTitle: 'Approval needed',
+    approvalFallback: 'Pending approval',
+    approveOnce: 'Approve once',
+    deny: 'Deny',
+    processing: 'Working…',
+    runLines: ['Working…', 'Checking…', 'Running…', 'Handling that…'],
+    reviewLines: ['Thinking…', 'Found a clue…', 'Reviewing…', 'Checking this…'],
+    failedLines: ['Something went wrong', 'Needs attention', 'Failed'],
+    waitingLines: ['Needs your input', 'Waiting for confirmation', 'Your turn']
+  },
+
   fileMenu: {
     revealFinder: 'Reveal in Finder',
     revealExplorer: 'Reveal in File Explorer',

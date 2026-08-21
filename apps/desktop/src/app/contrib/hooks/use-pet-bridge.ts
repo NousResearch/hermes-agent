@@ -1,8 +1,15 @@
 import { useEffect, useRef } from 'react'
 
+import { respondToApprovalAction } from '@/store/native-notifications'
 import { setPetActivity } from '@/store/pet'
 import { setPetScale } from '@/store/pet-gallery'
-import { setPetOverlayOpenAppHandler, setPetOverlayScaleHandler, setPetOverlaySubmitHandler } from '@/store/pet-overlay'
+import {
+  pushPetOverlayStateNow,
+  setPetOverlayApprovalHandler,
+  setPetOverlayOpenAppHandler,
+  setPetOverlayScaleHandler,
+  setPetOverlaySubmitHandler
+} from '@/store/pet-overlay'
 import { $sessions } from '@/store/session'
 import { $attentionSessionIds } from '@/store/session-states'
 import { isAuxiliaryWindow } from '@/store/windows'
@@ -36,6 +43,9 @@ export function usePetBridge({ requestGateway, resumeSession, submitText }: PetB
     }
 
     setPetOverlaySubmitHandler(text => void submitTextRef.current(text))
+    setPetOverlayApprovalHandler((choice, sessionId) => {
+      void respondToApprovalAction(sessionId, choice === 'once' ? 'approve' : 'reject').finally(pushPetOverlayStateNow)
+    })
     // Alt+wheel resize from the popped-out pet — persist through this window's
     // gateway (the overlay has none) so it survives restart.
     setPetOverlayScaleHandler(scale => setPetScale(requestGatewayRef.current, scale))
@@ -51,6 +61,7 @@ export function usePetBridge({ requestGateway, resumeSession, submitText }: PetB
 
     return () => {
       setPetOverlaySubmitHandler(null)
+      setPetOverlayApprovalHandler(null)
       setPetOverlayOpenAppHandler(null)
       setPetOverlayScaleHandler(null)
     }

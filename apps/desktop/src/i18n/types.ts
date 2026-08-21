@@ -110,6 +110,18 @@ export interface Translations {
     pathCopied: string
   }
 
+  petBubble: {
+    approvalTitle: string
+    approvalFallback: string
+    approveOnce: string
+    deny: string
+    processing: string
+    runLines: string[]
+    reviewLines: string[]
+    failedLines: string[]
+    waitingLines: string[]
+  }
+
   boot: {
     ready: string
     desktopBootFailedWithMessage: (message: string) => string

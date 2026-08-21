@@ -45,6 +45,18 @@ export const zhHant = defineLocale({
     off: '關閉'
   },
 
+  petBubble: {
+    approvalTitle: '需要核准',
+    approvalFallback: '待核准操作',
+    approveOnce: '核准一次',
+    deny: '拒絕',
+    processing: '處理中…',
+    runLines: ['正在處理…', '我來看看…', '正在執行…', '我需要處理一下…'],
+    reviewLines: ['正在思考…', '我發現了一些線索…', '正在檢查…', '我需要確認一下…'],
+    failedLines: ['遇到問題了', '這裡需要處理', '執行失敗了'],
+    waitingLines: ['需要你的操作', '等你確認', '輪到你啦']
+  },
+
   fileMenu: {
     revealFinder: '在 Finder 中顯示',
     revealExplorer: '在檔案總管中顯示',

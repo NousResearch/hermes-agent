@@ -318,7 +318,7 @@ describe('respondToApprovalAction', () => {
     setActiveSessionId('bg')
     setApprovalRequest({ command: 'rm -rf /', description: 'dangerous', sessionId: 'bg' })
 
-    await respondToApprovalAction('bg', 'approve')
+    await expect(respondToApprovalAction('bg', 'approve')).resolves.toBe(true)
 
     expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'once', session_id: 'bg' })
     expect($approvalRequest.get()).toBeNull()
@@ -330,13 +330,23 @@ describe('respondToApprovalAction', () => {
   })
 
   it('ignores unknown action ids', async () => {
-    await respondToApprovalAction('bg', 'snooze')
+    await expect(respondToApprovalAction('bg', 'snooze')).resolves.toBe(false)
     expect(request).not.toHaveBeenCalled()
   })
 
   it('no-ops without a gateway', async () => {
     $gateway.set(null)
-    await respondToApprovalAction('bg', 'approve')
+    await expect(respondToApprovalAction('bg', 'approve')).resolves.toBe(false)
     expect(request).not.toHaveBeenCalled()
+  })
+
+  it('keeps the prompt parked when approval.respond fails', async () => {
+    request.mockRejectedValueOnce(new Error('offline'))
+    setActiveSessionId('bg')
+    setApprovalRequest({ command: 'rm -rf /', description: 'dangerous', sessionId: 'bg' })
+
+    await expect(respondToApprovalAction('bg', 'approve')).resolves.toBe(false)
+
+    expect($approvalRequest.get()).toEqual({ command: 'rm -rf /', description: 'dangerous', sessionId: 'bg' })
   })
 })

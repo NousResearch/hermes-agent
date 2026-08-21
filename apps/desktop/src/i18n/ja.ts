@@ -45,6 +45,18 @@ export const ja = defineLocale({
     off: 'オフ'
   },
 
+  petBubble: {
+    approvalTitle: '承認が必要です',
+    approvalFallback: '承認待ちの操作',
+    approveOnce: '一度だけ承認',
+    deny: '拒否',
+    processing: '処理中…',
+    runLines: ['処理中…', '確認しています…', '実行中…', '対応しています…'],
+    reviewLines: ['考えています…', '手がかりを見つけました…', '確認中…', 'もう少し見ています…'],
+    failedLines: ['問題が起きました', '確認が必要です', '実行に失敗しました'],
+    waitingLines: ['操作が必要です', '確認待ちです', 'あなたの番です']
+  },
+
   fileMenu: {
     revealFinder: 'Finder で表示',
     revealExplorer: 'エクスプローラーで表示',

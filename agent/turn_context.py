@@ -1067,8 +1067,22 @@ def build_turn_context(
 
         if not _preflight_deferred:
             _last = _compressor.last_prompt_tokens
-            # Do NOT overwrite the -1 sentinel (#36718).
-            if _last >= 0 and _preflight_tokens > _last:
+            # The seed exists so the status bar shows current occupancy when a
+            # provider reports no usage (#34282's motivation). But
+            # ``last_prompt_tokens`` is also the post-response compression
+            # gate's "real tokens" input (conversation_loop) and the CLI
+            # context meter's source (cli.py). Overwriting a REAL provider
+            # reading with the rough preflight estimate makes the bar jump to
+            # an inflated number and can push the real-usage gate over the
+            # threshold on estimator noise — compression then fires at far
+            # below the user-configured threshold (observed: 492K real vs
+            # ~685K rough on a 1M window; reasoning-heavy sessions inflate
+            # the rough estimate 1.4-2.5x, see #81481).
+            #
+            # Policy: a real provider reading (>0) always wins. Seed only
+            # from the 0 state ("no reading yet"); -1 stays protected as the
+            # post-compression sentinel (#36718).
+            if _last == 0 and _preflight_tokens > _last:
                 _compressor.last_prompt_tokens = _preflight_tokens
 
         _compression_cooldown = getattr(

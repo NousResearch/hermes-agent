@@ -2463,9 +2463,9 @@ class TestPreflightSentinelGuard:
     """
 
     def _seed(self, last_prompt_tokens, preflight_tokens):
-        # Mirror the exact guard in agent/conversation_loop.py run_conversation.
+        # Mirror the exact guard in agent/turn_context.py build_turn_context.
         _last = last_prompt_tokens
-        if _last >= 0 and preflight_tokens > _last:
+        if _last == 0 and preflight_tokens > _last:
             return preflight_tokens  # would overwrite
         return last_prompt_tokens   # preserved
 
@@ -2475,10 +2475,20 @@ class TestPreflightSentinelGuard:
         result = self._seed(compressor.last_prompt_tokens, 250_000)
         assert result == -1
 
-    def test_real_value_still_revises_upward(self, compressor):
-        compressor.last_prompt_tokens = 10_000
+    def test_zero_state_still_seeded(self, compressor):
+        # 0 means "no reading yet" — the seed keeps the status bar live when
+        # providers report no usage.
+        compressor.last_prompt_tokens = 0
         result = self._seed(compressor.last_prompt_tokens, 50_000)
         assert result == 50_000
+
+    def test_real_provider_reading_wins_over_rough_estimate(self, compressor):
+        # Regression for the 492K-vs-685K display jump: a real provider
+        # reading must never be replaced by the schema/reasoning-inflated
+        # rough preflight estimate (#81481 class inflation).
+        compressor.last_prompt_tokens = 492_000
+        result = self._seed(compressor.last_prompt_tokens, 685_344)
+        assert result == 492_000
 
 
 

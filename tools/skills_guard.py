@@ -447,7 +447,7 @@ THREAT_PATTERNS = [
     (r'\bsudo\b',
      "sudo_usage", "high", "privilege_escalation",
      "uses sudo (privilege escalation)"),
-    (r'setuid|setgid|cap_setuid',
+    (r'(?-i:\b(?:setuid|setgid|cap_setuid|SETUID|SETGID|CAP_SETUID)\b)',
      "setuid_setgid", "critical", "privilege_escalation",
      "setuid/setgid (privilege escalation mechanism)"),
     (r'NOPASSWD',

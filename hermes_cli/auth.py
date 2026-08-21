@@ -3840,13 +3840,88 @@ def _sync_codex_pool_entries(
         entry["last_error_reset_at"] = None
 
 
+def _write_through_codex_tokens_to_global_root(
+    state: Dict[str, Any],
+    tokens: Dict[str, str],
+    last_refresh: Optional[str],
+) -> None:
+    """Persist a profile-refreshed Codex OAuth state into the global-root auth.json.
+
+    Codex refresh tokens are single-use with rotation-family reuse
+    detection: a profile that resolved the grant from the root fallback and
+    refreshed it must write the rotated chain back to root — including the
+    ``credential_pool.openai-codex`` entries the runtime actually selects
+    credentials from — or root keeps the *consumed* refresh token and the
+    next process to read it replays it, at which point OpenAI revokes the
+    whole rotation family and the credential needs a manual device-code
+    re-auth (#87503). Mirrors the xAI write-through (#43589/#74339):
+    root-only (never creates a shadowing profile key), best-effort — a
+    failed write-through must never break the profile's own save.
+    """
+    global_path = _global_auth_file_path()
+    if global_path is None:
+        # Classic mode (profile == root); the profile save already hit root.
+        return
+    # Seat belt: under pytest, refuse to write the real user's
+    # ~/.hermes/auth.json even when HERMES_HOME points at a profile path
+    # (mirrors the guard in _write_through_xai_oauth_to_global_root). Uses
+    # the unmodified HOME env, not Path.home() which fixtures may
+    # monkeypatch — and falls back to USERPROFILE because HOME is often
+    # unset on Windows, which would otherwise silently disable the guard.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        real_home_env = os.environ.get("HOME", "") or os.environ.get(
+            "USERPROFILE", ""
+        )
+        if real_home_env:
+            real_root = Path(real_home_env) / ".hermes" / "auth.json"
+            try:
+                if global_path.resolve(strict=False) == real_root.resolve(strict=False):
+                    return
+            except Exception:
+                return
+    try:
+        with _auth_store_lock(target_path=global_path):
+            root_store = _load_auth_store(global_path)
+            # Root's own previous singleton tokens drive the pool-sync
+            # alias check (#39236): legacy singleton-aliases in the ROOT
+            # store must be refreshed alongside the rotated chain.
+            root_prev_tokens = None
+            root_providers = root_store.get("providers")
+            if isinstance(root_providers, dict) and isinstance(
+                root_providers.get("openai-codex"), dict
+            ):
+                prev = root_providers["openai-codex"].get("tokens")
+                root_prev_tokens = prev if isinstance(prev, dict) else None
+            _store_provider_state(
+                root_store, "openai-codex", dict(state), set_active=False
+            )
+            _sync_codex_pool_entries(
+                root_store,
+                tokens,
+                last_refresh,
+                previous_singleton_tokens=root_prev_tokens,
+            )
+            _save_auth_store(root_store, target_path=global_path)
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.debug("Codex OAuth: write-through to global root failed: %s", exc)
+
+
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str = None) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with _auth_store_lock():
         auth_store = _load_auth_store()
-        state = _load_provider_state(auth_store, "openai-codex") or {}
+        # Resolve the state WITH its source: a profile without its own
+        # ``providers.openai-codex`` block reads the root grant through the
+        # fallback, and a refresh under that profile must rotate ROOT's
+        # chain, not fork a shadowing profile key (#87503, mirrors the xAI
+        # source-aware save from #43589/#74339).
+        state, source_path = _load_provider_state_with_source(
+            auth_store, "openai-codex"
+        )
+        if state is None:
+            state = {}
         # Capture the previous singleton tokens BEFORE overwriting them.  The
         # pool-sync step uses this to distinguish legacy singleton-aliases
         # (which should be refreshed) from independent accounts that
@@ -3858,6 +3933,21 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         state["auth_mode"] = "chatgpt"
         if label and str(label).strip():
             state["label"] = str(label).strip()
+        global_root = _global_auth_file_path()
+        is_from_root = bool(
+            source_path is not None
+            and global_root is not None
+            and _same_path(source_path, global_root)
+        )
+        if is_from_root:
+            # Grant was resolved from root — write the rotated chain back to
+            # root only. Do NOT also persist into the profile store (it would
+            # create a shadowing providers.openai-codex key that disables
+            # the write-through on the next refresh, #74339).
+            _write_through_codex_tokens_to_global_root(
+                state, tokens, last_refresh
+            )
+            return
         _save_provider_state(auth_store, "openai-codex", state)
         _sync_codex_pool_entries(
             auth_store,

@@ -80,6 +80,12 @@ export function clarifyCardOwnsKey(event: KeyboardEvent): boolean {
     return true
   }
 
+  // Space stages/toggles the highlighted row on the card — a leading space is
+  // never how a real composer message starts, so yielding it costs nothing.
+  if (event.key === ' ') {
+    return true
+  }
+
   // "Other" is the row past the last choice, hence the +1.
   const rows = Number(card.getAttribute('data-clarify-choices')) + 1
 

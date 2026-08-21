@@ -367,6 +367,48 @@ describe('ClarifyTool keyboard navigation', () => {
     expect(fireEvent.keyDown(window, { key: 'ArrowDown' })).toBe(true)
     expect(request).not.toHaveBeenCalled()
   })
+
+  it('stages the highlighted choice with Space without submitting', async () => {
+    const request = renderLiveClarify()
+    const production = screen.getByRole('button', { name: /production/ })
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    fireEvent.keyDown(window, { key: ' ' })
+
+    expect(production.getAttribute('aria-pressed')).toBe('true')
+    expect(request).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: 'production',
+        request_id: 'request-1'
+      })
+    })
+  })
+
+  it('Space toggles the highlighted multi-select choice', () => {
+    const request = renderLiveClarify({ multiSelect: true })
+    const staging = screen.getByRole('button', { name: /staging/ })
+
+    fireEvent.keyDown(window, { key: ' ' })
+    expect(staging.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.keyDown(window, { key: ' ' })
+    expect(staging.getAttribute('aria-pressed')).toBe('false')
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('Space on the Other row focuses the free-text field', () => {
+    renderLiveClarify()
+
+    const other = screen.getByPlaceholderText(/Other/)
+
+    fireEvent.keyDown(window, { key: 'ArrowUp' })
+    fireEvent.keyDown(window, { key: ' ' })
+    expect(document.activeElement).toBe(other)
+  })
 })
 
 describe('ClarifyTool recommended option', () => {

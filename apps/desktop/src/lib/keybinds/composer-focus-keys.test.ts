@@ -186,7 +186,9 @@ describe('composerFocusKeysAllowed', () => {
     expect(allowed('z', 'type')).toBe(true)
     expect(allowed('4', 'type')).toBe(true)
     expect(allowed('?', 'type')).toBe(true)
-    expect(allowed(' ', 'type')).toBe(true)
+
+    // Space stages the highlighted row; a real message never starts with one.
+    expect(allowed(' ', 'type')).toBe(false)
   })
 
   it('leaves every key alone for a clarify card in a background tab', () => {

@@ -582,11 +582,12 @@ function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs
     [submitAnswer]
   )
 
-  // Arrow keys move a visual cursor, 1-9 and A/B/C… pick directly, and Enter
-  // confirms the current answer (or acts on the highlighted row). Stands down
-  // whenever a focusable control (a field, a choice button, the action bar) is
-  // focused, so it never eats keystrokes meant for the composer, the Other box,
-  // or a button the user tabbed to.
+  // Arrow keys move a visual cursor, 1-9 and A/B/C… pick directly, Space
+  // stages/toggles the highlighted row without submitting, and Enter confirms
+  // the current answer (or acts on the highlighted row). Stands down whenever
+  // a focusable control (a field, a choice button, the action bar) is focused,
+  // so it never eats keystrokes meant for the composer, the Other box, or a
+  // button the user tabbed to.
   useEffect(() => {
     if (!ready || !hasChoices || submitting) {
       return
@@ -609,6 +610,23 @@ function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault()
         moveActive(event.key === 'ArrowDown' ? 1 : -1)
+
+        return
+      }
+
+      // Space stages (or, multi-select, toggles) the highlighted row without
+      // submitting — Enter stays the confirm key. On the "Other" row it just
+      // focuses the free-text field.
+      if (event.key === ' ') {
+        event.preventDefault()
+
+        const choice = choices[activeIndex]
+
+        if (choice) {
+          selectChoice(choice, activeIndex)
+        } else {
+          textareaRef.current?.focus()
+        }
 
         return
       }
@@ -658,7 +676,7 @@ function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs
     window.addEventListener('keydown', onKeyDown)
 
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activateActive, choices, hasChoices, moveActive, ready, selectChoice, submitting])
+  }, [activateActive, activeIndex, choices, hasChoices, moveActive, ready, selectChoice, submitting])
 
   if (loading) {
     return (

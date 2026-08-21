@@ -226,6 +226,50 @@ def _run_migrate_config_fresh(*, interactive: bool = False, quiet: bool = False)
     return migrate_config(interactive=interactive, quiet=quiet)
 
 
+def _maybe_migrate_config_on_current(print_completion) -> None:
+    """Run config migration on the ``commit_count == 0`` repair path.
+
+    A previous update attempt can pull new code onto disk and then fail
+    before reaching the config-migration block (e.g. PyPI timeout during
+    the dependency sync, #91360). The retry then enters the \"Already up
+    to date\" branch and returns early — skipping ``_run_config_check_fresh``
+    / ``migrate_config`` entirely. The fresh code (which may require a
+    newer ``_config_version``) keeps running against the old config, and
+    the next Hermes launch refuses to start.
+
+    This mirrors the version-bump handling from the normal update path
+    (``version_bump_only``): silently apply format-only migrations, and
+    warn about anything that needs attention. It is a no-op when the
+    config version is already current.
+    """
+    try:
+        current_ver, latest_ver = _run_config_check_fresh()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Config check on current-checkout path failed: %s", exc)
+        return
+    if current_ver >= latest_ver:
+        return
+    print()
+    print(
+        f"  ℹ Updating config format (v{current_ver} → v{latest_ver})…"
+    )
+    try:
+        _mig_results = _run_migrate_config_fresh(
+            interactive=False, quiet=True
+        )
+        print("  ✓ Config format updated (no new settings to configure)")
+        # quiet=True also mutes migration steps that RESET or REMOVE an
+        # existing setting; re-surface those notes so an unattended update
+        # never silently changes user configuration (#86656).
+        for _note in _mig_results.get("config_added") or []:
+            print(f"  ℹ {_note}")
+        for _warn in _mig_results.get("warnings") or []:
+            print(f"  ⚠️  {_warn}")
+    except Exception as _mig_err:
+        print(f"  ⚠️  Config format update failed: {_mig_err}")
+        print("     Run 'hermes config migrate' to retry.")
+
+
 # Critical files that Hermes must be able to import immediately after an
 # update/install. Most are imported on every CLI startup; ``web_server.py``
 # is the desktop/dashboard backend path that a fresh Windows install launches
@@ -5551,11 +5595,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 healthy_after, detail_after = _venv_core_imports_healthy()
                 if healthy_after:
                     print("✓ Dependencies repaired!")
+                    _maybe_migrate_config_on_current(_print_update_completion)
                     _print_update_completion("✓ Update complete!")
                 else:
                     print(f"⚠ Venv still unhealthy after repair: {detail_after}")
                     print("  Close all Hermes windows/gateways and re-run: hermes update")
             else:
+                _maybe_migrate_config_on_current(_print_update_completion)
                 _repair_node_deps_on_current_checkout(_print_update_completion)
             if runtime_repaired is not None and not _m()._is_windows():
                 print()

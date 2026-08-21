@@ -874,6 +874,10 @@ class TestNodeRuntimeNpmResolution:
             patch.object(hm, "_resolve_node_runtime_npm", return_value="npm.cmd"),
             patch.object(hm, "_desktop_build_needed", return_value=True),
             patch.object(hm, "_run_logged_subprocess", return_value=build_ok) as desktop_build,
+            # The post-build install hook is gated on the host bundle being
+            # copyable (darwin/win32); pin it so the third consultation below
+            # happens on every CI host, not just macOS/Windows.
+            patch.object(hm, "_desktop_bundle_install_supported", return_value=True),
         ):
             had_desktop_app_before_update = update_cmd._desktop_app_present(desktop_dir)
             assert not update_cmd._desktop_app_present(desktop_dir)

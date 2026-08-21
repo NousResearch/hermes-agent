@@ -2741,6 +2741,12 @@ def _resolve_runtime_agent_kwargs() -> dict:
     )
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
 
+    # Capture primary provider/model from config before the try block so we
+    # can include it in the fallback notice if the primary fails (#74349).
+    _model_cfg = _get_model_config()
+    _primary_model = (_model_cfg.get("default") or "").strip()
+    _primary_provider = (_model_cfg.get("provider") or "").strip()
+
     try:
         runtime = resolve_runtime_provider()
     except AuthError as auth_exc:
@@ -2754,6 +2760,17 @@ def _resolve_runtime_agent_kwargs() -> dict:
             logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
         fb_config = _try_resolve_fallback_provider()
         if fb_config is not None:
+            # Carry fallback notice metadata so the gateway can surface a
+            # user-visible provider switch (#74349).  The caller must pop
+            # ``_fallback_notice`` before forwarding kwargs to AIAgent.
+            fb_provider = fb_config.get("provider") or fb_config.get("requested_provider") or "unknown"
+            fb_model = fb_config.get("model") or "default"
+            primary_desc = "/".join(filter(None, [_primary_provider, _primary_model])) or "primary"
+            fallback_desc = "/".join(filter(None, [fb_provider, fb_model]))
+            fb_config["_fallback_notice"] = (
+                f"⚠️ Provider fallback: {primary_desc} unavailable; "
+                f"using {fallback_desc} for this response."
+            )
             return fb_config
         raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
     except Exception as exc:
@@ -5304,12 +5321,17 @@ class TurnRunner:
 
         max_iterations = _current_max_iterations()
 
+        _pending_fallback_notice = None
         try:
             model, runtime_kwargs = self._runner._resolve_session_agent_runtime(
                 source=ctx.source,
                 session_key=ctx.session_key,
                 user_config=ctx.user_config,
             )
+            # Pop fallback notice metadata set by _resolve_runtime_agent_kwargs()
+            # when the primary provider fails and a fallback is resolved.
+            # This must happen before runtime_kwargs is forwarded anywhere.
+            _pending_fallback_notice = runtime_kwargs.pop("_fallback_notice", None)
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
@@ -5710,6 +5732,13 @@ class TurnRunner:
                     )
                     self._runner._enforce_agent_cache_cap()
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, _sig)
+
+        # If the gateway resolved a fallback provider for this turn, surface
+        # a user-visible notice via the agent's existing fallback-notice
+        # mechanism (#74349).  This covers the pre-agent credential-resolution
+        # path that bypasses the in-conversation-loop fallback activation.
+        if _pending_fallback_notice:
+            agent._pending_fallback_notice = _pending_fallback_notice
 
         # Per-message state — callbacks and reasoning config change every
         # turn and must not be baked into the cached agent constructor.

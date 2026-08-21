@@ -4396,7 +4396,10 @@ def _resolve_child_credential_pool(
             )
         return None
 
-    if parent_pool is not None and effective_provider == parent_provider:
+    if effective_provider == parent_provider:
+        # A same-provider parent with no pool is using a fixed credential.
+        # Loading a separate provider pool here can replace the inherited
+        # endpoint and key when the child acquires its startup lease (#71424).
         return parent_pool
 
     try:

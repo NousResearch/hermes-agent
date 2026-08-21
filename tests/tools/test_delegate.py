@@ -1005,6 +1005,80 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
         result = _resolve_child_credential_pool("openrouter", parent)
         self.assertIs(result, mock_pool)
 
+    def test_same_provider_without_parent_pool_keeps_fixed_credential(self):
+        parent = _make_mock_parent()
+        parent.provider = "anthropic"
+        parent._credential_pool = None
+
+        with patch("agent.credential_pool.load_pool") as load_mock:
+            result = _resolve_child_credential_pool(
+                "anthropic", parent, "http://localhost:8080/anthropic"
+            )
+
+        self.assertIsNone(result)
+        load_mock.assert_not_called()
+
+    def test_fixed_proxy_child_does_not_lease_provider_default_pool(self):
+        parent = _make_mock_parent()
+        parent.provider = "anthropic"
+        parent.api_mode = "anthropic_messages"
+        parent.base_url = "https://api.anthropic.com"
+        parent.api_key = ""
+        parent._client_kwargs = {
+            "api_key": "proxy-credential",
+            "base_url": "http://localhost:8080/anthropic",
+        }
+        parent._credential_pool = None
+
+        provider_pool = MagicMock(name="provider_default_pool")
+        provider_pool.has_credentials.return_value = True
+        provider_pool.acquire_lease.return_value = "anthropic-default"
+        provider_pool.current.return_value = MagicMock(id="anthropic-default")
+
+        with (
+            patch("run_agent.AIAgent") as MockAgent,
+            patch("agent.credential_pool.load_pool", return_value=provider_pool),
+        ):
+            child = MagicMock()
+            child._credential_pool = None
+            child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+            MockAgent.return_value = child
+
+            built_child = _build_child_agent(
+                task_index=0,
+                goal="Use the parent's fixed proxy route",
+                context=None,
+                toolsets=["terminal"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+            from tools.delegate_tool import _run_single_child
+
+            result = _run_single_child(
+                task_index=0,
+                goal="Use the parent's fixed proxy route",
+                child=built_child,
+                parent_agent=parent,
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(
+            MockAgent.call_args.kwargs["base_url"],
+            "http://localhost:8080/anthropic",
+        )
+        self.assertEqual(MockAgent.call_args.kwargs["api_key"], "proxy-credential")
+        provider_pool.acquire_lease.assert_not_called()
+        child._swap_credential.assert_not_called()
+
     # --- Custom-endpoint identity resolution (issue #7833) ---
 
 

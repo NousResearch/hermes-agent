@@ -1090,9 +1090,20 @@ def _arm_exit_watchdog(timeout_s: float | None = None, *, from_signal: bool = Fa
     """
     if timeout_s is None:
         try:
-            timeout_s = float(os.getenv("HERMES_EXIT_WATCHDOG_S", "30"))
+            # Default budget must exceed the worst-case sum of cleanup
+            # steps between arming and the process actually exiting:
+            # shutdown_mcp_servers() alone can block for seconds during
+            # MCP server teardown, and shutdown_memory_provider()'s
+            # on_session_end hook can be a network-bound call for
+            # external memory providers (honcho, mem0, supermemory, ...).
+            # A 30s watchdog could guillotine that combination outright,
+            # killing the process via os._exit(0) before
+            # _print_exit_summary() (cost report + --resume hint) ever
+            # printed anything. 60s gives real headroom above that worst
+            # case while still bounding a truly wedged process.
+            timeout_s = float(os.getenv("HERMES_EXIT_WATCHDOG_S", "60"))
         except (TypeError, ValueError):
-            timeout_s = 30.0
+            timeout_s = 60.0
     if timeout_s <= 0:
         return
     # Never arm under pytest: tests invoke _run_cleanup() directly and a
@@ -1171,9 +1182,13 @@ def _arm_exit_watchdog_on_shutdown_signal() -> None:
         return
     _signal_watchdog_armed = True
     try:
-        base = float(os.getenv("HERMES_EXIT_WATCHDOG_S", "30"))
+        # Mirror _arm_exit_watchdog's own default (see that function's
+        # docstring for why 60s, not 30s) -- this must never fall out of
+        # sync, or the "2x headroom" guarantee below is computed from a
+        # stale base.
+        base = float(os.getenv("HERMES_EXIT_WATCHDOG_S", "60"))
     except (TypeError, ValueError):
-        base = 30.0
+        base = 60.0
     if base <= 0:
         return  # explicitly disabled
     try:
@@ -17043,6 +17058,45 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except (Exception, KeyboardInterrupt) as e:
             logger.debug("Could not persist active CLI session before close: %s", e)
 
+    def _finish_interactive_exit(self, *, release_session: bool = False) -> None:
+        """Shared interactive-exit tail: print the exit summary, THEN clean up.
+
+        ``_run_cleanup()`` can block for tens of seconds — a memory
+        provider's ``on_session_end`` hook can be a network-bound call, and
+        ``shutdown_mcp_servers()`` can separately block during MCP server
+        teardown. Both run inside ``_run_cleanup()``, which is "protected"
+        by ``_arm_exit_watchdog()`` — a daemon thread that force-exits the
+        process via ``os._exit(0)`` if cleanup hasn't finished within
+        ``HERMES_EXIT_WATCHDOG_S`` seconds. If the watchdog fires while
+        still inside ``_run_cleanup()``, the process is killed before any
+        code written AFTER ``_run_cleanup()`` ever runs — so calling
+        ``_run_cleanup()`` before ``_print_exit_summary()`` risks silently
+        swallowing the cost report and ``--resume`` hint with zero
+        user-visible error.
+
+        Printing first guarantees the user always sees them, even when
+        memory-provider shutdown or MCP teardown gets cut off by the
+        watchdog. Shared by both interactive-exit call sites in ``run()``
+        (the stdin-unavailable early return and the main exit path) so the
+        ordering can't drift out of sync between them.
+
+        The print step runs in a ``try/finally`` around cleanup: printing
+        first must not come at the cost of cleanup (and the watchdog arm
+        inside it) becoming conditional on the print succeeding.
+        ``_print_exit_summary()`` guards its own risky sub-steps
+        internally, but a bare ``print()`` can still raise on a broken
+        stdout pipe (``BrokenPipeError`` piping to e.g. ``head``) — that
+        must not skip ``_run_cleanup()`` (and therefore the watchdog and
+        session release), which would trade the original swallowed-summary
+        bug for a worse never-cleaned-up-at-all one.
+        """
+        try:
+            self._print_exit_summary()
+        finally:
+            _run_cleanup()
+            if release_session:
+                self._release_active_session()
+
     def _print_exit_summary(self, clear_screen: bool = True):
         """Print session resume info on exit, similar to Claude Code.
 
@@ -20555,8 +20609,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
                 "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
             )
-            _run_cleanup()
-            self._print_exit_summary()
+            self._finish_interactive_exit()
             return
 
         # On macOS with uv-managed Python, kqueue's selector cannot register
@@ -20721,9 +20774,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     )
                 except Exception:
                     pass
-            _run_cleanup()
-            self._print_exit_summary()
-            self._release_active_session()
+            self._finish_interactive_exit(release_session=True)
 
         # Deferred relaunch: /update sets _pending_relaunch so the exec
         # happens here — after prompt_toolkit has exited and fully restored

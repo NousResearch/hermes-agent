@@ -1091,7 +1091,7 @@ class TestEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# 7. EVENT BRIDGE POLL LOOP E2E — real SQLite DB, mtime optimization
+# 7. EVENT BRIDGE POLL LOOP E2E — real SQLite DB, filesystem change gate
 # ---------------------------------------------------------------------------
 
 class TestEventBridgePollE2E:
@@ -1258,7 +1258,7 @@ class TestEventBridgePollE2E:
         )
         conn.commit()
         conn.close()
-        # Touch the DB file to update mtime (WAL mode may not update mtime on small writes)
+        # Make this legacy main-file change path explicit.
         os.utime(db_path, None)
 
         # Update sessions.json updated_at to trigger re-check
@@ -1271,6 +1271,86 @@ class TestEventBridgePollE2E:
         assert len(r2["events"]) == 1
         assert r2["events"][0]["content"] == "New reply!"
 
+    def test_poll_detects_message_committed_only_to_wal(self, tmp_path, monkeypatch):
+        """A WAL-only commit must open the poll gate without touching state.db."""
+        import hermes_state
+        import mcp_serve
+
+        monkeypatch.setattr(
+            hermes_state,
+            "is_sqlite_wal_reset_vulnerable",
+            lambda version_info=None: False,
+        )
+        SessionDB = hermes_state.SessionDB
+        db_path = tmp_path / "state.db"
+        wal_path = tmp_path / "state.db-wal"
+        session_id = "20260329_150000_wal_message"
+        session_key = "agent:main:telegram:dm:wal"
+        writer = SessionDB(db_path=db_path)
+        reader = None
+        try:
+            assert writer._conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+            assert writer._conn.execute(
+                "PRAGMA wal_autocheckpoint=0"
+            ).fetchone()[0] == 0
+            writer.create_session(
+                session_id,
+                "telegram",
+                session_key=session_key,
+                chat_id="wal",
+                chat_type="dm",
+            )
+            writer.append_message(
+                session_id, "user", "Before baseline", timestamp=1000.0
+            )
+
+            # Keep the bridge on a separate, real read-only SQLite connection.
+            reader = SessionDB(db_path=db_path, read_only=True)
+
+            def load_index():
+                return {
+                    row["session_key"]: mcp_serve._row_to_index_entry(row)
+                    for row in reader.list_gateway_sessions(active_only=True)
+                }
+
+            monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: reader)
+            monkeypatch.setattr(mcp_serve, "_load_sessions_index", load_index)
+
+            bridge = mcp_serve.EventBridge()
+            bridge._establish_baseline()
+            baseline_signature = bridge._state_db_signature
+            assert baseline_signature == mcp_serve._sqlite_state_signature(db_path)
+            assert baseline_signature[1] is not None
+            baseline_wal_mtime_ns = wal_path.stat().st_mtime_ns
+
+            writer.append_message(
+                session_id, "assistant", "Committed to WAL", timestamp=1001.0
+            )
+
+            # Restore the WAL mtime to prove that append size is also part of
+            # the signature; coarse/same-timestamp filesystems must not miss it.
+            appended_wal = wal_path.stat()
+            assert appended_wal.st_size > baseline_signature[1][1]
+            os.utime(
+                wal_path,
+                ns=(appended_wal.st_atime_ns, baseline_wal_mtime_ns),
+            )
+            changed_signature = mcp_serve._sqlite_state_signature(db_path)
+            assert changed_signature[0] == baseline_signature[0]
+            assert changed_signature[1] != baseline_signature[1]
+            assert changed_signature[1][0] == baseline_signature[1][0]
+
+            bridge._poll_once(reader)
+
+            events = bridge.poll_events(after_cursor=0)["events"]
+            assert len(events) == 1
+            assert events[0]["role"] == "assistant"
+            assert events[0]["content"] == "Committed to WAL"
+        finally:
+            if reader is not None:
+                reader.close()
+            writer.close()
+
     def test_poll_picks_up_new_conversation_on_db_change(
         self, tmp_path, monkeypatch
     ):
@@ -1279,11 +1359,11 @@ class TestEventBridgePollE2E:
 
         Since #9006 the routing index lives IN state.db (session rows carry
         session_key/origin metadata), so a new conversation's registration and
-        its first message land in the same file — a single mtime check covers
-        both and the old dual-file (sessions.json + state.db) race (#8925) is
-        structurally impossible. This test asserts the index is refreshed on a
-        db-mtime bump, so a conversation the bridge has never seen before is
-        emitted on the same tick.
+        its first message land in the same SQLite database. The main/WAL
+        filesystem signature covers both and the old dual-file (sessions.json +
+        state.db) race (#8925) is structurally impossible. This test asserts the
+        index is refreshed on a database-signature change, so a conversation the
+        bridge has never seen before is emitted on the same tick.
         """
         import mcp_serve
 
@@ -1291,7 +1371,7 @@ class TestEventBridgePollE2E:
         sessions_dir.mkdir()
         monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
 
-        # _poll_once reads <HERMES_HOME>/state.db for its mtime gate; the autouse
+        # _poll_once signatures <HERMES_HOME>/state.db and its WAL; the autouse
         # fixture points HERMES_HOME at tmp_path.
         db_path = tmp_path / "state.db"
         db_path.write_text("placeholder")
@@ -1321,10 +1401,9 @@ class TestEventBridgePollE2E:
                 }]
 
         bridge = mcp_serve.EventBridge()
-        # Bridge has never seen this db state (mtime differs) and has an
-        # empty cached index — exactly the state after a new conversation's
-        # first write.
-        bridge._state_db_mtime = 0.0
+        # Bridge has never seen this database signature and has an empty cached
+        # index — exactly the state after a new conversation's first write.
+        bridge._state_db_signature = (None, None)
         assert bridge._cached_sessions_index == {}
 
         bridge._poll_once(DB())
@@ -1374,7 +1453,7 @@ class TestEventBridgePollE2E:
             "id": 2, "role": "assistant", "content": "arrived after start",
             "timestamp": "2026-03-29T15:05:00",
         })
-        os.utime(db_path, None)  # bump mtime so the poll gate opens
+        os.utime(db_path, None)  # change the signature so the poll gate opens
         bridge._poll_once(DB())
         events = bridge.poll_events(after_cursor=0)["events"]
         assert len(events) == 1

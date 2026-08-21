@@ -332,6 +332,22 @@ def _ts_float(ts) -> float:
     return 0.0
 
 
+def _file_signature(path: Path) -> Optional[tuple[int, int]]:
+    """Return metadata that changes on file rewrites and same-mtime appends."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
+def _sqlite_state_signature(
+    db_file: Path,
+) -> tuple[Optional[tuple[int, int]], Optional[tuple[int, int]]]:
+    """Return the filesystem state of a SQLite database and its WAL sidecar."""
+    return _file_signature(db_file), _file_signature(Path(f"{db_file}-wal"))
+
+
 class EventBridge:
     """Background poller that watches SessionDB for new messages and
     maintains an in-memory event queue with waiter support.
@@ -350,8 +366,8 @@ class EventBridge:
         self._last_poll_timestamps: Dict[str, float] = {}  # session_key -> unix timestamp
         # In-memory approval tracking (populated from events)
         self._pending_approvals: Dict[str, dict] = {}
-        # mtime cache — skip expensive work when state.db hasn't changed
-        self._state_db_mtime: float = 0.0
+        # Filesystem cache — skip work when state.db and its WAL are unchanged.
+        self._state_db_signature = (None, None)
         self._cached_sessions_index: dict = {}
 
     def start(self):
@@ -480,8 +496,8 @@ class EventBridge:
 
     def _establish_baseline_with_db(self, db) -> None:
         """Record the latest per-session message timestamp and the current
-        state.db mtime WITHOUT emitting events, so startup does not replay
-        history (#13414).
+        state.db/WAL signature WITHOUT emitting events, so startup does not
+        replay history (#13414).
 
         Only sessions that already exist at startup are baselined; a session
         that first appears afterwards is absent here and defaults to
@@ -493,10 +509,7 @@ class EventBridge:
             db_file = get_hermes_home() / "state.db"
         except ImportError:
             db_file = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
-        try:
-            self._state_db_mtime = db_file.stat().st_mtime if db_file.exists() else 0.0
-        except OSError:
-            self._state_db_mtime = 0.0
+        self._state_db_signature = _sqlite_state_signature(db_file)
         try:
             self._cached_sessions_index = _load_sessions_index()
         except Exception:
@@ -537,13 +550,10 @@ class EventBridge:
     def _poll_once(self, db):
         """Check for new messages across all sessions.
 
-        Uses a single mtime check on state.db to skip work when nothing
-        has changed — makes 200ms polling essentially free.  Since #9006
-        the routing index itself lives in state.db (session rows carry
-        session_key/origin metadata), so a new conversation and its first
-        message land in the SAME file and one mtime check covers both —
-        eliminating the old dual-file (sessions.json + state.db) race that
-        could drop brand-new conversations (#8925).
+        Uses a filesystem signature for state.db and state.db-wal to skip work
+        when neither has changed, keeping 200ms idle polling essentially free.
+        Since #9006 the routing index and messages live in the same SQLite
+        database, including its WAL sidecar while WAL mode is active.
         """
         try:
             from hermes_constants import get_hermes_home
@@ -551,18 +561,14 @@ class EventBridge:
         except ImportError:
             db_file = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
 
-        try:
-            db_mtime = db_file.stat().st_mtime if db_file.exists() else 0.0
-        except OSError:
-            db_mtime = 0.0
-
-        if db_mtime == self._state_db_mtime:
+        db_signature = _sqlite_state_signature(db_file)
+        if db_signature == self._state_db_signature:
             return  # Nothing changed since last poll — skip entirely
 
-        self._state_db_mtime = db_mtime
+        self._state_db_signature = db_signature
         # Refresh the routing index from state.db on every change tick —
         # it's a single indexed query and it can never lag the messages
-        # table (both live in the same database file).
+        # table (both live in the same database).
         self._cached_sessions_index = _load_sessions_index()
         entries = self._cached_sessions_index
 

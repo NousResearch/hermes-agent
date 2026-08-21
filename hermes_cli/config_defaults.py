@@ -1526,6 +1526,21 @@ DEFAULT_CONFIG = {
     # Web dashboard settings
     "dashboard": {
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
+        # Memory-pressure classifier tuning (#90713). Both the dashboard
+        # banner and the kanban dispatch guard consume the same classifier
+        # (gateway/memory_status.py::classify_pressure), so these keys
+        # retune both at once. Needed on ZFS-based hosts (TrueNAS) where
+        # MemAvailable chronically under-credits the reclaimable ARC and
+        # the default 15% elevated band fires 24/7 on a healthy host.
+        "memory_pressure": {
+            "elevated_fraction": 0.15,   # < this fraction of MemTotal -> elevated
+            "critical_fraction": 0.05,   # stays conservative; feeds OOM suspicion
+            "elevated_kib": 128 * 1024,  # < this many KiB available -> elevated
+            "critical_kib": 64 * 1024,   # < this many KiB available -> critical
+            # false silences ONLY the elevated banner/dispatcher warnings;
+            # critical is never silenceable.
+            "show_elevated_banner": True,
+        },
         # Process-isolation rollout controls. Runtime reads these through the
         # raw config loader, so tui_gateway.server also owns explicit defaults.
         "turn_isolation": False,

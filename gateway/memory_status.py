@@ -53,6 +53,85 @@ _CRITICAL_AVAILABLE_FRACTION = 0.05  # < 5% of MemTotal
 _ELEVATED_AVAILABLE_KIB = 128 * 1024  # < 128 MiB available
 _ELEVATED_AVAILABLE_FRACTION = 0.15  # < 15% of MemTotal
 
+# Configurable overrides (issue #90713). On ZFS-based hosts (TrueNAS etc.)
+# MemAvailable chronically under-credits the reclaimable ARC, so the fixed
+# 15% elevated band fires 24/7 on a host that is nowhere near OOM. Users
+# tune these via config.yaml under ``dashboard.memory_pressure``:
+#
+#   dashboard:
+#     memory_pressure:
+#       elevated_fraction: 0.08    # default 0.15
+#       critical_fraction: 0.05    # default 0.05 -- stays conservative
+#       elevated_kib: 131072       # optional absolute floor
+#       critical_kib: 65536        # optional absolute floor
+#       show_elevated_banner: true # false silences ONLY the elevated class
+#
+# NO new env vars: .env is secrets-only (repo policy); all behavioural
+# settings live in config.yaml. The critical class is deliberately NOT
+# silenceable -- it feeds the lifecycle ledger's OOM-suspicion heuristics.
+
+
+def _memory_pressure_config() -> Dict[str, Any]:
+    """Best-effort read of ``dashboard.memory_pressure`` from config.yaml.
+
+    Cached on config mtime by ``load_config_readonly``; any failure (missing
+    file, parse error, import trouble) degrades to an empty dict so the
+    hardcoded defaults below keep the classifier alive.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+    except Exception:
+        return {}
+    dash = cfg.get("dashboard")
+    if not isinstance(dash, dict):
+        return {}
+    mp = dash.get("memory_pressure")
+    return mp if isinstance(mp, dict) else {}
+
+
+def _resolve_thresholds() -> Dict[str, Any]:
+    """Merge config overrides over the hardcoded defaults, validated.
+
+    Invalid values (wrong type, out of range) are dropped rather than
+    clamped silently -- a typo must not turn the classifier into nonsense.
+    """
+    overrides = _memory_pressure_config()
+    resolved: Dict[str, Any] = {
+        "critical_kib": _CRITICAL_AVAILABLE_KIB,
+        "critical_fraction": _CRITICAL_AVAILABLE_FRACTION,
+        "elevated_kib": _ELEVATED_AVAILABLE_KIB,
+        "elevated_fraction": _ELEVATED_AVAILABLE_FRACTION,
+    }
+    for key in resolved:
+        value = overrides.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if value <= 0:
+            continue
+        if key.endswith("_kib"):
+            if not isinstance(value, int) or value < 1024:
+                continue
+        else:  # fraction
+            if value > 1.0:
+                continue
+        resolved[key] = value
+
+    # Cross-validation: if the elevated band was overridden to land inside
+    # or below the critical band, drop the elevated overrides.  Without this
+    # a typo like ``elevated_fraction: 0.02, critical_fraction: 0.05`` would
+    # make everything at/below 5% report critical — false OOM evidence for
+    # the lifecycle ledger.
+    if resolved["elevated_fraction"] <= resolved["critical_fraction"]:
+        resolved["elevated_fraction"] = _ELEVATED_AVAILABLE_FRACTION
+    if resolved["elevated_kib"] <= resolved["critical_kib"]:
+        resolved["elevated_kib"] = _ELEVATED_AVAILABLE_KIB
+
+    return resolved
+
 # A heartbeat older than this no longer describes the present.  The writer
 # cadence is 30s (DEFAULT_HEARTBEAT_INTERVAL_S); 150s of slack tolerates a
 # briefly stalled loop without letting a long-dead gateway's last sample
@@ -81,12 +160,19 @@ def _parse_iso(value: Any) -> Optional[datetime]:
 
 
 def classify_pressure(
-    available_kib: Any, total_kib: Any
+    available_kib: Any, total_kib: Any, thresholds: Optional[Dict[str, Any]] = None
 ) -> str:
     """Map a MemAvailable/MemTotal pair to ``ok``/``elevated``/``critical``.
 
     ``unknown`` when the sample is missing or malformed — the caller must
     not treat "we could not read it" as "memory is fine".
+
+    ``thresholds`` overrides the four band boundaries (``critical_kib``,
+    ``critical_fraction``, ``elevated_kib``, ``elevated_fraction``); when
+    omitted they come from ``dashboard.memory_pressure`` config merged over
+    the hardcoded defaults (issue #90713). Both consumers — the dashboard
+    banner and the kanban dispatch guard — call this same function, so a
+    tune applies everywhere at once.
     """
     if (
         isinstance(available_kib, bool)
@@ -101,12 +187,13 @@ def classify_pressure(
         and total_kib > 0
     ):
         fraction = available_kib / total_kib
-    if available_kib < _CRITICAL_AVAILABLE_KIB or (
-        fraction is not None and fraction < _CRITICAL_AVAILABLE_FRACTION
+    th = thresholds if thresholds is not None else _resolve_thresholds()
+    if available_kib < th["critical_kib"] or (
+        fraction is not None and fraction < th["critical_fraction"]
     ):
         return "critical"
-    if available_kib < _ELEVATED_AVAILABLE_KIB or (
-        fraction is not None and fraction < _ELEVATED_AVAILABLE_FRACTION
+    if available_kib < th["elevated_kib"] or (
+        fraction is not None and fraction < th["elevated_fraction"]
     ):
         return "elevated"
     return "ok"
@@ -181,10 +268,28 @@ def collect_memory_status(
                 status["sampled_at"] = sampled_at.isoformat()
                 age_s = (moment - sampled_at).total_seconds()
                 if 0 <= age_s <= _HEARTBEAT_FRESH_TTL_S:
-                    status["pressure"] = classify_pressure(
+                    pressure = classify_pressure(
                         mem.get("mem_available_kib"),
                         mem.get("mem_total_kib"),
                     )
+                    # Config escape hatch for chronic-elevated hosts
+                    # (ZFS ARC, #90713): ``show_elevated_banner: false``
+                    # downgrades an *elevated* verdict to ``ok`` in this
+                    # public rollup.  Raw numbers stay visible; the
+                    # critical class is never silenced.  Note: the kanban
+                    # dispatch guard calls ``classify_pressure()`` directly
+                    # and still sees the raw elevated — this flag controls
+                    # the /api/status rollup only (display concern, not
+                    # dispatch logic).
+                    if (
+                        pressure == "elevated"
+                        and _memory_pressure_config().get(
+                            "show_elevated_banner", True
+                        )
+                        is False
+                    ):
+                        pressure = "ok"
+                    status["pressure"] = pressure
                 # else: stale sample — numbers are still reported (they are
                 # honest about *when* via sampled_at) but pressure stays
                 # "unknown" so a dead gateway's final gasp cannot render a

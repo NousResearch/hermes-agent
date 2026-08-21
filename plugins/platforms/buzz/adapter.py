@@ -1056,6 +1056,7 @@ class BuzzAdapter(BasePlatformAdapter):
             user_name=await self._resolve_user_name(pubkey),
             message_id=event_id,
             created_at=created_at,
+            thread_id=self._thread_id_from_event(event),
         )
 
     # ── DM classification (issue #68871) ──────────────────────────────────
@@ -1210,6 +1211,32 @@ class BuzzAdapter(BasePlatformAdapter):
             state["seen"][event_id] = None
             self._trim_seen(state)
 
+    @staticmethod
+    def _thread_id_from_event(event: dict) -> Optional[str]:
+        """Return the canonical Buzz thread anchor from Nostr ``e`` tags."""
+        tags = event.get("tags")
+        if not isinstance(tags, list):
+            return None
+
+        root = None
+        reply = None
+        fallback = None
+        for tag in tags:
+            if not isinstance(tag, (list, tuple)) or len(tag) < 2 or tag[0] != "e":
+                continue
+            target = str(tag[1] or "").strip()
+            if not target:
+                continue
+            if fallback is None:
+                fallback = target
+            marker = str(tag[3] or "").strip().lower() if len(tag) > 3 else ""
+            if marker == "root" and root is None:
+                root = target
+            elif marker == "reply" and reply is None:
+                reply = target
+
+        return root or reply or fallback
+
     async def _dispatch_message(
         self,
         text: str,
@@ -1219,6 +1246,7 @@ class BuzzAdapter(BasePlatformAdapter):
         user_name: str,
         message_id: str,
         created_at: int,
+        thread_id: Optional[str] = None,
     ) -> None:
         """Build a MessageEvent and hand it to the base class handler."""
         if not self._message_handler:
@@ -1230,6 +1258,7 @@ class BuzzAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=user_id,
             user_name=user_name,
+            thread_id=thread_id,
         )
 
         event = MessageEvent(

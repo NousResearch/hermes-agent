@@ -64,6 +64,10 @@ def _ensure_teams_mock():
             self._card_action_handler = func
             return func
 
+        def on_file_consent(self, func):
+            self._file_consent_handler = func
+            return func
+
         async def initialize(self):
             pass
 
@@ -100,6 +104,19 @@ def _ensure_teams_mock():
     # Adaptive card response mocks
     microsoft_teams_api_models_adaptive_card.AdaptiveCardActionCardResponse = MagicMock
     microsoft_teams_api_models_adaptive_card.AdaptiveCardActionMessageResponse = MagicMock
+
+    microsoft_teams_api_models_file = types.ModuleType("microsoft_teams.api.models.file")
+
+    class MockFileConsentCard:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class MockFileInfoCard:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    microsoft_teams_api_models_file.FileConsentCard = MockFileConsentCard
+    microsoft_teams_api_models_file.FileInfoCard = MockFileInfoCard
 
     # Invoke response mocks
     class MockInvokeResponse:
@@ -154,6 +171,7 @@ def _ensure_teams_mock():
         "microsoft_teams.common.http.client": microsoft_teams_common_http_client,
         "microsoft_teams.api.models": microsoft_teams_api_models,
         "microsoft_teams.api.models.adaptive_card": microsoft_teams_api_models_adaptive_card,
+        "microsoft_teams.api.models.file": microsoft_teams_api_models_file,
         "microsoft_teams.api.models.invoke_response": microsoft_teams_api_models_invoke_response,
         "microsoft_teams.cards": microsoft_teams_cards,
         "microsoft_teams.apps.http": microsoft_teams_apps_http,
@@ -747,5 +765,151 @@ class TestTeamsMediaAttachments:
         result = await adapter.send_document("19:abc@thread.v2", str(doc))
         assert result.success
         adapter._app.send.assert_awaited_once()
+
+
+def _consent_ctx(token: str, action: str = "accept", user_id: str = "user-1", upload_url: str | None = "https://upload.example/file"):
+    upload = SimpleNamespace(
+        upload_url=upload_url,
+        unique_id="uid-1",
+        file_type="xlsx",
+        content_url="https://share.example/file",
+        name="report.xlsx",
+    )
+    value = SimpleNamespace(
+        context={"token": token},
+        action=action,
+        upload_info=upload,
+    )
+    activity = SimpleNamespace(
+        value=value,
+        from_=SimpleNamespace(aad_object_id=user_id, id=user_id),
+    )
+    return SimpleNamespace(activity=activity)
+
+
+class TestTeamsFileConsent:
+    """Personal-chat send_document uses the Bot Framework file-consent
+    card. Group/channel ids (19:...) keep the attachment path above."""
+
+    def _make_adapter(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter._app.send = AsyncMock(return_value=MagicMock(id="msg-consent"))
+        adapter._app.activity_sender = MagicMock()
+        adapter._app.activity_sender.send = AsyncMock(return_value=MagicMock(id="msg-consent"))
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_personal_chat_offers_consent_card(self, tmp_path, monkeypatch):
+        adapter = self._make_adapter(tmp_path, monkeypatch)
+        doc = tmp_path / "report.xlsx"
+        doc.write_bytes(b"PK\x03\x04workbook")
+        result = await adapter.send_document("a:1personal", str(doc), caption="parent codes")
+        assert result.success
+        adapter._app.send.assert_awaited_once()
+        store = json.loads((tmp_path / "pending_file_consents.json").read_text())
+        assert len(store) == 1
+        token, rec = next(iter(store.items()))
+        assert "/" not in token and "\\" not in token
+        assert rec["path"] == str(doc.resolve())
+        assert rec["name"] == "report.xlsx"
+        assert rec["chat_id"] == "a:1personal"
+
+    @pytest.mark.asyncio
+    async def test_empty_file_is_rejected(self, tmp_path, monkeypatch):
+        adapter = self._make_adapter(tmp_path, monkeypatch)
+        empty = tmp_path / "empty.csv"
+        empty.write_bytes(b"")
+        result = await adapter._send_file_consent("a:1personal", str(empty))
+        assert result.success is False
+        assert "empty" in result.error
+
+    @pytest.mark.asyncio
+    async def test_oversized_file_is_rejected(self, tmp_path, monkeypatch):
+        adapter = self._make_adapter(tmp_path, monkeypatch)
+        monkeypatch.setattr(_teams_mod, "_FILE_CONSENT_MAX_BYTES", 4)
+        big = tmp_path / "big.bin"
+        big.write_bytes(b"12345")
+        result = await adapter._send_file_consent("a:1personal", str(big))
+        assert result.success is False
+        assert "size limit" in result.error
+
+    @pytest.mark.asyncio
+    async def test_accept_uploads_and_drops_token(self, tmp_path, monkeypatch):
+        adapter = self._make_adapter(tmp_path, monkeypatch)
+        monkeypatch.setenv("TEAMS_ALLOW_ALL_USERS", "1")
+        doc = tmp_path / "report.xlsx"
+        doc.write_bytes(b"workbook-bytes")
+        offered = await adapter.send_document("a:1personal", str(doc))
+        assert offered.success
+        token = next(iter(json.loads((tmp_path / "pending_file_consents.json").read_text())))
+
+        puts: list[tuple] = []
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                async def put(url, content=None, headers=None):
+                    puts.append((url, content, headers))
+                    return FakeResponse()
+
+                self.put = put
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+        monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+        adapter.send = AsyncMock()
+        await adapter._on_file_consent(_consent_ctx(token))
+        store = json.loads((tmp_path / "pending_file_consents.json").read_text())
+        assert store == {}
+        assert puts and puts[0][0] == "https://upload.example/file"
+        assert puts[0][1] == b"workbook-bytes"
+        adapter.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_decline_does_not_upload(self, tmp_path, monkeypatch):
+        adapter = self._make_adapter(tmp_path, monkeypatch)
+        doc = tmp_path / "report.xlsx"
+        doc.write_bytes(b"workbook-bytes")
+        await adapter.send_document("a:1personal", str(doc))
+        token = next(iter(json.loads((tmp_path / "pending_file_consents.json").read_text())))
+        adapter.send = AsyncMock()
+        await adapter._on_file_consent(_consent_ctx(token, action="decline"))
+        store = json.loads((tmp_path / "pending_file_consents.json").read_text())
+        assert store == {}
+        adapter.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unknown_token_is_ignored(self, tmp_path, monkeypatch):
+        adapter = self._make_adapter(tmp_path, monkeypatch)
+        adapter.send = AsyncMock()
+        await adapter._on_file_consent(_consent_ctx("not-a-real-token"))
+        adapter.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_accept_gated_on_allowlist(self, tmp_path, monkeypatch):
+        adapter = self._make_adapter(tmp_path, monkeypatch)
+        monkeypatch.delenv("TEAMS_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "allowed-user")
+        doc = tmp_path / "report.xlsx"
+        doc.write_bytes(b"workbook-bytes")
+        await adapter.send_document("a:1personal", str(doc))
+        token = next(iter(json.loads((tmp_path / "pending_file_consents.json").read_text())))
+        adapter.send = AsyncMock()
+        await adapter._on_file_consent(_consent_ctx(token, user_id="other-user"))
+        adapter.send.assert_not_awaited()
+        store = json.loads((tmp_path / "pending_file_consents.json").read_text())
+        assert store == {}
 
 

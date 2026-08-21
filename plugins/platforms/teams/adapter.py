@@ -750,6 +750,73 @@ def check_teams_requirements() -> bool:
     return ensure_and_bind("platform.teams", _import, globals(), prompt=False)
 
 
+# Bot Framework file consent (document delivery in personal chat).
+#
+# Teams rejects a data: URI attachment for anything that is not an image
+# (HTTP 400), so send_document silently failed for .xlsx/.pdf/.csv while
+# the accompanying text claimed a file was attached. The supported path
+# for a bot to deliver a file in a personal chat is the file consent
+# card: the user accepts, Teams returns a pre-authorized upload URL into
+# that user's OneDrive, and the bot PUTs the bytes there. No Graph
+# permissions are involved.
+#
+# The pending map lives on disk rather than in memory because the card
+# may be sent from a short-lived `hermes send` process while the consent
+# invoke always lands in the long-lived gateway process. The context
+# echoed back through the client carries only an opaque token — never a
+# path — so a tampered or replayed invoke cannot make the bot upload an
+# arbitrary local file.
+#
+# Consent is personal-scope only. Group chats and channels have no
+# consent flow; they keep the attachment path (which still cannot carry
+# documents). The tenant Teams app manifest must set
+# `bots[].supportsFiles: true` or Allow fails with "This card action is
+# not supported".
+
+_FILE_CONSENT_CONTENT_TYPE = "application/vnd.microsoft.teams.card.file.consent"
+_FILE_INFO_CONTENT_TYPE = "application/vnd.microsoft.teams.card.file.info"
+_FILE_CONSENT_TTL_SECONDS = 24 * 60 * 60
+_FILE_CONSENT_MAX_BYTES = 250 * 1024 * 1024
+
+
+def _file_consent_store() -> str:
+    home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    return os.path.join(home, "pending_file_consents.json")
+
+
+def _load_file_consents() -> Dict[str, Any]:
+    try:
+        with open(_file_consent_store(), "r") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        logger.debug("[teams] Could not read file-consent store: %s", exc)
+        return {}
+
+
+def _write_file_consents(entries: Dict[str, Any]) -> None:
+    import time
+
+    path = _file_consent_store()
+    cutoff = time.time() - _FILE_CONSENT_TTL_SECONDS
+    fresh = {
+        key: rec
+        for key, rec in entries.items()
+        if isinstance(rec, dict) and float(rec.get("ts", 0) or 0) > cutoff
+    }
+    tmp = f"{path}.tmp"
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(tmp, "w") as fh:
+            json.dump(fresh, fh)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    except Exception as exc:
+        logger.warning("[teams] Could not persist file-consent store: %s", exc)
+
+
 class TeamsAdapter(BasePlatformAdapter):
     """Microsoft Teams adapter using the microsoft-teams-apps SDK."""
 
@@ -832,6 +899,13 @@ class TeamsAdapter(BasePlatformAdapter):
                 ctx: ActivityContext[AdaptiveCardInvokeActivity],
             ) -> InvokeResponse[AdaptiveCardActionMessageResponse]:
                 return await self._on_card_action(ctx)
+
+            # Completes a document offered by send_document. The invoke
+            # always arrives here, in the gateway, even when another
+            # process sent the card — hence the on-disk pending map.
+            @self._app.on_file_consent
+            async def _handle_file_consent(ctx) -> None:
+                await self._on_file_consent(ctx)
 
             # initialize() calls register_route() on the bridge, which adds
             # POST /api/messages to aiohttp_app automatically
@@ -1374,6 +1448,183 @@ class TeamsAdapter(BasePlatformAdapter):
             media_label="voice",
         )
 
+    def _is_personal_chat(self, chat_id: str) -> bool:
+        """True when chat_id is a 1:1 (personal-scope) Teams conversation."""
+        ref = self._conv_refs.get(chat_id)
+        conv = getattr(ref, "conversation", None) if ref is not None else None
+        conv_type = getattr(conv, "conversation_type", None)
+        if conv_type:
+            return str(conv_type) == "personal"
+        # No captured reference yet (outbound-first send): group chats and
+        # channels carry thread-scoped ids, personal conversations do not.
+        return not chat_id.startswith("19:")
+
+    def _is_allowed_teams_user(self, ctx: Any) -> bool:
+        """Same default-deny allowlist that guards card actions."""
+        if os.getenv("TEAMS_ALLOW_ALL_USERS", "").strip().lower() in {"1", "true", "yes"}:
+            return True
+        allowed_csv = os.getenv("TEAMS_ALLOWED_USERS", "").strip()
+        if not allowed_csv:
+            return False
+        from_account = getattr(ctx.activity, "from_", None)
+        user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
+        allowed = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+        return "*" in allowed or str(user_id) in allowed
+
+    async def _send_file_consent(
+        self,
+        chat_id: str,
+        path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+    ) -> SendResult:
+        """Offer a local file to a personal chat via a file consent card."""
+        import secrets
+        import time
+
+        from microsoft_teams.api import Attachment, MessageActivityInput
+        from microsoft_teams.api.models.file import FileConsentCard
+
+        try:
+            size = os.path.getsize(path)
+        except OSError as exc:
+            return SendResult(success=False, error=f"file not readable: {exc}")
+        if size <= 0:
+            return SendResult(success=False, error="file is empty")
+        if size > _FILE_CONSENT_MAX_BYTES:
+            return SendResult(success=False, error="file exceeds the consent-card size limit")
+
+        name = file_name or os.path.basename(path)
+        token = secrets.token_urlsafe(18)
+
+        entries = _load_file_consents()
+        entries[token] = {
+            "path": os.path.abspath(path),
+            "chat_id": chat_id,
+            "name": name,
+            "size": size,
+            "ts": time.time(),
+        }
+        _write_file_consents(entries)
+
+        card = FileConsentCard(
+            description=caption or name,
+            size_in_bytes=size,
+            accept_context={"token": token},
+            decline_context={"token": token},
+        )
+        attachment = Attachment(
+            content_type=_FILE_CONSENT_CONTENT_TYPE, name=name, content=card
+        )
+        activity = MessageActivityInput().add_attachments(attachment)
+
+        try:
+            conv_ref = self._conv_refs.get(chat_id)
+            if conv_ref:
+                result = await self._app.activity_sender.send(activity, conv_ref)
+            else:
+                result = await self._app.send(chat_id, activity)
+        except Exception as exc:
+            entries = _load_file_consents()
+            entries.pop(token, None)
+            _write_file_consents(entries)
+            logger.error("[teams] file consent offer failed for %s: %s", name, exc, exc_info=True)
+            return SendResult(success=False, error=str(exc), retryable=True)
+
+        logger.info(
+            "[teams] Offered %s (%d bytes) via file consent card to %s", name, size, chat_id
+        )
+        return SendResult(success=True, message_id=getattr(result, "id", None))
+
+    async def _send_file_info_card(self, chat_id: str, upload: Any) -> None:
+        """Post the file card that appears once the upload completes."""
+        try:
+            from microsoft_teams.api import Attachment, MessageActivityInput
+            from microsoft_teams.api.models.file import FileInfoCard
+
+            card = FileInfoCard(
+                unique_id=getattr(upload, "unique_id", None),
+                file_type=getattr(upload, "file_type", None),
+            )
+            attachment = Attachment(
+                content_type=_FILE_INFO_CONTENT_TYPE,
+                content_url=getattr(upload, "content_url", None),
+                name=getattr(upload, "name", None),
+                content=card,
+            )
+            activity = MessageActivityInput().add_attachments(attachment)
+            conv_ref = self._conv_refs.get(chat_id)
+            if conv_ref:
+                await self._app.activity_sender.send(activity, conv_ref)
+            else:
+                await self._app.send(chat_id, activity)
+        except Exception as exc:
+            logger.debug("[teams] Could not send file info card: %s", exc)
+
+    async def _on_file_consent(self, ctx: Any) -> None:
+        """Complete or discard a document offer once the user answers."""
+        value = getattr(ctx.activity, "value", None)
+        context = getattr(value, "context", None) or {}
+        token = context.get("token") if isinstance(context, dict) else None
+        action = getattr(value, "action", None)
+        action_str = str(getattr(action, "value", None) or action or "")
+
+        entries = _load_file_consents()
+        record = entries.pop(token, None) if token else None
+        _write_file_consents(entries)
+
+        if not isinstance(record, dict):
+            logger.warning("[teams] file consent callback with unknown/expired token — ignoring")
+            return
+
+        name = record.get("name") or "file"
+        chat_id = record.get("chat_id") or ""
+
+        if not action_str.endswith("accept"):
+            logger.info("[teams] %s declined by user", name)
+            return
+
+        # Accepting makes the bot read a local file and upload it, so gate
+        # the accept on the same allowlist that guards card actions.
+        if not self._is_allowed_teams_user(ctx):
+            logger.warning("[teams] Unauthorized file consent accept for %s — ignoring", name)
+            return
+
+        upload = getattr(value, "upload_info", None)
+        upload_url = getattr(upload, "upload_url", None)
+        if not upload_url:
+            logger.error("[teams] file consent accept for %s carried no upload URL", name)
+            return
+
+        try:
+            with open(record.get("path", ""), "rb") as fh:
+                data = fh.read()
+        except OSError as exc:
+            logger.error("[teams] file consent accept but %s is unreadable: %s", name, exc)
+            await self.send(chat_id, f"{name} is no longer available on the host.")
+            return
+
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                response = await client.put(
+                    upload_url,
+                    content=data,
+                    headers={
+                        "Content-Length": str(len(data)),
+                        "Content-Range": f"bytes 0-{len(data) - 1}/{len(data)}",
+                    },
+                )
+                response.raise_for_status()
+        except Exception as exc:
+            logger.error("[teams] upload failed for %s: %s", name, exc)
+            await self.send(chat_id, f"Upload of {name} failed: {exc}")
+            return
+
+        await self._send_file_info_card(chat_id, upload)
+        logger.info("[teams] Uploaded %s (%d bytes) after consent", name, len(data))
+
     async def send_document(
         self,
         chat_id: str,
@@ -1384,6 +1635,21 @@ class TeamsAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
+        # Teams rejects a data: URI attachment for anything that is not an
+        # image, so a document in personal chat goes out as a file consent
+        # card and _on_file_consent uploads the bytes once accepted. Group
+        # chats and channels have no consent flow, so they keep the old path.
+        is_local = not file_path.startswith(("http://", "https://"))
+        if is_local and self._is_personal_chat(chat_id):
+            result = await self._send_file_consent(
+                chat_id, file_path.removeprefix("file://"), caption, file_name
+            )
+            if result.success:
+                return result
+            logger.warning(
+                "[teams] file consent offer failed (%s); falling back to attachment",
+                result.error,
+            )
         return await self._send_media_attachment(
             chat_id=chat_id,
             source=file_path,

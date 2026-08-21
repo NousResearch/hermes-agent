@@ -807,6 +807,95 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       return false;
     });
 
+    // Touch scrolling (mobile / tablet).  xterm.js has no native touch
+    // support: a finger drag neither scrolls the viewport nor reaches the
+    // wheel handler above, so on touch devices the only way to scroll is
+    // the thin scrollbar.  Translate touch drags into scrollLines() using
+    // the live cell height (host height / visible rows), so the transcript
+    // tracks the finger 1:1.  passive:false + preventDefault stops the
+    // page itself from scrolling / pull-to-refresh instead.
+    let touchStart: { x: number; y: number; time: number } | null = null;
+    let lastTouchY = 0;
+    let lastTouchTime = 0;
+    let touchVelocity = 0;
+    let momentumRaf = 0;
+    const cellHeightPx = () => {
+      const rows = term.rows > 0 ? term.rows : 1;
+      const h = host.clientHeight > 0 ? host.clientHeight : rows * 18;
+      return Math.max(1, h / rows);
+    };
+    const onTouchStart = (ev: TouchEvent) => {
+      if (ev.touches.length !== 1) return;
+      // A new gesture supersedes any in-flight momentum animation.
+      if (momentumRaf) {
+        cancelAnimationFrame(momentumRaf);
+        momentumRaf = 0;
+      }
+      const t = ev.touches[0];
+      touchStart = { x: t.clientX, y: t.clientY, time: ev.timeStamp };
+      lastTouchY = t.clientY;
+      lastTouchTime = ev.timeStamp;
+      touchVelocity = 0;
+    };
+    const onTouchMove = (ev: TouchEvent) => {
+      if (ev.touches.length !== 1 || touchStart === null) return;
+      const t = ev.touches[0];
+      const dy = lastTouchY - t.clientY; // + = finger up = scroll down
+      const dt = ev.timeStamp - lastTouchTime;
+      if (dt > 0) {
+        touchVelocity = dy / dt; // px per ms, for momentum
+      }
+      lastTouchY = t.clientY;
+      lastTouchTime = ev.timeStamp;
+      const lines = dy / cellHeightPx();
+      if (lines !== 0) {
+        term.scrollLines(Math.round(lines));
+      }
+      // Only capture the gesture when the transcript can actually scroll
+      // (buffer longer than the viewport, or viewport not at the bottom);
+      // with no scrollback the drag is a no-op, so let the page scroll
+      // natively instead of freezing it.
+      const buf = term.buffer.active;
+      const canScroll = buf.length > term.rows || buf.baseY > 0;
+      if (canScroll) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+    };
+    const onTouchEnd = () => {
+      // Momentum: short fast flicks keep scrolling after release, like a
+      // native mobile list.  ~120ms of decaying distance, reprojected into
+      // terminal lines via the same cell height.
+      const speed = touchVelocity; // px/ms at release
+      if (Math.abs(speed) < 0.15 || touchStart === null) {
+        touchStart = null;
+        return;
+      }
+      const cell = cellHeightPx();
+      const dir = speed > 0 ? 1 : -1;
+      let remaining = Math.abs(speed) * 120; // total px of momentum
+      const step = () => {
+        if (remaining <= 0) {
+          momentumRaf = 0;
+          return;
+        }
+        const chunk = Math.max(1, remaining * 0.1);
+        term.scrollLines(dir * Math.round(chunk / cell));
+        remaining -= chunk;
+        if (remaining > 0) {
+          momentumRaf = requestAnimationFrame(step);
+        } else {
+          momentumRaf = 0;
+        }
+      };
+      momentumRaf = requestAnimationFrame(step);
+      touchStart = null;
+    };
+    host.addEventListener("touchstart", onTouchStart, { passive: true });
+    host.addEventListener("touchmove", onTouchMove, { passive: false });
+    host.addEventListener("touchend", onTouchEnd, { passive: true });
+    host.addEventListener("touchcancel", onTouchEnd, { passive: true });
+
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
     term.unicode.activeVersion = "11";
@@ -1485,9 +1574,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const wrap = termWrap;
       if (wrap) wrap.style.paddingBottom = "";
       ro.disconnect();
+      host.removeEventListener("touchstart", onTouchStart);
+      host.removeEventListener("touchmove", onTouchMove);
+      host.removeEventListener("touchend", onTouchEnd);
+      host.removeEventListener("touchcancel", onTouchEnd);
       if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);
       if (settleRaf2) cancelAnimationFrame(settleRaf2);
+      if (momentumRaf) cancelAnimationFrame(momentumRaf);
       clearReconnectTimer();
       clearConnectingTimer();
       clearTicketTimer();

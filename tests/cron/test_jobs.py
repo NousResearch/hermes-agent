@@ -548,6 +548,76 @@ class TestMarkJobRun:
 class TestAdvanceNextRun:
     """Tests for advance_next_run() — crash-safety for recurring jobs."""
 
+    def test_interval_keeps_due_time_phase_through_claim_and_completion(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        """Sub-tick runtime must not turn ``every 2m`` into a three-tick job."""
+        clock = {"now": datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc)}
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: clock["now"])
+        job = create_job(prompt="phase locked", schedule="every 2m")
+        first_due = datetime.fromisoformat(job["next_run_at"])
+
+        # The 60-second ticker notices the fire fractionally after its exact due
+        # time. Advancing from that observation time would permanently add the
+        # fraction and make the tick at 12:04:00 miss the next run.
+        clock["now"] = first_due + timedelta(milliseconds=250)
+        assert advance_next_run(job["id"]) is True
+        expected_next = first_due + timedelta(minutes=2)
+        advanced = get_job(job["id"])
+        assert isinstance(advanced, dict)
+        assert datetime.fromisoformat(advanced["next_run_at"]) == expected_next
+
+        # The durable claim and a quick completion happen slightly later still;
+        # neither may re-anchor the already-advanced interval slot.
+        clock["now"] += timedelta(milliseconds=50)
+        claimed = claim_job_for_fire(
+            job["id"], return_job=True, advance_schedule=False
+        )
+        assert isinstance(claimed, dict)
+        assert datetime.fromisoformat(claimed["next_run_at"]) == expected_next
+
+        clock["now"] += timedelta(milliseconds=200)
+        assert mark_job_run(
+            job["id"],
+            success=True,
+            expected_fire_owner=claimed["fire_claim"]["by"],
+        )
+        completed = get_job(job["id"])
+        assert isinstance(completed, dict)
+        assert datetime.fromisoformat(completed["next_run_at"]) == expected_next
+
+        clock["now"] = expected_next
+        assert job["id"] in {due["id"] for due in get_due_jobs()}
+
+    def test_long_interval_run_reanchors_from_completion(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        """A run that outlives its reserved slot must still wait a full interval."""
+        clock = {"now": datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc)}
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: clock["now"])
+        job = create_job(prompt="slow", schedule="every 2m")
+        first_due = datetime.fromisoformat(job["next_run_at"])
+
+        clock["now"] = first_due
+        assert advance_next_run(job["id"])
+        claimed = claim_job_for_fire(
+            job["id"], return_job=True, advance_schedule=False
+        )
+        assert isinstance(claimed, dict)
+
+        completion = first_due + timedelta(minutes=3, seconds=30)
+        clock["now"] = completion
+        assert mark_job_run(
+            job["id"],
+            success=True,
+            expected_fire_owner=claimed["fire_claim"]["by"],
+        )
+        completed = get_job(job["id"])
+        assert isinstance(completed, dict)
+        assert datetime.fromisoformat(completed["next_run_at"]) == (
+            completion + timedelta(minutes=2)
+        )
+
     def test_advances_interval_job(self, tmp_cron_dir):
         """Interval jobs should have next_run_at bumped to the next future occurrence."""
         job = create_job(prompt="Recurring check", schedule="every 1h")

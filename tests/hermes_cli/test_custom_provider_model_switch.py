@@ -164,6 +164,61 @@ class TestCustomProviderModelSwitch:
         assert "key_env" not in config["model"]
         assert "api_key" not in config["model"]
 
+    def test_named_custom_picker_replaces_stale_key_env(self, config_home, monkeypatch):
+        """Picking a named custom provider must clear the model slot's stale
+        ``key_env``/``api_key_env`` family.
+
+        Custom runtime resolution reads ``key_env``/``api_key_env`` BEFORE
+        ``api_key``, so a leftover env reference from the previously active
+        endpoint keeps authenticating the newly selected URL with the old
+        endpoint's secret.
+        """
+        import yaml
+        from hermes_cli.main import _model_flow_named_custom
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  default: old-model\n"
+            "  provider: custom\n"
+            "  base_url: https://old.example.test/v1\n"
+            "  key_env: HERMES_CUSTOM_OLD_EXAMPLE_TEST_API_KEY\n"
+            "  api_key_env: HERMES_CUSTOM_OLD_EXAMPLE_TEST_API_KEY\n"
+            "custom_providers:\n"
+            "- name: New Endpoint\n"
+            "  base_url: https://new.example.test/v1\n"
+            "  api_key: ${NEW_EXAMPLE_API_KEY}\n"
+            "  model: new-model\n"
+        )
+        (config_home / ".env").write_text(
+            "HERMES_CUSTOM_OLD_EXAMPLE_TEST_API_KEY=sk-old\n"
+        )
+        monkeypatch.setenv("NEW_EXAMPLE_API_KEY", "sk-new")
+
+        provider_info = {
+            "name": "New Endpoint",
+            "base_url": "https://new.example.test/v1",
+            "api_key": "sk-new",
+            "api_key_ref": "${NEW_EXAMPLE_API_KEY}",
+            "model": "new-model",
+        }
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=["new-model"]), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        config = yaml.safe_load(config_path.read_text()) or {}
+        assert config["model"]["base_url"] == "https://new.example.test/v1"
+        assert "key_env" not in config["model"], (
+            "old endpoint's key_env still routes the new URL"
+        )
+        assert "api_key_env" not in config["model"], (
+            "old endpoint's api_key_env still routes the new URL"
+        )
+        assert config["model"]["api_key"] == "${NEW_EXAMPLE_API_KEY}"
+
     def test_env_template_api_key_is_preserved_in_model_config(self, config_home, monkeypatch):
         """Selecting an env-backed custom provider must not inline the secret."""
         import yaml

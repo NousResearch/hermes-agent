@@ -7393,9 +7393,24 @@ def _apply_model_assignment_sync(
             not api_key
             and not key_env
             and isinstance(provider_entry, dict)
-            and provider_entry.get("api_key")
         ):
-            model_cfg["api_key"] = provider_entry["api_key"]
+            # Mirror the provider entry's credential reference — whichever
+            # form it uses — and keep the family exclusive: custom runtime
+            # resolution reads key_env/api_key_env BEFORE api_key, so a stale
+            # env reference must never survive next to the new key.
+            entry_key_env = str(
+                provider_entry.get("key_env")
+                or provider_entry.get("api_key_env")
+                or ""
+            ).strip()
+            if entry_key_env:
+                model_cfg["key_env"] = entry_key_env
+                model_cfg.pop("api_key", None)
+                model_cfg.pop("api", None)
+            elif provider_entry.get("api_key"):
+                model_cfg["api_key"] = provider_entry["api_key"]
+                model_cfg.pop("key_env", None)
+                model_cfg.pop("api_key_env", None)
         cfg["model"] = model_cfg
 
         # When switching the main provider to Nous, mirror the CLI's
@@ -8279,9 +8294,26 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         cfg["model"] = _apply_main_model_assignment(
             cfg.get("model", {}), endpoint_id, model, base_url
         )
-        if entry.get("key_env") and isinstance(cfg["model"], dict):
-            cfg["model"]["key_env"] = entry["key_env"]
-            cfg["model"].pop("api_key", None)
+        if isinstance(cfg["model"], dict):
+            # Same family-exclusive mirror as activate_custom_endpoint: the
+            # saved endpoint's reference replaces whatever credential family
+            # the model slot carried for the previous state.
+            make_default_key_env = str(
+                entry.get("key_env") or entry.get("api_key_env") or ""
+            ).strip()
+            if make_default_key_env:
+                cfg["model"]["key_env"] = make_default_key_env
+                cfg["model"].pop("api_key", None)
+                cfg["model"].pop("api", None)
+            elif entry.get("api_key"):
+                cfg["model"]["api_key"] = entry["api_key"]
+                cfg["model"].pop("key_env", None)
+                cfg["model"].pop("api_key_env", None)
+            else:
+                cfg["model"].pop("key_env", None)
+                cfg["model"].pop("api_key_env", None)
+                cfg["model"].pop("api_key", None)
+                cfg["model"].pop("api", None)
 
     return endpoint_id, entry
 
@@ -8343,11 +8375,22 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
                 raise HTTPException(status_code=400, detail="custom endpoint is incomplete")
 
             model_cfg = _apply_main_model_assignment(cfg.get("model", {}), provider_key, model, base_url)
-            if entry.get("key_env"):
-                model_cfg["key_env"] = entry["key_env"]
+            # Mirror the picked endpoint's credential reference — whichever
+            # form it uses — and keep the family exclusive: custom runtime
+            # resolution reads key_env/api_key_env BEFORE api_key, so a stale
+            # env reference from the previously active endpoint must never
+            # survive next to the new key.
+            entry_key_env = str(
+                entry.get("key_env") or entry.get("api_key_env") or ""
+            ).strip()
+            if entry_key_env:
+                model_cfg["key_env"] = entry_key_env
                 model_cfg.pop("api_key", None)
+                model_cfg.pop("api", None)
             elif entry.get("api_key"):
                 model_cfg["api_key"] = entry["api_key"]
+                model_cfg.pop("key_env", None)
+                model_cfg.pop("api_key_env", None)
             cfg["model"] = model_cfg
             save_config(cfg)
         return {"ok": True, "provider": provider_key, "model": model}

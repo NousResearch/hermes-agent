@@ -1754,15 +1754,24 @@ def _model_flow_named_custom(config, provider_info):
     if not isinstance(model, dict):
         model = {"default": model} if model else {}
         cfg["model"] = model
+    # The picked endpoint's credential reference replaces the whole family
+    # on the model slot: custom runtime resolution reads key_env/api_key_env
+    # BEFORE api_key, so a stale env reference from the previously active
+    # endpoint would keep authenticating the new URL with the old secret.
+    model.pop("key_env", None)
+    model.pop("api_key_env", None)
     if provider_key:
         model["provider"] = custom_provider_slug(name, provider_key)
         model.pop("base_url", None)
         model.pop("api_key", None)
+        model.pop("api", None)
     else:
         model["provider"] = "custom"
         model["base_url"] = _custom_provider_base_url_config_value(
             provider_info, base_url
         )
+        model.pop("api_key", None)
+        model.pop("api", None)
         if config_api_key:
             model["api_key"] = config_api_key
     # Apply api_mode from custom_providers entry, or clear stale value

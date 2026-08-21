@@ -1663,6 +1663,45 @@ class TestWebServerEndpoints:
         assert "key_env" not in model_cfg
         assert "api_key" not in model_cfg
 
+    def test_set_model_main_named_provider_persists_key_env(self):
+        """Assigning a named ``providers.<id>`` endpoint mirrors its key
+        reference onto the main slot — whichever family the entry uses.
+
+        The selected endpoint's reference must replace whatever the model
+        slot carried, never sit next to a stale env reference.
+        """
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "proxy": {
+                "name": "Proxy",
+                "base_url": "https://llm.proxy.example/v1",
+                "model": "proxy/model-1",
+                "key_env": "PROXY_API_KEY",
+                "models": {"proxy/model-1": {}},
+            }
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "proxy",
+                "model": "proxy/model-1",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+        model_cfg = load_config().get("model")
+        assert isinstance(model_cfg, dict)
+        assert model_cfg["provider"] == "proxy"
+        assert model_cfg["base_url"] == "https://llm.proxy.example/v1"
+        assert model_cfg["key_env"] == "PROXY_API_KEY"
+        assert "api_key" not in model_cfg
+
     def test_set_model_auxiliary_custom_persists_key_env(self):
         """Auxiliary custom assignments must not write plaintext keys."""
         from hermes_cli.config import (
@@ -1833,6 +1872,97 @@ class TestWebServerEndpoints:
         assert not model_cfg.get("base_url"), "deleted endpoint's host still routed to"
         assert not model_cfg.get("provider")
         assert not get_env_value(env_var), "deleted endpoint's key still in .env"
+
+    def test_activating_named_endpoint_replaces_stale_key_env(self):
+        """Activating endpoint B must not keep endpoint A's ``key_env``.
+
+        Custom runtime resolution reads ``key_env``/``api_key_env`` BEFORE
+        ``api_key``, so a stale env reference from the previously active
+        endpoint would keep authenticating B's URL with A's secret.
+        """
+        import yaml
+        from hermes_cli.config import (
+            custom_endpoint_key_env,
+            get_env_path,
+            load_config,
+        )
+
+        config_path = get_env_path().parent / "config.yaml"
+        assert self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "acme",
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/model-1",
+                "api_key": "sk-acme-secret",
+            },
+        ).status_code == 200
+        assert self.client.post(
+            "/api/providers/custom-endpoints/acme/activate", json={}
+        ).status_code == 200
+        cfg = load_config()
+        assert cfg["model"]["key_env"] == custom_endpoint_key_env("acme")
+
+        # Endpoint B: a hand-written legacy entry with an inline key
+        # reference and no key_env of its own (the dashboard upsert always
+        # converts submitted keys to env-backed entries, so this form only
+        # reaches config.yaml from an older release or manual editing).
+        cfg = load_config()
+        cfg["providers"]["proxy"] = {
+            "name": "Proxy",
+            "base_url": "https://llm.proxy.example/v1",
+            "model": "proxy/model-1",
+            "api_key": "${PROXY_API_KEY}",
+            "models": {"proxy/model-1": {}},
+        }
+        from hermes_cli.config import save_config
+
+        save_config(cfg)
+        assert self.client.post(
+            "/api/providers/custom-endpoints/proxy/activate", json={}
+        ).status_code == 200
+
+        cfg = yaml.safe_load(config_path.read_text()) or {}
+        model_cfg = cfg.get("model") or {}
+        assert model_cfg["provider"] == "proxy"
+        assert model_cfg["base_url"] == "https://llm.proxy.example/v1"
+        assert model_cfg["api_key"] == "${PROXY_API_KEY}"
+        assert not model_cfg.get("key_env"), (
+            "Acme's key_env still routes Proxy's URL"
+        )
+        assert not model_cfg.get("api_key_env")
+
+        # And back: activating A again must drop B's inline reference.
+        assert self.client.post(
+            "/api/providers/custom-endpoints/acme/activate", json={}
+        ).status_code == 200
+        cfg = yaml.safe_load(config_path.read_text()) or {}
+        model_cfg = cfg.get("model") or {}
+        assert model_cfg["key_env"] == custom_endpoint_key_env("acme")
+        assert not model_cfg.get("api_key")
+        assert not model_cfg.get("api_key_env")
+
+        # An ``api_key_env`` alias entry is honored as the key reference too.
+        cfg = load_config()
+        cfg["providers"]["alias"] = {
+            "name": "Alias",
+            "base_url": "https://llm.alias.example/v1",
+            "model": "alias/model-1",
+            "api_key_env": "ALIAS_API_KEY",
+            "models": {"alias/model-1": {}},
+        }
+        save_config(cfg)
+        assert self.client.post(
+            "/api/providers/custom-endpoints/alias/activate", json={}
+        ).status_code == 200
+        cfg = yaml.safe_load(config_path.read_text()) or {}
+        model_cfg = cfg.get("model") or {}
+        assert model_cfg["provider"] == "alias"
+        assert model_cfg["key_env"] == "ALIAS_API_KEY"
+        assert not model_cfg.get("api_key")
+        assert not model_cfg.get("api_key_env")
+
 
 
     def test_custom_endpoint_save_scopes_to_the_requested_profile(self):

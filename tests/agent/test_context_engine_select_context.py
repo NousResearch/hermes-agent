@@ -344,6 +344,27 @@ def test_tool_message_without_tool_call_id_rejected():
     )
     assert out is REQUEST
 
+
+def test_function_message_without_name_rejected():
+    """A ``function``-role message missing ``name`` is structurally invalid
+    and must be rejected rather than shipped downstream: the pre-call
+    sanitizer keeps function-role messages without repairing them, so a
+    nameless one reaches the provider as an HTTP 400."""
+    bad_function = [
+        {"role": "system", "content": "sys"},
+        {"role": "function", "content": "fn result"},
+    ]
+
+    class _Engine(_MinimalEngine):
+        def select_context(self, request_messages, **kwargs):
+            return bad_function
+
+    agent = _agent_with(_Engine())
+    out = _apply_context_engine_selection(
+        agent, REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
+    )
+    assert out is REQUEST
+
 # -- on_turn_complete (post-turn observation) ------------------------------
 
 

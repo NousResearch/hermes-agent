@@ -1663,6 +1663,8 @@ def _context_engine_selection_is_safe(
             return False
         if role == "tool" and not msg.get("tool_call_id"):
             return False
+        if role == "function" and not msg.get("name"):
+            return False
     return True
 
 

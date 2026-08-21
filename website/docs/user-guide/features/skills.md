@@ -635,8 +635,8 @@ hermes skills check                               # Check installed hub skills f
 hermes skills update                              # Reinstall hub skills with upstream changes when needed
 hermes skills audit                               # Re-scan all hub skills for security
 hermes skills uninstall k8s                       # Remove a hub skill
-hermes skills reset google-workspace              # Un-stick a bundled skill from "user-modified" (see below)
-hermes skills reset google-workspace --restore    # Also restore the bundled version, deleting your local edits
+hermes skills reset google-workspace              # Re-baseline only if your copy matches bundled; modified copies stay skipped
+hermes skills reset google-workspace --restore    # Replace your modified copy and resume stock updates
 hermes skills publish skills/my-skill --to github --repo owner/repo
 hermes skills snapshot export setup.json          # Export skill config
 hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
@@ -976,12 +976,13 @@ The protection is good, but it has one sharp edge. If you edit a bundled skill a
 `hermes skills reset` is the escape hatch:
 
 ```bash
-# Safe: clears the manifest entry for this skill. Your current copy is preserved,
-# but the next sync re-baselines against it so future updates work normally.
+# Plain reset: clears the manifest entry and preserves your current copy. The
+# next sync re-baselines only if that copy is byte-identical to bundled. A
+# genuinely modified copy stays preserved and skipped on future updates.
 hermes skills reset google-workspace
 
-# Full restore: also deletes your local copy and re-copies the current bundled
-# version. Use this when you want the pristine upstream skill back.
+# Full restore: deletes your modified local copy, re-copies the current bundled
+# version, and resumes stock updates.
 hermes skills reset google-workspace --restore
 
 # Non-interactive (e.g. in scripts or TUI mode) — skip the --restore confirmation.

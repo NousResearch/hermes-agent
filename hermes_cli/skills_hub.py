@@ -1322,9 +1322,11 @@ def do_list_modified(console: Optional[Console] = None,
     for entry in modified:
         c.print(f"  [yellow]~[/] {entry['name']}")
     c.print()
-    c.print("[dim]See changes:   hermes skills diff <name>[/]")
-    c.print("[dim]Resume updates: hermes skills reset <name>          (keep your copy, re-baseline)[/]")
-    c.print("[dim]Revert to stock: hermes skills reset <name> --restore[/]\n")
+    c.print("[dim]Inspect changes: hermes skills diff <name>[/]")
+    c.print(
+        "[dim]Replace your copy and resume stock updates: "
+        "hermes skills reset <name> --restore[/]\n"
+    )
 
 
 def do_diff(name: str, console: Optional[Console] = None) -> None:
@@ -2041,8 +2043,8 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
     elif action == "reset":
         if not args:
             c.print("[bold red]Usage:[/] /skills reset <name> [--restore] [--now]\n")
-            c.print("[dim]Clears the bundled-skills manifest entry so future updates stop marking it as user-modified.[/]")
-            c.print("[dim]Pass --restore to also replace the current copy with the bundled version.[/]\n")
+            c.print("[dim]Clears the bundled-skills manifest entry. If your local copy matches bundled, the next sync re-baselines and accepts upstream updates.[/]")
+            c.print("[dim]If your copy differs from bundled, it is preserved and keeps being skipped on updates — pass --restore to overwrite it with the bundled version.[/]\n")
             return
         name = args[0]
         restore = "--restore" in args
@@ -2119,7 +2121,8 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
         "  [cyan]list-modified[/]               List bundled skills you've edited (kept by update)\n"
         "  [cyan]diff[/] <name>                 Diff your copy of a bundled skill vs the stock version\n"
-        "  [cyan]reset[/] <name> [--restore]    Reset bundled-skill tracking (fix 'user-modified' flag)\n"
+        "  [cyan]reset[/] <name> [--restore]    Plain reset only re-baselines a byte-identical copy\n"
+        "       Modified copies stay skipped; --restore replaces them and resumes stock updates\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"
         "  [cyan]snapshot[/] export|import      Export/import skill configurations\n"
         "  [cyan]tap[/] list|add|remove         Manage skill sources\n",

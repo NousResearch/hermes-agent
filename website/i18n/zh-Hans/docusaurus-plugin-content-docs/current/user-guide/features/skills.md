@@ -398,8 +398,8 @@ hermes skills check                               # Check installed hub skills f
 hermes skills update                              # Reinstall hub skills with upstream changes when needed
 hermes skills audit                               # Re-scan all hub skills for security
 hermes skills uninstall k8s                       # Remove a hub skill
-hermes skills reset google-workspace              # Un-stick a bundled skill from "user-modified" (see below)
-hermes skills reset google-workspace --restore    # Also restore the bundled version, deleting your local edits
+hermes skills reset google-workspace              # 仅当本地副本与捆绑版本字节一致时才重新建立基线；修改过的副本仍会被跳过
+hermes skills reset google-workspace --restore    # 替换修改过的本地副本并恢复原版更新
 hermes skills publish skills/my-skill --to github --repo owner/repo
 hermes skills snapshot export setup.json          # Export skill config
 hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
@@ -718,12 +718,13 @@ Hermes 在仓库的 `skills/` 中附带一组捆绑 skills。在安装时以及�
 `hermes skills reset` 是解决此问题的方法：
 
 ```bash
-# 安全：清除此 skill 的清单条目。你当前的副本被保留，
-# 但下次同步会重新以其为基准，使未来的更新正常工作。
+# 普通 reset：清除此 skill 的清单条目并保留当前副本。只有当该副本与
+# 捆绑版本字节完全相同时，下次同步才会重新建立基线。真正修改过的副本
+# 会被保留，并在未来更新时继续跳过。
 hermes skills reset google-workspace
 
-# 完全恢复：同时删除你的本地副本并重新复制当前捆绑版本。
-# 当你想要恢复原始上游 skill 时使用此选项。
+# 完全恢复：删除修改过的本地副本，重新复制当前捆绑版本，
+# 并恢复原版更新。
 hermes skills reset google-workspace --restore
 
 # 非交互式（例如在脚本或 TUI 模式中）——跳过 --restore 确认。

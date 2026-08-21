@@ -845,8 +845,8 @@ def sync_skills(quiet: bool = False) -> dict:
                         print(
                             f"  ⚠ {skill_name}: bundled version shipped but you "
                             f"already have a local skill by this name — yours "
-                            f"was kept. Run `hermes skills reset {skill_name}` "
-                            f"to replace it with the bundled version."
+                            f"was kept. Run `hermes skills reset {skill_name} "
+                            f"--restore` to replace it with the bundled version."
                         )
                 else:
                     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -1037,14 +1037,30 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
         name: The skill name (matches the manifest key / skill frontmatter name).
         restore: If True, also delete the user's copy in the skills dir and let
                  the next sync re-copy the current bundled version. If False
-                 (default), only clear the manifest entry — the user's
-                 current copy is preserved but future updates work again.
+                 (default), only clear the manifest entry. A plain reset only
+                 re-baselines (and unsticks) the skill when the local copy is
+                 byte-identical to bundled; a genuinely modified or
+                 source-less copy is left preserved and still skipped on
+                 future syncs (see the action values below).
 
     Returns:
         dict with keys:
           - ok: bool, whether the reset succeeded
-          - action: one of "manifest_cleared", "restored", "not_in_manifest",
-                    "bundled_missing"
+          - action: one of
+                "manifest_cleared" — entry cleared and the resync re-baselined
+                    the skill, so future `hermes update` runs accept upstream
+                    changes;
+                "manifest_cleared_local_preserved" — entry cleared but the
+                    local copy differs from bundled, so it is preserved and
+                    still skipped on updates (use --restore to overwrite);
+                "manifest_cleared_no_bundled" — entry cleared but the skill has
+                    no bundled source (removed upstream / bundled unavailable),
+                    so the local copy is preserved and --restore cannot recover
+                    a shipped version;
+                "restored" — the local copy was replaced with the bundled
+                    version (restore=True);
+                "not_in_manifest" — the name is not a tracked bundled skill;
+                "bundled_missing" — restore=True but no bundled source exists.
           - message: human-readable description
           - synced: dict from sync_skills() if a sync was triggered, else None
     """
@@ -1114,11 +1130,43 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
         action = "restored"
         message = f"Restored '{name}' (no prior user copy, re-copied from bundled)."
     else:
-        action = "manifest_cleared"
-        message = (
-            f"Cleared manifest entry for '{name}'. Future `hermes update` runs "
-            f"will re-baseline against your current copy and accept upstream changes."
-        )
+        # Non-restore path: sync_skills() above either re-baselined the manifest
+        # (when user_hash matches the current bundled hash) or skipped without
+        # writing a manifest entry (when the user's copy genuinely differs from
+        # bundled — the new-skill-collision branch). Distinguish by reading the
+        # manifest after the resync so the user-facing message reflects what
+        # actually happened: a true re-baseline vs. a preserved local copy that
+        # will keep being skipped on future syncs.
+        manifest_after = _read_manifest()
+        if name in manifest_after:
+            action = "manifest_cleared"
+            message = (
+                f"Cleared manifest entry for '{name}'. Future `hermes update` runs "
+                f"will re-baseline against your current copy and accept upstream changes."
+            )
+        elif not is_bundled:
+            # No bundled source backs this skill (removed upstream or the
+            # bundled dir is unavailable), so the resync had nothing to
+            # baseline against and left it out of the manifest. Don't blame a
+            # "local differs from bundled" divergence — and don't point at
+            # `--restore`, which would fail with `bundled_missing` here.
+            action = "manifest_cleared_no_bundled"
+            message = (
+                f"Cleared manifest entry for '{name}', but it has no bundled "
+                f"source (removed upstream or bundled skills are unavailable), "
+                f"so the local copy is preserved as-is and `hermes update` will "
+                f"leave it untouched. `--restore` cannot recover a shipped "
+                f"version for this skill."
+            )
+        else:
+            action = "manifest_cleared_local_preserved"
+            message = (
+                f"Cleared manifest entry for '{name}', but your local copy differs "
+                f"from the bundled version, so it remains preserved and will not "
+                f"receive upstream updates. Use "
+                f"`hermes skills reset {name} --restore` to revert to the shipped "
+                f"version."
+            )
 
     return {"ok": True, "action": action, "message": message, "synced": synced}
 

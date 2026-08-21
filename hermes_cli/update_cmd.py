@@ -42,6 +42,20 @@ from hermes_constants import venv_python_path
 logger = logging.getLogger(__name__)
 
 
+def _print_user_modified_skills_notice(result: dict) -> None:
+    """Explain how to inspect and replace bundled skills kept during update."""
+    names = result.get("user_modified") or []
+    if not names:
+        return
+
+    print(f"  ~ {len(names)} user-modified (kept)")
+    print("    → inspect changes: hermes skills diff <name>")
+    print(
+        "    → replace modified copy and resume stock updates: "
+        "hermes skills reset <name> --restore"
+    )
+
+
 def _m():
     """Lazy ``hermes_cli.main`` reference.
 
@@ -1472,12 +1486,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
             print(
                 f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}"
             )
-        if result.get("user_modified"):
-            print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
-            print(
-                "    → see them: hermes skills list-modified  "
-                "(diff/reset to resume updates)"
-            )
+        _print_user_modified_skills_notice(result)
         if result.get("cleaned"):
             print(f"  − {len(result['cleaned'])} removed from manifest")
         if result.get("relocated"):
@@ -6209,12 +6218,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print(
                     f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}"
                 )
-            if result.get("user_modified"):
-                print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
-                print(
-                    "    → see them: hermes skills list-modified  "
-                    "(diff/reset to resume updates)"
-                )
+            _print_user_modified_skills_notice(result)
             if result.get("cleaned"):
                 print(f"  − {len(result['cleaned'])} removed from manifest")
             if result.get("relocated"):

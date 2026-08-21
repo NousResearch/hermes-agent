@@ -5,7 +5,14 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import (
+    do_check,
+    do_install,
+    do_list,
+    do_list_modified,
+    do_update,
+    handle_skills_slash,
+)
 
 
 class _DummyLockFile:
@@ -68,6 +75,59 @@ def _capture(source_filter: str = "all") -> str:
     console = Console(file=sink, force_terminal=False, color_system=None)
     do_list(source_filter=source_filter, console=console)
     return sink.getvalue()
+
+
+def test_skills_reset_slash_help_distinguishes_plain_reset_from_restore():
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    handle_skills_slash("/skills reset", console=console)
+
+    output = sink.getvalue()
+    assert "matches bundled" in output
+    assert "differs from bundled" in output
+    assert "--restore" in output
+
+
+def test_skills_main_help_explains_modified_reset_contract():
+    sink = StringIO()
+    console = Console(
+        file=sink,
+        force_terminal=False,
+        color_system=None,
+        width=200,
+    )
+
+    handle_skills_slash("/skills help", console=console)
+
+    output = " ".join(sink.getvalue().split())
+    assert "Plain reset only re-baselines a byte-identical copy" in output
+    contract = output.lower()
+    assert "modified copies stay skipped" in contract
+    assert "--restore replaces them and resumes stock updates" in contract
+
+
+def test_list_modified_points_to_restore_for_resuming_stock_updates(monkeypatch):
+    import tools.skills_sync as skills_sync
+
+    monkeypatch.setattr(
+        skills_sync,
+        "list_user_modified_bundled_skills",
+        lambda: [{"name": "edited-skill"}],
+    )
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    do_list_modified(console=console)
+
+    output = sink.getvalue()
+    normalized = " ".join(output.split())
+    assert "Inspect changes: hermes skills diff <name>" in normalized
+    assert (
+        "Replace your copy and resume stock updates: "
+        "hermes skills reset <name> --restore"
+    ) in normalized
+    assert "keep your copy, re-baseline" not in output
 
 
 def _capture_check(monkeypatch, results, name=None) -> str:

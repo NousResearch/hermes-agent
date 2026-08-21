@@ -463,6 +463,22 @@ class TestSyncSkills:
         assert len(manifest["new-skill"]) == 32
         assert len(manifest["old-skill"]) == 32
 
+    def test_collision_prints_reset_hint(self, tmp_path, capsys):
+        """A collision hint must point at --restore, not loop through reset."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        user_skill = skills_dir / "category" / "new-skill"
+        user_skill.mkdir(parents=True)
+        (user_skill / "SKILL.md").write_text("# From hub, unrelated to bundled")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=False)
+
+        captured = capsys.readouterr().out
+        assert "new-skill" in captured
+        assert "hermes skills reset new-skill --restore" in captured
+
     def test_user_deleted_skill_not_re_added_and_stale_entries_cleaned(self, tmp_path):
         """In manifest but not on disk = user deleted it; don't re-add. And a
         manifest entry no longer present in bundled gets cleaned out."""
@@ -619,6 +635,54 @@ class TestResetBundledSkill:
 
         assert removed["ok"] is False
         assert removed["action"] == "bundled_missing"
+
+    def test_reset_on_genuinely_modified_skill_reports_preserved(self, tmp_path):
+        """Plain reset must report that a divergent local copy stays skipped."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        dest = skills_dir / "productivity" / "google-workspace"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text(
+            "---\nname: google-workspace\n---\n# user-edited content, NOT bundled\n"
+        )
+        bundled_hash = _dir_hash(bundled / "productivity" / "google-workspace")
+        manifest_file.write_text(f"google-workspace:{bundled_hash}\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = reset_bundled_skill("google-workspace", restore=False)
+
+            assert result["ok"] is True
+            assert result["action"] == "manifest_cleared_local_preserved"
+            assert (
+                "hermes skills reset google-workspace --restore"
+                in result["message"]
+            )
+            assert "preserved" in result["message"]
+            assert "google-workspace" not in _read_manifest()
+            assert "user-edited" in (dest / "SKILL.md").read_text()
+
+    def test_reset_no_bundled_source_reports_no_bundled_action(self, tmp_path):
+        """A source-less tracked skill needs an honest, non-restore action."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        dest = skills_dir / "productivity" / "orphan-skill"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text(
+            "---\nname: orphan-skill\n---\n# Orphan\n"
+        )
+        manifest_file.write_text("orphan-skill:OLDHASH00000000000000000000000000\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = reset_bundled_skill("orphan-skill", restore=False)
+
+            assert result["ok"] is True
+            assert result["action"] == "manifest_cleared_no_bundled"
+            assert "no bundled source" in result["message"]
+            assert "reset --restore" not in result["message"]
+            assert "orphan-skill" not in _read_manifest()
+            assert "Orphan" in (dest / "SKILL.md").read_text()
 
     def test_reset_restore_succeeds_on_readonly_nix_tree(self, tmp_path):
         """#34972: --restore must succeed even when the user copy is a fully

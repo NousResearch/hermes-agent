@@ -585,8 +585,10 @@ def test_live_turn_cancels_review_during_startup_before_provider(monkeypatch):
     assert live_result == {"boundary_reached": True}
 
 
-def test_live_turn_stops_safely_when_review_acknowledgement_times_out(monkeypatch):
-    """A broken review abort path must not create an unbounded foreground wait."""
+def test_live_turn_proceeds_when_review_acknowledgement_times_out(monkeypatch):
+    """A broken review abort path must not block the foreground indefinitely.
+    The live turn proceeds after the bounded wait, retaining foreground priority.
+    """
     import time
 
     import agent.background_review as background_review_module
@@ -637,11 +639,15 @@ def test_live_turn_stops_safely_when_review_acknowledgement_times_out(monkeypatc
     relay_calls = _install_relay_recorder(monkeypatch, run)
 
     started = time.monotonic()
-    result = AIAgent.run_conversation(
-        agent,
-        "next turn",
-        task_id="live-task",
+    live_result = {}
+    live = _REAL_THREAD(
+        target=_run_wrapped_live_turn_to_boundary,
+        args=(agent, live_result),
+        daemon=True,
     )
+    live.start()
+    live.join(timeout=5.0)
+
     elapsed = time.monotonic() - started
 
     allow_interrupt_return.set()
@@ -652,17 +658,21 @@ def test_live_turn_stops_safely_when_review_acknowledgement_times_out(monkeypatc
     assert interrupt_entered.is_set()
     assert interrupt_returned.wait(2.0)
     assert not worker.is_alive()
-    assert relay_calls == []
-    assert boundary_calls == []
-    assert result is not None
-    assert result["completed"] is False
-    assert result["failed"] is True
-    assert result["background_review_cancellation_timeout"] is True
-    assert "not started" in result["final_response"].lower()
+    assert not live.is_alive()
+    # Foreground retains priority: Relay/turn-context proceed even though
+    # the review did not acknowledge within the bounded deadline.
+    assert boundary_calls == [True]
+    assert live_result == {"boundary_reached": True}
+    assert relay_calls == [
+        ("acquire", False),
+        ("begin", False),
+        ("start_task_run", False),
+    ]
+    assert agent.session_id == "test-session"
 
 
-def test_live_turn_fails_closed_for_untracked_legacy_review_stub(monkeypatch):
-    """Directly constructed agents without a handshake must not overlap turns."""
+def test_live_turn_interrupts_legacy_review_but_keeps_foreground_priority(monkeypatch):
+    """Legacy stubs are interrupted without turning review into a user blocker."""
     interrupts = []
     interrupt_called = threading.Event()
 
@@ -680,18 +690,26 @@ def test_live_turn_fails_closed_for_untracked_legacy_review_stub(monkeypatch):
     )
     relay_calls = _install_relay_recorder(monkeypatch)
 
-    result = AIAgent.run_conversation(
-        agent,
-        "next turn",
-        task_id="live-task",
+    live_result = {}
+    live = _REAL_THREAD(
+        target=_run_wrapped_live_turn_to_boundary,
+        args=(agent, live_result),
+        daemon=True,
     )
+    live.start()
+    live.join(timeout=5.0)
 
     assert interrupt_called.wait(2.0)
     assert interrupts == ["superseded by a new live turn"]
-    assert relay_calls == []
-    assert boundary_calls == []
-    assert result["background_review_cancellation_timeout"] is True
-    assert result["failed"] is True
+    assert not live.is_alive()
+    assert boundary_calls == [True]
+    assert live_result == {"boundary_reached": True}
+    assert relay_calls == [
+        ("acquire", False),
+        ("begin", False),
+        ("start_task_run", False),
+    ]
+    assert agent.session_id == "test-session"
 
 
 def test_stale_review_cleanup_cannot_clear_or_signal_newer_review(monkeypatch):

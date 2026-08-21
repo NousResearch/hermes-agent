@@ -113,7 +113,13 @@ def finish_background_review_run(
 
 
 def _interrupt_background_review(review_agent: Any) -> None:
-    """Request abort off-thread so a broken abort hook cannot stall foreground."""
+    """Request abort off-thread so a broken abort hook cannot stall foreground.
+
+    The bounded wait on ``request_done`` in
+    :func:`cancel_background_review_for_live_turn` is only effective if
+    ``interrupt()`` returns quickly.  Off-loading to a daemon thread ensures
+    a slow or wedged abort path cannot block the foreground turn (#84423).
+    """
 
     def _interrupt() -> None:
         try:
@@ -137,11 +143,13 @@ def _interrupt_background_review(review_agent: Any) -> None:
         )
 
 
-def cancel_background_review_for_live_turn(agent: Any) -> bool:
+def cancel_background_review_for_live_turn(agent: Any) -> None:
     """Cancel the current review and await its request-phase acknowledgement.
 
-    Returns ``False`` when acknowledgement is unavailable or misses the bounded
-    deadline.  Callers must then stop before same-session turn-context work.
+    Foreground priority is preserved: if the review does not acknowledge within
+    the bounded deadline, a warning is logged and the live turn proceeds
+    anyway. The review is non-critical self-improvement work and must never
+    block a user-facing turn (#84423).
     """
     lock = getattr(agent, "_background_review_lock", None)
     if lock is not None:
@@ -154,9 +162,9 @@ def cancel_background_review_for_live_turn(agent: Any) -> bool:
 
     if run is None:
         if legacy_agent is None:
-            return True
+            return
         _interrupt_background_review(legacy_agent)
-        return False
+        return
 
     review_agent = run.cancel()
     if review_agent is not None:
@@ -166,12 +174,11 @@ def cancel_background_review_for_live_turn(agent: Any) -> bool:
         timeout=_BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS
     )
     if not acknowledged:
-        logger.error(
+        logger.warning(
             "Background review did not acknowledge cancellation within %.1fs; "
-            "refusing to start overlapping live turn",
+            "proceeding with foreground live turn",
             _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS,
         )
-    return acknowledged
 
 
 # ---------------------------------------------------------------------------

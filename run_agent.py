@@ -8496,28 +8496,11 @@ class AIAgent:
         # A review deliberately shares this agent's session_id for prompt-cache
         # parity. Fence review startup or interrupt an admitted request, then
         # await that request's exit before opening any live-turn Relay or task
-        # instrumentation for the same session.
+        # instrumentation for the same session. Foreground priority is retained
+        # if the review does not acknowledge within the bounded deadline (#84423).
         from agent.background_review import cancel_background_review_for_live_turn
 
-        if not cancel_background_review_for_live_turn(self):
-            failure = (
-                "Live turn not started: the prior background review did not "
-                "acknowledge cancellation before the bounded safety deadline. "
-                "Retry after the review has stopped."
-            )
-            existing_messages = conversation_history
-            if existing_messages is None:
-                existing_messages = getattr(self, "_session_messages", None)
-            return {
-                "final_response": failure,
-                "messages": list(existing_messages or []),
-                "completed": False,
-                "api_calls": 0,
-                "error": failure,
-                "failed": True,
-                "retryable": True,
-                "background_review_cancellation_timeout": True,
-            }
+        cancel_background_review_for_live_turn(self)
 
         from agent.aux_accounting import (
             reset_accounting_context,

@@ -1914,9 +1914,10 @@ class TestExecuteToolCalls:
 
 
 class TestRetryAfterCap:
-    """#26293: the conversation loop owns rate-limit backoff and honors the
-    Retry-After header up to a 600s ceiling (was 120s, which retried before
-    Tier-1 reset windows of ~171s and re-tripped the limit)."""
+    """The loop honors provider cooldowns up to a 600-second ceiling.
+
+    This covers rate-limit headers (#26293) and retryable 5xx responses.
+    """
 
     def _drive_once(self, agent, retry_after_value):
         """Raise one 429 carrying ``Retry-After`` and capture the wait the loop
@@ -1956,6 +1957,50 @@ class TestRetryAfterCap:
         # 300s > old 120s cap but < new 600s cap → used verbatim.
         status = self._drive_once(agent, 300)
         assert "Waiting 300.0s" in status
+
+    @pytest.mark.parametrize(
+        ("headers", "body"),
+        [
+            ({"Retry-After": "120"}, {}),
+            ({}, {"status": 524, "retry_after": 120}),
+        ],
+        ids=("header", "problem-detail-body"),
+    )
+    def test_retry_after_on_cloudflare_524_is_honored(
+        self, agent, headers, body
+    ):
+        """A retryable 5xx must not bypass the provider's cooldown."""
+
+        class _CloudflareTimeout(Exception):
+            status_code = 524
+
+            def __str__(self):
+                return "Error code: 524 - origin response timeout"
+
+        error = _CloudflareTimeout()
+        error.response = SimpleNamespace(headers=headers)
+        error.body = body
+
+        def _fake_api_call(api_kwargs):
+            raise error
+
+        agent._interruptible_api_call = _fake_api_call
+        agent._persist_session = lambda *args, **kwargs: None
+        agent._save_trajectory = lambda *args, **kwargs: None
+
+        captured = []
+        original_buffer = agent._buffer_status
+
+        def _capture_status(msg, *args, **kwargs):
+            captured.append(msg)
+            if "Retrying in" in msg:
+                agent._interrupt_requested = True
+            return original_buffer(msg, *args, **kwargs)
+
+        agent._buffer_status = _capture_status
+        agent.run_conversation("hello")
+
+        assert any("Retrying in 120.0s" in msg for msg in captured)
 
 
 

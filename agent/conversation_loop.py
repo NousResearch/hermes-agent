@@ -85,6 +85,7 @@ from agent.retry_utils import (
     adaptive_rate_limit_backoff,
     is_zai_coding_overload_error,
     jittered_backoff,
+    parse_retry_after_seconds,
     zai_coding_overload_retry_ceiling,
 )
 from agent.repetition_guard import is_repetition_dominated
@@ -6447,22 +6448,28 @@ def run_conversation(
                         "billing_block": _billing_block,
                     }
 
-                # For rate limits, respect the Retry-After header if present
+                # Respect Retry-After on every retryable provider error, not
+                # just 429s. Retryable 5xx responses can also carry a standard
+                # header or a structured ``retry_after`` problem-detail field;
+                # ignoring either turns an origin outage into a retry storm.
                 _retry_after = None
-                if is_rate_limited:
-                    _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
-                    if _resp_headers and hasattr(_resp_headers, "get"):
-                        _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
-                        if _ra_raw:
-                            try:
-                                # Cap at 10 minutes. Anthropic Tier 1 input-token
-                                # buckets reset in ~171s, so a 120s cap caused us to
-                                # retry before the actual reset window and re-trip the
-                                # limit. 600s covers all realistic provider reset
-                                # windows while still rejecting pathological values. (#26293)
-                                _retry_after = min(float(_ra_raw), 600)
-                            except (TypeError, ValueError):
-                                pass
+                _resp_headers = getattr(
+                    getattr(api_error, "response", None), "headers", None
+                )
+                _retry_after = parse_retry_after_seconds(_resp_headers)
+                if _retry_after is None:
+                    _error_body = getattr(api_error, "body", None)
+                    if isinstance(_error_body, dict):
+                        _retry_after = parse_retry_after_seconds(
+                            _error_body.get("retry_after")
+                        )
+                if _retry_after is not None:
+                    # Cap at 10 minutes. Anthropic Tier 1 input-token buckets
+                    # reset in ~171s, so a 120s cap caused us to retry before
+                    # the actual reset window and re-trip the limit. 600s
+                    # covers realistic provider reset windows while rejecting
+                    # pathological values. (#26293)
+                    _retry_after = min(_retry_after, 600)
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 _backoff_policy = None
                 if (is_rate_limited or _is_zai_coding_overload) and not _retry_after:

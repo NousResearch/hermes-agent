@@ -31,3 +31,21 @@ def test_duplicate_ids_in_one_batch_remain_fail_closed():
         {"role": "tool", "tool_call_id": "same", "content": "ambiguous"},
     ]
     assert neutralize_completed_incomplete_tool_calls(messages) == messages
+
+
+def test_duplicate_results_leave_marker_history_unchanged():
+    messages = [
+        assistant(True),
+        {"role": "tool", "tool_call_id": "same", "content": "first"},
+        {"role": "tool", "tool_call_id": "same", "content": "duplicate"},
+    ]
+    assert neutralize_completed_incomplete_tool_calls(messages) == messages
+
+
+def test_preceding_orphan_makes_later_pair_ambiguous():
+    messages = [
+        {"role": "tool", "tool_call_id": "same", "content": "orphan"},
+        assistant(True),
+        {"role": "tool", "tool_call_id": "same", "content": "later"},
+    ]
+    assert neutralize_completed_incomplete_tool_calls(messages) == messages

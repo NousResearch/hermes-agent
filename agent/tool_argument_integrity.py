@@ -43,42 +43,55 @@ def _tool_call_has_incomplete_arguments(tool_call: Any) -> bool:
 def completed_tool_call_pairs(
     messages: list[dict[str, Any]],
 ) -> dict[tuple[int, int], int]:
-    """Map structurally paired assistant-call positions to result positions."""
-    pending: dict[str, list[tuple[int, int]]] = {}
-    pairs: dict[tuple[int, int], int] = {}
-    for message_index, message in enumerate(messages):
+    """Map unambiguous assistant calls to adjacent result positions."""
+    call_counts: dict[str, int] = {}
+    result_counts: dict[str, int] = {}
+    for message in messages:
         if not isinstance(message, dict):
-            pending.clear()
             continue
-        role = message.get("role")
-        if role == "assistant":
-            pending.clear()
+        if message.get("role") == "assistant":
             tool_calls = message.get("tool_calls")
-            if not isinstance(tool_calls, list):
-                continue
-            call_ids = [
-                call.get("id") for call in tool_calls if isinstance(call, dict)
-            ]
-            ambiguous_ids = {call_id for call_id in call_ids if call_ids.count(call_id) > 1}
-            for call_index, tool_call in enumerate(tool_calls):
-                if not isinstance(tool_call, dict):
-                    continue
-                call_id = tool_call.get("id")
-                if (
-                    isinstance(call_id, str)
-                    and call_id
-                    and call_id not in ambiguous_ids
-                ):
-                    pending.setdefault(call_id, []).append(
-                        (message_index, call_index)
-                    )
-        elif role == "tool":
+            if isinstance(tool_calls, list):
+                for tool_call in tool_calls:
+                    if isinstance(tool_call, dict):
+                        call_id = tool_call.get("id")
+                        if isinstance(call_id, str) and call_id:
+                            call_counts[call_id] = call_counts.get(call_id, 0) + 1
+        elif message.get("role") == "tool":
             call_id = message.get("tool_call_id")
-            queue = pending.get(call_id) if isinstance(call_id, str) else None
-            if queue:
-                pairs[queue.pop(0)] = message_index
-        else:
-            pending.clear()
+            if isinstance(call_id, str) and call_id:
+                result_counts[call_id] = result_counts.get(call_id, 0) + 1
+
+    pairs: dict[tuple[int, int], int] = {}
+    for assistant_index, message in enumerate(messages):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        calls_by_id: dict[str, list[int]] = {}
+        for call_index, tool_call in enumerate(tool_calls):
+            if isinstance(tool_call, dict):
+                call_id = tool_call.get("id")
+                if isinstance(call_id, str) and call_id:
+                    calls_by_id.setdefault(call_id, []).append(call_index)
+        results_by_id: dict[str, list[int]] = {}
+        for result_index in range(assistant_index + 1, len(messages)):
+            result = messages[result_index]
+            if not isinstance(result, dict) or result.get("role") != "tool":
+                break
+            call_id = result.get("tool_call_id")
+            if isinstance(call_id, str) and call_id:
+                results_by_id.setdefault(call_id, []).append(result_index)
+        for call_id, call_indices in calls_by_id.items():
+            result_indices = results_by_id.get(call_id, [])
+            if (
+                len(call_indices) == 1
+                and len(result_indices) == 1
+                and call_counts.get(call_id) == 1
+                and result_counts.get(call_id) == 1
+            ):
+                pairs[(assistant_index, call_indices[0])] = result_indices[0]
     return pairs
 
 
@@ -114,55 +127,17 @@ def neutralize_completed_incomplete_tool_calls(
     for the execution guard, and ordinary calls in a mixed batch retain their
     call/result pairing.
     """
-    pending: dict[str, list[tuple[int, int, bool]]] = {}
-    neutralized_calls: set[tuple[int, int]] = set()
-    neutralized_results: set[int] = set()
-    for message_index, message in enumerate(messages):
-        if not isinstance(message, dict):
-            pending.clear()
-            continue
-        role = message.get("role")
-        if role == "assistant":
-            pending.clear()
-            tool_calls = message.get("tool_calls")
-            if isinstance(tool_calls, list):
-                call_ids = [
-                    call.get("id")
-                    for call in tool_calls
-                    if isinstance(call, dict)
-                ]
-                ambiguous_ids = {
-                    call_id for call_id in call_ids if call_ids.count(call_id) > 1
-                }
-                for call_index, tool_call in enumerate(tool_calls):
-                    if not isinstance(tool_call, dict):
-                        continue
-                    tool_call_id = tool_call.get("id")
-                    if (
-                        isinstance(tool_call_id, str)
-                        and tool_call_id
-                        and tool_call_id not in ambiguous_ids
-                    ):
-                        pending.setdefault(tool_call_id, []).append(
-                            (
-                                message_index,
-                                call_index,
-                                _tool_call_has_incomplete_arguments(tool_call),
-                            )
-                        )
-        elif role == "tool":
-            tool_call_id = message.get("tool_call_id")
-            queue = pending.get(tool_call_id) if isinstance(tool_call_id, str) else None
-            if queue:
-                assistant_index, call_index, is_marker = queue.pop(0)
-                if is_marker:
-                    neutralized_calls.add((assistant_index, call_index))
-                    neutralized_results.add(message_index)
-        else:
-            pending.clear()
-
+    pairs = completed_tool_call_pairs(messages)
+    neutralized_calls = {
+        position
+        for position in pairs
+        if _tool_call_has_incomplete_arguments(
+            messages[position[0]]["tool_calls"][position[1]]
+        )
+    }
     if not neutralized_calls:
         return messages
+    neutralized_results = {pairs[position] for position in neutralized_calls}
 
     sanitized: list[dict[str, Any]] = []
     for message_index, message in enumerate(messages):

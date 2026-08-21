@@ -130,6 +130,60 @@ def test_schema_decoded_rejection_skips_lifecycle(agent, monkeypatch, concurrent
     assert json.loads(messages[0]["content"])["error_type"] == "incomplete_historical_tool_arguments"
 
 
+@pytest.mark.parametrize("concurrent", [False, True])
+def test_escaped_schema_decoded_marker_skips_lifecycle(agent, monkeypatch, concurrent):
+    from tools.registry import registry
+
+    events = []
+    tool_name = "integrity_escaped_schema_lifecycle_probe"
+    registry.register(
+        name=tool_name,
+        toolset="integrity-lifecycle",
+        schema={
+            "name": tool_name,
+            "description": "probe",
+            "parameters": {
+                "type": "object",
+                "properties": {"items": {"type": "array"}},
+            },
+        },
+        handler=lambda args, **kwargs: events.append("handler") or "handled",
+    )
+    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+    monkeypatch.setattr(
+        "hermes_cli.lifecycle.invoke_hook",
+        lambda *args, **kwargs: events.append("hook") or [],
+    )
+    encoded = '[{"__hermes_incomplete_tool_argument\\u0073__":{"version":1}}]'
+    raw_arguments = json.dumps({"items": encoded})
+    assert RESERVED not in raw_arguments
+    call = _mock_tool_call(name=tool_name, arguments=raw_arguments, call_id="escaped")
+    messages = []
+    with patch("run_agent.handle_function_call", side_effect=AssertionError("dispatch")):
+        _run(agent, concurrent, call, messages)
+    assert events == []
+    assert json.loads(messages[0]["content"])["error_type"] == "incomplete_historical_tool_arguments"
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+def test_interrupt_does_not_bypass_integrity_rejection(agent, monkeypatch, concurrent):
+    events = []
+    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+    monkeypatch.setattr(
+        "hermes_cli.lifecycle.invoke_hook",
+        lambda *args, **kwargs: events.append("hook") or [],
+    )
+    agent.tool_complete_callback = lambda *args, **kwargs: events.append("complete")
+    agent._interrupt_requested = True
+    payload = {RESERVED: {"version": 1, "replayable": False}}
+    call = _mock_tool_call(name="terminal", arguments=json.dumps(payload), call_id="interrupted")
+    messages = []
+    with patch("run_agent.handle_function_call", side_effect=AssertionError("dispatch")):
+        _run(agent, concurrent, call, messages)
+    assert events == []
+    assert json.loads(messages[0]["content"])["error_type"] == "incomplete_historical_tool_arguments"
+
+
 def test_concurrent_spinner_counts_only_runnable_calls(agent, monkeypatch):
     spinner_texts = []
     completion_texts = []
@@ -174,7 +228,7 @@ def test_concurrent_spinner_counts_only_runnable_calls(agent, monkeypatch):
 
 
 @pytest.mark.parametrize("concurrent", [False, True])
-def test_clean_arguments_skip_schema_integrity_preview(
+def test_clean_arguments_pass_schema_integrity_preview(
     agent, monkeypatch, concurrent
 ):
     call = _mock_tool_call(
@@ -183,11 +237,10 @@ def test_clean_arguments_skip_schema_integrity_preview(
         call_id="clean",
     )
     messages = []
+    previews = []
     monkeypatch.setattr(
         "agent.tool_executor._schema_decoded_integrity_result",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("schema preview should be skipped")
-        ),
+        lambda *_args, **_kwargs: previews.append(True) or None,
     )
 
     with patch("run_agent.handle_function_call", return_value="ok"):
@@ -195,3 +248,4 @@ def test_clean_arguments_skip_schema_integrity_preview(
 
     assert len(messages) == 1
     assert messages[0]["content"] == "ok"
+    assert previews == [True]

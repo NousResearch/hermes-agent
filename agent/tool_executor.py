@@ -42,7 +42,6 @@ from agent.tool_dispatch_helpers import (
     make_tool_result_message,
 )
 from agent.tool_argument_integrity import (
-    INCOMPLETE_TOOL_ARGUMENTS_KEY,
     incomplete_tool_arguments_after_schema_decode as _incomplete_after_schema_decode,
     incomplete_tool_arguments_error_result as _incomplete_tool_arguments_error_result,
     is_incomplete_tool_arguments_error_result as _is_incomplete_tool_arguments_error_result,
@@ -77,16 +76,6 @@ def _record_persisted_path_for_stub(agent, tool_call_id: str, function_result) -
             agent._tool_guardrails.record_persisted_result(tool_call_id, path)
     except Exception as exc:
         logger.debug("persisted-path record for result stub failed: %s", exc)
-
-
-def _raw_arguments_may_contain_incomplete_provenance(value: Any) -> bool:
-    """Cheap gate before schema lookup and recursive integrity preview.
-
-    Schema decoding can only expose the reserved key when its literal sentinel
-    is already present in the provider argument JSON. Non-string arguments are
-    treated as candidates to preserve the existing fail-closed fallback.
-    """
-    return not isinstance(value, str) or INCOMPLETE_TOOL_ARGUMENTS_KEY in value
 
 
 def _ensure_file_checkpoint(
@@ -217,6 +206,16 @@ def _schema_decoded_integrity_result(
     except Exception:
         pass
     return _incomplete_after_schema_decode(preview_args, parameters)
+
+
+def _integrity_preflight(function_name: str, raw_arguments: Any) -> Optional[str]:
+    """Return an integrity rejection before interrupt or lifecycle handling."""
+    function_args, parse_result = _parse_tool_arguments(raw_arguments)
+    if _is_incomplete_tool_arguments_error_result(parse_result):
+        return parse_result
+    if parse_result is not None:
+        return None
+    return _schema_decoded_integrity_result(function_name, function_args)
 
 
 def _resolve_concurrent_tool_timeout() -> float | None:
@@ -1127,6 +1126,20 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     if agent._interrupt_requested:
         print(f"{agent.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
         for tc in tool_calls:
+            integrity_result = _integrity_preflight(
+                tc.function.name, tc.function.arguments
+            )
+            if integrity_result is not None:
+                messages.append(make_tool_result_message(
+                    tc.function.name,
+                    integrity_result,
+                    tc.id,
+                    effect_disposition="none",
+                ))
+                _flush_session_db_after_tool_progress(
+                    agent, messages, stage=f"rejected tool result {tc.function.name}"
+                )
+                continue
             cancelled_result = (
                 f"[Tool execution cancelled — {tc.function.name} was skipped "
                 "due to user interrupt]"
@@ -1224,12 +1237,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
-        if (
-            _ts_scope_block is None
-            and _raw_arguments_may_contain_incomplete_provenance(
-                tool_call.function.arguments
-            )
-        ):
+        if _ts_scope_block is None:
             _schema_integrity_result = _schema_decoded_integrity_result(
                 function_name, function_args
             )
@@ -2067,6 +2075,21 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)", force=True)
             for skipped_tc in remaining_calls:
                 skipped_name = skipped_tc.function.name
+                integrity_result = _integrity_preflight(
+                    skipped_name, skipped_tc.function.arguments
+                )
+                if integrity_result is not None:
+                    messages.append(make_tool_result_message(
+                        skipped_name,
+                        integrity_result,
+                        skipped_tc.id,
+                        effect_disposition="none",
+                    ))
+                    if not _flush_session_db_after_tool_progress(
+                        agent, messages, stage=f"rejected tool result {skipped_name}"
+                    ):
+                        return
+                    continue
                 cancelled_result = (
                     f"[Tool execution cancelled — {skipped_name} was skipped "
                     "due to user interrupt]"
@@ -2180,12 +2203,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
-        if (
-            _ts_scope_block is None
-            and _raw_arguments_may_contain_incomplete_provenance(
-                tool_call.function.arguments
-            )
-        ):
+        if _ts_scope_block is None:
             _schema_integrity_result = _schema_decoded_integrity_result(
                 function_name, function_args
             )

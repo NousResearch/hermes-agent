@@ -153,6 +153,23 @@ class TestGitBashExternalProgramProbe:
 
         assert local_mod._bash_starts(r"C:\Git\bin\bash.exe") is True
         assert calls[0][0][-1] == "/usr/bin/true; /usr/bin/cat --version >/dev/null"
+        assert calls[0][1]["stdin"] is subprocess.DEVNULL
+
+    def test_aslr_probe_does_not_inherit_protocol_stdin(self, monkeypatch):
+        import tools.environments.local as local_mod
+
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, 0, stdout="OFF", stderr="")
+
+        monkeypatch.setattr(local_mod, "_mandatory_aslr_enabled_cache", None)
+        monkeypatch.setattr(local_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(local_mod.shutil, "which", lambda _name: "powershell.exe")
+
+        assert local_mod._mandatory_aslr_enabled() is False
+        assert calls[0][1]["stdin"] is subprocess.DEVNULL
 
     @pytest.mark.windows_only
     def test_aslr_failure_surfaces_targeted_windows_command(

@@ -27,9 +27,22 @@ QUOTA_STATE="$ROOT/blog_topics/quota_state.json"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/blog-backlog-pregen-$(date +%Y%m%d-%H%M%S).log"
 
+if [[ "${BLOG_DAILY_DRY_RUN:-0}" == "1" ]]; then
+  echo "dry-run: would launch backlog pregen (synchronous) -> $LOG"
+  exit 0
+fi
+
+# Legacy noop kept for backward compatibility with existing env wiring.
+if [[ "${BLOG_DAILY_NOOP:-}" == "1" ]]; then
+  echo "noop: would launch backlog pregen -> $LOG"
+  exit 0
+fi
+
 # ── Pre-run quota gate ─────────────────────────────────────────────────────
 # If a quota block was recorded and its reset time has not yet passed, skip
 # silently. The cron ticker stays armed; the first run after reset proceeds.
+# NOTE: deliberately AFTER the dry-run/noop checks so P13 hermetic tests are
+# never short-circuited by live provider state.
 if [[ -f "$QUOTA_STATE" ]]; then
   reset_epoch=$(python3 -c "
 import json, sys, time
@@ -49,17 +62,6 @@ except Exception:
   # Reset time passed — clear the block and run normally.
   rm -f "$QUOTA_STATE"
   echo "[$(date -Is)] quota block expired; clearing quota_state and resuming pregen"
-fi
-
-if [[ "${BLOG_DAILY_DRY_RUN:-0}" == "1" ]]; then
-  echo "dry-run: would launch backlog pregen (synchronous) -> $LOG"
-  exit 0
-fi
-
-# Legacy noop kept for backward compatibility with existing env wiring.
-if [[ "${BLOG_DAILY_NOOP:-}" == "1" ]]; then
-  echo "noop: would launch backlog pregen -> $LOG"
-  exit 0
 fi
 
 rc=0

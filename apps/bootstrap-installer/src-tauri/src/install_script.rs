@@ -93,6 +93,34 @@ pub(crate) fn cache_plan(immutable: bool, cached_exists: bool) -> CachePlan {
     }
 }
 
+/// One try plus two retries. First-run installs have no stale cache, so a
+/// single GitHub raw 503 used to abort the whole beta-to-stable setup (#88475).
+const MAX_DOWNLOAD_ATTEMPTS: u32 = 3;
+
+/// GitHub raw / CDN blips we should swallow. 404/401/403 stay fatal.
+pub(crate) fn is_transient_script_http_status(code: u16) -> bool {
+    matches!(code, 408 | 429 | 500 | 502 | 503 | 504)
+}
+
+pub(crate) fn should_retry_script_download(
+    http_status: Option<u16>,
+    transport_error: bool,
+    attempt: u32,
+) -> bool {
+    if attempt >= MAX_DOWNLOAD_ATTEMPTS {
+        return false;
+    }
+    if transport_error {
+        return true;
+    }
+    http_status.is_some_and(is_transient_script_http_status)
+}
+
+fn download_backoff(attempt: u32) -> std::time::Duration {
+    let shift = attempt.saturating_sub(1).min(3);
+    std::time::Duration::from_millis(200 * (1u64 << shift))
+}
+
 /// Resolves the install script to use for this run.
 ///
 /// `pin` is the commit-or-branch from either Hermes-Setup's build-time
@@ -104,7 +132,9 @@ pub async fn resolve(
 ) -> Result<ResolvedScript> {
     // 1. Dev shortcut.
     if let Ok(repo_root) = std::env::var("HERMES_SETUP_DEV_REPO_ROOT") {
-        let candidate = PathBuf::from(repo_root).join("scripts").join(kind.filename());
+        let candidate = PathBuf::from(repo_root)
+            .join("scripts")
+            .join(kind.filename());
         if candidate.exists() {
             emit_log(&format!(
                 "[bootstrap] dev mode — using local {} at {}",
@@ -165,11 +195,7 @@ pub async fn resolve(
             emit_log(&format!(
                 "[bootstrap] downloading {} for {} {} from GitHub",
                 kind.filename(),
-                if immutable {
-                    "commit"
-                } else {
-                    "mutable ref"
-                },
+                if immutable { "commit" } else { "mutable ref" },
                 truncate_ref(&commit_or_ref)
             ));
 
@@ -330,9 +356,8 @@ async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Re
     );
 
     if let Some(parent) = dest_path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!("creating bootstrap-cache parent dir {}", parent.display())
-        })?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating bootstrap-cache parent dir {}", parent.display()))?;
     }
 
     let tmp_path = dest_path.with_extension({
@@ -343,49 +368,113 @@ async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Re
         format!("{ext}.tmp")
     });
 
-    let response = reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(60))
         .build()
-        .context("building download client")?
-        .get(&url)
+        .context("building download client")?;
+
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 1..=MAX_DOWNLOAD_ATTEMPTS {
+        match download_once(&client, kind, &url, &tmp_path, dest_path).await {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                let retry = should_retry_script_download(err.http_status, err.transport, attempt);
+                last_err = Some(err.err);
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                if !retry {
+                    break;
+                }
+                tokio::time::sleep(download_backoff(attempt)).await;
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| anyhow!("download failed")))
+}
+
+struct DownloadAttemptErr {
+    err: anyhow::Error,
+    http_status: Option<u16>,
+    transport: bool,
+}
+
+async fn download_once(
+    client: &reqwest::Client,
+    kind: ScriptKind,
+    url: &str,
+    tmp_path: &Path,
+    dest_path: &Path,
+) -> Result<(), DownloadAttemptErr> {
+    let response = match client
+        .get(url)
         .header("User-Agent", "hermes-setup/0.0.1")
         .send()
         .await
-        .with_context(|| format!("GET {url}"))?;
+    {
+        Ok(response) => response,
+        Err(err) => {
+            let transport = err.is_timeout() || err.is_connect() || err.is_request();
+            return Err(DownloadAttemptErr {
+                err: anyhow!(err).context(format!("GET {url}")),
+                http_status: None,
+                transport,
+            });
+        }
+    };
 
     if !response.status().is_success() {
-        return Err(anyhow!(
-            "Failed to download {}: HTTP {} from {}",
-            kind.filename(),
-            response.status(),
-            url
-        ));
+        let http_status = response.status().as_u16();
+        return Err(DownloadAttemptErr {
+            err: anyhow!(
+                "Failed to download {}: HTTP {} from {}",
+                kind.filename(),
+                response.status(),
+                url
+            ),
+            http_status: Some(http_status),
+            transport: false,
+        });
     }
 
-    let bytes = response
-        .bytes()
-        .await
-        .with_context(|| format!("reading body of {url}"))?;
+    let bytes = response.bytes().await.map_err(|err| DownloadAttemptErr {
+        transport: err.is_timeout() || err.is_connect() || err.is_request(),
+        err: anyhow!(err).context(format!("reading body of {url}")),
+        http_status: None,
+    })?;
     let bytes = prepare_cached_script_bytes(kind, &bytes);
 
-    let mut file = tokio::fs::File::create(&tmp_path)
+    let mut file = tokio::fs::File::create(tmp_path)
         .await
-        .with_context(|| format!("creating temp file {}", tmp_path.display()))?;
+        .map_err(|err| DownloadAttemptErr {
+            err: anyhow!(err).context(format!("creating temp file {}", tmp_path.display())),
+            http_status: None,
+            transport: false,
+        })?;
     file.write_all(&bytes)
         .await
-        .with_context(|| format!("writing temp file {}", tmp_path.display()))?;
-    file.flush().await.context("flushing temp file")?;
+        .map_err(|err| DownloadAttemptErr {
+            err: anyhow!(err).context(format!("writing temp file {}", tmp_path.display())),
+            http_status: None,
+            transport: false,
+        })?;
+    file.flush().await.map_err(|err| DownloadAttemptErr {
+        err: anyhow!(err).context("flushing temp file"),
+        http_status: None,
+        transport: false,
+    })?;
     drop(file);
 
-    tokio::fs::rename(&tmp_path, dest_path)
+    tokio::fs::rename(tmp_path, dest_path)
         .await
-        .with_context(|| {
-            format!(
+        .map_err(|err| DownloadAttemptErr {
+            err: anyhow!(err).context(format!(
                 "renaming {} → {}",
                 tmp_path.display(),
                 dest_path.display()
-            )
+            )),
+            http_status: None,
+            transport: false,
         })?;
 
     Ok(())
@@ -414,7 +503,10 @@ mod tests {
     #[test]
     fn prepare_cached_ps1_prefixes_utf8_bom() {
         let out = prepare_cached_script_bytes(ScriptKind::Ps1, b"Write-Host hi\n");
-        assert!(out.starts_with(UTF8_BOM), "cached .ps1 must start with UTF-8 BOM");
+        assert!(
+            out.starts_with(UTF8_BOM),
+            "cached .ps1 must start with UTF-8 BOM"
+        );
         assert_eq!(&out[UTF8_BOM.len()..], b"Write-Host hi\n");
     }
 
@@ -463,6 +555,41 @@ mod tests {
             cache_plan(/*immutable=*/ true, /*cached_exists=*/ false),
             CachePlan::Fetch { stale_ok: false }
         );
+    }
+
+    #[test]
+    fn transient_script_http_statuses_are_the_cdn_blips() {
+        for code in [408, 429, 500, 502, 503, 504] {
+            assert!(is_transient_script_http_status(code), "{code} should retry");
+        }
+        for code in [200, 301, 400, 401, 403, 404, 410] {
+            assert!(
+                !is_transient_script_http_status(code),
+                "{code} must stay fatal"
+            );
+        }
+    }
+
+    #[test]
+    fn script_download_retries_are_bounded_and_skip_404() {
+        assert!(should_retry_script_download(Some(503), false, 1));
+        assert!(should_retry_script_download(Some(502), false, 2));
+        assert!(
+            !should_retry_script_download(Some(503), false, MAX_DOWNLOAD_ATTEMPTS),
+            "third failure is terminal"
+        );
+        assert!(
+            !should_retry_script_download(Some(404), false, 1),
+            "missing ref must not burn retries"
+        );
+        assert!(!should_retry_script_download(Some(401), false, 1));
+        assert!(should_retry_script_download(None, true, 1));
+        assert!(!should_retry_script_download(
+            None,
+            true,
+            MAX_DOWNLOAD_ATTEMPTS
+        ));
+        assert!(!should_retry_script_download(None, false, 1));
     }
 
     #[test]

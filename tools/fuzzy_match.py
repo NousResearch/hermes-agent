@@ -713,7 +713,10 @@ def _strategy_trimmed_boundary(content: str, pattern: str) -> List[Tuple[int, in
     matches = []
     pattern_line_count = len(pattern_lines)
     
-    for i in range(len(content_lines) - pattern_line_count + 1):
+    # Same non-overlapping advance as _find_normalized_matches / _strategy_exact.
+    i = 0
+    limit = len(content_lines) - pattern_line_count
+    while i <= limit:
         block_lines = content_lines[i:i + pattern_line_count]
         
         # Trim first and last of this block
@@ -728,6 +731,9 @@ def _strategy_trimmed_boundary(content: str, pattern: str) -> List[Tuple[int, in
                 content_lines, i, i + pattern_line_count, len(content)
             )
             matches.append((start_pos, end_pos))
+            i += pattern_line_count
+        else:
+            i += 1
     
     return matches
 
@@ -979,7 +985,15 @@ def _find_normalized_matches(content: str, content_lines: List[str],
     
     matches = []
     
-    for i in range(len(content_normalized_lines) - num_pattern_lines + 1):
+    # Advance past a whole match rather than one line at a time, so a
+    # self-overlapping pattern yields non-overlapping spans. _apply_replacements
+    # splices in reverse order on offsets computed against the ORIGINAL string;
+    # overlapping spans make every splice after the first index into shifted
+    # text and silently destroy file content under replace_all=True. This
+    # mirrors the same fix already applied to _strategy_exact.
+    i = 0
+    limit = len(content_normalized_lines) - num_pattern_lines
+    while i <= limit:
         # Check if this block matches
         block = '\n'.join(content_normalized_lines[i:i + num_pattern_lines])
         
@@ -989,6 +1003,9 @@ def _find_normalized_matches(content: str, content_lines: List[str],
                 content_lines, i, i + num_pattern_lines, len(content)
             )
             matches.append((start_pos, end_pos))
+            i += num_pattern_lines
+        else:
+            i += 1
     
     return matches
 

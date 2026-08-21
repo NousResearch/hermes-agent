@@ -841,12 +841,11 @@ def check_command_security(command: str) -> dict:
             summary = "security warning detected (details unavailable)"
 
     # Suppress warn verdicts that consist solely of a lookalike_tld finding for
-    # the .app TLD.  .app is a legitimate gTLD used by many production services
-    # and the "can be confused with file extensions" heuristic generates false
-    # positives for normal API calls.  Any other finding (including other
-    # lookalike_tld entries for non-.app TLDs) preserves the warn action.
+    # known benign TLDs. We currently treat .app and .dev as legitimate, avoiding
+    # false positives for production domains that use these extensions while keeping
+    # all other lookalike_tld findings as warnings.
     if action == "warn" and findings:
-        non_suppressible = [f for f in findings if not _is_app_tld_finding(f)]
+        non_suppressible = [f for f in findings if not _is_benign_tld_finding(f)]
         if not non_suppressible:
             action = "allow"
             findings = []
@@ -855,8 +854,11 @@ def check_command_security(command: str) -> dict:
     return {"action": action, "findings": findings, "summary": summary}
 
 
-def _is_app_tld_finding(finding: dict) -> bool:
-    """Return True if this finding is a lookalike_tld warning for the .app TLD only.
+_BENIGN_LOOKALIKE_TLDS = (".app", ".dev")
+
+
+def _is_benign_tld_finding(finding: dict) -> bool:
+    """Return True when a lookalike_tld finding targets an allowed benign TLD.
 
     Checks the rule_id and inspects common value/detail field names that
     Tirith may use to carry the TLD string.
@@ -867,6 +869,14 @@ def _is_app_tld_finding(finding: dict) -> bool:
         return False
     for field in ("value", "tld", "detail", "description", "message"):
         val = finding.get(field)
-        if val is not None and ".app" in str(val).lower():
+        if val is None:
+            continue
+        val_l = str(val).lower()
+        if any(tld in val_l for tld in _BENIGN_LOOKALIKE_TLDS):
             return True
     return False
+
+
+def _is_app_tld_finding(finding: dict) -> bool:
+    """Backward-compatible alias for the historical helper name."""
+    return _is_benign_tld_finding(finding)

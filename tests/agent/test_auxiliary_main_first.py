@@ -482,6 +482,42 @@ class TestResolveVisionMainFirst:
         assert captured == {"is_agent_turn": True, "is_vision": False}
         assert "default_headers" not in mock_openai.call_args.kwargs
 
+    def test_responses_only_copilot_model_uses_responses_wrapper(self, monkeypatch):
+        """Auxiliary Copilot calls must honour catalog endpoint metadata."""
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "ghu_test-token")
+        catalog = [{
+            "id": "grok-4.6",
+            "supported_endpoints": ["/responses"],
+        }]
+
+        with patch(
+            "agent.auxiliary_client.OpenAI",
+        ) as mock_openai, patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={
+                "provider": "copilot",
+                "api_key": "copilot-api-token",
+                "base_url": "https://api.githubcopilot.com",
+            },
+        ), patch(
+            "hermes_cli.copilot_auth.copilot_request_headers",
+            return_value={},
+        ), patch(
+            "hermes_cli.models.fetch_github_model_catalog",
+            return_value=catalog,
+        ):
+            mock_openai.return_value = MagicMock()
+
+            from agent.auxiliary_client import (
+                CodexAuxiliaryClient,
+                resolve_provider_client,
+            )
+
+            client, model = resolve_provider_client("copilot", "grok-4.6")
+
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "grok-4.6"
+
 
 
 

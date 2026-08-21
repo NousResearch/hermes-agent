@@ -4855,17 +4855,16 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
             client = GeminiNativeClient(api_key=api_key, base_url=base_url)
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
             return _route_client(req, client, final_model)
-    headers = _endpoint_default_headers(base_url, provider, is_vision=req.is_vision, xai=True)
-    client = _create_openai_client(api_key=api_key, base_url=base_url, **({"default_headers": headers} if headers else {}))
-    # Copilot GPT-5+ models (except gpt-5-mini) are only reachable via the Responses API;
-    # wrap so call_llm() transparently routes through responses.stream().
+    # Catalog discovery must precede the actual request's header construction.
+    copilot_needs_responses = False
     if provider == "copilot" and final_model and not req.raw_codex:
         with contextlib.suppress(ImportError):
-            from hermes_cli.models import _should_use_copilot_responses_api
-            if _should_use_copilot_responses_api(final_model):
-                logger.debug("resolve_provider_client: copilot model %s needs "
-                             "Responses API — wrapping with CodexAuxiliaryClient", final_model)
-                client = CodexAuxiliaryClient(client, final_model)
+            from hermes_cli.models import copilot_model_api_mode
+            copilot_needs_responses = copilot_model_api_mode(final_model, api_key=api_key) == "codex_responses"
+    headers = _endpoint_default_headers(base_url, provider, is_vision=req.is_vision, xai=True)
+    client = _create_openai_client(api_key=api_key, base_url=base_url, **({"default_headers": headers} if headers else {}))
+    if copilot_needs_responses:
+        client = CodexAuxiliaryClient(client, final_model)
     # api_mode handling for any API-key provider (direct OpenAI + codex model) and Anthropic-wire
     # endpoints (api.kimi.com/coding, /anthropic gateways) without per-provider branches.
     client = _wrap_transport(req, client, final_model, raw_base_url, api_key)

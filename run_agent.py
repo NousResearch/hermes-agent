@@ -634,7 +634,8 @@ class AIAgent(
         return model.lower().rsplit("/", 1)[-1].startswith("gpt-5")  # strip vendor prefix ("openai/gpt-5.4")
 
     @staticmethod
-    def _provider_model_requires_responses_api(model: str, *, provider: Optional[str] = None) -> bool:
+    def _provider_model_requires_responses_api(model: str, *, provider: Optional[str] = None,
+                                               api_key: Optional[str] = None) -> bool:
         """Return True when this provider/model pair should use Responses API."""
         from hermes_cli.providers import is_actual_route
         normalized_provider = (provider or "").strip().lower()
@@ -644,8 +645,8 @@ class AIAgent(
             return False
         if normalized_provider == "copilot":
             try:
-                from hermes_cli.models import _should_use_copilot_responses_api
-                return _should_use_copilot_responses_api(model)
+                from hermes_cli.models import copilot_model_api_mode
+                return copilot_model_api_mode(model, api_key=api_key) == "codex_responses"
             except Exception:
                 pass  # fall back to the generic GPT-5 rule
         return AIAgent._model_requires_responses_api(model)

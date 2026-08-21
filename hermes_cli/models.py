@@ -2074,7 +2074,7 @@ def _should_use_copilot_responses_api(model_id: str) -> bool:
 def copilot_model_api_mode(
     model_id: Optional[str], *, catalog: Optional[list[dict[str, Any]]] = None,
     api_key: Optional[str] = None) -> str:
-    """API mode for a Copilot model from the id pattern (opencode's approach). Copilot's Claude models
+    """API mode from the model family and Copilot catalog endpoint capabilities. Copilot's Claude models
     go through its OpenAI-compatible chat endpoint, not the native Anthropic adapter: the catalog may
     advertise /v1/messages but the Copilot token/header scheme lives in the OpenAI client path."""
     if catalog is None and api_key:  # fetch once so normalize + endpoint check share it
@@ -2082,6 +2082,18 @@ def copilot_model_api_mode(
     normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
     if normalized and _should_use_copilot_responses_api(normalized):
         return "codex_responses"
+    # Copilot Claude uses its OpenAI-compatible chat transport, not the native
+    # Anthropic adapter. Preserve that auth/wire contract even if the catalog
+    # advertises /v1/messages or /responses.
+    if normalized.lower().startswith(("claude-", "anthropic/claude-")):
+        return "chat_completions"
+    # Non-GPT models can also be Responses-only. Dual-endpoint models retain
+    # their existing chat transport; absent metadata keeps the name heuristic.
+    entry = next((item for item in catalog or [] if item.get("id") == normalized), None)
+    if entry is not None:
+        endpoints = entry.get("supported_endpoints") or []
+        if "/responses" in endpoints and "/chat/completions" not in endpoints:
+            return "codex_responses"
     return "chat_completions"
 
 

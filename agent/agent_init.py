@@ -418,7 +418,7 @@ def _resolve_api_mode(agent, api_mode, provider_name, base_url):
         agent.api_mode = _mandated if _mandated is not None else "chat_completions"
 
 
-def _finalize_routing(agent, api_mode, credential_pool):
+def _finalize_routing(agent, api_mode, credential_pool, api_key):
     from hermes_cli.providers import is_actual_route
     # Credential-pool validation runs AFTER provider auto-detection so a pool scoped to
     # "anthropic" isn't rejected for provider=None + anthropic.com URL.
@@ -483,7 +483,7 @@ def _finalize_routing(agent, api_mode, credential_pool):
         and not agent._is_azure_openai_url()
         and (
             agent._is_direct_openai_url()
-            or agent._provider_model_requires_responses_api(agent.model, provider=agent.provider)
+            or agent._provider_model_requires_responses_api(agent.model, provider=agent.provider, api_key=api_key)
         )
     ):
         agent.api_mode = "codex_responses"
@@ -2256,7 +2256,7 @@ def init_agent(
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
     _resolve_api_mode(agent, api_mode, provider_name, base_url)
-    _finalize_routing(agent, api_mode, credential_pool)
+    _finalize_routing(agent, api_mode, credential_pool, api_key)
 
     # Platform callbacks are stored under their parameter names verbatim.
     for _cb in _CALLBACK_PARAMS:

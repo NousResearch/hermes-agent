@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { useComposerEscCancel } from './use-composer-esc-cancel'
+import { resetBinding, setBinding } from '@/store/keybinds'
 
 function Harness({ busy, onCancel }: { busy: boolean; onCancel: () => void }) {
   useComposerEscCancel({ awaitingInput: false, busy, onCancel, target: 'main' })
@@ -12,6 +13,7 @@ function Harness({ busy, onCancel }: { busy: boolean; onCancel: () => void }) {
 afterEach(() => {
   cleanup()
   document.body.innerHTML = ''
+  resetBinding('composer.cancel')
 })
 
 describe('useComposerEscCancel', () => {
@@ -19,7 +21,7 @@ describe('useComposerEscCancel', () => {
     const onCancel = vi.fn()
     render(<Harness busy onCancel={onCancel} />)
 
-    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.keyDown(window, { code: 'Escape', key: 'Escape' })
 
     expect(onCancel).toHaveBeenCalledTimes(1)
   })
@@ -28,9 +30,19 @@ describe('useComposerEscCancel', () => {
     const onCancel = vi.fn()
     render(<Harness busy={false} onCancel={onCancel} />)
 
-    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.keyDown(window, { code: 'Escape', key: 'Escape' })
 
     expect(onCancel).not.toHaveBeenCalled()
+  })
+
+  it('cancels with a rebound busy-composer key', () => {
+    const onCancel = vi.fn()
+    setBinding('composer.cancel', ['mod+q'])
+    render(<Harness busy onCancel={onCancel} />)
+
+    fireEvent.keyDown(window, { code: 'KeyQ', ctrlKey: true, key: 'q' })
+
+    expect(onCancel).toHaveBeenCalledTimes(1)
   })
 
   it('does not cancel on Esc while an overlay surface covers the chat', () => {
@@ -43,7 +55,7 @@ describe('useComposerEscCancel', () => {
     overlay.setAttribute('data-overlay-surface', '')
     document.body.appendChild(overlay)
 
-    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.keyDown(window, { code: 'Escape', key: 'Escape' })
 
     expect(onCancel).not.toHaveBeenCalled()
   })

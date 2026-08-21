@@ -286,12 +286,11 @@ export function useComposerQueue({
     [activeQueueSessionKey, busy, onCancel, queueEdit, runDrain]
   )
 
-  // Deliver a queued entry as a mid-turn redirect — the queue-panel sibling of
-  // the composer's steer-on-Enter. No interrupt, no drain lock: a redirect
-  // rides the live turn (the gateway either restarts the active request with
-  // its displayed context or waits for the current tool boundary), so the turn
-  // keeps flowing and the remaining queue is untouched. Only meaningful while
-  // busy — idle has no turn to redirect, and `sendQueuedNow` already covers it.
+  // Deliver a queued entry as a mid-turn steer — the queue-panel sibling of
+  // the composer's steer-on-Enter. No interrupt, no drain lock: the gateway
+  // injects it at the next tool boundary, so the turn keeps flowing and the
+  // remaining queue is untouched. Only meaningful while busy — idle has no
+  // turn to steer, and `sendQueuedNow` already covers it.
   const steerQueuedNow = useCallback(
     async (id: string): Promise<boolean> => {
       if (!onSteer || !busy || !activeQueueSessionKey || id === queueEditRef.current?.entryId) {
@@ -310,7 +309,7 @@ export function useComposerQueue({
 
       // Rejected (turn already settling, gateway said no): leave the entry
       // queued exactly where it was — the settle drain picks it up, so the
-      // words are never lost. Only a delivered redirect consumes the entry.
+      // words are never lost. Only a delivered steer consumes the entry.
       if (!accepted) {
         return false
       }

@@ -86,7 +86,6 @@ interface HarnessHandle {
   reloadFromMessage: (parentId: null | string) => Promise<void>
   restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
   redirectPrompt: (text: string) => Promise<boolean>
-  /** @deprecated Use `redirectPrompt`. */
   steerPrompt: (text: string) => Promise<boolean>
   submitTextRaw: (text: string, options?: SubmitTextOptions) => Promise<boolean>
   submitText: (text: string, options?: SubmitTextOptions) => Promise<boolean>
@@ -2471,6 +2470,46 @@ describe('usePromptActions redirectPrompt', () => {
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', omit_messages: true })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'reconnect nudge' })
     expect(handle!.activeSessionIdRef.current).toBe(RECOVERED_SESSION_ID)
+  })
+})
+
+describe('usePromptActions steerPrompt', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('queues an in-flight steer without redirecting or adding a user turn', async () => {
+    const requestGateway = vi.fn(async () => ({ status: 'queued' }) as never)
+    let handle: HarnessHandle | null = null
+    const capturedStates: Record<string, unknown>[] = []
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => capturedStates.push(state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    expect(await handle!.steerPrompt('  use Postgres  ')).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith('session.steer', {
+      session_id: RUNTIME_SESSION_ID,
+      text: 'use Postgres'
+    })
+    expect(requestGateway).not.toHaveBeenCalledWith('session.redirect', expect.anything())
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+    expect(capturedStates.some(state => Array.isArray(state.messages) && state.messages.length > 0)).toBe(false)
+  })
+
+  it('returns false when the gateway rejects the steer so the composer queues it', async () => {
+    const requestGateway = vi.fn(async () => ({ status: 'rejected' }) as never)
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    expect(await handle!.steerPrompt('too late')).toBe(false)
   })
 })
 

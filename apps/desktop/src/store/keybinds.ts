@@ -85,6 +85,13 @@ export const $comboIndex = computed([$bindings, $registryVersion], bindings => {
   const index = new Map<string, string>()
 
   for (const action of allKeybindActions()) {
+    // Busy composer keys are resolved by the focused composer only. Indexing
+    // them globally would let `composer.steer`'s default Enter steal the idle
+    // `composer.focus`/send path (first action wins).
+    if (action.ownedBy === 'composer') {
+      continue
+    }
+
     for (const combo of bindingsFor(action.id, bindings)) {
       const key = canonicalizeCombo(combo)
 

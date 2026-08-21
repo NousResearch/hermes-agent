@@ -48,7 +48,7 @@ interface UseComposerSubmitArgs {
  * queue meet. `submitDraft` is the one decision tree (queue-edit save · slash-
  * now-while-busy · queue · drain · send · stop); `dispatchSubmit` is the shared
  * send-with-restore primitive (re-loads + re-stashes the draft if the gateway
- * rejects, so nothing is ever lost); `steerDraft` redirects the live turn. Reads
+ * rejects, so nothing is ever lost); `steerDraft` steers the live turn. Reads
  * the draft + queue APIs; owns no state of its own beyond the stable
  * external-submit listener ref.
  */
@@ -203,12 +203,12 @@ export function useComposerSubmit({
         clearDraft()
         dispatchSubmit(text)
       } else if (!compacting && !blockingPrompt && !attachments.length && text.trim()) {
-        // Cursor-style stop-and-correct: interrupt the live turn and redirect
-        // it with this text. redirect() preserves the shown reasoning/work; if
-        // the turn already ended, steerDraft re-queues so nothing is lost.
+        // Steer the live turn without interrupting it. The gateway injects the
+        // text at the next tool boundary; if that window is gone, steerDraft
+        // re-queues so nothing is lost.
         steerDraft()
       } else if (payloadPresent) {
-        // Attachments can't ride a redirect (no tool-result image carriage) —
+        // Attachments can't ride a steer (no tool-result image carriage) —
         // queue the whole payload for the next turn. Same for a turn parked on
         // an approval/sudo/secret prompt: a steer can't reach the model while
         // the tool batch is blocked, so the message runs as the next turn.
@@ -233,13 +233,12 @@ export function useComposerSubmit({
     focusInput()
   }
 
-  // Redirect the live turn with a correction. The gateway either restarts the
-  // active model request with its displayed context or waits for the current
-  // tool boundary. If the turn already ended, queue the words instead.
+  // Steer the live turn with a correction at its next tool boundary. If that
+  // boundary is gone, queue the words instead.
   const steerDraft = () => {
     const text = draftRef.current.trim()
 
-    // Guard on live editor state, not the render-lagged `canSteer`: a redirect
+    // Guard on live editor state, not the render-lagged `canSteer`: a steer
     // fired on a fast Enter must not be dropped because state hasn't synced.
     if (!onSteer || !text || attachments.length > 0 || SLASH_COMMAND_RE.test(text)) {
       return

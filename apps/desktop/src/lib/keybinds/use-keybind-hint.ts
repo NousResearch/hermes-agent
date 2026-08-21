@@ -7,7 +7,7 @@ import { KEYBIND_READONLY } from './actions'
 import { formatCombo } from './combo'
 
 // The formatted first combo for `actionId`, or null when unbound. Rebindable
-// actions read live from the store; readonly shortcuts (e.g. `composer.steer`)
+// actions read live from the store; readonly shortcuts
 // fall back to their fixed combo. Returns null for unknown action ids so the
 // tooltip shows just the text label with no trailing hint.
 export function useKeybindHint(actionId: string): string | null {

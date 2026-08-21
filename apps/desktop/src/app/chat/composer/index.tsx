@@ -14,6 +14,8 @@ import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
+import { comboFromEvent } from '@/lib/keybinds/combo'
+import { bindingsFor } from '@/store/keybinds'
 import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
@@ -338,7 +340,7 @@ export function ChatBar({
   // is parked on the user, so a steer can't reach the model — text queues.
   const canSteer = busy && !compacting && !blockingPrompt && !!onSteer && attachments.length === 0 && isSteerableText
 
-  // While busy: text redirects the live turn (Cursor-style stop-and-correct),
+  // While busy: text steers the live turn at its next safe boundary,
   // attachments queue for the next turn, an empty composer stops.
   const busyAction: 'steer' | 'queue' | 'stop' = canSteer
     ? 'steer'
@@ -818,9 +820,14 @@ export function ChatBar({
       return
     }
 
-    // Cmd/Ctrl+Enter queues a follow-up while a turn runs. Plain Enter steers
-    // a text-only draft, so both live-turn actions stay reachable by keyboard.
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
+    const combo = comboFromEvent(event.nativeEvent)
+    const matchesBusyQueue = busy && combo !== null && bindingsFor('composer.queue').includes(combo)
+    const matchesBusySteer = busy && combo !== null && bindingsFor('composer.steer').includes(combo)
+    const matchesBusyCancel = busy && combo !== null && bindingsFor('composer.cancel').includes(combo)
+
+    // Queue is a busy-only action; its key may be rebound without changing the
+    // idle composer keys.
+    if (matchesBusyQueue) {
       event.preventDefault()
 
       if (busy && !disabled) {
@@ -839,7 +846,11 @@ export function ChatBar({
       return
     }
 
-    if (event.key === 'Enter' && !event.shiftKey) {
+    const isIdleSend = !busy && event.key === 'Enter' && !event.shiftKey
+
+    // Idle Enter still sends. Busy Enter only steers when it is the bound
+    // steer combo — otherwise a rebound steer would keep aborting on Enter.
+    if (isIdleSend || matchesBusySteer) {
       event.preventDefault()
 
       // Decide from the DOM, not React state. `hasComposerPayload` is derived
@@ -884,8 +895,8 @@ export function ChatBar({
       return
     }
 
-    if (event.key === 'Escape') {
-      // Editing a queued turn → Esc cancels the edit, restoring the prior draft.
+    if (matchesBusyCancel) {
+      // The cancel binding also exits a queued edit, restoring the prior draft.
       if (queueEdit) {
         event.preventDefault()
         exitQueuedEdit('cancel')

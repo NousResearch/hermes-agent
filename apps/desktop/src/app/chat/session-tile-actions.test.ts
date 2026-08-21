@@ -99,21 +99,21 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID })
   })
 
-  it('resumes the stored session and retries once when session.redirect (steer) reports "session not found"', async () => {
+  it('resumes the stored session and retries once when session.steer reports "session not found"', async () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
-    let redirectAttempts = 0
+    let steerAttempts = 0
 
     requestGatewayMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
       calls.push({ method, params })
 
-      if (method === 'session.redirect') {
-        redirectAttempts += 1
+      if (method === 'session.steer') {
+        steerAttempts += 1
 
-        if (redirectAttempts === 1) {
+        if (steerAttempts === 1) {
           throw new Error('session not found')
         }
 
-        return { status: 'redirected' }
+        return { status: 'queued' }
       }
 
       if (method === 'session.resume') {
@@ -128,7 +128,7 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     const ok = await act(async () => result.current.steerPrompt('actually use Postgres'))
 
     expect(ok).toBe(true)
-    expect(calls.map(c => c.method)).toEqual(['session.redirect', 'session.resume', 'session.redirect'])
+    expect(calls.map(c => c.method)).toEqual(['session.steer', 'session.resume', 'session.steer'])
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'actually use Postgres' })
   })
 })

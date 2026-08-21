@@ -48,7 +48,8 @@ import type {
   HandoffRequestResponse,
   HandoffStateResponse,
   ImageAttachResponse,
-  SessionRedirectResponse
+  SessionRedirectResponse,
+  SessionSteerResponse
 } from '../../../types'
 
 import {
@@ -714,7 +715,7 @@ export function usePromptActions({
     }
   }, [activeSessionIdRef, busyRef, copy.stopFailed, requestGateway, selectedStoredSessionIdRef, updateSessionState])
 
-  // The desktop steering action is an immediate correction: the core cancels
+  // Redirect is an immediate correction: the core cancels
   // model generation and rebuilds the live turn with displayed reasoning and
   // completed work intact. During a tool it waits for the safe result boundary.
   // Returns false when the turn raced to completion so the composer can queue.
@@ -805,6 +806,46 @@ export function usePromptActions({
       return false
     },
     [activeSessionIdRef, appendSessionTextMessage, requestGateway, selectedStoredSessionIdRef, updateSessionState]
+  )
+
+  // Steering preserves the live turn and lets the gateway inject the note at
+  // its next tool-result boundary. A rejection means that boundary is gone,
+  // so the composer falls back to its normal queue path.
+  const steerPrompt = useCallback(
+    async (rawText: string): Promise<boolean> => {
+      const text = sanitizeComposerInput(rawText).trim()
+      const sessionId = activeSessionIdRef.current
+
+      if (!text || !sessionId) {
+        return false
+      }
+
+      try {
+        const { result } = await withSessionNotFoundResume(
+          sessionId,
+          selectedStoredSessionIdRef.current,
+          liveId => requestGateway<SessionSteerResponse>('session.steer', { session_id: liveId, text }),
+          {
+            requestGateway,
+            onRecovered: recoveredId => {
+              activeSessionIdRef.current = recoveredId
+              setActiveSessionId(recoveredId)
+            }
+          }
+        )
+
+        if (result?.status === 'queued') {
+          triggerHaptic('submit')
+
+          return true
+        }
+      } catch {
+        // Swallow — caller queues the text so nothing is lost.
+      }
+
+      return false
+    },
+    [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
   )
 
   // After a durable rewind the surviving bubbles' cached rowIds are stale (the
@@ -1138,8 +1179,7 @@ export function usePromptActions({
     reloadFromMessage,
     restoreToMessage,
     redirectPrompt,
-    /** @deprecated Use `redirectPrompt` — this is an active-turn redirect, not tool steer. */
-    steerPrompt: redirectPrompt,
+    steerPrompt,
     submitText,
     transcribeVoiceAudio
   }

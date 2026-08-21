@@ -14,7 +14,6 @@ import { useCallback, useMemo, useRef } from 'react'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import type { ClientSessionState } from '@/app/types'
 import { useI18n } from '@/i18n'
-import { textPart } from '@/lib/chat-messages'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { clearClarifyRequest } from '@/store/clarify'
@@ -33,7 +32,6 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { uploadComposerAttachment } from '../session/hooks/use-prompt-actions'
 import {
-  appendMidTurnUserMessage,
   applyBranchVisibility,
   applyReloadOptimistic,
   applyRewindOptimistic,
@@ -327,46 +325,11 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
         return false
       }
 
-      const messageId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-
-      const mutate = (updater: (state: ClientSessionState) => ClientSessionState) =>
-        sessionTileDelegate()?.updateSession(sessionId, updater)
-
-      // Match the primary composer: record the correction in arrival order —
-      // sealed already-streamed output above, correction below, post-redirect
-      // deltas below that — before awaiting the redirect RPC, whose completion
-      // can race us. The old insert-before-the-active-reply splice put the
-      // bubble above output the user had already read (#73793), and its
-      // last-assistant fallback could land it mid-thread when the stream id
-      // was missing or stale (#83151).
-      mutate(state =>
-        appendMidTurnUserMessage(state, {
-          id: messageId,
-          role: 'user' as const,
-          parts: [textPart(text)]
-        })
-      )
-
-      const discardOptimisticMessage = () =>
-        mutate(state => ({
-          ...state,
-          messages: state.messages.filter(message => message.id !== messageId)
-        }))
-
-      const moveOptimisticMessageToEnd = () =>
-        mutate(state => {
-          const message = state.messages.find(candidate => candidate.id === messageId)
-
-          return message
-            ? { ...state, messages: [...state.messages.filter(candidate => candidate.id !== messageId), message] }
-            : state
-        })
-
       try {
         const { result } = await withSessionNotFoundResume(
           sessionId,
           storedIdRef.current,
-          liveId => requestGateway<{ status?: string }>('session.redirect', { session_id: liveId, text }),
+          liveId => requestGateway<{ status?: 'queued' | 'rejected' }>('session.steer', { session_id: liveId, text }),
           {
             requestGateway,
             onRecovered: recoveredId => {
@@ -375,26 +338,16 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
           }
         )
 
-        if (result?.status === 'redirected') {
-          triggerHaptic('submit')
-
-          return true
-        }
-
         if (result?.status === 'queued') {
-          moveOptimisticMessageToEnd()
           triggerHaptic('submit')
 
           return true
         }
       } catch {
-        discardOptimisticMessage()
         // Swallow — the caller queues the text so nothing is lost.
 
         return false
       }
-
-      discardOptimisticMessage()
 
       return false
     },

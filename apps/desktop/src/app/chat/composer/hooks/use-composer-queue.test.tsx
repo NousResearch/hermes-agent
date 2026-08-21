@@ -140,7 +140,7 @@ describe('useComposerQueue park integration', () => {
     })
 
     expect(onSteer).toHaveBeenCalledWith('steer me')
-    // A redirect rides the live turn: no interrupt, no submit.
+    // A steer rides the live turn: no interrupt, no submit.
     expect(onCancel).not.toHaveBeenCalled()
     expect(onSubmit).not.toHaveBeenCalled()
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)

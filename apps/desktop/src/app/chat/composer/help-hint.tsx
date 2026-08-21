@@ -1,26 +1,35 @@
+import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
 import { KbdCombo } from '@/components/ui/kbd'
 import { useI18n } from '@/i18n'
+import { $bindings, bindingsFor } from '@/store/keybinds'
 
 import { COMPLETION_DRAWER_CLASS } from './completion-drawer'
 
 const COMMON_COMMAND_KEYS = ['/help', '/clear', '/resume', '/details', '/copy', '/quit']
 
 /** Stable ids → i18n `hotkeyDescs` keys. Combos resolve mod labels per OS. */
-const COMPOSER_HOTKEY_ROWS = [
+interface ComposerHotkeyRow {
+  id: string
+  combos: readonly string[]
+  actionId?: string
+}
+
+const COMPOSER_HOTKEY_ROWS: readonly ComposerHotkeyRow[] = [
   { id: 'composer.mention', combos: ['@'] },
   { id: 'composer.slash', combos: ['/'] },
   { id: 'composer.help', combos: ['?'] },
   { id: 'composer.sendNewline', combos: ['enter', 'shift+enter'] },
   { id: 'composer.sendQueued', combos: ['mod+shift+k'] },
   { id: 'keybinds.openPanel', combos: ['mod+/'] },
-  { id: 'composer.cancel', combos: ['escape'] },
+  { id: 'composer.cancel', actionId: 'composer.cancel', combos: [] },
   { id: 'composer.history', combos: ['up', 'down'] }
-] as const
+]
 
 export function HelpHint() {
   const { t } = useI18n()
+  const bindings = useStore($bindings)
   const c = t.composer
 
   return (
@@ -33,7 +42,11 @@ export function HelpHint() {
 
       <Section title={c.hotkeys}>
         {COMPOSER_HOTKEY_ROWS.map(row => (
-          <HotkeyRow combos={[...row.combos]} description={c.hotkeyDescs[row.id] ?? ''} key={row.id} />
+          <HotkeyRow
+            combos={row.actionId ? bindingsFor(row.actionId, bindings) : [...row.combos]}
+            description={c.hotkeyDescs[row.id] ?? ''}
+            key={row.id}
+          />
         ))}
       </Section>
 

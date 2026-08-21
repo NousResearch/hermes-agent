@@ -1,7 +1,9 @@
 import { useEffect, useRef } from 'react'
 
 import { triggerHaptic } from '@/lib/haptics'
+import { comboFromEvent } from '@/lib/keybinds/combo'
 import { composerFocusBlockedBySurface } from '@/lib/keybinds/composer-focus-keys'
+import { bindingsFor } from '@/store/keybinds'
 
 import { type ComposerTarget, getActiveComposer } from '../focus'
 
@@ -32,7 +34,15 @@ export function useComposerEscCancel({ awaitingInput, busy, onCancel, target }: 
     // `awaitingInput`: the turn is parked on a clarify / approval / sudo / secret
     // prompt, which owns Esc (or is meant to persist) — never cancel the stream
     // out from under it.
-    if (event.key !== 'Escape' || event.defaultPrevented || !busy || awaitingInput) {
+    const combo = comboFromEvent(event)
+
+    if (
+      event.defaultPrevented ||
+      !busy ||
+      awaitingInput ||
+      combo === null ||
+      !bindingsFor('composer.cancel').includes(combo)
+    ) {
       return
     }
 

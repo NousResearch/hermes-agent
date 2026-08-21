@@ -24,6 +24,12 @@ export interface KeybindActionMeta {
   category: KeybindCategory
   /** Default combos. Empty = shipped unbound (user can assign one). */
   defaults: readonly string[]
+  /**
+   * This action is handled by its focused surface, rather than the global
+   * dispatcher. It remains rebindable and visible in Settings, but cannot
+   * claim a combo from context-sensitive actions such as `composer.focus`.
+   */
+  ownedBy?: 'composer'
   /** Display label for CONTRIBUTED actions (built-ins use i18n). */
   label?: string
 }
@@ -56,6 +62,11 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ── Composer ─────────────────────────────────────────────────────────────
   // Soft `/` / Enter focus (gated); other printables type-to-focus unbound.
   { id: 'composer.focus', category: 'composer', defaults: ['/', 'enter'] },
+  // Busy-composer actions are handled by the focused rich editor. They stay
+  // out of the global combo index so idle Enter can still focus/send.
+  { id: 'composer.steer', category: 'composer', defaults: ['enter'], ownedBy: 'composer' },
+  { id: 'composer.queue', category: 'composer', defaults: ['mod+enter'], ownedBy: 'composer' },
+  { id: 'composer.cancel', category: 'composer', defaults: ['escape'], ownedBy: 'composer' },
   // ⌘⇧M — "m" for model; the convention chat apps converged on (LibreChat,
   // Open WebUI, and Cherry Studio all ship the same chord). Opens the pill's
   // live dropdown on the pane under the pointer, else the active composer.
@@ -248,14 +259,11 @@ export interface KeybindReadonly {
 export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   { id: 'composer.send', category: 'composer', keys: ['enter'] },
   { id: 'composer.newline', category: 'composer', keys: ['shift+enter'] },
-  { id: 'composer.steer', category: 'composer', keys: ['enter'] },
-  { id: 'composer.queue', category: 'composer', keys: ['mod+enter'] },
   { id: 'composer.sendQueued', category: 'composer', keys: ['mod+shift+k'] },
   { id: 'composer.mention', category: 'composer', keys: ['@'] },
   { id: 'composer.slash', category: 'composer', keys: ['/'] },
   { id: 'composer.help', category: 'composer', keys: ['?'] },
   { id: 'composer.history', category: 'composer', keys: ['up', 'down'] },
-  { id: 'composer.cancel', category: 'composer', keys: ['escape'] },
   // Fixed, context-local shortcuts surfaced for discoverability.
   { id: 'view.terminalSelection', category: 'view', keys: ['mod+l'] },
   // Terminal clipboard. ⌘C/⌘V on macOS, Ctrl+Shift+C/V elsewhere — matching VS

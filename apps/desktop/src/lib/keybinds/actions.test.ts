@@ -31,3 +31,16 @@ describe('session.archive keybind action', () => {
     expect(matches).toHaveLength(1)
   })
 })
+
+describe('busy composer keybind actions', () => {
+  it.each([
+    ['composer.steer', ['enter']],
+    ['composer.queue', ['mod+enter']],
+    ['composer.cancel', ['escape']]
+  ])('ships %s as a rebindable composer-owned action', (id, defaults) => {
+    const action = keybindAction(id)
+
+    expect(action?.defaults).toEqual(defaults)
+    expect(action?.ownedBy).toBe('composer')
+  })
+})

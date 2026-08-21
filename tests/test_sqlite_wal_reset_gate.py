@@ -28,8 +28,23 @@ from hermes_state import (
 @pytest.fixture(autouse=True)
 def _reset_wal_reset_bug_warnings():
     hermes_state._wal_reset_bug_warned_paths.clear()
+    hermes_state._wal_probe_eio_warned_paths.clear()
     yield
     hermes_state._wal_reset_bug_warned_paths.clear()
+    hermes_state._wal_probe_eio_warned_paths.clear()
+
+
+def _open_with_journal_mode_eio(path, statements: list[str]) -> sqlite3.Connection:
+    class _JournalModeEIOConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+            if "journal_mode" in sql.lower():
+                statements.append(sql)
+                raise sqlite3.OperationalError("disk I/O error")
+            return super().execute(sql, *args, **kwargs)
+
+    return sqlite3.connect(
+        str(path), factory=_JournalModeEIOConnection, isolation_level=None
+    )
 
 
 class TestIsSqliteWalResetVulnerable:
@@ -104,7 +119,122 @@ class TestApplyWalWalResetGate:
         finally:
             conn.close()
 
+    def test_probe_eio_leaves_mode_unknown_when_vulnerable(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        monkeypatch.setattr(
+            hermes_state,
+            "is_sqlite_wal_reset_vulnerable",
+            lambda version_info=None: True,
+        )
+        statements: list[str] = []
+        conn = _open_with_journal_mode_eio(tmp_path / "probe_eio.db", statements)
+        try:
+            with caplog.at_level("WARNING", logger="hermes_state"):
+                mode = apply_wal_with_fallback(conn, db_label="probe_eio.db")
+            assert mode == "unknown"
+            assert statements == ["PRAGMA journal_mode"] * 4
+            messages = [record.getMessage() for record in caplog.records]
+            assert any("journal mode unchanged" in message for message in messages)
+            wal_reset_messages = [
+                message for message in messages if "WAL-reset" in message
+            ]
+            assert len(wal_reset_messages) == 1
+            assert "filesystem I/O failure" in wal_reset_messages[0]
+        finally:
+            conn.close()
 
+    def test_probe_eio_rejects_required_wal_when_vulnerable(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            hermes_state,
+            "is_sqlite_wal_reset_vulnerable",
+            lambda version_info=None: True,
+        )
+        statements: list[str] = []
+        conn = _open_with_journal_mode_eio(
+            tmp_path / "probe_eio_required.db", statements
+        )
+        try:
+            with pytest.raises(
+                hermes_state.WalUnsupportedError, match="could not verify"
+            ):
+                apply_wal_with_fallback(conn, require_wal=True)
+            assert statements == ["PRAGMA journal_mode"] * 4
+        finally:
+            conn.close()
+
+    def test_non_wal_mode_rejects_required_wal_when_vulnerable(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            hermes_state,
+            "is_sqlite_wal_reset_vulnerable",
+            lambda version_info=None: True,
+        )
+        conn = sqlite3.connect(str(tmp_path / "required_wal.db"))
+        try:
+            with pytest.raises(hermes_state.WalUnsupportedError, match="WAL-reset"):
+                apply_wal_with_fallback(conn, require_wal=True)
+        finally:
+            conn.close()
+
+    def test_probe_eio_rejects_configured_delete_when_vulnerable(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            hermes_state,
+            "is_sqlite_wal_reset_vulnerable",
+            lambda version_info=None: True,
+        )
+        monkeypatch.setattr(hermes_state, "resolve_journal_mode", lambda: "delete")
+        statements: list[str] = []
+        conn = _open_with_journal_mode_eio(
+            tmp_path / "probe_eio_delete.db", statements
+        )
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="refusing to downgrade"):
+                apply_wal_with_fallback(conn)
+            assert statements == ["PRAGMA journal_mode"] * 4
+        finally:
+            conn.close()
+
+    def test_probe_eio_preserves_macos_durability_when_vulnerable(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            hermes_state,
+            "is_sqlite_wal_reset_vulnerable",
+            lambda version_info=None: True,
+        )
+        monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
+        executed: list[str] = []
+
+        class _DarwinJournalModeEIOConnection(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+                executed.append(sql)
+                if "journal_mode" in sql.lower():
+                    raise sqlite3.OperationalError("disk I/O error")
+                return super().execute(sql, *args, **kwargs)
+
+        conn = sqlite3.connect(
+            str(tmp_path / "darwin_probe_eio.db"),
+            factory=_DarwinJournalModeEIOConnection,
+            isolation_level=None,
+        )
+        try:
+            assert apply_wal_with_fallback(conn) == "unknown"
+            assert executed == [
+                "PRAGMA journal_mode",
+                "PRAGMA journal_mode",
+                "PRAGMA journal_mode",
+                "PRAGMA journal_mode",
+                "PRAGMA checkpoint_fullfsync=1",
+                "PRAGMA synchronous=FULL",
+            ]
+        finally:
+            conn.close()
 
     def test_warning_deduped_per_label(self, tmp_path, monkeypatch, caplog):
         monkeypatch.setattr(
@@ -239,7 +369,7 @@ class TestNoDowngradeUnderConcurrentOpeners:
                     conn.execute("PRAGMA journal_mode").fetchone()
                 with caplog.at_level("WARNING", logger="hermes_state"):
                     mode = apply_wal_with_fallback(conn, db_label="locked_wal.db")
-                assert mode == "wal"
+                assert mode == "unknown"
                 assert any(
                     "concurrent openers" in r.getMessage() for r in caplog.records
                 )

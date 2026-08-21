@@ -45,6 +45,19 @@ def _make_blocking_factory(reason: str, attempt_counter: list):
     return _WalBlockingConnection
 
 
+def _make_probe_eio_factory(statements: list[str]):
+    """Return a connection subclass whose journal-mode statements raise EIO."""
+
+    class _JournalModeProbeEIOConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+            if "journal_mode" in sql.lower():
+                statements.append(sql)
+                raise sqlite3.OperationalError("disk I/O error")
+            return super().execute(sql, *args, **kwargs)
+
+    return _JournalModeProbeEIOConnection
+
+
 def _open_blocking(path, reason="locking protocol", **kwargs):
     """Open a connection whose WAL pragma raises ``reason``.
 
@@ -89,8 +102,10 @@ def _reset_last_init_error():
 def _reset_wal_fallback_warned_paths():
     """Reset the WAL-fallback warned-paths set so dedup doesn't leak between tests."""
     hermes_state._wal_fallback_warned_paths.clear()
+    hermes_state._wal_probe_eio_warned_paths.clear()
     yield
     hermes_state._wal_fallback_warned_paths.clear()
+    hermes_state._wal_probe_eio_warned_paths.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -268,6 +283,100 @@ class TestApplyWalWithFallback:
         finally:
             check.close()
 
+    def test_indeterminate_probe_preserves_macos_durability(
+        self, tmp_path, monkeypatch
+    ):
+        """Unknown mode still applies settings required by a possible live WAL."""
+        target = tmp_path / "darwin-wal.db"
+        seed = sqlite3.connect(str(target), isolation_level=None)
+        try:
+            assert seed.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+            seed.execute("CREATE TABLE t (value TEXT)")
+        finally:
+            seed.close()
+
+        executed: list[str] = []
+
+        class _DarwinProbeEIOConnection(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+                executed.append(sql)
+                if "journal_mode" in sql.lower():
+                    raise sqlite3.OperationalError("disk I/O error")
+                return super().execute(sql, *args, **kwargs)
+
+        monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
+        conn = sqlite3.connect(
+            str(target),
+            factory=_DarwinProbeEIOConnection,
+            isolation_level=None,
+        )
+        try:
+            assert apply_wal_with_fallback(conn) == "unknown"
+            assert executed == [
+                "PRAGMA journal_mode",
+                "PRAGMA journal_mode",
+                "PRAGMA journal_mode",
+                "PRAGMA journal_mode",
+                "PRAGMA checkpoint_fullfsync=1",
+                "PRAGMA synchronous=FULL",
+            ]
+        finally:
+            conn.close()
+
+    def test_indeterminate_probe_warning_is_deduplicated(self, tmp_path, caplog):
+        """Repeated healthy opens emit one warning for the degraded read path."""
+        target = tmp_path / "probe-eio.db"
+        seed = sqlite3.connect(str(target))
+        seed.execute("CREATE TABLE t (value TEXT)")
+        seed.close()
+
+        with caplog.at_level("WARNING", logger="hermes_state"):
+            for _ in range(2):
+                statements: list[str] = []
+                conn = sqlite3.connect(
+                    str(target),
+                    factory=_make_probe_eio_factory(statements),
+                    isolation_level=None,
+                )
+                try:
+                    assert (
+                        apply_wal_with_fallback(conn, db_label="state.db") == "unknown"
+                    )
+                    assert statements == ["PRAGMA journal_mode"] * 4
+                finally:
+                    conn.close()
+
+        warnings = [
+            record
+            for record in caplog.records
+            if record.levelname == "WARNING" and "state.db" in record.getMessage()
+        ]
+        assert len(warnings) == 1
+        message = warnings[0].getMessage()
+        assert "disk I/O error" in message
+        assert "journal mode unchanged" in message
+        assert "WAL-only optimizations disabled" in message
+
+    def test_probe_eio_rejects_configured_delete_with_cause(
+        self, tmp_path, monkeypatch
+    ):
+        """Explicit DELETE remains strict and reports why mode is unknown."""
+        monkeypatch.setattr(hermes_state, "resolve_journal_mode", lambda: "delete")
+        statements: list[str] = []
+        conn = sqlite3.connect(
+            str(tmp_path / "probe-eio-delete.db"),
+            factory=_make_probe_eio_factory(statements),
+            isolation_level=None,
+        )
+        try:
+            with pytest.raises(sqlite3.OperationalError) as raised:
+                apply_wal_with_fallback(conn)
+            assert "refusing to downgrade" in str(raised.value)
+            assert "disk I/O error" in str(raised.value)
+            assert statements == ["PRAGMA journal_mode"] * 4
+        finally:
+            conn.close()
+
     def test_does_not_downgrade_when_disk_says_wal(self, tmp_path):
         """Refuse to downgrade an already-WAL DB even if the set-pragma path
         would have raised a downgrade-eligible marker.
@@ -414,6 +523,26 @@ class TestRequireWal:
         finally:
             conn.close()
 
+    def test_raises_when_journal_mode_probe_is_indeterminate(self, tmp_path):
+        """A caller requiring WAL must not accept an unverified journal mode."""
+        target = tmp_path / "indeterminate.db"
+        seed = sqlite3.connect(str(target))
+        seed.execute("CREATE TABLE t (value TEXT)")
+        seed.close()
+
+        statements: list[str] = []
+        conn = sqlite3.connect(
+            str(target),
+            factory=_make_probe_eio_factory(statements),
+            isolation_level=None,
+        )
+        try:
+            with pytest.raises(WalUnsupportedError, match="could not verify"):
+                apply_wal_with_fallback(conn, require_wal=True)
+            assert statements == ["PRAGMA journal_mode"] * 4
+        finally:
+            conn.close()
+
     def test_error_is_operationalerror_subclass(self, tmp_path):
         """WalUnsupportedError must stay catchable as sqlite3.OperationalError
         so existing DB-init handlers (e.g. SessionDB.__init__) still catch it."""
@@ -486,6 +615,41 @@ class TestFormatSessionDbUnavailable:
 
 
 class TestSessionDbUsesWalFallback:
+    def test_sessiondb_survives_persistent_journal_mode_probe_eio(self, tmp_path):
+        """A healthy persisted WAL DB remains usable after probe EIO retries."""
+        target = tmp_path / "live-wal.db"
+        seed = sqlite3.connect(str(target), isolation_level=None)
+        try:
+            assert seed.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+            seed.execute("CREATE TABLE incident_probe (value TEXT NOT NULL)")
+            seed.execute("INSERT INTO incident_probe VALUES ('healthy')")
+        finally:
+            seed.close()
+
+        real_connect = sqlite3.connect
+        statements: list[str] = []
+        factory = _make_probe_eio_factory(statements)
+
+        def gated_connect(*args, **kwargs):
+            kwargs.pop("factory", None)
+            return real_connect(str(target), factory=factory, **kwargs)
+
+        with patch("hermes_state.sqlite3.connect", side_effect=gated_connect):
+            db = SessionDB(db_path=target)
+
+        try:
+            assert db._wal_active is False
+            assert (
+                db._conn.execute("SELECT value FROM incident_probe").fetchone()[0]
+                == "healthy"
+            )
+            db.create_session(session_id="eio-session", source="dashboard")
+            assert db.get_session("eio-session")["source"] == "dashboard"
+            assert get_last_init_error() is None
+            assert statements == ["PRAGMA journal_mode"] * 4
+        finally:
+            db.close()
+
     def test_sessiondb_works_when_wal_unavailable(self, tmp_path):
         """E2E: SessionDB initializes and performs a write on a WAL-blocked FS."""
         target = tmp_path / "nfs_style.db"

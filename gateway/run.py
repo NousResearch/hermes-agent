@@ -24749,7 +24749,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # what they said: ...") read as a meta-instruction and made
                     # the LLM volunteer commentary about voice mode rather than
                     # reply to the content.
-                    enriched_parts.append(f'"{transcript}"')
+                    #
+                    # The PATH is appended after it, because `content` is the
+                    # only record of where the audio lives — the messages table
+                    # has no media column, and consumers recover attachments by
+                    # parsing these markers back out of the text. Dropping it
+                    # here made a SUCCESSFUL transcription the one outcome that
+                    # loses the recording: every failure branch below keeps the
+                    # path, so the better STT got, the more audio became
+                    # unreachable.
+                    #
+                    # The wording is `_build_media_placeholder`'s existing
+                    # audio grammar, NOT the "[The user sent a voice message:
+                    # ...]" prose the stt-disabled branch emits. Consumers
+                    # already parse the former; a consumer matching on media
+                    # markers does not match the prose, so reusing it would
+                    # keep the path visible to the model while leaving the
+                    # attachment just as unrecoverable.
+                    from tools.credential_files import to_agent_visible_cache_path
+
+                    agent_path = to_agent_visible_cache_path(os.path.abspath(path))
+                    enriched_parts.append(
+                        f'"{transcript}"\n'
+                        f"[User sent audio: {agent_path}]"
+                    )
                 else:
                     error = result.get("error", "unknown error")
                     # All failure branches: a single, minimal, neutral marker.

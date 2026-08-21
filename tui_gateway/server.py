@@ -1559,6 +1559,22 @@ def _profile_scoped(handler):
     return wrapper
 
 
+@contextlib.contextmanager
+def _session_config_scope(session: dict | None):
+    """Bind config read/write helpers to the session's profile home."""
+    profile_home = (
+        session.get("profile_home") if isinstance(session, dict) else None
+    )
+    if not profile_home:
+        yield
+        return
+    token = set_hermes_home_override(profile_home)
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
+
+
 # Placeholder ``terminal.cwd`` values that don't name a real directory — the
 # gateway resolves these to the home dir at runtime, so they must NOT be treated
 # as an explicit workspace (mirrors gateway/run.py's config bridge).
@@ -3382,7 +3398,9 @@ def _save_cfg(cfg: dict):
 
     from utils import atomic_roundtrip_yaml_save
 
-    path = _hermes_home / "config.yaml"
+    override = get_hermes_home_override()
+    home = Path(override) if isinstance(override, str) and override else _hermes_home
+    path = home / "config.yaml"
     # Comment-, ordering-, and Unicode-preserving full-state write.
     # Replaces the previous `yaml.safe_dump(cfg, f)` (and later
     # `atomic_config_write`, which is not comment-preserving) which clobbered
@@ -11935,8 +11953,13 @@ def _respond(rid, params, key, *, allow_expired=False):
 # in a follow-up once that PR lands.
 @method("config.set")
 def _(rid, params: dict) -> dict:
-    key, value = params.get("key", ""), params.get("value", "")
     session = _sessions.get(params.get("session_id", ""))
+    with _session_config_scope(session):
+        return _config_set(rid, params, session)
+
+
+def _config_set(rid, params: dict, session: dict | None = None) -> dict:
+    key, value = params.get("key", ""), params.get("value", "")
 
     if key == "model":
         try:
@@ -12580,7 +12603,11 @@ def _(rid, params: dict) -> dict:
         if not os.path.isdir(cwd):
             return _err(rid, 4002, f"working directory does not exist: {raw}")
         _write_config_key("terminal.cwd", cwd)
-        os.environ["TERMINAL_CWD"] = cwd
+        # In app-global desktop mode, TERMINAL_CWD belongs to the launch
+        # process. Profile-bound sessions persist their cwd through that
+        # profile's config.yaml and must not leak it into other profiles.
+        if not (isinstance(session, dict) and session.get("profile_home")):
+            os.environ["TERMINAL_CWD"] = cwd
         return _ok(
             rid,
             {"key": "terminal.cwd", "value": cwd, "cwd": cwd, "branch": _git_branch_for_cwd(cwd)},

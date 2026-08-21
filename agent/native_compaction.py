@@ -207,10 +207,11 @@ def _approx_tokens(text: str) -> int:
 
 
 def _extract_item_text(item: Any) -> Optional[str]:
-    """Extract measurable text from string, list content, output_text, or nested metadata text.
+    """Extract measurable text from message content and fallback fields.
 
-    Returns None when the item carries no measurable text.
-    Handles string content, multipart lists (input_text/text/output_text), and fallback keys.
+    Returns None when the item carries no measurable text. Handles string
+    content, multipart lists (input_text/text/output_text), and nested
+    metadata text.
     """
     if not isinstance(item, dict):
         return None
@@ -240,6 +241,30 @@ def _extract_item_text(item: Any) -> Optional[str]:
         return text if text.strip() else None
 
     return None
+
+
+def _has_retainable_image_content(item: Any) -> bool:
+    """Return True for a converted Responses message with a valid image part.
+
+    The pruning boundary receives normalized Responses items, so only the
+    adapter-owned ``input_image`` shape is authority here. Unknown, malformed,
+    or empty multipart placeholders must not become durable history merely
+    because their list is non-empty.
+    """
+    if not isinstance(item, dict):
+        return False
+    content = item.get("content")
+    if not isinstance(content, list):
+        return False
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if str(part.get("type") or "").strip().lower() != "input_image":
+            continue
+        image_url = part.get("image_url")
+        if isinstance(image_url, str) and image_url.strip():
+            return True
+    return False
 
 
 def _is_summary_item(item: Any) -> bool:
@@ -286,7 +311,8 @@ def prune_pre_checkpoint_items(
     - Retained user messages are kept verbatim within
       ``retained_user_token_budget``; the boundary message is head-truncated
       when it only partially fits (string content only) — goals are usually
-      stated up front, so the head is the valuable end.
+      stated up front, so the head is the valuable end. A recognized
+      image-only user message is retained whole at one-token cost.
     - Compression summary messages (``_is_summary_item``, the canonical
       ``agent.context_compressor`` provenance check) are retained whole
       within ``retained_summary_token_budget``. A summary is never
@@ -397,14 +423,11 @@ def prune_pre_checkpoint_items(
             continue
 
         text = _extract_item_text(item)
+        has_retainable_image = is_user and _has_retainable_image_content(item)
+        if text is None and not has_retainable_image:
+            continue
         if text is None:
-            continue
-        # Image-only user messages have empty text but non-empty content —
-        # main retains them at 1-token cost (images count as zero, matching
-        # Codex's retention accounting). Don't skip them just because text
-        # is falsy.
-        if not text and not is_user:
-            continue
+            text = ""
 
         if is_summary:
             result = _try_retain_summary(text)

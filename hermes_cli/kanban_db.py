@@ -3183,6 +3183,8 @@ def create_task(
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    workflow_template_id: Optional[str] = None,
+    current_step_key: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -3222,6 +3224,15 @@ def create_task(
     in its own projects.db, a matching canonical project-linked task in this
     board can supply the repo and branch convention. Its literal worktree is
     never reused; the new task still gets its own task-id-keyed path.
+
+    ``workflow_template_id`` / ``current_step_key`` record template-routing
+    metadata on the task (informational in v1). They back the
+    ``hermes kanban workflow <template> <card-ref>`` command and the
+    ``--workflow-template-id`` / ``--step-key`` list filters; gating is
+    carried by parent links + a sticky ``block_task(kind='needs_input')``
+    on approval-gated steps. Both columns exist in the schema
+    (``workflow_template_id TEXT``, ``current_step_key TEXT``); passing
+    ``None`` leaves them unset.
     """
     model_override = (model_override or "").strip() or None
     provider_override = (provider_override or "").strip() or None
@@ -3497,8 +3508,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id,
+                        workflow_template_id, current_step_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3524,6 +3536,8 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        (workflow_template_id or "").strip() or None,
+                        (current_step_key or "").strip() or None,
                     ),
                 )
                 for pid in parents:
@@ -10115,7 +10129,20 @@ def _dispatch_once_locked(
         if ready_budget is not None and spawned >= ready_budget:
             break
         row_assignee = row["assignee"]
-        if not row_assignee:
+        # Treat the literal string "default" as effectively-unassigned for the
+        # rewrite: ``profile_exists("default")`` is hardcoded to True in
+        # hermes_cli/profiles.py (no real ``profiles/default/`` directory is
+        # ever created), so a task created with ``assignee='default'`` would
+        # otherwise fall through to ``_default_spawn`` -> ``hermes -p default``
+        # -> root config, burning whatever ``model.default`` / fallback the
+        # root config holds (fleet routing directive 2026-08-10: that has
+        # already drifted to grok-build-0.1 -> deepseek-v4-flash). Cron task
+        # creators (auto-decomposer, automation-discovery, scout, workflow:*)
+        # intentionally emit ``assignee='default'`` for "no human lane" work,
+        # and that work belongs on the fleet profile (calcifer / MiniMax-M3).
+        # The ``kanban.default_assignee`` rewrite below is the single
+        # honour-the-config path; widening the predicate here makes it fire.
+        if not row_assignee or row_assignee.strip() == "default":
             # Honour kanban.default_assignee: when the dispatcher hits an
             # unassigned ready task and an operator-configured fallback
             # exists, persist the assignment and proceed. This removes the
@@ -10135,7 +10162,7 @@ def _dispatch_once_locked(
                         with write_txn(conn):
                             conn.execute(
                                 "UPDATE tasks SET assignee = ? WHERE id = ? "
-                                "AND (assignee IS NULL OR assignee = '')",
+                                "AND (assignee IS NULL OR assignee = '' OR assignee = 'default')",
                                 (_default_assignee, row["id"]),
                             )
                             _append_event(

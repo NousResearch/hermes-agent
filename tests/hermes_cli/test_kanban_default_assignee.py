@@ -79,7 +79,41 @@ def test_unassigned_task_auto_assigned_with_default_assignee(isolated_kanban_hom
 def test_explicitly_assigned_task_untouched_by_default_assignee(isolated_kanban_home):
     """A task with an explicit assignee must NOT be touched by the
     default_assignee logic — that fallback only applies to genuinely
-    unassigned rows."""
+    unassigned rows OR to the literal string ``'default'``, which is
+    hardcoded to ``profile_exists=True`` in hermes_cli/profiles.py even
+    though no ``profiles/default/`` directory exists (fleet routing
+    directive 2026-08-10). The cron task creators
+    (auto-decomposer/automation-discovery/scout/workflow:*) emit
+    ``assignee='default'`` for "no human lane" work; without this
+    widening that work burns the root config's model.default /
+    fallback quota. A real explicit lane like ``alpha`` must still
+    NOT be rewritten."""
+    kb, _home = isolated_kanban_home
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        task_id = kb.create_task(conn, title="t1", assignee="alpha")
+    with kb.connect_closing() as conn:
+        res = kb.dispatch_once(
+            conn, spawn_fn=_fake_spawn, dry_run=False,
+            default_assignee="someother",
+        )
+    assert task_id not in res.auto_assigned_default
+    assert not any(s[0] == task_id and s[1] == "someother" for s in res.spawned)
+
+
+def test_default_assignee_string_rewritten_to_configured_profile(isolated_kanban_home):
+    """Fleet routing directive 2026-08-10: a task created with
+    ``assignee='default'`` is treated as "unassigned for routing purposes"
+    because no ``profiles/default/`` directory is ever created (only
+    ``profile_exists`` returning True prevents the dispatcher from
+    bucketing it as nonspawnable). With ``kanban.default_assignee`` set,
+    the dispatcher rewrites the assignee and spawns on the configured
+    profile. This is the regression test for the cron-creator leak.
+
+    Uses ``default_assignee='default'`` (which ``profile_exists`` always
+    treats as resolved) because in the isolated test env there are no
+    real profile directories; the production case is the calcifer profile
+    which exists at ``~/.hermes/profiles/calcifer/``."""
     kb, _home = isolated_kanban_home
     with kb.connect_closing() as conn:
         kb.create_board(slug="default", name="Test")
@@ -87,9 +121,23 @@ def test_explicitly_assigned_task_untouched_by_default_assignee(isolated_kanban_
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
             conn, spawn_fn=_fake_spawn, dry_run=False,
-            default_assignee="someother",
+            default_assignee="default",
         )
-    assert task_id not in res.auto_assigned_default
+    assert task_id in res.auto_assigned_default
     assert any(s[0] == task_id and s[1] == "default" for s in res.spawned)
+
+    with kb.connect_closing() as conn:
+        row = conn.execute("SELECT assignee FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    assert row["assignee"] == "default"
+
+    with kb.connect_closing() as conn:
+        evs = list(conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id = ? AND kind = 'assigned'",
+            (task_id,),
+        ))
+    assert len(evs) == 1
+    payload = json.loads(evs[0][1])
+    assert payload["assignee"] == "default"
+    assert payload["source"] == "kanban.default_assignee"
 
 

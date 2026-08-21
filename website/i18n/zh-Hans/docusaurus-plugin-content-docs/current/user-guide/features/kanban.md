@@ -816,7 +816,77 @@ hermes kanban runs t_abcd
 
 ### 向前兼容性
 
-`tasks` 上的两个可空列为 v2 工作流路由保留：`workflow_template_id`（此任务属于哪个模板）和 `current_step_key`（该模板中哪个步骤处于活动状态）。v1 内核忽略它们用于路由，但允许客户端写入它们，因此 v2 版本可以添加路由机制而无需另一次 schema 迁移。
+`tasks` 上的两个可空列为工作流路由保留：`workflow_template_id`（此任务属于哪个模板）和 `current_step_key`（该模板中哪个步骤处于活动状态）。它们由 `hermes kanban create --workflow-template-id <id> --step-key <key>` 写入，由 `hermes kanban list --workflow-template-id <id>` 用于过滤。v1 内核不基于它们进行调度 —— 门控来自父任务链接和 ship 卡的粘性阻塞（参见 [工作流模板](#工作流模板)）—— 但它们可以清晰地标识链成员，便于工具和仪表盘使用。
+
+## 工作流模板
+
+工作流模板将多步骤修复链编码化（一个 scout issue 卡片 → recon → reproduce+patch → regression test → approval-gated ship）。模板规范是单一事实来源：`hermes_cli/kanban_templates/<template-id>.md` 是一个带有 YAML frontmatter（机器契约）的 markdown 文件，后跟散文（人类原理）。实现者解析 frontmatter；规范散文记录契约。
+
+### 命令
+
+```
+hermes kanban workflow list
+hermes kanban workflow show <template>
+hermes kanban workflow <template> <card-ref> [--dry-run] [--force] \
+    [--assignee KEY=PROFILE]... [--json]
+```
+
+* `list` — 枚举磁盘上的每个模板。
+* `show <template>` — 打印解析后的契约（frontmatter + 步骤）。
+* `<template> <card-ref> <flags>` — 针对源卡片实例化模板。`<card-ref>` 是任务 id（`t_…`）或 VULN-id（`VULN-XX-NNN`）。
+
+### 标志
+
+* `--dry-run` — 完整验证 + 负责人解析 + 计划渲染，但不写入。成功退出 0，验证失败退出 2。
+* `--force` — 找到现有链时绕过预检停止。**不是**门控绕过：ship 卡仍然以粘性阻塞方式创建。
+* `--assignee KEY=PROFILE`（可重复）— 覆盖单个步骤的解析负责人。在创建任何卡片之前，会针对 `hermes profile list` + 板上曾出现过的每个负责人验证该配置文件。
+* `--json` — 机器可读输出。
+
+### 内置：`sec-vuln-remediation`
+
+规范的 SEC 漏洞修复模板。接受一个 SEC 严重程度标记的 scout issue 卡片并实例化 4 步链：
+
+| # | 步骤 | 门控 | 负责人（回退） |
+|---|---|---|---|
+| 1 | `corpus-recon` — corpus-first 侦察，无代码 | auto | `default` |
+| 2 | `repro-patch` — 重现 + 最小修复 | auto | `calcifer`（`default`） |
+| 3 | `regression-test` — red-green 测试 | auto | `default` |
+| 4 | `ship-pr` — 针对 `origin/main` 开 PR | **approval** | `calcifer`（`default`） |
+
+**输入契约。** 引用的卡片必须满足所有条件：
+
+* **Scout-issue 谓词。** `created_by='scout'`，或 `idempotency_key` 以 `scout:` 开头，或标题以 `[gh]` 开头。
+* **SEC 严重程度标记谓词。** 标题中（不区分大小写）或正文中任何位置有 `[SEC]`，并且有可解析的严重程度（标题中 `[SEC][<SEVERITY>]` 或正文中 `severity <SEVERITY>`）。有效的严重程度：`CRITICAL`、`HIGH`、`MEDIUM`、`LOW`。
+* **必需字段：** `vuln_id`、`severity`、`component`、`body`、`evidence_links`（≥1 项）、`source_card_id`。
+
+非 scout、非 SEC 或缺少字段的卡片以退出码 2 拒绝，并显示字段级错误消息 —— 不创建任何卡片。
+
+### Ship 卡和审批门
+
+Ship 卡**从创建时就停在审批门**。步骤 1–3 在其父任务为 `done` 时自动运行。步骤 4 被粘性阻塞（`block_kind=needs_input`），在你明确批准之前无法调度：
+
+```
+hermes kanban unblock <ship-card-id>
+```
+
+批准仅授权：针对 `origin/main` 开一个限定范围的 PR 并提供证据（卡正文中的门控 1–4）。**链中任何地方都禁止自动合并和自动部署** —— 这些仍然是工作流之外的 Sab 操作。
+
+### 硬性禁令（贯穿整个链）
+
+* 禁止自动合并 —— 任何步骤中的 worker 都不能调用 `gh pr merge`，也不能在其导致的合并状态下完成链。
+* 禁止自动部署 —— 任何步骤都不能作为链的一部分触发部署（Kamal/CF 推送、部署钩子、重启实时服务）。其修复包括部署的漏洞会获得单独的 `[Sab action]` 部署卡（门控 G2）。
+
+### 幂等性和重新运行
+
+* 每个子任务携带 `idempotency_key = sec-vuln-remediation:<VULN_ID>:<STEP_KEY>`（`create_task` 去重返回现有 id 而不是重复创建）。
+* 在任何创建之前，命令会对源卡设置了 `workflow_template_id` 的子任务进行预检 —— 如果存在任何子任务，命令会打印 `chain already exists: <ids>` 并以 0 退出（使用 `--force` 绕过；仍然不是门控绕过）。
+* 针对现有链的重新运行是无操作：卡片永远不会被重写。部分链（某些步骤存在，某些缺失）通过使用 `--force` 重新运行来填充。
+
+### 退出码
+
+* `0` — 链已创建、对现有链无操作或 dry-run 成功。
+* `2` — 用法/验证（未知模板、未知卡片、非 scout issue、非 SEC 标记、缺少严重程度/字段、未知负责人、错误标志）。错误文本枚举失败。未创建任何卡片。
+* `1` — 运行时/数据库失败。创建发生在一个事务中，因此不可能部分写入。
 
 ## 事件参考
 

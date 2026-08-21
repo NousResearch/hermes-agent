@@ -76,6 +76,32 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
             assert kb.get_task(conn, tid).status == "blocked"
 
 
+def test_initially_blocked_task_is_not_auto_promoted(kanban_home: Path) -> None:
+    """An intake-created hold is deliberate, just like ``kanban_block``.
+
+    ``create_task(initial_status="blocked")`` records only a ``created`` event,
+    so the sticky guard must consult that event instead of treating the task as
+    a recoverable circuit-breaker block.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="awaiting intake approval",
+            initial_status="blocked",
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.status == "blocked"
+
+        for _ in range(3):
+            assert kb.recompute_ready(conn) == 0
+            task = kb.get_task(conn, tid)
+            assert task is not None and task.status == "blocked"
+
+        # Explicit operator release still clears the hold.
+        assert kb.unblock_task(conn, tid)
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.status == "ready"
+
 
 
 # ---------------------------------------------------------------------------

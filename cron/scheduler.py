@@ -4066,6 +4066,7 @@ def _run_job_script(
         _script_cwd = workdir or str(path.parent)
         proc = subprocess.Popen(
             argv,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

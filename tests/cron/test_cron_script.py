@@ -106,6 +106,46 @@ class TestRunJobScript:
         assert output == "relative works"
 
 
+    def test_script_subprocess_gets_clean_stdin(self, cron_env, monkeypatch):
+        """Cron scripts must not inherit the gateway's stdin.
+
+        The gateway is launched detached (`nohup ... &`), so its FD 0 can be a
+        dead/closed descriptor. When the script child inherited that FD,
+        CPython aborted at interpreter startup with
+        ``Fatal Python error: init_sys_streams ... Bad file descriptor`` —
+        before the script body ever ran. The runner must hand the child a
+        deterministic /dev/null stdin instead.
+        """
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text('print("ok")\n')
+
+        captured = {}
+
+        class FakeProc:
+            def __init__(self, argv, **kwargs):
+                captured["kwargs"] = kwargs
+                self.returncode = 0
+
+            def poll(self):
+                return self.returncode
+
+            def communicate(self, timeout=None):
+                return ("ok\n", "")
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        monkeypatch.setattr(sched_mod.subprocess, "Popen", FakeProc)
+
+        success, output = _run_job_script("probe.py")
+
+        assert success is True
+        assert output == "ok"
+        assert captured["kwargs"]["stdin"] == sched_mod.subprocess.DEVNULL
+
     def test_script_subprocess_env_sanitized(self, cron_env, monkeypatch):
         """Cron scripts must not inherit Hermes provider env (SECURITY.md §2.3)."""
         from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST

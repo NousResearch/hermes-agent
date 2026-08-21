@@ -428,6 +428,95 @@ class TurnContext:
     preflight_compression_blocked: bool = False
 
 
+def _maybe_inject_project_bootstrap(agent: Any, messages: List[Any]) -> None:
+    """Inject a project-context bootstrap row on the first turn of a session.
+
+    Called from ``build_turn_context`` when ``conversation_history`` is empty
+    (the first-turn check). Behavior:
+
+      - Skip when ``agent.session_id`` or ``agent._session_db`` is missing.
+      - Skip when a row with ``display_kind="system_reminder"`` already
+        exists for this session_id (idempotency: covers resume-into-
+        bootstrapped-session and post-compaction same-session continuation).
+      - Skip when the session row has no ``cwd`` set, or when the cwd is
+        not a project root per ``is_project_root``.
+      - Otherwise, build the bootstrap, render the reminder, and append it
+        to ``messages`` as the new first row (before the user message).
+
+    All failures are swallowed at debug-level. The bootstrap is never fatal:
+    a misconfigured project root must not break the user's turn.
+
+    Tests can call this directly with a stubbed ``agent`` carrying only
+    ``session_id`` and ``_session_db``.
+    """
+    try:
+        from gateway.project_bootstrap import (
+            build_project_context as _build_project_context,
+            is_project_root as _is_project_root,
+        )
+    except Exception as _import_exc:
+        logger.debug("project bootstrap import failed: %s", _import_exc)
+        return
+
+    _bootstrap_sid = getattr(agent, "session_id", None)
+    _bootstrap_session_db = getattr(agent, "_session_db", None)
+    if not _bootstrap_sid or _bootstrap_session_db is None:
+        return
+
+    try:
+        _already_bootstrapped = bool(
+            _bootstrap_session_db.has_display_kind_message(
+                _bootstrap_sid, "system_reminder"
+            )
+        )
+    except Exception:
+        _already_bootstrapped = False
+    if _already_bootstrapped:
+        return
+
+    try:
+        _session_row = _bootstrap_session_db.get_session(_bootstrap_sid) or {}
+    except Exception:
+        _session_row = {}
+    _cwd = _session_row.get("cwd") or ""
+    if not _cwd:
+        return
+
+    try:
+        import os as _os
+        import pathlib as _pathlib
+
+        _projects_root = _os.path.expanduser("~/projects")
+        if not _is_project_root(
+            _pathlib.Path(_cwd),
+            _pathlib.Path(_projects_root),
+        ):
+            return
+        _ctx = _build_project_context(
+            cwd=_cwd, projects_root=_projects_root
+        )
+        _rendered = _ctx.render()
+    except Exception as _build_exc:
+        logger.debug("project bootstrap build failed: %s", _build_exc)
+        return
+
+    try:
+        append_message(
+            messages,
+            {
+                "role": "system",
+                "content": _rendered,
+                "display_kind": "system_reminder",
+                "display_metadata": {
+                    "source": "project_bootstrap",
+                    "cwd": _cwd,
+                },
+            },
+        )
+    except Exception as _append_exc:
+        logger.debug("project bootstrap append failed: %s", _append_exc)
+
+
 def build_turn_context(
     agent,
     user_message: Any,
@@ -690,6 +779,23 @@ def build_turn_context(
     append_message(messages, user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
+
+    # Project bootstrap (gateway/project_bootstrap.py): on the FIRST turn of
+    # any session whose cwd is a project root, inject a system_reminder row
+    # summarizing the project (README, directory tree, recent git, skills).
+    # The row is persisted in the same flush batch as the user message
+    # (next _persist_session call), so the bootstrap is durable on first
+    # turn. Subsequent turns of the same session_id hit the idempotency
+    # guard and skip — Resume mints a new session_id by design so the
+    # bootstrap fires again for the new session. Compaction preserves
+    # session_id, so a post-compact first turn sees the prior bootstrap
+    # row in state.db and skips.
+    #
+    # The bootstrap sits at messages[0] (before the user message) so the
+    # user's message remains the current turn. _DB_PERSISTED_MARKER on the
+    # in-memory list will dedupe re-flushes across turns.
+    if not conversation_history:
+        _maybe_inject_project_bootstrap(agent, messages)
 
     # Track user turns for memory flush and periodic nudge logic.
     agent._user_turn_count += 1

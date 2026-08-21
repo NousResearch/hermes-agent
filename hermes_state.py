@@ -11248,6 +11248,28 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             return cursor.fetchone() is not None
 
+    def has_display_kind_message(
+        self, session_id: str, display_kind: str
+    ) -> bool:
+        """Check if any active message in ``session_id`` carries ``display_kind``.
+
+        Used by the project-bootstrap wiring in agent/turn_context.py to
+        enforce one-bootstrap-per-session_id semantics: a second
+        ``run_conversation`` call against the same session must not
+        re-inject a system_reminder row. Compacted (active=0) rows are
+        ignored so a compacted bootstrap cannot suppress a fresh one after
+        an intentional reset.
+        """
+        if not session_id or not display_kind:
+            return False
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT 1 FROM messages "
+                "WHERE session_id = ? AND display_kind = ? AND active = 1 LIMIT 1",
+                (session_id, display_kind),
+            )
+            return cursor.fetchone() is not None
+
     # =========================================================================
     # Export and cleanup
     # =========================================================================

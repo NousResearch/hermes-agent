@@ -20,6 +20,7 @@ import {
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
+  safeStorageEncryptionAvailable,
   SAFE_STORAGE_ENCODING,
   SECRET_FILE_MODE,
   sensitiveFileBlockReason,
@@ -622,6 +623,32 @@ test('tightenSecretFileMode leaves Windows alone rather than flipping the read-o
   // suppressed it above.
   assert.equal(tightenSecretFileMode('/home/me/connection.json', { fs: fakeFs, platform: 'linux' }), true)
   assert.ok(chmods.includes('/home/me/connection.json'), 'the POSIX path was tightened')
+})
+
+test('safeStorage capability checks do not initialize the macOS keychain', () => {
+  let probes = 0
+  const safeStorageApi = {
+    isEncryptionAvailable: () => {
+      probes += 1
+      return true
+    }
+  }
+
+  assert.equal(safeStorageEncryptionAvailable('darwin', safeStorageApi), true)
+  assert.equal(probes, 0, 'macOS capability checks must not create a Safe Storage keychain item')
+})
+
+test('safeStorage capability checks still probe Linux keyrings', () => {
+  let probes = 0
+  const safeStorageApi = {
+    isEncryptionAvailable: () => {
+      probes += 1
+      return false
+    }
+  }
+
+  assert.equal(safeStorageEncryptionAvailable('linux', safeStorageApi), false)
+  assert.equal(probes, 1)
 })
 
 test('a token is never persisted in plaintext when safeStorage is unavailable', () => {

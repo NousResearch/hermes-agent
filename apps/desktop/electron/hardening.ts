@@ -153,6 +153,29 @@ function resolveTimeoutMs(timeoutMs, fallbackMs = DEFAULT_FETCH_TIMEOUT_MS) {
   return fallback
 }
 
+/**
+ * Report whether safeStorage can encrypt without creating credential state as
+ * a side effect. Electron's macOS implementation creates the app's
+ * "Safe Storage" Keychain item when isEncryptionAvailable() is queried, so a
+ * capability-only UI read must not call it. Keychain-backed encryption is a
+ * platform capability on macOS; an actual encryptString() still surfaces any
+ * locked/unavailable-keychain failure when a secret is intentionally saved.
+ */
+function safeStorageEncryptionAvailable(
+  platform: string,
+  safeStorageApi: { isEncryptionAvailable?: () => boolean } | null | undefined
+) {
+  if (platform === 'darwin') {
+    return true
+  }
+
+  try {
+    return Boolean(safeStorageApi?.isEncryptionAvailable?.())
+  } catch {
+    return false
+  }
+}
+
 function encryptDesktopSecret(value, safeStorageApi, options: { allowPlainText?: boolean } = {}) {
   const raw = String(value || '')
 
@@ -545,6 +568,7 @@ export {
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
+  safeStorageEncryptionAvailable,
   SAFE_STORAGE_ENCODING,
   SECRET_FILE_MODE,
   sensitiveFileBlockReason,

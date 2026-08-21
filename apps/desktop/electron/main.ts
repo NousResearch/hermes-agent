@@ -175,6 +175,7 @@ import {
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
+  safeStorageEncryptionAvailable,
   SAFE_STORAGE_ENCODING,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
   tightenSecretFileMode,
@@ -8571,13 +8572,7 @@ function sanitizeRegistryConnection(entry) {
 function sanitizeConnectionsRegistry(registry = readDesktopConnectionsRegistry()) {
   // Same keyring probe the v1 sanitize exposes: lets the Connections panel
   // offer the plain-text opt-in on keyring-less Linux instead of failing.
-  let secureTokenStorage = false
-
-  try {
-    secureTokenStorage = Boolean(safeStorage.isEncryptionAvailable())
-  } catch {
-    secureTokenStorage = false
-  }
+  const secureTokenStorage = safeStorageEncryptionAvailable(process.platform, safeStorage)
 
   return {
     version: registry.version,
@@ -8701,15 +8696,10 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 
   // Whether the OS keyring (safeStorage) can encrypt the saved token. When
   // false the renderer knows to offer the plain-text opt-in in Settings →
-  // Gateway. safeStorage.isEncryptionAvailable can throw on some platforms, so
-  // treat any failure as "not available".
-  let secureTokenStorage = false
-
-  try {
-    secureTokenStorage = Boolean(safeStorage.isEncryptionAvailable())
-  } catch {
-    secureTokenStorage = false
-  }
+  // Gateway. On macOS the raw Electron capability probe creates the app's Safe
+  // Storage Keychain item, so the helper answers from the platform capability
+  // without touching Keychain. Other platforms keep the guarded runtime probe.
+  const secureTokenStorage = safeStorageEncryptionAvailable(process.platform, safeStorage)
 
   // Whether the currently saved token is stored in plain text (the keyring-less
   // opt-in path). The env override supplies its token from the environment, not

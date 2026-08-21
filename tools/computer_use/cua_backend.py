@@ -643,7 +643,13 @@ class _EmbeddedCuaDaemon:
         self._stderr_tail: deque[str] = deque(maxlen=20)
         self._stderr_thread: Optional[threading.Thread] = None
         token = uuid.uuid4().hex[:12]
-        if sys.platform == "win32":
+        if sys.platform == "win32" or driver_cmd.lower().endswith(".exe"):
+            # A Windows-native process (sys.platform == "win32") or a
+            # Windows binary driven via WSL interop (driver_cmd ending in
+            # .exe while sys.platform == "linux" under WSL2) both need a
+            # Windows named pipe path -- a Unix socket path under /tmp
+            # isn't creatable by a Windows process (OS error 123,
+            # ERROR_INVALID_NAME).
             self.socket_path = rf"\\.\pipe\hermes-cua-{token}"
         else:
             self.socket_path = os.path.join(
@@ -785,7 +791,7 @@ class _EmbeddedCuaDaemon:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=2.0)
-        if sys.platform != "win32" and os.path.exists(self.socket_path):
+        if "pipe" not in self.socket_path.lower() and os.path.exists(self.socket_path):
             try:
                 os.remove(self.socket_path)
             except OSError:

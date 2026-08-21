@@ -197,6 +197,80 @@ def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
     assert proxy_args == ["mcp", "--embedded", "--socket", daemon.socket_path]
 
 
+class TestEmbeddedDaemonWslSocketPath:
+    """Regression tests for issue #80227: on WSL2, sys.platform is "linux"
+    even when the daemon is a Windows binary (cua-driver.exe) driven via
+    WSL interop. sys.platform alone can't tell "Hermes running natively on
+    Windows" apart from "Hermes running on WSL2 driving a Windows binary" --
+    only the driver_cmd's own .exe suffix can. A Unix socket path isn't
+    creatable by a Windows process (OS error 123, ERROR_INVALID_NAME).
+    """
+
+    def test_windows_exe_driver_gets_named_pipe_path_even_off_win32(self):
+        from tools.computer_use import cua_backend
+
+        with patch.object(cua_backend.sys, "platform", "linux"):
+            daemon = cua_backend._EmbeddedCuaDaemon(
+                "/mnt/d/Miniforge3/Scripts/cua-driver.exe", "unrestricted"
+            )
+
+        assert daemon.socket_path.startswith("\\\\.\\pipe\\hermes-cua-"), (
+            f"a .exe driver must get a Windows named pipe path even when "
+            f"sys.platform is 'linux' (WSL2 interop): {daemon.socket_path!r}"
+        )
+
+    def test_exe_suffix_detection_is_case_insensitive(self):
+        from tools.computer_use import cua_backend
+
+        with patch.object(cua_backend.sys, "platform", "linux"):
+            daemon = cua_backend._EmbeddedCuaDaemon(
+                r"D:\Tools\cua-driver.EXE", "unrestricted"
+            )
+
+        assert daemon.socket_path.startswith("\\\\.\\pipe\\hermes-cua-")
+
+    def test_non_exe_driver_still_gets_unix_socket_path_off_win32(self):
+        """Sanity: the normal Linux/macOS case (a native cua-driver
+        binary, no .exe suffix) must be unchanged."""
+        from tools.computer_use import cua_backend
+
+        with patch.object(cua_backend.sys, "platform", "linux"):
+            daemon = cua_backend._EmbeddedCuaDaemon("cua-driver", "unrestricted")
+
+        assert daemon.socket_path.endswith(".sock")
+        assert "pipe" not in daemon.socket_path.lower()
+
+    def test_win32_native_still_gets_named_pipe_path_without_exe_suffix(self):
+        """Sanity: the existing native-Windows case (sys.platform ==
+        "win32", driver_cmd may or may not literally end in .exe) must
+        remain unchanged."""
+        from tools.computer_use import cua_backend
+
+        with patch.object(cua_backend.sys, "platform", "win32"):
+            daemon = cua_backend._EmbeddedCuaDaemon("cua-driver", "unrestricted")
+
+        assert daemon.socket_path.startswith("\\\\.\\pipe\\hermes-cua-")
+
+    def test_stop_does_not_attempt_unix_cleanup_on_named_pipe_path(self):
+        """The cleanup path in stop() must not try os.path.exists/os.remove
+        on a Windows named pipe path -- that's meaningless (and, more
+        importantly, must not be gated on the same sys.platform check that
+        caused the original socket-path bug, since it would be wrong for
+        the identical WSL2+.exe reason)."""
+        from tools.computer_use import cua_backend
+
+        with patch.object(cua_backend.sys, "platform", "linux"):
+            daemon = cua_backend._EmbeddedCuaDaemon(
+                "/mnt/d/Miniforge3/Scripts/cua-driver.exe", "unrestricted"
+            )
+            daemon._process = None  # nothing to wait/terminate in stop()
+
+            with patch.object(cua_backend.os.path, "exists") as mock_exists:
+                daemon.stop()
+
+        mock_exists.assert_not_called()
+
+
 def test_standard_backend_does_not_spawn_an_embedded_daemon():
     from tools.computer_use.cua_backend import CuaDriverBackend
 

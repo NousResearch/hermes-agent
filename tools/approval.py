@@ -2631,6 +2631,93 @@ def unregister_gateway_notify(session_key: str) -> None:
         entry.event.set()
 
 
+def enqueue_gateway_approval(session_key: str, approval_data: dict) -> object:
+    """Enqueue a pending approval entry under a session key.
+
+    Used by the kanban notifier watcher (issue #88057) to register an
+    approval request that was originated by a headless kanban worker in a
+    SEPARATE process: the worker wrote the request to the kanban relay
+    table, the watcher delivers the prompt to the originating channel, and
+    this entry lets the user's /approve or button click resolve it through
+    the exact same in-process queue the interactive path uses. The entry
+    data carries ``relay_request_id`` so :func:`resolve_gateway_approval`
+    can persist the decision back to the relay row the worker polls.
+
+    Returns the created entry (callers only need it for identity checks).
+    """
+    entry = _ApprovalEntry(dict(approval_data))
+    with _lock:
+        _gateway_queues.setdefault(session_key, []).append(entry)
+    return entry
+
+
+def drop_gateway_approval(
+    session_key: str, request_id: Optional[str] = None,
+) -> int:
+    """Remove pending approval entries for a session (no resolution).
+
+    Used by the kanban relay watcher when a delivered prompt failed to send
+    or a relay request expired: the entry must disappear so a later click
+    cannot resolve a request the worker already gave up on. When
+    ``request_id`` is given, only entries carrying that ``relay_request_id``
+    are removed; otherwise the session's whole queue is cleared. Returns the
+    number of entries removed.
+    """
+    removed = 0
+    with _lock:
+        queue = _gateway_queues.get(session_key)
+        if not queue:
+            return 0
+        if request_id:
+            kept = []
+            for entry in queue:
+                data = entry.data if isinstance(entry.data, dict) else {}
+                if data.get("relay_request_id") == request_id:
+                    removed += 1
+                else:
+                    kept.append(entry)
+            queue[:] = kept
+            if not kept:
+                _gateway_queues.pop(session_key, None)
+        else:
+            removed = len(queue)
+            _gateway_queues.pop(session_key, None)
+    return removed
+
+
+def _write_relay_decision(entry: object, choice: str) -> None:
+    """Persist a resolved gateway approval back to a kanban relay request.
+
+    Entries created by the kanban notifier watcher (issue #88057) carry
+    ``relay_request_id``; the waiting worker polls the kanban DB for the
+    decision. Best-effort: a write failure is logged, never raised into the
+    gateway's approve/deny handler (the in-process resolution already
+    happened — the worker simply fails closed when no decision lands).
+    """
+    data = entry.data if isinstance(entry.data, dict) else {}
+    request_id = data.get("relay_request_id")
+    if not request_id:
+        return
+    try:
+        from hermes_cli import kanban_db as kb
+
+        conn = kb.connect()
+        try:
+            if not kb.resolve_approval_relay_request(conn, str(request_id), choice):
+                logger.info(
+                    "kanban relay request %s already resolved; ignoring stale "
+                    "decision %s",
+                    request_id, choice,
+                )
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning(
+            "kanban relay decision write-back failed for %s: %s",
+            request_id, exc,
+        )
+
+
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
                              reason: Optional[str] = None,
@@ -2670,6 +2757,9 @@ def resolve_gateway_approval(session_key: str, choice: str,
         if reason:
             entry.reason = reason
         entry.event.set()
+        # Kanban relay (#88057): persist the decision to the relay row the
+        # waiting headless worker polls. No-op for ordinary entries.
+        _write_relay_decision(entry, choice)
     return len(targets)
 
 

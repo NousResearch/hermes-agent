@@ -1005,11 +1005,212 @@ class GatewayKanbanWatchersMixin:
                             )
             except Exception as exc:
                 logger.warning("kanban notifier tick failed: %s", exc)
+            # Approval relay (#88057): deliver protected-operation prompts
+            # originated by headless kanban workers to the originating
+            # channel. Kept in this tick so the relay shares the notifier's
+            # cadence and per-board DB iteration (near-zero idle cost: the
+            # per-board probe below is a single indexed COUNT).
+            try:
+                await self._deliver_kanban_approval_relays()
+            except Exception as exc:
+                logger.warning("kanban approval relay tick failed: %s", exc)
             # Sleep with cancellation checks.
             for _ in range(int(max(1, interval))):
                 if not self._running:
                     return
                 await asyncio.sleep(1)
+
+    async def _deliver_kanban_approval_relays(self) -> None:
+        """Deliver pending kanban approval-relay requests (issue #88057).
+
+        Headless kanban workers write one-use protected-operation approval
+        requests to ``kanban_approval_relay`` (see
+        ``tools.file_tools._try_kanban_relay_approval``). This pass:
+
+        * expires relay rows nobody resolved (the worker fails closed);
+        * delivers each still-pending request ONCE to the originating
+          channel via the same button-based approval prompt the interactive
+          path uses (``send_exec_approval``, or a plain-text fallback);
+        * enqueues a matching in-process gateway approval entry under the
+          origin session key so the user's approve/deny button resolves it
+          through the existing controls; ``resolve_gateway_approval`` then
+          persists the decision back to the relay row the worker polls.
+
+        Failures are per-request: a failed send is retried on the next tick
+        (the entry is dropped so a late click cannot resolve a request that
+        never reached the user), and a request whose origin has no
+        reachable adapter is left to expire.
+        """
+        from hermes_cli import kanban_db as _kb
+        from gateway.config import Platform as _Platform
+        from tools.approval import (
+            drop_gateway_approval,
+            enqueue_gateway_approval,
+        )
+
+        delivered_set: set[str] = getattr(
+            self, "_kanban_relay_delivered", set()
+        )
+        self._kanban_relay_delivered = delivered_set
+
+        def _collect_relays() -> list[dict]:
+            """Return pending relay requests (+ origin sub) per board."""
+            relays: list[dict] = []
+            try:
+                boards = _kb.list_boards(include_archived=False)
+            except Exception:
+                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            seen_db_paths: set[str] = set()
+            for board_meta in boards:
+                slug = board_meta.get("slug") or _kb.DEFAULT_BOARD
+                db_path = board_meta.get("db_path")
+                try:
+                    resolved_db_path = (
+                        str(Path(db_path).expanduser().resolve())
+                        if db_path else str(_kb.kanban_db_path(slug).resolve())
+                    )
+                except Exception:
+                    resolved_db_path = f"slug:{slug}"
+                if resolved_db_path in seen_db_paths:
+                    continue
+                seen_db_paths.add(resolved_db_path)
+                try:
+                    conn = _kb.connect(board=slug)
+                except Exception:
+                    continue
+                try:
+                    # Cheap zero-relay early exit (idle cost near zero).
+                    if _kb.count_pending_approval_relay_requests(conn) == 0:
+                        continue
+                    for req in _kb.list_pending_approval_relay_requests(conn):
+                        sub = None
+                        for candidate in _kb.list_notify_subs(
+                            conn, task_id=req["task_id"]
+                        ):
+                            if (
+                                candidate.get("platform") == req["platform"]
+                                and candidate.get("chat_id") == req["chat_id"]
+                            ):
+                                sub = candidate
+                                break
+                        relays.append({
+                            "request": req,
+                            "sub": sub,
+                            "board": slug,
+                        })
+                except Exception:
+                    continue
+                finally:
+                    conn.close()
+            return relays
+
+        # Expire rows nobody resolved; drop their queue entries so a late
+        # button click cannot resolve a request the worker already gave up
+        # on (and prune the delivered set to still-pending ids).
+        def _expire_stale() -> None:
+            try:
+                conn = _kb.connect()
+                try:
+                    _kb.expire_approval_relay_requests(conn)
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+
+        await asyncio.to_thread(_expire_stale)
+
+        relays = await asyncio.to_thread(_collect_relays)
+        pending_ids = {r["request"]["request_id"] for r in relays}
+        delivered_set.intersection_update(pending_ids)
+
+        for item in relays:
+            req = item["request"]
+            request_id = req["request_id"]
+            board_slug = item["board"]
+            sub = item["sub"]
+            if request_id in delivered_set:
+                continue
+            platform_str = (req["platform"] or "").lower()
+            try:
+                plat = _Platform(platform_str)
+            except ValueError:
+                continue
+            session_key = req["session_key"] or ""
+            if not session_key:
+                continue
+            # Route via the same authorization chokepoint the notifier uses;
+            # the subscription's profile stamp (when present) selects the
+            # owning profile's adapter.
+            sub_profile = (sub or {}).get("notifier_profile") or None
+            adapter = self._authorization_adapter(plat, sub_profile)
+            if adapter is None:
+                continue  # leave to expire; no reachable channel
+            metadata: dict[str, Any] = {}
+            if req.get("thread_id"):
+                metadata["thread_id"] = req["thread_id"]
+            elif sub and isinstance(sub.get("delivery_metadata"), dict):
+                dm = sub["delivery_metadata"]
+                if dm.get("thread_id"):
+                    metadata["thread_id"] = dm["thread_id"]
+
+            approval_data = {
+                "command": req.get("command", ""),
+                "description": req.get("description", ""),
+                "pattern_key": "protected_instruction_file",
+                "pattern_keys": ["protected_instruction_file"],
+                "allow_permanent": False,
+                "allow_session": False,
+                "relay_request_id": request_id,
+            }
+
+            # Enqueue BEFORE sending so a fast button click can always
+            # resolve the entry; on a failed send the entry is dropped below.
+            enqueue_gateway_approval(session_key, approval_data)
+            try:
+                if getattr(type(adapter), "send_exec_approval", None) is not None:
+                    result = await adapter.send_exec_approval(
+                        chat_id=req["chat_id"],
+                        command=req.get("command", ""),
+                        session_key=session_key,
+                        description=req.get("description", ""),
+                        metadata=metadata,
+                        allow_permanent=False,
+                        allow_session=False,
+                    )
+                    if getattr(result, "success", True) is False:
+                        raise RuntimeError(
+                            "send_exec_approval reported failure: "
+                            f"{getattr(result, 'error', None) or 'unknown error'}"
+                        )
+                else:
+                    msg = (
+                        "⚠️ Approval required for kanban task "
+                        f"{req['task_id']}:\n\n{req.get('command', '')}\n\n"
+                        f"{req.get('description', '')}\n\n"
+                        "Reply `/approve` to allow this one operation, or "
+                        "`/deny` to deny it."
+                    )
+                    await adapter.send(req["chat_id"], msg, metadata=metadata)
+            except Exception as exc:
+                logger.warning(
+                    "kanban approval relay: delivery failed for %s on %s/%s "
+                    "(board %s): %s",
+                    request_id, platform_str, req["chat_id"], board_slug, exc,
+                )
+                # The prompt never reached the user; drop the entry so a
+                # later click cannot resolve it, and retry next tick.
+                try:
+                    drop_gateway_approval(session_key, request_id=request_id)
+                except Exception:
+                    pass
+                continue
+            delivered_set.add(request_id)
+            logger.info(
+                "kanban approval relay: delivered %s to %s/%s for task %s "
+                "(board %s, session %s)",
+                request_id, platform_str, req["chat_id"],
+                req["task_id"], board_slug, session_key,
+            )
 
     def _kanban_advance(
         self, sub: dict, cursor: int, board: Optional[str] = None,

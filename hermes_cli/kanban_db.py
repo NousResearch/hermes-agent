@@ -1524,6 +1524,38 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+
+-- Approval relay (#88057): headless kanban workers run in a separate
+-- process with no gateway approval callback, so a protected-operation
+-- gate (e.g. a write to a protected agent-instruction file) cannot
+-- prompt the authenticated origin directly. The worker writes a
+-- one-use request here; the gateway's kanban-notifier watcher delivers
+-- the prompt to the originating channel and writes the decision back.
+-- Rows are strictly one-operation: a resolved/expired row is never
+-- re-delivered and never grants anything persistent.
+CREATE TABLE IF NOT EXISTS kanban_approval_relay (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id  TEXT NOT NULL,
+    task_id     TEXT NOT NULL,
+    run_id      INTEGER,
+    session_key TEXT NOT NULL,
+    platform    TEXT NOT NULL,
+    chat_id     TEXT NOT NULL,
+    thread_id   TEXT NOT NULL DEFAULT '',
+    command     TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'pending',
+    decision    TEXT,
+    created_at  INTEGER NOT NULL,
+    expires_at  INTEGER NOT NULL,
+    resolved_at INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_relay_request
+    ON kanban_approval_relay(request_id);
+CREATE INDEX IF NOT EXISTS idx_approval_relay_pending
+    ON kanban_approval_relay(status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_approval_relay_session
+    ON kanban_approval_relay(session_key, status);
 """
 
 
@@ -2763,6 +2795,44 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "delivery_metadata", "delivery_metadata TEXT"
             )
+
+    # Approval-relay table (#88057). New table on existing boards: unlike
+    # the additive-column migrations above, ``CREATE TABLE IF NOT EXISTS``
+    # is safe to run unconditionally on every first open of a legacy DB
+    # (fresh DBs already get it from SCHEMA_SQL).
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kanban_approval_relay (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id  TEXT NOT NULL,
+            task_id     TEXT NOT NULL,
+            run_id      INTEGER,
+            session_key TEXT NOT NULL,
+            platform    TEXT NOT NULL,
+            chat_id     TEXT NOT NULL,
+            thread_id   TEXT NOT NULL DEFAULT '',
+            command     TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            status      TEXT NOT NULL DEFAULT 'pending',
+            decision    TEXT,
+            created_at  INTEGER NOT NULL,
+            expires_at  INTEGER NOT NULL,
+            resolved_at INTEGER
+        )
+        """
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_relay_request "
+        "ON kanban_approval_relay(request_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_approval_relay_pending "
+        "ON kanban_approval_relay(status, expires_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_approval_relay_session "
+        "ON kanban_approval_relay(session_key, status)"
+    )
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
@@ -12137,3 +12207,159 @@ def latest_summaries(
         ids,
     ).fetchall()
     return {r["task_id"]: r["summary"] for r in rows}
+
+
+# ---------------------------------------------------------------------------
+# Approval relay (issue #88057)
+# ---------------------------------------------------------------------------
+# Headless kanban workers run in a separate process with no gateway approval
+# callback, so a protected-operation gate (e.g. a write to a protected
+# agent-instruction file) cannot prompt the authenticated origin directly.
+# The worker writes a one-use request below; the gateway's kanban-notifier
+# watcher delivers the prompt to the originating channel and writes the
+# decision back via :func:`resolve_approval_relay_request`. Rows are
+# strictly one-operation: a resolved/expired row is never re-delivered and
+# never grants anything persistent.
+
+_APPROVAL_RELAY_PENDING = "pending"
+_APPROVAL_RELAY_APPROVED = "approved"
+_APPROVAL_RELAY_DENIED = "denied"
+_APPROVAL_RELAY_EXPIRED = "expired"
+_APPROVAL_RELAY_STATUSES = (
+    _APPROVAL_RELAY_PENDING,
+    _APPROVAL_RELAY_APPROVED,
+    _APPROVAL_RELAY_DENIED,
+    _APPROVAL_RELAY_EXPIRED,
+)
+
+
+def create_approval_relay_request(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    run_id: Optional[int],
+    session_key: str,
+    platform: str,
+    chat_id: str,
+    thread_id: str = "",
+    command: str,
+    description: str = "",
+    timeout_seconds: int = 300,
+) -> str:
+    """Insert a pending approval-relay request and return its request_id.
+
+    ``request_id`` is an unguessable UUID so a chat reply can never be
+    forged from board metadata; the gateway resolves by this id (plus the
+    session-key FIFO fallback), and the worker polls for the decision.
+    ``timeout_seconds`` is bounded by the caller's canonical approval
+    timeout; a request the gateway never picks up expires and the worker
+    fails closed (silence is not consent).
+    """
+    import uuid as _uuid
+
+    now = int(time.time())
+    request_id = _uuid.uuid4().hex
+    conn.execute(
+        """
+        INSERT INTO kanban_approval_relay (
+            request_id, task_id, run_id, session_key,
+            platform, chat_id, thread_id,
+            command, description, status, decision,
+            created_at, expires_at, resolved_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
+        """,
+        (
+            request_id, task_id, run_id, session_key or "",
+            platform, chat_id, thread_id or "",
+            command, description or "", _APPROVAL_RELAY_PENDING,
+            now, now + max(int(timeout_seconds), 1),
+        ),
+    )
+    return request_id
+
+
+def get_approval_relay_request(
+    conn: sqlite3.Connection, request_id: str
+) -> Optional[dict]:
+    """Return one relay request as a dict (or None when unknown)."""
+    row = conn.execute(
+        "SELECT * FROM kanban_approval_relay WHERE request_id = ?",
+        (request_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_pending_approval_relay_requests(
+    conn: sqlite3.Connection, now: Optional[int] = None
+) -> list[dict]:
+    """Return unexpired pending relay requests (newest first)."""
+    now = int(time.time()) if now is None else int(now)
+    rows = conn.execute(
+        "SELECT * FROM kanban_approval_relay "
+        "WHERE status = ? AND expires_at > ? "
+        "ORDER BY id ASC",
+        (_APPROVAL_RELAY_PENDING, now),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_pending_approval_relay_requests(
+    conn: sqlite3.Connection, now: Optional[int] = None
+) -> int:
+    """Cheap probe for the notifier watcher's zero-relay early exit."""
+    now = int(time.time()) if now is None else int(now)
+    row = conn.execute(
+        "SELECT COUNT(*) FROM kanban_approval_relay "
+        "WHERE status = ? AND expires_at > ?",
+        (_APPROVAL_RELAY_PENDING, now),
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def resolve_approval_relay_request(
+    conn: sqlite3.Connection,
+    request_id: str,
+    decision: str,
+    now: Optional[int] = None,
+) -> bool:
+    """Record a gateway decision for one relay request.
+
+    One-operation semantics: ``approved`` for any granted scope (the
+    protected gate never persists a session/permanent grant, matching the
+    interactive path), ``denied`` otherwise. Returns True when the row was
+    still pending and got resolved; False when it was already resolved or
+    expired (stale/duplicate decisions are rejected, never double-counted).
+    """
+    now = int(time.time()) if now is None else int(now)
+    status = (
+        _APPROVAL_RELAY_APPROVED
+        if decision in ("once", "session", "always")
+        else _APPROVAL_RELAY_DENIED
+    )
+    cur = conn.execute(
+        "UPDATE kanban_approval_relay "
+        "SET status = ?, decision = ?, resolved_at = ? "
+        "WHERE request_id = ? AND status = ?",
+        (status, decision, now, request_id, _APPROVAL_RELAY_PENDING),
+    )
+    return cur.rowcount > 0
+
+
+def expire_approval_relay_requests(
+    conn: sqlite3.Connection, now: Optional[int] = None
+) -> int:
+    """Mark overdue pending requests as expired; returns rows touched.
+
+    The gateway watcher runs this so a request nobody resolved (worker
+    died, delivery failed, user never answered) cannot linger as pending
+    forever — it also lets the watcher clean up its in-process queue
+    entries for those requests.
+    """
+    now = int(time.time()) if now is None else int(now)
+    cur = conn.execute(
+        "UPDATE kanban_approval_relay "
+        "SET status = ?, decision = 'deny', resolved_at = ? "
+        "WHERE status = ? AND expires_at <= ?",
+        (_APPROVAL_RELAY_EXPIRED, now, _APPROVAL_RELAY_PENDING, now),
+    )
+    return cur.rowcount

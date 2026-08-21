@@ -927,11 +927,162 @@ def _request_protected_instruction_approval(
                     "Silence is not consent.")
         return blocked.format(why="was denied by the user.")
 
+    # Kanban worker relay (#88057): a dispatcher-spawned kanban worker runs
+    # in a separate process with no gateway notify_cb registered here, but
+    # the task's origin (creator session + subscribed channel) is persisted
+    # in the board DB. Route the request through the kanban approval-relay
+    # table: the gateway's kanban-notifier watcher delivers the prompt to
+    # the originating channel and writes the decision back. Any failure in
+    # the relay itself returns None so the caller keeps its normal
+    # fail-closed behavior — a relay that cannot prove a decision never
+    # turns into an implicit grant.
+    relay = _try_kanban_relay_approval(display, description)
+    if relay is not None:
+        if relay.get("approved"):
+            return None
+        return blocked.format(
+            why=relay.get(
+                "block_reason",
+                "was denied via the originating gateway channel.",
+            )
+        )
+
     # No human channel at all (script, cron, background thread): fail
     # closed. Auto-approving here would recreate the persistence vector.
     return blocked.format(
         why="requires approval but no interactive user or gateway is "
             "present to approve it.")
+
+
+def _try_kanban_relay_approval(display: str, description: str) -> dict | None:
+    """Route a protected-operation approval through the kanban relay table.
+
+    Active only inside a dispatcher-spawned kanban worker
+    (``HERMES_KANBAN_TASK`` set). Returns ``None`` when there is no
+    trusted authenticated origin to route to (or any relay error) so the
+    caller's existing fail-closed path applies; otherwise a dict with
+    ``approved: bool`` and, on a denied/expired outcome, ``block_reason``.
+
+    Edge cases covered:
+    * No task env / unknown task / task without an origin ``session_id``
+      (CLI-created, dashboard-created, imported) -> None (no authority).
+    * No notification subscription (origin never asked for lifecycle
+      delivery, or the sub was purged) -> None (no reachable channel).
+    * Worker orphaned mid-wait (task no longer running) -> deny.
+    * Timeout / expiry / duplicate or stale resolution -> deny.
+    * Any DB or adapter error -> None (fail closed, never auto-approve).
+    """
+    import os
+    import time
+
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "")
+    if not task_id:
+        return None
+    try:
+        from hermes_cli import kanban_db as kb
+        from tools.approval import _get_approval_timeout
+    except Exception:
+        return None
+
+    # Mirror the canonical gateway approval timeout so a headless worker
+    # never waits longer than an interactive session would.
+    try:
+        timeout = max(int(_get_approval_timeout()), 1)
+    except Exception:
+        timeout = 300
+
+    try:
+        conn = kb.connect()
+    except Exception:
+        return None
+    try:
+        task = kb.get_task(conn, task_id)
+        if task is None:
+            return None
+        origin_session = getattr(task, "session_id", None) or ""
+        if not origin_session:
+            return None
+        subs = kb.list_notify_subs(conn, task_id=task_id)
+        if not subs:
+            return None
+        # Prefer the first subscription that carries a real delivery
+        # destination (platform + chat id); subscriptions are the gateway's
+        # trusted authenticated-provenance record for this task.
+        sub = None
+        for candidate in subs:
+            if candidate.get("platform") and candidate.get("chat_id"):
+                sub = candidate
+                break
+        if sub is None:
+            return None
+        metadata = sub.get("delivery_metadata") or {}
+        thread_id = str(sub.get("thread_id") or metadata.get("thread_id") or "")
+        request_id = kb.create_approval_relay_request(
+            conn,
+            task_id=task_id,
+            run_id=getattr(task, "current_run_id", None),
+            session_key=origin_session,
+            platform=str(sub["platform"]),
+            chat_id=str(sub["chat_id"]),
+            thread_id=thread_id,
+            command=display,
+            description=description,
+            timeout_seconds=timeout,
+        )
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+    # Poll for the gateway's decision. The wait is bounded by the same
+    # approval timeout the interactive path uses, and every poll re-checks
+    # the task is still this worker's live run so an orphaned worker cannot
+    # harvest a decision for a task that already moved on.
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {
+                "approved": False,
+                "block_reason": "approval prompt timed out without a user "
+                    "response. Silence is not consent.",
+            }
+        try:
+            conn = kb.connect()
+            try:
+                row = kb.get_approval_relay_request(conn, request_id)
+                task = kb.get_task(conn, task_id)
+                if row is None:
+                    return None  # row vanished; fail closed
+                status = row.get("status")
+                if status == "approved":
+                    return {"approved": True}
+                if status == "denied":
+                    return {
+                        "approved": False,
+                        "block_reason": "was denied via the originating "
+                            "gateway channel.",
+                    }
+                if status == "expired":
+                    return {
+                        "approved": False,
+                        "block_reason": "approval prompt expired without a "
+                            "user response. Silence is not consent.",
+                    }
+                # Still pending: a task that is no longer this worker's live
+                # run (completed/blocked/reclaimed while we waited) must not
+                # receive a grant — the run that asked is gone.
+                if task is not None and getattr(task, "status", "running") != "running":
+                    return {
+                        "approved": False,
+                        "block_reason": "task left the running state while "
+                            "awaiting approval; the write was not granted.",
+                    }
+            finally:
+                conn.close()
+        except Exception:
+            return None
+        time.sleep(min(1.0, max(remaining, 0.1)))
 
 
 def _check_protected_instruction_write(paths: list[str],

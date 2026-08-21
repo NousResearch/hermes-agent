@@ -72,6 +72,7 @@ The terminal tool can execute commands in different environments:
 | `singularity` | HPC containers | Cluster computing, rootless |
 | `modal` | Cloud execution | Serverless, scale |
 | `daytona` | Cloud sandbox workspace | Persistent remote dev environments |
+| `e2b` | E2B cloud sandbox | Remote execution with filesystem-only persistence |
 | `vercel_sandbox` | Vercel Sandbox cloud microVM | Cloud execution with snapshot-backed filesystem persistence |
 
 ### Configuration
@@ -79,7 +80,7 @@ The terminal tool can execute commands in different environments:
 ```yaml
 # In ~/.hermes/config.yaml
 terminal:
-  backend: local    # or: docker, ssh, singularity, modal, daytona, vercel_sandbox
+  backend: local    # or: docker, ssh, singularity, modal, daytona, e2b, vercel_sandbox
   cwd: "."          # Working directory
   timeout: 180      # Command timeout in seconds
 ```
@@ -186,7 +187,7 @@ Leave `container_disk` unset or at the shared default `51200`; custom disk sizin
 
 ### Container Resources
 
-Configure CPU, memory, disk, and persistence for all container backends:
+Configure CPU, memory, disk, and persistence for supported container backends:
 
 ```yaml
 terminal:
@@ -198,6 +199,8 @@ terminal:
 ```
 
 When `container_persistent: true`, installed packages, files, and config survive across sessions.
+
+E2B resource sizing is defined by `e2b_template`, so `container_cpu`, `container_memory`, and `container_disk` do not apply to that backend. `container_persistent` still controls whether Hermes pauses or kills the E2B sandbox during cleanup.
 
 ### Container Security
 

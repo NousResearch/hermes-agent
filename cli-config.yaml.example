@@ -427,10 +427,21 @@ terminal:
 #   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 #   container_disk: 10240          # Daytona max is 10GB per sandbox
 
+# -----------------------------------------------------------------------------
+# OPTION 7: E2B cloud execution
+# Hermes stays local and delegates terminal, file, and code execution to an
+# isolated E2B sandbox. Requires the e2b extra and E2B_API_KEY in the profile.
+# -----------------------------------------------------------------------------
+# terminal:
+#   backend: "e2b"
+#   e2b_template: "base"           # E2B template alias or ID
+#   lifetime_seconds: 300           # Sandbox timeout / local idle cleanup
+#   container_persistent: true      # Pause filesystem; false = kill on cleanup
+
 #
-# --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh) ---
-# These settings apply to all container backends. They control the resources
-# allocated to the sandbox and whether its filesystem persists across sessions.
+# --- Container settings (E2B uses persistence only; its template defines resources) ---
+# Resource fields apply where the backend supports them. Persistence controls
+# whether filesystem state is retained across sessions.
   container_cpu: 1              # CPU cores
   container_memory: 5120        # Memory in MB (5120 = 5GB)
   container_disk: 51200         # Disk in MB (51200 = 50GB)

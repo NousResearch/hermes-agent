@@ -64,9 +64,8 @@ def _make_manager(
     *file_mapping* is a list of (host_path, remote_path) tuples that
     ``get_files_fn`` returns.  If *None* an empty list is used.
 
-    When *seed_pushed_state* is True (default), populate ``_pushed_hashes``
-    from the mapping so sync_back doesn't early-return on the "nothing
-    previously pushed" guard. Set False to test the noop path.
+    When *seed_pushed_state* is True (default), run a successful initial sync
+    so sync_back does not early-return. Set False to test the noop path.
     """
     mapping = file_mapping or []
     mgr = FileSyncManager(
@@ -76,16 +75,7 @@ def _make_manager(
         bulk_download_fn=bulk_download_fn,
     )
     if seed_pushed_state:
-        # Seed _pushed_hashes so sync_back's "nothing previously pushed"
-        # guard does not early-return. Populate from the mapping when we
-        # can; otherwise drop a sentinel entry.
-        for host_path, remote_path in mapping:
-            if os.path.exists(host_path):
-                mgr._pushed_hashes[remote_path] = _sha256_file(host_path)
-            else:
-                mgr._pushed_hashes[remote_path] = "0" * 64
-        if not mgr._pushed_hashes:
-            mgr._pushed_hashes["/_sentinel"] = "0" * 64
+        assert mgr.sync(force=True)
     return mgr
 
 
@@ -102,6 +92,31 @@ class TestSyncBackNoop:
         # Should return immediately without error
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
         # Nothing to assert beyond "no exception raised"
+
+    def test_sync_back_skips_when_no_sync_cycle_succeeded(self, tmp_path):
+        download = MagicMock()
+        mgr = _make_manager(
+            tmp_path,
+            bulk_download_fn=download,
+            seed_pushed_state=False,
+        )
+
+        mgr.sync_back(hermes_home=tmp_path / ".hermes")
+
+        download.assert_not_called()
+
+    @patch("tools.environments.file_sync.sys.is_finalizing", return_value=True)
+    def test_sync_back_skips_during_interpreter_shutdown(
+        self,
+        _mock_is_finalizing,
+        tmp_path,
+    ):
+        download = MagicMock()
+        mgr = _make_manager(tmp_path, bulk_download_fn=download)
+
+        mgr.sync_back(hermes_home=tmp_path / ".hermes")
+
+        download.assert_not_called()
 
 
 class TestSyncBackNoChanges:
@@ -348,7 +363,6 @@ class TestInferHostPath:
         )
         assert result is None
 
-
     def test_infer_matching_prefix(self, tmp_path):
         """A file in a mapped directory should be correctly inferred."""
         host_file = tmp_path / "host" / "skills" / "a.py"
@@ -363,6 +377,55 @@ class TestInferHostPath:
         expected = str(tmp_path / "host" / "skills" / "b.py")
         assert result == expected
 
+    def test_declared_root_maps_new_nested_directory(self, tmp_path):
+        skills_root = tmp_path / "host" / "skills"
+        mgr = FileSyncManager(
+            get_files_fn=lambda: [],
+            upload_fn=MagicMock(),
+            delete_fn=MagicMock(),
+            sync_back_roots=[
+                (str(skills_root), "/home/user/.hermes/skills"),
+            ],
+        )
+
+        result = mgr._infer_host_path(
+            "/home/user/.hermes/skills/incident-triage/SKILL.md",
+        )
+
+        assert result == str(skills_root / "incident-triage" / "SKILL.md")
+
+    def test_declared_root_does_not_map_other_hermes_state(self, tmp_path):
+        mgr = FileSyncManager(
+            get_files_fn=lambda: [],
+            upload_fn=MagicMock(),
+            delete_fn=MagicMock(),
+            sync_back_roots=[
+                (str(tmp_path / "skills"), "/home/user/.hermes/skills"),
+            ],
+        )
+
+        assert mgr._infer_host_path("/home/user/.hermes/.env") is None
+
+    def test_declared_root_rejects_host_symlink_escape(self, tmp_path):
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (skills_root / "escape").symlink_to(outside, target_is_directory=True)
+        mgr = FileSyncManager(
+            get_files_fn=lambda: [],
+            upload_fn=MagicMock(),
+            delete_fn=MagicMock(),
+            sync_back_roots=[
+                (str(skills_root), "/home/user/.hermes/skills"),
+            ],
+        )
+
+        result = mgr._infer_host_path(
+            "/home/user/.hermes/skills/escape/secret.txt",
+        )
+
+        assert result is None
 
 class TestSyncBackSIGINT:
     """SIGINT deferral during sync-back."""

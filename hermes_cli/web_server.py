@@ -1046,7 +1046,12 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "terminal.backend": {
         "type": "select",
         "description": "Terminal execution backend",
-        "options": ["local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity"],
+        "options": ["local", "docker", "ssh", "modal", "daytona", "e2b", "vercel_sandbox", "singularity"],
+    },
+    "terminal.e2b_template": {
+        "type": "string",
+        "description": "E2B template alias or ID",
+        "category": "general",
     },
     "terminal.vercel_runtime": {
         "type": "select",
@@ -15096,6 +15101,11 @@ _TERMINAL_BACKENDS: List[Dict[str, str]] = [
         "description": "Run commands in a Daytona cloud sandbox.",
     },
     {
+        "name": "e2b",
+        "label": "E2B",
+        "description": "Delegate terminal, file, and code execution to an E2B sandbox.",
+    },
+    {
         "name": "ssh",
         "label": "SSH",
         "description": "Run commands on a remote host over SSH.",
@@ -15202,6 +15212,22 @@ def _probe_daytona_backend() -> tuple:
     return ("needs_setup", "Set DAYTONA_API_KEY to use the Daytona backend.")
 
 
+def _probe_e2b_backend() -> tuple:
+    try:
+        from agent.secret_scope import get_secret
+
+        if not get_secret("E2B_API_KEY"):
+            return ("needs_setup", "Set E2B_API_KEY to use the E2B backend.")
+    except Exception:
+        return ("needs_setup", "Set E2B_API_KEY to use the E2B backend.")
+    if importlib.util.find_spec("e2b") is None:
+        return (
+            "needs_setup",
+            "E2B SDK not installed — install the hermes-agent[e2b] extra.",
+        )
+    return ("ready", "")
+
+
 def _probe_terminal_backend(name: str, terminal_cfg: dict) -> tuple:
     """Return ``(status, detail)`` for one backend. Never raises."""
     try:
@@ -15217,6 +15243,8 @@ def _probe_terminal_backend(name: str, terminal_cfg: dict) -> tuple:
             return _probe_modal_backend()
         if name == "daytona":
             return _probe_daytona_backend()
+        if name == "e2b":
+            return _probe_e2b_backend()
         return ("unavailable", f"Unknown backend: {name}")
     except Exception as exc:  # pragma: no cover — belt-and-braces guard
         return ("unavailable", f"Probe failed: {exc}")

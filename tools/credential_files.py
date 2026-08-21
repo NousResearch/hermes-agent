@@ -534,7 +534,7 @@ def to_agent_visible_cache_path(
 
     * docker / modal — bind-mounted (docker) or per-file-synced (modal) at
       ``/root/.hermes`` (the *container_base* default).
-    * ssh / daytona / vercel_sandbox — file-synced under the remote user's
+    * ssh / daytona / e2b / vercel_sandbox — file-synced under the remote user's
       home; ``~/.hermes`` is shell-expanded by the remote shell, so tool
       commands resolve it regardless of the actual remote home. Previously
       these backends synced the bytes but still rendered the dangling host
@@ -549,7 +549,7 @@ def to_agent_visible_cache_path(
     backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
     if backend in ("docker", "modal"):
         pass  # /root/.hermes default
-    elif backend in ("ssh", "daytona", "vercel_sandbox"):
+    elif backend in ("ssh", "daytona", "e2b", "vercel_sandbox"):
         container_base = "~/.hermes"
     else:
         return host_path  # local, singularity, unknown: host path is correct

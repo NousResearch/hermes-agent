@@ -1302,6 +1302,8 @@ async def vision_analyze_tool(
     model: str = None,
     task_id: Optional[str] = None,
     region: Optional[list] = None,
+    task: str = "vision",
+    max_tokens: Optional[int] = None,
 ) -> str:
     """
     Analyze an image from a URL or local file path using vision AI.
@@ -1488,7 +1490,7 @@ async def vision_analyze_tool(
         try:
             from hermes_cli.config import cfg_get, load_config
             _cfg = load_config()
-            _vision_cfg = cfg_get(_cfg, "auxiliary", "vision", default={})
+            _vision_cfg = cfg_get(_cfg, "auxiliary", task, default={})
             _vt = _vision_cfg.get("timeout")
             if _vt is not None:
                 vision_timeout = float(_vt)
@@ -1498,11 +1500,13 @@ async def vision_analyze_tool(
         except Exception:
             pass
         call_kwargs = {
-            "task": "vision",
+            "task": task,
             "messages": messages,
             "temperature": vision_temperature,
             "timeout": vision_timeout,
         }
+        if max_tokens is not None:
+            call_kwargs["max_tokens"] = max_tokens
         if model:
             call_kwargs["model"] = model
         _load_auxiliary_client()
@@ -1791,6 +1795,9 @@ async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:
         pass
     if not model:
         model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
+    ocr_context = await _maybe_ocr_context(image_url, region=region, task_id=task_id)
+    if ocr_context:
+        full_prompt += "\n\n" + ocr_context
     return await vision_analyze_tool(image_url, full_prompt, model, task_id=task_id, region=region)
 
 
@@ -1802,6 +1809,153 @@ registry.register(
     check_fn=check_vision_requirements,
     is_async=True,
     emoji="👁️",
+)
+
+
+VISION_OCR_SCHEMA = {
+    "name": "vision_ocr",
+    "description": (
+        "Extract text from an image VERBATIM using the dedicated local OCR "
+        "model (fast, exact, includes layout bounding boxes). PREFER this "
+        "over vision_analyze whenever the image is primarily text: "
+        "screenshots, documents, receipts, invoices, error dialogs, chat "
+        "captures, signs, tables, forms. Use vision_analyze only for scenes, "
+        "objects, people, or when you need interpretation rather than the "
+        "exact text. Accepts a URL, local file path, or data URL."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "image_url": {
+                "type": "string",
+                "description": "Image URL (http/https), local file path, or data: URL to OCR."
+            },
+            "question": {
+                "type": "string",
+                "description": (
+                    "Optional focus, e.g. 'only the table' or 'the total "
+                    "amount'. Leave empty for a full verbatim transcription."
+                )
+            },
+            "region": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 4,
+                "maxItems": 4,
+                "description": (
+                    "Optional [x1, y1, x2, y2] crop region in pixel "
+                    "coordinates of the ORIGINAL image, applied before any "
+                    "downscaling."
+                )
+            }
+        },
+        "required": ["image_url"]
+    }
+}
+
+
+async def _maybe_ocr_context(
+    image_url: str,
+    *,
+    region: Optional[list] = None,
+    task_id: Optional[str] = None,
+) -> str:
+    """Cheap verbatim OCR transcript to ground the auxiliary vision model.
+
+    Small scene models read embedded text poorly; the dedicated OCR model is
+    a ~5s CPU call. When ``auxiliary.ocr.model`` is configured (and
+    ``auxiliary.vision.ocr_context`` is not set to false), run OCR first and
+    return a prompt section with the transcript. Fail-open: any error or an
+    empty transcript returns "" and vision proceeds as before. The native
+    fast path does not use this yet (multimodal envelope shape).
+    """
+    ocr_model = None
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        _cfg = load_config()
+        if cfg_get(_cfg, "auxiliary", "vision", "ocr_context") is False:
+            return ""
+        _omodel = cfg_get(_cfg, "auxiliary", "ocr", "model")
+        if _omodel:
+            ocr_model = str(_omodel).strip() or None
+    except Exception:
+        return ""
+    if not ocr_model:
+        return ""
+    try:
+        raw = await vision_analyze_tool(
+            image_url,
+            "OCR this image. Output the text verbatim.",
+            ocr_model,
+            task_id=task_id,
+            region=region,
+            task="ocr",
+            max_tokens=4000,
+        )
+        parsed = json.loads(raw)
+        transcript = (parsed.get("analysis") or "").strip() if parsed.get("success") else ""
+        if not transcript:
+            return ""
+        return (
+            "Verbatim OCR transcript of this image (layout blocks with "
+            "[x1, y1, x2, y2] pixel boxes) — trust it for any text content, "
+            "you only need to describe the visual/scene aspects:\n"
+            + transcript
+        )
+    except Exception:
+        logger.info("vision_analyze: OCR context unavailable, proceeding without", exc_info=True)
+        return ""
+
+
+async def _handle_vision_ocr(args: Dict[str, Any], **kw: Any) -> str:
+    image_url = args.get("image_url", "")
+    question = (args.get("question") or "").strip()
+    region = args.get("region")
+    task_id = kw.get("task_id")
+
+    # No native fast path here on purpose: even a vision-capable main model
+    # reads pixels lossily, while the dedicated OCR model returns verbatim
+    # text with layout boxes. This tool is only as good as its pinned model.
+    prompt = "OCR this image. Output the text verbatim."
+    if question:
+        prompt += f" Focus: {question}"
+
+    model = None
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        _cfg = load_config()
+        _omodel = cfg_get(_cfg, "auxiliary", "ocr", "model")
+        if _omodel:
+            model = str(_omodel).strip() or None
+    except Exception:
+        pass
+    if not model:
+        model = os.getenv("AUXILIARY_OCR_MODEL", "").strip() or None
+    if not model:
+        return tool_error(
+            "vision_ocr is not configured: set auxiliary.ocr.model (and "
+            "provider) in config.yaml, or use vision_analyze instead.",
+            success=False,
+        )
+    return await vision_analyze_tool(
+        image_url,
+        prompt,
+        model,
+        task_id=task_id,
+        region=region,
+        task="ocr",
+        max_tokens=4000,
+    )
+
+
+registry.register(
+    name="vision_ocr",
+    toolset="vision",
+    schema=VISION_OCR_SCHEMA,
+    handler=_handle_vision_ocr,
+    check_fn=check_vision_requirements,
+    is_async=True,
+    emoji="🔤",
 )
 
 

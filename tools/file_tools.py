@@ -677,6 +677,51 @@ def _get_hermes_config_resolved() -> str | None:
     return _hermes_config_resolved
 
 
+def _casefold_sensitive_posix_paths(task_id: str = "default") -> bool:
+    """Return True when denylist matching should use Win32-local path aliases.
+
+    Native Windows + Git Bash local sinks are case-insensitive and ignore
+    trailing spaces/dots in ordinary components, so spellings like
+    ``/Etc/hosts`` and ``/Etc./hosts`` must match the lowercase POSIX
+    denylist. Container and remote POSIX backends remain case-sensitive.
+    """
+    return sys.platform == "win32" and _terminal_env_type_for_task(task_id) == "local"
+
+
+def _win32_component_for_sensitive_check(component: str) -> str:
+    """Apply Win32 ordinary-component lookup stripping for denylist keys.
+
+    Win32 (and Git Bash/MSYS on native Windows) ignores trailing spaces and
+    dots in ordinary path components, so ``Etc.`` and ``etc `` resolve like
+    ``etc``. Preserve ``.`` / ``..``; they are not ordinary name components.
+    """
+    if component in (".", ".."):
+        return component
+    return component.rstrip(" .")
+
+
+def _posix_form_for_sensitive_check(path: str, *, casefold: bool = False) -> str:
+    """Return *path* with separators normalized for POSIX denylist matching.
+
+    On Windows hosts, ``ntpath.normpath`` / ``Path`` turn ``/etc/hosts`` into
+    ``\\etc\\hosts``. The denylist entries are POSIX-form (``/etc/``,
+    ``/var/run/docker.sock``), so comparisons must use a shared separator or
+    the write guard fails open while the shell layer later restores the POSIX
+    path via ``_bash_safe_path``.
+
+    When *casefold* is True (native Windows local only), also strip trailing
+    spaces/dots per Win32 component lookup, then fold case so Git Bash-
+    equivalent spellings cannot bypass the denylist.
+    """
+    form = path.replace("\\", "/")
+    if not casefold:
+        return form
+    form = "/".join(
+        _win32_component_for_sensitive_check(part) for part in form.split("/")
+    )
+    return form.casefold()
+
+
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
@@ -684,26 +729,35 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     except (OSError, ValueError):
         resolved = filepath
     normalized = os.path.normpath(_expand_tilde(filepath))
+    # Compare denylist entries against slash-normalized forms so Windows
+    # backslash rewriting cannot bypass the POSIX prefixes / exact paths.
+    # Native Windows local also casefolds to match Git Bash sink semantics.
+    casefold = _casefold_sensitive_posix_paths(task_id)
+    resolved_posix = _posix_form_for_sensitive_check(resolved, casefold=casefold)
+    normalized_posix = _posix_form_for_sensitive_check(normalized, casefold=casefold)
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
     for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
+        if resolved_posix.startswith(prefix) or normalized_posix.startswith(prefix):
             return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
+    if resolved_posix in _SENSITIVE_EXACT_PATHS or normalized_posix in _SENSITIVE_EXACT_PATHS:
         return _err
     # Prevent agents from modifying the Hermes config file directly.
     # approvals.mode and other security settings live here; a malicious or
     # prompt-injected agent could silently disable exec approval by writing to
-    # this file.
+    # this file. Reuse the same Windows-local alias canonicalization as the
+    # POSIX denylist so mixed-case / trailing-dot spellings cannot bypass.
     hermes_config = _get_hermes_config_resolved()
-    if hermes_config and (resolved == hermes_config or normalized == hermes_config):
-        return (
-            f"Refusing to write to Hermes config file: {filepath}\n"
-            "Agent cannot modify security-sensitive configuration. "
-            "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead."
-        )
+    if hermes_config:
+        hermes_key = _posix_form_for_sensitive_check(hermes_config, casefold=casefold)
+        if resolved_posix == hermes_key or normalized_posix == hermes_key:
+            return (
+                f"Refusing to write to Hermes config file: {filepath}\n"
+                "Agent cannot modify security-sensitive configuration. "
+                "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead."
+            )
     return None
 
 

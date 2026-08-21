@@ -3,8 +3,10 @@
 Based on PR #1085 by ismoilh (salvaged).
 """
 
+import json
 import os
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -255,6 +257,436 @@ class TestCheckSensitivePathMacOSBypass:
     def test_safe_path_allowed(self):
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/tmp/safe_file.txt") is None
+
+
+class TestCheckSensitivePathWindowsHostSemantics:
+    """POSIX denylist entries must still match after Windows path rewriting.
+
+    On win32, ``_resolve_path_for_task`` / ``os.path.normpath`` turn
+    ``/etc/hosts`` into ``\\etc\\hosts``. Without separator normalization the
+    write guard fails open while the shell layer restores the POSIX path.
+    """
+
+    def test_prefix_blocked_when_resolution_uses_backslashes(self, monkeypatch):
+        from tools import file_tools as mod
+
+        monkeypatch.setattr(
+            mod,
+            "_resolve_path_for_task",
+            lambda filepath, task_id="default": Path(str(filepath).replace("/", "\\")),
+        )
+        monkeypatch.setattr(
+            mod.os.path,
+            "normpath",
+            lambda path: str(path).replace("/", "\\"),
+        )
+
+        assert mod._check_sensitive_path("/etc/hosts") is not None
+        assert mod._check_sensitive_path("/boot/grub/grub.cfg") is not None
+        assert mod._check_sensitive_path("/usr/lib/systemd/system/x.service") is not None
+        assert mod._check_sensitive_path("/private/etc/hosts") is not None
+
+    def test_exact_docker_sock_blocked_when_resolution_uses_backslashes(self, monkeypatch):
+        from tools import file_tools as mod
+
+        monkeypatch.setattr(
+            mod,
+            "_resolve_path_for_task",
+            lambda filepath, task_id="default": Path(str(filepath).replace("/", "\\")),
+        )
+        monkeypatch.setattr(
+            mod.os.path,
+            "normpath",
+            lambda path: str(path).replace("/", "\\"),
+        )
+
+        assert mod._check_sensitive_path("/var/run/docker.sock") is not None
+        assert mod._check_sensitive_path("/run/docker.sock") is not None
+
+    def test_safe_path_still_allowed_with_backslash_normalization(self, monkeypatch):
+        from tools import file_tools as mod
+
+        monkeypatch.setattr(
+            mod,
+            "_resolve_path_for_task",
+            lambda filepath, task_id="default": Path(str(filepath).replace("/", "\\")),
+        )
+        monkeypatch.setattr(
+            mod.os.path,
+            "normpath",
+            lambda path: str(path).replace("/", "\\"),
+        )
+
+        assert mod._check_sensitive_path("/tmp/safe_file.txt") is None
+
+    @pytest.mark.skipif(os.name != "nt", reason="native Windows path rewriting")
+    def test_native_windows_host_blocks_posix_sensitive_targets(self):
+        from tools.file_tools import _check_sensitive_path
+
+        assert _check_sensitive_path("/etc/hosts") is not None
+        assert _check_sensitive_path("/boot/grub/grub.cfg") is not None
+        assert _check_sensitive_path("/var/run/docker.sock") is not None
+        assert _check_sensitive_path("/tmp/safe_file.txt") is None
+
+    def _patch_windows_local_backslash_resolution(self, monkeypatch, mod):
+        monkeypatch.setattr(mod.sys, "platform", "win32")
+        monkeypatch.setattr(
+            mod, "_terminal_env_type_for_task", lambda task_id="default": "local"
+        )
+        monkeypatch.setattr(
+            mod,
+            "_resolve_path_for_task",
+            lambda filepath, task_id="default": Path(str(filepath).replace("/", "\\")),
+        )
+        monkeypatch.setattr(
+            mod.os.path,
+            "normpath",
+            lambda path: str(path).replace("/", "\\"),
+        )
+
+    def test_mixed_case_prefix_blocked_on_windows_local(self, monkeypatch):
+        """Git Bash resolves /Etc/hosts to the same target as /etc/hosts."""
+        from tools import file_tools as mod
+
+        self._patch_windows_local_backslash_resolution(monkeypatch, mod)
+
+        assert mod._check_sensitive_path("/Etc/hosts") is not None
+        assert mod._check_sensitive_path("/BOOT/grub/grub.cfg") is not None
+        assert mod._check_sensitive_path("/Private/Etc/hosts") is not None
+
+    def test_mixed_case_exact_docker_sock_blocked_on_windows_local(self, monkeypatch):
+        from tools import file_tools as mod
+
+        self._patch_windows_local_backslash_resolution(monkeypatch, mod)
+
+        assert mod._check_sensitive_path("/var/run/Docker.sock") is not None
+        assert mod._check_sensitive_path("/Run/docker.sock") is not None
+
+    def test_mixed_case_lookalikes_and_safe_paths_still_allowed(self, monkeypatch):
+        from tools import file_tools as mod
+
+        self._patch_windows_local_backslash_resolution(monkeypatch, mod)
+
+        assert mod._check_sensitive_path("/tmp/safe.txt") is None
+        assert mod._check_sensitive_path("/etc2/hosts") is None
+        assert mod._check_sensitive_path(r"C:\Users\test\file.txt") is None
+
+    def test_mixed_case_not_blocked_on_posix_or_container_backends(self, monkeypatch):
+        """Container/WSL/remote POSIX sinks stay case-sensitive."""
+        from tools import file_tools as mod
+
+        monkeypatch.setattr(mod.sys, "platform", "linux")
+        monkeypatch.setattr(
+            mod, "_terminal_env_type_for_task", lambda task_id="default": "docker"
+        )
+        assert mod._check_sensitive_path("/Etc/hosts") is None
+        assert mod._check_sensitive_path("/var/run/Docker.sock") is None
+
+        monkeypatch.setattr(mod.sys, "platform", "win32")
+        monkeypatch.setattr(
+            mod, "_terminal_env_type_for_task", lambda task_id="default": "docker"
+        )
+        assert mod._check_sensitive_path("/Etc/hosts") is None
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_file_blocks_mixed_case_prefix_on_windows_local(
+        self, mock_get, monkeypatch
+    ):
+        from tools import file_tools as mod
+
+        self._patch_windows_local_backslash_resolution(monkeypatch, mod)
+
+        result = json.loads(mod.write_file_tool("/Etc/hosts", "evil"))
+        assert "error" in result
+        assert "sensitive system path" in result["error"]
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_file_blocks_mixed_case_exact_on_windows_local(
+        self, mock_get, monkeypatch
+    ):
+        from tools import file_tools as mod
+
+        self._patch_windows_local_backslash_resolution(monkeypatch, mod)
+
+        result = json.loads(mod.write_file_tool("/var/run/Docker.sock", "evil"))
+        assert "error" in result
+        assert "sensitive system path" in result["error"]
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_v4a_patch_blocks_mixed_case_prefix_on_windows_local(
+        self, mock_get, monkeypatch
+    ):
+        from tools import file_tools as mod
+
+        self._patch_windows_local_backslash_resolution(monkeypatch, mod)
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Update File: /Etc/hosts\n"
+            "@@ @@\n"
+            "-old\n"
+            "+new\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(mod.patch_tool(mode="patch", patch=patch_text))
+        assert "error" in result
+        assert "sensitive" in result["error"].lower()
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_v4a_patch_blocks_mixed_case_exact_on_windows_local(
+        self, mock_get, monkeypatch
+    ):
+        from tools import file_tools as mod
+
+        self._patch_windows_local_backslash_resolution(monkeypatch, mod)
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Add File: /var/run/Docker.sock\n"
+            "+evil\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(mod.patch_tool(mode="patch", patch=patch_text))
+        assert "error" in result
+        assert "sensitive" in result["error"].lower()
+        mock_get.assert_not_called()
+
+    def test_trailing_dot_and_space_aliases_blocked_on_windows_local(self, monkeypatch):
+        """Win32 lookup strips trailing dots/spaces in ordinary components."""
+        from tools import file_tools as mod
+
+        self._patch_windows_local_backslash_resolution(monkeypatch, mod)
+
+        assert mod._check_sensitive_path("/Etc./hosts") is not None
+        assert mod._check_sensitive_path("/etc /hosts") is not None
+        assert mod._check_sensitive_path("/boot./grub/grub.cfg") is not None
+        assert mod._check_sensitive_path("/private/etc./hosts") is not None
+        assert mod._check_sensitive_path("/var/run/docker.sock.") is not None
+        assert mod._check_sensitive_path("/run/docker.sock ") is not None
+
+    def test_trailing_alias_lookalikes_and_safe_paths_still_allowed(self, monkeypatch):
+        from tools import file_tools as mod
+
+        self._patch_windows_local_backslash_resolution(monkeypatch, mod)
+
+        assert mod._check_sensitive_path("/tmp/safe.txt") is None
+        assert mod._check_sensitive_path("/etc2/hosts") is None
+        assert mod._check_sensitive_path("/etc2./hosts") is None
+        assert mod._check_sensitive_path(r"C:\Users\test\file.txt") is None
+
+    def test_trailing_aliases_not_blocked_on_posix_or_container_backends(self, monkeypatch):
+        """POSIX/container backends must not apply Win32 component stripping."""
+        from tools import file_tools as mod
+
+        monkeypatch.setattr(mod.sys, "platform", "linux")
+        monkeypatch.setattr(
+            mod, "_terminal_env_type_for_task", lambda task_id="default": "docker"
+        )
+        assert mod._check_sensitive_path("/Etc./hosts") is None
+        assert mod._check_sensitive_path("/etc /hosts") is None
+        assert mod._check_sensitive_path("/var/run/docker.sock.") is None
+
+        monkeypatch.setattr(mod.sys, "platform", "win32")
+        monkeypatch.setattr(
+            mod, "_terminal_env_type_for_task", lambda task_id="default": "docker"
+        )
+        assert mod._check_sensitive_path("/Etc./hosts") is None
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_file_blocks_trailing_dot_alias_on_windows_local(
+        self, mock_get, monkeypatch
+    ):
+        from tools import file_tools as mod
+
+        self._patch_windows_local_backslash_resolution(monkeypatch, mod)
+
+        result = json.loads(mod.write_file_tool("/Etc./hosts", "evil"))
+        assert "error" in result
+        assert "sensitive system path" in result["error"]
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_file_blocks_trailing_space_exact_on_windows_local(
+        self, mock_get, monkeypatch
+    ):
+        from tools import file_tools as mod
+
+        self._patch_windows_local_backslash_resolution(monkeypatch, mod)
+
+        result = json.loads(mod.write_file_tool("/run/docker.sock ", "evil"))
+        assert "error" in result
+        assert "sensitive system path" in result["error"]
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_v4a_patch_blocks_trailing_dot_alias_on_windows_local(
+        self, mock_get, monkeypatch
+    ):
+        from tools import file_tools as mod
+
+        self._patch_windows_local_backslash_resolution(monkeypatch, mod)
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Update File: /Etc./hosts\n"
+            "@@ @@\n"
+            "-old\n"
+            "+new\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(mod.patch_tool(mode="patch", patch=patch_text))
+        assert "error" in result
+        assert "sensitive" in result["error"].lower()
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_v4a_patch_blocks_trailing_space_exact_on_windows_local(
+        self, mock_get, monkeypatch
+    ):
+        from tools import file_tools as mod
+
+        self._patch_windows_local_backslash_resolution(monkeypatch, mod)
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Add File: /var/run/docker.sock.\n"
+            "+evil\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(mod.patch_tool(mode="patch", patch=patch_text))
+        assert "error" in result
+        assert "sensitive" in result["error"].lower()
+        mock_get.assert_not_called()
+
+    _WIN_HERMES_CONFIG = r"C:\Users\test\.hermes\config.yaml"
+    _WIN_HERMES_CONFIG_MIXED = r"C:\Users\test\.HERMES\CONFIG.YAML"
+    _WIN_HERMES_CONFIG_TRAILING = r"C:\Users\test\.hermes\config.yaml."
+    _WIN_HERMES_NEARBY_SAFE = r"C:\Users\test\.hermes\notes.yaml"
+
+    def _patch_windows_hermes_config(self, monkeypatch, mod, config_path=None):
+        config_path = config_path or self._WIN_HERMES_CONFIG
+        self._patch_windows_local_backslash_resolution(monkeypatch, mod)
+        monkeypatch.setattr(mod, "_hermes_config_resolved", config_path)
+        monkeypatch.setattr(mod, "_hermes_config_resolved_loaded", True)
+
+    def test_hermes_config_canonical_blocked_on_windows_local(self, monkeypatch):
+        from tools import file_tools as mod
+
+        self._patch_windows_hermes_config(monkeypatch, mod)
+        assert mod._check_sensitive_path(self._WIN_HERMES_CONFIG) is not None
+
+    def test_hermes_config_mixed_case_alias_blocked_on_windows_local(self, monkeypatch):
+        from tools import file_tools as mod
+
+        self._patch_windows_hermes_config(monkeypatch, mod)
+        err = mod._check_sensitive_path(self._WIN_HERMES_CONFIG_MIXED)
+        assert err is not None
+        assert "Hermes config" in err
+
+    def test_hermes_config_trailing_dot_alias_blocked_on_windows_local(self, monkeypatch):
+        from tools import file_tools as mod
+
+        self._patch_windows_hermes_config(monkeypatch, mod)
+        err = mod._check_sensitive_path(self._WIN_HERMES_CONFIG_TRAILING)
+        assert err is not None
+        assert "Hermes config" in err
+
+    def test_hermes_config_nearby_safe_path_still_allowed(self, monkeypatch):
+        from tools import file_tools as mod
+
+        self._patch_windows_hermes_config(monkeypatch, mod)
+        assert mod._check_sensitive_path(self._WIN_HERMES_NEARBY_SAFE) is None
+
+    def test_hermes_config_aliases_not_blocked_on_posix_or_container(self, monkeypatch):
+        """POSIX/container sinks stay case-sensitive for the config identity check."""
+        from tools import file_tools as mod
+
+        hermes = "/home/user/.hermes/config.yaml"
+        monkeypatch.setattr(mod, "_hermes_config_resolved", hermes)
+        monkeypatch.setattr(mod, "_hermes_config_resolved_loaded", True)
+        monkeypatch.setattr(
+            mod,
+            "_resolve_path_for_task",
+            lambda filepath, task_id="default": Path(filepath),
+        )
+        monkeypatch.setattr(mod.os.path, "normpath", lambda path: path)
+
+        monkeypatch.setattr(mod.sys, "platform", "linux")
+        monkeypatch.setattr(
+            mod, "_terminal_env_type_for_task", lambda task_id="default": "docker"
+        )
+        assert mod._check_sensitive_path(hermes) is not None
+        assert mod._check_sensitive_path("/home/user/.HERMES/config.yaml") is None
+        assert mod._check_sensitive_path("/home/user/.hermes/config.yaml.") is None
+
+        monkeypatch.setattr(mod.sys, "platform", "win32")
+        monkeypatch.setattr(
+            mod, "_terminal_env_type_for_task", lambda task_id="default": "docker"
+        )
+        assert mod._check_sensitive_path("/home/user/.HERMES/config.yaml") is None
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_file_blocks_hermes_config_alias_on_windows_local(
+        self, mock_get, monkeypatch
+    ):
+        from tools import file_tools as mod
+
+        self._patch_windows_hermes_config(monkeypatch, mod)
+        result = json.loads(
+            mod.write_file_tool(self._WIN_HERMES_CONFIG_MIXED, "approvals:\n  mode: off\n")
+        )
+        assert "error" in result
+        assert "Hermes config" in result["error"]
+        mock_get.assert_not_called()
+
+        result = json.loads(
+            mod.write_file_tool(self._WIN_HERMES_CONFIG_TRAILING, "approvals:\n  mode: off\n")
+        )
+        assert "error" in result
+        assert "Hermes config" in result["error"]
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_file_allows_nearby_safe_path_on_windows_local(
+        self, mock_get, monkeypatch
+    ):
+        from tools import file_tools as mod
+
+        self._patch_windows_hermes_config(monkeypatch, mod)
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {
+            "status": "ok",
+            "path": self._WIN_HERMES_NEARBY_SAFE,
+            "bytes": 5,
+        }
+        mock_ops.write_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        result = json.loads(mod.write_file_tool(self._WIN_HERMES_NEARBY_SAFE, "hello"))
+        assert result["status"] == "ok"
+        mock_get.assert_called_once()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_v4a_patch_blocks_hermes_config_alias_on_windows_local(
+        self, mock_get, monkeypatch
+    ):
+        from tools import file_tools as mod
+
+        self._patch_windows_hermes_config(monkeypatch, mod)
+        for path in (self._WIN_HERMES_CONFIG_MIXED, self._WIN_HERMES_CONFIG_TRAILING):
+            patch_text = (
+                "*** Begin Patch\n"
+                f"*** Update File: {path}\n"
+                "@@ @@\n"
+                "-old\n"
+                "+approvals:\n"
+                "+  mode: off\n"
+                "*** End Patch\n"
+            )
+            result = json.loads(mod.patch_tool(mode="patch", patch=patch_text))
+            assert "error" in result
+            assert "hermes config" in result["error"].lower()
+            mock_get.assert_not_called()
 
 
 class TestAtomicWrite:

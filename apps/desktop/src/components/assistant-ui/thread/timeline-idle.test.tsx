@@ -2,6 +2,8 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { TranscriptWindowProvider } from './transcript-window'
+
 /**
  * The timeline must do NO work it can't currently show. Two gates are proven
  * here by rendering the real component and counting the work it performs:
@@ -64,6 +66,9 @@ const renderTimeline = (ui: ReactNode = <ThreadTimeline />) => render(ui)
 
 afterEach(() => {
   cleanup()
+  globalThis.document.body.replaceChildren()
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   selectorCalls.mockClear()
   transcriptReads.mockClear()
   paneActive = true
@@ -120,6 +125,114 @@ describe('ThreadTimeline popover', () => {
 
     // Still mounted — the popover fades out, it does not pop out of existence.
     expect(popover?.querySelectorAll('button')).toHaveLength(6)
+  })
+})
+
+describe('ThreadTimeline with a bounded runtime window', () => {
+  it('keeps older prompts in the rail and asks the window to reveal hidden targets', () => {
+    messages = transcript(2)
+    const revealMessage = vi.fn()
+    const timelineEntries = transcript(6).map((message, index) => ({ id: message.id, preview: `prompt ${index}` }))
+
+    renderTimeline(
+      <TranscriptWindowProvider
+        value={{
+          olderAvailable: true,
+          expandWindow: vi.fn(),
+          revealMessage,
+          timelineEntries
+        }}
+      >
+        <ThreadTimeline />
+      </TranscriptWindowProvider>
+    )
+
+    expect(screen.getAllByRole('button')).toHaveLength(6)
+
+    fireEvent.click(screen.getByRole('button', { name: 'prompt 0' }))
+
+    expect(revealMessage).toHaveBeenCalledWith('u0')
+  })
+
+  it('scrolls to the prompt after the window materializes it', () => {
+    messages = transcript(6).slice(4)
+    const revealMessage = vi.fn()
+    const timelineEntries = transcript(6).map((message, index) => ({ id: message.id, preview: `prompt ${index}` }))
+    const surface = globalThis.document.createElement('div')
+    const viewport = globalThis.document.createElement('div')
+    const host = globalThis.document.createElement('div')
+
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+
+    const frame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      callback(performance.now() + 200)
+
+      return 1
+    })
+
+    surface.dataset.sessionAnchor = 'timeline-test'
+    viewport.dataset.slot = 'aui_thread-viewport'
+    viewport.getBoundingClientRect = () => ({
+      bottom: 400,
+      height: 400,
+      left: 0,
+      right: 800,
+      top: 0,
+      width: 800,
+      x: 0,
+      y: 0,
+      toJSON: () => ({})
+    })
+    surface.append(viewport, host)
+    globalThis.document.body.append(surface)
+
+    const { rerender } = render(
+      <TranscriptWindowProvider
+        value={{
+          olderAvailable: true,
+          expandWindow: vi.fn(),
+          revealMessage,
+          timelineEntries
+        }}
+      >
+        <ThreadTimeline />
+      </TranscriptWindowProvider>,
+      { container: host }
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'prompt 0' }))
+    expect(revealMessage).toHaveBeenCalledWith('u0')
+
+    const target = globalThis.document.createElement('div')
+    target.dataset.messageId = 'u0'
+    target.getBoundingClientRect = () => ({
+      bottom: 200,
+      height: 100,
+      left: 0,
+      right: 700,
+      top: 100,
+      width: 700,
+      x: 0,
+      y: 100,
+      toJSON: () => ({})
+    })
+    viewport.append(target)
+    messages = [userTurn('u0', 'prompt 0'), userTurn('u1', 'prompt 1')]
+    rerender(
+      <TranscriptWindowProvider
+        value={{
+          olderAvailable: true,
+          expandWindow: vi.fn(),
+          revealMessage,
+          timelineEntries
+        }}
+      >
+        <ThreadTimeline />
+      </TranscriptWindowProvider>
+    )
+
+    expect(viewport.scrollTop).toBe(92)
+    frame.mockRestore()
   })
 })
 

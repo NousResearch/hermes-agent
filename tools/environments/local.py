@@ -1715,6 +1715,10 @@ class LocalEnvironment(BaseEnvironment):
 
     _profile_scoped_passthrough = True
 
+    def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:
+        """Keep process/profile identity out of shared local snapshots."""
+        return ("HOME", "HERMES_HOME", "HERMES_REAL_HOME")
+
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         cwd = _resolve_local_initial_cwd(cwd)
         super().__init__(cwd=cwd, timeout=timeout, env=env)

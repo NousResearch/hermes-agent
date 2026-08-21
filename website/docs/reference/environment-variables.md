@@ -45,6 +45,8 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `ARCEE_BASE_URL` | Override Arcee base URL (default: `https://api.arcee.ai/api/v1`) |
 | `GMI_API_KEY` | GMI Cloud API key ([gmicloud.ai](https://www.gmicloud.ai/)) |
 | `GMI_BASE_URL` | Override GMI Cloud base URL (default: `https://api.gmi-serving.com/v1`) |
+| `INWORLD_API_KEY` | Inworld LLM router API key ([portal.inworld.ai](https://portal.inworld.ai/)) |
+| `INWORLD_BASE_URL` | Override Inworld base URL (default: `https://api.inworld.ai/v1`) |
 | `ACTUAL_API_KEY` | Actual Computer inference key (`ac_...`, [actual.inc/user/keys](https://actual.inc/user/keys)). Not needed for the local daemon. |
 | `ACTUAL_BASE_URL` | Override Actual Computer base URL (default: `https://api.actual.inc/v1`). Set to `http://127.0.0.1:8080` for the local offline daemon — loopback hosts need no API key. |
 | `MINIMAX_API_KEY` | MiniMax API key — global endpoint ([minimax.io](https://www.minimax.io)). **Not used by `minimax-oauth`** (OAuth path uses browser login instead). |

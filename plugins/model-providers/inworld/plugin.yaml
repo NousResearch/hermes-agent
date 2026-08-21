@@ -1,0 +1,5 @@
+name: inworld-provider
+kind: model-provider
+version: 1.0.0
+description: Inworld — LLM router fronting first-party and upstream models
+author: Anastasia Smolskaya

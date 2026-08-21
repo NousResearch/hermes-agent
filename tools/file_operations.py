@@ -715,7 +715,18 @@ def _lint_yaml_inproc(content: str) -> tuple[bool, str]:
     here refuses a legitimate write outright.  ``yaml.parse`` still
     catches real scanner/parser failures (unclosed quotes, bad
     indentation, tab-mangled block maps).
+
+    Go-template content (Helm charts, Argo/flux patches) is likewise
+    skipped: ``{{ .Values.x }}`` / ``{{- if ... }}`` directives are not
+    YAML syntax at all, and PyYAML's parser trips on them (flow-node /
+    block-end errors at the delimiter).  These files are only valid YAML
+    after the template engine renders them — validated with
+    ``helm template`` / ``helm lint``, never by a raw YAML parser.  The
+    check is a conservative substring scan for ``{{`` + ``}}``; template
+    code is never plain YAML, so this cannot mask a real YAML error.
     """
+    if "{{" in content and "}}" in content:
+        return True, "__SKIP__"
     try:
         import yaml as _yaml
     except ImportError:

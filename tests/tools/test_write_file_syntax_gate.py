@@ -74,3 +74,38 @@ class TestFailClosedSyntaxGate:
         res = ops.write_file(str(target), content)
         assert res.error is None, res.error
         assert target.read_text() == content
+
+    def test_helm_template_yaml_is_written_not_refused(self, ops, tmp_path: Path):
+        """Go-template YAML (Helm chart templates, Argo/flux patches) is NOT
+        plain YAML — {{ .Values.x }} / {{- if }} directives make PyYAML's
+        parser fail with flow-node/block-end errors at the delimiter.  The
+        file only becomes YAML after ``helm template`` renders it, so the
+        syntax gate must skip it (mirrors the CloudFormation/Ansible tag
+        exemption above: a consumer convention, not a syntax error).  This
+        exact content was refused by the gate before the exemption."""
+        target = tmp_path / "postgres-cluster.yaml"
+        content = (
+            "{{- if .Values.postgresql.enabled }}\n"
+            "apiVersion: postgresql.cnpg.io/v1\n"
+            "kind: Cluster\n"
+            "metadata:\n"
+            "  name: {{ include \"9chat.pg.name\" . }}\n"
+            "spec:\n"
+            "  instances: {{ .Values.postgresql.instances }}\n"
+            "  {{- with .Values.postgresql.storage.storageClass }}\n"
+            "  storageClass: {{ . }}\n"
+            "  {{- end }}\n"
+            "{{- end }}\n"
+        )
+        res = ops.write_file(str(target), content)
+        assert res.error is None, res.error
+        assert target.read_text() == content
+
+    def test_broken_plain_yaml_is_still_refused(self, ops, tmp_path: Path):
+        """The Go-template exemption must not weaken the gate for plain YAML:
+        real syntax errors (tab-mangled block map) are still hard-refused."""
+        target = tmp_path / "values.yaml"
+        res = ops.write_file(str(target), "a: 1\n\tb: tab-indented\n")
+        assert res.error is not None
+        assert "yaml" in res.error.lower()
+        assert not target.exists(), "broken YAML must NOT be written to disk"

@@ -34,6 +34,55 @@ Configure via `hermes plugins` → Provider Plugins → Context Engine, or edit 
 
 For building a context engine plugin, see [Context Engine Plugins](/developer-guide/context-engine-plugin).
 
+## keep_history engine: request-only compaction (chat history always visible)
+
+The built-in `compressor` rewrites the live transcript on compaction: the
+summarized middle is swapped in and the pre-compaction turns are
+soft-archived (`active=0, compacted=1` in the session store). UIs that
+render the session store (desktop app, dashboard) show only active rows, so
+after a compaction the visible timeline collapses to a summary card plus the
+recent tail.
+
+The bundled `keep_history` engine takes the opposite approach: **the
+persisted transcript is never rewritten**. It compacts *background* context
+— old tool logs, terminal dumps, file arrays, search results — only in the
+per-request message list via the `select_context()` hook (request-only by
+contract), so:
+
+- The model always receives a bounded, compacted context within token limits.
+- The session DB — and therefore the visible chat history — keeps **every**
+  user/assistant turn, fully scrollable at all times.
+
+```yaml
+context:
+  engine: "keep_history"    # compact background context, keep full chat history
+```
+
+Behavior:
+
+- `should_compress()` always returns `False` — the destructive
+  LLM-summary + `archive_and_compact` path is never auto-triggered.
+- `select_context()` prunes old tool results deterministically (dedup,
+  one-line summaries for large outputs, tool_call-arg truncation) when the
+  request crosses the token trigger, with a rearm watermark so
+  prompt-cache breaks stay episodic. A hard-ceiling trim guarantees the
+  request still fits the window in pathological sessions; in those cases
+  the trim may drop mid-chat turns **from the request the model sees**
+  (request-level drop only — the stored transcript still keeps every
+  turn, so the visible history is unaffected).
+- `compress()` (manual `/compress`, gateway hygiene) performs the same
+  deterministic prune — every user/assistant message survives verbatim and
+  no summary card is produced.
+
+The engine honors the same `compression.*` config block
+(`threshold`, `protect_last_n`, `min_tail_user_messages`,
+`proactive_prune_tokens`, `proactive_prune_min_result_chars`,
+`proactive_prune_min_reclaim_tokens`). The request-prune trigger is driven
+by `proactive_prune_tokens` (fallback: ~55% of the context window);
+`threshold` is accepted for compatibility but is not consulted, since the
+destructive full-compression path it configures never fires for this
+engine.
+
 ## Dual Compression System
 
 Hermes has two separate compression layers that operate independently:

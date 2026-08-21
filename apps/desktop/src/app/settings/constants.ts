@@ -233,7 +233,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'agent.image_input_mode': ['auto', 'native', 'text'],
   'approvals.mode': ['manual', 'smart', 'off'],
   'code_execution.mode': ['project', 'strict'],
-  'context.engine': ['compressor', 'default', 'custom'],
+  'context.engine': ['compressor', 'keep_history', 'default', 'custom'],
   // '' = inherit the agent's own effort; the rest is the shared scale.
   'delegation.reasoning_effort': ['', ...REASONING_EFFORTS],
   // NOTE: memory.provider is intentionally NOT listed here. Its options are

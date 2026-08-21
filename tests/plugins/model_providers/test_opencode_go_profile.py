@@ -106,6 +106,69 @@ class TestOpenCodeGoGLM52Reasoning:
         assert top_level == {"reasoning_effort": "max"}
 
 
+class TestOpenCodeGoGLM53Reasoning:
+    """GLM-5.3 cannot disable thinking. Effort is low / high / max."""
+
+    def test_no_preference_omits_thinking(self, opencode_go_profile):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config=None, model="glm-5.3"
+        )
+        assert extra_body == {}
+        assert top_level == {}
+
+    def test_disabled_becomes_enabled_plus_low(self, opencode_go_profile):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="glm-5.3",
+        )
+        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert top_level == {"reasoning_effort": "low"}
+
+    @pytest.mark.parametrize("effort", ["none", "minimal", "low"])
+    def test_light_efforts_map_to_low(self, opencode_go_profile, effort):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort},
+            model="glm-5.3",
+        )
+        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert top_level == {"reasoning_effort": "low"}
+
+    @pytest.mark.parametrize("effort", ["medium", "high"])
+    def test_mid_efforts_map_to_high(self, opencode_go_profile, effort):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort},
+            model="glm-5.3",
+        )
+        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert top_level == {"reasoning_effort": "high"}
+
+    @pytest.mark.parametrize("effort", ["xhigh", "max", "ultra"])
+    def test_strong_efforts_map_to_max(self, opencode_go_profile, effort):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort},
+            model="glm-5.3",
+        )
+        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert top_level == {"reasoning_effort": "max"}
+
+    @pytest.mark.parametrize("model", ["opencode-go/glm-5.3", "glm-5-3", "glm-5p3"])
+    def test_alias_spellings_recognized(self, opencode_go_profile, model):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "low"},
+            model=model,
+        )
+        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert top_level == {"reasoning_effort": "low"}
+
+    def test_glm_5_2_disabled_still_omits(self, opencode_go_profile):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="glm-5.2",
+        )
+        assert extra_body == {}
+        assert top_level == {}
+
+
 class TestOpenCodeGoModelGating:
     """Other OpenCode Go models must not receive Kimi/DeepSeek/GLM controls."""
 
@@ -163,3 +226,17 @@ class TestOpenCodeGoFullKwargsIntegration:
         )
         assert "extra_body" not in kwargs
         assert kwargs["reasoning_effort"] == "high"
+
+    def test_glm_5_3_off_reaches_enabled_plus_low(self, opencode_go_profile):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="glm-5.3",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=opencode_go_profile,
+            reasoning_config={"enabled": False},
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        assert kwargs["reasoning_effort"] == "low"
+        assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}

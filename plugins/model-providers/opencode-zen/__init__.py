@@ -49,6 +49,33 @@ def _is_glm_5_2_model(model: str | None) -> bool:
     return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
 
 
+def _is_glm_5_3_model(model: str | None) -> bool:
+    """Detect GLM-5.3 across alias spellings (glm-5.3 / glm-5-3 / glm-5p3)."""
+    m = _flat_model_name(model)
+    return any(token in m for token in ("glm-5.3", "glm-5-3", "glm-5p3"))
+
+
+def _glm_5_3_reasoning_effort(reasoning_config: dict | None) -> str | None:
+    """Map Hermes effort onto GLM-5.3's low / high / max.
+
+    Thinking cannot be turned off. Disabled / none / minimal / low → low.
+    medium / high → high. xhigh / max / ultra → max. No preference leaves
+    the server default (max) untouched.
+    """
+    if not isinstance(reasoning_config, dict):
+        return None
+    if reasoning_config.get("enabled") is False:
+        return "low"
+    effort = (reasoning_config.get("effort") or "").strip().lower()
+    if not effort:
+        return None
+    if effort in {"none", "minimal", "low"}:
+        return "low"
+    if effort in {"xhigh", "max", "ultra"}:
+        return "max"
+    return "high"
+
+
 class OpenCodeGoProfile(ProviderProfile):
     """OpenCode Go - model-specific reasoning controls."""
 
@@ -72,6 +99,17 @@ class OpenCodeGoProfile(ProviderProfile):
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
+
+        if _is_glm_5_3_model(model):
+            # GLM-5.3 rejects thinking.type=disabled. Always send enabled,
+            # and use reasoning_effort=low for "off".
+            if not isinstance(reasoning_config, dict):
+                return extra_body, top_level
+            extra_body["thinking"] = {"type": "enabled"}
+            effort = _glm_5_3_reasoning_effort(reasoning_config)
+            if effort is not None:
+                top_level["reasoning_effort"] = effort
+            return extra_body, top_level
 
         if _is_glm_5_2_model(model):
             # GLM-5.2 on OpenCode Go uses its native OpenAI-compatible

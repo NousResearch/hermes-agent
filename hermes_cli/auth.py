@@ -735,16 +735,17 @@ def _resolve_api_key_provider_secret(
 # Z.AI has separate billing for general vs coding plans, and global vs China
 # endpoints.  A key that works on one may return "Insufficient balance" on
 # another.  We probe at setup time and store the working endpoint.
-# Each entry lists candidate models to try in order — newer coding plan accounts
-# may only have access to recent models (glm-5.1, glm-5v-turbo) while older
-# ones still use glm-4.7.
+# Each entry lists candidate models to try in order. Newer coding plan
+# accounts may only have access to recent models (glm-5.3, glm-5.1,
+# glm-5v-turbo) while older ones still use glm-4.7. z.ai /models still
+# lists 5.2 as the newest slug, but the chat endpoint already accepts 5.3.
 
 ZAI_ENDPOINTS = [
     # (id, base_url, probe_models, label)
     ("global",        "https://api.z.ai/api/paas/v4",        ["glm-5"],   "Global"),
     ("cn",            "https://open.bigmodel.cn/api/paas/v4", ["glm-5"],   "China"),
-    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
-    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
+    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.3", "glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
+    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.3", "glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
 ]
 
 

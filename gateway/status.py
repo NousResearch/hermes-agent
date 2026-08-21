@@ -220,11 +220,21 @@ def terminate_pid(
     On POSIX an expectation is optional, but when the caller provides one and it no longer matches the live
     process, the kill is refused on every platform — a mismatched fingerprint always means the PID was
     recycled. See #89614.
-    On Windows, ``os.kill(SIGTERM)`` is ``TerminateProcess``, which returns ERROR_ACCESS_DENIED
-    when the target is an orphaned job-object child (the usual shape after a gateway crash: the
-    parent cmd.exe dies, leaving python.exe unreapable). On the ``force=False`` path that used to
-    bail out; it now escalates to ``taskkill /T /F`` so the restart manager can replace the dead
-    instance instead of leaving the orphan until an operator kills it by hand.
+    POSIX uses SIGTERM/SIGKILL. Windows uses taskkill /T /F for true force-kill
+    because os.kill(..., SIGTERM) is not equivalent to a tree-killing hard stop.
+
+    On Windows, `os.kill(SIGTERM)` actually calls `TerminateProcess`, which
+    returns `Permission denied` (ERROR_ACCESS_DENIED) when the target PID is
+    owned by an orphaned job-object tree — a pattern that occurs after the
+    Hermes gateway crashes on Windows (the parent cmd.exe wrapper dies, leaving
+    child python.exe as an unreapable job-object orphan). When that happens on
+    the `force=False` path, escalate to `taskkill /T /F` (the same call used
+    by the `force=True` path) so the gateway restart manager's `--replace`
+    path can actually replace the dead instance instead of bailing out at the
+    `return False` in `gateway/run.py` start_gateway() that follows the
+    PermissionError catch on this function. Without this escalation, every
+    Hermes gateway crash on Windows is unrecoverable until an operator manually
+    kills the orphan.
     """
     if force and (_IS_WINDOWS or expected_start_time is not None):
         if expected_start_time is None:

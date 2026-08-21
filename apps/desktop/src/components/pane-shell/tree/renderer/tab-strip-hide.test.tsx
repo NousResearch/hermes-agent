@@ -16,10 +16,8 @@ function LiveTreeGroup() {
   return <TreeGroup node={zoneAt(0)} parentAxis="column" />
 }
 
-// Pins the tab-strip hide/recovery grammar: hiding the strip is an EXPLICIT
-// verb (zone menu / main tab menu) — a double-click on a tab must NOT vanish
-// the bar (it used to, stranding the zone with no ✕), and a double-tap on the
-// zone body restores a strip that WAS hidden explicitly.
+// Pins the tab-strip hide grammar: the double-tap hide belongs to the STRIP
+// BACKGROUND alone — tabs are activate-only and must never hide the bar.
 
 class TestResizeObserver {
   observe() {}
@@ -74,14 +72,18 @@ const groupNode = () => {
   return (node.type === 'split' ? node.children[0] : node) as { headerHidden?: boolean; panes: string[] }
 }
 
-const tablist = () => document.querySelector('[role="tablist"]')
+const tablist = () => globalThis.document.querySelector('[role="tablist"]')
 
-const doublePointerDown = (target: Element) => {
-  fireEvent.pointerDown(target, { button: 0, pointerType: 'mouse' })
-  fireEvent.pointerDown(target, { button: 0, pointerType: 'mouse' })
+/** Two sub-threshold taps: pointerdown on the target, pointerup on window
+ *  (drag-session listens there), twice — the synthesized double-tap path. */
+const doubleTap = (target: Element) => {
+  for (let i = 0; i < 2; i++) {
+    fireEvent.pointerDown(target, { button: 0, clientX: 10, clientY: 10, pointerType: 'mouse' })
+    fireEvent.pointerUp(window, { button: 0, clientX: 10, clientY: 10, pointerType: 'mouse' })
+  }
 }
 
-describe('tab strip hide/recovery grammar', () => {
+describe('tab strip hide grammar', () => {
   it('double-clicking a tab does NOT hide the strip', () => {
     // $layoutTree.set, not declareDefaultTree — the latter only adopts into an
     // existing tree, and the store is module state that survives between tests.
@@ -90,44 +92,27 @@ describe('tab strip hide/recovery grammar', () => {
     )
     render(<LiveTreeGroup />)
 
-    const tab = document.querySelector<HTMLElement>('[data-tree-tab="terminal"]')
+    const tab = globalThis.document.querySelector<HTMLElement>('[data-tree-tab="terminal"]')
     expect(tab).toBeTruthy()
 
-    doublePointerDown(tab!)
+    doubleTap(tab!)
 
     // The strip is still there and the tree never recorded a hide.
     expect(tablist()).toBeTruthy()
     expect(groupNode().headerHidden).not.toBe(true)
   })
 
-  it('double-tapping the zone body restores an explicitly hidden strip', () => {
+  it('double-tapping the strip background still hides the header (documented gesture)', () => {
     $layoutTree.set(
-      split('column', [group(['terminal'], { active: 'terminal', headerHidden: true, id: 'grp-tools' })])
+      split('column', [group(['workspace', 'terminal'], { active: 'terminal', id: 'grp-main' })])
     )
     render(<LiveTreeGroup />)
 
-    // Hidden strip: no tablist, no ✕ anywhere in the zone.
-    expect(tablist()).toBeNull()
+    const strip = globalThis.document.querySelector<HTMLElement>('[data-zone-tabstrip="grp-main"]')
+    expect(strip).toBeTruthy()
 
-    const body = document.querySelector<HTMLElement>('[data-tree-group="grp-tools"]')
-    expect(body).toBeTruthy()
+    doubleTap(strip!)
 
-    doublePointerDown(body!)
-
-    expect(tablist()).toBeTruthy()
-    expect(groupNode().headerHidden).toBe(false)
-  })
-
-  it('a single body tap does not toggle the strip back', () => {
-    $layoutTree.set(
-      split('column', [group(['terminal'], { active: 'terminal', headerHidden: true, id: 'grp-tools' })])
-    )
-    render(<LiveTreeGroup />)
-
-    const body = document.querySelector<HTMLElement>('[data-tree-group="grp-tools"]')!
-    fireEvent.pointerDown(body, { button: 0, pointerType: 'mouse' })
-
-    expect(tablist()).toBeNull()
     expect(groupNode().headerHidden).toBe(true)
   })
 })

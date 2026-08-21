@@ -10,15 +10,7 @@
  */
 
 import { useStore } from '@nanostores/react'
-import {
-  type CSSProperties,
-  Fragment,
-  type ReactNode,
-  type PointerEvent as ReactPointerEvent,
-  type RefObject,
-  useRef,
-  useState
-} from 'react'
+import { type CSSProperties, Fragment, type ReactNode, type RefObject, useRef, useState } from 'react'
 
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
@@ -79,7 +71,7 @@ import {
   toggleTabSelected
 } from '../tab-selection'
 
-import { DOUBLE_TAP_MS, type DoubleTapContext, startPaneDrag } from './drag-session'
+import { type DoubleTapContext, startPaneDrag } from './drag-session'
 import { forceLoneHeaderForPanes } from './lone-header'
 import { useActiveTabVisible } from './tab-strip-scroll'
 import { paneChrome } from './track-model'
@@ -299,52 +291,16 @@ export function TreeGroup({
     tabCount: shown.length
   })
 
-  // The STRIP background keeps the synthesized double-tap hide — it is the
-  // documented explicit gesture (model.ts) and the open PR #84458 reveal edge
-  // is its recovery for that surface. TABS must not carry it: a tab is where
-  // people double-click for mundane reasons (select a title, retry a click),
-  // and every tab drag forwarded the gesture, so a routine double-click
-  // vanished the whole bar and stranded the zone with no ✕ and no way back
-  // but a right-click. The body below carries the inverse gesture as the
-  // recovery path when a strip IS hidden.
+  // The STRIP background owns the synthesized double-tap hide — it is the
+  // documented explicit gesture (model.ts). TABS never carry it: a tab is
+  // where people double-click for mundane reasons (select a title, retry a
+  // click), so tab presses pass no double-tap context and stay activate-only.
   const hideHeaderDoubleTap: DoubleTapContext = {
     key: `hide-header-${node.id}`,
     onDoubleTap: () => {
       setTreeGroupMinimized(node.id, false)
       setTreeGroupHeaderHidden(node.id, true)
     }
-  }
-
-  // Recovery for an explicitly hidden strip: double-tap the zone BODY brings
-  // the bar back. The body is otherwise inert (panes own their clicks; drags
-  // engage past a movement threshold), so the gesture can't fire by accident.
-  const showHeaderDoubleTap: DoubleTapContext = {
-    key: `show-header-${node.id}`,
-    onDoubleTap: () => setTreeGroupHeaderHidden(node.id, false)
-  }
-
-  const bodyTapRef = useRef<{ time: number; x: number; y: number } | null>(null)
-
-  const onBodyPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || !headerHidden || node.minimized || editMode) {
-      return
-    }
-
-    const now = Date.now()
-    const last = bodyTapRef.current
-
-    if (
-      last &&
-      now - last.time < DOUBLE_TAP_MS &&
-      Math.hypot(event.clientX - last.x, event.clientY - last.y) < 24
-    ) {
-      bodyTapRef.current = null
-      showHeaderDoubleTap.onDoubleTap()
-
-      return
-    }
-
-    bodyTapRef.current = { time: now, x: event.clientX, y: event.clientY }
   }
 
   // Zone-menu close targets read the layout tree, but this component must NOT
@@ -400,10 +356,11 @@ export function TreeGroup({
     targetPane
   }
 
-  // The bar's lifecycle is explicit: gaining a tab sticky-shows it
-  // (insertAtGroup pins headerHidden false), the zone menu (and the main
-  // tab's menu) hide it, full-page views veto it via paneChrome.headerVeto,
-  // and a double-tap on the body restores it while hidden.
+  // NO body double-click toggle: virtualized content (the thread) recreates
+  // its nodes between clicks, so the gesture was hopelessly unreliable. The
+  // bar's lifecycle is explicit instead — gaining a tab sticky-shows it
+  // (insertAtGroup pins headerHidden false), the main tab's context menu
+  // hides it, and full-page views veto it via paneChrome.headerVeto.
 
   return (
     <div
@@ -420,7 +377,6 @@ export function TreeGroup({
       onContextMenu={e => {
         setMenuPane((e.target as HTMLElement).closest('[data-tree-tab]')?.getAttribute('data-tree-tab') ?? undefined)
       }}
-      onPointerDown={onBodyPointerDown}
       ref={ref}
       style={wcOverlap ? { paddingTop: wcOverlap.y + wcOverlap.height } : undefined}
     >

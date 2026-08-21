@@ -5772,13 +5772,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     )
                     total_messages += len(tail_ids)
                     for r in tail_rows:
-                        raw = r["tool_calls"]
-                        if raw:
-                            try:
-                                parsed = json.loads(raw) if isinstance(raw, str) else raw
-                                total_tool_calls += len(parsed) if isinstance(parsed, list) else 0
-                            except (TypeError, ValueError):
-                                pass
+                        total_tool_calls += self._tool_calls_json_and_count(
+                            r["tool_calls"]
+                        )[1]
             conn.execute(
                 "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
                 (total_messages, total_tool_calls, child_session_id),
@@ -9264,6 +9260,26 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return value
         return json.dumps(value)
 
+    @staticmethod
+    def _tool_calls_json_and_count(value: Any) -> tuple[Optional[str], int]:
+        """Return the canonical persisted form and aggregate count.
+
+        ``tool_calls`` accepts decoded values and JSON text because live writes,
+        imports, forks, and rewrites all share the same insertion paths. Empty or
+        invalid values are normalized to SQL NULL and therefore count as zero;
+        non-empty lists count their entries, while a legacy non-list JSON value
+        is one call. Keeping both outputs together prevents counters from
+        describing data that was not actually persisted.
+        """
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                return None, 0
+        if not value:
+            return None, 0
+        return json.dumps(value), len(value) if isinstance(value, list) else 1
+
     def append_message(
         self,
         session_id: str,
@@ -9317,15 +9333,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         reasoning_details_json = self._reasoning_json_text(reasoning_details)
         codex_items_json = self._reasoning_json_text(codex_reasoning_items)
         codex_message_items_json = self._reasoning_json_text(codex_message_items)
-        # tool_calls may arrive as a Python list (from the live agent) or
-        # as a JSON string (from import/export). Parse first to avoid
-        # double-encoding.
-        if isinstance(tool_calls, str):
-            try:
-                tool_calls = json.loads(tool_calls)
-            except (json.JSONDecodeError, TypeError):
-                tool_calls = []
-        tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+        tool_calls_json, num_tool_calls = self._tool_calls_json_and_count(tool_calls)
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
@@ -9339,11 +9347,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     message_timestamp = float(timestamp)
             except (TypeError, ValueError):
                 logger.debug("Ignoring invalid explicit message timestamp: %r", timestamp)
-
-        # Pre-compute tool call count
-        num_tool_calls = 0
-        if tool_calls is not None:
-            num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
 
         def _do(conn):
             self._check_transcript_write_guards(
@@ -9745,7 +9748,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         tool_calls_total = 0
         for msg in messages:
             role = msg.get("role", "unknown")
-            tool_calls = msg.get("tool_calls")
+            tool_calls_json, tool_call_count = self._tool_calls_json_and_count(
+                msg.get("tool_calls")
+            )
             message_timestamp = now_ts
             if msg.get("timestamp") is not None:
                 try:
@@ -9766,16 +9771,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             reasoning_details_json = self._reasoning_json_text(reasoning_details)
             codex_items_json = self._reasoning_json_text(codex_reasoning_items)
             codex_message_items_json = self._reasoning_json_text(codex_message_items)
-            # tool_calls may arrive as a Python list (from the live agent)
-            # or as a JSON string (from import_sessions / export_session,
-            # which store it as TEXT). json.dumps on an already-serialized
-            # string double-encodes it, so parse first.
-            if isinstance(tool_calls, str):
-                try:
-                    tool_calls = json.loads(tool_calls)
-                except (json.JSONDecodeError, TypeError):
-                    tool_calls = []
-            tool_calls_json = json.dumps(tool_calls) if tool_calls else None
             # Accept either `platform_message_id` (new explicit name) or
             # `message_id` (yuanbao's existing convention on message dicts).
             platform_msg_id = (
@@ -9817,10 +9812,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if isinstance(msg, dict) and cur.lastrowid is not None:
                 msg["_row_id"] = cur.lastrowid
             inserted += 1
-            if tool_calls is not None:
-                tool_calls_total += (
-                    len(tool_calls) if isinstance(tool_calls, list) else 1
-                )
+            tool_calls_total += tool_call_count
             now_ts = max(now_ts + 1e-6, message_timestamp + 1e-6)
         return inserted, tool_calls_total
 
@@ -9939,9 +9931,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     )
 
                 tool_call_count = sum(
-                    len(tool_calls) if isinstance(tool_calls, list) else 1
+                    self._tool_calls_json_and_count(msg.get("tool_calls"))[1]
                     for msg in projected[: len(messages)]
-                    if (tool_calls := msg.get("tool_calls")) is not None
                 )
                 conn.execute(
                     "UPDATE sessions SET message_count = ?, tool_call_count = ? "
@@ -10103,13 +10094,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     (session_id, int(watermark)),
                 ).fetchall():
                     tail_ids.append(int(row["id"]))
-                    raw = row["tool_calls"]
-                    if raw:
-                        try:
-                            parsed = json.loads(raw) if isinstance(raw, str) else raw
-                            tail_tool_calls += len(parsed) if isinstance(parsed, list) else 0
-                        except (TypeError, ValueError):
-                            pass
+                    tail_tool_calls += self._tool_calls_json_and_count(
+                        row["tool_calls"]
+                    )[1]
 
             # Soft-archive the live turns: active=0 hides them from the live
             # context load, compacted=1 marks them as "summarized away" (vs

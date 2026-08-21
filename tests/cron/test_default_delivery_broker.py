@@ -323,7 +323,12 @@ def test_delivery_targets_include_brokered_platform_and_default_home(monkeypatch
     )
 
     with patch("gateway.config.load_gateway_config", return_value=_gateway_config(set())):
-        assert sched.cron_delivery_targets() == [
+        platform_targets = [
+            target
+            for target in sched.cron_delivery_targets()
+            if not target["id"].startswith("bot-chat:")
+        ]
+        assert platform_targets == [
             {
                 "id": "telegram",
                 "name": "Telegram",

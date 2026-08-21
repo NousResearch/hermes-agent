@@ -595,6 +595,19 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'social-media',
+                  key: 'skills-optional-social-media',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/social-media/social-media-socialrobot-analytics',
+                    'user-guide/skills/optional/social-media/social-media-socialrobot-calendar-review',
+                    'user-guide/skills/optional/social-media/social-media-socialrobot-campaign-report',
+                    'user-guide/skills/optional/social-media/social-media-socialrobot-content-repurposing',
+                    'user-guide/skills/optional/social-media/social-media-socialrobot-scheduling',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'software-development',
                   key: 'skills-optional-software-development',
                   collapsed: true,

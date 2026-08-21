@@ -226,6 +226,16 @@ hermes skills uninstall <skill-name>
 | [**unbroker**](/docs/user-guide/skills/optional/security/security-unbroker) | Autonomously remove your info from data-broker sites. |
 | [**web-pentest**](/docs/user-guide/skills/optional/security/security-web-pentest) | Authorized web pentest: recon, proof-based exploits, report. |
 
+## social-media
+
+| Skill | Description |
+|-------|-------------|
+| [**socialrobot-analytics**](/docs/user-guide/skills/optional/social-media/social-media-socialrobot-analytics) | Report SocialRobot post, account, and audience analytics. |
+| [**socialrobot-calendar-review**](/docs/user-guide/skills/optional/social-media/social-media-socialrobot-calendar-review) | Audit the upcoming social queue and fix gaps or overlaps. |
+| [**socialrobot-campaign-report**](/docs/user-guide/skills/optional/social-media/social-media-socialrobot-campaign-report) | Compare campaign performance across platforms and recap. |
+| [**socialrobot-content-repurposing**](/docs/user-guide/skills/optional/social-media/social-media-socialrobot-content-repurposing) | Repurpose long-form content into multi-platform posts. |
+| [**socialrobot-scheduling**](/docs/user-guide/skills/optional/social-media/social-media-socialrobot-scheduling) | Schedule multi-platform social posts via SocialRobot MCP. |
+
 ## software-development
 
 | Skill | Description |

@@ -1,0 +1,59 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: socialrobot
+description: Schedule and manage multi-platform social posts from Hermes.
+source: https://socialrobot.io/mcp
+
+# SocialRobot ships a remote MCP server over Streamable HTTP with native
+# OAuth 2.1 + Dynamic Client Registration via Better Auth. Hermes's MCP client
+# + mcp_oauth_manager handle discovery, PKCE, token exchange, and refresh;
+# nothing to install locally. The same server also serves its own agent skills
+# (SEP-2640) over the connection: list with `skills/list`, read the create-post
+# workflow with `skills/get`.
+transport:
+  type: http
+  url: https://socialrobot.io/api/mcp
+
+auth:
+  type: oauth
+  # No `provider:`: this is native MCP OAuth (case 1), not a third-party
+  # provider like Google. The MCP client triggers the browser flow on the
+  # first probe / first connect.
+  #
+  # Alternative for headless clients: SocialRobot also accepts API keys
+  # (Scheduler → API Keys) as `x-api-key` or `Authorization: Bearer <key>`.
+  # OAuth remains the default because it issues scoped, refreshable tokens.
+
+# Tool selection at install time:
+# The server exposes 18 tools (account discovery, media upload, create/update/
+# reschedule/delete posts, analytics, and platform-specific lookup tools such
+# as Pinterest boards, TikTok creator info, and LinkedIn geo/mention search).
+# The mutating tools (create_post, delete_post, update_post, reschedule_post,
+# pinterest_create_board) are the core value of the product, so unlike the n8n
+# entry we do NOT prune them by default. `default_enabled` is left unset so the
+# install-time checklist starts with everything pre-checked and users prune
+# what they don't want.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - socialrobot
+    - social robot
+    - post-scheduler
+  hosts:
+    - socialrobot.io
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with
+  SocialRobot. Approve the requested scopes (publishing, analytics, media).
+  Nothing publishes until you approve them.
+
+  No account yet? Get a free account at https://socialrobot.io and link the
+  social platforms you want to post to there first.
+
+  After auth, restart your Hermes session so the SocialRobot tools are loaded.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure socialrobot

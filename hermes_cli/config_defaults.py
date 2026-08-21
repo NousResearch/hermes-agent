@@ -491,6 +491,14 @@ DEFAULT_CONFIG = {
         "persistent_shell": True,
     },
 
+    "acp": {
+        # Cadence (seconds) for the ACP turn keepalive — emits an empty
+        # agent_message_chunk so ACP clients (e.g. Zed / VS Code panel) don't
+        # hit their idle-timeout and kill the session during long-running
+        # turns. Set to 0 to disable.
+        "keepalive_interval_s": 45.0,
+    },
+
     "web": {
         "backend": "",           # shared fallback — applies to both search and extract
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")

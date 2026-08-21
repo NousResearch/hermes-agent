@@ -45,6 +45,23 @@ _TOPIC_TABLES = (
     "telegram_dm_topic_bindings",
 )
 
+_OMITTED_DURABLE_TABLES = ("delivery_obligations",)
+_KNOWN_DELIVERY_STATES = frozenset({
+    "pending",
+    "attempting",
+    "failed",
+    "delivered",
+    "abandoned",
+})
+_TERMINAL_DELIVERY_STATES = frozenset({"delivered", "abandoned"})
+_UNKNOWN_DEFAULT = object()
+# The async-delegation migration adds origin_session_id without a SQL default,
+# so legacy rows remain NULL. The durable writer stores "" when no origin is
+# available. Both values mean "no origin" for omission reporting.
+_SEMANTIC_COLUMN_EMPTY_VALUES: dict[tuple[str, str], tuple[object, ...]] = {
+    ("async_delegations", "origin_session_id"): (None, ""),
+}
+
 # These values describe derived indexes or the schema that owns an optional
 # table. A fresh destination must generate them from its own current schema.
 _GENERATED_META_KEYS = frozenset({
@@ -272,6 +289,49 @@ def _copy_source_bundle(source: Path, snapshot_dir: Path) -> tuple[Path, list[st
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
     return [str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table}")')]
+
+
+def _table_column_defaults(
+    conn: sqlite3.Connection,
+    table: str,
+) -> dict[str, Optional[str]]:
+    return {
+        str(row[1]): None if row[4] is None else str(row[4])
+        for row in conn.execute(f'PRAGMA table_info("{table}")')
+    }
+
+
+def _quote_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _schema_object_exists(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        (name,),
+    ).fetchone()
+    return row is not None
+
+
+def _source_table_columns_with_error(
+    source: sqlite3.Connection,
+    table: str,
+) -> tuple[list[str], Optional[str]]:
+    try:
+        columns = _table_columns(source, table)
+    except sqlite3.DatabaseError as exc:
+        return [], str(exc)
+    if columns:
+        return columns, None
+    try:
+        if _schema_object_exists(source, table):
+            # PRAGMA writable_schema=ON deliberately hides malformed schema
+            # objects from table_info so readable canonical tables can still
+            # be salvaged. sqlite_master remains the source-of-truth inventory.
+            return [], "source table schema is unreadable"
+    except sqlite3.DatabaseError as exc:
+        return [], str(exc)
+    return [], None
 
 
 def _table_inventory(
@@ -792,6 +852,236 @@ def _copy_table_salvage(
     return result
 
 
+def _sqlite_literal_default(default_sql: Optional[str]) -> object:
+    if default_sql is None:
+        return None
+    value = default_sql.strip()
+    while len(value) >= 2 and value.startswith("(") and value.endswith(")"):
+        value = value[1:-1].strip()
+    upper = value.upper()
+    if upper == "NULL":
+        return None
+    if upper == "TRUE":
+        return 1
+    if upper == "FALSE":
+        return 0
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        return value[1:-1].replace("''", "'")
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        return value[1:-1].replace('""', '"')
+    if len(value) >= 3 and upper.startswith("X'") and value.endswith("'"):
+        try:
+            return bytes.fromhex(value[2:-1])
+        except ValueError:
+            return _UNKNOWN_DEFAULT
+    try:
+        return int(value, 10)
+    except ValueError:
+        try:
+            return float(value)
+        except ValueError:
+            return _UNKNOWN_DEFAULT
+
+
+def _source_column_has_non_default_value(
+    source: sqlite3.Connection,
+    table: str,
+    column: str,
+    default_sql: Optional[str],
+) -> bool:
+    quoted_table = _quote_identifier(table)
+    quoted_column = _quote_identifier(column)
+    semantic_empty_values = _SEMANTIC_COLUMN_EMPTY_VALUES.get((table, column))
+    if semantic_empty_values is not None:
+        predicate = " AND ".join(
+            f"{quoted_column} IS NOT ?" for _value in semantic_empty_values
+        )
+        parameters = semantic_empty_values
+    else:
+        default_value = _sqlite_literal_default(default_sql)
+        if default_value is _UNKNOWN_DEFAULT:
+            predicate = f"{quoted_column} IS NOT NULL"
+            parameters = ()
+        else:
+            predicate = f"{quoted_column} IS NOT ?"
+            parameters = (default_value,)
+    row = source.execute(
+        f"SELECT 1 FROM {quoted_table} NOT INDEXED WHERE {predicate} LIMIT 1",
+        parameters,
+    ).fetchone()
+    return row is not None
+
+
+def _record_unreadable_table_omission(
+    report: dict[str, Any],
+    table: str,
+    error: str,
+    *,
+    copy_status: Optional[str] = None,
+) -> None:
+    table_report: dict[str, Any] = {
+        "omitted": True,
+        "copied_rows": 0,
+        "inspection_error": error,
+    }
+    if copy_status is not None:
+        table_report["copy_status"] = copy_status
+    report["tables"][table] = table_report
+    report["loss_detected"] = True
+    report["warnings"].append(
+        f"{table}: recovery omitted a source table whose schema could not be read"
+    )
+
+
+def _build_omission_report(
+    source: sqlite3.Connection,
+    destination: sqlite3.Connection,
+    copy_report: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Describe durable source state that the current recovery omits.
+
+    This is deliberately reporting-only. Delivery obligations carry
+    at-least-once replay semantics and must not be copied or re-owned by an
+    offline recovery tool without an explicit policy decision.
+    """
+
+    report: dict[str, Any] = {
+        "tables": {},
+        "columns": {},
+        "warnings": [],
+        "loss_detected": False,
+    }
+
+    for table, table_copy in copy_report.items():
+        source_columns, schema_error = _source_table_columns_with_error(source, table)
+        if schema_error is not None:
+            _record_unreadable_table_omission(
+                report,
+                table,
+                schema_error,
+                copy_status=table_copy.get("status"),
+            )
+            continue
+        if not source_columns:
+            continue
+        source_defaults = _table_column_defaults(source, table)
+        destination_columns = _table_columns(destination, table)
+        omitted_columns = [
+            column for column in source_columns if column not in destination_columns
+        ]
+        if not omitted_columns:
+            continue
+
+        material_columns: list[str] = []
+        inspection_errors: dict[str, str] = {}
+        for column in omitted_columns:
+            try:
+                if _source_column_has_non_default_value(
+                    source,
+                    table,
+                    column,
+                    source_defaults.get(column),
+                ):
+                    material_columns.append(column)
+            except sqlite3.DatabaseError as exc:
+                inspection_errors[column] = str(exc)
+
+        column_report: dict[str, Any] = {
+            "copy_status": table_copy.get("status"),
+            "omitted_source_columns": omitted_columns,
+            "columns_with_non_default_values": material_columns,
+        }
+        if inspection_errors:
+            column_report["inspection_errors"] = inspection_errors
+        report["columns"][table] = column_report
+
+        if material_columns:
+            report["loss_detected"] = True
+            report["warnings"].append(
+                f"{table}: recovery omitted source-only column(s) with "
+                f"non-default values: {', '.join(material_columns)}"
+            )
+        if inspection_errors:
+            report["loss_detected"] = True
+            report["warnings"].append(
+                f"{table}: recovery could not determine whether omitted "
+                "source-only column(s) contain data: "
+                + ", ".join(sorted(inspection_errors))
+            )
+
+    for table in _OMITTED_DURABLE_TABLES:
+        source_columns, schema_error = _source_table_columns_with_error(source, table)
+        if schema_error is not None:
+            _record_unreadable_table_omission(report, table, schema_error)
+            continue
+        if not source_columns:
+            continue
+
+        table_report: dict[str, Any] = {
+            "omitted": True,
+            "copied_rows": 0,
+        }
+        report["tables"][table] = table_report
+        if "state" not in source_columns:
+            table_report["inspection_error"] = "source table has no state column"
+            report["loss_detected"] = True
+            report["warnings"].append(
+                f"{table}: recovery omitted the table and its states could not "
+                "be inspected"
+            )
+            continue
+
+        state_counts: dict[str, int] = {}
+        try:
+            quoted_table = _quote_identifier(table)
+            for row in source.execute(
+                f'SELECT "state" FROM {quoted_table} NOT INDEXED'
+            ):
+                if row[0] is None:
+                    state = "<NULL>"
+                else:
+                    raw_state = str(row[0])
+                    state = (
+                        raw_state
+                        if raw_state in _KNOWN_DELIVERY_STATES
+                        else "<UNKNOWN>"
+                    )
+                state_counts[state] = state_counts.get(state, 0) + 1
+        except sqlite3.DatabaseError as exc:
+            table_report["inspection_error"] = str(exc)
+            report["loss_detected"] = True
+            report["warnings"].append(
+                f"{table}: recovery omitted the table and its states could not "
+                f"be read: {exc}"
+            )
+            continue
+
+        source_rows = sum(state_counts.values())
+        non_terminal_rows = sum(
+            count
+            for state, count in state_counts.items()
+            if state not in _TERMINAL_DELIVERY_STATES
+        )
+        table_report.update({
+            "source_rows": source_rows,
+            "state_counts": state_counts,
+            "non_terminal_rows": non_terminal_rows,
+        })
+        if non_terminal_rows:
+            report["loss_detected"] = True
+            report["warnings"].append(
+                f"{table}: recovery omitted {non_terminal_rows} non-terminal "
+                "delivery obligation(s); pending final replies may be lost"
+            )
+        elif source_rows:
+            report["warnings"].append(
+                f"{table}: recovery omitted {source_rows} terminal delivery "
+                "obligation(s) under the current recovery policy"
+            )
+
+    return report
+
+
 def _copy_state_meta(
     source: sqlite3.Connection,
     destination: sqlite3.Connection,
@@ -1168,6 +1458,7 @@ def _verify_recovered_database(
     copy_report: dict[str, dict[str, Any]],
     allow_partial: bool = False,
     orphan_cleanup: Optional[dict[str, Any]] = None,
+    omissions: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     verification: dict[str, Any] = {
         "errors": [],
@@ -1295,6 +1586,12 @@ def _verify_recovered_database(
                 verification["loss_detected"] = True
             else:
                 verification["errors"].append(message)
+
+        if omissions is not None:
+            verification["omissions"] = omissions
+            verification["warnings"].extend(omissions.get("warnings") or [])
+            if omissions.get("loss_detected"):
+                verification["loss_detected"] = True
 
         if orphan_cleanup:
             orphan_count = int(
@@ -1483,6 +1780,17 @@ def _recover_via_lost_and_found(
     )
     verification["complete"] = False
 
+    omissions = {
+        "tables": {},
+        "columns": {},
+        "warnings": [
+            "Omission inventory is unavailable because the source table "
+            "schemas were unreadable."
+        ],
+        "loss_detected": True,
+        "inspection_unavailable": True,
+    }
+
     source_unchanged = (
         _source_fingerprint(source) == inspection["source_fingerprint"]
     )
@@ -1515,6 +1823,7 @@ def _recover_via_lost_and_found(
         "session_stubs": stubbing,
         "fts_rebuild": fts,
         "copy": copy_report,
+        "omissions": omissions,
         "orphan_cleanup": {
             "sessions_reconstructed": stubbing["sessions_stubbed"],
             "messages_retained": stubbing["messages_retained"],
@@ -1662,6 +1971,11 @@ def recover_session_database(
                     progress_cb=progress_cb,
                     source_rows=table_inspection.get("rows"),
                 )
+            omissions = _build_omission_report(
+                source_conn,
+                destination_conn,
+                copy_report,
+            )
             orphan_cleanup = (
                 _cleanup_partial_orphans(destination_conn)
                 if allow_partial
@@ -1684,6 +1998,7 @@ def recover_session_database(
             copy_report=copy_report,
             allow_partial=allow_partial,
             orphan_cleanup=orphan_cleanup,
+            omissions=omissions,
         )
         source_unchanged = (
             _source_fingerprint(source) == inspection["source_fingerprint"]
@@ -1710,6 +2025,7 @@ def recover_session_database(
                 "warnings": inspection["warnings"],
             },
             "copy": copy_report,
+            "omissions": omissions,
             "orphan_cleanup": orphan_cleanup,
             "derived_metadata": derived_metadata,
             "verification": verification,

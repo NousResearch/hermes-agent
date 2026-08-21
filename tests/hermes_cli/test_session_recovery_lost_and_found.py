@@ -266,6 +266,8 @@ def test_lost_and_found_lane_recovers_schema_unreadable_source(
     assert report["complete"] is False
     assert report["installed"] is False
     assert report["unreadable_schemas"] == ["sessions", "messages"]
+    assert report["omissions"]["loss_detected"] is True
+    assert report["omissions"]["inspection_unavailable"] is True
     assert any(
         "BEST-EFFORT" in warning
         for warning in report["verification"]["warnings"]

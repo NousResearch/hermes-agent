@@ -298,6 +298,21 @@ def cmd_sessions(args, sessions_parser=None):
                 "and orphan count in the JSON report before installing it."
             )
             return 0
+        omissions = report.get("omissions") or {}
+        if report.get("verified") and omissions.get("loss_detected"):
+            print(f"✓ Recovery output verified with known omissions at: {output}")
+            print("  The output passed integrity and foreign-key checks.")
+            print("  The active session database was not changed.")
+            omission_warnings = omissions.get("warnings") or []
+            if omission_warnings:
+                print("  Known omissions:")
+                for warning in omission_warnings:
+                    print(f"    - {warning}")
+            print(
+                "  This output is incomplete. Review the JSON report "
+                "before installing it."
+            )
+            return 0
         print("✗ Recovery output did not pass every verification check.")
         print("  Do not install it. Review the JSON report for partial data or errors.")
         return 1

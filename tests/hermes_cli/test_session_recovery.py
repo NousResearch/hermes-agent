@@ -19,6 +19,7 @@ from hermes_cli.session_recovery import (
     SessionRecoverySourceError,
     inspect_session_database,
     recover_session_database,
+    write_recovery_report,
 )
 
 
@@ -28,6 +29,10 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(64 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _table_column_names(conn: sqlite3.Connection, table: str) -> list[str]:
+    return [str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table}")')]
 
 
 def _make_source(path: Path) -> dict[str, int]:
@@ -300,6 +305,84 @@ def _corrupt_table_root(path: Path, root_page: int) -> None:
     path.write_bytes(data)
 
 
+def _make_auxiliary_omission_source(
+    path: Path,
+    *,
+    delivery_states: tuple[str, ...],
+    origin_session_id: str | None = None,
+) -> None:
+    db = SessionDB(db_path=path)
+    try:
+        db.create_session("omission-session", "cli", cwd="/tmp/omission")
+        db.append_message("omission-session", "user", "synthetic fixture")
+    finally:
+        db.close()
+
+    from gateway.delivery_ledger import _initialize_schema as init_delivery_schema
+    from tools.async_delegation import _initialize_schema as init_delegation_schema
+
+    conn = sqlite3.connect(str(path), isolation_level=None)
+    try:
+        init_delivery_schema(conn)
+        init_delegation_schema(conn)
+        for index, state in enumerate(delivery_states):
+            conn.execute(
+                """INSERT INTO delivery_obligations (
+                    obligation_id, session_key, platform, chat_id, thread_id,
+                    content, state, attempts, created_at, updated_at,
+                    owner_pid, owner_started_at, last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    f"obligation-{index}",
+                    "telegram:chat-1",
+                    "telegram",
+                    "chat-1",
+                    None,
+                    "synthetic final response",
+                    state,
+                    0,
+                    1.0,
+                    1.0,
+                    999_999,
+                    1,
+                    None,
+                ),
+            )
+        if origin_session_id is not None:
+            conn.execute(
+                """INSERT INTO async_delegations (
+                    delegation_id, origin_session, state, dispatched_at,
+                    updated_at, origin_session_id
+                ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    "delegation-omission",
+                    "omission-session",
+                    "completed",
+                    1.0,
+                    1.0,
+                    origin_session_id,
+                ),
+            )
+    finally:
+        conn.close()
+
+
+def _malform_table_schema(path: Path, table: str) -> None:
+    conn = sqlite3.connect(str(path), isolation_level=None)
+    try:
+        schema_version = int(conn.execute("PRAGMA schema_version").fetchone()[0])
+        conn.execute("PRAGMA writable_schema=ON")
+        cursor = conn.execute(
+            "UPDATE sqlite_master SET sql = ? "
+            "WHERE type = 'table' AND name = ?",
+            (f"CREATE TABLE {table}(", table),
+        )
+        assert cursor.rowcount == 1
+        conn.execute(f"PRAGMA schema_version = {schema_version + 1}")
+    finally:
+        conn.close()
+
+
 def test_snapshot_blocks_connections_opened_during_the_copy(
     tmp_path: Path,
 ) -> None:
@@ -479,12 +562,203 @@ def test_partial_recovery_keeps_messages_when_sessions_are_unsalvageable(
     assert report["installed"] is False
 
 
+def test_recovery_reports_non_terminal_and_lazy_schema_omissions(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "auxiliary-source.db"
+    output = tmp_path / "auxiliary-recovered.db"
+    _make_auxiliary_omission_source(
+        source,
+        delivery_states=("pending", "delivered", "unexpected-private-state"),
+        origin_session_id="raw-origin-session-id",
+    )
+
+    report = recover_session_database(source, output, work_dir=tmp_path)
+    report_path = tmp_path / "auxiliary-recovery.json"
+    write_recovery_report(report_path, report)
+    persisted_report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert "delivery_obligations" in persisted_report["omissions"]["tables"]
+
+    omissions = report["omissions"]
+    delivery = omissions["tables"]["delivery_obligations"]
+    assert delivery["state_counts"] == {
+        "pending": 1,
+        "delivered": 1,
+        "<UNKNOWN>": 1,
+    }
+    assert delivery["non_terminal_rows"] == 2
+    delegation = omissions["columns"]["async_delegations"]
+    assert delegation["omitted_source_columns"] == ["origin_session_id"]
+    assert delegation["columns_with_non_default_values"] == ["origin_session_id"]
+    assert omissions["loss_detected"] is True
+    assert report["verification"]["loss_detected"] is True
+    assert report["complete"] is False
+    assert report["partial"] is True
+    assert report["verified"] is True
+    assert any(
+        "pending final replies may be lost" in warning
+        for warning in report["verification"]["warnings"]
+    )
+
+    conn = sqlite3.connect(str(output), isolation_level=None)
+    try:
+        assert _table_column_names(conn, "delivery_obligations") == []
+        assert "origin_session_id" not in _table_column_names(
+            conn,
+            "async_delegations",
+        )
+    finally:
+        conn.close()
 
 
+def test_terminal_delivery_omission_is_reported_without_claiming_data_loss(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "terminal-delivery-source.db"
+    output = tmp_path / "terminal-delivery-recovered.db"
+    _make_auxiliary_omission_source(
+        source,
+        delivery_states=("delivered", "abandoned"),
+        origin_session_id="",
+    )
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        conn.execute(
+            """INSERT INTO async_delegations (
+                delegation_id, origin_session, state, dispatched_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?)""",
+            ("delegation-null-origin", "omission-session", "completed", 1.0, 1.0),
+        )
+    finally:
+        conn.close()
+
+    report = recover_session_database(source, output, work_dir=tmp_path)
+
+    delivery = report["omissions"]["tables"]["delivery_obligations"]
+    assert delivery["state_counts"] == {"delivered": 1, "abandoned": 1}
+    assert delivery["non_terminal_rows"] == 0
+    delegation = report["omissions"]["columns"]["async_delegations"]
+    assert delegation["columns_with_non_default_values"] == []
+    assert report["omissions"]["loss_detected"] is False
+    assert report["verification"]["loss_detected"] is False
+    assert report["complete"] is True
+    assert report["partial"] is False
+    assert any(
+        "terminal delivery obligation" in warning
+        for warning in report["verification"]["warnings"]
+    )
 
 
+def test_unreadable_omitted_table_schema_is_reported_as_loss(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "malformed-auxiliary-schema.db"
+    output = tmp_path / "malformed-auxiliary-recovered.db"
+    _make_auxiliary_omission_source(
+        source,
+        delivery_states=("pending",),
+    )
+    _malform_table_schema(source, "delivery_obligations")
+
+    report = recover_session_database(source, output, work_dir=tmp_path)
+
+    delivery = report["omissions"]["tables"]["delivery_obligations"]
+    assert delivery["omitted"] is True
+    assert delivery["inspection_error"] == "source table schema is unreadable"
+    assert report["omissions"]["loss_detected"] is True
+    assert report["verification"]["loss_detected"] is True
+    assert report["complete"] is False
+    assert report["partial"] is True
+    assert report["verified"] is True
 
 
+def test_source_only_literal_default_is_reported_without_claiming_data_loss(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "defaulted-column-source.db"
+    output = tmp_path / "defaulted-column-recovered.db"
+    _make_source(source)
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        conn.execute(
+            "ALTER TABLE async_delegations "
+            "ADD COLUMN future_marker TEXT DEFAULT 'unset'"
+        )
+    finally:
+        conn.close()
+
+    report = recover_session_database(source, output, work_dir=tmp_path)
+
+    delegation = report["omissions"]["columns"]["async_delegations"]
+    assert delegation["omitted_source_columns"] == ["future_marker"]
+    assert delegation["columns_with_non_default_values"] == []
+    assert report["omissions"]["loss_detected"] is False
+    assert report["complete"] is True
+    assert report["partial"] is False
+
+
+@pytest.mark.parametrize(
+    ("delivery_states", "expected_complete", "expected_loss", "expected_message"),
+    [
+        (("delivered",), True, False, "Recovered database verified at"),
+        (
+            ("pending",),
+            False,
+            True,
+            "Recovery output verified with known omissions at",
+        ),
+    ],
+)
+def test_cli_distinguishes_verified_auxiliary_omissions(
+    tmp_path: Path,
+    delivery_states: tuple[str, ...],
+    expected_complete: bool,
+    expected_loss: bool,
+    expected_message: str,
+) -> None:
+    state_label = delivery_states[0]
+    source = tmp_path / f"cli-{state_label}-source.db"
+    output = tmp_path / f"cli-{state_label}-recovered.db"
+    _make_auxiliary_omission_source(
+        source,
+        delivery_states=delivery_states,
+        origin_session_id="",
+    )
+
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(tmp_path / f"cli-{state_label}-home")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "hermes_cli.main",
+            "sessions",
+            "recover",
+            "--source",
+            str(source),
+            "--output",
+            str(output),
+            "--work-dir",
+            str(tmp_path),
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert expected_message in result.stdout
+    assert "did not pass every verification check" not in result.stdout
+    report_path = output.with_name(output.name + ".recovery.json")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["complete"] is expected_complete
+    assert report["verified"] is True
+    assert report["omissions"]["loss_detected"] is expected_loss
+    if expected_loss:
+        assert "pending final replies may be lost" in result.stdout
 
 
 def test_cli_allow_partial_salvages_rows_across_a_corrupt_leaf(

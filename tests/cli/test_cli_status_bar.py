@@ -8,6 +8,15 @@ import cli as cli_mod
 from cli import HermesCLI
 
 
+_LOCAL_GPT56_ALIAS_CONFIG = {
+    "model": {
+        "aliases": {
+            "local-gpt56": "local-sub2api/gpt-5.6-sol",
+        }
+    }
+}
+
+
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj = HermesCLI.__new__(HermesCLI)
     cli_obj.model = model
@@ -15,6 +24,18 @@ def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
     return cli_obj
+
+
+def _set_alias_config(monkeypatch, config):
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr(cli_mod, "_REVERSE_ALIAS_CACHE", None)
+
+
+def _status_bar_model_short(provider: str, *, cli_provider: str | None = None) -> str:
+    cli_obj = _make_cli("gpt-5.6-sol")
+    cli_obj.provider = cli_provider or provider
+    cli_obj.agent = SimpleNamespace(model="gpt-5.6-sol", provider=provider)
+    return cli_obj._get_status_bar_snapshot()["model_short"]
 
 
 def _attach_agent(
@@ -55,6 +76,167 @@ def _attach_agent(
 
 
 class TestCLIStatusBar:
+    def test_status_bar_does_not_use_alias_from_another_provider(self, monkeypatch):
+        _set_alias_config(monkeypatch, _LOCAL_GPT56_ALIAS_CONFIG)
+
+        assert _status_bar_model_short("openai-codex") == "gpt-5.6-sol"
+
+    def test_status_bar_uses_alias_from_active_provider(self, monkeypatch):
+        _set_alias_config(monkeypatch, _LOCAL_GPT56_ALIAS_CONFIG)
+
+        assert _status_bar_model_short("local-sub2api") == "local-gpt56"
+
+    def test_reverse_alias_supports_both_config_forms(self, monkeypatch):
+        _set_alias_config(
+            monkeypatch,
+            {
+                "model_aliases": {
+                    "top-level": {
+                        "model": "claude-opus-4-6",
+                        "provider": "anthropic",
+                    }
+                },
+                "model": {
+                    "aliases": {
+                        "string-form": "openai-codex/gpt-5.6-sol",
+                    }
+                },
+            },
+        )
+
+        assert (
+            cli_mod._reverse_alias_for_display("claude-opus-4-6", "anthropic")
+            == "top-level"
+        )
+        assert (
+            cli_mod._reverse_alias_for_display("gpt-5.6-sol", "openai-codex")
+            == "string-form"
+        )
+
+    def test_reverse_alias_matches_canonical_provider_alias(self, monkeypatch):
+        _set_alias_config(
+            monkeypatch,
+            {
+                "model": {
+                    "aliases": {
+                        "opus": "claude/claude-opus-4-6",
+                    }
+                }
+            },
+        )
+
+        assert (
+            cli_mod._reverse_alias_for_display("claude-opus-4-6", "anthropic")
+            == "opus"
+        )
+
+    def test_reverse_alias_uses_shortest_provider_match(self, monkeypatch):
+        _set_alias_config(
+            monkeypatch,
+            {
+                "model": {
+                    "aliases": {
+                        "long-local-gpt56": "local-sub2api/gpt-5.6-sol",
+                        "gpt56": "local-sub2api/gpt-5.6-sol",
+                    }
+                }
+            },
+        )
+
+        assert (
+            cli_mod._reverse_alias_for_display("gpt-5.6-sol", "local-sub2api")
+            == "gpt56"
+        )
+
+    def test_reverse_alias_falls_back_when_provider_is_unavailable(self, monkeypatch):
+        _set_alias_config(monkeypatch, _LOCAL_GPT56_ALIAS_CONFIG)
+
+        assert cli_mod._reverse_alias_for_display("gpt-5.6-sol") == "local-gpt56"
+
+    def test_reverse_alias_auto_provider_falls_back_to_model_only(self, monkeypatch):
+        _set_alias_config(
+            monkeypatch,
+            {
+                "model": {
+                    "aliases": {
+                        "local-gpt56": "local-sub2api/gpt-5.6-sol",
+                        "any-gpt56": "gpt-5.6-sol",
+                    }
+                }
+            },
+        )
+
+        assert (
+            cli_mod._reverse_alias_for_display("gpt-5.6-sol", "auto")
+            == "any-gpt56"
+        )
+
+    def test_reverse_alias_dict_form_without_provider_uses_model_default(
+        self, monkeypatch
+    ):
+        _set_alias_config(
+            monkeypatch,
+            {
+                "model_aliases": {
+                    "top-level": {
+                        "model": "gpt-5.6-sol",
+                    }
+                },
+                "model": {
+                    "provider": "local-sub2api",
+                },
+            },
+        )
+
+        assert (
+            cli_mod._reverse_alias_for_display("gpt-5.6-sol", "local-sub2api")
+            == "top-level"
+        )
+
+    def test_reverse_alias_dict_form_without_provider_stays_scoped(
+        self, monkeypatch
+    ):
+        _set_alias_config(
+            monkeypatch,
+            {
+                "model_aliases": {
+                    "top-level": {
+                        "model": "gpt-5.6-sol",
+                    }
+                }
+            },
+        )
+
+        assert (
+            cli_mod._reverse_alias_for_display("gpt-5.6-sol", "openai-codex")
+            == "gpt-5.6-sol"
+        )
+        assert cli_mod._reverse_alias_for_display("gpt-5.6-sol") == "top-level"
+
+    def test_status_bar_prefers_live_agent_provider(self, monkeypatch):
+        _set_alias_config(
+            monkeypatch,
+            {
+                "model_aliases": {
+                    "codex": {
+                        "model": "gpt-5.6-sol",
+                        "provider": "openai-codex",
+                    },
+                    "local-gpt56": {
+                        "model": "gpt-5.6-sol",
+                        "provider": "local-sub2api",
+                    },
+                }
+            },
+        )
+        assert (
+            _status_bar_model_short(
+                "local-sub2api",
+                cli_provider="openai-codex",
+            )
+            == "local-gpt56"
+        )
+
     def test_session_title_is_right_aligned_after_it_is_queued(self):
         cli_obj = _make_cli()
         cli_obj._pending_title = "weekly-digest"
@@ -368,5 +550,3 @@ class TestIdleSinceLastTurn:
         cli_obj._prompt_duration = 5.0
         snapshot = cli_obj._get_status_bar_snapshot()
         assert snapshot["idle_since"].startswith("✓ ")
-
-

@@ -122,50 +122,89 @@ def format_duration_compact(*args, **kwargs):
     return f"{days:.1f}d"
 
 
-# Cached reverse map of config.yaml ``model_aliases:`` so the TUI can show
-# friendly names instead of full Palantir RIDs / long catalog IDs. Built
-# lazily on first call; cache is process-lifetime (config is read once at
-# session start, so further invalidation is unnecessary).
-_REVERSE_ALIAS_CACHE: dict[str, str] | None = None
+# Cached reverse maps of config.yaml model aliases so the TUI can show friendly
+# names instead of full Palantir RIDs / long catalog IDs. ``None`` provider keys
+# retain the legacy model-only fallback for callers without runtime provider
+# information. Built lazily on first call; cache is process-lifetime (config is
+# read once at session start, so further invalidation is unnecessary).
+_REVERSE_ALIAS_CACHE: dict[tuple[str | None, str], str] | None = None
 
 
-def _reverse_alias_for_display(model_name: str) -> str:
-    """Return the shortest configured alias for ``model_name``, or ``model_name``.
+def _normalize_provider_for_alias_display(provider: str | None) -> str:
+    provider_key = str(provider or "").strip().lower()
+    if not provider_key or provider_key == "auto":
+        return provider_key
+    try:
+        from hermes_cli.models import normalize_provider
+
+        return normalize_provider(provider_key)
+    except ImportError:
+        return provider_key
+
+
+def _reverse_alias_for_display(model_name: str, provider: str | None = None) -> str:
+    """Return the shortest configured alias for ``provider``/``model_name``.
 
     Looks up both ``model_aliases:`` (dict-based, full DirectAlias entries)
     and ``model.aliases:`` (string-based, set via ``hermes config set``)
     from config.yaml. Multiple aliases pointing at the same model — the
-    shortest wins, so ``opus47`` beats ``palantir-claude47``.
+    shortest wins, so ``opus47`` beats ``palantir-claude47``. When provider
+    information is unavailable, preserve the historical model-only lookup.
     """
     global _REVERSE_ALIAS_CACHE
     if not model_name:
         return model_name
     if _REVERSE_ALIAS_CACHE is None:
-        rmap: dict[str, str] = {}
+        rmap: dict[tuple[str | None, str], str] = {}
+
+        def remember(alias: str, model: str, alias_provider: str | None) -> None:
+            provider_key = _normalize_provider_for_alias_display(alias_provider)
+            for key in ((provider_key, model), (None, model)):
+                if key not in rmap or len(alias) < len(rmap[key]):
+                    rmap[key] = alias
+
         try:
             from hermes_cli.config import load_config
             cfg = load_config() or {}
+            mdl = cfg.get("model", {}) or {}
             ma = cfg.get("model_aliases")
             if isinstance(ma, dict):
                 for alias, entry in ma.items():
-                    if isinstance(entry, dict):
+                    if isinstance(alias, str) and isinstance(entry, dict):
                         m = str(entry.get("model", "") or "").strip()
-                        if m and (m not in rmap or len(alias) < len(rmap[m])):
-                            rmap[m] = alias
-            mdl = cfg.get("model", {}) or {}
+                        if m:
+                            # Fall back to the same default as the string-form
+                            # aliases below so both config shapes behave
+                            # identically for provider-less entries.
+                            remember(
+                                alias,
+                                m,
+                                entry.get("provider") or mdl.get("provider", ""),
+                            )
             if isinstance(mdl, dict):
                 simple = mdl.get("aliases")
                 if isinstance(simple, dict):
                     for alias, val in simple.items():
-                        if isinstance(val, str) and val.strip():
+                        if isinstance(alias, str) and isinstance(val, str) and val.strip():
                             v = val.strip()
-                            m = v.split("/", 1)[1] if "/" in v else v
-                            if m and (m not in rmap or len(alias) < len(rmap[m])):
-                                rmap[m] = alias
+                            if "/" in v:
+                                alias_provider, m = v.split("/", 1)
+                            else:
+                                alias_provider = mdl.get("provider", "")
+                                m = v
+                            m = m.strip()
+                            if m:
+                                remember(alias, m, alias_provider)
         except Exception:
             pass
         _REVERSE_ALIAS_CACHE = rmap
-    return _REVERSE_ALIAS_CACHE.get(model_name, model_name)
+    provider_key = _normalize_provider_for_alias_display(provider)
+    lookup_key = (
+        (provider_key, model_name)
+        if provider_key and provider_key != "auto"
+        else (None, model_name)
+    )
+    return _REVERSE_ALIAS_CACHE.get(lookup_key, model_name)
 
 
 def format_token_count_compact(*args, **kwargs):
@@ -6221,17 +6260,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         return f"✓ {format_duration_compact(idle)}"
 
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
-        # Prefer the agent's model name — it updates on fallback.
-        # self.model reflects the originally configured model and never
-        # changes mid-session, so the TUI would show a stale name after
-        # _try_activate_fallback() switches provider/model.
+        # Prefer the agent's live route — its model and provider update on
+        # fallback. The CLI fields retain the primary route, so using them
+        # while an agent is active would leave the TUI label stale.
         agent = getattr(self, "agent", None)
         model_name = (getattr(agent, "model", None) or self.model or "unknown")
+        active_provider = (
+            getattr(agent, "provider", None)
+            or getattr(self, "provider", None)
+        )
         # Friendly display: prefer reverse-alias from config.yaml ``model_aliases:``
         # before slash/length truncation. This turns long Palantir RIDs like
         # ``ri.language-model-service..language-model.anthropic-claude-4-7-opus``
         # into the user's chosen short name (e.g. ``opus-4.7``) in the status bar.
-        model_short = _reverse_alias_for_display(model_name)
+        model_short = _reverse_alias_for_display(model_name, active_provider)
         if model_short == model_name:
             model_short = model_name.split("/")[-1] if "/" in model_name else model_name
             # Strip Palantir RID prefixes via the shared display formatter so

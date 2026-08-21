@@ -518,6 +518,11 @@ def _gateway_platform_value(platform: Any) -> str:
     return str(getattr(platform, "value", platform) or "").strip().lower()
 
 
+def _gateway_profile_config_writes_allowed(platform: Any) -> bool:
+    """Keep qualification Buzz profiles immutable during gateway handling."""
+    return _gateway_platform_value(platform) != "buzz"
+
+
 def _non_conversational_metadata(
     metadata: Optional[Dict[str, Any]] = None,
     *,
@@ -849,6 +854,12 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return None
     if _gateway_surface_passes_raw_text(platform):
         return text
+
+    # Buzz publishes kind-9 messages rather than an editable status surface.
+    # Keep every auxiliary/status callback in sanitized local diagnostics; the
+    # adapter's verified terminal path is the only task publication boundary.
+    if _gateway_platform_value(platform) == "buzz":
+        return None
 
     text = _redact_gateway_user_facing_secrets(text)
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
@@ -4367,7 +4378,11 @@ class TurnRunner:
                         cfg_get(_cfg, "display", "tool_progress_command"),
                         default=False,
                     )
-                    if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
+                    if (
+                        _gateway_profile_config_writes_allowed(ctx.source.platform)
+                        and gate_on
+                        and not is_seen(_cfg, TOOL_PROGRESS_FLAG)
+                    ):
                         ctx.long_tool_hint_fired[0] = True
                         ctx.progress_queue.put(tool_progress_hint_gateway())
                         mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
@@ -10555,7 +10570,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 mark_seen,
             )
             _user_cfg = _load_gateway_config()
-            if not is_seen(_user_cfg, BUSY_INPUT_FLAG):
+            if (
+                _gateway_profile_config_writes_allowed(event.source.platform)
+                and not is_seen(_user_cfg, BUSY_INPUT_FLAG)
+            ):
                 if is_steer_mode:
                     _hint_mode = "steer"
                 elif is_queue_mode:
@@ -19961,7 +19979,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Delivered on the current user message (sidecar), NOT the ephemeral
         # system prompt: present-on-turn-1/absent-on-turn-2 was a guaranteed
         # system-prompt diff and agent rebuild.
-        if not history and not await self.async_session_store.has_any_sessions():
+        if (
+            not history
+            and not await self.async_session_store.has_any_sessions()
+            and _gateway_profile_config_writes_allowed(source.platform)
+        ):
             # Default first-contact note: a brief self-introduction.
             _intro_note = (
                 "[System note: This is the user's very first message ever. "

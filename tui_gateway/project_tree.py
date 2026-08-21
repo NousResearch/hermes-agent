@@ -29,6 +29,8 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Optional
 
+from hermes_state_common import _date_representable_timestamp
+
 # A cwd -> git identity resolver. Returns ``{"repo_root", "worktree_root"}`` where
 # ``repo_root`` is the COMMON (main) repo root shared across worktrees and
 # ``worktree_root`` is this cwd's own checkout root. Returns ``None`` when the
@@ -331,7 +333,11 @@ def _disambiguate_labels(items: list[dict]) -> None:
 
 
 def _session_time(session: dict) -> float:
-    return float(session.get("last_active") or session.get("started_at") or 0)
+    return (
+        _date_representable_timestamp(session.get("last_active"))
+        or _date_representable_timestamp(session.get("started_at"))
+        or 0.0
+    )
 
 
 def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool) -> list[dict]:
@@ -741,7 +747,7 @@ def build_tree(
                 path=root,
                 repos=[{"id": root, "label": label, "path": root, "groups": [], "sessionCount": 0}],
                 session_count=int(repo.get("sessions") or 0),
-                last_active=float(repo.get("last_active") or 0),
+                last_active=repo.get("last_active") or 0.0,
                 preview_sessions=[],
                 is_auto=True,
             )

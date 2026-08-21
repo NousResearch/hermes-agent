@@ -336,7 +336,7 @@ def get_profiles_sessions(
                 s["is_default_profile"] = name == "default"
                 s["is_active"] = (
                     s.get("ended_at") is None
-                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
+                    and (now - (s.get("last_active") or s.get("started_at") or 0)) < 300
                 )
                 s["archived"] = bool(s.get("archived"))
                 s["pinned"] = bool(s.get("pinned"))
@@ -433,7 +433,7 @@ def get_profiles_sessions_sidebar(
             s["is_default_profile"] = name == "default"
             s["is_active"] = (
                 s.get("ended_at") is None
-                and (now - s.get("last_active", s.get("started_at", 0))) < 300
+                and (now - (s.get("last_active") or s.get("started_at") or 0)) < 300
             )
             s["archived"] = bool(s.get("archived"))
             # SQLite stores the pin as 0/1; the sidebar needs a real boolean to

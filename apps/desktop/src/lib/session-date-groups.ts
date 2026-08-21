@@ -1,4 +1,5 @@
 import { type SidebarSessionEntry } from '@/lib/session-branch-tree'
+import { sessionListRecencySeconds } from '@/lib/session-timestamp'
 import { calendarBucket, HOUR, localeWeekStartDay, MINUTE, SECOND, type SessionBucket } from '@/lib/time'
 
 // A flat list row is either a divider or a session entry. Interleaving these
@@ -12,8 +13,7 @@ export type SidebarListRow =
 
 // The row's own age label reads from `last_active || started_at`; bucket off the
 // same value so a divider lines up with what the row actually shows.
-const recencyMs = (entry: SidebarSessionEntry): number =>
-  (entry.session.last_active || entry.session.started_at || 0) * SECOND
+const recencyMs = (entry: SidebarSessionEntry): number => sessionListRecencySeconds(entry.session) * SECOND
 
 // Aim the head at "the most recent handful". A break shorter than
 // MIN_RUN_BREAK_MS never counts as one — that would slice a rapid-fire burst —

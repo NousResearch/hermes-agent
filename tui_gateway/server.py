@@ -13025,7 +13025,7 @@ def _discover_repos_payload(
             continue
         agg = _agg(root)
         agg["sessions"] += int(row.get("sessions") or 0)
-        agg["last_active"] = max(agg["last_active"], float(row.get("last_active") or 0))
+        agg["last_active"] = max(agg["last_active"], row.get("last_active") or 0.0)
 
     if backfill:
         try:

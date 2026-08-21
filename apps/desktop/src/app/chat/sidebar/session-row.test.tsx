@@ -340,6 +340,32 @@ describe('SidebarSessionRow', () => {
     expect(tipTrigger(age)).toBeTruthy()
   })
 
+  it('uses started_at when last_active is outside the JavaScript Date range', () => {
+    const startedAt = Math.floor(Date.now() / 1000) - 5 * 60
+
+    renderRow(
+      makeSession({
+        last_active: 4.701028517545611e180,
+        started_at: startedAt,
+        title: 'Session with invalid recency'
+      })
+    )
+
+    const age = screen.getByText('5m')
+    expect(age.getAttribute('datetime')).toBe(new Date(startedAt * 1000).toISOString())
+    expect(age.getAttribute('aria-label')).toMatch(/^5m, Today at /)
+  })
+
+  it('uses started_at when last_active is zero', () => {
+    const startedAt = Math.floor(Date.now() / 1000) - 5 * 60
+
+    renderRow(makeSession({ last_active: 0, started_at: startedAt, title: 'Fresh draft session' }))
+
+    const age = screen.getByText('5m')
+    expect(age.getAttribute('datetime')).toBe(new Date(startedAt * 1000).toISOString())
+    expect(age.getAttribute('aria-label')).toMatch(/^5m, Today at /)
+  })
+
   it('does not render a handoff avatar for a locally-started session', () => {
     const { container } = render(
       <SidebarSessionRow

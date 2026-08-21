@@ -12,6 +12,7 @@ import pytest
 import hermes_state
 from agent.session_activity import ActivityProvenance
 from hermes_state import SCHEMA_SQL, SCHEMA_VERSION, SessionDB
+from hermes_state_common import _sql_session_last_active, _sql_session_last_active_by_id
 
 
 class _NoFtsCursor(sqlite3.Cursor):
@@ -2029,6 +2030,248 @@ class TestListSessionsRich:
             db._conn.commit()
         db.touch_session_activity("s1", 1_700_000_500.0, description="api")  # older than message
         assert db.list_sessions_rich()[0]["last_active"] == 1_700_000_800.0
+
+    def test_last_active_ignores_message_timestamp_outside_the_date_range(self, db):
+        """Impossible message dates must not poison session-list recency."""
+        started_at = 1_700_000_000.0
+        db.create_session("s1", "cli")
+        db.append_message("s1", "tool", "captured tool result")
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (started_at, "s1"))
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=?",
+                (4.701028517545611e180, "s1"),
+            )
+            db._conn.commit()
+
+        assert db.list_sessions_rich()[0]["last_active"] == started_at
+
+    def test_last_active_ignores_activity_heartbeat_outside_the_date_range(self, db):
+        """An impossible heartbeat must not outrank a valid message timestamp."""
+        message_at = 1_700_000_800.0
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "hello")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=?",
+                (message_at, "s1"),
+            )
+            db._conn.execute(
+                "UPDATE sessions SET last_activity_at=? WHERE id=?",
+                (4.701028517545611e180, "s1"),
+            )
+            db._conn.commit()
+
+        assert db.list_sessions_rich()[0]["last_active"] == message_at
+
+    @pytest.mark.parametrize(
+        "last_active_sql",
+        [_sql_session_last_active("s"), _sql_session_last_active_by_id("s.id")],
+    )
+    def test_message_recency_uses_timestamp_range_index(self, db, last_active_sql):
+        """Date-safe recency helpers keep the session/timestamp index fast path."""
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "hello")
+
+        plan = db._conn.execute(
+            "EXPLAIN QUERY PLAN "
+            f"SELECT {last_active_sql} FROM sessions s WHERE s.id = ?",
+            ("s1",),
+        ).fetchall()
+        detail = " ".join(row[-1] for row in plan)
+
+        assert "idx_messages_session (" in detail, detail
+        assert "timestamp>?" in detail and "timestamp<?" in detail, detail
+
+    def test_last_active_is_none_when_only_started_at_is_outside_the_date_range(self, db):
+        """A session without any renderable recency candidate exposes no timestamp."""
+        db.create_session("s1", "cli")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?",
+                (4.701028517545611e180, "s1"),
+            )
+            db._conn.commit()
+
+        assert db.list_sessions_rich()[0]["last_active"] is None
+
+    @pytest.mark.parametrize(
+        ("last_active", "started_at", "last_read_at", "expected"),
+        [
+            (20.0, 10.0, 10.0, True),
+            (10.0, 20.0, 10.0, False),
+            # Preserve zero-as-unset behavior using a safe started_at fallback.
+            (0.0, 20.0, 10.0, True),
+            (None, 20.0, 10.0, True),
+        ],
+    )
+    def test_session_unread_uses_safe_activity_or_started_at_fallback(
+        self, last_active, started_at, last_read_at, expected
+    ):
+        assert SessionDB.session_unread(
+            {
+                "last_active": last_active,
+                "started_at": started_at,
+                "last_read_at": last_read_at,
+            }
+        ) is expected
+
+    @pytest.mark.parametrize(
+        "invalid", [True, False, 10**1000, float("nan"), float("inf"), float("-inf"), "not-a-timestamp"]
+    )
+    def test_session_unread_rejects_nonfinite_and_malformed_values(self, invalid):
+        assert SessionDB.session_unread(
+            {"last_active": invalid, "started_at": invalid, "last_read_at": 0.0}
+        ) is False
+
+    def test_invalid_started_at_cannot_mark_ordinary_session_unread(self, db):
+        db.create_session("ordinary", "cli")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, last_read_at=? WHERE id=?",
+                (4.701028517545611e180, 0.0, "ordinary"),
+            )
+            db._conn.commit()
+
+        (row,) = db.list_sessions_rich()
+        assert row["started_at"] is None
+        assert row["last_active"] is None
+        assert row["unread"] is False
+
+    def test_malformed_started_at_cannot_crash_or_mark_session_unread(self, db):
+        db.create_session("malformed", "cli")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, last_activity_at=?, last_read_at=? WHERE id=?",
+                ("not-a-timestamp", "not-a-timestamp", 0.0, "malformed"),
+            )
+            db._conn.execute(
+                "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+                ("malformed", "tool", "captured tool result", "not-a-timestamp"),
+            )
+            db._conn.commit()
+
+        (row,) = db.list_sessions_rich()
+        assert row["started_at"] is None
+        assert row["last_active"] is None
+        assert row["unread"] is False
+
+    def test_invalid_recency_cannot_mark_pinned_backfill_unread(self, db):
+        db.create_session("pinned", "cli")
+        db.set_session_pinned("pinned", True)
+        db.create_session("recent", "cli")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, last_read_at=? WHERE id=?",
+                (4.701028517545611e180, 0.0, "pinned"),
+            )
+            db._conn.commit()
+
+        rows = db.list_sessions_rich(limit=1, include_pinned=True, order_by_last_active=True)
+        pinned = next(row for row in rows if row["id"] == "pinned")
+        assert pinned["started_at"] is None
+        assert pinned["last_active"] is None
+        assert pinned["unread"] is False
+
+    def test_invalid_recency_cannot_mark_compression_projection_unread(self, db):
+        db.create_session("root", "cli")
+        db.end_session("root", "compression")
+        db.create_session("tip", "cli", parent_session_id="root")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, last_read_at=? WHERE id=?",
+                (4.701028517545611e180, 0.0, "root"),
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?",
+                (4.701028517545611e180, "tip"),
+            )
+            db._conn.commit()
+
+        (row,) = db.list_sessions_rich(order_by_last_active=True)
+        assert row["id"] == "tip"
+        assert row["started_at"] is None
+        assert row["last_active"] is None
+        assert row["unread"] is False
+
+    def test_order_by_last_active_ignores_invalid_timestamp_on_compression_tip(self, db):
+        """Lineage recency must use the by-id helper's valid timestamp candidates."""
+        root_at = 1_700_000_000.0
+        other_at = root_at + 500.0
+        db.create_session("root", "cli")
+        db.end_session("root", "compression")
+        db.create_session("tip", "cli", parent_session_id="root")
+        db.append_message("tip", "tool", "captured tool result")
+        db.create_session("other", "cli")
+        db.append_message("other", "user", "normal recent activity")
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (root_at, "root"))
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (root_at + 100.0, "tip"))
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=?",
+                (4.701028517545611e180, "tip"),
+            )
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=?",
+                (other_at, "other"),
+            )
+            db._conn.commit()
+
+        sessions = db.list_sessions_rich(order_by_last_active=True)
+        assert [session["id"] for session in sessions][:2] == ["other", "tip"]
+
+    def test_order_by_last_active_does_not_restore_invalid_compression_started_at(self, db):
+        """An all-invalid compression chain must not outrank valid recent activity."""
+        invalid = 4.701028517545611e180
+        valid_at = 1_700_000_500.0
+        db.create_session("root", "cli")
+        db.end_session("root", "compression")
+        db.create_session("tip", "cli", parent_session_id="root")
+        db.create_session("other", "cli")
+        db.append_message("other", "user", "normal recent activity")
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id IN (?, ?)", (invalid, "root", "tip"))
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=?",
+                (valid_at, "other"),
+            )
+            db._conn.commit()
+
+        sessions = db.list_sessions_rich(order_by_last_active=True)
+        assert [session["id"] for session in sessions][:2] == ["other", "tip"]
+
+    def test_pinned_backfill_ignores_message_timestamp_outside_the_date_range(self, db):
+        """A pinned row must not serialize an impossible message timestamp."""
+        started_at = 1_700_000_000.0
+        db.create_session("pinned", "cli")
+        db.append_message("pinned", "tool", "captured tool result")
+        db.set_session_pinned("pinned", True)
+        db.create_session("recent", "cli")
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (started_at, "pinned"))
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=?",
+                (4.701028517545611e180, "pinned"),
+            )
+            db._conn.commit()
+
+        rows = db.list_sessions_rich(limit=1, include_pinned=True, order_by_last_active=True)
+        pinned = next(row for row in rows if row["id"] == "pinned")
+        assert pinned["last_active"] == started_at
+
+    def test_pinned_backfill_omits_invalid_only_started_at(self, db):
+        """A pinned row with no valid recency candidate exposes no last_active."""
+        invalid = 4.701028517545611e180
+        db.create_session("pinned", "cli")
+        db.set_session_pinned("pinned", True)
+        db.create_session("recent", "cli")
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (invalid, "pinned"))
+            db._conn.commit()
+
+        rows = db.list_sessions_rich(limit=1, include_pinned=True, order_by_last_active=True)
+        pinned = next(row for row in rows if row["id"] == "pinned")
+        assert pinned["last_active"] is None
 
     def test_list_gateway_sessions_last_active_uses_activity_heartbeat(self, db):
         db.create_session(

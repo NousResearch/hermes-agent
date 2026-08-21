@@ -6,7 +6,8 @@ reference them without importing hermes_state (which would be a cycle).
 hermes_state re-imports every name here for backward compatibility.
 """
 
-from typing import Any
+import math
+from typing import Any, Optional, Union
 
 from agent.skill_commands import (
     SKILL_EXCERPT_JOINT,
@@ -152,6 +153,40 @@ _LISTABLE_CHILD_SQL = (
     f" OR {_RESET_CHILD_SQL.format(a='s')})"
 )
 
+# ECMAScript Date accepts milliseconds in ±8.64e15. Session timestamps are
+# Unix seconds, so keep derived recency inside the range every Desktop client
+# can render before it reaches its date formatter.
+_JS_DATE_MAX_UNIX_SECONDS = 8_640_000_000_000
+
+
+def _date_representable_timestamp(value: Any) -> Optional[Union[int, float]]:
+    """Return a finite SQLite/ECMAScript-Date-compatible Unix-seconds value.
+
+    Session-list consumers must use this alongside the SQL producer guard:
+    persisted rows may still carry malformed values when a caller receives a
+    hand-built, projected, or legacy row rather than a fresh SQL expression.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if -_JS_DATE_MAX_UNIX_SECONDS <= value <= _JS_DATE_MAX_UNIX_SECONDS else None
+    if not isinstance(value, float):
+        return None
+    if not math.isfinite(value):
+        return None
+    if not -_JS_DATE_MAX_UNIX_SECONDS <= value <= _JS_DATE_MAX_UNIX_SECONDS:
+        return None
+    return value
+
+
+def _sql_date_representable_timestamp(expr: str) -> str:
+    """Return ``expr`` only when SQLite stores a Date-representable number."""
+    return (
+        f"CASE WHEN typeof({expr}) IN ('integer', 'real') "
+        f"AND {expr} BETWEEN -{_JS_DATE_MAX_UNIX_SECONDS} AND {_JS_DATE_MAX_UNIX_SECONDS} "
+        f"THEN {expr} END"
+    )
+
 
 def _ephemeral_child_sql(alias: str = "s") -> str:
     """Subagent runs, not branch, reset, or compression children."""
@@ -178,16 +213,18 @@ def _sql_session_last_active(alias: str = "s") -> str:
     """
     msg_max = (
         f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m "
-        f"WHERE _act_m.session_id = {alias}.id)"
+        f"WHERE _act_m.session_id = {alias}.id "
+        f"AND typeof(_act_m.timestamp) IN ('integer', 'real') "
+        f"AND _act_m.timestamp BETWEEN -{_JS_DATE_MAX_UNIX_SECONDS} AND {_JS_DATE_MAX_UNIX_SECONDS})"
     )
     return (
         f"COALESCE("
         f"(SELECT MAX(_act_v.v) FROM ("
-        f"SELECT {alias}.last_activity_at AS v "
+        f"SELECT {_sql_date_representable_timestamp(f'{alias}.last_activity_at')} AS v "
         f"UNION ALL "
         f"SELECT {msg_max}"
         f") _act_v), "
-        f"{alias}.started_at)"
+        f"{_sql_date_representable_timestamp(f'{alias}.started_at')})"
     )
 
 
@@ -195,14 +232,16 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     """Same freshest-of expression keyed by a session-id SQL expression."""
     msg_max = (
         f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m "
-        f"WHERE _act_m.session_id = {session_id_expr})"
+        f"WHERE _act_m.session_id = {session_id_expr} "
+        f"AND typeof(_act_m.timestamp) IN ('integer', 'real') "
+        f"AND _act_m.timestamp BETWEEN -{_JS_DATE_MAX_UNIX_SECONDS} AND {_JS_DATE_MAX_UNIX_SECONDS})"
     )
     activity = (
-        f"(SELECT last_activity_at FROM sessions _act_s "
+        f"(SELECT {_sql_date_representable_timestamp('last_activity_at')} FROM sessions _act_s "
         f"WHERE _act_s.id = {session_id_expr})"
     )
     started = (
-        f"(SELECT started_at FROM sessions _act_s "
+        f"(SELECT {_sql_date_representable_timestamp('started_at')} FROM sessions _act_s "
         f"WHERE _act_s.id = {session_id_expr})"
     )
     return (

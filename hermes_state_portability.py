@@ -17,6 +17,7 @@ from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
 from hermes_state_common import (
     SCHEMA_SQL,
     _PREVIEW_RAW_SELECT,
+    _date_representable_timestamp,
     _shape_preview,
     _sql_session_last_active,
 )
@@ -63,7 +64,7 @@ class SessionPortabilityMixin:
             {
                 "cwd": r["cwd"],
                 "sessions": int(r["sessions"] or 0),
-                "last_active": float(r["last_active"] or 0),
+                "last_active": _date_representable_timestamp(r["last_active"]) or 0.0,
             }
             for r in rows
         ]
@@ -206,6 +207,9 @@ class SessionPortabilityMixin:
         for row in rows:
             s = self._session_row_dict(row)
             s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
+            s["started_at"] = _date_representable_timestamp(s.get("started_at"))
+            s["last_active"] = _date_representable_timestamp(s.get("last_active"))
+            s["last_read_at"] = _date_representable_timestamp(s.get("last_read_at"))
             result[s["id"]] = s
         return result
 

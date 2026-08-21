@@ -30,6 +30,12 @@ def _session(cwd, *, branch="", repo_root="", **over):
     return row
 
 
+def test_session_time_rejects_malformed_and_out_of_range_values():
+    assert pt._session_time({"last_active": "not-a-timestamp", "started_at": "not-a-timestamp"}) == 0.0
+    assert pt._session_time({"last_active": float("inf"), "started_at": 10**1000}) == 0.0
+    assert pt._session_time({"last_active": -100.0, "started_at": 1000.0}) == -100.0
+
+
 def _project(pid, name, folders, **over):
     row = {
         "id": pid,

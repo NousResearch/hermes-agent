@@ -23,6 +23,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
 from hermes_cli.web_deps import late
+from hermes_state_common import _date_representable_timestamp
 from hermes_cli.web_models import (
     BulkDeleteSessions,
     SessionImport,
@@ -147,7 +148,7 @@ def get_sessions(
             for s in sessions:
                 s["is_active"] = (
                     s.get("ended_at") is None
-                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
+                    and (now - (s.get("last_active") or s.get("started_at") or 0)) < 300
                 )
                 s["profile"] = row_profile
                 s["is_default_profile"] = row_profile == "default"
@@ -236,8 +237,8 @@ async def search_sessions(
                     if not parent_session:
                         root = cur
                         break
-                    parent_ended_at = parent_session.get("ended_at")
-                    started_at = s.get("started_at")
+                    parent_ended_at = _date_representable_timestamp(parent_session.get("ended_at"))
+                    started_at = _date_representable_timestamp(s.get("started_at"))
                     is_compression_edge = (
                         parent_session.get("end_reason") == "compression"
                         and parent_ended_at is not None

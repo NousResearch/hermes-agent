@@ -57,9 +57,11 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _PREVIEW_RAW_SELECT,
     _RESET_END_REASONS,
     _RESET_END_REASONS_SQL,
+    _date_representable_timestamp,
     _ephemeral_child_sql,
     _legacy_reset_child_sql,
     _shape_preview,
+    _sql_date_representable_timestamp,
     _sql_session_last_active,
     _sql_session_last_active_by_id,
     escape_like as _escape_like,
@@ -8453,17 +8455,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
     @staticmethod
     def session_unread(session_row: Dict[str, Any]) -> bool:
-        """Derive unread from a session row's watermark and activity.
+        """Derive unread from a session row's safe recency and watermark.
 
-        Shared by ``list_sessions_rich`` and any future surface that holds a
-        row (or projected row) with ``last_read_at`` and ``last_active``.
-        NULL watermark = never tracked = read.
+        ``last_active`` comes from the SQL recency helpers. A missing or zero
+        value follows the existing zero-as-unset contract and may fall back to
+        ``started_at``, but only through the same Date-representability guard.
+        Malformed legacy/projected fields therefore degrade to read rather than
+        controlling UI state or raising during numeric coercion.
         """
-        last_read = session_row.get("last_read_at")
+        last_read = _date_representable_timestamp(session_row.get("last_read_at"))
         if last_read is None:
             return False
-        last_active = session_row.get("last_active") or session_row.get("started_at")
-        return float(last_active or 0) > float(last_read)
+        last_active = _date_representable_timestamp(session_row.get("last_active"))
+        if last_active is None or last_active == 0:
+            last_active = _date_representable_timestamp(session_row.get("started_at"))
+        return last_active is not None and last_active > last_read
 
     def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
@@ -8882,7 +8888,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         ''
                     ) AS _preview_raw,
                     {_sql_session_last_active("s")} AS last_active,
-                    COALESCE(cm.effective_last_active, s.started_at) AS _effective_last_active
+                    COALESCE(cm.effective_last_active, {_sql_date_representable_timestamp('s.started_at')}) AS _effective_last_active
                 FROM sessions s
                 LEFT JOIN chain_max cm ON cm.root_id = s.id
                 {prompt_join}
@@ -8943,10 +8949,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                          ORDER BY m.timestamp, m.id LIMIT 1),
                         ''
                     ) AS _preview_raw,
-                    COALESCE(
-                        (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                        s.started_at
-                    ) AS last_active
+                    {_sql_session_last_active("s")} AS last_active
                 FROM sessions s
                 {prompt_join}
                 {pinned_where}
@@ -9012,11 +9015,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 projected.append(merged)
             sessions = projected
 
-        # Derive read state per surfaced conversation. ``last_read_at`` is
-        # lineage-stamped by set_session_read, so a projected row's root
-        # watermark and its tip's are the same value — comparing it against
-        # the tip's last_active is correct either way.
+        # Session-list rows are a UI boundary: every timestamp exposed to a
+        # sidebar, profile roster, or project tree follows the same finite,
+        # ECMAScript-Date-compatible contract as SQL-derived last_active.
+        # This keeps downstream zero-as-unset fallbacks from reintroducing raw
+        # legacy fields after recency derivation deliberately rejected them.
         for s in sessions:
+            s["started_at"] = _date_representable_timestamp(s.get("started_at"))
+            s["last_active"] = _date_representable_timestamp(s.get("last_active"))
+            s["last_read_at"] = _date_representable_timestamp(s.get("last_read_at"))
             s["unread"] = self.session_unread(s)
 
         return sessions

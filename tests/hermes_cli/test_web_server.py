@@ -399,6 +399,32 @@ class TestWebServerEndpoints:
         assert response.json()["sessions"] == []
         assert response.json()["total"] == 0
 
+    def test_get_sessions_invalid_recency_is_safe_and_inactive(self):
+        """A malformed persisted timestamp cannot 500 the session-list UI."""
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        seed = SessionDB(db_path=db_path)
+        try:
+            assert seed._conn is not None
+            seed.create_session("invalid-recency", source="cli")
+            seed._conn.execute(
+                "UPDATE sessions SET started_at=?, last_activity_at=? WHERE id=?",
+                ("not-a-timestamp", "not-a-timestamp", "invalid-recency"),
+            )
+            seed._conn.commit()
+        finally:
+            seed.close()
+
+        response = self.client.get("/api/sessions?limit=50&offset=0")
+
+        assert response.status_code == 200
+        (row,) = response.json()["sessions"]
+        assert row["last_active"] is None
+        assert row["started_at"] is None
+        assert row["is_active"] is False
+
     @pytest.mark.parametrize(
         "missing_column", ["archived", "pinned", "last_activity_at"]
     )

@@ -1,5 +1,6 @@
 import type { HermesGitWorktree } from '@/global'
 import type { ProjectInfo, SessionInfo } from '@/hermes'
+import { sessionListRecencySeconds } from '@/lib/session-timestamp'
 import { normalize } from '@/lib/text'
 
 import { rankSessions } from '../order'
@@ -132,7 +133,7 @@ export const branchLaneId = (repoRoot: string, branch?: string): string =>
   `${repoRoot}::branch::${(branch ?? '').trim()}`
 
 /** A session's recency stamp (last activity, falling back to creation). */
-export const sessionRecency = (session: SessionInfo): number => session.last_active || session.started_at || 0
+export const sessionRecency = (session: SessionInfo): number => sessionListRecencySeconds(session)
 
 /** Default-branch names that pin to the top and read as the repo's trunk. */
 const TRUNK_BRANCHES = new Set(['main', 'master', 'trunk', 'develop'])

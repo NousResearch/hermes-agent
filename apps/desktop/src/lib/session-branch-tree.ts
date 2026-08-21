@@ -1,3 +1,4 @@
+import { sessionListRecencySeconds } from '@/lib/session-timestamp'
 import type { SessionInfo } from '@/types/hermes'
 
 export interface SidebarSessionEntry {
@@ -15,7 +16,7 @@ export interface FlattenSessionsOptions {
   preserveOrder?: boolean
 }
 
-const recency = (session: SessionInfo): number => session.last_active || session.started_at || 0
+const recency = (session: SessionInfo): number => sessionListRecencySeconds(session)
 
 /** Flat list with branch/fork sessions nested visually under their parent. */
 export function flattenSessionsWithBranches(

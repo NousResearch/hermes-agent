@@ -839,7 +839,17 @@ def _subagent_spawn_count(args: Mapping[str, Any]) -> int:
     """
     if isinstance(args, Mapping):
         action = str(args.get("action") or "").strip().lower()
-        if action in ("list", "steer", "stop"):
+        if action in (
+            "list",
+            "steer",
+            "stop",
+            "status",
+            "tail",
+            "wait",
+            "resume",
+            "interrupt",
+            "abandon",
+        ):
             return 0
     tasks = args.get("tasks") if isinstance(args, Mapping) else None
     if isinstance(tasks, list) and tasks:

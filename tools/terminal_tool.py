@@ -1213,6 +1213,41 @@ def record_session_cwd(session_key: Optional[str], cwd: Optional[str]) -> None:
             _session_cwd[key] = cwd
 
 
+def _configure_forced_handoff_session(proc_session, session_key: str) -> None:
+    """Route completion for a foreground process that was adopted mid-wait."""
+    from tools.process_registry import process_registry
+    from gateway.session_context import (
+        async_delivery_supported,
+        get_session_env,
+    )
+
+    if not async_delivery_supported():
+        proc_session.notify_on_complete = False
+        return
+    platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+    if not platform:
+        return
+    proc_session.watcher_platform = platform
+    proc_session.watcher_chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+    proc_session.watcher_user_id = get_session_env("HERMES_SESSION_USER_ID", "")
+    proc_session.watcher_user_name = get_session_env("HERMES_SESSION_USER_NAME", "")
+    proc_session.watcher_thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "")
+    proc_session.watcher_message_id = get_session_env("HERMES_SESSION_MESSAGE_ID", "")
+    proc_session.watcher_interval = 5
+    process_registry.pending_watchers.append({
+        "session_id": proc_session.id,
+        "check_interval": 5,
+        "session_key": session_key,
+        "platform": proc_session.watcher_platform,
+        "chat_id": proc_session.watcher_chat_id,
+        "user_id": proc_session.watcher_user_id,
+        "user_name": proc_session.watcher_user_name,
+        "thread_id": proc_session.watcher_thread_id,
+        "message_id": proc_session.watcher_message_id,
+        "notify_on_complete": True,
+    })
+
+
 def get_session_cwd(session_key: Optional[str]) -> Optional[str]:
     """Return the recorded working directory for *session_key*, if any.
 
@@ -3356,6 +3391,24 @@ def terminal_tool(
                         # reads, RPC reads) intentionally stay unbounded.
                         "bounded_capture": True,
                     }
+                    from tools.foreground_wait import current_foreground_wait
+
+                    wait_slot = current_foreground_wait()
+                    if wait_slot is not None and wait_slot.kind == "terminal":
+                        execute_kwargs["foreground_handoff"] = {
+                            "command": command,
+                            "task_id": effective_task_id or "",
+                            "session_key": session_key,
+                            "cwd": command_cwd,
+                            "on_adopted": lambda proc_session: (
+                                _configure_forced_handoff_session(
+                                    proc_session, session_key
+                                )
+                            ),
+                            "on_complete": lambda final_cwd: record_session_cwd(
+                                session_key, final_cwd
+                            ),
+                        }
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
                     error_str = str(e).lower()

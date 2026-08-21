@@ -885,7 +885,11 @@ def init_agent(
     # iteration. Message-role alternation is preserved (we modify an
     # existing tool message rather than inserting a new user turn).
     agent._pending_steer: Optional[str] = None
+    agent._pending_steer_envelopes: list = []
     agent._pending_steer_lock = threading.Lock()
+    from tools.foreground_wait import ForegroundWaitRegistry
+
+    agent._foreground_waits = ForegroundWaitRegistry()
 
     # Active-turn redirect mechanism. A regular follow-up sent while the model
     # is generating is different from a hard /stop: preserve the valid turn

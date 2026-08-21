@@ -14,8 +14,8 @@ import re
 import select
 import shlex
 import subprocess
-import threading
 import time
+import threading
 import uuid
 from abc import ABC, abstractmethod
 from collections import deque
@@ -976,7 +976,8 @@ class BaseEnvironment(ABC):
     # ------------------------------------------------------------------
 
     def _wait_for_process(
-        self, proc: ProcessHandle, timeout: int = 120, *, bounded_capture: bool = False
+        self, proc: ProcessHandle, timeout: int = 120, *, bounded_capture: bool = False,
+        foreground_handoff: dict | None = None,
     ) -> dict:
         """Poll-based wait with interrupt checking and stdout draining.
 
@@ -1033,6 +1034,9 @@ class BaseEnvironment(ABC):
             except Exception:
                 spill_path = None
         output = _BoundedOutputCollector(capture_limit, spill_path=spill_path)
+        adoption_lock = threading.Lock()
+        adopted_session = None
+        handoff_failed = False
 
         # Non-blocking drain via select().
         #
@@ -1190,6 +1194,113 @@ class BaseEnvironment(ABC):
             _poll_sleep = 0.005
             while proc.poll() is None:
                 _iter_count += 1
+                from tools.foreground_wait import (
+                    current_foreground_wait,
+                    process_handoff,
+                )
+
+                wait_slot = current_foreground_wait()
+                if (
+                    not handoff_failed
+                    and wait_slot is not None
+                    and wait_slot.kind == "terminal"
+                    and wait_slot.background_requested.is_set()
+                ):
+                    metadata = foreground_handoff or {}
+                    command = metadata.get("command")
+                    if not isinstance(command, str) or not command:
+                        handoff_failed = True
+                        wait_slot.fail_background(
+                            "foreground terminal handoff metadata is unavailable"
+                        )
+                    else:
+                        from tools.process_registry import process_registry
+
+                        try:
+                            with adoption_lock:
+                                session = process_registry.adopt_foreground_process(
+                                    proc,
+                                    command=command,
+                                    task_id=str(metadata.get("task_id") or ""),
+                                    session_key=str(metadata.get("session_key") or ""),
+                                    cwd=str(metadata.get("cwd") or self.cwd or ""),
+                                    env_ref=self,
+                                    initial_output=output.render(),
+                                    kill_callback=lambda: self._kill_process(proc),
+                                    notify_on_complete=True,
+                                )
+                                adopted_session = session
+                        except Exception as exc:
+                            handoff_failed = True
+                            wait_slot.fail_background(
+                                f"Could not adopt the foreground process: {exc}"
+                            )
+                            continue
+
+                        on_adopted = metadata.get("on_adopted")
+                        if callable(on_adopted):
+                            try:
+                                on_adopted(session)
+                            except Exception:
+                                logger.debug(
+                                    "foreground process routing setup failed",
+                                    exc_info=True,
+                                )
+
+                        def _finish_adopted() -> None:
+                            timed_out = False
+                            while proc.poll() is None:
+                                if time.monotonic() > deadline:
+                                    timed_out = True
+                                    self._kill_process(proc)
+                                    break
+                                time.sleep(0.1)
+                            drain_thread.join(timeout=2)
+                            try:
+                                proc.stdout.close()
+                            except Exception:
+                                pass
+                            final_result = {
+                                "output": output.render(),
+                                "returncode": 124 if timed_out else proc.returncode,
+                            }
+                            self._update_cwd(final_result)
+                            on_complete = metadata.get("on_complete")
+                            if callable(on_complete):
+                                try:
+                                    on_complete(self.cwd)
+                                except Exception:
+                                    logger.debug(
+                                        "foreground process cwd update failed",
+                                        exc_info=True,
+                                    )
+                            process_registry.finish_adopted_process(
+                                session,
+                                output=final_result["output"],
+                                exit_code=final_result["returncode"],
+                                completion_reason=(
+                                    "timed_out" if timed_out else "exited"
+                                ),
+                                termination_source=(
+                                    "foreground_timeout" if timed_out else ""
+                                ),
+                            )
+
+                        finalizer = threading.Thread(
+                            target=_finish_adopted,
+                            daemon=True,
+                            name=f"proc-adopted-{session.id}",
+                        )
+                        session._reader_thread = finalizer
+                        finalizer.start()
+                        handoff = process_handoff(session.id)
+                        wait_slot.complete_background(handoff)
+                        return {
+                            "status": "backgrounded",
+                            "output": output.render(),
+                            "returncode": None,
+                            "foreground_handoff": handoff,
+                        }
                 if is_interrupted():
                     if _DEBUG_INTERRUPT:
                         logger.info(
@@ -1406,6 +1517,7 @@ class BaseEnvironment(ABC):
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
+        foreground_handoff: dict | None = None,
     ) -> dict:
         """Execute a command, return {"output": str, "returncode": int}.
 
@@ -1453,7 +1565,8 @@ class BaseEnvironment(ABC):
             wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
         )
         result = self._wait_for_process(
-            proc, timeout=effective_timeout, bounded_capture=bounded_capture
+            proc, timeout=effective_timeout, bounded_capture=bounded_capture,
+            foreground_handoff=foreground_handoff,
         )
         self._update_cwd(result)
 

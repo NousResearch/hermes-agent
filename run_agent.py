@@ -3447,7 +3447,27 @@ class AIAgent:
                 self._pending_steer = None
         return True
 
-    def steer(self, text: str) -> bool:
+    def _steer_queue_unlocked(self) -> list:
+        queue = getattr(self, "_pending_steer_envelopes", None)
+        if isinstance(queue, list):
+            return queue
+        text = getattr(self, "_pending_steer", None)
+        queue = [{"text": text, "mailbox_id": None, "outcome_callback": None}] if text else []
+        self._pending_steer_envelopes = queue
+        return queue
+
+    def _sync_pending_steer_text_unlocked(self, queue: list) -> None:
+        self._pending_steer = "\n".join(
+            str(item.get("text") or "") for item in queue if item.get("text")
+        ) or None
+
+    def steer(
+        self,
+        text: str,
+        *,
+        mailbox_id: Optional[str] = None,
+        outcome_callback=None,
+    ) -> bool:
         """
         Inject a user message into the next tool result without interrupting.
 
@@ -3464,24 +3484,121 @@ class AIAgent:
 
         Returns:
             True if the steer was accepted, False if the text was empty.
+        
+        Optional mailbox_id / outcome_callback track a durable steer envelope.
         """
-        if not text or not text.strip():
+        if not isinstance(text, str) or not text.strip():
             return False
         cleaned = text.strip()
-        _lock = getattr(self, "_pending_steer_lock", None)
-        if _lock is None:
-            # Test stubs that built AIAgent via object.__new__ skip __init__.
-            # Fall back to direct attribute set; no concurrent callers expected
-            # in those stubs.
-            existing = getattr(self, "_pending_steer", None)
-            self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
+        envelope = {
+            "text": cleaned,
+            "mailbox_id": mailbox_id if isinstance(mailbox_id, str) else None,
+            "outcome_callback": outcome_callback if callable(outcome_callback) else None,
+        }
+        lock = getattr(self, "_pending_steer_lock", None)
+        if lock is None:
+            if envelope["mailbox_id"] and getattr(self, "_interrupt_requested", False):
+                self._ack_steer_envelopes([envelope], "superseded_by_interrupt")
+                return False
+            queue = self._steer_queue_unlocked()
+            queue.append(envelope)
+            self._sync_pending_steer_text_unlocked(queue)
             return True
-        with _lock:
-            if self._pending_steer:
-                self._pending_steer = self._pending_steer + "\n" + cleaned
-            else:
-                self._pending_steer = cleaned
+        with lock:
+            if envelope["mailbox_id"] and getattr(self, "_interrupt_requested", False):
+                self._ack_steer_envelopes([envelope], "superseded_by_interrupt")
+                return False
+            queue = self._steer_queue_unlocked()
+            queue.append(envelope)
+            self._sync_pending_steer_text_unlocked(queue)
         return True
+
+    def request_durable_steer(
+        self,
+        text: str,
+        *,
+        mailbox_id: str,
+        outcome_callback,
+        force: bool = False,
+    ) -> dict:
+        """Queue a tracked steer, optionally handing foreground waits off first."""
+        waits = getattr(self, "_foreground_waits", None)
+        active = waits.snapshot() if waits is not None else []
+        wait_kinds = sorted({slot.kind for slot in active})
+        if active and not force:
+            if callable(outcome_callback):
+                outcome_callback("foreground_wait")
+            return {"status": "foreground_wait", "wait_kinds": wait_kinds}
+
+        accepted = self.steer(
+            text,
+            mailbox_id=mailbox_id,
+            outcome_callback=outcome_callback,
+        )
+        if not accepted:
+            return {"status": "too_late_after_completion", "wait_kinds": wait_kinds}
+        if not active:
+            return {"status": "accepted", "wait_kinds": []}
+
+        result = waits.request_background(active)
+        if result.get("status") != "backgrounded":
+            self._remove_pending_steer_envelope(mailbox_id)
+            if callable(outcome_callback):
+                outcome_callback("force_background_failed")
+            return {
+                "status": "force_background_failed",
+                "wait_kinds": result.get("wait_kinds") or wait_kinds,
+                "errors": result.get("errors") or ["foreground handoff failed"],
+            }
+        return {
+            "status": "accepted",
+            "wait_kinds": result.get("wait_kinds") or wait_kinds,
+        }
+
+    def _remove_pending_steer_envelope(self, mailbox_id: str) -> None:
+        lock = getattr(self, "_pending_steer_lock", None)
+
+        def _remove() -> None:
+            queue = self._steer_queue_unlocked()
+            self._pending_steer_envelopes = [
+                item for item in queue if item.get("mailbox_id") != mailbox_id
+            ]
+            self._sync_pending_steer_text_unlocked(self._pending_steer_envelopes)
+
+        if lock is None:
+            _remove()
+        else:
+            with lock:
+                _remove()
+
+    def _drain_pending_steer_envelopes(self) -> list:
+        lock = getattr(self, "_pending_steer_lock", None)
+        if lock is None:
+            queue = list(self._steer_queue_unlocked())
+            self._pending_steer_envelopes = []
+            self._pending_steer = None
+            return queue
+        with lock:
+            queue = list(self._steer_queue_unlocked())
+            self._pending_steer_envelopes = []
+            self._pending_steer = None
+        return queue
+
+    @staticmethod
+    def _steer_envelope_text(envelopes: list) -> Optional[str]:
+        return "\n".join(
+            str(item.get("text") or "") for item in envelopes if item.get("text")
+        ) or None
+
+    @staticmethod
+    def _ack_steer_envelopes(envelopes: list, outcome: str) -> None:
+        for envelope in envelopes:
+            callback = envelope.get("outcome_callback")
+            if callable(callback):
+                try:
+                    callback(outcome)
+                except Exception:
+                    logger.debug("steer outcome callback failed", exc_info=True)
 
     def redirect(self, text: str) -> bool:
         """Redirect the active turn without converting it into a new task.
@@ -3601,15 +3718,7 @@ class AIAgent:
         Safe to call from the agent execution thread after appending tool
         results. Returns None when no steer is pending.
         """
-        _lock = getattr(self, "_pending_steer_lock", None)
-        if _lock is None:
-            text = getattr(self, "_pending_steer", None)
-            self._pending_steer = None
-            return text
-        with _lock:
-            text = self._pending_steer
-            self._pending_steer = None
-        return text
+        return self._steer_envelope_text(self._drain_pending_steer_envelopes())
 
     def _record_file_mutation_result(
         self,
@@ -8386,6 +8495,14 @@ class AIAgent:
             action=function_args.get("action"),
             subagent_id=function_args.get("subagent_id"),
             message=function_args.get("message"),
+            delegation_id=function_args.get("delegation_id"),
+            attempt_id=function_args.get("attempt_id"),
+            run_id=function_args.get("run_id"),
+            timeout_seconds=function_args.get("timeout_seconds"),
+            limit=function_args.get("limit"),
+            cascade=function_args.get("cascade"),
+            reason=function_args.get("reason"),
+            force=function_args.get("force"),
             parent_agent=self,
         )
 

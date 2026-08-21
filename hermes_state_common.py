@@ -501,7 +501,76 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     owner_started_at INTEGER,
     task_json TEXT,
     delivery_claim TEXT,
-    delivery_claimed_at REAL
+    delivery_claimed_at REAL,
+    root_subagent_ids_json TEXT NOT NULL DEFAULT '[]',
+    children_json TEXT NOT NULL DEFAULT '{}',
+    interrupt_requests_json TEXT NOT NULL DEFAULT '{}',
+    interrupt_reason TEXT,
+    abandon_reason TEXT,
+    lifecycle_version INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS delegation_logical_subagents (
+    logical_id TEXT PRIMARY KEY,
+    delegation_id TEXT NOT NULL REFERENCES async_delegations(delegation_id) ON DELETE CASCADE,
+    parent_logical_id TEXT REFERENCES delegation_logical_subagents(logical_id),
+    root_ordinal INTEGER,
+    spec_json TEXT NOT NULL DEFAULT '{}',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    UNIQUE (delegation_id, root_ordinal)
+);
+
+CREATE TABLE IF NOT EXISTS delegation_runs (
+    run_id TEXT PRIMARY KEY,
+    delegation_id TEXT NOT NULL REFERENCES async_delegations(delegation_id) ON DELETE CASCADE,
+    run_number INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    completed_at REAL,
+    event_json TEXT,
+    result_json TEXT,
+    delivery_state TEXT NOT NULL DEFAULT 'pending',
+    delivery_claim TEXT,
+    delivery_claimed_at REAL,
+    delivery_attempts INTEGER NOT NULL DEFAULT 0,
+    delivered_at REAL,
+    UNIQUE (delegation_id, run_number)
+);
+
+CREATE TABLE IF NOT EXISTS delegation_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    logical_id TEXT NOT NULL REFERENCES delegation_logical_subagents(logical_id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL REFERENCES delegation_runs(run_id) ON DELETE CASCADE,
+    attempt_number INTEGER NOT NULL,
+    physical_worker_id TEXT,
+    state TEXT NOT NULL,
+    owner_pid INTEGER,
+    owner_started_at INTEGER,
+    created_at REAL NOT NULL,
+    started_at REAL,
+    completed_at REAL,
+    updated_at REAL NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    interrupt_reason TEXT,
+    interrupt_requested_at REAL,
+    interrupt_taken_at REAL,
+    UNIQUE (logical_id, attempt_number)
+);
+
+CREATE TABLE IF NOT EXISTS delegation_steer_mailbox (
+    mailbox_id TEXT PRIMARY KEY,
+    delegation_id TEXT NOT NULL REFERENCES async_delegations(delegation_id) ON DELETE CASCADE,
+    logical_id TEXT NOT NULL REFERENCES delegation_logical_subagents(logical_id) ON DELETE CASCADE,
+    attempt_id TEXT NOT NULL REFERENCES delegation_attempts(attempt_id) ON DELETE CASCADE,
+    sequence_number INTEGER NOT NULL,
+    message TEXT NOT NULL,
+    force INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at REAL NOT NULL,
+    forwarded_at REAL,
+    resolved_at REAL,
+    UNIQUE (attempt_id, sequence_number)
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -544,6 +613,17 @@ CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
     ON sessions(handoff_state, started_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_system_prompt_hash
     ON sessions(system_prompt_hash);
+CREATE INDEX IF NOT EXISTS idx_async_delegations_owner_updated
+    ON async_delegations(origin_session, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_delegation_attempts_run
+    ON delegation_attempts(run_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_delegation_one_active_attempt
+    ON delegation_attempts(logical_id)
+    WHERE state IN ('starting','running','finalizing','interrupt_requested');
+CREATE INDEX IF NOT EXISTS idx_delegation_runs_delivery
+    ON delegation_runs(delivery_state, completed_at);
+CREATE INDEX IF NOT EXISTS idx_delegation_steer_attempt
+    ON delegation_steer_mailbox(attempt_id, sequence_number);
 """
 
 

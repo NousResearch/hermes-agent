@@ -19,9 +19,12 @@ never the child's intermediate tool calls or reasoning.
 
 import enum
 import contextvars
+import copy
 import json
 import logging
 import re
+import uuid
+from types import SimpleNamespace
 
 logger = logging.getLogger(__name__)
 import os
@@ -151,6 +154,15 @@ _active_subagents_lock = threading.Lock()
 # subagent_id -> mutable record tracking the live child agent.  Stays only
 # for the lifetime of the run; _run_single_child is the owner.
 _active_subagents: Dict[str, Dict[str, Any]] = {}
+_TERMINAL_SUBAGENT_STATUSES = {
+    "completed",
+    "success",
+    "error",
+    "failed",
+    "interrupted",
+    "timeout",
+}
+_LIVE_BEARER_TOKEN_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
 
 # subagent_id -> {goal, delegation_id, parent_session_id} retained AFTER the
 # child finishes (bounded FIFO). Child-started background processes routinely
@@ -212,9 +224,87 @@ def _register_subagent(record: Dict[str, Any]) -> None:
     sid = record.get("subagent_id")
     if not sid:
         return
+    record.setdefault("events", [])
+    record.setdefault("assistant_text_tail", "")
+    record.setdefault("assistant_text_raw_tail", "")
     record.setdefault("accepting_steer", True)
+    durable_expected = (
+        "delegation_attempt_id" in record or "delegation_run_id" in record
+    )
+    delegation_id = None
+    try:
+        from tools.async_delegation import (
+            register_subagent_lifecycle,
+            take_pending_subagent_interrupt,
+        )
+
+        delegation_id = register_subagent_lifecycle(record)
+        if durable_expected and delegation_id is None:
+            return
+    except Exception:
+        logger.debug("subagent/delegation association failed", exc_info=True)
+        if durable_expected:
+            return
+
     with _active_subagents_lock:
         _active_subagents[sid] = record
+    if delegation_id is not None:
+        pending, reason = take_pending_subagent_interrupt(sid)
+        if pending:
+            outcome = interrupt_subagent_status(sid, reason=reason)
+            if outcome != "interrupt_requested":
+                logger.warning(
+                    "queued interrupt for starting subagent %s resolved as %s",
+                    sid,
+                    outcome,
+                )
+        attempt_id = record.get("delegation_attempt_id")
+        if isinstance(attempt_id, str):
+            forward_pending_subagent_steers(sid, attempt_id)
+
+
+def _unregister_subagent(
+    subagent_id: str, attempt_id: Optional[str] = None, *, agent: Any = None
+) -> None:
+    """Drop a live child, optionally only if it still matches one attempt."""
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+        if record is None:
+            return
+        if agent is not None and record.get("agent") is not agent:
+            return
+        if (
+            attempt_id is not None
+            and record.get("delegation_attempt_id") != attempt_id
+        ):
+            return
+        _active_subagents.pop(subagent_id, None)
+        _retain_recent_subagent(record)
+
+    tail = {
+        "subagent_id": subagent_id,
+        "parent_id": record.get("parent_id"),
+        "depth": record.get("depth"),
+        "goal": record.get("goal"),
+        "model": record.get("model"),
+        "started_at": record.get("started_at"),
+        "status": record.get("status"),
+        "interrupt_reason": record.get("interrupt_reason"),
+        "tool_count": record.get("tool_count", 0),
+        "last_tool": record.get("last_tool", ""),
+        "events": copy.deepcopy(record.get("events") or []),
+        "assistant_text_tail": str(record.get("assistant_text_tail") or ""),
+        "last_activity_at": record.get("last_activity_at"),
+    }
+    for lifecycle_id in ("delegation_attempt_id", "delegation_run_id"):
+        if lifecycle_id in record:
+            tail[lifecycle_id] = record[lifecycle_id]
+    try:
+        from tools.async_delegation import archive_subagent_tail
+
+        archive_subagent_tail(subagent_id, tail)
+    except Exception:
+        logger.debug("subagent tail archival failed", exc_info=True)
 
 
 def _retain_recent_subagent(record: Dict[str, Any]) -> None:
@@ -229,14 +319,6 @@ def _retain_recent_subagent(record: Dict[str, Any]) -> None:
     }
     while len(_recent_subagents) > _RECENT_SUBAGENTS_CAP:
         _recent_subagents.pop(next(iter(_recent_subagents)), None)
-
-
-def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
-    with _active_subagents_lock:
-        record = _active_subagents.get(subagent_id)
-        if record is not None and (agent is None or record.get("agent") is agent):
-            _active_subagents.pop(subagent_id, None)
-            _retain_recent_subagent(record)
 
 
 def _close_subagent_steering(subagent_id: str, agent: Any) -> Optional[str]:
@@ -398,9 +480,24 @@ def _is_descendant_of(child_agent: Any, parent_agent: Any, max_hops: int = 8) ->
     return False
 
 
-# Model-facing control actions accepted by delegate_task(action=...).
-# "spawn" (or omitted) keeps the historical spawn semantics.
-_CONTROL_ACTIONS = frozenset({"list", "steer", "stop"})
+# Live-tree actions accepted by delegate_task(action=...) without a
+# durable delegation_id. Durable wait/resume/interrupt/abandon/status/tail
+# route through the merged control plane below.
+_LIVE_CONTROL_ACTIONS = frozenset({"list", "steer", "stop"})
+_MERGED_CONTROL_ACTIONS = frozenset(
+    {
+        "list",
+        "status",
+        "tail",
+        "wait",
+        "steer",
+        "resume",
+        "interrupt",
+        "stop",
+        "abandon",
+    }
+)
+_CONTROL_ACTIONS = _LIVE_CONTROL_ACTIONS
 
 
 def _resolve_session_lineage(session_id: Optional[str], parent_agent: Any) -> str:
@@ -580,6 +677,64 @@ def _handle_control_action(
         )
 
     return tool_error(f"Unknown action '{action}'. Use spawn, list, steer, or stop.")
+
+
+def _route_delegate_control_action(
+    action: str,
+    *,
+    parent_agent: Any,
+    subagent_id: Optional[str] = None,
+    message: Optional[str] = None,
+    delegation_id: Optional[str] = None,
+    attempt_id: Optional[str] = None,
+    run_id: Optional[str] = None,
+    timeout_seconds: Optional[float] = None,
+    limit: Optional[int] = None,
+    cascade: Optional[bool] = None,
+    reason: Optional[str] = None,
+    force: Optional[bool] = None,
+) -> str:
+    """Route a control action to the live tree or the durable lifecycle plane."""
+    has_delegation_id = bool(str(delegation_id or "").strip())
+    live_compatible = action in _LIVE_CONTROL_ACTIONS or (
+        action == "interrupt" and not has_delegation_id and bool(str(subagent_id or "").strip())
+    )
+    if live_compatible and not has_delegation_id:
+        live_action = "stop" if action == "interrupt" else action
+        live = _handle_control_action(live_action, subagent_id, message, parent_agent)
+        if action != "list":
+            return live
+        live_payload = json.loads(live)
+        try:
+            from tools.delegation_control import delegation_control
+
+            durable = json.loads(
+                delegation_control(action="list", parent_agent=parent_agent)
+            )
+            live_payload["delegations"] = durable.get("delegations") or []
+            live_payload["status"] = durable.get("status") or "ok"
+        except Exception:
+            live_payload["delegations"] = []
+            live_payload["status"] = "ok"
+        return json.dumps(live_payload, ensure_ascii=False)
+
+    from tools.delegation_control import delegation_control
+
+    durable_action = "interrupt" if action == "stop" else action
+    return delegation_control(
+        action=durable_action,
+        delegation_id=delegation_id,
+        subagent_id=subagent_id,
+        attempt_id=attempt_id,
+        run_id=run_id,
+        timeout_seconds=timeout_seconds,
+        limit=limit,
+        cascade=cascade,
+        reason=reason,
+        message=message,
+        force=force,
+        parent_agent=parent_agent,
+    )
 
 
 def _extract_output_tail(
@@ -3606,6 +3761,14 @@ def delegate_task(
     subagent_id: Optional[str] = None,
     message: Optional[str] = None,
     parent_agent=None,
+    delegation_id: Optional[str] = None,
+    attempt_id: Optional[str] = None,
+    run_id: Optional[str] = None,
+    timeout_seconds: Optional[float] = None,
+    limit: Optional[int] = None,
+    cascade: Optional[bool] = None,
+    reason: Optional[str] = None,
+    force: Optional[bool] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks, or control
@@ -3620,6 +3783,9 @@ def delegate_task(
       - action='steer' -> queue course-correction text into a running child
                           (subagent_id + message)
       - action='stop'  -> interrupt a running child early (subagent_id)
+      - action='status' / 'tail' / 'wait' / 'resume' / 'interrupt' /
+        'abandon' require the handle returned by spawn. action='stop'
+        with a delegation_id is an alias for interrupt.
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
@@ -3635,13 +3801,25 @@ def delegate_task(
     # They never spawn, so they bypass the pause gate, depth limit, and the
     # async dispatch machinery entirely.
     normalized_action = (action or "").strip().lower()
-    if normalized_action in _CONTROL_ACTIONS:
-        return _handle_control_action(
-            normalized_action, subagent_id, message, parent_agent
+    if normalized_action in _MERGED_CONTROL_ACTIONS:
+        return _route_delegate_control_action(
+            normalized_action,
+            parent_agent=parent_agent,
+            subagent_id=subagent_id,
+            message=message,
+            delegation_id=delegation_id,
+            attempt_id=attempt_id,
+            run_id=run_id,
+            timeout_seconds=timeout_seconds,
+            limit=limit,
+            cascade=cascade,
+            reason=reason,
+            force=force,
         )
     if normalized_action and normalized_action != "spawn":
         return tool_error(
-            f"Unknown action '{action}'. Use spawn (default), list, steer, or stop."
+            f"Unknown action '{action}'. Use spawn (default), list, status, "
+            "tail, wait, steer, resume, interrupt, stop, or abandon."
         )
 
     # Operator-controlled kill switch — lets the TUI freeze new fan-out
@@ -4824,34 +5002,83 @@ DELEGATE_TASK_SCHEMA = {
             },
             "action": {
                 "type": "string",
-                "enum": ["spawn", "list", "steer", "stop"],
+                "enum": [
+                    "spawn",
+                    "list",
+                    "status",
+                    "tail",
+                    "wait",
+                    "steer",
+                    "resume",
+                    "interrupt",
+                    "stop",
+                    "abandon",
+                ],
                 "description": (
                     "Default 'spawn' (omit for normal delegation). Live "
-                    "orchestration of running subagents: 'list' shows this "
-                    "conversation's live children (ids, goals, status, "
-                    "transcript paths); 'steer' queues course-correction text "
-                    "into one child (requires subagent_id + message) without "
-                    "stopping it; 'stop' ends one child early (requires "
-                    "subagent_id) — its partial result still returns as a "
-                    "completion message. Control actions return immediately; "
-                    "goal/tasks are ignored when action is not 'spawn'."
+                    "orchestration: 'list' shows this conversation's live "
+                    "children; 'steer' queues course-correction text "
+                    "(subagent_id + message); 'stop' ends one live child. "
+                    "Durable lifecycle on the same tool: 'status', 'tail', "
+                    "'wait', 'resume', 'interrupt', 'abandon' require the "
+                    "handle returned by spawn. 'stop' with a delegation_id "
+                    "is an alias for interrupt. Control actions return "
+                    "immediately; goal/tasks are ignored when action is "
+                    "not 'spawn'."
                 ),
             },
             "subagent_id": {
                 "type": "string",
                 "description": (
-                    "Target for action='steer'/'stop'. Ids are returned in the "
-                    "spawn dispatch response (subagent_ids) and by "
-                    "action='list'."
+                    "Target child. Required for live steer/stop and for "
+                    "durable steer/resume. Returned in the spawn dispatch "
+                    "response and by action='list'."
                 ),
             },
             "message": {
                 "type": "string",
                 "description": (
-                    "For action='steer': the course correction. Be directive "
-                    "and specific — the child sees it appended to its next "
-                    "tool result mid-run (e.g. \"Stop exploring X; focus on Y "
-                    "and return early results\")."
+                    "For action='steer'/'resume': the course correction or "
+                    "next user instruction. Be directive and specific."
+                ),
+            },
+            "delegation_id": {
+                "type": "string",
+                "description": (
+                    "Handle returned by a spawn. Required for status/tail/"
+                    "wait/resume/interrupt/abandon; omitted for live list/"
+                    "steer/stop."
+                ),
+            },
+            "attempt_id": {
+                "type": "string",
+                "description": "Exact historical attempt selector; accepted only by tail.",
+            },
+            "run_id": {
+                "type": "string",
+                "description": "Exact execution run selector; accepted only by wait.",
+            },
+            "timeout_seconds": {
+                "type": "number",
+                "description": "Bounded wait duration; default 30 seconds. Zero checks immediately.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Recent events returned by tail; default 20.",
+            },
+            "cascade": {
+                "type": "boolean",
+                "description": "Interrupt descendants of the delegation or selected child branch. Defaults true.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Optional audit reason for interrupt or abandon.",
+            },
+            "force": {
+                "type": "boolean",
+                "description": (
+                    "For steer only: move supported foreground waits to "
+                    "background before delivering the guidance."
                 ),
             },
         },
@@ -4924,3 +5151,293 @@ registry.register(
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,
 )
+
+def build_resumed_child_agent(
+    *,
+    bundle: Dict[str, Any],
+    logical_id: str,
+    goal: str,
+    parent_agent,
+    continuation: Optional[Dict[str, str]] = None,
+):
+    """Reconstruct a child using persisted non-secret policy and live credentials."""
+    metadata = dict(bundle.get("reconstruction_metadata") or {})
+    model = str(metadata.get("model") or "").strip()
+    provider = str(metadata.get("provider") or "").strip()
+    if not model or not provider:
+        raise ValueError("saved child provider/model is unavailable")
+    continuation = continuation or prepare_resumed_child_session(bundle)
+    # Re-resolve credentials and approval policy from current authorized config;
+    # no persisted secret is ever accepted from the resume bundle.
+    credentials = _resolve_delegation_credentials(
+        {"provider": provider, "model": model}, parent_agent
+    )
+    runtime_parent = parent_agent
+    if runtime_parent is None:
+        from hermes_state import SessionDB
+
+        # Durable resume must work after a gateway restart, where the original
+        # parent AIAgent object no longer exists and native tool adapters may not
+        # expose the newly-created controller object. Rebuild only the non-secret
+        # policy surface consumed by _build_child_agent; credentials above were
+        # resolved fresh from the active provider configuration.
+        runtime_parent = SimpleNamespace(
+            session_id=continuation["delegate_from"],
+            _session_db=SessionDB(),
+            model=model,
+            provider=credentials.get("provider") or provider,
+            base_url=credentials.get("base_url"),
+            api_key=credentials.get("api_key"),
+            api_mode=credentials.get("api_mode"),
+            _client_kwargs={
+                key: value
+                for key, value in {
+                    "base_url": credentials.get("base_url"),
+                    "api_key": credentials.get("api_key"),
+                }.items()
+                if value
+            },
+            _delegate_depth=max(0, int(metadata.get("depth") or 1) - 1),
+            _subagent_id=metadata.get("parent_logical_id"),
+            enabled_toolsets=list(metadata.get("enabled_toolsets") or []),
+            disabled_toolsets=list(metadata.get("disabled_toolsets") or []),
+            valid_tool_names=[],
+            reasoning_config=_json_safe_copy(metadata.get("reasoning_config")),
+            _fallback_chain=_json_safe_copy(metadata.get("fallback_routes")) or [],
+            acp_command=credentials.get("command"),
+            acp_args=list(credentials.get("args") or []),
+        )
+    child = _build_child_agent(
+        task_index=0,
+        goal=goal,
+        context=None,
+        toolsets=list(metadata.get("enabled_toolsets") or []),
+        model=model,
+        max_iterations=int(metadata.get("max_iterations") or 50),
+        task_count=1,
+        parent_agent=runtime_parent,
+        override_provider=credentials.get("provider"),
+        override_base_url=credentials.get("base_url"),
+        override_api_key=credentials.get("api_key"),
+        override_api_mode=credentials.get("api_mode"),
+        override_request_overrides=credentials.get("request_overrides"),
+        override_max_tokens=(
+            metadata.get("max_tokens")
+            if isinstance(metadata.get("max_tokens"), int)
+            else credentials.get("max_output_tokens")
+        ),
+        override_acp_command=credentials.get("command"),
+        override_acp_args=credentials.get("args"),
+        role=str(metadata.get("role") or "leaf"),
+    )
+
+    owner = continuation["delegate_from"]
+    prior = continuation["parent_session_id"]
+    session_id = continuation["session_id"]
+    parent_logical_id = metadata.get("parent_logical_id")
+    child.session_id = session_id
+    child._parent_session_id = prior
+    child._subagent_id = logical_id
+    child._parent_subagent_id = (
+        parent_logical_id if isinstance(parent_logical_id, str) else None
+    )
+    if isinstance(metadata.get("depth"), int):
+        child._delegate_depth = metadata["depth"]
+    child._delegate_role = str(metadata.get("role") or "leaf")
+    child._subagent_goal = goal
+    session_ref = {"session_id": session_id}
+    child._delegation_session_ref = session_ref
+    child._delegation_runtime_metadata = {
+        **metadata,
+        "child_session_id": session_id,
+        "parent_session_id": owner,
+        "enabled_toolsets": list(getattr(child, "enabled_toolsets", None) or []),
+        "disabled_toolsets": list(getattr(child, "disabled_toolsets", None) or []),
+        "reasoning_config": _json_safe_copy(
+            getattr(child, "reasoning_config", metadata.get("reasoning_config"))
+        ),
+        "fallback_routes": _json_safe_copy(
+            getattr(child, "_fallback_chain", metadata.get("fallback_routes"))
+        ),
+    }
+    if getattr(child, "_session_init_model_config", None) is not None:
+        child._session_init_model_config["_delegate_from"] = owner
+
+    # Rebuild the callback because the initial builder generated a throwaway
+    # logical/session identity before this exact resumed identity was known.
+    child_progress_cb = _build_child_progress_callback(
+        0,
+        goal,
+        runtime_parent,
+        1,
+        subagent_id=logical_id,
+        parent_id=child._parent_subagent_id,
+        depth=max(0, int(getattr(child, "_delegate_depth", 1)) - 1),
+        model=model,
+        toolsets=list(getattr(child, "enabled_toolsets", None) or []),
+        session_ref=session_ref,
+    )
+    child.tool_progress_callback = child_progress_cb
+    if child_progress_cb:
+        def _resumed_thinking(text: str) -> None:
+            if text:
+                child_progress_cb("_thinking", text)
+
+        child.thinking_callback = _resumed_thinking
+    return child
+
+
+def prepare_resumed_child_session(bundle: Dict[str, Any]) -> Dict[str, str]:
+    """Validate a hydration bundle and allocate a distinct child segment.
+
+    This deliberately does not create the SQLite row. The standard AIAgent
+    persistence path creates/enriches it with the effective current runtime
+    configuration before the first resumed turn is stored.
+    """
+    if not isinstance(bundle, dict):
+        raise ValueError("missing subagent resume bundle")
+    prior = bundle.get("prior_child_session_id")
+    owner = bundle.get("parent_session_id")
+    history = bundle.get("history")
+    metadata = bundle.get("reconstruction_metadata")
+    if (
+        not isinstance(prior, str)
+        or not prior
+        or not isinstance(owner, str)
+        or not owner
+        or not isinstance(history, list)
+        or not history
+        or not isinstance(metadata, dict)
+        or metadata.get("parent_session_id") != owner
+    ):
+        raise ValueError("incomplete subagent resume bundle")
+    return {
+        "session_id": f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}",
+        "parent_session_id": prior,
+        "delegate_from": owner,
+    }
+
+
+def interrupt_subagent_status(subagent_id: str, reason: str = "") -> str:
+    """Request a cooperative stop and return an honest lifecycle outcome."""
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+        if not record:
+            return "not_live"
+        current_status = str(record.get("status") or "").lower()
+        if current_status in _TERMINAL_SUBAGENT_STATUSES:
+            return "already_terminal"
+        if current_status == "interrupt_requested":
+            return "interrupt_requested"
+        agent = record.get("agent")
+        if agent is None:
+            return "interrupt_failed"
+        record["status"] = "interrupt_requested"
+        if reason:
+            record["interrupt_reason"] = reason
+    try:
+        agent.interrupt(reason or f"Interrupted via TUI ({subagent_id})")
+    except Exception as exc:
+        with _active_subagents_lock:
+            current = _active_subagents.get(subagent_id)
+            if current is not None and current.get("status") == "interrupt_requested":
+                current["status"] = "running"
+        logger.debug("interrupt_subagent(%s) failed: %s", subagent_id, exc)
+        return "interrupt_failed"
+    return "interrupt_requested"
+
+
+def forward_pending_subagent_steers(
+    subagent_id: str,
+    attempt_id: str,
+    *,
+    outcome_sink: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Forward ordered durable mailbox items to one exact live attempt."""
+    if not subagent_id or not attempt_id:
+        return 0
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+        if not record or record.get("delegation_attempt_id") != attempt_id:
+            return 0
+        agent = record.get("agent")
+    steer = getattr(agent, "steer", None)
+    request_durable = getattr(agent, "request_durable_steer", None)
+    request_defined = callable(getattr(type(agent), "request_durable_steer", None)) or callable(
+        getattr(agent, "__dict__", {}).get("request_durable_steer")
+    )
+    if not callable(steer) and not (request_defined and callable(request_durable)):
+        return 0
+
+    try:
+        from tools.async_delegation import _repository
+
+        repository = _repository()
+    except Exception:
+        return 0
+
+    forwarded = 0
+    while True:
+        pending = repository.pending_steers(attempt_id)
+        if not pending:
+            break
+        mailbox_id = str(pending[0]["mailbox_id"])
+        claimed = repository.claim_steer(attempt_id, mailbox_id)
+        if claimed.get("status") != "claimed":
+            break
+
+        def _ack(outcome: str, *, _mailbox_id: str = mailbox_id) -> None:
+            repository.resolve_steer(_mailbox_id, outcome)
+
+        if request_defined and callable(request_durable):
+            outcome = request_durable(
+                str(claimed.get("message") or ""),
+                mailbox_id=mailbox_id,
+                outcome_callback=_ack,
+                force=bool(claimed.get("force")),
+            )
+            outcome = outcome if isinstance(outcome, dict) else {"status": "rejected"}
+            if outcome_sink is not None:
+                outcome_sink[mailbox_id] = dict(outcome)
+            status = str(outcome.get("status") or "rejected")
+            accepted = status == "accepted"
+        else:
+            accepted = bool(
+                steer(
+                    str(claimed.get("message") or ""),
+                    mailbox_id=mailbox_id,
+                    outcome_callback=_ack,
+                )
+            )
+            status = "accepted" if accepted else "too_late_after_completion"
+        if not accepted:
+            if status in {"foreground_wait", "force_background_failed"}:
+                repository.resolve_steer(mailbox_id, status)
+                continue
+            repository.resolve_steer(mailbox_id, "too_late_after_completion")
+            break
+        repository.mark_steer_forwarded(mailbox_id)
+        forwarded += 1
+    return forwarded
+
+
+def redact_observable_text(value: Any) -> str:
+    """Force-redact model-facing delegation observations, failing closed."""
+    text = _stringify_tool_content(value)
+    try:
+        from agent.redact import redact_sensitive_text
+
+        redacted = redact_sensitive_text(text, force=True)
+        return _LIVE_BEARER_TOKEN_RE.sub("Bearer [REDACTED]", redacted)
+    except Exception:
+        logger.debug("observable text secret redaction failed", exc_info=True)
+        return "[REDACTION UNAVAILABLE]"
+
+
+def _json_safe_copy(value: Any) -> Any:
+    """Return a detached JSON value or ``None`` for runtime-only objects."""
+    try:
+        return json.loads(json.dumps(value))
+    except (TypeError, ValueError, OverflowError):
+        return None
+

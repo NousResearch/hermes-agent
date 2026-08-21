@@ -1370,6 +1370,17 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         if err and (data.get("success") is False or "error" in data):
             return True, f" [{_trim_error(str(err))}]"
 
+    # Tools whose normal result contract includes an "error" key per item
+    # (value is null on success). The string-literal heuristic below would
+    # false-positive on them on every successful call, so they are judged
+    # by the structured branches here instead.
+    if tool_name in {"web_extract", "web_search"}:
+        if isinstance(data, dict):
+            for item in data.get("results", []) or []:
+                if isinstance(item, dict) and item.get("error"):
+                    return True, f" [{_trim_error(str(item['error']))}]"
+        return False, ""
+
     # Generic heuristic for non-terminal tools
     # Multimodal tool results (dicts with _multimodal=True) are not strings —
     # treat them as successes since failures would be JSON-encoded strings.

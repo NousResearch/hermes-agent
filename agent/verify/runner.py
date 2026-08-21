@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -160,13 +161,31 @@ def _poll_readiness(url: str, timeout: float, interval: float = 1.0) -> tuple[bo
 
 
 def _terminate_process_group(proc: subprocess.Popen) -> None:
-    """Terminate the started app and its whole process group cleanly.
+    """Terminate the started app and its whole process tree cleanly.
 
     On POSIX the child is spawned with ``start_new_session=True`` so we can
-    signal the whole group; on Windows (no ``os.killpg``) we fall back to
-    terminating just the direct child.
+    signal the whole group. On Windows that flag is a no-op and
+    ``proc.terminate()`` (TerminateProcess) only hits the *direct* child —
+    with ``shell=True`` that is ``cmd.exe``, while the real app and its
+    workers (e.g. Django's auto-reloader child) survive as grandchildren.
+    They keep the stdout pipe's write end open, so the later
+    ``proc.stdout.read()`` never sees EOF and ``hermes verify`` hangs after
+    readiness with no final receipt and an orphaned listener (#88427).
+    ``taskkill /T`` takes down the whole tree, which also closes every pipe
+    writer.
     """
     if proc.poll() is not None:
+        return
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+        )
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
         return
     killpg = getattr(os, "killpg", None)
     getpgid = getattr(os, "getpgid", None)

@@ -5836,6 +5836,9 @@ class SlackAdapter(BasePlatformAdapter):
         # bot/app-originated events that slip past the markers often do not.
         msg_user = event.get("user", "")
         sender_is_bot = self._event_declares_bot_sender(event)
+        bot_sender_id = ""
+        bot_sender_name = ""
+
         if not sender_is_bot and msg_user and not event.get("client_msg_id"):
             sender_is_bot = await self._resolve_user_is_bot(
                 msg_user,
@@ -5860,6 +5863,18 @@ class SlackAdapter(BasePlatformAdapter):
             # Always ignore our own messages to prevent echo loops
             if msg_user and self._bot_user_id and msg_user == self._bot_user_id:
                 return
+            bot_sender_id = self._slack_allowed_bot_identity(event)
+            if not bot_sender_id:
+                return
+            bot_profile = event.get("bot_profile") or {}
+            if not isinstance(bot_profile, dict):
+                bot_profile = {}
+            bot_sender_name = (
+                event.get("username")
+                or bot_profile.get("name")
+                or bot_profile.get("real_name")
+                or bot_sender_id
+            )
 
         # Ignore message deletions. Edits are normalized above so an @mention
         # added by edit can still wake the bot once.
@@ -5995,7 +6010,10 @@ class SlackAdapter(BasePlatformAdapter):
             team_id=outer_team_id,
             body=payload,
         )
-        user_id = event.get("user") or assistant_meta.get("user_id", "")
+        if sender_is_bot:
+            user_id = bot_sender_id
+        else:
+            user_id = event.get("user") or assistant_meta.get("user_id", "")
         if not channel_id:
             channel_id = assistant_meta.get("channel_id", "")
         team_id = outer_team_id or assistant_meta.get("team_id", "")
@@ -6048,6 +6066,8 @@ class SlackAdapter(BasePlatformAdapter):
                 chat_type="dm" if is_dm else "group",
                 user_id=user_id,
                 user_name="",
+                scope_id=str(team_id) if team_id else None,
+                is_bot=sender_is_bot,
             )
             if not _auth_fn(_source):
                 logger.warning(
@@ -6055,6 +6075,13 @@ class SlackAdapter(BasePlatformAdapter):
                     user_id,
                     channel_id,
                 )
+                if self._reactions_enabled() and ts and channel_id:
+                    await self._add_reaction(
+                        channel_id,
+                        ts,
+                        "x",
+                        str(team_id or ""),
+                    )
                 return
 
         # Build thread_ts for session keying.
@@ -6187,6 +6214,11 @@ class SlackAdapter(BasePlatformAdapter):
 
             if force_process:
                 pass  # Explicit internal routing path (reaction trigger).
+            elif (
+                sender_is_bot
+                and channel_id in self._slack_bot_auto_response_channels()
+            ):
+                pass  # Explicitly admitted automation channel.
             elif (
                 channel_id not in self._slack_require_mention_channels()
                 and (
@@ -6700,9 +6732,12 @@ class SlackAdapter(BasePlatformAdapter):
             msg_type = MessageType.COMMAND
 
         # Resolve user display name (cached after first lookup)
-        user_name = await self._resolve_user_name(
-            user_id, chat_id=channel_id, team_id=team_id
-        )
+        if bot_sender_name and user_id == bot_sender_id:
+            user_name = bot_sender_name
+        else:
+            user_name = await self._resolve_user_name(
+                user_id, chat_id=channel_id, team_id=team_id
+            )
 
         # Resolve channel display name (cached after first lookup) so logs
         # and agent context show #channel / peer names instead of raw IDs.
@@ -6728,11 +6763,10 @@ class SlackAdapter(BasePlatformAdapter):
             user_name=user_name,
             thread_id=thread_ts,
             scope_id=str(team_id) if team_id else None,
-            # Slack Workflow Builder / app posts arrive as
-            # subtype=bot_message with user=None; flag them so the
-            # gateway SLACK_ALLOW_BOTS bypass can authorize them
-            # (they carry no user_id to match against the allowlist).
-            is_bot=bool(event.get("bot_id")) or event.get("subtype") == "bot_message",
+            # Reuse the identity resolved before the early authorization gate.
+            # This includes bot-user events lacking explicit bot_id/subtype
+            # markers so both authorization boundaries evaluate the same ID.
+            is_bot=sender_is_bot,
         )
 
         # Per-channel ephemeral prompt
@@ -8861,6 +8895,54 @@ class SlackAdapter(BasePlatformAdapter):
             for uid in self_uids
         )
 
+    def _slack_bot_auto_response_channels(self) -> set:
+        """Return channels where admitted bot posts bypass mention gating."""
+        raw = self.config.extra.get("bot_auto_response_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_BOT_AUTO_RESPONSE_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        value = str(raw).strip() if raw is not None else ""
+        return {part.strip() for part in value.split(",") if part.strip()}
+
+    def _slack_allowed_bot_identities(self) -> set:
+        """Return configured exact Slack bot/user/app IDs."""
+        raw = self.config.extra.get("allowed_bots")
+        if raw is None:
+            raw = os.getenv("SLACK_ALLOWED_BOTS", "")
+        if isinstance(raw, list):
+            parts = raw
+        else:
+            parts = str(raw).split(",") if raw is not None else []
+        return {str(part).strip() for part in parts if str(part).strip()}
+
+    def _slack_allowed_bot_identity(self, event: dict) -> str | None:
+        """Return the exact admitted Slack bot/user/app ID for an event."""
+        allowed = self._slack_allowed_bot_identities()
+        bot_profile = event.get("bot_profile") or {}
+        if not isinstance(bot_profile, dict):
+            bot_profile = {}
+        # Prefer Slack's bot/app IDs over the optional bot-user ID. The selected
+        # identity is propagated into SessionSource so the final auth boundary
+        # checks the same exact ID that admitted the event here.
+        candidates = [
+            event.get("bot_id"),
+            event.get("app_id"),
+            bot_profile.get("id"),
+            bot_profile.get("app_id"),
+            event.get("user"),
+        ]
+        identities = [
+            str(candidate).strip()
+            for candidate in candidates
+            if str(candidate or "").strip()
+        ]
+        if not identities:
+            return None
+        if not allowed or "*" in allowed:
+            return identities[0]
+        return next((identity for identity in identities if identity in allowed), None)
+
     def _slack_free_response_channels(self) -> set:
         """Return channel IDs where no @mention is required."""
         raw = self.config.extra.get("free_response_channels")
@@ -9517,6 +9599,16 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         ).lower()
     if "allow_bots" in slack_cfg and not os.getenv("SLACK_ALLOW_BOTS"):
         os.environ["SLACK_ALLOW_BOTS"] = str(slack_cfg["allow_bots"]).lower()
+    allowed_bots = slack_cfg.get("allowed_bots")
+    if allowed_bots is not None and not os.getenv("SLACK_ALLOWED_BOTS"):
+        if isinstance(allowed_bots, list):
+            allowed_bots = ",".join(str(value) for value in allowed_bots)
+        os.environ["SLACK_ALLOWED_BOTS"] = str(allowed_bots)
+    bot_channels = slack_cfg.get("bot_auto_response_channels")
+    if bot_channels is not None and not os.getenv("SLACK_BOT_AUTO_RESPONSE_CHANNELS"):
+        if isinstance(bot_channels, list):
+            bot_channels = ",".join(str(value) for value in bot_channels)
+        os.environ["SLACK_BOT_AUTO_RESPONSE_CHANNELS"] = str(bot_channels)
     frc = slack_cfg.get("free_response_channels")
     if frc is not None and not os.getenv("SLACK_FREE_RESPONSE_CHANNELS"):
         if isinstance(frc, list):

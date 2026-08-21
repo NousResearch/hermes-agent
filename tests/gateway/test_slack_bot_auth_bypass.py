@@ -23,6 +23,7 @@ from gateway.session import Platform, SessionSource
 def _isolate_slack_env(monkeypatch):
     for var in (
         "SLACK_ALLOW_BOTS",
+        "SLACK_ALLOWED_BOTS",
         "SLACK_ALLOWED_USERS",
         "SLACK_ALLOW_ALL_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
@@ -39,13 +40,12 @@ def _make_bare_runner():
     return runner
 
 
-def _make_slack_bot_source():
-    # Workflow Builder / app posts: subtype=bot_message, user=None.
+def _make_slack_bot_source(user_id=None):
     return SessionSource(
         platform=Platform.SLACK,
         chat_id="C0123",
         chat_type="group",
-        user_id=None,
+        user_id=user_id,
         user_name="",
         is_bot=True,
     )
@@ -66,6 +66,28 @@ def test_slack_bot_authorized_when_allow_bots_all(monkeypatch):
     runner = _make_bare_runner()
     monkeypatch.setenv("SLACK_ALLOW_BOTS", "all")
     assert runner._is_user_authorized(_make_slack_bot_source()) is True
+
+
+@pytest.mark.parametrize("allow_bots", ["mentions", "all"])
+def test_identified_slack_bot_still_requires_sender_authorization(
+    monkeypatch, allow_bots
+):
+    runner = _make_bare_runner()
+    monkeypatch.setenv("SLACK_ALLOW_BOTS", allow_bots)
+    monkeypatch.setenv("SLACK_ALLOWED_USERS", "U_TRUSTED_BOT")
+
+    assert runner._is_user_authorized(_make_slack_bot_source("U_TRUSTED_BOT")) is True
+    assert runner._is_user_authorized(_make_slack_bot_source("U_OTHER_BOT")) is False
+
+
+@pytest.mark.parametrize("allow_bots", ["mentions", "all"])
+def test_identified_slack_bot_can_use_exact_bot_id_acl(monkeypatch, allow_bots):
+    runner = _make_bare_runner()
+    monkeypatch.setenv("SLACK_ALLOW_BOTS", allow_bots)
+    monkeypatch.setenv("SLACK_ALLOWED_BOTS", "B_TRUSTED")
+
+    assert runner._is_user_authorized(_make_slack_bot_source("B_TRUSTED")) is True
+    assert runner._is_user_authorized(_make_slack_bot_source("B_OTHER")) is False
 
 
 def test_slack_human_unaffected_by_bot_bypass(monkeypatch):

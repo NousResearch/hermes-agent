@@ -506,7 +506,22 @@ class GatewayAuthorizationMixin:
         }
         if getattr(source, "is_bot", False):
             allow_bots_var = platform_allow_bots_map.get(source.platform)
-            if allow_bots_var and _platform_gate_env(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
+            allow_bots = (
+                _platform_gate_env(allow_bots_var, "none").lower().strip()
+                if allow_bots_var
+                else "none"
+            )
+            # Identified Slack bots must pass the exact bot-ID ACL at both the
+            # adapter prefetch boundary and this final authorization boundary.
+            # Broad allow_bots remains only for identity-less app/workflow events.
+            if source.platform == Platform.SLACK and user_id:
+                allowed_bot_ids = _coerce_allow_set(
+                    _platform_gate_env("SLACK_ALLOWED_BOTS", "")
+                )
+                if allow_bots in {"mentions", "all"} and user_id in allowed_bot_ids:
+                    return True
+            allow_class_grant = source.platform != Platform.SLACK or not user_id
+            if allow_class_grant and allow_bots in {"mentions", "all"}:
                 return True
 
         if not user_id:

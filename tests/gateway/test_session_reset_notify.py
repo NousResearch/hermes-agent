@@ -168,6 +168,15 @@ class TestResetPolicyNotify:
         policy = SessionResetPolicy()
         assert "api_server" in policy.notify_exclude_platforms
         assert "webhook" in policy.notify_exclude_platforms
+        assert "email" in policy.notify_exclude_platforms
+
+    def test_from_dict_uses_notify_exclude_defaults(self):
+        policy = SessionResetPolicy.from_dict({})
+        assert policy.notify_exclude_platforms == (
+            "api_server",
+            "webhook",
+            "email",
+        )
 
 
     def test_from_dict_with_custom_excludes(self):

@@ -15956,6 +15956,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
 
+    @staticmethod
+    def _should_send_auto_reset_notice(
+        platform_name: str, reset_reason: str, policy, had_activity: bool
+    ) -> bool:
+        """Return whether reset policy allows a standalone platform notice."""
+        if platform_name in policy.notify_exclude_platforms:
+            return False
+        return reset_reason in {"suspended", "resume_pending_expired"} or (
+            policy.notify and had_activity
+        )
+
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
         adapter = self._adapter_for_source(source)
@@ -19053,14 +19064,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 platform_name = source.platform.value if source.platform else ""
                 had_activity = getattr(session_entry, 'reset_had_activity', False)
-                # Suspended and restart-recovery-expired sessions always notify
-                # regardless of policy.notify — the user had an active session
-                # that was silently replaced, so they need to know they can
-                # /resume it.  Idle/daily resets respect the policy flag.
-                should_notify = reset_reason in {"suspended", "resume_pending_expired"} or (
-                    policy.notify
-                    and had_activity
-                    and platform_name not in policy.notify_exclude_platforms
+                # Suspended and restart-recovery-expired sessions ignore
+                # policy.notify because the user needs to know the active
+                # session was replaced. Transport exclusions still win.
+                should_notify = self._should_send_auto_reset_notice(
+                    platform_name, reset_reason, policy, had_activity
                 )
                 if should_notify:
                     adapter = self._adapter_for_source(source)

@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig, SessionResetPolicy
 from gateway.platforms.base import SendResult
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
@@ -48,5 +48,28 @@ async def test_deliver_platform_notice_uses_private_delivery_when_configured():
         metadata={"thread_id": "111.222", "user_id": "U123"},
     )
     adapter.send.assert_not_awaited()
+
+
+@pytest.mark.parametrize("reset_reason", ["suspended", "resume_pending_expired"])
+def test_reset_notice_platform_exclusion_is_absolute(reset_reason):
+    policy = SessionResetPolicy(
+        notify=True,
+        notify_exclude_platforms=("email",),
+    )
+
+    assert not GatewayRunner._should_send_auto_reset_notice(
+        "email", reset_reason, policy, had_activity=True
+    )
+
+
+def test_reset_notice_still_sends_on_included_chat_platform():
+    policy = SessionResetPolicy(
+        notify=True,
+        notify_exclude_platforms=("email",),
+    )
+
+    assert GatewayRunner._should_send_auto_reset_notice(
+        "telegram", "idle", policy, had_activity=True
+    )
 
 

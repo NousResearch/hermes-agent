@@ -547,7 +547,7 @@ class SessionResetPolicy:
     at_hour: int = 4  # Hour for daily reset (0-23, local time)
     idle_minutes: int = 1440  # Minutes of inactivity before reset (24 hours)
     notify: bool = True  # Send a notification to the user when auto-reset occurs
-    notify_exclude_platforms: tuple = ("api_server", "webhook")  # Platforms that don't get reset notifications
+    notify_exclude_platforms: tuple = ("api_server", "webhook", "email")  # Platforms that don't get reset notifications
     # A background process this many hours old (or older) no longer blocks
     # session idle/daily reset. A forgotten preview server should not keep a
     # session alive forever (#29177). The process is NOT killed — only ignored
@@ -580,7 +580,7 @@ class SessionResetPolicy:
             at_hour=at_hour if at_hour is not None else 4,
             idle_minutes=idle_minutes if idle_minutes is not None else 1440,
             notify=_coerce_bool(notify, True),
-            notify_exclude_platforms=tuple(exclude) if exclude is not None else ("api_server", "webhook"),
+            notify_exclude_platforms=tuple(exclude) if exclude is not None else ("api_server", "webhook", "email"),
             bg_process_max_age_hours=bg_max_age if bg_max_age is not None else 24,
         )
 

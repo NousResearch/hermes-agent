@@ -389,10 +389,13 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
     // other sockets is untouched, and a genuinely live turn here re-asserts
     // busy on its next event. Lazy import: a static edge here closes a module
     // cycle (session-states → … → gateway) that leaves nanostores atoms
-    // undefined at init for whichever module loads second.
-    void import('@/store/session-states').then(({ reconcileBusyStatesOnReconnect }) =>
-      reconcileBusyStatesOnReconnect(entry.scope)
-    )
+    // undefined at init for whichever module loads second. Best-effort catch:
+    // under partial vi.mock('@/hermes') harnesses the transitive graph can
+    // fail to load — a skipped reconcile there must not surface as an
+    // unhandled rejection (the real graph always loads in production).
+    void import('@/store/session-states')
+      .then(({ reconcileBusyStatesOnReconnect }) => reconcileBusyStatesOnReconnect(entry.scope))
+      .catch(() => undefined)
   } catch (error) {
     // The registry no longer knows this connection (removed while we were
     // backing off), or Electron's deletion guard reports the profile itself

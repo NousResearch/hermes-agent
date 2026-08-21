@@ -348,7 +348,9 @@ class SessionSearchMixin:
             return True  # transient (lock contention) — caller retries
         if more is False:
             status = self.fts_rebuild_status()
-            if status is not None and status["indexed"] >= status["total"]:
+            if high_water <= 0 or (
+                status is not None and status["indexed"] >= status["total"]
+            ):
                 self._fts_rebuild_finish()
             return False
         return bool(more)

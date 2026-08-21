@@ -3640,7 +3640,10 @@ class TestFTSExternalContentMigration:
         finally:
             db.close()
 
-    def test_v23_rebuild_from_trigram_tool_calls_projection(self, tmp_path):
+    @pytest.mark.parametrize("with_message", [False, True])
+    def test_v23_rebuild_from_trigram_tool_calls_projection(
+        self, tmp_path, with_message
+    ):
         """v23 installs built with historical trigram projection should be
         repaired via optimize-storage: trigram must drop tool_calls while
         standard messages_fts keeps indexing them."""
@@ -3713,28 +3716,29 @@ class TestFTSExternalContentMigration:
         conn.commit()
         conn.close()
 
-        conn = sqlite3.connect(str(db_path))
-        conn.execute(
-            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
-            ("s1", "cli", time.time()),
-        )
-        conn.execute(
-            "INSERT INTO messages (session_id, timestamp, role, content, tool_name, tool_calls) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                "s1",
-                time.time(),
-                "assistant",
-                "部署完成 assistant content",
-                "legacyTool",
-                '{"name": "legacy", "arguments": "UNIQUE_TOOLCALL_TOKEN_43701"}',
-            ),
-        )
-        conn.commit()
-        assert conn.execute(
-            "SELECT rowid FROM messages_fts_trigram WHERE messages_fts_trigram MATCH 'UNIQUE_TOOLCALL_TOKEN_43701'"
-        ).fetchall()
-        conn.close()
+        if with_message:
+            conn = sqlite3.connect(str(db_path))
+            conn.execute(
+                "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+                ("s1", "cli", time.time()),
+            )
+            conn.execute(
+                "INSERT INTO messages (session_id, timestamp, role, content, tool_name, tool_calls) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "s1",
+                    time.time(),
+                    "assistant",
+                    "部署完成 assistant content",
+                    "legacyTool",
+                    '{"name": "legacy", "arguments": "UNIQUE_TOOLCALL_TOKEN_43701"}',
+                ),
+            )
+            conn.commit()
+            assert conn.execute(
+                "SELECT rowid FROM messages_fts_trigram WHERE messages_fts_trigram MATCH 'UNIQUE_TOOLCALL_TOKEN_43701'"
+            ).fetchall()
+            conn.close()
 
         db = SessionDB(db_path=db_path)
         try:
@@ -3752,24 +3756,35 @@ class TestFTSExternalContentMigration:
             db._ensure_fts_schema = interrupt_after_demote
             with pytest.raises(RuntimeError, match="injected trigram"):
                 db.optimize_fts_storage(vacuum=False)
-            assert db.get_meta("fts_rebuild_high_water") is not None
+
+            db.close()
+            db = SessionDB(db_path=db_path)
+            assert db._conn is not None
+            assert db.get_meta("fts_rebuild_high_water") is None
+            assert db.get_meta("fts_rebuild_progress") is None
+            assert db._has_fts_trash(db._conn) is True
             assert db.fts_optimize_available() is True
             assert db.get_meta("fts_storage_version") == "1"
+            if with_message:
+                assert db._conn.execute(
+                    "SELECT 1 FROM messages_fts_trigram "
+                    "WHERE messages_fts_trigram MATCH '部署完成' LIMIT 1"
+                ).fetchone()
 
-            db._ensure_fts_schema = original_ensure
             result = db.optimize_fts_storage(vacuum=False)
             assert result["ok"] is True
 
-            # messages_fts stays in the tool-calls search path.
-            assert len(db.search_messages("UNIQUE_TOOLCALL_TOKEN_43701")) == 1
-            # New trigram schema excludes tool_calls from trigram projection.
-            assert not db._conn.execute(
-                "SELECT 1 FROM messages_fts_trigram WHERE messages_fts_trigram MATCH 'UNIQUE_TOOLCALL_TOKEN_43701' LIMIT 1"
-            ).fetchone()
-            assert db._conn.execute(
-                "SELECT 1 FROM messages_fts_trigram "
-                "WHERE messages_fts_trigram MATCH '部署完成' LIMIT 1"
-            ).fetchone()
+            if with_message:
+                # messages_fts stays in the tool-calls search path.
+                assert len(db.search_messages("UNIQUE_TOOLCALL_TOKEN_43701")) == 1
+                # New trigram schema excludes tool_calls from trigram projection.
+                assert not db._conn.execute(
+                    "SELECT 1 FROM messages_fts_trigram WHERE messages_fts_trigram MATCH 'UNIQUE_TOOLCALL_TOKEN_43701' LIMIT 1"
+                ).fetchone()
+                assert db._conn.execute(
+                    "SELECT 1 FROM messages_fts_trigram "
+                    "WHERE messages_fts_trigram MATCH '部署完成' LIMIT 1"
+                ).fetchone()
             trigger_sql = db._conn.execute(
                 "SELECT sql FROM sqlite_master "
                 "WHERE type = 'trigger' AND name = 'messages_fts_trigram_update'"

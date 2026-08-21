@@ -1017,6 +1017,24 @@ def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
     return missing
 
 
+def _resolve_dict_key(dct, remaining_parts):
+    """Find the longest prefix of *remaining_parts* that matches an existing key.
+
+    Keys in config may legitimately contain dots (Matrix room IDs, email
+    addresses, hostnames).  A greedy match avoids splitting them into
+    phantom nested dicts (issue #80006).
+
+    Returns ``(matched_key, consumed)`` where *consumed* is the number of
+    segments consumed.  Falls back to a single segment if nothing matches.
+    """
+    for end in range(len(remaining_parts), 0, -1):
+        candidate = ".".join(remaining_parts[:end])
+        if candidate in dct:
+            return candidate, end
+    # No existing key matched — use the first segment (legacy behavior).
+    return remaining_parts[0], 1
+
+
 def _set_nested(config, dotted_key: str, value):
     """Set a value at an arbitrarily nested dotted key path.
 
@@ -1024,6 +1042,10 @@ def _set_nested(config, dotted_key: str, value):
       _set_nested(c, "a.b.c", 1)     → c["a"]["b"]["c"] = 1
       _set_nested(c, "a.0.b", 1)     → c["a"][0]["b"] = 1
       _set_nested(c, "providers.1", "x") → c["providers"][1] = "x"
+
+    Keys containing dots (e.g. Matrix room IDs like ``!room:server.tld``)
+    are matched greedily against existing dict keys before splitting on
+    dots (issue #80006).
 
     Intermediate dicts are created on demand.  List indices are parsed
     from numeric path segments; the referenced index must already exist
@@ -1041,22 +1063,27 @@ def _set_nested(config, dotted_key: str, value):
     """
     parts = dotted_key.split(".")
     current = config
-    for part in parts[:-1]:
+    idx = 0
+    while idx < len(parts) - 1:
+        part = parts[idx]
         if isinstance(current, list):
             try:
-                idx = int(part)
+                list_idx = int(part)
             except (TypeError, ValueError):
                 raise TypeError(
                     f"Cannot navigate into list at key {dotted_key!r}: "
                     f"segment {part!r} is not a numeric index"
                 )
-            current = current[idx]
+            current = current[list_idx]
+            idx += 1
         elif isinstance(current, dict):
-            existing = current.get(part)
-            # Preserve dicts and lists; replace missing/scalar with a fresh dict.
-            if part not in current or not isinstance(existing, (dict, list)):
-                current[part] = {}
-            current = current[part]
+            # Greedy match: try longest prefix of remaining parts first.
+            matched_key, consumed = _resolve_dict_key(current, parts[idx:])
+            existing = current.get(matched_key)
+            if matched_key not in current or not isinstance(existing, (dict, list)):
+                current[matched_key] = {}
+            current = current[matched_key]
+            idx += consumed
         else:
             raise TypeError(
                 f"Cannot navigate into {type(current).__name__} at key {dotted_key!r}"
@@ -1066,7 +1093,6 @@ def _set_nested(config, dotted_key: str, value):
         current[int(last)] = value
     else:
         current[last] = value
-
 
 def clear_model_endpoint_credentials(
     model_cfg: Dict[str, Any],

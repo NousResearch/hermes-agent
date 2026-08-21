@@ -127,6 +127,7 @@ interface SlashCommandDeps {
     storedSessionId?: string | null
   ) => void
   branchCurrentSession: () => Promise<boolean>
+  branchStoredSession: (storedSessionId: string, sessionProfile?: string | null) => Promise<boolean>
   busyRef: MutableRefObject<boolean>
   copy: Translations['desktop']
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
@@ -157,6 +158,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
     activeSessionIdRef,
     appendSessionTextMessage,
     branchCurrentSession,
+    branchStoredSession,
     busyRef,
     copy,
     createBackendSessionForSend,
@@ -488,7 +490,25 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         new: async () => {
           startFreshSessionDraft()
         },
-        branch: async () => {
+        branch: async ({ sessionHint }) => {
+          // When dispatched from a tile (⌘T tab, split pane), sessionHint
+          // carries the tile's runtime ID.  branchCurrentSession() reads
+          // foreground-only refs (activeSessionIdRef, $messages, busyRef),
+          // so it would branch the primary chat instead.  Route through
+          // branchStoredSession for non-foreground targets — it reads the
+          // stored transcript directly and does not depend on the active
+          // session or live message store.
+          if (sessionHint && sessionHint !== activeSessionIdRef.current) {
+            const states = $sessionStates.get()
+            const storedId = states[sessionHint]?.storedSessionId
+
+            if (storedId) {
+              await branchStoredSession(storedId)
+
+              return
+            }
+          }
+
           await branchCurrentSession()
         },
         // /compress (alias /compact) runs the gateway's dedicated
@@ -1107,6 +1127,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       activeSessionIdRef,
       appendSessionTextMessage,
       branchCurrentSession,
+      branchStoredSession,
       busyRef,
       copy,
       createBackendSessionForSend,

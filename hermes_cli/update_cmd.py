@@ -226,6 +226,33 @@ def _run_migrate_config_fresh(*, interactive: bool = False, quiet: bool = False)
     return migrate_config(interactive=interactive, quiet=quiet)
 
 
+def _repair_config_on_current_checkout() -> None:
+    """Run pending config migrations when no new commits need pulling.
+
+    A retry after an interrupted dependency install sees the already-pulled
+    checkout as current. That path must still migrate config written for the
+    previous code version before the updated CLI or desktop starts again.
+    """
+    print()
+    print("→ Checking configuration for new options...")
+    try:
+        current_ver, latest_ver = _run_config_check_fresh()
+        if current_ver >= latest_ver:
+            print("  ✓ Configuration is up to date")
+            return
+
+        print(f"  ℹ Updating config format (v{current_ver} → v{latest_ver})…")
+        results = _run_migrate_config_fresh(interactive=False, quiet=True)
+        print("  ✓ Config format updated")
+        for note in results.get("config_added") or []:
+            print(f"  ℹ {note}")
+        for warning in results.get("warnings") or []:
+            print(f"  ⚠️  {warning}")
+    except Exception as exc:
+        print(f"  ⚠️  Config format update failed: {exc}")
+        print("     Run 'hermes config migrate' to retry.")
+
+
 # Critical files that Hermes must be able to import immediately after an
 # update/install. Most are imported on every CLI startup; ``web_server.py``
 # is the desktop/dashboard backend path that a fresh Windows install launches
@@ -5557,6 +5584,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print("  Close all Hermes windows/gateways and re-run: hermes update")
             else:
                 _repair_node_deps_on_current_checkout(_print_update_completion)
+            _repair_config_on_current_checkout()
             if runtime_repaired is not None and not _m()._is_windows():
                 print()
                 print(

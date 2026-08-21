@@ -1645,6 +1645,22 @@ def stop() -> None:
     # process sweep here: Windows direct-spawn starts are profile-scoped, and a
     # stop command must be bounded even if the scanner or shutdown path is wedged.
     stop_pids.extend(pid for pid in _collect_gateway_stop_pids() if pid not in stop_pids)
+    # If the planned drain did not finish in time, mark those PIDs as a
+    # planned force-stop in the lifecycle sentinel BEFORE TerminateProcess.
+    # Otherwise the next boot sees phase=running + dead PID and falsely
+    # reports gateway.previous_unclean_exit (drain-timeout lifecycle bug).
+    if not drained and stop_pids:
+        try:
+            from gateway.lifecycle_ledger import mark_exited_for_pid
+
+            for force_pid in stop_pids:
+                mark_exited_for_pid(
+                    force_pid,
+                    exit_code=1,
+                    reason="windows_stop_drain_timeout",
+                )
+        except Exception:
+            pass
     killed = _force_terminate_known_gateway_pids(stop_pids)
     if killed:
         stopped_any = True

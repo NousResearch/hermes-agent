@@ -364,6 +364,71 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_windows_stop_marks_lifecycle_before_force_kill(monkeypatch, tmp_path):
+    """When drain times out, mark lifecycle exited before TerminateProcess.
+
+    Prevents the next boot from reporting previous_unclean_exit for a
+    planned Windows stop that force-killed mid-drain.
+    """
+    import json
+
+    from gateway.lifecycle_ledger import (
+        detect_unclean_exit,
+        get_lifecycle_sentinel_path,
+        record_startup,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    record_startup(home=tmp_path)
+    # Pretend the running gateway is a different (dead) PID that owns the
+    # sentinel — the Windows stopper must rewrite *that* PID's record.
+    gateway_pid = 424242
+    path = get_lifecycle_sentinel_path(tmp_path)
+    sentinel = json.loads(path.read_text(encoding="utf-8"))
+    sentinel["pid"] = gateway_pid
+    path.write_text(json.dumps(sentinel), encoding="utf-8")
+
+    force_calls: list[tuple[int, bool]] = []
+    lifecycle_before_kill: list[dict] = []
+
+    def _fake_drain(pid, drain_timeout):
+        assert pid == gateway_pid
+        return False  # timed out
+
+    def _fake_terminate(pids):
+        lifecycle_before_kill.append(
+            json.loads(path.read_text(encoding="utf-8"))
+        )
+        for pid in pids:
+            force_calls.append((pid, True))
+        return len(pids)
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(
+        "gateway.status.get_running_pid", lambda: gateway_pid
+    )
+    monkeypatch.setattr(
+        gateway_windows, "_collect_gateway_stop_pids", lambda primary=None: [gateway_pid]
+    )
+    monkeypatch.setattr(gateway_windows, "_drain_gateway_pid", _fake_drain)
+    monkeypatch.setattr(
+        gateway_windows, "_force_terminate_known_gateway_pids", _fake_terminate
+    )
+    monkeypatch.setattr(
+        gateway_windows, "_windows_stop_drain_timeout", lambda: 1.0
+    )
+
+    gateway_windows.stop()
+
+    assert force_calls == [(gateway_pid, True)]
+    assert lifecycle_before_kill, "lifecycle must be marked before force-kill"
+    assert lifecycle_before_kill[0]["phase"] == "exited"
+    assert lifecycle_before_kill[0]["pid"] == gateway_pid
+    assert lifecycle_before_kill[0]["exit_reason"] == "windows_stop_drain_timeout"
+    assert detect_unclean_exit(home=tmp_path) is None
+
+
 
 
 

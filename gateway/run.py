@@ -14660,6 +14660,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._clear_plugin_message_injector()
             self._draining = True
 
+            # Persist planned-exit intent BEFORE the drain wait. Windows
+            # ``gateway stop`` caps its wait (~30s) then force-kills, and
+            # systemd TimeoutStopSec can SIGKILL mid-drain — both happen
+            # before ``_exit_after_graceful_shutdown`` can run. Marking
+            # here prevents the next boot from falsely reporting
+            # ``gateway.previous_unclean_exit`` for a planned stop.
+            try:
+                from gateway.lifecycle_ledger import mark_exited as _lifecycle_mark_exited
+                _lifecycle_mark_exited(0, reason="planned_shutdown")
+            except Exception as _e:
+                logger.debug("lifecycle mark_exited(planned_shutdown) failed: %s", _e)
+
             stop_watchdog = getattr(self, "_stop_systemd_watchdog", None)
             if callable(stop_watchdog):
                 await stop_watchdog()
@@ -14740,6 +14752,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _api_at_start,
                 self._active_api_run_count(),
             )
+
+            # Refine the lifecycle reason now that drain outcome is known.
+            # Still best-effort and ownership-guarded; the early
+            # planned_shutdown mark above already covers force-kill during
+            # the drain itself.
+            try:
+                from gateway.lifecycle_ledger import mark_exited as _lifecycle_mark_exited
+                _lifecycle_mark_exited(
+                    0,
+                    reason=(
+                        "drain_timeout_shutdown"
+                        if timed_out
+                        else "graceful_shutdown"
+                    ),
+                )
+            except Exception as _e:
+                logger.debug("lifecycle mark_exited after drain failed: %s", _e)
 
             if not timed_out:
                 # Drain completed gracefully — all running sessions finished.

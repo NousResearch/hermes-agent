@@ -18,6 +18,7 @@ this relies on (get_running_job_ids, mark_running_jobs_interrupted).
 """
 
 import asyncio
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -115,4 +116,55 @@ class TestKillToolSubprocessesMarksCronInterrupted:
 
         assert marked_calls, "mark_running_jobs_interrupted was never called during shutdown"
         assert any(result == ["job-1"] for _reason, result in marked_calls)
+
+
+@pytest.mark.asyncio
+async def test_drain_timeout_marks_lifecycle_exited(tmp_path, monkeypatch):
+    """Planned stop that times out draining must still mark lifecycle exited.
+
+    Regression for the false ``gateway.previous_unclean_exit`` after a
+    planned stop with in-flight cron work: mark_exited used to run only in
+    ``_exit_after_graceful_shutdown``, so a force-kill during post-drain
+    teardown left ``phase=running`` for a dead PID.
+    """
+    import cron.scheduler as sched
+    import tools.process_registry as _pr
+    import tools.terminal_tool as _tt
+    import tools.browser_tool as _bt
+    from gateway.lifecycle_ledger import (
+        detect_unclean_exit,
+        get_lifecycle_sentinel_path,
+        record_startup,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    record_startup(home=tmp_path)
+    sentinel_before = json.loads(
+        get_lifecycle_sentinel_path(tmp_path).read_text(encoding="utf-8")
+    )
+    assert sentinel_before["phase"] == "running"
+
+    runner, adapter = make_restart_runner()
+    runner._restart_drain_timeout = 0.01
+    runner._cron_drain_timeout = 0.01
+    adapter.disconnect = _make_async_noop()
+    sched._running_job_ids.add("job-drain-timeout")
+
+    monkeypatch.setattr(_pr.process_registry, "kill_all", lambda task_id=None: 0)
+    monkeypatch.setattr(_tt, "cleanup_all_environments", lambda: None)
+    monkeypatch.setattr(_bt, "cleanup_all_browsers", lambda: None)
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"), \
+         patch("cron.scheduler.mark_job_run"):
+        await runner.stop()
+
+    sentinel = json.loads(
+        get_lifecycle_sentinel_path(tmp_path).read_text(encoding="utf-8")
+    )
+    assert sentinel["phase"] == "exited"
+    assert sentinel["exit_reason"] == "drain_timeout_shutdown"
+    # Simulate the process dying without reaching _exit_after_graceful_shutdown:
+    # the next boot must NOT report previous_unclean_exit.
+    assert detect_unclean_exit(home=tmp_path) is None
+
 

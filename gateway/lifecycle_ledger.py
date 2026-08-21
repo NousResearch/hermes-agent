@@ -20,11 +20,16 @@ This module closes that gap with a tiny state machine persisted to
   telemetry snapshot — is appended to ``gateway-exit-diag.log`` as a
   ``gateway.previous_unclean_exit`` record and logged at WARNING.  The
   sentinel is then rewritten as ``phase=running`` for the new life.
-* On every clean exit path, :func:`mark_exited` rewrites the sentinel as
-  ``phase=exited`` with the exit code and a reason string.  Wired into
-  ``_exit_after_graceful_shutdown`` (the single funnel for all graceful
-  exits, #53107) and the two watchdog ``os._exit`` sites in
-  :mod:`gateway.shutdown_watchdog`.
+* On every clean / planned exit path, :func:`mark_exited` (or
+  :func:`mark_exited_for_pid` for an external stopper) rewrites the
+  sentinel as ``phase=exited`` with the exit code and a reason string.
+  Wired into ``GatewayRunner.stop()`` as soon as a planned drain begins
+  (so a Windows/systemd force-kill mid-drain cannot leave a false
+  ``gateway.previous_unclean_exit``), refined after drain success /
+  drain-timeout, ``_exit_after_graceful_shutdown`` (the final funnel for
+  graceful exits, #53107), the two watchdog ``os._exit`` sites in
+  :mod:`gateway.shutdown_watchdog`, and Windows ``gateway stop`` before
+  it force-terminates a PID that was asked to drain but did not exit.
 
 :func:`sample_memory` provides the cheap (<1ms, pure /proc reads) memory
 snapshot that :func:`gateway.shutdown_watchdog.write_loop_heartbeat`
@@ -277,6 +282,53 @@ def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
     return evidence
 
 
+def mark_exited_for_pid(
+    pid: int,
+    exit_code: Optional[int] = None,
+    reason: str = "planned_force_stop",
+    home: Optional[Path] = None,
+) -> bool:
+    """Mark a planned exit for another process's lifecycle sentinel.
+
+    Used by Windows ``hermes gateway stop`` when the CLI force-kills a
+    gateway that was asked to drain (planned-stop marker written) but did
+    not exit within the stop drain budget.  Without this, the next boot
+    sees ``phase=running`` for a dead PID and falsely reports
+    ``gateway.previous_unclean_exit``.
+
+    Only rewrites when the sentinel's ``pid`` matches ``pid``.  Returns
+    True when the sentinel was rewritten.  Never raises.
+    """
+    try:
+        pid_int = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid_int <= 0:
+        return False
+    try:
+        sentinel = _read_json(get_lifecycle_sentinel_path(home))
+        if sentinel is None or sentinel.get("pid") != pid_int:
+            return False
+        _write_sentinel(
+            {
+                "phase": "exited",
+                "pid": pid_int,
+                "exit_code": exit_code,
+                "exit_reason": reason,
+                "exited_at": datetime.now(timezone.utc).isoformat(),
+            },
+            home,
+        )
+        return True
+    except Exception:
+        logger.debug(
+            "Failed to mark lifecycle sentinel exited for pid=%s",
+            pid,
+            exc_info=True,
+        )
+        return False
+
+
 def mark_exited(
     exit_code: Optional[int] = None,
     reason: str = "graceful_shutdown",
@@ -292,22 +344,7 @@ def mark_exited(
     likewise left alone: we must not overwrite evidence we cannot prove is
     ours with a ``clean exit`` claim.
     """
-    try:
-        sentinel = _read_json(get_lifecycle_sentinel_path(home))
-        if sentinel is not None and sentinel.get("pid") != os.getpid():
-            return
-        _write_sentinel(
-            {
-                "phase": "exited",
-                "pid": os.getpid(),
-                "exit_code": exit_code,
-                "exit_reason": reason,
-                "exited_at": datetime.now(timezone.utc).isoformat(),
-            },
-            home,
-        )
-    except Exception:
-        logger.debug("Failed to mark lifecycle sentinel exited", exc_info=True)
+    mark_exited_for_pid(os.getpid(), exit_code=exit_code, reason=reason, home=home)
 
 
 def read_prior_exit_label(profile_home: Path) -> str:

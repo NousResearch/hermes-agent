@@ -204,6 +204,49 @@ def test_mark_exited_leaves_pid_none_sentinel_alone(tmp_path: Path) -> None:
     assert sentinel["pid"] is None
 
 
+def test_mark_exited_for_pid_rewrites_matching_sentinel(tmp_path: Path) -> None:
+    """External stoppers (Windows drain-timeout force-kill) must be able to
+    mark another PID's sentinel so the next boot does not false-positive
+    previous_unclean_exit."""
+    from gateway.lifecycle_ledger import mark_exited_for_pid
+
+    _write_sentinel(tmp_path, {
+        "phase": "running",
+        "pid": _DEAD_PID,
+        "start_time": 1000.0,
+        "started_at": "2026-08-16T19:37:00+00:00",
+    })
+    assert mark_exited_for_pid(
+        _DEAD_PID,
+        exit_code=1,
+        reason="windows_stop_drain_timeout",
+        home=tmp_path,
+    ) is True
+    sentinel = _read_sentinel(tmp_path)
+    assert sentinel["phase"] == "exited"
+    assert sentinel["pid"] == _DEAD_PID
+    assert sentinel["exit_reason"] == "windows_stop_drain_timeout"
+    assert detect_unclean_exit(home=tmp_path) is None
+
+
+def test_mark_exited_for_pid_ignores_mismatched_owner(tmp_path: Path) -> None:
+    from gateway.lifecycle_ledger import mark_exited_for_pid
+
+    _write_sentinel(tmp_path, {
+        "phase": "running",
+        "pid": _DEAD_PID,
+        "start_time": 1000.0,
+    })
+    assert mark_exited_for_pid(
+        _DEAD_PID + 1,
+        reason="windows_stop_drain_timeout",
+        home=tmp_path,
+    ) is False
+    sentinel = _read_sentinel(tmp_path)
+    assert sentinel["phase"] == "running"
+    assert sentinel["pid"] == _DEAD_PID
+
+
 # ---------------------------------------------------------------------------
 # read_prior_exit_label (container-boot annotation)
 # ---------------------------------------------------------------------------

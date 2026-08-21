@@ -141,6 +141,27 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
     return '\n'.join(diagnostics), '\n'.join(payload)
 
 
+def _rg_diagnostic_requires_pcre2(diagnostics: str) -> bool:
+    """Whether rg's actual error line names a PCRE2-only construct."""
+    supported_errors = {
+        "error: look-around, including look-ahead and look-behind, is not supported",
+        "error: backreferences are not supported",
+    }
+    lines = [line.rstrip().lower() for line in diagnostics.splitlines()]
+    nonempty = [line for line in lines if line]
+    if not nonempty or nonempty[0] != "rg: regex parse error:":
+        return False
+    # Anchor the trigger inside rg's complete parser diagnostic. User-controlled
+    # patterns are indented, while path/I/O diagnostics end with their OS error
+    # rather than rg's fixed PCRE2 recommendation.
+    if nonempty[-2:] != [
+        "consider enabling pcre2 with the --pcre2 flag, which can handle backreferences",
+        "and look-around.",
+    ]:
+        return False
+    return any(line in supported_errors for line in nonempty[1:-2])
+
+
 def _parse_search_context_line(line: str) -> tuple[str, int, str] | None:
     """Parse a ``path-line-content`` context line using the RIGHTMOST numeric
     separator (filenames may contain ``-<digits>-`` segments):
@@ -743,7 +764,7 @@ class SearchMixin:
 
     def _run_search_pipeline(self, cmd_parts: List[str], output_mode: str, limit: int,
                              offset: int, context: int, warning: Optional[str] = None,
-                             line_cap: bool = False) -> SearchResult:
+                             line_cap: bool = False, retry_pcre2: bool = False) -> SearchResult:
         """Run ``cmd_parts | head -n <fetch_limit>`` under pipefail and parse. Extra
         rows report the true total (context mode also emits "--" separators, so
         grab 200 more). pipefail keeps the engine's exit 2 alive across ``| head``
@@ -756,6 +777,13 @@ class SearchMixin:
         if line_cap and output_mode not in ("files_only", "count"):
             parts += ["|", "cut", "-c1-2000"]
         result = self._exec("set -o pipefail; " + " ".join(parts), timeout=60)
+        if retry_pcre2 and result.exit_code == 2:
+            stdout, _ = _search_stdout_and_limit(result)
+            diagnostics, payload = _split_tool_diagnostics(stdout)
+            if not payload.strip() and _rg_diagnostic_requires_pcre2(diagnostics):
+                pcre_parts = list(parts)
+                pcre_parts.insert(1, "--pcre2")
+                result = self._exec("set -o pipefail; " + " ".join(pcre_parts), timeout=60)
         return _parse_search_output(result, output_mode, limit, offset, context, warning=warning)
 
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
@@ -791,7 +819,7 @@ class SearchMixin:
             "Pattern contains \\n — multiline mode (-U) was enabled automatically "
             "so the regex can match across line boundaries."
         ) if multiline else None
-        return self._run_search_pipeline(cmd_parts, output_mode, limit, offset, context, warning=ml_note)
+        return self._run_search_pipeline(cmd_parts, output_mode, limit, offset, context, warning=ml_note, retry_pcre2=True)
 
     def _grep_cmd(self, head: List[str], pattern: str, output_mode: str, context: int,
                   file_glob: Optional[str] = None) -> List[str]:

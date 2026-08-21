@@ -69,6 +69,33 @@ class FakeStore:
         return list(self.transcripts.get(session_id, []))
 
 
+class PersistingShortcutStore(FakeStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.shortcut_topics: list[dict[str, str]] = []
+        self.shortcut_answers: list[dict[str, str]] = []
+
+    def record_shortcut_topic(
+        self, *, title: str, text: str, topic_id: str, message_id: str
+    ) -> str:
+        self.shortcut_topics.append({
+            "title": title,
+            "text": text,
+            "topic_id": topic_id,
+            "message_id": message_id,
+        })
+        return "shortcut-session"
+
+    def record_shortcut_answer(
+        self, *, session_id: str, text: str, message_id: str
+    ) -> None:
+        self.shortcut_answers.append({
+            "session_id": session_id,
+            "text": text,
+            "message_id": message_id,
+        })
+
+
 class RacingStore(FakeStore):
     def revision_for_topic(self, row: dict, transcript: list[dict]) -> str:
         del row, transcript
@@ -337,6 +364,34 @@ class ProjectionDB:
     ) -> list[dict]:
         del session_id, include_inactive
         return [{"role": "user", "content": "hello", "timestamp": 1_755_104_400.0}]
+
+
+class ShortcutProjectionDB:
+    def __init__(self) -> None:
+        self.sessions: dict[str, dict[str, object]] = {}
+        self.messages: dict[str, list[dict[str, object]]] = {}
+
+    def get_session(self, session_id: str) -> dict[str, object] | None:
+        return self.sessions.get(session_id)
+
+    def create_session(self, session_id: str, source: str, **kwargs: object) -> str:
+        self.sessions[session_id] = {"id": session_id, "source": source, **kwargs}
+        self.messages.setdefault(session_id, [])
+        return session_id
+
+    def set_session_title(self, session_id: str, title: str) -> bool:
+        self.sessions[session_id]["title"] = title
+        return True
+
+    def get_messages(
+        self, session_id: str, include_inactive: bool = False
+    ) -> list[dict[str, object]]:
+        del include_inactive
+        return list(self.messages.get(session_id, []))
+
+    def append_message(self, session_id: str, role: str, **kwargs: object) -> int:
+        self.messages.setdefault(session_id, []).append({"role": role, **kwargs})
+        return len(self.messages[session_id])
 
 
 def config(*, port: int = 0, topic_reply: str = "unavailable") -> BeckyLoopsConfig:
@@ -738,6 +793,48 @@ async def test_bridge_answers_a_new_topic_without_exposing_answer_text() -> None
     assert generator.calls[0]["transcript"][0]["content"] == (
         "Please help me plan this."
     )
+
+
+@pytest.mark.asyncio
+async def test_new_topic_answer_persists_exchange_for_loop_projection() -> None:
+    store = PersistingShortcutStore()
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator(["The audit needs an export first."])
+    server = reply_server(store=store, sender=sender, generator=generator)
+
+    response = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.answer_new_topic",
+            "params": new_topic_reply_params(
+                title="Energy Audit Request",
+                text="Please audit the last week's energy usage.",
+                topic_id="44",
+                message_id="104",
+            ),
+        })
+    )
+
+    assert response["result"] == {
+        "schema_version": "1",
+        "answer_state": "answered",
+    }
+    assert store.shortcut_topics == [
+        {
+            "title": "Energy Audit Request",
+            "text": "Please audit the last week's energy usage.",
+            "topic_id": "44",
+            "message_id": "104",
+        }
+    ]
+    assert store.shortcut_answers == [
+        {
+            "session_id": "shortcut-session",
+            "text": "The audit needs an export first.",
+            "message_id": "101",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -1980,6 +2077,39 @@ def test_session_store_excludes_branch_delegate_and_tool_children() -> None:
     store = SessionDBBeckyLoopsStore(ProjectionDB())
     rows = store.list_topics("123456789")
     assert [row["title"] for row in rows] == ["Root"]
+
+
+def test_session_store_persists_shortcut_topic_exchange_idempotently() -> None:
+    from gateway.becky_loops import SessionDBBeckyLoopsStore
+
+    db = ShortcutProjectionDB()
+    store = SessionDBBeckyLoopsStore(db)
+    store._chat_id = "-1004476874933"
+
+    session_id = store.record_shortcut_topic(
+        title="Energy Audit Request",
+        text="Please audit the last week's energy usage.",
+        topic_id="44",
+        message_id="104",
+    )
+    assert session_id is not None
+    store.record_shortcut_topic(
+        title="Energy Audit Request",
+        text="Please audit the last week's energy usage.",
+        topic_id="44",
+        message_id="104",
+    )
+    store.record_shortcut_answer(
+        session_id=session_id,
+        text="I need an export first.",
+        message_id="105",
+    )
+
+    assert db.sessions[session_id]["title"] == "Energy Audit Request"
+    assert [message["role"] for message in db.messages[session_id]] == [
+        "user",
+        "assistant",
+    ]
 
 
 def test_session_store_coalesces_restarted_sessions_for_one_topic() -> None:

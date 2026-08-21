@@ -485,6 +485,76 @@ class SessionDBBeckyLoopsStore:
     def transcript(self, session_id: str) -> list[dict[str, Any]]:
         return self._db.get_messages(session_id, include_inactive=False)
 
+    def record_shortcut_topic(
+        self, *, title: str, text: str, topic_id: str, message_id: str
+    ) -> str | None:
+        """Persist a Shortcut-created topic so it enters the normal projection."""
+        if not all(
+            callable(getattr(self._db, name, None))
+            for name in (
+                "create_session",
+                "get_session",
+                "get_messages",
+                "append_message",
+            )
+        ):
+            return None
+        digest = hashlib.sha256(
+            f"telegram\0{self._chat_id}\0{topic_id}".encode()
+        ).hexdigest()[:32]
+        session_id = f"telegram_shortcut_{digest}"
+        if self._db.get_session(session_id) is None:
+            self._db.create_session(
+                session_id=session_id,
+                source="telegram",
+                chat_id=self._chat_id,
+                chat_type="supergroup",
+                thread_id=topic_id,
+            )
+            set_title = getattr(self._db, "set_session_title", None)
+            if callable(set_title):
+                try:
+                    set_title(session_id, title)
+                except ValueError:
+                    for suffix in range(2, 100):
+                        try:
+                            if set_title(session_id, f"{title} ({suffix})"):
+                                break
+                        except ValueError:
+                            continue
+        messages = self._db.get_messages(session_id, include_inactive=False)
+        if not any(
+            str(message.get("platform_message_id") or "") == message_id
+            for message in messages
+        ):
+            self._db.append_message(
+                session_id,
+                "user",
+                content=text,
+                platform_message_id=message_id,
+                observed=True,
+                timestamp=datetime.now(UTC).timestamp(),
+            )
+        return session_id
+
+    def record_shortcut_answer(
+        self, *, session_id: str, text: str, message_id: str
+    ) -> None:
+        messages = self._db.get_messages(session_id, include_inactive=False)
+        if any(
+            str(message.get("platform_message_id") or "") == message_id
+            for message in messages
+        ):
+            return
+        self._db.append_message(
+            session_id,
+            "assistant",
+            content=text,
+            platform_message_id=message_id,
+            observed=True,
+            timestamp=datetime.now(UTC).timestamp(),
+        )
+
     @staticmethod
     def _hidden_child(row: dict[str, Any]) -> bool:
         if row.get("parent_session_id") not in (None, ""):
@@ -858,6 +928,12 @@ class BeckyLoopsBridgeServer:
             return await asyncio.shield(future)
 
         result: dict[str, Any]
+        shortcut_session_id = self._record_shortcut_topic(
+            title=title,
+            text=text,
+            topic_id=topic_id,
+            message_id=message_id,
+        )
         try:
             answer = await self._generate_reply(
                 row={
@@ -878,11 +954,17 @@ class BeckyLoopsBridgeServer:
             answer = answer.strip()
             if not 1 <= len(answer) <= _MAX_REPLY_TEXT_CHARS:
                 raise ValueError("reply unavailable")
-            await self._send_topic(
+            receipt = await self._send_topic(
                 thread_id=topic_id,
                 text=answer,
                 reply_to_message_id=message_id,
             )
+            if shortcut_session_id is not None:
+                self._record_shortcut_answer(
+                    session_id=shortcut_session_id,
+                    text=answer,
+                    message_id=receipt.message_id,
+                )
             result = {"schema_version": "1", "answer_state": "answered"}
         except asyncio.CancelledError:
             result = {"schema_version": "1", "answer_state": "answer_unavailable"}
@@ -894,6 +976,39 @@ class BeckyLoopsBridgeServer:
         if not future.done():
             future.set_result(result)
         return result
+
+    def _record_shortcut_topic(
+        self, *, title: str, text: str, topic_id: str, message_id: str
+    ) -> str | None:
+        recorder = getattr(self.store, "record_shortcut_topic", None)
+        if not callable(recorder):
+            return None
+        try:
+            session_id = recorder(
+                title=title,
+                text=text,
+                topic_id=topic_id,
+                message_id=message_id,
+            )
+        except Exception:
+            logger.debug(
+                "Unable to persist Shortcut-created Telegram topic", exc_info=True
+            )
+            return None
+        return session_id if isinstance(session_id, str) and session_id else None
+
+    def _record_shortcut_answer(
+        self, *, session_id: str, text: str, message_id: str
+    ) -> None:
+        recorder = getattr(self.store, "record_shortcut_answer", None)
+        if not callable(recorder):
+            return
+        try:
+            recorder(session_id=session_id, text=text, message_id=message_id)
+        except Exception:
+            logger.debug(
+                "Unable to persist Shortcut-created Telegram answer", exc_info=True
+            )
 
     def _find_topic(self, source_ref: str) -> dict[str, Any] | None:
         rows = self.store.list_topics(self.config.chat_id)

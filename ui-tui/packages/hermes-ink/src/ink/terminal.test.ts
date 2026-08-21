@@ -1,7 +1,19 @@
 import { describe, expect, it } from 'vitest'
 
-import { isSynchronizedOutputSupported, needsAltScreenResizeScrollbackClear, writeDiffToTerminal } from './terminal.js'
+import {
+  isSynchronizedOutputSupported,
+  needsAltScreenResizeScrollbackClear,
+  supportsExtendedKeys,
+  writeDiffToTerminal
+} from './terminal.js'
 import { BSU, ESU } from './termio/dec.js'
+
+describe('extended key reporting', () => {
+  it('supports Alacritty while remaining conservative for unknown terminals', () => {
+    expect(supportsExtendedKeys('alacritty')).toBe(true)
+    expect(supportsExtendedKeys('unknown-terminal')).toBe(false)
+  })
+})
 
 describe('terminal resize quirks', () => {
   it('uses a deeper alt-screen resize clear for Apple Terminal', () => {

@@ -65,6 +65,7 @@
 import http from "node:http";
 import crypto from "node:crypto";
 import { once } from "node:events";
+import { readBinaryContentWithRetry } from "./attachment-read.mjs";
 import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
 import {
@@ -457,7 +458,7 @@ async function normalizeBinaryContent(content) {
   }
   if (typeof content.read === "function") {
     try {
-      const buf = await content.read();
+      const buf = await readBinaryContentWithRetry(content, { label });
       // Guard the case where size was unknown but the bytes turn out to be
       // over the cap.
       if (buf && buf.length > MAX_INLINE_ATTACHMENT_BYTES) {

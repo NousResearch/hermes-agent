@@ -12084,7 +12084,7 @@ function BotsPane() {
                     'aria-label': 'Search bots and group chats',
                     containerClassName: cn(
                       'min-w-0 flex-1',
-                      query ? 'opacity-100!' : 'opacity-60 focus-within:opacity-100'
+                      query ? 'opacity-100!' : 'opacity-50 focus-within:opacity-100'
                     ),
                     inputClassName:
                       'w-full text-[0.75rem] placeholder:text-(--ui-text-tertiary)',

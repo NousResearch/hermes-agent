@@ -4747,6 +4747,16 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
             kwargs["explicit_base_url"] = job.get("base_url")
         resolve_runtime_provider(**kwargs)
     except AuthError as exc:
+        # Router-internal provider names (e.g. lmstudio-qwen-studio-qwen38
+        # from router.yaml) are valid at runtime but invisible to
+        # resolve_runtime_provider.  Only surface the missing-credential
+        # warning when the provider is a well-known built-in; for anything
+        # else let the real resolution path handle it (fail-open).
+        from hermes_cli.auth import resolve_provider as _rp
+        try:
+            _rp(requested)  # if this succeeds, it IS a known provider
+        except Exception:
+            return None  # non-standard name → fail-open
         return (
             f"provider credential missing: {exc}. "
             "Set the provider API key in .env (or `hermes setup`), or pin a "

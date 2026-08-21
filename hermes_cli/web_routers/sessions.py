@@ -15,12 +15,16 @@ the late-binding seam in :mod:`hermes_cli.web_deps` so tests that
 import asyncio  # noqa: F401 — used by handlers
 import json
 import logging
+import re
 import time  # noqa: F401
-from typing import Any, Dict, List, Optional  # noqa: F401
+from typing import Any, Dict, List, Literal, Optional, Union  # noqa: F401
 
 from fastapi import APIRouter, HTTPException, Query, Request  # noqa: F401
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
+
+from agent.redact import redact_sensitive_text
 
 from hermes_cli.web_deps import late
 from hermes_cli.web_models import (
@@ -44,10 +48,191 @@ _cron_profile_home = late("_cron_profile_home")
 _import_sessions_for_profile = late("_import_sessions_for_profile")
 _maybe_auto_archive_for_profile = late("_maybe_auto_archive_for_profile")
 _open_session_db_for_profile = late("_open_session_db_for_profile")
+_open_session_db_strict_read_only = late("_open_session_db_strict_read_only")
 _prune_sessions = late("_prune_sessions")
 _read_session_import_body = late("_read_session_import_body")
 _session_latest_descendant = late("_session_latest_descendant")
 _strip_session_list_rows = late("_strip_session_list_rows")
+
+
+_SESSION_ACTIVITY_CAPABILITIES = ("sessions.activity.read_model.v1",)
+_SESSION_ACTIVITY_SCHEMA = "sessions.activity.read_model.v1"
+_SESSION_ACTIVITY_CONTENT_LIMIT = 500
+_SESSION_ACTIVITY_CONTENT_READ_BYTES = 8 * 1024
+_SESSION_ACTIVITY_PUBLIC_BLOCK_TYPES = frozenset({"text", "input_text", "output_text"})
+_SESSION_ACTIVITY_PATH_HINT_RE = re.compile(
+    r"(?i)(?:\bfile://|(?:^|[\s:(])(?:~[/\\]|[A-Z]:[/\\]|\\\\|\.{0,2}[/\\]|/)"
+    r"|(?:^|[\s:(])[^\s:/\\]+[/\\][^\s]+)"
+)
+
+
+class _StrictSessionActivityModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class SessionActivityCapabilitiesResponse(_StrictSessionActivityModel):
+    capabilities: List[Literal["sessions.activity.read_model.v1"]]
+
+
+class SessionActivitySessionResponse(_StrictSessionActivityModel):
+    session_id: str
+    profile_id: str
+    source: str
+    started_at: Optional[Union[str, int, float]] = None
+    last_activity_at: Optional[Union[str, int, float]] = None
+    ended_at: Optional[Union[str, int, float]] = None
+    state: Literal["open", "ended"]
+
+
+class SessionActivityMessageResponse(_StrictSessionActivityModel):
+    message_id: str
+    role: Literal["user", "assistant"]
+    content: str
+    occurred_at: Optional[Union[str, int, float]] = None
+    truncated: bool
+
+
+class SessionActivityWindowResponse(_StrictSessionActivityModel):
+    limit: int = Field(ge=1, le=200)
+    order: Literal["latest"]
+    source_rows: int = Field(ge=0, le=200)
+    returned: int = Field(ge=0, le=200)
+
+
+class SessionActivityResponse(_StrictSessionActivityModel):
+    schema: Literal["sessions.activity.read_model.v1"]
+    capabilities: List[Literal["sessions.activity.read_model.v1"]]
+    requested_session_id: str
+    session: SessionActivitySessionResponse
+    messages: List[SessionActivityMessageResponse]
+    window: SessionActivityWindowResponse
+
+
+def _session_activity_headers() -> Dict[str, str]:
+    return {
+        "Cache-Control": "private, no-store",
+        "X-Hermes-Session-Capabilities": ", ".join(
+            _SESSION_ACTIVITY_CAPABILITIES
+        ),
+    }
+
+
+def _validate_session_activity_query(request: Request) -> None:
+    pairs = list(request.query_params.multi_items())
+    counts: Dict[str, int] = {}
+    for key, _value in pairs:
+        counts[key] = counts.get(key, 0) + 1
+    unknown = sorted(set(counts) - {"profile", "limit"})
+    duplicates = sorted(key for key, count in counts.items() if count != 1)
+    if unknown or duplicates:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_query",
+                "unknown": unknown,
+                "duplicates": duplicates,
+            },
+        )
+
+
+def _session_activity_public_text(content: Any) -> Optional[str]:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return None
+    chunks = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") not in _SESSION_ACTIVITY_PUBLIC_BLOCK_TYPES:
+            continue
+        text = part.get("text")
+        if isinstance(text, str) and text:
+            chunks.append(text)
+    return "\n".join(chunks) if chunks else None
+
+
+def _session_activity_redact_paths(text: str) -> str:
+    if _SESSION_ACTIVITY_PATH_HINT_RE.search(text):
+        return "[REDACTED: path-like content]"
+    return text
+
+
+def _session_activity_message(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    role = row.get("role")
+    if role not in {"user", "assistant"}:
+        return None
+    message_id = row.get("id")
+    if isinstance(message_id, bool) or not isinstance(message_id, (int, str)):
+        return None
+    if not str(message_id):
+        return None
+    oversized = row.get("content_oversized") is True or row.get("content_oversized") == 1
+    text = (
+        "[REDACTED: message exceeds public read limit]"
+        if oversized
+        else (_session_activity_public_text(row.get("content")) or "")
+    ).strip()
+    if not text:
+        return None
+    try:
+        text = redact_sensitive_text(
+            text,
+            force=True,
+            file_read=True,
+            redact_url_credentials=True,
+        )
+        text = _session_activity_redact_paths(text)
+    except Exception:
+        text = "[REDACTED: content unavailable]"
+    truncated = oversized or len(text) > _SESSION_ACTIVITY_CONTENT_LIMIT
+    return {
+        "message_id": str(message_id),
+        "role": role,
+        "content": text[:_SESSION_ACTIVITY_CONTENT_LIMIT],
+        "occurred_at": row.get("timestamp"),
+        "truncated": truncated,
+    }
+
+
+def _session_activity_model(
+    *,
+    requested_session_id: str,
+    session_id: str,
+    profile_id: str,
+    session: Dict[str, Any],
+    source_rows: List[Dict[str, Any]],
+    limit: int,
+) -> Dict[str, Any]:
+    messages = []
+    for row in source_rows:
+        message = _session_activity_message(row)
+        if message is not None:
+            messages.append(message)
+    last_activity_at = session.get("last_activity_at")
+    if last_activity_at is None:
+        last_activity_at = session.get("last_active")
+    return {
+        "schema": _SESSION_ACTIVITY_SCHEMA,
+        "capabilities": list(_SESSION_ACTIVITY_CAPABILITIES),
+        "requested_session_id": requested_session_id,
+        "session": {
+            "session_id": session_id,
+            "profile_id": profile_id,
+            "source": session.get("source"),
+            "started_at": session.get("started_at"),
+            "last_activity_at": last_activity_at,
+            "ended_at": session.get("ended_at"),
+            "state": "ended" if session.get("ended_at") is not None else "open",
+        },
+        "messages": messages,
+        "window": {
+            "limit": limit,
+            "order": "latest",
+            "source_rows": len(source_rows),
+            "returned": len(messages),
+        },
+    }
 
 
 @list_router.get("/api/sessions")
@@ -520,6 +705,17 @@ async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
     return {"ok": True, "deleted": deleted}
 
 
+@manage_router.get(
+    "/api/sessions/capabilities",
+    response_model=SessionActivityCapabilitiesResponse,
+)
+def get_session_capabilities():
+    return JSONResponse(
+        {"capabilities": list(_SESSION_ACTIVITY_CAPABILITIES)},
+        headers=_session_activity_headers(),
+    )
+
+
 @manage_router.get("/api/sessions/stats")
 async def get_session_stats(profile: Optional[str] = None):
     """Session-store statistics for the Sessions page (mirrors `hermes sessions stats`).
@@ -596,6 +792,94 @@ async def get_session_latest_descendant(
         "path": path,
         "changed": bool(path and latest != path[0]),
     }
+
+
+async def _session_activity_http_response(
+    request: Request,
+    session_id: str,
+    profile: Optional[str],
+    limit: int,
+):
+    _validate_session_activity_query(request)
+
+    def _read():
+        db = _open_session_db_strict_read_only(profile)
+        try:
+            requested_session_id = db.resolve_session_id(session_id)
+            if not requested_session_id:
+                return None
+            resolved_session_id = (
+                db.resolve_resume_session_id(requested_session_id)
+                or requested_session_id
+            )
+            session = db.get_session(resolved_session_id)
+            if not session:
+                return None
+            source_rows = db.get_activity_messages(
+                resolved_session_id,
+                limit=limit,
+                content_bytes=_SESSION_ACTIVITY_CONTENT_READ_BYTES,
+            )
+            profile_id = (
+                _cron_profile_home(profile)[0]
+                if profile
+                else _cron_default_profile()
+            )
+            return _session_activity_model(
+                requested_session_id=requested_session_id,
+                session_id=resolved_session_id,
+                profile_id=profile_id,
+                session=session,
+                source_rows=source_rows,
+                limit=limit,
+            )
+        finally:
+            db.close()
+
+    model = await asyncio.to_thread(_read)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    headers = _session_activity_headers()
+    response = JSONResponse(model, headers=headers)
+    if request.method == "HEAD":
+        return Response(status_code=response.status_code, headers=dict(response.headers))
+    return response
+
+
+@manage_router.get(
+    "/api/sessions/{session_id}/activity",
+    response_model=SessionActivityResponse,
+)
+async def get_session_activity(
+    request: Request,
+    session_id: str,
+    profile: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=200),
+):
+    return await _session_activity_http_response(
+        request,
+        session_id,
+        profile,
+        limit,
+    )
+
+
+@manage_router.head(
+    "/api/sessions/{session_id}/activity",
+    response_class=Response,
+)
+async def head_session_activity(
+    request: Request,
+    session_id: str,
+    profile: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=200),
+):
+    return await _session_activity_http_response(
+        request,
+        session_id,
+        profile,
+        limit,
+    )
 
 
 @manage_router.get("/api/sessions/{session_id}/messages")

@@ -9272,7 +9272,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self,
         session_id: str,
         role: str,
-        content: str = None,
+        content: Any = None,
         tool_name: str = None,
         tool_calls: Any = None,
         tool_call_id: str = None,
@@ -10267,6 +10267,73 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if msg.get("display_metadata") is not None:
                 msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
             result.append(msg)
+        return result
+
+    def get_activity_messages(
+        self,
+        session_id: str,
+        *,
+        limit: int = 100,
+        content_bytes: int = 8 * 1024,
+    ) -> List[Dict[str, Any]]:
+        """Return a bounded, display-only projection for activity surfaces.
+
+        The SQL excludes non-public roles and every tool/reasoning column. Message
+        content is opened through SQLite's incremental BLOB API and read only when
+        its encoded size fits the public boundary.
+        """
+        safe_limit = max(1, min(int(limit), 200))
+        safe_content_bytes = max(1, min(int(content_bytes), 64 * 1024))
+        result = []
+        with self._read_ctx() as conn:
+            assert conn is not None
+            rows = conn.execute(
+                """
+                SELECT
+                    id,
+                    role,
+                    timestamp,
+                    content IS NULL AS content_is_null
+                FROM messages
+                WHERE session_id = ?
+                  AND active = 1
+                  AND role IN ('user', 'assistant')
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (session_id, safe_limit),
+            ).fetchall()
+            rows.reverse()
+            for row in rows:
+                message = {
+                    "id": row["id"],
+                    "role": row["role"],
+                    "content": None,
+                    "content_oversized": 0,
+                    "timestamp": row["timestamp"],
+                }
+                if not row["content_is_null"]:
+                    blob = None
+                    try:
+                        blob = conn.blobopen(
+                            "messages",
+                            "content",
+                            row["id"],
+                            readonly=True,
+                        )
+                        if len(blob) > safe_content_bytes:
+                            message["content_oversized"] = 1
+                        else:
+                            raw = blob.read(safe_content_bytes + 1)
+                            message["content"] = self._decode_content(
+                                raw.decode("utf-8")
+                            )
+                    except (sqlite3.Error, UnicodeDecodeError):
+                        message["content_oversized"] = 1
+                    finally:
+                        if blob is not None:
+                            blob.close()
+                result.append(message)
         return result
 
     def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:

@@ -12016,9 +12016,12 @@ from hermes_cli.web_routers.sessions import (  # noqa: E402,F401 — legacy re-e
     import_sessions_endpoint,
     count_empty_sessions_endpoint,
     delete_empty_sessions_endpoint,
+    get_session_capabilities,
     get_session_stats,
     get_session_detail,
     get_session_latest_descendant,
+    get_session_activity,
+    head_session_activity,
     get_session_messages,
     delete_session_endpoint,
     rename_session_endpoint,
@@ -12168,6 +12171,30 @@ def _open_session_db_for_profile(profile: Optional[str], *, read_only: bool):
     else:
         db_path = Path(_default_db_path())
     return _open_session_db_at_path(db_path, read_only=read_only)
+
+
+def _open_session_db_strict_read_only(profile: Optional[str]):
+    """Open an existing profile store without bootstrap, heal, or writes."""
+    import sqlite3
+    import stat
+
+    from hermes_state import SessionDB, _default_db_path
+
+    if profile:
+        _name, home = _cron_profile_home(profile)
+        db_path = Path(home) / "state.db"
+    else:
+        db_path = Path(_default_db_path())
+    try:
+        metadata = db_path.stat()
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="Session store unavailable") from exc
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_size <= 0:
+        raise HTTPException(status_code=503, detail="Session store unavailable")
+    try:
+        return SessionDB(db_path=db_path, read_only=True)
+    except (OSError, sqlite3.Error) as exc:
+        raise HTTPException(status_code=503, detail="Session store unavailable") from exc
 
 
 # In-process throttle for the opportunistic auto-archive trigger, keyed by

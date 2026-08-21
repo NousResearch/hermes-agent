@@ -10,6 +10,7 @@ Uses python-telegram-bot library for:
 import asyncio
 import dataclasses
 import faulthandler
+import hashlib
 import inspect
 import json
 import logging
@@ -9648,6 +9649,65 @@ class TelegramAdapter(BasePlatformAdapter):
             profile=self._session_key_profile(event.source),
         )
 
+    @staticmethod
+    def _text_source_message(event: MessageEvent) -> dict[str, Any]:
+        """Return lossless provenance for one Telegram update before batching.
+
+        The gateway intentionally combines rapid text updates so a client-side
+        split reaches the agent as one turn.  Plugins observing the later
+        ``pre_gateway_dispatch`` hook still need the original update boundaries
+        for durable audit/capture use cases.  Keep that provenance in metadata;
+        it does not alter the text that is dispatched to the agent.
+        """
+        raw_text = getattr(getattr(event, "raw_message", None), "text", None)
+        timestamp = getattr(event, "timestamp", None)
+        if isinstance(timestamp, datetime):
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            timestamp_value = timestamp.isoformat()
+        else:
+            timestamp_value = str(timestamp or "")
+        source = getattr(event, "source", None)
+        return {
+            "message_id": str(getattr(event, "message_id", None) or ""),
+            "platform_update_id": str(getattr(event, "platform_update_id", None) or ""),
+            "thread_id": str(getattr(source, "thread_id", None) or ""),
+            "source_timestamp": timestamp_value,
+            "source_text": str(raw_text if raw_text is not None else (event.text or "")),
+            "reply_to_message_id": str(getattr(event, "reply_to_message_id", None) or ""),
+            "message_type": (
+                event.message_type.value
+                if isinstance(getattr(event, "message_type", None), MessageType)
+                else str(getattr(event, "message_type", None) or "")
+            ),
+        }
+
+    @staticmethod
+    def _merge_telegram_update_metadata(
+        existing: MessageEvent,
+        incoming: MessageEvent,
+    ) -> None:
+        updates: List[Dict[str, Any]] = []
+        existing_batch = existing.metadata.get("telegram_updates")
+        if isinstance(existing_batch, list):
+            updates.extend(item for item in existing_batch if isinstance(item, dict))
+        else:
+            existing_update = existing.metadata.get("telegram_update")
+            if isinstance(existing_update, dict):
+                updates.append(existing_update)
+
+        incoming_batch = incoming.metadata.get("telegram_updates")
+        if isinstance(incoming_batch, list):
+            updates.extend(item for item in incoming_batch if isinstance(item, dict))
+        else:
+            incoming_update = incoming.metadata.get("telegram_update")
+            if isinstance(incoming_update, dict):
+                updates.append(incoming_update)
+
+        if updates:
+            existing.metadata.pop("telegram_update", None)
+            existing.metadata["telegram_updates"] = updates
+
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer.
 
@@ -9660,13 +9720,19 @@ class TelegramAdapter(BasePlatformAdapter):
             self._hold_inbound_event(event, where="text-enqueue")
             return
 
+        # Capture the raw update boundary before topic recovery mutates the
+        # routing source or a later update is concatenated into ``event.text``.
+        source_message = self._text_source_message(event)
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
         chunk_len = len(event.text or "")
         if existing is None:
+            event.metadata = dict(event.metadata or {})
+            event.metadata["telegram_source_messages"] = [source_message]
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             self._pending_text_batches[key] = event
         else:
+            self._merge_telegram_update_metadata(existing, event)
             # Append text from the follow-up chunk
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
@@ -9675,6 +9741,12 @@ class TelegramAdapter(BasePlatformAdapter):
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+            existing.metadata = dict(existing.metadata or {})
+            source_messages = existing.metadata.get("telegram_source_messages")
+            if not isinstance(source_messages, list):
+                source_messages = []
+                existing.metadata["telegram_source_messages"] = source_messages
+            source_messages.append(source_message)
 
         # Cancel any pending flush and restart the timer
         prior_task = self._pending_text_batch_tasks.get(key)
@@ -9791,6 +9863,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if existing is None:
             self._pending_photo_batches[batch_key] = event
         else:
+            self._merge_telegram_update_metadata(existing, event)
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
             if event.text:
@@ -10118,6 +10191,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if existing is None:
             self._media_group_events[media_group_id] = event
         else:
+            self._merge_telegram_update_metadata(existing, event)
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
             if event.text:
@@ -10402,6 +10476,50 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         chat = message.chat
         user = message.from_user
+
+        to_dict = getattr(message, "to_dict", None)
+        try:
+            raw_message = to_dict() if callable(to_dict) else None
+        except Exception:
+            raw_message = None
+        if not isinstance(raw_message, dict):
+            raw_message = {
+                "message_id": getattr(message, "message_id", None),
+                "text": getattr(message, "text", None),
+                "caption": getattr(message, "caption", None),
+                "media_group_id": getattr(message, "media_group_id", None),
+                "date": getattr(message, "date", None),
+                "edit_date": getattr(message, "edit_date", None),
+            }
+
+        content_message = dict(raw_message)
+        content_message.pop("date", None)
+        content_message.pop("edit_date", None)
+
+        def _stable_hash(value: Dict[str, Any]) -> str:
+            encoded = json.dumps(
+                value,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                default=str,
+            ).encode("utf-8")
+            return hashlib.sha256(encoded).hexdigest()
+
+        ingress_metadata = {
+            "event_type": (
+                "message.edit"
+                if getattr(message, "edit_date", None) is not None
+                else "message.new"
+            ),
+            "update_id": update_id,
+            "message_id": str(message.message_id),
+            "dispatch_kind": "gateway_dispatch",
+            "payload_hash": _stable_hash(
+                {"update_id": update_id, "message": raw_message}
+            ),
+            "content_hash": _stable_hash({"message": content_message}),
+        }
         
         # Determine chat type.  Normalize through ``str`` so tests/mocks and
         # python-telegram-bot enum values both work (``ChatType.CHANNEL`` is
@@ -10553,6 +10671,7 @@ class TelegramAdapter(BasePlatformAdapter):
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
             timestamp=message.date,
+            metadata={"telegram_update": ingress_metadata},
         )
 
     # ── Message reactions (processing lifecycle) ──────────────────────────

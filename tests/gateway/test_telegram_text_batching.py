@@ -6,6 +6,7 @@ from the same session and aggregate them before dispatching.
 """
 
 import asyncio
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -43,6 +44,7 @@ def _make_adapter():
     adapter._set_status_indicator = AsyncMock()
     adapter._release_platform_lock = lambda: None
     adapter._text_batch_delay_seconds = 0.1  # fast for tests
+    adapter._media_batch_delay_seconds = 0.1
     adapter._active_sessions = {}
     adapter._pending_messages = {}
     adapter._message_handler = AsyncMock()
@@ -54,12 +56,41 @@ def _make_adapter():
     return adapter
 
 
-def _make_event(text: str, chat_id: str = "12345") -> MessageEvent:
+def _make_event(
+    text: str,
+    chat_id: str = "12345",
+    *,
+    message_id: str | None = None,
+    update_id: int | None = None,
+    thread_id: str | None = None,
+) -> MessageEvent:
     return MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
-        source=SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"),
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id,
+            chat_type="dm",
+            thread_id=thread_id,
+        ),
+        raw_message=SimpleNamespace(text=text),
+        message_id=message_id,
+        platform_update_id=update_id,
+        timestamp=datetime(2026, 8, 7, 12, 0, tzinfo=timezone.utc),
     )
+
+
+def _make_typed_event(text: str, update_id: int) -> MessageEvent:
+    event = _make_event(text)
+    event.metadata["telegram_update"] = {
+        "event_type": "message.new",
+        "update_id": update_id,
+        "message_id": str(update_id),
+        "dispatch_kind": "gateway_dispatch",
+        "payload_hash": f"payload-{update_id}",
+        "content_hash": f"content-{update_id}",
+    }
+    return event
 
 
 class TestTextBatching:
@@ -99,6 +130,108 @@ class TestTextBatching:
         dispatched = adapter.handle_message.call_args[0][0]
         assert "part one" in dispatched.text
         assert "split by Telegram" in dispatched.text
+
+    @pytest.mark.asyncio
+    async def test_split_messages_preserve_each_source_update_for_observers(self):
+        """Batching must not erase unique message IDs, text, or topic provenance."""
+        adapter = _make_adapter()
+
+        adapter._enqueue_text_event(
+            _make_event(
+                "rough idea", message_id="41", update_id=101, thread_id="topic-7"
+            )
+        )
+        await asyncio.sleep(0.02)
+        adapter._enqueue_text_event(
+            _make_event(
+                "later iteration", message_id="42", update_id=102, thread_id="topic-7"
+            )
+        )
+
+        await asyncio.sleep(0.2)
+
+        dispatched = adapter.handle_message.call_args[0][0]
+        assert dispatched.text == "rough idea\nlater iteration"
+        assert dispatched.metadata["telegram_source_messages"] == [
+            {
+                "message_id": "41",
+                "platform_update_id": "101",
+                "thread_id": "topic-7",
+                "source_timestamp": "2026-08-07T12:00:00+00:00",
+                "source_text": "rough idea",
+                "reply_to_message_id": "",
+                "message_type": "text",
+            },
+            {
+                "message_id": "42",
+                "platform_update_id": "102",
+                "thread_id": "topic-7",
+                "source_timestamp": "2026-08-07T12:00:00+00:00",
+                "source_text": "later iteration",
+                "reply_to_message_id": "",
+                "message_type": "text",
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_split_batch_preserves_all_updates_without_claiming_single_identity(self):
+        adapter = _make_adapter()
+
+        adapter._enqueue_text_event(_make_typed_event("chunk one", 101))
+        await asyncio.sleep(0.02)
+        adapter._enqueue_text_event(_make_typed_event("chunk two", 102))
+        await asyncio.sleep(0.2)
+
+        dispatched = adapter.handle_message.call_args[0][0]
+        assert "telegram_update" not in dispatched.metadata
+        assert [
+            item["update_id"] for item in dispatched.metadata["telegram_updates"]
+        ] == [101, 102]
+
+    @pytest.mark.asyncio
+    async def test_photo_batch_preserves_all_updates_without_claiming_single_identity(self):
+        adapter = _make_adapter()
+        first = _make_typed_event("first caption", 201)
+        first.media_urls = ["/tmp/first.jpg"]
+        first.media_types = ["image/jpeg"]
+        second = _make_typed_event("second caption", 202)
+        second.media_urls = ["/tmp/second.jpg"]
+        second.media_types = ["image/jpeg"]
+
+        adapter._enqueue_photo_event("album", first)
+        await asyncio.sleep(0.02)
+        adapter._enqueue_photo_event("album", second)
+        await asyncio.sleep(0.2)
+
+        dispatched = adapter.handle_message.call_args[0][0]
+        assert "telegram_update" not in dispatched.metadata
+        assert [
+            item["update_id"] for item in dispatched.metadata["telegram_updates"]
+        ] == [201, 202]
+
+    @pytest.mark.asyncio
+    async def test_media_group_preserves_all_updates_without_claiming_single_identity(self):
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        adapter = _make_adapter()
+        first = _make_typed_event("album caption", 301)
+        first.media_urls = ["/tmp/first.jpg"]
+        first.media_types = ["image/jpeg"]
+        second = _make_typed_event("", 302)
+        second.media_urls = ["/tmp/second.jpg"]
+        second.media_types = ["image/jpeg"]
+
+        with patch.object(TelegramAdapter, "MEDIA_GROUP_WAIT_SECONDS", 0.1):
+            await adapter._queue_media_group_event("album", first)
+            await asyncio.sleep(0.02)
+            await adapter._queue_media_group_event("album", second)
+            await asyncio.sleep(0.2)
+
+        dispatched = adapter.handle_message.call_args[0][0]
+        assert "telegram_update" not in dispatched.metadata
+        assert [
+            item["update_id"] for item in dispatched.metadata["telegram_updates"]
+        ] == [301, 302]
 
     @pytest.mark.asyncio
     async def test_three_way_split_aggregated(self):

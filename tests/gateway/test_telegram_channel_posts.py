@@ -119,6 +119,7 @@ def _make_channel_message(text="channel id test @hermes_bot"):
         reply_to_message=None,
         quote=None,
         date=None,
+        edit_date=None,
         forum_topic_created=None,
     )
 
@@ -145,5 +146,33 @@ def test_build_message_event_uses_channel_identity_for_channel_posts(telegram_ad
     assert event.source.user_id == "-1003950368353"
     assert event.source.user_name == "wzrd"
     assert event.platform_update_id == 12345
+    ingress = event.metadata["telegram_update"]
+    assert ingress["event_type"] == "message.new"
+    assert ingress["update_id"] == 12345
+    assert ingress["message_id"] == "11"
+    assert ingress["dispatch_kind"] == "gateway_dispatch"
+    assert len(ingress["payload_hash"]) == 64
+    assert len(ingress["content_hash"]) == 64
+
+
+def test_build_message_event_classifies_edits_and_keeps_content_hash_update_independent(
+    telegram_adapter_cls,
+):
+    adapter = _make_adapter(telegram_adapter_cls)
+    msg = _make_channel_message("edited text")
+    msg.edit_date = object()
+
+    first = adapter._build_message_event(msg, MessageType.TEXT, update_id=100)
+    replay_under_new_update = adapter._build_message_event(
+        msg,
+        MessageType.TEXT,
+        update_id=101,
+    )
+
+    first_meta = first.metadata["telegram_update"]
+    second_meta = replay_under_new_update.metadata["telegram_update"]
+    assert first_meta["event_type"] == "message.edit"
+    assert first_meta["content_hash"] == second_meta["content_hash"]
+    assert first_meta["payload_hash"] != second_meta["payload_hash"]
 
 

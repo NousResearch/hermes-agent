@@ -56,6 +56,55 @@ def _sanitize_url(url: str | None) -> str | None:
 HOST = "hermes"
 
 
+def _install_peer_response_compat() -> type | None:
+    """Accept legacy peer-level observation data on SDK responses only.
+
+    Honcho uses the same strict ``PeerConfig`` model for requests and
+    responses. Older/self-hosted servers can still return the retired
+    ``configuration.observe_others`` field, causing every peer lookup to fail
+    validation. Keep request validation strict while replacing only the SDK's
+    response model with a narrow compatibility subclass that consumes and
+    excludes that one legacy field.
+    """
+    import sys
+
+    try:
+        from honcho.api_types import PeerConfig, PeerResponse
+    except ModuleNotFoundError as exc:
+        # Unit tests and third-party wrappers may provide a minimal ``honcho``
+        # module with only the public Honcho client. There is no SDK response
+        # model to patch in that shape.
+        if exc.name == "honcho.api_types":
+            return None
+        raise
+    from pydantic import Field
+
+    if getattr(PeerResponse, "__hermes_legacy_observe_others_compat__", False):
+        return PeerResponse
+
+    original_response = PeerResponse
+
+    class _PeerResponseConfig(PeerConfig):
+        observe_others: bool | None = Field(default=None, exclude=True)
+
+    class _PeerResponseCompat(original_response):
+        configuration: _PeerResponseConfig = Field(  # pyright: ignore[reportIncompatibleVariableOverride]
+            default_factory=_PeerResponseConfig
+        )
+
+    setattr(_PeerResponseCompat, "__hermes_legacy_observe_others_compat__", True)
+
+    # The SDK imports PeerResponse into several module globals. Replace only
+    # references to the exact original response class; request models and any
+    # independently changed SDK symbols remain untouched.
+    for module_name, module in tuple(sys.modules.items()):
+        if module_name == "honcho" or module_name.startswith("honcho."):
+            if getattr(module, "PeerResponse", None) is original_response:
+                setattr(module, "PeerResponse", _PeerResponseCompat)
+
+    return _PeerResponseCompat
+
+
 def profile_host_key(profile: str | None) -> str:
     """Return the safe Honcho host key for a Hermes profile."""
     if not profile or profile in {"default", "custom"}:
@@ -1267,6 +1316,7 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 
         try:
             from honcho import Honcho
+            _install_peer_response_compat()
         except ImportError:
             raise ImportError(
                 "honcho-ai is required for Honcho integration. "

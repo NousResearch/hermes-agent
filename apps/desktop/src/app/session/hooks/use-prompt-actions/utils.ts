@@ -668,6 +668,9 @@ export interface SubmitTextOptions {
    *  still receives the text as a normal user turn. */
   displayKind?: 'hidden'
   fromQueue?: boolean
+  /** A one-shot /goal resume dispatch. The backend consumes its canonical
+   * checkpoint only after agent readiness, at actual turn start. */
+  goalContinuation?: boolean
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground
    *  session between enqueue and drain. */

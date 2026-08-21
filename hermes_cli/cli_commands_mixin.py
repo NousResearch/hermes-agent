@@ -2849,11 +2849,27 @@ class CLICommandsMixin:
                     )
             return
 
-        if lower in {"clear", "stop", "done"}:
+        if lower == "done":
+            had = mgr.has_goal()
+            mgr.clear()
+            _cprint("  ✓ Goal cancelled/cleared." if had else f"  {_DIM}No active goal.{_RST}")
+            return
+        if lower == "complete" or lower.startswith("complete ") or lower.startswith("done "):
+            evidence = arg.split(None, 1)[1].strip() if " " in arg else ""
+            if not evidence:
+                _cprint("  Usage: /goal complete <evidence> (model text alone is not completion evidence)")
+                return
+            try:
+                _cprint("  ✓ Goal completed with explicit evidence." if mgr.confirm_completion(evidence, source="user-command") else f"  {_DIM}No active goal to complete.{_RST}")
+            except ValueError as exc:
+                _cprint(f"  /goal complete: {exc}")
+            return
+
+        if lower in {"clear", "stop"}:
             had = mgr.has_goal()
             mgr.clear()
             if had:
-                _cprint("  ✓ Goal cleared.")
+                _cprint("  ✓ Goal cancelled/cleared.")
             else:
                 _cprint(f"  {_DIM}No active goal.{_RST}")
             return

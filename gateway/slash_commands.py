@@ -2572,6 +2572,46 @@ class GatewaySlashCommandsMixin:
         prefix = "✓" if result.success else "✗"
         return f"{prefix} {result.message}"
 
+    async def _handle_llm_pipeline_command(self, event: MessageEvent) -> str:
+        """Handle /llm-pipeline command in the gateway.
+
+        Same surface as the CLI handler in cli.py:
+            /llm-pipeline                — show current state
+            /llm-pipeline on / off       — enable or disable
+            /llm-pipeline providers ...  — restrict provider whitelist
+
+        On change, the cached agent for this session is evicted so the next
+        message creates a fresh AIAgent with the updated transport config.
+        """
+        from hermes_cli import llm_pipeline_switch as lps
+
+        raw_args = event.get_command_args().strip() if event else ""
+        parsed, errors = lps.parse_args(raw_args)
+        if errors:
+            return "❌ " + "\n❌ ".join(errors)
+
+        try:
+            from hermes_cli.config import load_config, save_config
+        except Exception as exc:
+            return f"❌ Could not load config: {exc}"
+        cfg = load_config()
+
+        result = lps.apply(
+            cfg,
+            parsed,
+            persist_callback=(save_config if parsed is not None else None),
+        )
+
+        if result.success and parsed is not None and result.requires_new_session:
+            try:
+                session_key = self._session_key_for_source(event.source)
+                self._evict_cached_agent(session_key)
+            except Exception:
+                logger.debug("could not evict cached agent after llm-pipeline change", exc_info=True)
+
+        prefix = "✓" if result.success else "✗"
+        return f"{prefix} {result.message}"
+
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality.
 
@@ -2691,7 +2731,7 @@ class GatewaySlashCommandsMixin:
         """Handle /goal for gateway platforms.
 
         Subcommands: ``/goal`` / ``/goal status`` / ``/goal pause`` /
-        ``/goal resume`` / ``/goal clear``. Any other text becomes the
+        ``/goal resume`` / ``/goal clear`` / ``/goal gate add <command>``.
         new goal.
 
         Setting a new goal queues the goal text as the next turn so the
@@ -2711,6 +2751,28 @@ class GatewaySlashCommandsMixin:
         # /goal show → print the active goal's completion contract
         if lower == "show":
             return f"{mgr.status_line()}\n{mgr.render_contract()}"
+
+        if lower in {"gates", "gate"} or lower.startswith("gate "):
+            gate_args = "" if lower == "gates" or lower == "gate" else args[len("gate"):].strip()
+            if not gate_args or gate_args == "list":
+                return mgr.render_gates()
+            if gate_args.startswith("add "):
+                try:
+                    gate = mgr.add_gate(gate_args[4:].strip())
+                    return f"✓ Quality gate added: $ {gate.command}"
+                except (RuntimeError, ValueError) as exc:
+                    return f"/goal gate add: {exc}"
+            if gate_args.startswith("remove "):
+                try:
+                    return f"✓ Quality gate removed: $ {mgr.remove_gate(int(gate_args[7:].strip()))}"
+                except (RuntimeError, ValueError, IndexError) as exc:
+                    return f"/goal gate remove: {exc}"
+            if gate_args == "clear":
+                try:
+                    return f"✓ Cleared {mgr.clear_gates()} quality gate(s)."
+                except RuntimeError as exc:
+                    return f"/goal gate clear: {exc}"
+            return "Usage: /goal gate [list|add <command>|remove <index>|clear]"
 
         if lower == "pause":
             state = mgr.pause(reason="user-paused")
@@ -2752,7 +2814,20 @@ class GatewaySlashCommandsMixin:
                 logger.debug("goal resume: continuation enqueue failed: %s", exc)
             return t("gateway.goal.resumed", goal=state.goal)
 
-        if lower in {"clear", "stop", "done"}:
+        if lower == "done":
+            had = mgr.has_goal()
+            mgr.clear()
+            return t("gateway.goal_cleared") if had else t("gateway.no_active_goal")
+        if lower == "complete" or lower.startswith("complete ") or lower.startswith("done "):
+            evidence = args.split(None, 1)[1].strip() if " " in args else ""
+            if not evidence:
+                return "Usage: /goal complete <evidence> (model text alone is not completion evidence)."
+            try:
+                return "✓ Goal completed with explicit evidence." if mgr.confirm_completion(evidence, source="user-command") else "No active goal to complete."
+            except ValueError as exc:
+                return f"/goal complete: {exc}"
+
+        if lower in {"clear", "stop"}:
             had = mgr.has_goal()
             mgr.clear()
             try:

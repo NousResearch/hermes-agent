@@ -444,6 +444,21 @@ class ComputeHost:
             from tui_gateway import server
 
             session = self._ensure_server_session(server, frame)
+            # The compute host is the canonical turn owner while isolation is
+            # active. Admit durable session state before claiming running or
+            # emitting turn.started; a false ready/streaming projection for an
+            # unpersisted prompt is not recoverable after a host crash.
+            if not server._ensure_session_db_row(session):
+                self.emit(
+                    {
+                        "type": "turn.error",
+                        "sid": sid,
+                        "request_id": request_id,
+                        "reason": "session_persistence_failed",
+                        "message": "session persistence failed; prompt was not started",
+                    }
+                )
+                return
             with session["history_lock"]:
                 queued_prompt_generation = frame.get("queued_prompt_generation")
                 if (
@@ -469,10 +484,6 @@ class ComputeHost:
                 session["last_active"] = time.time()
                 server._start_inflight_turn(session, frame.get("text") if "text" in frame else frame.get("prompt"))
             self.emit({"type": "turn.started", "sid": sid, "request_id": request_id, "started_ns": now_ns()})
-            try:
-                server._ensure_session_db_row(session)
-            except Exception:
-                pass
             try:
                 import hermes_undo
 

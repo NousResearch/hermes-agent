@@ -60,6 +60,15 @@ def server():
     mod._answers.clear()
 
 
+@pytest.fixture(autouse=True)
+def _restore_method_registry(server):
+    """Tests may substitute RPC handlers, but must not leak them cross-module."""
+    original = dict(server._methods)
+    yield
+    server._methods.clear()
+    server._methods.update(original)
+
+
 @pytest.fixture()
 def capture(server):
     """Redirect server's real stdout to a StringIO and return (server, buf)."""

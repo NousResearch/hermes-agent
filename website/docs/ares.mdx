@@ -1,0 +1,25 @@
+---
+slug: /ares
+title: "Ares Distribution"
+description: "What Ares adds to its Hermes-compatible base and what remains explicitly optional"
+sidebar_position: 0
+---
+
+# Ares Distribution
+
+Ares is RecursiveIntell's downstream, evidence-native distribution of Hermes Agent. It preserves the `hermes` package and CLI for compatibility, but has a distinct installer, default `~/.ares` home, and integration policy.
+
+> Ares is **not** an official Nous Research product. The surrounding documentation remains useful for Hermes-compatible behavior, while this page owns the downstream distinction and optional-integration boundaries.
+
+## What Ares adds
+
+- an `ares` launcher that targets a dedicated Ares home by default;
+- a source-owned bootstrap that does not silently configure providers, services, hooks, or MCP servers;
+- a documented route to the standalone Recursive Agent plugin for bounded local execution with daemon-derived receipt verification;
+- source-level optional integration modules for RecursiveIntell transport and governed-service paths.
+
+## What remains explicit
+
+Semantic memory, Agent Graph, Claim Ledger, CEA Graph, Pilot Bridge, provider credentials, and the Recursive Agent daemon are separate components. Their presence in source or documentation is not proof they are installed, configured, or operational.
+
+For installation and evidence boundaries, read the repository [README](https://github.com/RecursiveIntell/hermes-agent#readme) and the [Recursive Agent integration guide](https://github.com/RecursiveIntell/hermes-agent/blob/main/docs/ares-recursive-agent.md).

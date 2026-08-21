@@ -1,0 +1,10 @@
+{
+  "context": {
+    "engine": "ri-context-governor",
+    "governor": {
+      "binary": "{{CONTEXT_GOVERNOR_BINARY}}",
+      "receipt_store": "{{HERMES_HOME}}/context-governor",
+      "key_id": "{{CONTEXT_GOVERNOR_KEY_ID}}"
+    }
+  }
+}

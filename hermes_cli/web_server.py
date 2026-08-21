@@ -502,6 +502,10 @@ def _resolve_session_token() -> str:
 
 _SESSION_TOKEN = _resolve_session_token()
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
+# Ares Desktop builds published before the header rename still send this
+# equivalent session header. Keep it accepted while packaged clients upgrade;
+# it carries the same ephemeral per-process token.
+_LEGACY_SESSION_HEADER_NAME = "X-Ares-Session-Token"
 _SSH_OWNER_NONCE: Optional[str] = None
 
 
@@ -572,7 +576,9 @@ def _has_valid_session_token(request: Request) -> bool:
     accept the legacy Bearer path for backward compatibility with older
     dashboard bundles.
     """
-    session_header = request.headers.get(_SESSION_HEADER_NAME, "")
+    session_header = request.headers.get(_SESSION_HEADER_NAME, "") or request.headers.get(
+        _LEGACY_SESSION_HEADER_NAME, ""
+    )
     if session_header and hmac.compare_digest(
         session_header.encode(),
         _SESSION_TOKEN.encode(),
@@ -19045,13 +19051,27 @@ def start_server(
         ws_ping_timeout=None if _is_loopback else 20.0,
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     )
+    # ``uvicorn`` can successfully bind and serve HTTP with ``ws=auto`` even
+    # when neither websockets nor wsproto is installed.  In that state it logs
+    # "Unsupported upgrade request" only after Desktop connects, which is too
+    # late: the old path had already emitted HERMES_BACKEND_READY and Desktop
+    # entered a restart loop around an HTTP-only listener.  Load the config now
+    # and fail before readiness unless the transport this backend exists to
+    # provide was actually selected.
+    if not config.loaded:
+        config.load()
+    if config.ws_protocol_class is None:
+        raise RuntimeError(
+            "Hermes backend requires WebSocket transport, but uvicorn loaded "
+            "no WebSocket protocol. Reinstall Hermes with its declared runtime "
+            "dependencies (uvicorn[standard] and websockets or wsproto) using "
+            f"the selected interpreter: {sys.executable}"
+        )
     server = uvicorn.Server(config)
 
     async def _serve():
         # Split startup from main_loop so we can read the bound port
         # after the socket is live (ephemeral port discovery).
-        if not config.loaded:
-            config.load()
         server.lifespan = config.lifespan_class(config)
         with server.capture_signals():
             await server.startup()

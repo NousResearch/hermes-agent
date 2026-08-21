@@ -11561,6 +11561,43 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if result.success and result.requires_new_session:
             _cprint("    Tip: `/reset` starts a new session immediately.")
 
+    def _handle_llm_pipeline(self, cmd_original: str) -> None:
+        """Handle /llm-pipeline — toggle the Rust-backed llm-pipeline transport.
+
+        Usage:
+            /llm-pipeline               — show current state
+            /llm-pipeline on/off         — enable or disable transport
+            /llm-pipeline providers ...  — limit transport to providers
+        """
+        from hermes_cli import llm_pipeline_switch as lps
+
+        parts = cmd_original.split(None, 1)
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
+        parsed, errors = lps.parse_args(raw_args)
+        if errors:
+            for err in errors:
+                _cprint(f"❌ {err}")
+            return
+
+        try:
+            from hermes_cli.config import load_config, save_config
+        except Exception as exc:
+            _cprint(f"❌ could not load config: {exc}")
+            return
+        cfg = load_config()
+
+        result = lps.apply(
+            cfg,
+            parsed,
+            persist_callback=(save_config if parsed is not None else None),
+        )
+
+        prefix = "✓" if result.success else "✗"
+        for line in result.message.splitlines():
+            _cprint(f"  {prefix} {line}")
+        if result.success and result.requires_new_session:
+            _cprint("    Tip: `/reset` starts a new session immediately.")
+
     def _should_handle_model_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /model should be handled immediately on the UI thread."""
         if not text or has_images or not _looks_like_slash_command(text):
@@ -12002,6 +12039,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_model_switch(cmd_original)
         elif canonical == "codex-runtime":
             self._handle_codex_runtime(cmd_original)
+        elif canonical == "llm-pipeline":
+            self._handle_llm_pipeline(cmd_original)
 
         elif canonical == "personality":
             # Use original case (handler lowercases the personality name itself)
@@ -12934,12 +12973,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             last_response = ""
 
-        # Skip judging on empty/whitespace-only responses. These are almost
-        # always transient failures (API error, empty stream) where the
-        # judge would say "continue" and trip the consecutive-parse-failures
-        # backstop unnecessarily. Mirrors the gateway guard.
+        # Empty output is an execution outcome, not "nothing to evaluate".
+        # Persist a bounded checkpoint so a provider/tool failure cannot leave
+        # the goal visibly active but inert.
+        turn_outcome = None
         if not last_response.strip():
-            return
+            from hermes_cli.goals import EXECUTION_FAILED as _GOAL_EXECUTION_FAILED
+            turn_outcome = _GOAL_EXECUTION_FAILED
 
         try:
             from hermes_cli.goals import gather_background_processes as _gather_bg
@@ -12951,6 +12991,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             last_response,
             user_initiated=True,
             background_processes=_bg_procs,
+            turn_outcome=turn_outcome,
+            turn_metadata={"reason": "empty assistant output"} if turn_outcome else None,
         )
         msg = decision.get("message") or ""
         if msg:
@@ -12959,10 +13001,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if decision.get("should_continue"):
             prompt = decision.get("continuation_prompt")
             if prompt:
+                owner = f"cli:{os.getpid()}:{id(self)}"
+                if not mgr.claim_continuation(owner):
+                    _cprint(f"  {_DIM}⚠ Continuation already claimed by another worker; checkpoint retained.{_RST}")
+                    return
                 try:
                     self._pending_input.put(prompt)
+                    mgr.release_continuation(queued=True)
                 except Exception as exc:
-                    logging.debug("goal continuation enqueue failed: %s", exc)
+                    mgr.release_continuation(queued=False)
+                    logging.error("goal continuation enqueue failed; checkpoint remains pending: %s", exc)
+                    _cprint(f"  {_DIM}⚠ Goal checkpointed but continuation could not be queued: {exc}. Use /goal resume.{_RST}")
 
 
 

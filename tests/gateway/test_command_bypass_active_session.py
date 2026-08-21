@@ -290,6 +290,7 @@ class TestAllResolvableCommandsBypassGuard:
             ("/model", "model"),
             ("/reasoning high", "reasoning"),
             ("/personality default", "personality"),
+            ("/llm-pipeline", "llm-pipeline"),
             ("/voice on", "voice"),
             ("/insights 7", "insights"),
             ("/title my session", "title"),
@@ -326,7 +327,7 @@ class TestAllResolvableCommandsBypassGuard:
         for cmd in (
             "model", "reasoning", "personality", "voice", "insights", "title",
             "resume", "retry", "undo", "compress", "usage",
-            "reload-mcp", "sethome", "reset",
+            "reload-mcp", "sethome", "reset", "llm-pipeline",
         ):
             assert should_bypass_active_session(cmd) is True, (
                 f"/{cmd} must bypass the active-session guard"

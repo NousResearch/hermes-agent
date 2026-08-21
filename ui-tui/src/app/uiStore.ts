@@ -30,7 +30,7 @@ const buildUiState = (): UiState => ({
   sessionTitle: '',
   showReasoning: false,
   sid: null,
-  status: 'summoning hermes…',
+  status: 'starting Ares...',
   statusBar: 'top',
   streaming: true,
   timestamps: false,

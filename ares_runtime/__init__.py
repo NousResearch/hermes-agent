@@ -1,0 +1,50 @@
+"""Canonical installed-runtime contracts for Ares releases.
+
+This package deliberately owns installation and activation semantics, while
+``hermes_cli.ares_candidate_store`` continues to own candidate custody and
+authorization.
+"""
+
+from .contracts import (
+    ACTIVATION_GRANT_SCHEMA,
+    INSTALLED_RUNTIME_POINTER_SCHEMA,
+    RUNTIME_IDENTITY_SCHEMA,
+    ActivationGrant,
+    InstalledRuntimePointer,
+    ReleaseReference,
+    RuntimeIdentity,
+)
+from .errors import AresRuntimeError
+from .layout import AresRuntimeLayout
+from .materializer import MaterializedRelease, materialize_candidate_release
+from .activation import ActivationResult, ActivationState, AresReleaseActivator
+from .resolver import AresRuntimeResolver, ResolvedRuntime
+from .image import (
+    RELEASE_MANIFEST_SCHEMA,
+    RuntimeImage,
+    stage_runtime_image,
+    write_release_manifest,
+)
+
+__all__ = [
+    "ACTIVATION_GRANT_SCHEMA",
+    "INSTALLED_RUNTIME_POINTER_SCHEMA",
+    "RUNTIME_IDENTITY_SCHEMA",
+    "ActivationGrant",
+    "ActivationResult",
+    "ActivationState",
+    "AresReleaseActivator",
+    "AresRuntimeResolver",
+    "RELEASE_MANIFEST_SCHEMA",
+    "AresRuntimeError",
+    "AresRuntimeLayout",
+    "InstalledRuntimePointer",
+    "MaterializedRelease",
+    "ReleaseReference",
+    "RuntimeIdentity",
+    "RuntimeImage",
+    "ResolvedRuntime",
+    "materialize_candidate_release",
+    "stage_runtime_image",
+    "write_release_manifest",
+]

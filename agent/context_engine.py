@@ -428,6 +428,7 @@ class ContextEngine(ABC):
           messages: the current in-memory message list (for live ingestion)
         """
         import json
+
         return json.dumps({"error": f"Unknown context engine tool: {name}"})
 
     # -- Optional: status / display ----------------------------------------
@@ -442,15 +443,50 @@ class ContextEngine(ABC):
         # raw -1 or a negative usage_percent on the transitional turn. Mirrors
         # the CLI/gateway status-bar paths (cli.py, tui_gateway/server.py).
         last_prompt = self.last_prompt_tokens if self.last_prompt_tokens > 0 else 0
-        return {
+        status = {
             "last_prompt_tokens": last_prompt,
             "threshold_tokens": self.threshold_tokens,
             "context_length": self.context_length,
             "usage_percent": (
                 min(100, last_prompt / self.context_length * 100)
-                if self.context_length else 0
+                if self.context_length
+                else 0
             ),
             "compression_count": self.compression_count,
+        }
+        activation = getattr(self, "_activation_status", None)
+        if isinstance(activation, dict):
+            status["activation"] = dict(activation)
+        return status
+
+    def set_activation_status(
+        self,
+        *,
+        configured_engine: str,
+        discovered: bool,
+        version_compatible: bool,
+        capability_compatible: bool,
+        instantiated: bool,
+        observed_live_engine: str | None = None,
+        state: str = "ready",
+        detail: str = "",
+    ) -> None:
+        """Record host-generic engine activation evidence.
+
+        The host owns configuration and selection; an engine may update only
+        `observed_live_engine` after it has handled a compaction. This keeps
+        status a projection of the actual selection lifecycle rather than a
+        plugin-specific assertion.
+        """
+        self._activation_status = {
+            "configured_engine": configured_engine,
+            "discovered": bool(discovered),
+            "version_compatible": bool(version_compatible),
+            "capability_compatible": bool(capability_compatible),
+            "instantiated": bool(instantiated),
+            "observed_live_engine": observed_live_engine,
+            "state": state,
+            "detail": detail,
         }
 
     # -- Optional: model switch support ------------------------------------

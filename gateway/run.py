@@ -2674,6 +2674,7 @@ from gateway.session_state import (
 )
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
+from gateway.smart_lobby import GatewaySmartLobbyMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.turn_context import TurnContext
 from gateway.platforms.base import (
@@ -6723,7 +6724,12 @@ class TurnRunner:
 _SESSION_DB_UNPINNED = object()
 
 
-class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
+class GatewayRunner(
+    GatewayAuthorizationMixin,
+    GatewayKanbanWatchersMixin,
+    GatewaySlashCommandsMixin,
+    GatewaySmartLobbyMixin,
+):
     """
     Main gateway controller.
 
@@ -16188,6 +16194,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         "moa": "Agent is running — wait or /stop first, then run /moa.",
     }
 
+    async def _dispatch_plugin_slash_command(
+        self, event: MessageEvent, command: str, source,
+    ):
+        """Authorize and execute one plugin-registered slash command."""
+        denied = self._check_slash_access(source, command)
+        if denied is not None:
+            return denied
+        from hermes_cli.plugins import get_plugin_command_handler
+
+        handler = get_plugin_command_handler(command.replace("_", "-"))
+        if handler is None:
+            return None
+        result = handler(event.get_command_args().strip())
+        if inspect.isawaitable(result):
+            result = await result
+        return str(result) if result else None
+
     async def _dispatch_busy_slash_command(
         self, event: MessageEvent, cmd_def, quick_key: str, source,
     ):
@@ -17025,6 +17048,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
 
+            if _evt_cmd and _cmd_def_inner is None:
+                from hermes_cli.commands import is_gateway_known_command
+
+                if is_gateway_known_command(_evt_cmd):
+                    return await self._dispatch_plugin_slash_command(
+                        event, _evt_cmd, source
+                    )
+
             # /status and /context are intentionally pre-gate so users
             # always see session state.
             if _cmd_def_inner and _cmd_def_inner.name == "status":
@@ -17219,6 +17250,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # NOTE: self._pending_messages was write-only (never consumed).
             # The actual interrupt message is delivered via adapter._pending_messages
             # which is read by _run_agent. Removed to prevent unbounded growth.
+            return None
+
+        # Optional Discord smart lobby. Authorization, emergency-stop, pending
+        # prompt/approval handling, and busy-session controls have already run;
+        # only a fresh ordinary user turn can be consumed here. The target
+        # profile's own adapter creates the thread and re-enters the normal
+        # adapter pipeline, preserving that profile's auth/session/tool scope.
+        if not is_internal and await self._maybe_route_smart_lobby(event):
             return None
 
         # Check for commands

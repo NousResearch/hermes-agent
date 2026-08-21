@@ -1003,6 +1003,13 @@ class GatewayConfig:
     # dict with: name, platform, profile, and optional guild_id/chat_id/thread_id.
     profile_routes: list = field(default_factory=list)
 
+    # Optional content-aware Discord lobby. Messages in one configured intake
+    # channel are classified against specialist profile descriptions and moved
+    # into a dedicated thread created by that profile's own Discord adapter.
+    # Raw mapping is validated lazily by gateway.smart_lobby so malformed config
+    # fails closed without preventing gateway startup.
+    smart_lobby: Dict[str, Any] = field(default_factory=dict)
+
     def __post_init__(self) -> None:
         self.multiplex_profile_allowlist = _normalize_multiplex_profile_allowlist(
             self.multiplex_profile_allowlist
@@ -1111,6 +1118,7 @@ class GatewayConfig:
             },
             "reset_triggers": self.reset_triggers,
             "quick_commands": self.quick_commands,
+            "smart_lobby": self.smart_lobby,
             "sessions_dir": str(self.sessions_dir),
             "write_sessions_json": self.write_sessions_json,
             "always_log_local": self.always_log_local,
@@ -1255,6 +1263,11 @@ class GatewayConfig:
             reset_by_platform=reset_by_platform,
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=quick_commands,
+            smart_lobby=(
+                dict(data.get("smart_lobby") or {})
+                if isinstance(data.get("smart_lobby"), dict)
+                else {}
+            ),
             sessions_dir=sessions_dir,
             write_sessions_json=_coerce_bool(data.get("write_sessions_json"), True),
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
@@ -1430,6 +1443,15 @@ def load_gateway_config() -> GatewayConfig:
                 _pr = gateway_section.get("profile_routes")
             if isinstance(_pr, list):
                 gw_data["profile_routes"] = _pr
+
+            # Content-aware lobby routing is optional and config-only. Accept
+            # both historical top-level placement and the canonical nested
+            # gateway.smart_lobby form used by `hermes config set`.
+            _smart_lobby = yaml_cfg.get("smart_lobby")
+            if _smart_lobby is None and isinstance(gateway_section, dict):
+                _smart_lobby = gateway_section.get("smart_lobby")
+            if isinstance(_smart_lobby, dict):
+                gw_data["smart_lobby"] = _smart_lobby
 
             if isinstance(gateway_section, dict):
                 if "multiplex_profiles" in gateway_section and "multiplex_profiles" not in gw_data:

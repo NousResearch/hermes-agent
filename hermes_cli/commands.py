@@ -563,7 +563,7 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     ACTIVE_SESSION_BYPASS_COMMANDS remains the subset of commands with
     explicit Level-2 handlers; the rest fall through to the catch-all.
     """
-    return resolve_command(command_name) is not None if command_name else False
+    return is_gateway_known_command(command_name) if command_name else False
 
 
 def _resolve_config_gates() -> set[str]:
@@ -617,9 +617,10 @@ def _requires_argument(args_hint: str) -> bool:
 
 
 def gateway_help_lines() -> list[str]:
-    """Generate gateway help text lines from the registry."""
+    """Generate gateway help text lines from built-in and plugin commands."""
     overrides = _resolve_config_gates()
     lines: list[str] = []
+    registered_names: set[str] = set()
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
@@ -632,6 +633,18 @@ def gateway_help_lines() -> list[str]:
             alias_parts.append(f"`/{a}`")
         alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
         lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
+        registered_names.add(cmd.name)
+
+    # Plugin commands are native gateway commands too: Discord mirrors them
+    # into its slash picker and gateway/run.py dispatches their handlers. Keep
+    # /help and /commands on the same registry-backed surface so discoverability
+    # never depends on knowing a plugin command in advance.
+    for name, description, args_hint in _iter_plugin_command_entries():
+        if name in registered_names:
+            continue
+        args = f" {args_hint}" if args_hint else ""
+        lines.append(f"`/{name}{args}` -- {description}")
+        registered_names.add(name)
     return lines
 
 

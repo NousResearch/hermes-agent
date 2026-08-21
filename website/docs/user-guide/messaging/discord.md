@@ -793,6 +793,50 @@ Discord forum channels (type 15) don't accept direct messages — every post in 
 
 Refreshing the directory (`/channels refresh` on platforms that expose it, or a gateway restart) populates the cache with any forum channels created after the bot started.
 
+## Smart Lobby Routing
+
+When one Discord channel is the entry point for several multiplexed Hermes
+profiles, `gateway.smart_lobby` can classify each ordinary message, create a
+dedicated thread in the selected profile's channel using that profile's own
+Discord bot, and run the original request inside that profile's isolated
+session/config/skills/memory namespace.
+
+```yaml
+gateway:
+  multiplex_profiles: true
+  smart_lobby:
+    enabled: true
+    platform: discord
+    chat_id: "111111111111111111"  # lobby channel
+    default_profile: default
+    min_confidence: 0.65
+    timeout_seconds: 20
+    candidates:
+      work:
+        channel_id: "222222222222222222"
+        description: "Work repositories, CI/CD, Jira, GitLab, and Gerrit."
+      lab:
+        channel_id: "333333333333333333"
+        description: "Homelab, infrastructure, Thor, and Home Assistant."
+```
+
+Behavior and safety:
+
+- Slash commands such as `/help`, `/queue`, `/steer`, and `/goal` always stay in
+  the lobby and bypass classification.
+- Prefix a request with `[work]`, `@work`, or `work:` to select a configured
+  profile deterministically without an auxiliary-model call.
+- Ambiguous or low-confidence requests stay in the lobby/default profile.
+- The target profile must have a connected Discord adapter and permission to
+  create threads in its configured channel. There is no fallback to another
+  profile's bot.
+- A profile-scoped SQLite reservation prevents replayed/concurrent Discord
+  events from creating or executing the same routed request twice. Once an
+  external thread operation is reserved, failure is reported rather than
+  silently running the request in the lobby.
+- The original prompt is mirrored visibly into the new thread, while the real
+  user turn enters the target profile's normal session pipeline.
+
 ## Troubleshooting
 
 ### Bot is online but not responding to messages

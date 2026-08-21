@@ -34,8 +34,6 @@ import sqlite3
 import sys
 from pathlib import Path
 
-import pytest
-
 import hermes_state
 from hermes_state import (
     _connect_repair_durable,
@@ -55,7 +53,7 @@ def _make_db(tmp_path: Path) -> Path:
     return db
 
 
-# ── Defect 1: repair-path write durability ──────────────────────────────
+# ── Repair-path write durability ────────────────────────────────────────
 
 
 def test_connect_repair_durable_sets_macos_barriers(tmp_path: Path) -> None:

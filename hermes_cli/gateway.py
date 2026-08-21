@@ -3437,6 +3437,53 @@ def _normalize_service_definition(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
 
 
+def _resolve_existing_service_path(path: str) -> str:
+    """Resolve a plain absolute path for comparison, failing closed."""
+    if not path.startswith(os.sep):
+        return path
+    try:
+        return str(Path(path).resolve(strict=True))
+    except (OSError, RuntimeError, ValueError):
+        return path
+
+
+def _normalize_systemd_unit_paths(text: str) -> str:
+    """Canonicalize existing paths in Hermes-generated systemd fields.
+
+    A stable install symlink and its resolved release path are equivalent for
+    the current unit, but a literal text comparison reports them as stale.
+    Limit canonicalization to the path positions emitted by
+    :func:`generate_systemd_unit`; arguments and unrelated environment values
+    remain byte-significant. Missing and broken paths are left untouched.
+    """
+    normalized_lines: list[str] = []
+    for line in _normalize_service_definition(text).splitlines():
+        if line.startswith("WorkingDirectory="):
+            key, path = line.split("=", 1)
+            line = f"{key}={_resolve_existing_service_path(path)}"
+        elif line.startswith(("ExecStart=", "ExecStopPost=")):
+            key, command = line.split("=", 1)
+            prefix_length = len(command) - len(command.lstrip("-@:+!"))
+            prefix = command[:prefix_length]
+            executable, separator, arguments = command[prefix_length:].partition(" ")
+            executable = _resolve_existing_service_path(executable)
+            line = f"{key}={prefix}{executable}{separator}{arguments}"
+        elif line.startswith('Environment="') and line.endswith('"'):
+            body = line[len('Environment="') : -1]
+            name, separator, value = body.partition("=")
+            if separator and name in {"HERMES_HOME", "VIRTUAL_ENV"}:
+                value = _resolve_existing_service_path(value)
+                line = f'Environment="{name}={value}"'
+            elif separator and name == "PATH":
+                value = os.pathsep.join(
+                    _resolve_existing_service_path(path)
+                    for path in value.split(os.pathsep)
+                )
+                line = f'Environment="PATH={value}"'
+        normalized_lines.append(line)
+    return "\n".join(normalized_lines)
+
+
 # Directives that older systemd versions silently ignore/strip.  Normalize
 # them out of stale-check comparisons so a unit that differs only by these
 # directives is not perpetually flagged as outdated.
@@ -3506,12 +3553,13 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
     # Normalize out directives that older systemd versions silently drop
-    # (RestartMaxDelaySec, RestartSteps) so a unit that differs only by
-    # those directives is not perpetually flagged as outdated.
-    norm_installed = _normalize_service_definition(
+    # (RestartMaxDelaySec, RestartSteps), then canonicalize existing paths in
+    # Hermes-generated fields so stable install symlinks compare equal to
+    # their resolved release paths.
+    norm_installed = _normalize_systemd_unit_paths(
         _strip_optional_systemd_directives(installed)
     )
-    norm_expected = _normalize_service_definition(
+    norm_expected = _normalize_systemd_unit_paths(
         _strip_optional_systemd_directives(expected)
     )
     return norm_installed == norm_expected

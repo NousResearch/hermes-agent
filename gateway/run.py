@@ -10052,6 +10052,151 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # still small enough to never threaten memory.
     _BUSY_QUEUE_MAX_PENDING = 32
 
+    @staticmethod
+    def _event_has_batch_media(event: Optional[MessageEvent]) -> bool:
+        if event is None or not (getattr(event, "media_urls", None) or []):
+            return False
+        if getattr(event, "message_type", None) in {
+            MessageType.PHOTO,
+            MessageType.VIDEO,
+            MessageType.AUDIO,
+            MessageType.VOICE,
+            MessageType.DOCUMENT,
+            MessageType.VIDEO_NOTE,
+        }:
+            return True
+        return any(
+            str(mtype).startswith(("image/", "audio/", "video/", "application/"))
+            for mtype in (getattr(event, "media_types", None) or [])
+        )
+
+    @staticmethod
+    def _event_has_forwarded_text_context(event: Optional[MessageEvent]) -> bool:
+        if event is None or getattr(event, "message_type", None) != MessageType.TEXT:
+            return False
+        if getattr(event, "media_urls", None):
+            return False
+        return bool(getattr(event, "forward_origin", None)) or (
+            (getattr(event, "text", None) or "").lstrip().startswith("[Forwarded message |")
+        )
+
+    @classmethod
+    def _event_can_join_startup_batch(cls, event: Optional[MessageEvent]) -> bool:
+        return cls._event_has_batch_media(event) or cls._event_has_forwarded_text_context(event)
+
+    @staticmethod
+    def _adapter_declared_method(adapter: Any, name: str) -> Optional[Callable[..., Any]]:
+        try:
+            inspect.getattr_static(adapter, name)
+        except AttributeError:
+            return None
+        method = getattr(adapter, name, None)
+        return method if callable(method) else None
+
+    @staticmethod
+    def _startup_media_grace_seconds() -> float:
+        return 1.0
+
+    @staticmethod
+    def _format_forward_origin_context(forward_origin: Optional[Dict[str, str]]) -> Optional[str]:
+        if not forward_origin:
+            return None
+        parts = ["Forwarded message"]
+        if forward_origin.get("automatic") == "true":
+            parts.append("automatic forward")
+        sender = forward_origin.get("sender_name")
+        if sender:
+            username = forward_origin.get("sender_username")
+            parts.append(f"From: {sender} (@{username})" if username else f"From: {sender}")
+        elif forward_origin.get("type") == "hidden_user":
+            parts.append("From: hidden sender")
+        chat = forward_origin.get("chat_name")
+        if chat:
+            username = forward_origin.get("chat_username")
+            parts.append(f"Chat: {chat} (@{username})" if username else f"Chat: {chat}")
+        if forward_origin.get("author_signature"):
+            parts.append(f"Author: {forward_origin['author_signature']}")
+        if forward_origin.get("date"):
+            parts.append(f"Date: {forward_origin['date']}")
+        return "[" + " | ".join(parts) + "]"
+
+    def _inline_forward_context(self, event: MessageEvent) -> MessageEvent:
+        if not getattr(event, "forward_origin", None):
+            return event
+        context = self._format_forward_origin_context(event.forward_origin)
+        if not context:
+            return event
+        text = event.text or ""
+        if text.lstrip().startswith("[Forwarded message |"):
+            return dataclasses.replace(event, forward_origin=None)
+        return dataclasses.replace(
+            event,
+            text=f"{context}\n\n{text}" if text else context,
+            forward_origin=None,
+        )
+
+    async def _merge_startup_media_followups(
+        self,
+        event: MessageEvent,
+        source: SessionSource,
+        session_key: str,
+    ) -> MessageEvent:
+        """Merge a rapid Telegram forward batch into its starting text turn."""
+        if (
+            source.platform != Platform.TELEGRAM
+            or event.message_type != MessageType.TEXT
+            or getattr(event, "media_urls", None)
+        ):
+            return event
+
+        adapter = self._adapter_for_source(source)
+        if adapter is None:
+            return event
+        pop_media = self._adapter_declared_method(adapter, "pop_startup_media_event")
+        has_pending = self._adapter_declared_method(adapter, "has_startup_media_pending")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._startup_media_grace_seconds()
+        merged_attachments = 0
+        merged_forwarded_texts = 0
+
+        while True:
+            incoming = None
+            if pop_media is not None:
+                try:
+                    incoming = pop_media(session_key)
+                except Exception:
+                    logger.debug("Telegram startup media pop failed", exc_info=True)
+                    incoming = None
+            if incoming is not None:
+                if getattr(incoming, "forward_origin", None):
+                    incoming = self._inline_forward_context(incoming)
+                    if incoming.message_type == MessageType.TEXT and not incoming.media_urls:
+                        merged_forwarded_texts += 1
+                slot = {session_key: event}
+                merge_pending_message_event(slot, session_key, incoming, merge_text=True)
+                event = slot[session_key]
+                merged_attachments += len(getattr(incoming, "media_urls", None) or [])
+                continue
+
+            pending = False
+            if has_pending is not None:
+                try:
+                    pending = bool(has_pending(session_key))
+                except Exception:
+                    logger.debug("Telegram startup pending check failed", exc_info=True)
+            if not pending or loop.time() >= deadline:
+                break
+            await asyncio.sleep(min(0.05, max(0.0, deadline - loop.time())))
+
+        if merged_attachments or merged_forwarded_texts:
+            logger.info(
+                "Merged %d Telegram startup attachment(s) and %d forwarded text batch(es) into session %s",
+                merged_attachments,
+                merged_forwarded_texts,
+                session_key,
+            )
+        return event
+
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
         adapter = self._adapter_for_source(event.source)
         if not adapter:
@@ -10292,6 +10437,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _busy_state = self._peek_session_state(session_key)
         running_agent = _busy_state.turn.agent if _busy_state else None
 
+        if (
+            event.source.platform == Platform.TELEGRAM
+            and running_agent is _AGENT_PENDING_SENTINEL
+            and self._event_can_join_startup_batch(event)
+        ):
+            logger.debug(
+                "Queueing Telegram startup forward/media follow-up for session %s without interrupt/ack",
+                session_key,
+            )
+            queue_startup = self._adapter_declared_method(adapter, "queue_startup_batch_event")
+            if queue_startup is not None:
+                queue_startup(session_key, event)
+            else:
+                merge_pending_message_event(
+                    adapter._pending_messages,
+                    session_key,
+                    event,
+                    merge_text=self._event_has_forwarded_text_context(event),
+                )
+            return True
+
+        effective_mode = self._effective_busy_input_mode(event.source)
         busy_text_mode = self._effective_busy_text_mode(event.source)
         if (
             event.message_type == MessageType.TEXT
@@ -15393,6 +15560,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # profile-scoped.  Preserve both dimensions in the key so dashboard
         # and NAS health aggregation can see which secondary profile failed.
         adapter._runtime_status_platform_key = f"{profile_name}:{platform.value}"
+        adapter._gateway_profile_name = profile_name
         adapter.set_message_handler(self._make_profile_message_handler(profile_name))
         adapter.set_fatal_error_handler(
             self._make_profile_fatal_error_handler(profile_name, platform)
@@ -18151,6 +18319,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if getattr(event, "channel_context", None):
             message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
 
+        forward_context = self._format_forward_origin_context(getattr(event, "forward_origin", None))
+        if forward_context:
+            message_text = f"{forward_context}\n\n{message_text}"
+
         # Declare at outer scope so the audio-file-paths handling block below
         # remains safe when ``event.media_urls`` is empty (no inner block runs).
         audio_file_paths: list[str] = []
@@ -20077,6 +20249,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # attachments (documents, audio, etc.) are not sent to the vision
         # tool even when they appear in the same message.
         # -----------------------------------------------------------------
+        event = await self._merge_startup_media_followups(event, source, session_key)
         message_text = await self._prepare_profile_scoped_inbound_message_text(
             event=event,
             source=source,

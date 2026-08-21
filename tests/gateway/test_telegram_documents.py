@@ -143,6 +143,7 @@ class TestDocumentTypeDetection:
         msg = _make_message(document=doc)
         update = _make_update(msg)
         await adapter._handle_media_message(update, MagicMock())
+        await asyncio.sleep(adapter._media_batch_delay_seconds + 0.05)
         event = adapter.handle_message.call_args[0][0]
         assert event.message_type == MessageType.DOCUMENT
 
@@ -172,6 +173,7 @@ class TestDocumentDownloadBlock:
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
+        await asyncio.sleep(adapter._media_batch_delay_seconds + 0.05)
         event = adapter.handle_message.call_args[0][0]
         assert "Hello from a text file" in event.text
         assert "[Content of notes.txt]" in event.text
@@ -188,6 +190,7 @@ class TestDocumentDownloadBlock:
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
+        await asyncio.sleep(adapter._media_batch_delay_seconds + 0.05)
         event = adapter.handle_message.call_args[0][0]
         assert "# Title" in event.text
 
@@ -203,6 +206,7 @@ class TestDocumentDownloadBlock:
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
+        await asyncio.sleep(adapter._media_batch_delay_seconds + 0.05)
         event = adapter.handle_message.call_args[0][0]
         assert "file text" in event.text
         assert "Please summarize" in event.text
@@ -221,6 +225,7 @@ class TestDocumentDownloadBlock:
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
+        await asyncio.sleep(adapter._media_batch_delay_seconds + 0.05)
         event = adapter.handle_message.call_args[0][0]
         # File should be cached
         assert len(event.media_urls) == 1

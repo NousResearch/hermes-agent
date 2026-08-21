@@ -108,9 +108,9 @@ class _FakeSocketModeClient:
         self.aiohttp_client_session = _FakeSession(self)
         self.closed = False
         self.close_should_raise = False
-        self.message_processor = None
-        self.current_session_monitor = None
-        self.message_receiver = None
+        self.message_processor: asyncio.Task | None = None
+        self.current_session_monitor: asyncio.Task | None = None
+        self.message_receiver: asyncio.Task | None = None
 
     def live_task_names(self) -> list:
         return [
@@ -177,6 +177,38 @@ async def _spin() -> None:
         await asyncio.sleep(0.001)
 
 
+async def _resist_cancellation_until(release: asyncio.Event) -> None:
+    """Keep running across cancellation until the test explicitly releases it."""
+    while not release.is_set():
+        try:
+            await asyncio.sleep(0.001)
+        except asyncio.CancelledError:
+            continue
+
+
+async def _replace_client_task_on_cancel(
+    client: _FakeSocketModeClient,
+    release: asyncio.Event,
+) -> None:
+    """Model an SDK owner that replaces its task while cancellation runs."""
+    try:
+        await _spin()
+    except asyncio.CancelledError:
+        client.message_processor = asyncio.create_task(
+            _resist_cancellation_until(release)
+        )
+
+
+async def _replace_client_task_with_cooperative_owner_on_cancel(
+    client: _FakeSocketModeClient,
+) -> None:
+    """Publish a normal cancellable owner while the first snapshot settles."""
+    try:
+        await _spin()
+    except asyncio.CancelledError:
+        client.message_processor = asyncio.create_task(_spin())
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -232,7 +264,6 @@ class TestSocketModeTeardown:
         )
         assert task.done(), "the old socket task outlived teardown"
 
-
     @pytest.mark.asyncio
     async def test_client_tasks_are_dead_before_the_session_closes(self, adapter):
         """Nothing may still be inside connect() when the shared session closes.
@@ -272,7 +303,348 @@ class TestSocketModeTeardown:
 
 
 class TestSocketModeRestart:
+    @pytest.mark.asyncio
+    async def test_restart_defers_close_for_task_created_during_cancellation(
+        self, adapter
+    ):
+        """A post-snapshot SDK task must keep the old session open."""
+        handler = _FakeHandler()
+        client = handler.client
+        release = asyncio.Event()
+        client.message_processor = asyncio.create_task(
+            _replace_client_task_on_cancel(client, release)
+        )
+        _attach(adapter, handler)
+        await asyncio.sleep(0.01)
 
+        started: list[str] = []
+
+        try:
+            with (
+                patch.object(_slack_mod, "_SOCKET_TASK_CANCEL_TIMEOUT_S", 0.01),
+                patch.object(
+                    adapter,
+                    "_start_socket_mode_handler",
+                    side_effect=lambda: started.append("started"),
+                ),
+            ):
+                await adapter._restart_socket_mode("transport disconnected")
+
+                replacement = client.message_processor
+                assert replacement is not None
+                assert replacement.done() is False
+                assert client.aiohttp_client_session.closed is False
+                assert adapter._handler is handler
+                assert started == []
+
+                release.set()
+                await asyncio.wait_for(replacement, timeout=0.1)
+                await adapter._restart_socket_mode("deferred teardown retry")
+
+            assert client.aiohttp_client_session.closed is True
+            assert started == ["started"]
+        finally:
+            release.set()
+            replacement = client.message_processor
+            if replacement is not None and not replacement.done():
+                await asyncio.wait_for(replacement, timeout=0.1)
+
+    @pytest.mark.parametrize(
+        "owner_attr",
+        ["outer", *_FakeSocketModeClient._TASK_ATTRS],
+    )
+    @pytest.mark.asyncio
+    async def test_restart_defers_close_while_owner_resists_cancellation(
+        self, adapter, owner_attr
+    ):
+        """Reconnect must not close a session that an owner can still use."""
+        handler = _FakeHandler()
+        client = handler.client
+        release = asyncio.Event()
+        stubborn_task = asyncio.create_task(_resist_cancellation_until(release))
+        if owner_attr == "outer":
+            adapter._handler = handler
+            adapter._socket_mode_task = stubborn_task
+            old_task = stubborn_task
+        else:
+            setattr(client, owner_attr, stubborn_task)
+            old_task = _attach(adapter, handler)
+        old_task.add_done_callback(adapter._on_socket_mode_task_done)
+        await asyncio.sleep(0.01)
+
+        started: list[str] = []
+
+        try:
+            with (
+                patch.object(_slack_mod, "_SOCKET_TASK_CANCEL_TIMEOUT_S", 0.01),
+                patch.object(
+                    adapter,
+                    "_start_socket_mode_handler",
+                    side_effect=lambda: started.append("started"),
+                ),
+            ):
+                await adapter._restart_socket_mode("transport disconnected")
+
+                session = client.aiohttp_client_session
+                assert session.closed is False
+                assert session.ws_connect_after_close == 0
+                assert adapter._handler is handler
+                assert adapter._socket_mode_task is old_task
+                assert started == []
+
+                release.set()
+                await asyncio.wait_for(stubborn_task, timeout=0.1)
+                await adapter._restart_socket_mode("deferred teardown retry")
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+
+            assert session.closed is True
+            assert started == ["started"]
+        finally:
+            release.set()
+            if not stubborn_task.done():
+                await asyncio.wait_for(stubborn_task, timeout=0.1)
+
+    @pytest.mark.asyncio
+    async def test_disconnect_closes_handler_when_watchdog_teardown_is_cancelled(
+        self, adapter
+    ):
+        """Cancelling the watchdog mid-stop must restore ownership for shutdown."""
+        handler = _FakeHandler()
+        _attach(adapter, handler)
+        await asyncio.sleep(0.01)
+
+        entered_cancel = asyncio.Event()
+        original_cancel = _slack_mod._cancel_socket_tasks
+        cancel_calls = 0
+
+        async def _block_first_cancel(tasks):
+            nonlocal cancel_calls
+            cancel_calls += 1
+            if cancel_calls == 1:
+                entered_cancel.set()
+                await asyncio.Event().wait()
+            return await original_cancel(tasks)
+
+        adapter._close_workspace_clients = AsyncMock()
+        adapter._release_platform_lock = MagicMock()
+
+        with (
+            patch.object(_slack_mod, "_cancel_socket_tasks", _block_first_cancel),
+            patch.object(adapter, "_start_socket_mode_handler") as start_handler,
+        ):
+            adapter._socket_watchdog_task = asyncio.create_task(
+                adapter._restart_socket_mode("transport disconnected")
+            )
+            await asyncio.wait_for(entered_cancel.wait(), timeout=0.1)
+            assert adapter._handler is None
+
+            await adapter.disconnect()
+
+        assert handler.client.aiohttp_client_session.closed is True
+        assert adapter._handler is None
+        assert adapter._socket_mode_task is None
+        assert adapter._socket_watchdog_task is None
+        assert adapter._app is None
+        start_handler.assert_not_called()
+        adapter._close_workspace_clients.assert_awaited_once()
+        adapter._release_platform_lock.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cancellation_during_stream_seal_waits_for_cleanup(
+        self, adapter
+    ):
+        """Early stream teardown cancellation must not bypass final cleanup."""
+        handler = _FakeHandler()
+        client = handler.client
+        _attach(adapter, handler)
+        await asyncio.sleep(0.01)
+
+        seal_entered = asyncio.Event()
+        seal_release = asyncio.Event()
+
+        async def _blocked_seal_stream(chat_id, stream) -> None:
+            seal_entered.set()
+            await seal_release.wait()
+
+        adapter._active_streams = {"C123": object()}
+        adapter._seal_stream = _blocked_seal_stream
+        adapter._close_workspace_clients = AsyncMock()
+        adapter._release_platform_lock = MagicMock()
+
+        disconnect_task = asyncio.create_task(adapter.disconnect())
+        await asyncio.wait_for(seal_entered.wait(), timeout=0.1)
+        disconnect_task.cancel()
+        await asyncio.sleep(0)
+        assert disconnect_task.done() is False
+
+        seal_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await disconnect_task
+
+        assert client.aiohttp_client_session.closed is True
+        assert adapter._active_streams == {}
+        assert adapter._handler is None
+        assert adapter._socket_mode_task is None
+        assert adapter._app is None
+        assert adapter._socket_reconnect_lock.locked() is False
+        adapter._close_workspace_clients.assert_awaited_once()
+        adapter._release_platform_lock.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cancellation_waits_for_final_cleanup(self, adapter):
+        """Caller cancellation must not bypass final close or lock release."""
+        handler = _FakeHandler()
+        client = handler.client
+        _attach(adapter, handler)
+        await asyncio.sleep(0.01)
+
+        close_entered = asyncio.Event()
+        close_release = asyncio.Event()
+
+        async def _blocked_close_async() -> None:
+            close_entered.set()
+            await close_release.wait()
+            await client.close()
+
+        handler.close_async = _blocked_close_async
+        adapter._close_workspace_clients = AsyncMock()
+        adapter._release_platform_lock = MagicMock()
+
+        disconnect_task = asyncio.create_task(adapter.disconnect())
+        await asyncio.wait_for(close_entered.wait(), timeout=0.1)
+        disconnect_task.cancel()
+        await asyncio.sleep(0)
+        assert disconnect_task.done() is False
+
+        close_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await disconnect_task
+
+        assert client.aiohttp_client_session.closed is True
+        assert adapter._handler is None
+        assert adapter._socket_mode_task is None
+        assert adapter._app is None
+        assert adapter._socket_reconnect_lock.locked() is False
+        adapter._close_workspace_clients.assert_awaited_once()
+        adapter._release_platform_lock.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_awaits_task_created_during_cancellation(self, adapter):
+        """Full shutdown must await a cooperative post-snapshot SDK owner."""
+        handler = _FakeHandler()
+        client = handler.client
+        client.message_processor = asyncio.create_task(
+            _replace_client_task_with_cooperative_owner_on_cancel(client)
+        )
+        _attach(adapter, handler)
+        await asyncio.sleep(0.01)
+
+        adapter._close_workspace_clients = AsyncMock()
+        adapter._release_platform_lock = MagicMock()
+
+        await adapter.disconnect()
+
+        replacement = client.message_processor
+        assert replacement is not None
+        assert replacement.done() is True
+        assert client.aiohttp_client_session.live_tasks_at_close == []
+        assert client.aiohttp_client_session.closed is True
+        assert adapter._handler is None
+        adapter._close_workspace_clients.assert_awaited_once()
+        adapter._release_platform_lock.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_disconnect_cannot_restore_deferred_handler(self, adapter):
+        """Shutdown must win a race with reconnect teardown and close its handler."""
+        handler = _FakeHandler()
+        release_owner = asyncio.Event()
+        stubborn_task = asyncio.create_task(_resist_cancellation_until(release_owner))
+        handler.client.message_processor = stubborn_task
+        _attach(adapter, handler)
+        await asyncio.sleep(0.01)
+
+        entered_cancel = asyncio.Event()
+        continue_cancel = asyncio.Event()
+        original_cancel = _slack_mod._cancel_socket_tasks
+        cancel_calls = 0
+
+        async def _pause_first_cancel(tasks):
+            nonlocal cancel_calls
+            cancel_calls += 1
+            if cancel_calls == 1:
+                entered_cancel.set()
+                await continue_cancel.wait()
+            return await original_cancel(tasks)
+
+        adapter._close_workspace_clients = AsyncMock()
+        adapter._release_platform_lock = MagicMock()
+
+        try:
+            with (
+                patch.object(_slack_mod, "_SOCKET_TASK_CANCEL_TIMEOUT_S", 0.01),
+                patch.object(_slack_mod, "_cancel_socket_tasks", _pause_first_cancel),
+                patch.object(adapter, "_start_socket_mode_handler") as start_handler,
+            ):
+                reconnect = asyncio.create_task(
+                    adapter._restart_socket_mode("transport disconnected")
+                )
+                await asyncio.wait_for(entered_cancel.wait(), timeout=0.1)
+                assert adapter._handler is None
+
+                shutdown = asyncio.create_task(adapter.disconnect())
+                await asyncio.sleep(0.01)
+                continue_cancel.set()
+                await asyncio.gather(reconnect, shutdown)
+
+            assert handler.client.aiohttp_client_session.closed is True
+            assert adapter._handler is None
+            assert adapter._socket_mode_task is None
+            assert adapter._app is None
+            start_handler.assert_not_called()
+            adapter._close_workspace_clients.assert_awaited_once()
+            adapter._release_platform_lock.assert_called_once()
+        finally:
+            continue_cancel.set()
+            release_owner.set()
+            if not stubborn_task.done():
+                await asyncio.wait_for(stubborn_task, timeout=0.1)
+
+    @pytest.mark.asyncio
+    async def test_full_disconnect_cleans_up_after_cancellation_timeout(self, adapter):
+        """Fail-closed reconnect state must not strand full gateway shutdown."""
+        handler = _FakeHandler()
+        release = asyncio.Event()
+        stubborn_task = asyncio.create_task(_resist_cancellation_until(release))
+        handler.client.message_processor = stubborn_task
+        _attach(adapter, handler)
+        await asyncio.sleep(0.01)
+
+        adapter._close_workspace_clients = AsyncMock()
+        adapter._release_platform_lock = MagicMock()
+
+        try:
+            with (
+                patch.object(_slack_mod, "_SOCKET_TASK_CANCEL_TIMEOUT_S", 0.01),
+                patch.object(adapter, "_start_socket_mode_handler") as start_handler,
+            ):
+                await adapter._restart_socket_mode("transport disconnected")
+                assert handler.client.aiohttp_client_session.closed is False
+                assert adapter._handler is handler
+                start_handler.assert_not_called()
+
+                await adapter.disconnect()
+
+            assert handler.client.aiohttp_client_session.closed is True
+            assert adapter._handler is None
+            assert adapter._socket_mode_task is None
+            assert adapter._app is None
+            adapter._close_workspace_clients.assert_awaited_once()
+            adapter._release_platform_lock.assert_called_once()
+        finally:
+            release.set()
+            if not stubborn_task.done():
+                await asyncio.wait_for(stubborn_task, timeout=0.1)
 
     @pytest.mark.asyncio
     async def test_watchdog_restarts_when_transport_disconnected(self, adapter):

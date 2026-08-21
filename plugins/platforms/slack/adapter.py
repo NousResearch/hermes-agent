@@ -709,7 +709,7 @@ _SOCKET_CLIENT_TASK_ATTRS = (
 _SOCKET_TASK_CANCEL_TIMEOUT_S = 3.0
 
 
-async def _cancel_socket_tasks(tasks: Any) -> None:
+async def _cancel_socket_tasks(tasks: Any) -> set[Any]:
     """Cancel Socket Mode tasks and wait, with a bound, for them to finish.
 
     Cancellation is only a request until the task is awaited, so a caller that
@@ -725,7 +725,7 @@ async def _cancel_socket_tasks(tasks: Any) -> None:
         pending.add(task)
 
     if not pending:
-        return
+        return set()
 
     done, still_running = await asyncio.wait(
         pending, timeout=_SOCKET_TASK_CANCEL_TIMEOUT_S
@@ -743,6 +743,7 @@ async def _cancel_socket_tasks(tasks: Any) -> None:
             len(still_running),
             _SOCKET_TASK_CANCEL_TIMEOUT_S,
         )
+    return still_running
 
 
 _SLACK_PROXY_HOSTS = (
@@ -952,6 +953,10 @@ class SlackAdapter(BasePlatformAdapter):
         # user messages without bot_id/subtype=bot_message markers.
         self._user_is_bot_cache: Dict[Tuple[str, str], bool] = {}
         self._socket_mode_task: Optional[asyncio.Task] = None
+        # Outer tasks intentionally cancelled during teardown may swallow
+        # cancellation and finish later. Keep their done-callback from
+        # scheduling a duplicate reconnect after ownership is restored.
+        self._socket_mode_stopping_tasks: set[asyncio.Task] = set()
         # Multi-workspace support
         self._team_clients: Dict[str, Any] = {}  # team_id → WebClient
         self._team_bot_user_ids: Dict[str, str] = {}  # team_id → bot_user_id
@@ -1240,7 +1245,9 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_handler_started_monotonic = time.monotonic()
         task.add_done_callback(self._on_socket_mode_task_done)
 
-    async def _stop_socket_mode_handler(self) -> None:
+    async def _stop_socket_mode_handler(
+        self, *, defer_close_if_tasks_running: bool = False
+    ) -> bool:
         """Stop Socket Mode handler and task.
 
         Order matters. ``close_async()`` closes the SocketModeClient's shared
@@ -1256,26 +1263,95 @@ class SlackAdapter(BasePlatformAdapter):
         awaits inside ``close()``. Cancelling from a snapshot taken partway
         through that would race a moving target. See
         slackapi/python-slack-sdk#1913.
+
+        Reconnect callers set ``defer_close_if_tasks_running`` so an owner that
+        resists cancellation keeps its session open and reachable for a later
+        teardown attempt. Full gateway disconnect remains best-effort and
+        always continues through client and platform-lock cleanup.
         """
         handler = self._handler
         task = self._socket_mode_task
+        if task is not None and not task.done():
+            self._socket_mode_stopping_tasks.add(task)
+        # Detach before cancellation so the task done-callback recognizes this
+        # as intentional teardown and cannot queue a second reconnect. Restore
+        # the references below when reconnect teardown must be deferred.
         self._handler = None
         self._socket_mode_task = None
 
         client = getattr(handler, "client", None)
-        await _cancel_socket_tasks(
-            [task] + [getattr(client, attr, None) for attr in _SOCKET_CLIENT_TASK_ATTRS]
-        )
+        captured_owners = [task] + [
+            getattr(client, attr, None) for attr in _SOCKET_CLIENT_TASK_ATTRS
+        ]
+        try:
+            still_running = await _cancel_socket_tasks(captured_owners)
+
+            # An SDK owner can publish a replacement task while responding to
+            # cancellation. Await one bounded late-owner pass so cooperative
+            # replacements settle before full disconnect closes the session.
+            late_owners = []
+            for attr in _SOCKET_CLIENT_TASK_ATTRS:
+                current = getattr(client, attr, None)
+                cancel = getattr(current, "cancel", None)
+                done = getattr(current, "done", None)
+                if (
+                    callable(cancel)
+                    and callable(done)
+                    and not done()
+                    and all(current is not owner for owner in captured_owners)
+                ):
+                    late_owners.append(current)
+
+            if late_owners:
+                still_running.update(await _cancel_socket_tasks(late_owners))
+
+            # Drop owners that settled during the late pass, then make one
+            # final moving-target snapshot. Any task still alive keeps
+            # reconnect fail-closed; full disconnect remains bounded.
+            still_running = {
+                owner
+                for owner in still_running
+                if not callable(getattr(owner, "done", None)) or not owner.done()
+            }
+            for attr in _SOCKET_CLIENT_TASK_ATTRS:
+                current = getattr(client, attr, None)
+                cancel = getattr(current, "cancel", None)
+                done = getattr(current, "done", None)
+                if callable(cancel) and callable(done) and not done():
+                    cancel()
+                    still_running.add(current)
+        except asyncio.CancelledError:
+            # Full disconnect cancels the watchdog before taking the reconnect
+            # lock. Keep ownership reachable so disconnect can close it.
+            self._handler = handler
+            self._socket_mode_task = task
+            raise
+
+        if still_running and defer_close_if_tasks_running:
+            # Anything still alive may enter connect(), so closing the shared
+            # session here would create an unrecoverable closed-session loop.
+            self._handler = handler
+            self._socket_mode_task = task
+            logger.error(
+                "[Slack] Socket Mode reconnect deferred; %d task(s) still running",
+                len(still_running),
+            )
+            return False
 
         if handler is not None:
             try:
                 await handler.close_async()
+            except asyncio.CancelledError:
+                self._handler = handler
+                self._socket_mode_task = task
+                raise
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.warning(
                     "[Slack] Error while closing Socket Mode handler: %s",
                     e,
                     exc_info=True,
                 )
+        return True
 
     async def _socket_transport_connected(self) -> Optional[bool]:
         """Best-effort check of current Socket Mode transport state."""
@@ -1339,7 +1415,11 @@ class SlackAdapter(BasePlatformAdapter):
                 return
 
             logger.warning("[Slack] Socket Mode unhealthy (%s); reconnecting", reason)
-            await self._stop_socket_mode_handler()
+            stopped = await self._stop_socket_mode_handler(
+                defer_close_if_tasks_running=True
+            )
+            if not stopped:
+                return
 
             try:
                 self._start_socket_mode_handler()
@@ -1413,6 +1493,9 @@ class SlackAdapter(BasePlatformAdapter):
             task.add_done_callback(self._on_socket_watchdog_done)
 
     def _on_socket_mode_task_done(self, task: asyncio.Task) -> None:
+        if task in self._socket_mode_stopping_tasks:
+            self._socket_mode_stopping_tasks.discard(task)
+            return
         # Ignore stale tasks from intentional reconnect/shutdown.
         if task is not self._socket_mode_task:
             return
@@ -2318,46 +2401,69 @@ class SlackAdapter(BasePlatformAdapter):
         """Disconnect from Slack."""
         self._running = False
 
-        # Seal any dangling native streams so chats aren't left with a
-        # live-typing indicator across a restart.
-        for chat_id, stream in list(self._active_streams.items()):
-            await self._seal_stream(chat_id, stream)
-        self._active_streams.clear()
-
-        watchdog_task = self._socket_watchdog_task
-        self._socket_watchdog_task = None
-        if watchdog_task is not None and not watchdog_task.done():
-            watchdog_task.cancel()
+        async def _finalize_disconnect() -> None:
             try:
-                await watchdog_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:  # pragma: no cover - defensive logging
-                # Watchdog may have lost the cancellation race and exited with
-                # an unrelated exception. Log and continue so handler cleanup
-                # and lock release still happen.
-                logger.debug(
-                    "[Slack] Watchdog task raised during disconnect", exc_info=True
-                )
+                # Seal dangling native streams so chats are not left with a
+                # live-typing indicator across a restart.
+                for chat_id, stream in list(self._active_streams.items()):
+                    await self._seal_stream(chat_id, stream)
+                self._active_streams.clear()
 
-        # Finalize native streams while workspace clients are still live. The
-        # gateway normally stops each turn's stream first; this is the shutdown
-        # safety net for cancellation/reconnect races.
-        for key, stream in list(self._native_task_card_streams.items()):
-            await self._stop_native_task_card_stream(key, stream)
+                watchdog_task = self._socket_watchdog_task
+                self._socket_watchdog_task = None
+                if watchdog_task is not None and not watchdog_task.done():
+                    watchdog_task.cancel()
+                    try:
+                        await watchdog_task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:  # pragma: no cover - defensive logging
+                        logger.debug(
+                            "[Slack] Watchdog task raised during disconnect",
+                            exc_info=True,
+                        )
 
-        await self._stop_socket_mode_handler()
-        await self._close_workspace_clients()
-        self._app = None
-        self._app_token = None
-        self._proxy_url = None
-        self._bot_user_id = None
-        self._team_clients = {}
-        self._team_bot_user_ids = {}
-        self._channel_team = {}
-        self._dm_conversation_cache = {}
+                # Finalize native streams while workspace clients are live.
+                for key, stream in list(self._native_task_card_streams.items()):
+                    await self._stop_native_task_card_stream(key, stream)
+            finally:
+                # A reconnect may have temporarily detached the handler while
+                # cancelling SDK task owners. Serialize final ownership transfer,
+                # and clear state even if a downstream close reports an error.
+                async with self._socket_reconnect_lock:
+                    try:
+                        await self._stop_socket_mode_handler()
+                        await self._close_workspace_clients()
+                    finally:
+                        self._app = None
+                        self._app_token = None
+                        self._proxy_url = None
+                        self._bot_user_id = None
+                        self._team_clients = {}
+                        self._team_bot_user_ids = {}
+                        self._channel_team = {}
+                        self._dm_conversation_cache = {}
 
-        self._release_platform_lock()
+        # Protect the complete teardown sequence, including stream sealing, so
+        # cancellation cannot strand an open handler or retain the exclusivity
+        # lock. Deliver caller cancellation only after bounded cleanup finishes.
+        cleanup_task = asyncio.create_task(_finalize_disconnect())
+        cancel_requested = False
+        try:
+            while True:
+                try:
+                    await asyncio.shield(cleanup_task)
+                    break
+                except asyncio.CancelledError:
+                    cancel_requested = True
+                    if cleanup_task.done():
+                        break
+            cleanup_task.result()
+        finally:
+            self._release_platform_lock()
+
+        if cancel_requested:
+            raise asyncio.CancelledError
 
         logger.info("[Slack] Disconnected")
 

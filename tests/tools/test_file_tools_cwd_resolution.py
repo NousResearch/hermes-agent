@@ -310,3 +310,49 @@ def test_v4a_patch_applies_to_resolved_workspace_not_backend_cwd(
     assert (workspace / "target.py").read_text() == "WORKSPACE_PATCHED\n"
     # The decoy (backend cwd) was left untouched.
     assert (decoy / "target.py").read_text() == "DECOY_ORIGINAL\n"
+
+
+# ── ssh / WSL backend: POSIX-namespace path resolution ─────────────────────
+# (Aug 2026 bug class: on a Windows host with a WSL-via-ssh backend,
+# `_uses_container_paths` excluded "ssh", so absolute POSIX paths like
+# /home/steve/... were routed through the Windows ntpath/WindowsPath branch.
+# ntpath.normpath mangled them to \home\steve\... and WindowsPath.is_absolute()
+# returned False (no drive letter), so the resolver treated an absolute POSIX
+# path as a relative escape and write_file emitted a false "OUTSIDE the active
+# workspace" warning even though the bytes landed correctly on WSL.)
+
+
+def test_ssh_backend_uses_container_paths(monkeypatch):
+    """ssh (and WSL-via-ssh) must be treated as a POSIX-namespace backend."""
+    monkeypatch.setattr(ft, "_terminal_env_type_for_task", lambda task_id="default": "ssh")
+    assert ft._uses_container_paths("default") is True
+
+
+def test_ssh_absolute_posix_path_stays_posix(monkeypatch):
+    """An absolute POSIX path on ssh must NOT be rewritten to Windows form."""
+    monkeypatch.setattr(ft, "_terminal_env_type_for_task", lambda task_id="default": "ssh")
+    resolved = ft._resolve_path_for_task("/home/steve/projects/foo.py", task_id="default")
+    # Must remain a POSIX absolute path — no \home\steve mangling.
+    assert isinstance(resolved, PurePosixPath)
+    assert str(resolved) == "/home/steve/projects/foo.py"
+    assert resolved.is_absolute()
+
+
+def test_ssh_absolute_posix_path_no_false_warning(monkeypatch):
+    """Absolute POSIX paths on ssh must not trigger the workspace-escape warning."""
+    monkeypatch.setattr(ft, "_terminal_env_type_for_task", lambda task_id="default": "ssh")
+    terminal_tool.record_session_cwd("default", "/home/steve")
+    resolved = ft._resolve_path_for_task("/home/steve/projects/foo.py", task_id="default")
+    warn = ft._path_resolution_warning("/home/steve/projects/foo.py", resolved, task_id="default")
+    assert warn is None
+
+
+def test_ssh_relative_path_still_warns_when_outside_workspace(monkeypatch, tmp_path):
+    """Relative-path escape detection must still work for ssh backends."""
+    monkeypatch.setattr(ft, "_terminal_env_type_for_task", lambda task_id="default": "ssh")
+    terminal_tool.record_session_cwd("default", "/home/steve")
+    resolved = ft._resolve_path_for_task("../outside/target.py", task_id="default")
+    warn = ft._path_resolution_warning("../outside/target.py", resolved, task_id="default")
+    # A path escaping the workspace root is still flagged.
+    assert warn is not None
+    assert "OUTSIDE the active workspace" in warn

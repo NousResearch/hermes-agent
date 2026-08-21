@@ -214,7 +214,14 @@ def _uses_container_paths(task_id: str = "default") -> bool:
         container_backends = _CONTAINER_BACKENDS
     except Exception:
         container_backends = _CONTAINER_PATH_BACKENDS_FALLBACK
-    return _terminal_env_type_for_task(task_id) in container_backends
+    env_type = _terminal_env_type_for_task(task_id)
+    # ssh (and WSL-via-ssh) exposes a POSIX filesystem in a namespace distinct
+    # from the Windows host, so file-tool paths there are POSIX paths. Treat it
+    # like a container backend for PATH RESOLUTION so absolute POSIX paths
+    # (/home/steve/...) aren't misrouted through Windows ntpath on the host.
+    if env_type == "ssh":
+        return True
+    return env_type in container_backends
 
 
 def _normalize_without_host_deref(path: str | Path | PurePosixPath) -> PurePosixPath:
@@ -419,7 +426,13 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
     (no ``cd`` run yet) is warned on the very first write.
     """
     try:
-        if Path(_expand_tilde(filepath)).is_absolute():
+        expanded_input = _expand_tilde(filepath)
+        if _uses_container_paths(task_id):
+            # POSIX-namespace backend (container, ssh/WSL): a leading-slash path
+            # is absolute in the backend's filesystem.
+            if posixpath.isabs(expanded_input):
+                return None
+        elif Path(expanded_input).is_absolute():
             return None
         workspace_root = _authoritative_workspace_root(task_id)
         if not workspace_root:

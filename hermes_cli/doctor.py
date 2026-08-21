@@ -910,6 +910,42 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
         check_warn("Could not verify systemd linger", f"({linger_detail})")
 
 
+def _check_windows_gateway_launcher(issues: list[str]) -> None:
+    """Windows: converge Scheduled Task + Startup-folder gateway autostart.
+
+    Pre-#45610 installs left a ``cmd.exe`` launcher in the Startup folder,
+    and successful Scheduled Task installs never removed Startup entries —
+    both then fire the same launcher at logon and spawn duplicate gateways
+    (#80569). Reconciles to a single mechanism and reports the outcome.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        from hermes_cli import gateway_windows
+    except Exception:
+        return
+    try:
+        if not gateway_windows.is_installed():
+            return
+    except Exception:
+        return
+    _section("Windows Gateway Autostart")
+    try:
+        actions = gateway_windows.reconcile_autostart_launchers()
+    except Exception as exc:
+        check_warn("Could not reconcile Windows gateway autostart", f"({exc})")
+        return
+    if actions:
+        for action in actions:
+            check_info(action)
+        if any(a.startswith("⚠") for a in actions):
+            check_warn("Gateway autostart reconcile incomplete — review the warnings above")
+        else:
+            check_ok("Gateway autostart reconciled to a single mechanism")
+    else:
+        check_ok("Gateway autostart uses a single mechanism")
+
+
 _APIKEY_PROVIDERS_CACHE: list | None = None
 
 
@@ -1981,6 +2017,7 @@ def run_doctor(args):
 
     _check_gateway_service_linger(issues)
     _check_s6_supervision(issues)
+    _check_windows_gateway_launcher(issues)
 
     if sys.platform != "win32":
         _section("Command Installation")

@@ -1517,3 +1517,86 @@ class TestDoctorDeprecatedConfigAndEnv:
         assert "Deprecated: delegation.max_async_children" in out
         assert "Deprecated: HERMES_TOOL_PROGRESS_MODE" in out
         assert "⚠" in out or "Deprecated" in out
+
+
+# ---------------------------------------------------------------------------
+# Windows gateway autostart convergence — issue #80569
+# ---------------------------------------------------------------------------
+
+
+def test_windows_gateway_launcher_check_reconciles_and_reports(monkeypatch, capsys):
+    """Windows doctor applies and reports autostart convergence (#80569)."""
+    import hermes_cli.gateway_windows as gateway_windows
+
+    actions = ["Removed redundant Windows login item: C:\\Startup\\Hermes_Gateway.cmd"]
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
+    monkeypatch.setattr(gateway_windows, "reconcile_autostart_launchers", lambda: actions)
+
+    doctor._check_windows_gateway_launcher([])
+
+    out = capsys.readouterr().out
+    assert "Windows Gateway Autostart" in out
+    assert "Removed redundant Windows login item" in out
+    assert "reconciled to a single mechanism" in out
+
+
+def test_windows_gateway_launcher_check_skips_off_windows(monkeypatch, capsys):
+    """The check is a no-op on non-Windows platforms."""
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    doctor._check_windows_gateway_launcher([])
+
+    assert "Windows Gateway Autostart" not in capsys.readouterr().out
+
+
+def test_windows_gateway_launcher_check_skips_when_not_installed(monkeypatch, capsys):
+    """No gateway autostart install -> nothing to reconcile, no section."""
+    import hermes_cli.gateway_windows as gateway_windows
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: False)
+
+    doctor._check_windows_gateway_launcher([])
+
+    assert "Windows Gateway Autostart" not in capsys.readouterr().out
+
+
+def test_windows_gateway_launcher_check_warns_on_incomplete_reconcile(monkeypatch, capsys):
+    """A failed removal must surface as a warning, not a clean ok."""
+    import hermes_cli.gateway_windows as gateway_windows
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
+    monkeypatch.setattr(
+        gateway_windows,
+        "reconcile_autostart_launchers",
+        lambda: ["⚠ Could not remove redundant Windows login item: C:\\Startup\\Hermes_Gateway.cmd"],
+    )
+
+    doctor._check_windows_gateway_launcher([])
+
+    out = capsys.readouterr().out
+    assert "Could not remove redundant Windows login item" in out
+    assert "reconcile incomplete" in out
+    assert "reconciled to a single mechanism" not in out
+
+
+def test_windows_gateway_launcher_check_warns_when_schtasks_wedges(monkeypatch, capsys):
+    """A schtasks query failure surfaces as a doctor warning, not a clean ok."""
+    import hermes_cli.gateway_windows as gateway_windows
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
+    monkeypatch.setattr(
+        gateway_windows,
+        "reconcile_autostart_launchers",
+        lambda: ["⚠ Could not verify Scheduled Task state — reconcile skipped"],
+    )
+
+    doctor._check_windows_gateway_launcher([])
+
+    out = capsys.readouterr().out
+    assert "Could not verify Scheduled Task state" in out
+    assert "reconcile incomplete" in out
+    assert "reconciled to a single mechanism" not in out

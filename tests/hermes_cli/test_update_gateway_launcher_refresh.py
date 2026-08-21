@@ -81,6 +81,25 @@ def test_restart_spec_normalizes_legacy_pythonw_argv(tmp_path):
     assert env["VIRTUAL_ENV"] == str(tmp_path / "venv")
 
 
+def test_refresh_reconciles_dual_autostart_entries(tmp_path):
+    """Post-update launcher refresh converges dual autostart persistence.
+
+    ``_refresh_windows_gateway_launchers`` must remove redundant Startup
+    entries (legacy .cmd / .vbs fallback) whenever a Scheduled Task is
+    registered, so the next logon cannot fire the same launcher twice
+    (#80569).
+    """
+    actions = ["Removed redundant Windows login item: C:\\Startup\\Hermes_Gateway.cmd"]
+    with mock.patch.object(cli_main, "_is_windows", return_value=True), mock.patch.object(
+        gateway_windows, "is_installed", return_value=True
+    ), mock.patch.object(
+        gateway_windows, "_write_task_script", return_value=tmp_path / "Hermes_Gateway.cmd"
+    ), mock.patch.object(
+        gateway_windows, "reconcile_autostart_launchers", return_value=actions
+    ):
+        cli_main._refresh_windows_gateway_launchers()
+
+
 # ---------------------------------------------------------------------------
 # _refresh_windows_gateway_launchers: hermes update regenerates launchers
 # ---------------------------------------------------------------------------

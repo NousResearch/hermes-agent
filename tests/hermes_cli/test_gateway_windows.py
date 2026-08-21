@@ -314,6 +314,169 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "cmd.exe" not in xml_seen["text"]
 
 
+# ---------------------------------------------------------------------------
+# Dual autostart persistence convergence — issue #80569
+# ---------------------------------------------------------------------------
+
+
+def _arrange_startup_files(monkeypatch, tmp_path):
+    """Create a Startup folder with both the .vbs fallback and legacy .cmd."""
+    vbs = tmp_path / "Startup" / "Hermes_Gateway_alice.vbs"
+    cmd = tmp_path / "Startup" / "Hermes_Gateway_alice.cmd"
+    vbs.parent.mkdir(parents=True, exist_ok=True)
+    vbs.write_text("' fake vbs fallback", encoding="utf-8")
+    cmd.write_text("@echo off", encoding="utf-8")
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: vbs)
+    monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: cmd)
+    return vbs, cmd
+
+
+def test_reconcile_removes_both_entries_when_task_registered(monkeypatch, tmp_path):
+    """Task + Startup entries coexisting -> both Startup entries are removed."""
+    vbs, cmd = _arrange_startup_files(monkeypatch, tmp_path)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+
+    actions = gateway_windows.reconcile_autostart_launchers()
+
+    assert not vbs.exists()
+    assert not cmd.exists()
+    assert len(actions) == 2
+    assert all("Removed redundant Windows login item" in a for a in actions)
+
+
+def test_reconcile_migrates_legacy_cmd_to_vbs_when_no_task(monkeypatch, tmp_path):
+    """No task + legacy .cmd -> .vbs fallback installed, legacy .cmd removed."""
+    cmd = tmp_path / "Startup" / "Hermes_Gateway_alice.cmd"
+    vbs = tmp_path / "Startup" / "Hermes_Gateway_alice.vbs"
+    cmd.parent.mkdir(parents=True, exist_ok=True)
+    cmd.write_text("@echo off", encoding="utf-8")
+    script_path = tmp_path / "gateway-service" / "Hermes_Gateway_alice.cmd"
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: vbs)
+    monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: cmd)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script_path)
+
+    actions = gateway_windows.reconcile_autostart_launchers()
+
+    assert not cmd.exists()
+    assert vbs.exists()
+    assert len(actions) == 1
+    assert "Migrated legacy Windows login item" in actions[0]
+
+
+def test_reconcile_noop_when_converged(monkeypatch, tmp_path):
+    """Task-only or .vbs-fallback-only installs are already converged."""
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(
+        gateway_windows, "get_startup_entry_path", lambda: tmp_path / "missing.vbs"
+    )
+    monkeypatch.setattr(
+        gateway_windows, "_legacy_startup_entry_path", lambda: tmp_path / "missing.cmd"
+    )
+    assert gateway_windows.reconcile_autostart_launchers() == []
+
+    vbs = tmp_path / "Startup" / "Hermes_Gateway_alice.vbs"
+    vbs.parent.mkdir(parents=True, exist_ok=True)
+    vbs.write_text("' fake vbs fallback", encoding="utf-8")
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: vbs)
+    assert gateway_windows.reconcile_autostart_launchers() == []
+
+
+def test_install_success_removes_redundant_startup_entries(monkeypatch, tmp_path):
+    """install() with a successful Scheduled Task converges to task-only."""
+    script_path = tmp_path / "Hermes_Gateway_alice.cmd"
+    removed_calls = []
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(
+        gateway_windows,
+        "_prompt_install_choices",
+        lambda *args, **kwargs: (False, True),
+    )
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: True)
+    monkeypatch.setattr(
+        gateway_windows,
+        "_install_scheduled_task",
+        lambda task_name, script_path: (True, "Created Scheduled Task 'Hermes_Gateway_alice'"),
+    )
+
+    def fake_remove_startup_entries():
+        removed_calls.append(True)
+        return ([tmp_path / "Startup" / "Hermes_Gateway_alice.vbs"], [])
+
+    monkeypatch.setattr(gateway_windows, "_remove_startup_entries", fake_remove_startup_entries)
+    monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: None)
+
+    gateway_windows.install()
+
+    assert removed_calls == [True]
+
+
+def test_reconcile_reports_unlink_failure(monkeypatch, tmp_path):
+    """A locked Startup entry must be reported, not silently claimed removed."""
+    vbs, cmd = _arrange_startup_files(monkeypatch, tmp_path)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self):
+        if self.name.endswith(".vbs"):
+            raise PermissionError("file is locked")
+        return real_unlink(self)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+    actions = gateway_windows.reconcile_autostart_launchers()
+
+    assert vbs.exists()
+    assert not cmd.exists()
+    assert any("Removed redundant Windows login item" in a for a in actions)
+    assert any("Could not remove redundant Windows login item" in a for a in actions)
+
+
+def test_reconcile_warns_when_schtasks_wedges(monkeypatch, tmp_path):
+    """A schtasks query failure must warn, not crash or remove anything."""
+    vbs, cmd = _arrange_startup_files(monkeypatch, tmp_path)
+
+    def raise_wedge():
+        raise RuntimeError("schtasks timed out")
+
+    monkeypatch.setattr(gateway_windows, "is_task_registered", raise_wedge)
+
+    actions = gateway_windows.reconcile_autostart_launchers()
+
+    assert len(actions) == 1
+    assert "Could not verify Scheduled Task state" in actions[0]
+    assert vbs.exists()
+    assert cmd.exists()
+
+
+def test_install_fallback_skips_entry_when_task_still_registered(monkeypatch, tmp_path):
+    """Startup fallback must not be installed while the Scheduled Task exists."""
+    script_path = tmp_path / "Hermes_Gateway_alice.cmd"
+    calls = []
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(
+        gateway_windows, "_install_startup_entry", lambda p: calls.append(("entry", p)) or p
+    )
+    monkeypatch.setattr(
+        gateway_windows, "_spawn_detached", lambda: calls.append(("spawn", None)) or 12345
+    )
+    monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda via: calls.append(("report", via)))
+    monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: calls.append(("next", None)))
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda: [])
+    monkeypatch.setattr(gateway, "_profile_arg", lambda: "--profile alice")
+
+    gateway_windows._install_startup_fallback(script_path, start_now=True, detail="blocked")
+
+    assert not any(c[0] == "entry" for c in calls)
+    assert any(c[0] == "spawn" for c in calls)
+
+
 def test_gateway_vbs_script_is_console_less(monkeypatch):
     """The .vbs launcher must avoid cmd.exe entirely and Run pythonw hidden
     (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A)."""

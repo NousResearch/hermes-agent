@@ -589,6 +589,16 @@ _MIN_KEEPALIVE_INTERVAL = 5        # clamp floor for configured intervals
 # immediately; cancellation-resistant tasks must not hang process exit.
 _MCP_LOOP_DRAIN_TIMEOUT = 3.0
 
+# Hard ceiling for waiting on server.shutdown() during shutdown_mcp_servers().
+# This call gates the gateway's clean-exit funnel (lifecycle_ledger
+# mark_exited), and container supervisors (s6-overlay, etc.) typically grant
+# only ~3s of kill grace before SIGKILL. A 15s wait here held the exit funnel
+# open past the grace period, so a wedged MCP server silently cost the
+# gateway its clean-exit record (#82874). 2s is ample for well-behaved
+# server.shutdown() implementations (they self-enforce their own close
+# timeouts); a server that hasn't returned in 2s won't return in 15s either.
+_MCP_SHUTDOWN_DRAIN_SECONDS = 2
+
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR",
@@ -7965,7 +7975,7 @@ def shutdown_mcp_servers():
         )
         if future is not None:
             try:
-                future.result(timeout=15)
+                future.result(timeout=_MCP_SHUTDOWN_DRAIN_SECONDS)
             except BaseException as exc:
                 logger.debug("Error during MCP shutdown: %s", exc)
 

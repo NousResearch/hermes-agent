@@ -198,6 +198,12 @@ def get_cron_output_dir() -> Path:
 # claim expire mid-run.
 ONESHOT_RUN_CLAIM_TTL_SECONDS = 1800
 
+# External/manual fires use a short ownership lease which run_one_job renews
+# every minute. Sibling built-in schedulers must honor that same lease for
+# one-shots; otherwise a finite job can be deleted after claim_dispatch while
+# its externally-triggered run is still active.
+FIRE_CLAIM_TTL_SECONDS = 300
+
 # The derived TTL is the cron inactivity timeout times this headroom multiplier.
 # A healthy run clears its claim via mark_job_run() long before the TTL; the
 # TTL only recovers a claim left by a tick that DIED mid-run. HERMES_CRON_TIMEOUT
@@ -2865,7 +2871,7 @@ def _machine_id() -> str:
 def claim_job_for_fire(
     job_id: str,
     *,
-    claim_ttl_seconds: int = 300,
+    claim_ttl_seconds: int = FIRE_CLAIM_TTL_SECONDS,
     force: bool = False,
     return_job: bool = False,
 ) -> Union[bool, Dict[str, Any]]:
@@ -3243,6 +3249,26 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     needs_save = True
                     break
                 continue
+
+            # External/manual runs own fire_claim rather than the built-in
+            # ticker's run_claim. run_one_job heartbeats fire_claim every
+            # minute, so a fresh lease is durable proof that another process
+            # is still executing this job. Honor it for every schedule kind:
+            # recurring jobs can become due again while a long external run is
+            # still active, and one-shots can otherwise be deleted after
+            # claim_dispatch() increments repeat.completed.
+            external_claim = job.get("fire_claim")
+            if external_claim:
+                try:
+                    claimed_at = _ensure_aware(
+                        datetime.fromisoformat(external_claim["at"])
+                    )
+                    claim_age = (now - claimed_at).total_seconds()
+                    if 0 <= claim_age < FIRE_CLAIM_TTL_SECONDS:
+                        continue
+                except (KeyError, ValueError, TypeError):
+                    # Malformed claims are stale and must not wedge the job.
+                    pass
 
             # Cross-process running-claim guard (#59229): if another scheduler
             # process already claimed this one-shot and its run is still in flight

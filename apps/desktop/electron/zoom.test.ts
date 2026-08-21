@@ -14,6 +14,8 @@ import {
   DEFAULT_ZOOM_LEVEL,
   installZoomReassertOnWindowEvents,
   percentToZoomLevel,
+  ZOOM_REASSERT_MAX_SETTLE_CHECKS,
+  ZOOM_REASSERT_SETTLE_DELAY_MS,
   ZOOM_RESIZE_REASSERT_DELAY_MS,
   ZOOM_STEP,
   ZOOM_STORAGE_KEY,
@@ -185,6 +187,91 @@ test('installZoomReassertOnWindowEvents skips destroyed windows', () => {
   destroyed = true
   handlers.get('show')()
   assert.equal(calls, 0)
+})
+
+test('installZoomReassertOnWindowEvents re-verifies Linux zoom after the debounced re-assert so a dropped re-apply is retried', () => {
+  vi.useFakeTimers()
+
+  try {
+    const handlers = new Map()
+
+    const win = {
+      isDestroyed: () => false,
+      on(event, listener) {
+        handlers.set(event, listener)
+      }
+    }
+
+    let calls = 0
+    installZoomReassertOnWindowEvents(
+      win,
+      () => {
+        calls += 1
+      },
+      'linux'
+    )
+
+    handlers.get('resize')()
+    vi.advanceTimersByTime(ZOOM_RESIZE_REASSERT_DELAY_MS)
+    assert.equal(calls, 1, 'debounced re-assert fires once')
+
+    // Cosmic tiling can drop the just-applied zoom mid-reconfigure; the
+    // settle-verify chain re-asserts on a bounded schedule until it converges:
+    // one initial re-assert plus ZOOM_REASSERT_MAX_SETTLE_CHECKS follow-ups.
+    for (let i = 1; i <= ZOOM_REASSERT_MAX_SETTLE_CHECKS; i++) {
+      vi.advanceTimersByTime(ZOOM_REASSERT_SETTLE_DELAY_MS)
+      assert.equal(calls, 1 + i, `settle check ${i} re-asserts`)
+    }
+
+    vi.advanceTimersByTime(ZOOM_REASSERT_SETTLE_DELAY_MS * 2)
+    assert.equal(calls, 1 + ZOOM_REASSERT_MAX_SETTLE_CHECKS, 'settle chain is bounded and stops')
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('installZoomReassertOnWindowEvents resets the settle chain on a fresh re-assert', () => {
+  vi.useFakeTimers()
+
+  try {
+    const handlers = new Map()
+
+    const win = {
+      isDestroyed: () => false,
+      on(event, listener) {
+        handlers.set(event, listener)
+      }
+    }
+
+    let calls = 0
+    installZoomReassertOnWindowEvents(
+      win,
+      () => {
+        calls += 1
+      },
+      'linux'
+    )
+
+    handlers.get('show')()
+    vi.advanceTimersByTime(ZOOM_REASSERT_SETTLE_DELAY_MS)
+    assert.equal(calls, 2, 'initial re-assert plus one settle check')
+
+    // A second transition while the first settle chain is still pending must
+    // restart the chain from zero instead of exhausting the budget.
+    handlers.get('restore')()
+    assert.equal(calls, 3, 'fresh transition re-asserts immediately')
+
+    // The restarted chain runs its full bounded schedule (3 more checks).
+    for (let i = 1; i <= ZOOM_REASSERT_MAX_SETTLE_CHECKS; i++) {
+      vi.advanceTimersByTime(ZOOM_REASSERT_SETTLE_DELAY_MS)
+      assert.equal(calls, 3 + i, `restarted chain settle check ${i} re-asserts`)
+    }
+
+    vi.advanceTimersByTime(ZOOM_REASSERT_SETTLE_DELAY_MS * 2)
+    assert.equal(calls, 3 + ZOOM_REASSERT_MAX_SETTLE_CHECKS, 'restarted chain is bounded too')
+  } finally {
+    vi.useRealTimers()
+  }
 })
 
 // Zoom-wiring contract: chat windows keep global UI zoom while fixed-size

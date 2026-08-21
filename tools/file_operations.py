@@ -1145,6 +1145,32 @@ class ShellFileOperations(FileOperations):
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
+    def _pattern_arg(self, pattern: str) -> str:
+        """Escape *pattern* and prefix it with the ``--`` end-of-options
+        separator, as a single string ready to drop into a search
+        command's argv.
+
+        Single choke point for the rg/grep argv fix in issue #85795: a
+        pattern starting with ``-`` (the Markdown checkbox ``- [ ]``,
+        diff-style ``-foo`` lines, etc.) is parsed as a flag by rg/grep
+        themselves unless preceded by ``--``; ``_escape_shell_arg``'s
+        quoting only protects against shell word-splitting, not the
+        target program's own argv parsing. ``--`` is a de-facto
+        convention rather than POSIX-mandated, but is accepted by every
+        variant this project actually shells out to (GNU grep, BSD grep,
+        ripgrep, BusyBox grep).
+
+        Every rg/grep command this class builds -- including the
+        ``_zero_match_probe`` diagnostic sub-searches -- must go through
+        this helper rather than inlining ``-- {escaped pattern}``
+        separately, so a future call site can't reintroduce the missing-
+        separator bug (review of #85798, point 2: the probe's own
+        duplication is exactly how the original issue slipped past the
+        main search path).
+        """
+        return f"-- {self._escape_shell_arg(pattern)}"
+
+
     def _escape_native_tool_arg(self, arg: str) -> str:
         """Escape a path argument destined for a NATIVE Windows binary.
 
@@ -2913,7 +2939,7 @@ class ShellFileOperations(FileOperations):
         glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
         probe = self._exec(
             f"rg -i --count-matches{glob_expr} "
-            f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
+            f"{self._pattern_arg(pattern)} {self._escape_native_tool_arg(path)} "
             f"2>/dev/null | head -50",
             timeout=30,
         )
@@ -2930,7 +2956,7 @@ class ShellFileOperations(FileOperations):
         # missing from results).
         hidden = self._exec(
             f"rg --hidden --no-ignore --count-matches{glob_expr} "
-            f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
+            f"{self._pattern_arg(pattern)} {self._escape_native_tool_arg(path)} "
             f"2>/dev/null | head -50",
             timeout=30,
         )
@@ -2944,7 +2970,7 @@ class ShellFileOperations(FileOperations):
         if re.search(r"[.\[\](){}?*+^$\\|]", pattern):
             fixed = self._exec(
                 f"rg -F --count-matches{glob_expr} "
-                f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
+                f"{self._pattern_arg(pattern)} {self._escape_native_tool_arg(path)} "
                 f"2>/dev/null | head -50",
                 timeout=30,
             )
@@ -3156,8 +3182,11 @@ class ShellFileOperations(FileOperations):
         elif output_mode == "count":
             cmd_parts.append("-c")  # Count per file
         
-        # Add pattern and path
-        cmd_parts.append(self._escape_shell_arg(pattern))
+        # Add pattern and path. `--` stops option parsing so a pattern that
+        # starts with "-" (e.g. the Markdown checkbox "- [ ]") is not read
+        # as a flag by rg itself -- see _pattern_arg()'s docstring for the
+        # full rationale.
+        cmd_parts.append(self._pattern_arg(pattern))
         # rg is a native Windows binary when installed via winget/cargo/choco:
         # it needs the C:/... path form, not the MSYS /c/... form (which
         # nothing converts back — Hermes sets MSYS_NO_PATHCONV for its bash).
@@ -3300,7 +3329,10 @@ class ShellFileOperations(FileOperations):
         # ``.*`` to exclude the entire search. Anchor relative paths at the
         # shell's live cwd; quoting $PWD separately keeps user paths escaped
         # while working across local, container, and remote backends.
-        cmd_parts.append(self._escape_shell_arg(pattern))
+        # `--` stops option parsing so a pattern that starts with "-" (e.g.
+        # the Markdown checkbox "- [ ]") is not read as a flag by grep
+        # itself -- see _pattern_arg()'s docstring for the full rationale.
+        cmd_parts.append(self._pattern_arg(pattern))
         is_absolute = path.startswith(("/", "\\\\")) or bool(
             re.match(r"^[A-Za-z]:[\\/]", path)
         )

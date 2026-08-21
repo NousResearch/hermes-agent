@@ -299,6 +299,288 @@ async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_
 
 
 @pytest.mark.asyncio
+async def test_session_crud_and_message_history(adapter, session_db):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        create_resp = await cli.post("/api/sessions", json={"title": "Mobile chat", "model": "test-model"})
+        assert create_resp.status == 201
+        created = await create_resp.json()
+        session_id = created["session"]["id"]
+        assert created["object"] == "hermes.session"
+        assert created["session"]["title"] == "Mobile chat"
+
+        session_db.append_message(session_id, "user", "hello from phone")
+        session_db.append_message(session_id, "assistant", "hello from hermes")
+
+        list_resp = await cli.get("/api/sessions?limit=10&offset=0")
+        assert list_resp.status == 200
+        listed = await list_resp.json()
+        assert listed["object"] == "list"
+        assert [s["id"] for s in listed["data"]] == [session_id]
+        assert listed["data"][0]["message_count"] == 2
+
+        get_resp = await cli.get(f"/api/sessions/{session_id}")
+        assert get_resp.status == 200
+        got = await get_resp.json()
+        assert got["session"]["id"] == session_id
+        assert got["session"]["message_count"] == 2
+
+        messages_resp = await cli.get(f"/api/sessions/{session_id}/messages")
+        assert messages_resp.status == 200
+        messages = await messages_resp.json()
+        assert messages["object"] == "list"
+        assert [m["role"] for m in messages["data"]] == ["user", "assistant"]
+        assert messages["data"][0]["content"] == "hello from phone"
+
+        patch_resp = await cli.patch(f"/api/sessions/{session_id}", json={"title": "Renamed"})
+        assert patch_resp.status == 200
+        patched = await patch_resp.json()
+        assert patched["session"]["title"] == "Renamed"
+
+        delete_resp = await cli.delete(f"/api/sessions/{session_id}")
+        assert delete_resp.status == 200
+        deleted = await delete_resp.json()
+        assert deleted == {"object": "hermes.session.deleted", "id": session_id, "deleted": True}
+        assert session_db.get_session(session_id) is None
+
+
+@pytest.mark.asyncio
+async def test_session_messages_follow_compression_tip(adapter, session_db):
+    source_id = session_db.create_session("source-session", "api_server")
+    session_db.append_message(source_id, "user", "before compression")
+    session_db.end_session(source_id, "compression")
+    session_db.create_session("tip-session", "api_server", parent_session_id=source_id)
+    # Don't mutate the compression-closed source: hermes_state now guards writes
+    # to a session ended by compression (adopt its live continuation instead).
+    # The endpoint follows the tip regardless of the source's residual messages,
+    # so the redirect is what this asserts.
+    session_db.append_message("tip-session", "user", "after compression")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        messages_resp = await cli.get(f"/api/sessions/{source_id}/messages")
+        assert messages_resp.status == 200
+        messages = await messages_resp.json()
+
+    assert messages["object"] == "list"
+    assert messages["session_id"] == "tip-session"
+    assert [m["content"] for m in messages["data"]] == ["after compression"]
+
+
+@pytest.mark.asyncio
+async def test_session_fork_uses_current_sessiondb_branch_primitives(adapter, session_db):
+    source_id = session_db.create_session("source-session", "api_server", model="test-model")
+    session_db.set_session_title(source_id, "Original")
+    session_db.append_message(source_id, "user", "first path")
+    session_db.append_message(source_id, "assistant", "answer")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(f"/api/sessions/{source_id}/fork", json={"title": "Alternative"})
+        assert resp.status == 201
+        payload = await resp.json()
+
+    fork = payload["session"]
+    assert payload["object"] == "hermes.session"
+    assert fork["id"] != source_id
+    assert fork["parent_session_id"] == source_id
+    assert fork["title"] == "Alternative"
+    assert [m["content"] for m in session_db.get_messages(fork["id"])] == ["first path", "answer"]
+    assert session_db.get_session(source_id)["end_reason"] == "branched"
+
+
+@pytest.mark.asyncio
+async def test_session_chat_loads_history_and_preserves_session_headers(auth_adapter, session_db):
+    session_id = session_db.create_session("chat-session", "api_server")
+    session_db.set_session_title(session_id, "Chat")
+    session_db.append_message(session_id, "user", "earlier")
+    session_db.append_message(session_id, "assistant", "prior answer")
+
+    mock_run = AsyncMock(return_value=({"final_response": "fresh answer", "session_id": session_id}, {"total_tokens": 3}))
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "next", "system_message": "stay focused"},
+                headers={"Authorization": "Bearer sk-test", "X-Hermes-Session-Key": "client-42"},
+            )
+            assert resp.status == 200
+            payload = await resp.json()
+
+    assert resp.headers["X-Hermes-Session-Id"] == session_id
+    assert resp.headers["X-Hermes-Session-Key"] == "client-42"
+    assert payload["object"] == "hermes.session.chat.completion"
+    assert payload["session_id"] == session_id
+    assert payload["message"]["role"] == "assistant"
+    assert payload["message"]["content"] == "fresh answer"
+    mock_run.assert_awaited_once()
+    _, kwargs = mock_run.call_args
+    assert kwargs["session_id"] == session_id
+    assert kwargs["gateway_session_key"] == "client-42"
+    assert kwargs["ephemeral_system_prompt"] == "stay focused"
+    history = kwargs["conversation_history"]
+    assert len(history) == 2
+    assert isinstance(history[0].pop("timestamp"), (int, float))
+    assert isinstance(history[1].pop("timestamp"), (int, float))
+    assert history == [
+        {"role": "user", "content": "earlier"},
+        {"role": "assistant", "content": "prior answer"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_chat_accepts_multimodal_message(auth_adapter, session_db):
+    session_id = session_db.create_session("image-session", "api_server")
+    image_payload = [
+        {"type": "input_text", "text": "What's in this image?"},
+        {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+    ]
+    expected_user_message = [
+        {"type": "text", "text": "What's in this image?"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+
+    mock_run = AsyncMock(return_value=({"final_response": "A cat.", "session_id": session_id}, {"total_tokens": 4}))
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": image_payload},
+                headers={"Authorization": "Bearer sk-test"},
+            )
+            assert resp.status == 200, await resp.text()
+
+    _, kwargs = mock_run.call_args
+    assert kwargs["user_message"] == expected_user_message
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_accepts_multimodal_message(adapter, session_db):
+    session_id = session_db.create_session("image-stream-session", "api_server")
+    image_payload = [
+        {"type": "input_text", "text": "What's in this image?"},
+        {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+    ]
+    expected_user_message = [
+        {"type": "text", "text": "What's in this image?"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+    captured_kwargs = {}
+
+    async def fake_run(**kwargs):
+        captured_kwargs.update(kwargs)
+        kwargs["stream_delta_callback"]("A cat.")
+        return {"final_response": "A cat.", "session_id": session_id}, {"total_tokens": 4}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": image_payload},
+            )
+            assert resp.status == 200, await resp.text()
+            assert resp.headers["Content-Type"].startswith("text/event-stream")
+            body = await resp.text()
+
+    assert "event: assistant.completed" in body
+    assert captured_kwargs["user_message"] == expected_user_message
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_shape(adapter, session_db):
+    session_id = session_db.create_session("stream-session", "api_server")
+    session_db.set_session_title(session_id, "Stream")
+
+    async def fake_run(**kwargs):
+        kwargs["stream_delta_callback"]("Hello")
+        kwargs["stream_delta_callback"](" world")
+        kwargs["tool_progress_callback"]("reasoning.available", tool_name="_thinking", preview="thinking")
+        return {"final_response": "Hello world", "session_id": session_id}, {"total_tokens": 2}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}/chat/stream", json={"message": "stream please"})
+            assert resp.status == 200
+            assert resp.headers["Content-Type"].startswith("text/event-stream")
+            body = await resp.text()
+
+    assert "event: run.started" in body
+    assert "event: message.started" in body
+    assert "event: assistant.delta" in body
+    assert "Hello world" in body
+    assert "event: tool.progress" in body
+    assert "event: assistant.completed" in body
+    assert "event: run.completed" in body
+    assert "event: done" in body
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_emits_codex_commentary_as_typed_event(adapter, session_db):
+    """Codex ``phase="commentary"`` preambles must reach streaming clients as a
+    distinct ``assistant.commentary`` event — never concatenated into the final
+    answer — and an already-streamed interim must not be re-emitted. Refs #67580.
+    """
+    import json as _json
+
+    session_id = session_db.create_session("commentary-session", "api_server")
+
+    captured_kwargs = {}
+
+    async def fake_run(**kwargs):
+        captured_kwargs.update(kwargs)
+        interim = kwargs["interim_assistant_callback"]
+        assert interim is not None
+        interim("Let me check the repo first.")
+        # An interim already delivered through the delta channel must be
+        # dropped here so clients don't render it twice.
+        interim("streamed duplicate", already_streamed=True)
+        kwargs["stream_delta_callback"]("Done.")
+        return {"final_response": "Done.", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "hi"},
+            )
+            assert resp.status == 200, await resp.text()
+            body = await resp.text()
+
+    # Commentary is wired through to the agent and surfaced as its own event.
+    assert captured_kwargs.get("interim_assistant_callback") is not None
+    assert "event: assistant.commentary" in body
+    commentary_payload = None
+    for block in body.split("\n\n"):
+        if "event: assistant.commentary" in block:
+            for line in block.splitlines():
+                if line.startswith("data: "):
+                    commentary_payload = _json.loads(line[len("data: "):])
+            break
+    assert commentary_payload is not None, body
+    assert commentary_payload["content"] == "Let me check the repo first."
+
+    # An already-streamed interim is not re-emitted.
+    assert "streamed duplicate" not in body
+
+    # Commentary must not be concatenated into the final answer.
+    completed_payload = None
+    for block in body.split("\n\n"):
+        if "event: assistant.completed" in block:
+            for line in block.splitlines():
+                if line.startswith("data: "):
+                    completed_payload = _json.loads(line[len("data: "):])
+            break
+    assert completed_payload is not None, body
+    assert completed_payload["content"] == "Done."
+    assert "Let me check the repo first." not in completed_payload["content"]
+
+
+@pytest.mark.asyncio
 async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter, session_db):
     """run.completed must include the full interleaved turn transcript so a
     client that lost intermediate (pre-tool-call) assistant text from the live

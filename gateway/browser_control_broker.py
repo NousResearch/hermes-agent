@@ -335,17 +335,27 @@ class BrowserControlBroker:
         self._controllers: Dict[ControllerScope, _Controller] = {}
         self._pending: Dict[str, _PendingCommand] = {}
         # Developer Mode gates privileged capabilities (browser_evaluate,
-        # browser_cdp). None defers to the live config on every dispatch so
-        # a mid-process config change is honored without restart; an explicit
-        # bool pins the gate for tests and multi-tenant hosts.
-        if developer_mode is None:
-            developer_mode = browser_control_developer_mode()
-        self._developer_mode = developer_mode is True
+        # browser_cdp). None defers to the live config on every selection so
+        # a mid-process config change is honored without restart — including
+        # REVOKING raw CDP/eval from already-attached controllers; an
+        # explicit bool pins the gate for tests and multi-tenant hosts.
+        self._developer_mode_pinned: Optional[bool] = (
+            None if developer_mode is None else developer_mode is True
+        )
         # Artifact stores keyed by resolved profile id; ``None`` is the
         # default/unscoped store (tests, single-profile hosts). A multiplex
         # listener attaches one store per profile so profile A touching the
         # artifact route first can never pin profile B to A's physical root.
         self._artifact_stores: Dict[Optional[str], Any] = {}
+
+    def _developer_mode_now(self) -> bool:
+        """Current Developer Mode authority (live config unless pinned)."""
+        if self._developer_mode_pinned is not None:
+            return self._developer_mode_pinned
+        try:
+            return browser_control_developer_mode()
+        except Exception:
+            return False
 
     def attach_artifact_store(
         self, store: Any, *, profile_id: Optional[str] = None
@@ -378,14 +388,9 @@ class BrowserControlBroker:
         return self._artifact_stores.get(None)
 
     @property
-    def _artifact_store(self) -> Any:
-        """Back-compat view of the default artifact store (tests)."""
-        return self._artifact_stores.get(None)
-
-    @property
     def developer_mode(self) -> bool:
         """Whether privileged capabilities may be selected/dispatched."""
-        return self._developer_mode
+        return self._developer_mode_now()
 
     # ------------------------------------------------------------------
     # Registration tickets
@@ -534,10 +539,13 @@ class BrowserControlBroker:
         Privileged capabilities (``browser_evaluate``, ``browser_cdp``) are
         additionally gated on Developer Mode: with the gate off they are
         never selectable, even when a controller somehow negotiated them.
+        The gate consults the LIVE flag on every selection (unless pinned at
+        construction), so flipping ``developer_mode`` off in config revokes
+        raw CDP/eval from already-attached controllers without a restart.
         """
         if (
             capability in BROWSER_CONTROL_DEVELOPER_CAPABILITIES
-            and not self._developer_mode
+            and not self._developer_mode_now()
         ):
             return None
         with self._lock:

@@ -215,6 +215,44 @@ class ArtifactStore:
         self._clock = clock if clock is not None else time.time
         self._lock = threading.RLock()
         self._entries: dict[str, _ArtifactEntry] = {}
+        # Restart-safe retention: receipts live only in memory, so files
+        # left behind by a previous process are unreachable but would
+        # otherwise persist forever. Sweep every artifact-id-shaped file
+        # (plus stale temps) that has no index entry — at construction the
+        # index is empty, so anything on disk is an orphan from a dead
+        # process and past its advertised TTL by definition.
+        self._sweep_orphan_files()
+
+    def _sweep_orphan_files(self) -> int:
+        """Delete on-disk artifact files with no live index entry.
+
+        Called at construction (empty index ⇒ everything on disk is an
+        orphan from a previous process). Only files whose names match the
+        server-minted 32-hex id shape or the ``*.tmp`` staging suffix are
+        touched; anything else in the directory is left alone.
+        """
+        removed = 0
+        try:
+            candidates = list(self._root.iterdir())
+        except OSError:
+            return 0
+        with self._lock:
+            live = set(self._entries)
+        for path in candidates:
+            if not path.is_file():
+                continue
+            name = path.name
+            is_temp = name.endswith(".tmp")
+            if not is_temp and not _ARTIFACT_ID_RE.fullmatch(name):
+                continue
+            if not is_temp and name in live:
+                continue
+            try:
+                path.unlink(missing_ok=True)
+                removed += 1
+            except OSError:
+                continue
+        return removed
 
     # ------------------------------------------------------------------
     # Public API

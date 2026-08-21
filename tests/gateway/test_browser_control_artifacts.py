@@ -660,3 +660,62 @@ def test_multiplex_profiles_get_distinct_stores_regardless_of_touch_order(tmp_pa
     scope_b = _broker_scope(profile_id="profile-b")
     assert broker._artifact_store_for_scope(scope_a) is store_a
     assert broker._artifact_store_for_scope(scope_b) is store_b
+
+
+def test_developer_mode_flip_revokes_privileged_selection_live(monkeypatch):
+    """Turning developer_mode off in config revokes CDP/eval from an
+    already-attached controller without a process restart (and on->off
+    the reverse: enabling unlocks selection for a new negotiation)."""
+    import gateway.browser_control_broker as broker_mod
+
+    flag = {"on": True}
+    monkeypatch.setattr(
+        broker_mod, "browser_control_developer_mode", lambda config=None: flag["on"]
+    )
+    broker = BrowserControlBroker()  # developer_mode=None -> live config
+    scope = _broker_scope(
+        capabilities=frozenset({"browser_evaluate", "browser_cdp", "controller.noop"})
+    )
+    broker.attach(scope, lambda _frame: None)
+
+    assert broker.select(scope, "browser_evaluate") is not None
+    # Revocation: flip the live flag off — the attached controller loses
+    # privileged selection immediately.
+    flag["on"] = False
+    assert broker.select(scope, "browser_evaluate") is None
+    assert broker.select(scope, "browser_cdp") is None
+    # Base capabilities are unaffected by the developer gate.
+    assert broker.select(scope, "controller.noop") is not None
+    # And back on: selection resumes without any rebind.
+    flag["on"] = True
+    assert broker.select(scope, "browser_cdp") is not None
+    # Explicit pin still wins over live config (test/multi-tenant contract).
+    pinned = BrowserControlBroker(developer_mode=False)
+    pinned.attach(scope, lambda _frame: None)
+    assert pinned.select(scope, "browser_evaluate") is None
+
+
+def test_store_construction_sweeps_orphan_files_from_previous_process(tmp_path):
+    """Files left by a dead process (unreachable, past advertised TTL) are
+    removed when a fresh store opens the same root."""
+    root = tmp_path / "root"
+    store = ArtifactStore(root)
+    receipt = store.store(
+        TEXT_BYTES, filename="note.txt", content_type="text/plain", scope=_Scope()
+    )
+    orphan = root / receipt.artifact_id
+    assert orphan.exists()
+    stale_tmp = root / "deadbeef.tmp"
+    stale_tmp.write_bytes(b"partial")
+    unrelated = root / "README"
+    unrelated.write_bytes(b"keep me")
+
+    # Simulate restart: a new store over the same root has an empty index.
+    fresh = ArtifactStore(root)
+    assert not orphan.exists()
+    assert not stale_tmp.exists()
+    assert unrelated.exists()  # non-artifact-shaped names untouched
+    assert fresh.count() == 0
+    # New store works normally afterwards.
+    fresh.store(TEXT_BYTES, filename="new.txt", content_type="text/plain", scope=_Scope())
+    assert fresh.count() == 1

@@ -85,6 +85,21 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         ),
     )
     update_parser.add_argument(
+        "--switch-branch",
+        action="store_true",
+        default=False,
+        help=(
+            "When the checkout sits on a branch carrying unmerged commits, "
+            "switch to the update target and update THERE instead of merging "
+            "the target into the branch in place. The branch is left exactly "
+            "as it was — no merge commit is written into its history. Use on "
+            "long-lived feature branches where an update-driven merge commit "
+            "would pollute the branch; the default in-place behaviour suits "
+            "branches that track the target with a small patch set. Still "
+            "refuses to touch a dirty tree."
+        ),
+    )
+    update_parser.add_argument(
         "--force",
         action="store_true",
         default=False,

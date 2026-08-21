@@ -5169,6 +5169,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # stash. Only applies when an update actually landed; abort/no-op paths
     # still restore, since the tree they restore onto is unchanged.
     keep_stash = bool(getattr(args, "keep_stash", False))
+    # --switch-branch: on a branch carrying unmerged commits, prefer switching
+    # to the update target over an in-place merge, so the branch's history is
+    # never written to by an update (#89507 review feedback). Only meaningful
+    # when updates.parked_branch_strategy is "update_in_place".
+    switch_branch = bool(getattr(args, "switch_branch", False))
 
     # Whether this update is running without a human at the keyboard.
     # Interactive terminal updates always stash-and-ask (unchanged behavior);
@@ -5573,7 +5578,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     logger.debug(
                         "Could not read updates.parked_branch_strategy: %s", exc
                     )
-                if _in_place_configured:
+                if _in_place_configured and not switch_branch:
                     # The merge source must exist upstream; --branch typos
                     # previously surfaced through the checkout failing, which
                     # does not run on this path.

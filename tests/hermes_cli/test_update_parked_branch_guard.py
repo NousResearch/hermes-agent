@@ -395,6 +395,107 @@ def test_update_updates_unmerged_branch_in_place_when_configured(
     assert "feature work" in _git(repo_pair, "log", "--oneline").stdout
 
 
+def test_switch_branch_flag_overrides_in_place_strategy(
+    repo_pair, monkeypatch, capsys
+):
+    """--switch-branch overrides updates.parked_branch_strategy:
+    update_in_place for one run: the unmerged branch is LEFT ALONE and the
+    update runs on the target instead.
+
+    A long-lived feature branch does not want an update-driven merge commit
+    in its history (#89507 review). The branch tip must be byte-identical
+    afterwards, while the checkout ends up on the updated target.
+    """
+    import hermes_cli.config as hermes_config
+
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"updates": {"parked_branch_strategy": "update_in_place"}},
+    )
+    (repo_pair / "feature.txt").write_text("unmerged work\n")
+    _git(repo_pair, "add", "feature.txt")
+    _git(repo_pair, "commit", "-qm", "feature work")
+    branch_tip_before = _git(
+        repo_pair, "rev-parse", "old-feature"
+    ).stdout.strip()
+    _patch_update_flow(monkeypatch, repo_pair)
+
+    class _StopFlow(Exception):
+        pass
+
+    monkeypatch.setattr(
+        hermes_main,
+        "_abort_dependency_sync_if_self_locked",
+        lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
+    )
+    args = SimpleNamespace(
+        branch=None, yes=False, force=False, force_venv=False,
+        switch_branch=True,
+    )
+
+    with pytest.raises(_StopFlow):
+        hermes_main.cmd_update(args)
+
+    out = capsys.readouterr().out
+    assert "1 commit(s) not merged into origin/main" in out
+    assert "updating it in place" not in out
+    assert "CODE UPDATE SKIPPED" not in out
+    # Checkout moved to the target and picked up its code...
+    assert (
+        _git(repo_pair, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        == "main"
+    )
+    assert (repo_pair / "b.txt").exists()
+    # ...and the feature branch was not written to at all.
+    assert (
+        _git(repo_pair, "rev-parse", "old-feature").stdout.strip()
+        == branch_tip_before
+    )
+
+
+def test_unmerged_branch_still_updates_in_place_without_the_flag(
+    repo_pair, monkeypatch, capsys
+):
+    """--switch-branch is opt-in: with the in-place strategy configured and
+    no flag, the update stays in place."""
+    import hermes_cli.config as hermes_config
+
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"updates": {"parked_branch_strategy": "update_in_place"}},
+    )
+    (repo_pair / "feature.txt").write_text("unmerged work\n")
+    _git(repo_pair, "add", "feature.txt")
+    _git(repo_pair, "commit", "-qm", "feature work")
+    _patch_update_flow(monkeypatch, repo_pair)
+
+    class _StopFlow(Exception):
+        pass
+
+    monkeypatch.setattr(
+        hermes_main,
+        "_abort_dependency_sync_if_self_locked",
+        lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
+    )
+    args = SimpleNamespace(
+        branch=None, yes=False, force=False, force_venv=False,
+        switch_branch=False,
+    )
+
+    with pytest.raises(_StopFlow):
+        hermes_main.cmd_update(args)
+
+    out = capsys.readouterr().out
+    assert "updating it in place" in out
+    assert "--switch-branch" not in out
+    assert (
+        _git(repo_pair, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        == "old-feature"
+    )
+
+
 def test_update_auto_switches_clean_merged_parked_branch(
     repo_pair, monkeypatch, capsys
 ):

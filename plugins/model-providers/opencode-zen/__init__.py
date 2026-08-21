@@ -158,7 +158,33 @@ class OpenCodeGoProfile(ProviderProfile):
         return extra_body, top_level
 
 
-opencode_zen = ProviderProfile(
+class OpenCodeZenProfile(ProviderProfile):
+    """OpenCode Zen - model-specific reasoning controls."""
+
+    def build_api_kwargs_extras(
+        self, *, reasoning_config: dict | None = None, model: str | None = None, **context
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if _flat_model_name(model) != "x-preview-f-free":
+            return {}, {}
+        if not isinstance(reasoning_config, dict):
+            return {}, {}
+        if reasoning_config.get("enabled") is False:
+            return {}, {}
+
+        effort = (reasoning_config.get("effort") or "").strip().lower()
+        if not effort or effort == "none":
+            return {}, {}
+
+        from agent.reasoning_effort import clamp_effort
+
+        supported_efforts = ("low", "high", "max")
+        clamped = clamp_effort(effort, supported_efforts, {"xhigh": "max"})
+        if clamped not in supported_efforts:
+            return {}, {}
+        return {}, {"reasoning_effort": clamped}
+
+
+opencode_zen = OpenCodeZenProfile(
     name="opencode-zen",
     aliases=("opencode", "opencode_zen", "zen"),
     env_vars=("OPENCODE_ZEN_API_KEY",),

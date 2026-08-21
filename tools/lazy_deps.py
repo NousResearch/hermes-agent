@@ -536,6 +536,41 @@ def _allow_lazy_installs() -> bool:
     return True
 
 
+# Cached result of the macOS cmake probe so we don't shell out to `cmake
+# --version` on every lazy-install gate check. ``None`` = not probed yet.
+_macos_cmake_major: Optional[int] = None
+
+
+def _macos_cmake_major_version() -> Optional[int]:
+    """Return the major version of the Homebrew/system ``cmake`` on macOS.
+
+    Returns ``0`` if cmake is absent (olm_build.py would then fall back to
+    ``make``). Cached after the first call.
+    """
+    global _macos_cmake_major
+    if _macos_cmake_major is not None:
+        return _macos_cmake_major
+    cmake_bin = shutil.which("cmake")
+    if not cmake_bin:
+        _macos_cmake_major = 0
+        return 0
+    try:
+        r = subprocess.run(
+            [cmake_bin, "--version"], capture_output=True, text=True,
+            timeout=10, stdin=subprocess.DEVNULL,
+        )
+        if r.returncode != 0:
+            _macos_cmake_major = 0
+            return 0
+        # Output looks like "cmake version 4.3.4\nCMake suite ..."
+        first = (r.stdout or "").splitlines()[0].strip() if r.stdout else ""
+        m = re.search(r"(\d+)\.", first)
+        _macos_cmake_major = int(m.group(1)) if m else 0
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        _macos_cmake_major = 0
+    return _macos_cmake_major
+
+
 def _unsupported_feature_reason(feature: str) -> Optional[str]:
     """Return why a lazy feature cannot work on this host, or ``None``.
 
@@ -548,6 +583,27 @@ def _unsupported_feature_reason(feature: str) -> Optional[str]:
             "unsupported on Windows: Matrix E2EE depends on python-olm, "
             "which has no Windows wheel and requires make + libolm to build "
             "from sdist. Run Hermes under WSL to use Matrix on Windows."
+        )
+    # macOS with CMake ≥ 4 cannot build python-olm's bundled libolm from sdist:
+    # libolm 3.2.16's CMakeLists.txt declares cmake_minimum_required(VERSION
+    # 3.4), and CMake 4.0+ removed compatibility with < 3.5. python-olm ships
+    # no wheel, and olm_build.py invokes cmake unconditionally (no make
+    # fallback when cmake exists but fails). Apple Clang 21+ then rejects the
+    # const-pointer self-increment in list.hh even if the policy is relaxed.
+    # Mirror the Windows gate so `hermes update` reports "skipped" not
+    # "failed" on affected macOS hosts.
+    if (
+        sys.platform == "darwin"
+        and feature == "platform.matrix"
+        and _macos_cmake_major_version() >= 4
+    ):
+        return (
+            "unsupported on this macOS host: Matrix E2EE depends on "
+            "python-olm, which has no wheel and its bundled libolm 3.2.16 "
+            "cannot build under CMake 4.x (cmake_minimum_required < 3.5 "
+            "removed) or Apple Clang 21+. Re-run after upstream python-olm "
+            "ships a buildable sdist/wheel, or build libolm separately with "
+            "CMake 3.x and point PKG_CONFIG_PATH at it."
         )
     return None
 

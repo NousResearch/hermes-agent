@@ -52,7 +52,39 @@ def _classify_responses_issuer(
     return "other"
 
 
+def _is_codex_family_issuer(issuer_kind: Optional[str], response: Any = None) -> bool:
+    """True when this response came from a Codex-contract Responses endpoint.
+
+    The native Codex/xAI/GitHub backends are identified by ``issuer_kind``.
+    Third-party relays of the same GPT-5.x weights (AWS Bedrock Mantle's
+    ``openai.gpt-5.x``, self-hosted Responses proxies) surface as
+    ``other:<base_url>`` because they are keyed on hostname, yet they inherit
+    the Codex behaviour where a reasoning-only item with ``status="completed"``
+    means "still thinking, call me again" rather than "final answer".
+
+    Treating those as ordinary providers ends the turn on a reasoning-only
+    response, which users experience as the model announcing an action and then
+    doing nothing. Fall back to the model id so the contract follows the model
+    family rather than the hostname that happens to serve it.
+    """
+    if issuer_kind in ("codex_backend", "xai_responses", "github_responses"):
+        return True
+    model = getattr(response, "model", None)
+    if not isinstance(model, str) or not model:
+        return False
+    m = model.strip().lower()
+    # Strip a vendor prefix in slash ("openai/gpt-5.6") or Bedrock-style dot
+    # ("openai.gpt-5.6-sol") form. Only treat the dot as a vendor separator
+    # when followed by gpt-5 so the version dot in "gpt-5.6" survives.
+    if "/" in m:
+        m = m.rsplit("/", 1)[-1]
+    elif re.match(r"^[a-z0-9_-]+\.gpt-5", m):
+        m = m.split(".", 1)[-1]
+    return m.startswith("gpt-5")
+
+
 # Throttle the per-process cross-issuer skip warning so we don't flood logs
+
 # when a long history contains many stale-issuer reasoning blocks.
 _CROSS_ISSUER_WARN_EMITTED = False
 
@@ -1688,10 +1720,19 @@ def _normalize_codex_response(
         # state — forcing "incomplete" causes multi-minute stalls as the
         # continuation path re-issues calls (3 retries × up to 240s each).
         # See https://github.com/NousResearch/hermes-agent/issues/64434
-        if response_status == "completed" and issuer_kind not in (
-            "codex_backend",
-            "xai_responses",
-            "github_responses",
+        #
+        # EXCEPTION — Codex-family models served from a third-party Responses
+        # endpoint (e.g. AWS Bedrock Mantle's openai.gpt-5.x). These are the
+        # same GPT-5.x weights as the native Codex backend and share its
+        # "reasoning-only item means I am mid-thought, call me again" contract,
+        # but they arrive here as issuer_kind="other:<base_url>" because the
+        # host is not chatgpt.com. Trusting status=="completed" for them ends
+        # the turn on a reasoning-only response, which the user experiences as
+        # the model narrating an intention and then silently doing nothing.
+        # Detect the model family instead of the hostname so the correct
+        # continuation contract applies on every surface that serves it.
+        if response_status == "completed" and not _is_codex_family_issuer(
+            issuer_kind, response
         ):
             finish_reason = "stop"
         else:

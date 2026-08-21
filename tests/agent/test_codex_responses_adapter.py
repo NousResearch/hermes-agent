@@ -227,6 +227,90 @@ def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
     assert assistant_message.codex_reasoning_items is None
 
 
+def test_reasoning_only_gpt5_on_third_party_endpoint_stays_incomplete():
+    """Codex-family weights keep the continuation contract off-host.
+
+    AWS Bedrock Mantle relays the same GPT-5.x weights as the native Codex
+    backend, but ``_classify_responses_issuer`` keys on hostname, so it lands
+    as ``other:<base_url>``. Before this fix the #64434 branch trusted
+    ``status="completed"`` and returned ``stop``, ending the turn on a
+    reasoning-only response — the model would announce an action and then
+    silently do nothing.
+    """
+    mantle = "other:https://bedrock-mantle.us-east-1.api.aws/openai/v1"
+    response = SimpleNamespace(
+        status="completed",
+        model="openai.gpt-5.6-sol",
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id="rs_1",
+                encrypted_content="opaque",
+                summary=[],
+            )
+        ],
+        output_text="",
+    )
+
+    _, finish_reason = _normalize_codex_response(response, issuer_kind=mantle)
+
+    assert finish_reason == "incomplete"
+
+
+def test_reasoning_only_non_codex_model_on_third_party_endpoint_still_stops():
+    """#64434 must keep holding for genuinely non-Codex models.
+
+    Mantle also serves GLM/Qwen/DeepSeek. Those do not share the Codex
+    "reasoning-only means keep going" contract, so forcing ``incomplete``
+    would reintroduce the multi-minute continuation stalls #64434 fixed.
+    """
+    mantle = "other:https://bedrock-mantle.us-east-1.api.aws/openai/v1"
+    response = SimpleNamespace(
+        status="completed",
+        model="zai.glm-5",
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id="rs_1",
+                encrypted_content="opaque",
+                summary=[],
+            )
+        ],
+        output_text="",
+    )
+
+    _, finish_reason = _normalize_codex_response(response, issuer_kind=mantle)
+
+    assert finish_reason == "stop"
+
+
+def test_final_answer_from_third_party_gpt5_still_stops():
+    """The fix must not turn real answers into continuations."""
+    mantle = "other:https://bedrock-mantle.us-east-1.api.aws/openai/v1"
+    response = SimpleNamespace(
+        status="completed",
+        model="openai.gpt-5.6-sol",
+        output=[
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                phase="final_answer",
+                id="msg_1",
+                content=[SimpleNamespace(type="output_text", text="Done.")],
+            )
+        ],
+        output_text="Done.",
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind=mantle
+    )
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "Done."
+
+
 
 
 # ---------------------------------------------------------------------------

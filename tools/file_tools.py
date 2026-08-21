@@ -2795,11 +2795,19 @@ def _handle_patch(args, **kw):
     )
 
 
+VALID_SEARCH_TARGETS = frozenset({"content", "files"})
+
 def _handle_search_files(args, **kw):
     tid = kw.get("task_id") or "default"
     target_map = {"grep": "content", "find": "files"}
     raw_target = args.get("target", "content")
     target = target_map.get(raw_target, raw_target)
+    if target not in VALID_SEARCH_TARGETS:
+        return tool_error(
+            f"search_files: invalid target '{raw_target}'. "
+            f"Must be one of: 'content' or 'files'. "
+            f"Re-emit the tool call with a valid target."
+        )
     return search_tool(
         pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),

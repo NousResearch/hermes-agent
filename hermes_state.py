@@ -11836,6 +11836,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self,
         older_than_days: Optional[float] = None,
         source: str = None,
+        *,
+        include_open: bool = False,
         **filters,
     ) -> List[Dict[str, Any]]:
         """Return the sessions a matching :meth:`prune_sessions` /
@@ -11848,9 +11850,29 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         message_count, archived``. ``older_than_days`` is an inactivity
         threshold: it uses the latest message timestamp, falling back to
         ``started_at`` for sessions without messages.
+
+        ``include_open=True`` neutralizes the ``ended_at IS NOT NULL``
+        safety guard for read-only callers (bulk session export): the guard
+        exists so destructive pruning can never touch a live session, but an
+        export that silently skips every open session is the opposite of
+        what "export everything" means — open/live sessions are often the
+        ones a user most wants to back up (#89223). Destructive callers
+        keep the default.
         """
         self._apply_prune_age_filter(older_than_days, filters)
         where, params = self._prune_filter_where(source=source, **filters)
+        if include_open:
+            ended_guard = "s.ended_at IS NOT NULL"
+            if not where.startswith(ended_guard):
+                raise RuntimeError(
+                    "prune filter lost its ended-session safety guard"
+                )
+            # Parenthesized so the remaining AND-chain applies to both
+            # branches: "(ended OR open) AND <filters>".
+            where = (
+                "(s.ended_at IS NOT NULL OR s.ended_at IS NULL)"
+                + where[len(ended_guard):]
+            )
         with self._lock:
             cursor = self._conn.execute(
                 f"""SELECT s.id, s.source, s.title, s.model, s.started_at,

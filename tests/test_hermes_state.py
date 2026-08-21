@@ -1154,6 +1154,39 @@ class TestPruneSessions:
             older_than_days=90, source="cron", archived=False
         )} == {"ended"}
 
+    def test_list_prune_candidates_include_open(self, db):
+        """``include_open=True`` is for read-only callers (bulk export):
+        it neutralizes only the ended-session guard while every other
+        filter still applies. The default keeps the destructive-prune
+        semantics untouched (#89223)."""
+        db.create_session(session_id="open-cron", source="cron")
+        db.create_session(session_id="open-cli", source="cli")
+        db.create_session(session_id="ended-cron", source="cron")
+        db.end_session("ended-cron", "completed")
+        old = time.time() - 200 * 86400
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id IN (?, ?, ?)",
+            (old, "open-cron", "open-cli", "ended-cron"),
+        )
+        db._conn.commit()
+
+        # Default: destructive semantics — only ended sessions.
+        assert {row["id"] for row in db.list_prune_candidates(
+            older_than_days=90, source="cron", archived=False
+        )} == {"ended-cron"}
+
+        # include_open: same filters, open sessions now eligible too.
+        assert {row["id"] for row in db.list_prune_candidates(
+            older_than_days=90, source="cron", archived=False,
+            include_open=True,
+        )} == {"open-cron", "ended-cron"}
+
+        # Other filters still apply with include_open (source narrows it).
+        assert {row["id"] for row in db.list_prune_candidates(
+            older_than_days=90, source="cli", archived=False,
+            include_open=True,
+        )} == {"open-cli"}
+
 
 
 

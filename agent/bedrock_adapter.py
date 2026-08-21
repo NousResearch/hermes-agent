@@ -765,7 +765,19 @@ def normalize_converse_response(response: Dict) -> SimpleNamespace:
         elif "reasoningContent" in block:
             reasoning = block["reasoningContent"]
             if isinstance(reasoning, dict):
-                thinking_text = reasoning.get("text", "")
+                # Converse has two different shapes for this field. The
+                # NON-streaming ReasoningContentBlock is a union whose text
+                # member is {"reasoningText": {"text", "signature"}}; only the
+                # streaming ReasoningContentBlockDelta puts "text" at the top
+                # level (see the contentBlockDelta handler below). Reading the
+                # streaming shape here made reasoning_content always empty.
+                reasoning_text = reasoning.get("reasoningText")
+                if isinstance(reasoning_text, dict):
+                    thinking_text = reasoning_text.get("text", "")
+                else:
+                    # Delta shape, tolerated so a caller that hands us an
+                    # already-flattened block still works.
+                    thinking_text = reasoning.get("text", "")
                 if thinking_text:
                     reasoning_parts.append(str(thinking_text))
         elif "toolUse" in block:

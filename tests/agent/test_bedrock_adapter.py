@@ -1212,3 +1212,70 @@ class TestBearerTokenRoutesToConverse:
         runtime = self._resolve(monkeypatch, bearer=False)
         assert runtime["api_mode"] == "anthropic_messages"
         assert runtime.get("bedrock_anthropic") is True
+
+
+class TestNonStreamingReasoningContent:
+    """Non-streaming Converse responses use a different reasoningContent shape.
+
+    The AWS `ReasoningContentBlock` (non-streaming) is a union whose text member
+    is `{"reasoningText": {"text", "signature"}}`. Only the streaming
+    `ReasoningContentBlockDelta` puts `"text"` at the top level.
+    `normalize_converse_response` read the streaming shape, so
+    `reasoning_content` was always None on non-streaming calls and the model's
+    chain of thought was dropped from display, accounting and replay.
+    """
+
+    @staticmethod
+    def _normalize(reasoning_block):
+        from agent.bedrock_adapter import normalize_converse_response
+
+        return normalize_converse_response(
+            {
+                "output": {
+                    "message": {
+                        "role": "assistant",
+                        "content": [reasoning_block, {"text": "done"}],
+                    }
+                },
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 10, "outputTokens": 5},
+            }
+        )
+
+    def test_reasoning_text_union_member_is_preserved(self):
+        resp = self._normalize(
+            {
+                "reasoningContent": {
+                    "reasoningText": {
+                        "text": "The user wants the file. I should call read_file.",
+                        "signature": "sig-abc",
+                    }
+                }
+            }
+        )
+        assert (
+            resp.choices[0].message.reasoning_content
+            == "The user wants the file. I should call read_file."
+        )
+        assert resp.choices[0].message.content == "done"
+
+    def test_flat_delta_shape_still_accepted(self):
+        """A caller handing us an already-flattened block keeps working."""
+        resp = self._normalize({"reasoningContent": {"text": "flattened"}})
+        assert resp.choices[0].message.reasoning_content == "flattened"
+
+    def test_redacted_only_block_yields_no_text(self):
+        resp = self._normalize({"reasoningContent": {"redactedContent": b"\x00\x01"}})
+        assert resp.choices[0].message.reasoning_content is None
+
+    def test_absent_reasoning_is_none(self):
+        from agent.bedrock_adapter import normalize_converse_response
+
+        resp = normalize_converse_response(
+            {
+                "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 1, "outputTokens": 1},
+            }
+        )
+        assert resp.choices[0].message.reasoning_content is None

@@ -200,7 +200,18 @@ def _(rid, params: dict) -> dict:
         cwd = _completion_cwd({"cwd": raw} if raw else {})
         return _ok(rid, {"cwd": cwd, "branch": _git_branch_for_cwd(cwd)})
     if key == "full":
-        return _ok(rid, {"config": _load_cfg()})
+        from datetime import date, time
+
+        def json_safe(value):
+            if isinstance(value, (date, time)):
+                return value.isoformat()
+            if isinstance(value, dict):
+                return {item_key: json_safe(item) for item_key, item in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [json_safe(item) for item in value]
+            return value
+
+        return _ok(rid, {"config": json_safe(_load_cfg())})
     if key == "prompt":
         return _ok(rid, {"prompt": _load_cfg().get("custom_prompt", "")})
     if key == "skin":

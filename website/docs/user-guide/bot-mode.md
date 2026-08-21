@@ -79,6 +79,11 @@ Right-click a local Bot → **Manage groups** to add or remove it from any numbe
 
 **Rooms follow your gateways, not one Desktop.** Each room's recent transcript, members, picture, and name are mirrored into the shared profile metadata of **every** gateway your Desktop is connected to, with per-gateway versioning so two Desktops writing at once merge instead of overwriting each other. Open Hermes Desktop on another machine against the same gateway (local network, Tailscale, anywhere) and the room appears with its history; gateway-only clients see it too. Rooms carry a durable internal identity, so renaming one changes just its display name everywhere, disbanding one removes it permanently on every client — even ones that were offline at the time — and recreating a same-name group starts a genuinely fresh room. If a gateway dies or is removed, nothing is lost: every connected Desktop keeps the full room locally and re-seeds any gateway it reconnects to. (The full orchestration log stays in each Desktop's local storage; the shared mirror is a bounded recent-history projection.)
 
+A group's identity is editable, at creation and after:
+
+- **New Group Chat** lets you set an optional **room picture** alongside the name — upload one from your device or generate one (when an image backend is configured), using the same pipeline as Bot avatars. The picture replaces the fanned member faces in the roster row and leads the title in the room header.
+- The room header's **gear** button opens **Group settings**, where you can **rename** the group or set, replace, or remove its picture any time. A rename carries everything with it — the room log, each member's `Group: <name>` session, memberships, and the picture — so no history is lost. Renaming to a name that's already taken is rejected rather than silently suffixed.
+
 Groups are standalone rows in the same activity-ordered roster as Bot DMs. A Bot keeps one DM row even when it belongs to several groups, while every group gets its own room row with member count, latest-message preview, timestamp, and needs-you state.
 
 **Open chat** on any group row (2–6 Bots) opens a shared room where the whole group coordinates:

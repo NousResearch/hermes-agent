@@ -2939,6 +2939,47 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             config_context_length=_effective_context_length,
             custom_providers=_sm_custom_providers,
         )
+        _sm_update_kwargs = {}
+        try:
+            from agent.agent_init import _resolve_compression_threshold
+            from agent.auxiliary_client import (
+                _compression_threshold_for_model,
+                _is_codex_gpt54_or_gpt55,
+                _is_codex_spark,
+            )
+            from agent.context_compressor import ContextCompressor
+
+            if isinstance(agent.context_compressor, ContextCompressor):
+                _sm_model_threshold = _compression_threshold_for_model(
+                    agent.model,
+                    provider=agent.provider,
+                    allow_codex_gpt55_autoraise=getattr(
+                        agent, "_codex_gpt55_autoraise", True,
+                    ),
+                    api_mode=agent.api_mode,
+                )
+                _sm_default_threshold, _ = _resolve_compression_threshold(
+                    agent.context_compressor._config_threshold_percent,
+                    _sm_model_threshold,
+                    model=agent.model,
+                    is_codex_autoraise=(
+                        _is_codex_gpt54_or_gpt55(
+                            agent.model,
+                            agent.provider,
+                            api_mode=agent.api_mode,
+                        )
+                        or _is_codex_spark(agent.model, agent.provider)
+                    ),
+                )
+                _sm_update_kwargs["default_threshold_percent"] = (
+                    _sm_default_threshold
+                )
+        except Exception:
+            logger.debug(
+                "compression threshold resolution skipped on switch_model",
+                exc_info=True,
+            )
+
         agent.context_compressor.update_model(
             model=agent.model,
             context_length=new_context_length,
@@ -2946,6 +2987,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
             provider=agent.provider,
             api_mode=agent.api_mode,
+            **_sm_update_kwargs,
         )
 
     # ── Re-resolve reasoning_config from per-model override ──

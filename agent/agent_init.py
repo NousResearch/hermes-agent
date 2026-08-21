@@ -2070,6 +2070,7 @@ def init_agent(
     _codex_gpt55_autoraise = str(
         _compression_cfg.get("codex_gpt55_autoraise", True)
     ).lower() in {"true", "1", "yes"}
+    agent._codex_gpt55_autoraise = _codex_gpt55_autoraise
     _codex_gpt55_autoraise_notice = str(
         _compression_cfg.get("codex_gpt55_autoraise_notice", True)
     ).lower() in {"true", "1", "yes"}
@@ -2084,6 +2085,7 @@ def init_agent(
             agent.model,
             agent.provider,
             allow_codex_gpt55_autoraise=_codex_gpt55_autoraise,
+            api_mode=getattr(agent, "api_mode", None),
         )
         # The Codex autoraises (gpt-5.4/5.5 272K family and gpt-5.3-codex-spark)
         # apply only when they RAISE (never lower a user's higher global
@@ -2096,7 +2098,7 @@ def init_agent(
                 _model_cthresh,
                 model=agent.model,
                 is_codex_autoraise=(
-                    _is_codex_gpt54_or_gpt55_fn(agent.model, agent.provider)
+                    _is_codex_gpt54_or_gpt55_fn(agent.model, agent.provider, api_mode=getattr(agent, "api_mode", None))
                     or _is_codex_spark_fn(agent.model, agent.provider)
                 ),
             )

@@ -2762,6 +2762,7 @@ class ContextCompressor(ContextEngine):
         provider: str = "",
         api_mode: str = "",
         max_tokens: int | None = None,
+        default_threshold_percent: float | None = None,
     ) -> None:
         """Update model info after a model switch or fallback activation."""
         runtime_changed = any((
@@ -2777,15 +2778,22 @@ class ContextCompressor(ContextEngine):
         self.api_mode = api_mode
         self.context_length = context_length
         # Re-resolve per-model threshold for the NEW model, then re-apply the
-        # small-context threshold floor. Starting from _config_threshold_percent
-        # (the raw config value) so a switch from a model with an override to
-        # one without correctly falls back to the global threshold.
+        # small-context threshold floor. Callers may provide a route-specific
+        # default for this update; the immutable _config_threshold_percent
+        # remains the fallback on later switches. Explicit model_thresholds
+        # still win because resolve_model_threshold applies them last.
         _config_pct = getattr(
             self, "_config_threshold_percent", self.threshold_percent,
         )
-        _new_base = resolve_model_threshold(
-            model, self.model_thresholds, _config_pct,
+        _default_pct = (
+            _config_pct
+            if default_threshold_percent is None
+            else default_threshold_percent
         )
+        _new_base = resolve_model_threshold(
+            model, self.model_thresholds, _default_pct,
+        )
+        self._configured_threshold_percent = _new_base
         self._base_threshold_percent = _new_base
         self.threshold_percent = self._effective_threshold_percent(
             context_length, _new_base,

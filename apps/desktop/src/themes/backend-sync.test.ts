@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $backendThemes, $pendingSkinApply, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
 
@@ -105,5 +105,107 @@ describe('ingestBackendSkin', () => {
     ingestBackendSkin({ name: '' }, { apply: true })
 
     expect($pendingSkinApply.get()).toBeNull()
+  })
+})
+
+describe('backend skin persistence', () => {
+  beforeEach(() => __resetBackendSkinSync())
+
+  it('persists a backend skin to localStorage so it survives reload', () => {
+    ingestBackendSkin(skin('neon'), { apply: false })
+
+    // The memory store holds it AND localStorage got it, so at boot — before
+    // any gateway event lands — `$backendThemes` rehydrates from storage and
+    // `resolveTheme('neon')` succeeds.
+    expect($backendThemes.get().neon?.name).toBe('neon')
+    expect(window.localStorage.getItem('hermes-desktop-backend-skins-v1')).toContain('"neon"')
+  })
+
+  it('rehydrates the backend store from localStorage on a fresh module load', async () => {
+    // Simulate a prior session having persisted a skin: seed the storage key
+    // directly, then reload the module so the atom is re-constructed against
+    // that storage — exactly what happens on a real cold start.
+    const seeded = {
+      neon: {
+        name: 'neon',
+        label: 'Neon',
+        description: 'Hermes skin',
+        colors: { background: '#000000', foreground: '#ffffff', primary: '#ff33aa' },
+        darkColors: { background: '#000000', foreground: '#ffffff', primary: '#ff33aa' }
+      }
+    }
+
+    window.localStorage.setItem('hermes-desktop-backend-skins-v1', JSON.stringify(seeded))
+
+    vi.resetModules()
+    const fresh = await import('./backend-sync')
+
+    expect((fresh.$backendThemes.get().neon as unknown as { name?: string })?.name).toBe('neon')
+  })
+
+  it('drops unusable entries when rehydrating (corrupted / partial writes)', async () => {
+    // A malformed seed must never shadow a live skin or a user install.
+    const seeded = {
+      broken: { name: 'broken', label: 'Broken', colors: {} }, // missing required color keys
+      good: { name: 'good', label: 'Good', colors: { background: '#000', foreground: '#fff', primary: '#888' } }
+    }
+
+    window.localStorage.setItem('hermes-desktop-backend-skins-v1', JSON.stringify(seeded))
+
+    vi.resetModules()
+    const fresh = await import('./backend-sync')
+
+    expect(fresh.$backendThemes.get().broken).toBeUndefined()
+    expect((fresh.$backendThemes.get().good as unknown as { name?: string })?.name).toBe('good')
+  })
+
+  it('never rehydrates a built-in or default name from storage', async () => {
+    // Built-ins and `default` are never persisted, so a stale/foreign entry
+    // under those names must not come back either.
+    const seeded = {
+      default: { name: 'default', label: 'Default', colors: { background: '#000', foreground: '#fff', primary: '#888' } },
+      mono: { name: 'mono', label: 'Mono', colors: { background: '#000', foreground: '#fff', primary: '#888' } }
+    }
+
+    window.localStorage.setItem('hermes-desktop-backend-skins-v1', JSON.stringify(seeded))
+
+    vi.resetModules()
+    const fresh = await import('./backend-sync')
+
+    expect(fresh.$backendThemes.get().default).toBeUndefined()
+    expect(fresh.$backendThemes.get().mono).toBeUndefined()
+  })
+
+  it('never persists default or built-ins', () => {
+    ingestBackendSkin(skin('default'), { apply: true })
+    ingestBackendSkin(skin('mono'), { apply: true })
+
+    const raw = window.localStorage.getItem('hermes-desktop-backend-skins-v1') ?? ''
+    expect(raw).not.toContain('"default"')
+    expect(raw).not.toContain('"mono"')
+  })
+
+  it('does not rewrite storage when the skin is unchanged', () => {
+    ingestBackendSkin(skin('neon'), { apply: false })
+    const first = window.localStorage.getItem('hermes-desktop-backend-skins-v1')
+
+    // Same skin, same payload → no store change → no localStorage rewrite.
+    ingestBackendSkin(skin('neon'), { apply: true })
+
+    expect(window.localStorage.getItem('hermes-desktop-backend-skins-v1')).toBe(first)
+  })
+
+  it('rewrites storage when the skin palette changes (in-place recolor)', () => {
+    ingestBackendSkin(skin('neon'), { apply: false })
+    const first = window.localStorage.getItem('hermes-desktop-backend-skins-v1')
+
+    // A recolor of the same named skin changes the converted palette.
+    ingestBackendSkin({ ...skin('neon'), colors: { background: '#202040', ui_accent: '#ff33aa', banner_text: '#eeeeee' } }, {
+      apply: true
+    })
+
+    const second = window.localStorage.getItem('hermes-desktop-backend-skins-v1')
+    expect(second).not.toBe(first)
+    expect(second).toContain('"neon"')
   })
 })

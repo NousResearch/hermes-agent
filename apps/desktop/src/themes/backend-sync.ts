@@ -23,8 +23,82 @@ import { BUILTIN_THEMES } from './presets'
 import { skinToDesktopTheme } from './skin'
 import type { DesktopTheme } from './types'
 
+// Backend skins persist to localStorage so they resolve at boot, when the
+// in-memory backend store is still empty. Keyed by skin name → converted
+// DesktopTheme. This is a BOOT SEED only: at runtime `$backendThemes` is the
+// live source of truth and wins over the seed (same key, same object).
+const BACKEND_SKINS_KEY = 'hermes-desktop-backend-skins-v1'
+
+function readPersistedBackendSkins(): Record<string, DesktopTheme> {
+  try {
+    const raw = window.localStorage.getItem(BACKEND_SKINS_KEY)
+
+    if (!raw) {
+      return {}
+    }
+
+    const parsed: unknown = JSON.parse(raw)
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {}
+    }
+
+    const out: Record<string, DesktopTheme> = {}
+
+    for (const [name, value] of Object.entries(parsed)) {
+      // Built-ins and `default` are never persisted, so a stale/foreign entry
+      // under those names must not be rehydrated either — the built-in
+      // palette (or the desktop's own default) always wins.
+      if (name === 'default' || BUILTIN_THEMES[name]) {
+        continue
+      }
+
+      if (isUsableBackendTheme(value)) {
+        out[name] = value
+      }
+    }
+
+    return out
+  } catch {
+    return {}
+  }
+}
+
+function persistBackendSkins(record: Record<string, DesktopTheme>): void {
+  try {
+    window.localStorage.setItem(BACKEND_SKINS_KEY, JSON.stringify(record))
+  } catch {
+    // Best-effort: a restricted storage context shouldn't break theming.
+  }
+}
+
+/**
+ * A persisted entry is only worth rehydrating if it can actually paint:
+ * the same minimal bar `applyTheme` tolerates — name/label present plus the
+ * three load-bearing color slots. Anything else (corrupted read, partial
+ * write, stored from an incompatible future shape) is dropped so a stale
+ * seed can never shadow a live skin or a user install.
+ */
+function isUsableBackendTheme(value: unknown): value is DesktopTheme {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const theme = value as Partial<DesktopTheme>
+  const colors = theme.colors as unknown as Record<string, unknown> | undefined
+
+  return (
+    typeof theme.name === 'string' &&
+    typeof theme.label === 'string' &&
+    !!colors &&
+    ['background', 'foreground', 'primary'].every(key => typeof colors[key] === 'string')
+  )
+}
+
 /** Skins pushed by the backend, keyed by name. Merged by `listAllThemes`. */
-export const $backendThemes = atom<Record<string, DesktopTheme>>({})
+export const $backendThemes = atom<Record<string, DesktopTheme>>(
+  typeof window === 'undefined' ? {} : readPersistedBackendSkins()
+)
 
 /** One-shot skin name the ThemeProvider should switch to (it clears this). */
 export const $pendingSkinApply = atom<string | null>(null)
@@ -42,6 +116,12 @@ export function __resetBackendSkinSync(): void {
   lastSynced = null
   $backendThemes.set({})
   $pendingSkinApply.set(null)
+
+  try {
+    window.localStorage.removeItem(BACKEND_SKINS_KEY)
+  } catch {
+    // best-effort
+  }
 }
 
 /**
@@ -74,6 +154,11 @@ export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }
 
     if (JSON.stringify(current[name]) !== JSON.stringify(theme)) {
       $backendThemes.set({ ...current, [name]: theme })
+
+      // Persist only on an actual change so the skin resolves at boot, when
+      // the in-memory backend store is still empty. The live store stays the
+      // runtime source of truth; the seed is just the pre-warm for cold start.
+      persistBackendSkins($backendThemes.get())
     }
   }
 

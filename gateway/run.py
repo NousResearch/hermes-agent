@@ -24962,19 +24962,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             or adapter is None
         ):
             return
-        already_echoed = int(getattr(event, "_gateway_pending_stt_echoed", 0) or 0)
-        unsent = transcripts[already_echoed:]
-        setattr(event, "_gateway_pending_stt_echoed", already_echoed + len(unsent))
-        for tx in unsent:
-            try:
-                echo_result = await adapter.send(
-                    source.chat_id,
-                    f'🎙️ "{tx}"',
-                    metadata=metadata,
-                )
-                self._remember_stt_reply_anchor(event, source, echo_result)
-            except Exception as echo_exc:
-                logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
+
+        # The interrupt monitor and completed-turn drain can reach the same
+        # pending event concurrently. Serialize echo delivery so the drain
+        # waits for an in-flight send to publish its reply anchor before it
+        # snapshots the queued turn's effective anchor. The count remains an
+        # at-most-once ledger: an unknown send outcome is never replayed.
+        echo_lock = getattr(event, "_gateway_pending_stt_echo_lock", None)
+        if echo_lock is None:
+            echo_lock = asyncio.Lock()
+            setattr(event, "_gateway_pending_stt_echo_lock", echo_lock)
+        async with echo_lock:
+            already_echoed = int(getattr(event, "_gateway_pending_stt_echoed", 0) or 0)
+            unsent = transcripts[already_echoed:]
+            setattr(event, "_gateway_pending_stt_echoed", already_echoed + len(unsent))
+            for tx in unsent:
+                try:
+                    echo_result = await adapter.send(
+                        source.chat_id,
+                        f'🎙️ "{tx}"',
+                        metadata=metadata,
+                    )
+                    self._remember_stt_reply_anchor(event, source, echo_result)
+                except Exception as echo_exc:
+                    logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
 
     async def _transcribe_and_echo_pending_voice(
         self,

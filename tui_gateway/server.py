@@ -1478,6 +1478,10 @@ def _transfer_db_to_agent(agent, db) -> bool:
         # explicitly even if a caller invokes the transfer incorrectly; the
         # caller's own `owns_db` gate is the first line of defense.
         if db is _get_db():
+            logger.warning(
+                "Refused transfer of the shared launch SessionDB to a session "
+                "agent — the caller's owns_db gate should have prevented this."
+            )
             return False
         agent._owns_session_db = True
         return True

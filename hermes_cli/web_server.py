@@ -1716,7 +1716,12 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
 
 
 def _apply_main_model_assignment(
-    model_cfg: "Any", provider: str, model: str, base_url: str = "", api_key: str = ""
+    model_cfg: "Any",
+    provider: str,
+    model: str,
+    base_url: str = "",
+    api_key: str = "",
+    key_env: str = "",
 ) -> dict:
     """Apply a main-slot model assignment to a ``model`` config dict in place.
 
@@ -1761,9 +1766,24 @@ def _apply_main_model_assignment(
     # different provider (it belonged to the old endpoint), and preserved on a
     # same-provider re-pick so re-selecting a model doesn't wipe the key.
     if api_key.strip():
-        model_cfg["api_key"] = api_key.strip()
+        if not key_env.strip():
+            from hermes_cli.config import model_api_key_env, save_env_value
+
+            key_env = model_api_key_env(provider, base_url)
+        else:
+            from hermes_cli.config import save_env_value
+
+        save_env_value(key_env, api_key.strip())
+        model_cfg["key_env"] = key_env
+        model_cfg.pop("api_key", None)
         model_cfg.pop("api", None)
-    elif (model_cfg.get("api_key") or model_cfg.get("api")) and new_provider != prev_provider:
+        model_cfg.pop("api_key_env", None)
+    elif (
+        model_cfg.get("api_key")
+        or model_cfg.get("api")
+        or model_cfg.get("key_env")
+        or model_cfg.get("api_key_env")
+    ) and new_provider != prev_provider:
         # A stale endpoint secret can live under the legacy ``api`` alias with
         # no ``api_key`` (the resolver still reads ``model.api`` as a key), so
         # the switch-clears-the-key path must trigger on either field — else the
@@ -7341,8 +7361,21 @@ def _apply_model_assignment_sync(
         model_cfg = _apply_main_model_assignment(
             cfg.get("model", {}), provider, model, base_url, api_key
         )
-        if isinstance(provider_entry, dict) and provider_entry.get("api_key"):
-            model_cfg["api_key"] = provider_entry["api_key"]
+        # Fall back to the provider entry's stored key only when the request
+        # didn't carry one — same precedence as the base_url fill above. An
+        # unconditional overwrite silently discards a key the caller is
+        # rotating in. Prefer key_env/api_key_env and retain inline values only
+        # for legacy configurations.
+        if not api_key and isinstance(provider_entry, dict):
+            provider_key_env = provider_entry.get("key_env") or provider_entry.get(
+                "api_key_env"
+            )
+            if provider_key_env:
+                model_cfg["key_env"] = provider_key_env
+                model_cfg.pop("api_key", None)
+                model_cfg.pop("api", None)
+            elif provider_entry.get("api_key"):
+                model_cfg["api_key"] = provider_entry["api_key"]
         cfg["model"] = model_cfg
 
         # When switching the main provider to Nous, mirror the CLI's
@@ -7491,14 +7524,22 @@ def _apply_model_assignment_sync(
             # base_url, or the slot silently rebinds to whatever
             # model.base_url happens to hold — and breaks entirely once the
             # main slot switches away and clears it. The auxiliary resolver
-            # already reads auxiliary.<task>.base_url/api_key
+            # already reads auxiliary.<task>.base_url/key_env
             # (_resolve_task_provider_model), so persisting them here is
             # what actually wires the endpoint in.
             slot_cfg["base_url"] = base_url
-            if api_key:
-                slot_cfg["api_key"] = api_key
-        elif new_provider != prev_provider and new_provider != "custom":
-            slot_cfg.pop("base_url", None)
+        if api_key:
+            from hermes_cli.config import auxiliary_api_key_env, save_env_value
+
+            key_env = auxiliary_api_key_env(task)
+            save_env_value(key_env, api_key)
+            slot_cfg["key_env"] = key_env
+            slot_cfg.pop("api_key", None)
+            slot_cfg.pop("api", None)
+            slot_cfg.pop("api_key_env", None)
+        elif new_provider != prev_provider:
+            if not base_url:
+                slot_cfg.pop("base_url", None)
             clear_model_endpoint_credentials(slot_cfg)
         aux[slot] = slot_cfg
 

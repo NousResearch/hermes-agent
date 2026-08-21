@@ -1573,22 +1573,19 @@ class TestWebServerEndpoints:
         assert _parse_model_ids(FakeResp(ValueError("bad json"))) == []
 
 
-    def test_set_model_main_custom_persists_api_key_and_registers_provider(self):
-        """A custom endpoint that requires auth must persist model.api_key (where
-        the runtime reads it) AND register a named custom_providers entry so the
-        endpoint reappears as a ready row in the picker — matching the
-        ``hermes model`` custom flow. Regression for the desktop loop where a
-        keyed custom endpoint could never be configured from the GUI."""
-        from hermes_cli.config import load_config
+    def test_set_model_main_custom_keeps_api_key_out_of_config(self):
+        """A GUI custom endpoint stores its key in .env behind key_env."""
+        from hermes_cli.config import get_env_value, load_config
 
+        marker = "synthetic-model-key"
         resp = self.client.post(
             "/api/model/set",
             json={
                 "scope": "main",
                 "provider": "custom",
-                "model": "gpt-oss-120b",
-                "base_url": "https://text.example.com/v1",
-                "api_key": "sk-secret",
+                "model": "synthetic-model",
+                "base_url": "https://text.synthetic.invalid/v1",
+                "api_key": marker,
             },
         )
         assert resp.status_code == 200
@@ -1598,19 +1595,54 @@ class TestWebServerEndpoints:
         model_cfg = cfg.get("model")
         assert isinstance(model_cfg, dict)
         assert model_cfg["provider"] == "custom"
-        assert model_cfg["base_url"] == "https://text.example.com/v1"
-        assert model_cfg["api_key"] == "sk-secret"
+        assert model_cfg["base_url"] == "https://text.synthetic.invalid/v1"
+        assert model_cfg.get("api_key") is None
+        assert model_cfg.get("key_env")
+        assert get_env_value(model_cfg["key_env"]) == marker
 
-        # Registered in custom_providers (dedup by base_url) so the picker shows
-        # a proper ready row instead of the "needs setup" dead-end.
         custom = cfg.get("custom_providers") or []
-        assert any(
-            isinstance(e, dict)
-            and e.get("base_url") == "https://text.example.com/v1"
-            and e.get("api_key") == "sk-secret"
-            and e.get("model") == "gpt-oss-120b"
-            for e in custom
+        entry = next(
+            e for e in custom
+            if isinstance(e, dict)
+            and e.get("base_url") == "https://text.synthetic.invalid/v1"
         )
+        assert entry.get("key_env") == model_cfg["key_env"]
+        assert "api_key" not in entry
+        assert marker not in yaml.safe_dump(cfg)
+
+        from hermes_constants import get_hermes_home
+        for snapshot in get_hermes_home().glob("config.yaml*"):
+            assert marker not in snapshot.read_text(encoding="utf-8")
+
+    def test_set_model_aux_custom_keeps_api_key_out_of_config(self, monkeypatch):
+        """Auxiliary custom assignments use the same key_env protection."""
+        monkeypatch.setattr(
+            "hermes_cli.model_cost_guard.expensive_model_warning",
+            lambda *_args, **_kwargs: None,
+        )
+        from hermes_cli.config import get_env_value, load_config
+
+        marker = "synthetic-aux-key"
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "auxiliary",
+                "task": "vision",
+                "provider": "custom",
+                "model": "synthetic-vision-model",
+                "base_url": "https://vision.synthetic.invalid/v1",
+                "api_key": marker,
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+        cfg = load_config()
+        slot = cfg["auxiliary"]["vision"]
+        assert not slot.get("api_key")
+        assert slot.get("key_env")
+        assert get_env_value(slot["key_env"]) == marker
+        assert marker not in yaml.safe_dump(cfg)
 
 
 

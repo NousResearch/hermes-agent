@@ -1088,6 +1088,8 @@ def clear_model_endpoint_credentials(
     if clear_api_key:
         model_cfg.pop("api_key", None)
         model_cfg.pop("api", None)
+        model_cfg.pop("key_env", None)
+        model_cfg.pop("api_key_env", None)
     if clear_api_mode:
         model_cfg.pop("api_mode", None)
     if clear_base_url:
@@ -4317,6 +4319,57 @@ def custom_endpoint_key_env(identity: str) -> str:
     return f"HERMES_CUSTOM_{slug}_API_KEY" if slug else "HERMES_CUSTOM_API_KEY"
 
 
+def model_api_key_env(provider: str = "", base_url: str = "") -> str:
+    """Return the environment variable used for a main-model API key.
+
+    Built-in providers share one active model slot. Custom endpoints are keyed
+    by their full endpoint identity so two endpoints cannot overwrite one
+    another's credential in ``.env``.
+    """
+    if str(provider or "").strip().lower() in {"custom", "local"} and str(
+        base_url or ""
+    ).strip():
+        return custom_endpoint_key_env(str(base_url).strip())
+    return "HERMES_MODEL_API_KEY"
+
+
+def auxiliary_api_key_env(task: str) -> str:
+    """Return a stable, task-scoped environment variable for an aux key."""
+    slug = re.sub(r"[^A-Z0-9]+", "_", str(task or "").upper()).strip("_")
+    return f"HERMES_AUX_{slug}_API_KEY" if slug else "HERMES_AUX_API_KEY"
+
+
+def _config_secret_env_var(key: str) -> str | None:
+    """Map supported secret-shaped config paths to env references.
+
+    This intentionally covers only paths whose runtime already understands an
+    environment reference. Route-specific webhook secrets are left alone so a
+    future implementation can give each route its own reference instead of
+    accidentally conflating it with the global ``WEBHOOK_SECRET``.
+    """
+    normalized = str(key or "").strip().lower()
+    if normalized in {
+        "platforms.webhook.extra.secret",
+        "platforms.webhook.secret",
+        "gateway.platforms.webhook.extra.secret",
+        "gateway.platforms.webhook.secret",
+    }:
+        return "WEBHOOK_SECRET"
+
+    parts = normalized.split(".")
+    if len(parts) < 2 or parts[-1] not in {"api_key", "api"}:
+        return None
+    if parts[:1] == ["model"] and len(parts) == 2:
+        return "HERMES_MODEL_API_KEY"
+    if parts[:1] == ["auxiliary"] and len(parts) >= 3:
+        return auxiliary_api_key_env(parts[1])
+    if parts[:1] in (["providers"], ["custom_providers"]) and len(parts) >= 3:
+        slug = re.sub(r"[^A-Z0-9]+", "_", parts[1].upper()).strip("_")
+        prefix = "HERMES_PROVIDER" if parts[0] == "providers" else "HERMES_CUSTOM_PROVIDER"
+        return f"{prefix}_{slug or 'DEFAULT'}_API_KEY"
+    return None
+
+
 def remove_env_value(key: str) -> bool:
     """Remove a key from ~/.hermes/.env and os.environ.
 
@@ -5428,8 +5481,10 @@ def set_config_value(key: str, value: str, force: bool = False):
             file=sys.stderr,
         )
         sys.exit(1)
-    # Check if it's an API key (goes to .env)
-    if _is_env_config_key(key):
+    # Check if it's an API key (goes to .env). Secret-shaped dotted paths
+    # use an explicit config reference so the value never enters YAML.
+    secret_env_var = _config_secret_env_var(key)
+    if _is_env_config_key(key) and not secret_env_var:
         # Unified lifecycle: also rotates any config.yaml mirror of the old
         # value so a stale higher-precedence copy can't win (#62269).
         from hermes_cli.credential_lifecycle import save_provider_env_credential
@@ -5475,6 +5530,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Preserve values for string-typed settings.  In particular, enum members
     # such as approvals.mode="off" must not become YAML booleans.  Unknown keys
     # retain the historical best-effort coercion behavior.
+    secret_value = value
     coerced_value: Any = value
     if not isinstance(_default_value_for_key(key), str):
         _stripped = value.strip()
@@ -5597,7 +5653,18 @@ def set_config_value(key: str, value: str, force: bool = False):
                     file=sys.stderr,
                 )
                 sys.exit(1)
-    _set_nested(user_config, key, value)
+    if secret_env_var:
+        # Webhook secrets are represented by the documented template in YAML;
+        # model/provider credentials use the runtime's sibling key_env field.
+        if secret_env_var == "WEBHOOK_SECRET":
+            _set_nested(user_config, key, "${WEBHOOK_SECRET}")
+        else:
+            parent_key = key.rsplit(".", 1)[0]
+            _set_nested(user_config, f"{parent_key}.key_env", secret_env_var)
+            _unset_nested(user_config, key)
+        save_env_value(secret_env_var, str(secret_value))
+    else:
+        _set_nested(user_config, key, value)
     # Normalize the api_base → base_url alias at set-time too (issue #8919),
     # so a fresh `hermes config set model.api_base ...` lands on the canonical
     # key the runtime resolver actually reads, instead of being silently

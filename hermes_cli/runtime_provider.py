@@ -1294,6 +1294,16 @@ def _resolve_openrouter_runtime(
         if isinstance(v, str) and v.strip():
             cfg_api_key = v.strip()
             break
+    # New writes store only the environment variable name. Resolve it before
+    # falling back to an inline legacy value so existing configs keep working.
+    for key_field in ("key_env", "api_key_env"):
+        key_env = str(model_cfg.get(key_field) or "").strip()
+        if not key_env:
+            continue
+        resolved_key = _getenv(key_env, "").strip()
+        if resolved_key:
+            cfg_api_key = resolved_key
+            break
     requested_norm = (requested_provider or "").strip().lower()
     cfg_provider = cfg_provider.strip().lower()
     # GitHub #27132: provider aliases that resolve to "custom" (ollama,

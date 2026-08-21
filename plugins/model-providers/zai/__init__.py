@@ -32,6 +32,17 @@ from typing import Any
 from providers import register_provider
 from providers.base import ProviderProfile
 
+# Universally-free models available to all Z.AI users (both the
+# international and China platforms), but not listed by the provider's
+# /v1/models endpoint.  All verified with real API calls.
+ZAI_FREE_MODELS = (
+    "glm-4v-flash",
+    "glm-4.6v-flash",
+    "glm-4.1v-thinking-flash",
+    "glm-4.5-flash",
+    "glm-4-flash-250414",
+)
+
 _GLM_VERSION_RE = re.compile(r"^glm-(\d+)(?:\.(\d+))?")
 
 
@@ -88,6 +99,35 @@ def _glm_5_2_reasoning_effort(reasoning_config: dict | None) -> str | None:
 
 class ZaiProfile(ProviderProfile):
     """Z.AI / GLM — extra_body.thinking on/off + GLM-5.2 reasoning_effort."""
+
+    def fetch_models(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: float = 8.0,
+    ) -> list[str] | None:
+        """Fetch the live model list and append universally-free models.
+
+        Z.AI's ``/v1/models`` endpoint omits a handful of Flash models that
+        nonetheless accept real API calls (``glm-4v-flash`` etc., verified
+        against both the international and China platforms).  Append them
+        here so China API users — whose keys are rejected by the
+        international endpoint — still get the free models in the picker.
+
+        ``base_url`` is forwarded so the China routing fix in
+        ``provider_model_ids`` (``hermes_cli/models.py``) is not undone.
+        """
+        live = super().fetch_models(
+            api_key=api_key, base_url=base_url, timeout=timeout
+        )
+        models = list(live) if live else []
+        seen = {m.lower() for m in models}
+        for m in ZAI_FREE_MODELS:
+            if m.lower() not in seen:
+                models.append(m)
+                seen.add(m.lower())
+        return models
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context

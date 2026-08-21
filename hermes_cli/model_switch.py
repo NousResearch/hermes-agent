@@ -2948,7 +2948,11 @@ def list_authenticated_providers(
 
         # Check if credentials exist
         has_creds = False
-        if overlay.auth_type == "aws_sdk":
+        if getattr(overlay, "keyless", False):
+            # Keyless providers (opencode-free) are served anonymously —
+            # there is no credential to check, so everyone is authenticated.
+            has_creds = True
+        elif overlay.auth_type == "aws_sdk":
             has_creds = _has_aws_sdk_creds_for_listing(hermes_slug)
         elif overlay.auth_type == "vertex":
             # Vertex authenticates via OAuth2 (service-account JSON / ADC),

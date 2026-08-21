@@ -3803,6 +3803,86 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
             removed_dupes,
         )
+
+    # 4. Enforce causal adjacency. OpenAI-compatible providers require every
+    # assistant(tool_calls) batch to be followed immediately by one tool
+    # result for each call before any user/assistant/system message. The set
+    # checks above only prove that an id exists *somewhere* in the transcript;
+    # after compression/recovery a result can precede its call, satisfy those
+    # sets, then be dropped by the outstanding-call deduper above. That leaves
+    # the later call unanswered and strict providers reject the entire request.
+    #
+    # Walk each batch in wire order. Preserve valid contiguous results, drop
+    # unrelated tool rows, and synthesize a bounded placeholder for every
+    # unanswered call before the next non-tool message. This is intentionally
+    # the final pre-API pass: persisted history remains untouched while every
+    # provider receives a causally valid sequence.
+    causally_repaired: List[Dict[str, Any]] = []
+    inserted_stubs = 0
+    dropped_noncausal_results = 0
+    idx = 0
+    while idx < len(messages):
+        msg = messages[idx]
+        if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+            if msg.get("role") == "tool":
+                # A tool row not consumed by the immediately preceding
+                # assistant batch is non-causal, even if its id appears in a
+                # different part of the transcript.
+                dropped_noncausal_results += 1
+            else:
+                causally_repaired.append(msg)
+            idx += 1
+            continue
+
+        causally_repaired.append(msg)
+        calls = []
+        aliases: Dict[str, str] = {}
+        for tc in msg.get("tool_calls") or []:
+            canonical_id = _ra().AIAgent._get_tool_call_id_static(tc)
+            if not canonical_id:
+                continue
+            calls.append((canonical_id, tc))
+            aliases[canonical_id] = canonical_id
+            if isinstance(tc, dict):
+                for key in ("id", "call_id"):
+                    alias = tc.get(key)
+                    if alias:
+                        aliases[str(alias)] = canonical_id
+
+        answered: set[str] = set()
+        cursor = idx + 1
+        while cursor < len(messages) and messages[cursor].get("role") == "tool":
+            tool_msg = messages[cursor]
+            result_id = str(tool_msg.get("tool_call_id") or "").strip()
+            canonical_id = aliases.get(result_id)
+            if canonical_id and canonical_id not in answered:
+                causally_repaired.append(tool_msg)
+                answered.add(canonical_id)
+            else:
+                dropped_noncausal_results += 1
+            cursor += 1
+
+        for canonical_id, tc in calls:
+            if canonical_id in answered:
+                continue
+            causally_repaired.append({
+                "role": "tool",
+                "name": _ra().AIAgent._get_tool_call_name_static(tc),
+                "content": "[Result unavailable — see context summary above]",
+                "tool_call_id": canonical_id,
+            })
+            inserted_stubs += 1
+
+        idx = cursor
+
+    if inserted_stubs or dropped_noncausal_results:
+        messages = causally_repaired
+        _ra().logger.warning(
+            "Pre-call sanitizer: repaired non-causal tool sequence "
+            "(%d stub result(s) added, %d misplaced result(s) removed)",
+            inserted_stubs,
+            dropped_noncausal_results,
+        )
     return messages
 
 

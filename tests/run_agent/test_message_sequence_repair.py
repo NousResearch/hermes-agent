@@ -456,6 +456,82 @@ def test_sanitize_drops_result_with_no_preceding_call():
     assert [m for m in out if m.get("role") == "tool"] == []
 
 
+def test_sanitize_repairs_result_that_precedes_its_call():
+    """A matching id elsewhere is not enough: results must follow the call.
+
+    Compression can move a historical tool result before a synthetic
+    assistant message that still carries the original tool_call. The old
+    global-set sanitizer considered that pair complete, then the causal
+    deduper removed the early result and left the call unanswered.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "continue"},
+        _result("call_reordered", "completed before the compressed call"),
+        _call("call_reordered"),
+        {"role": "assistant", "content": "next assistant turn"},
+    ]
+
+    out = sanitize_api_messages(list(messages))
+
+    call_idx = next(
+        i for i, msg in enumerate(out)
+        if msg.get("role") == "assistant" and msg.get("tool_calls")
+    )
+    assert out[call_idx + 1] == {
+        "role": "tool",
+        "name": "terminal",
+        "content": "[Result unavailable — see context summary above]",
+        "tool_call_id": "call_reordered",
+    }
+    assert out[call_idx + 2]["role"] == "assistant"
+    assert not any(
+        msg.get("content") == "completed before the compressed call"
+        for msg in out
+    )
+
+
+def test_sanitize_closes_partial_multi_call_batch_before_next_assistant():
+    """Every call in a batch gets a result before the next non-tool turn."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    call_ids = [f"call_{i}" for i in range(7)]
+    calls = {
+        "role": "assistant",
+        "content": "compressed task state",
+        "tool_calls": [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": "terminal", "arguments": "{}"},
+            }
+            for call_id in call_ids
+        ],
+    }
+    messages = [
+        {"role": "user", "content": "continue"},
+        *[_result(call_id, f"misplaced-{call_id}") for call_id in call_ids[:5]],
+        calls,
+        _result(call_ids[5], "valid-5"),
+        _result(call_ids[6], "valid-6"),
+        {"role": "assistant", "content": "next assistant turn"},
+    ]
+
+    out = sanitize_api_messages(list(messages))
+
+    call_idx = next(
+        i for i, msg in enumerate(out)
+        if msg.get("role") == "assistant"
+        and msg.get("content") == "compressed task state"
+    )
+    results = out[call_idx + 1:call_idx + 8]
+    assert [msg["role"] for msg in results] == ["tool"] * 7
+    assert {msg["tool_call_id"] for msg in results} == set(call_ids)
+    assert sum("Result unavailable" in msg["content"] for msg in results) == 5
+    assert out[call_idx + 8]["role"] == "assistant"
+
+
 def test_sanitize_drops_empty_tool_calls_array():
     """sanitize_api_messages strips ``tool_calls: []`` from assistant messages.
 

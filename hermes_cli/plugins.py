@@ -6518,18 +6518,21 @@ def get_plugin_commands() -> Dict[str, dict]:
     return _ensure_plugins_discovered()._plugin_commands
 
 
-def get_plugin_auxiliary_tasks() -> List[Dict[str, Any]]:
+def get_plugin_auxiliary_tasks(discover: bool = True) -> List[Dict[str, Any]]:
     """Return all plugin-registered auxiliary tasks as a stable-ordered list.
 
     Each entry is the registration dict from
     :meth:`PluginContext.register_auxiliary_task`:
     ``{key, display_name, description, defaults, plugin}``.
 
-    Triggers idempotent plugin discovery so callers can read the registry
-    before any explicit ``discover_plugins()`` call. Sorted by ``key`` for
-    deterministic ordering in pickers and tests.
+    By default, triggers idempotent plugin discovery so callers can read the
+    registry before any explicit ``discover_plugins()`` call. Pass
+    ``discover=False`` for import-time callers that must only inspect plugins
+    already registered; this avoids making module initialization execute
+    arbitrary user-plugin code. Sorted by ``key`` for deterministic ordering
+    in pickers and tests.
     """
-    manager = _ensure_plugins_discovered()
+    manager = _ensure_plugins_discovered() if discover else get_plugin_manager()
     return [manager._aux_tasks[k] for k in sorted(manager._aux_tasks)]
 
 

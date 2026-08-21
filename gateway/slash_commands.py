@@ -1770,12 +1770,25 @@ class GatewaySlashCommandsMixin:
         from hermes_cli.providers import get_label
 
         raw_args = event.get_command_args().strip()
+        normalized_raw_args = raw_args.lower()
         source = event.source
         _command_profile_home = None
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             _command_profile_home = getattr(
                 self, "_resolve_profile_home_for_source"
             )(source)
+
+        # One-shot helpers for Telegram/gateway model selection.
+        session_key = self._canonical_session_key_for_source(source)
+        if not hasattr(self, "_pending_one_shot_model_overrides"):
+            self._pending_one_shot_model_overrides = {}
+
+        if normalized_raw_args == "auto":
+            self._pending_one_shot_model_overrides.pop(session_key, None)
+            return "Автоматический выбор модели включён."
+        if normalized_raw_args == "strong":
+            self._pending_one_shot_model_overrides[session_key] = {"model": "gpt-5.4"}
+            return "Сильная модель gpt-5.4 выбрана для следующей задачи. После неё вернусь в auto."
 
         # Parse --provider, --global, --session, --once, and --refresh flags
         # via the shared single-owner parser (hermes_cli.model_switch).
@@ -1833,13 +1846,7 @@ class GatewaySlashCommandsMixin:
         except Exception:
             pass
 
-        # Check for session override. Normalize the source the same way a normal
-        # message turn does
-        # (Telegram DM topic recovery) before deriving the override key, so
-        # the override is stored under the key the next message turn reads
-        # (#30479).
-        source = await asyncio.to_thread(self._normalize_source_for_session_key, source)
-        session_key = self._session_key_for_source(source)
+        # Check for session override
         override = self._session_model_overrides.get(session_key, {})
         restore_snapshot = (
             self._snapshot_session_model_override(session_key) if one_turn else None
@@ -2244,6 +2251,14 @@ class GatewaySlashCommandsMixin:
             )
         except Exception as exc:
             logger.debug("preflight-compression switch warning failed: %s", exc)
+
+        if (
+            not persist_global
+            and not explicit_provider
+            and (result.new_model or "").strip().lower() == "gpt-5.4"
+        ):
+            self._pending_one_shot_model_overrides[session_key] = {"model": "gpt-5.4"}
+            return "Следующая задача будет выполнена с gpt-5.4. После неё вернусь в auto."
 
         async def _finish_switch() -> str:
             """Apply the resolved switch (agent, session, config) and build the reply."""

@@ -5398,6 +5398,10 @@ class TurnRunner:
                 session_key=ctx.session_key,
                 user_config=ctx.user_config,
             )
+            pending_one_shot = getattr(self._runner, "_pending_one_shot_model_overrides", {}).get(ctx.session_key)
+            if pending_one_shot and pending_one_shot.get("model") and not runtime_kwargs.get("model"):
+                runtime_kwargs = dict(runtime_kwargs)
+                runtime_kwargs["model"] = pending_one_shot["model"]
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
@@ -8189,6 +8193,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return model, runtime_kwargs
 
+    def _canonical_session_key_for_source(self, source: SessionSource) -> str:
+        """Return the canonical session/chat identity shared by commands and turns."""
+        try:
+            normalized = self._normalize_source_for_session_key(source)
+        except Exception:
+            normalized = source
+        try:
+            if getattr(self, "session_store", None) is not None:
+                return self.session_store._generate_session_key(normalized)
+        except Exception:
+            pass
+        return self._session_key_for_source(normalized)
+
+    def _pop_one_shot_model_override(self, session_key: str, *, success: bool) -> Optional[dict]:
+        """Consume a pending one-shot model override after a turn outcome.
+
+        Successful turns clear the pending override. Failed turns keep it so the
+        user can retry on the same chosen model. Returns the current pending
+        override record (pre-pop or retained) for observability in tests.
+        """
+        pending = getattr(self, "_pending_one_shot_model_overrides", None)
+        if not pending or not session_key:
+            return None
+        current = pending.get(session_key)
+        if current and success:
+            pending.pop(session_key, None)
+        return current
+
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
 
@@ -8197,7 +8229,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         mode, attach `request_overrides` so the API call is marked
         accordingly.
         """
+        from agent.model_escalation_policy import select_initial_model
         from hermes_cli.models import resolve_fast_mode_overrides
+
+        explicit_model_override = runtime_kwargs.get("model")
+        effective_model = model
+        if not explicit_model_override:
+            decision = select_initial_model(user_message)
+            if decision.selected_model:
+                effective_model = decision.selected_model
 
         runtime = {
             "api_key": runtime_kwargs.get("api_key"),
@@ -8211,10 +8251,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "max_tokens": runtime_kwargs.get("max_tokens"),
         }
         route = {
-            "model": model,
+            "model": explicit_model_override or effective_model,
             "runtime": runtime,
             "signature": (
-                model,
+                explicit_model_override or effective_model,
                 runtime["provider"],
                 runtime["requested_provider"],
                 runtime["base_url"],
@@ -20274,6 +20314,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "clear_resume_pending failed for %s: %s",
                         session_key, _e,
                     )
+
+            self._pop_one_shot_model_override(
+                session_key,
+                success=bool(response) and not bool(agent_result.get("error")),
+            )
 
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.

@@ -65,6 +65,7 @@ from agent.turn_context import (
     compression_made_progress,
 )
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
+from gateway.matrix_tool_activity import matrix_tool_activity_bodies
 from hermes_cli.fallback_config import get_fallback_chain
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -4849,7 +4850,25 @@ class TurnRunner:
             except (TypeError, ValueError):
                 _edit_accepts_metadata = False
 
-        async def _edit_progress_message(message_id: str, content: str):
+        _is_matrix_progress = (
+            str(getattr(adapter, "name", "") or "").lower() == "matrix"
+            or str(getattr(ctx.source, "platform", "") or "").lower() == "matrix"
+            or str(getattr(getattr(ctx.source, "platform", None), "value", "") or "").lower() == "matrix"
+        )
+
+        def _matrix_tool_activity_bodies(lines: list) -> tuple[str, str]:
+            return matrix_tool_activity_bodies(lines)
+
+        def _progress_metadata_with_matrix_html(lines: list):
+            meta = dict(ctx._progress_metadata or {})
+            if _is_matrix_progress and lines:
+                body, html = _matrix_tool_activity_bodies(lines)
+                meta["matrix_formatted_body"] = html
+                meta["matrix_formatted_body_unprefixed"] = True
+                return meta, body
+            return meta, None
+
+        async def _edit_progress_message(message_id: str, content: str, lines: list | None = None):
             kwargs = {
                 "chat_id": ctx.source.chat_id,
                 "message_id": message_id,
@@ -4857,11 +4876,19 @@ class TurnRunner:
             }
             if getattr(adapter, "REQUIRES_EDIT_FINALIZE", False):
                 kwargs["finalize"] = True
-            if _edit_accepts_metadata:
+            if _is_matrix_progress and lines is not None:
+                meta, body = _progress_metadata_with_matrix_html(lines)
+                if body is not None:
+                    kwargs["content"] = body
+                kwargs["metadata"] = meta
+            elif _edit_accepts_metadata and ctx._progress_metadata:
                 kwargs["metadata"] = ctx._progress_metadata
             return await adapter.edit_message(**kwargs)
 
         def _progress_text(lines: list) -> str:
+            if _is_matrix_progress:
+                body, _html = _matrix_tool_activity_bodies(lines)
+                return body
             return "\n".join(str(line) for line in lines)
 
         def _split_progress_groups(lines: list) -> list[list]:
@@ -4887,12 +4914,18 @@ class TurnRunner:
             ):
                 ctx._cleanup_msg_ids.append(str(result.message_id))
 
-        async def _send_progress_text(text: str):
+        async def _send_progress_text(text: str, lines: list | None = None):
+            meta = ctx._progress_metadata
+            content = text
+            if _is_matrix_progress and lines is not None:
+                meta, body = _progress_metadata_with_matrix_html(lines)
+                if body is not None:
+                    content = body
             result = await adapter.send(
                 chat_id=ctx.source.chat_id,
-                content=text,
+                content=content,
                 reply_to=ctx._progress_reply_to,
-                metadata=ctx._progress_metadata,
+                metadata=meta,
             )
             _track_progress_result(result)
             return result
@@ -4906,6 +4939,9 @@ class TurnRunner:
                 the normal send/edit path for this tick.
                 """
             nonlocal progress_msg_id, progress_lines, can_edit
+            # Matrix keeps one sticky Tool activity pane.
+            if _is_matrix_progress:
+                return False
             if not progress_lines or not can_edit:
                 return False
             groups = _split_progress_groups(progress_lines)
@@ -4914,7 +4950,7 @@ class TurnRunner:
 
             first_text = _progress_text(groups[0])
             if progress_msg_id is not None:
-                result = await _edit_progress_message(progress_msg_id, first_text)
+                result = await _edit_progress_message(progress_msg_id, first_text, progress_lines)
                 if not result.success:
                     if getattr(result, "retryable", False):
                         logger.debug(
@@ -4926,12 +4962,12 @@ class TurnRunner:
                     # Fall back to the existing non-edit behavior below.
                     return False
             else:
-                result = await _send_progress_text(first_text)
+                result = await _send_progress_text(first_text, progress_lines)
                 if result.success and result.message_id:
                     progress_msg_id = result.message_id
 
             for group in groups[1:]:
-                result = await _send_progress_text(_progress_text(group))
+                result = await _send_progress_text(_progress_text(group), group)
                 if result.success and result.message_id:
                     progress_msg_id = result.message_id
 
@@ -5019,7 +5055,7 @@ class TurnRunner:
                 if can_edit and progress_msg_id is not None:
                     # Try to edit the existing progress message
                     full_text = "\n".join(progress_lines)
-                    result = await _edit_progress_message(progress_msg_id, full_text)
+                    result = await _edit_progress_message(progress_msg_id, full_text, progress_lines)
                     if not result.success:
                         _err = (getattr(result, "error", "") or "").lower()
                         # Transient network errors (ConnectError, timeouts)
@@ -5105,7 +5141,7 @@ class TurnRunner:
                             if can_edit and progress_lines and progress_msg_id:
                                 _pending_text = _progress_text(progress_lines)
                                 try:
-                                    await _edit_progress_message(progress_msg_id, _pending_text)
+                                    await _edit_progress_message(progress_msg_id, _pending_text, progress_lines)
                                 except Exception:
                                     pass
                             progress_msg_id = None
@@ -5123,7 +5159,7 @@ class TurnRunner:
                 if can_edit and progress_lines and progress_msg_id:
                     full_text = _progress_text(progress_lines)
                     try:
-                        await _edit_progress_message(progress_msg_id, full_text)
+                        await _edit_progress_message(progress_msg_id, full_text, progress_lines)
                     except Exception:
                         pass
                 return

@@ -68,9 +68,14 @@ import {
 } from './utils'
 
 // Manual compression is LLM-bound and routinely outlives the desktop's 30s
-// default WS request timeout on large sessions — give it the TUI client's
-// 120s RPC budget (HERMES_TUI_RPC_TIMEOUT_MS default) instead.
-const SESSION_COMPRESS_TIMEOUT_MS = 120_000
+// default WS request timeout on large sessions. It is ONE summarisation call
+// over the whole session and exceeds 2 minutes on large histories or slow
+// providers; the server-side auxiliary compression timeout is floored at 300s
+// (_COMPRESSION_TIMEOUT_FLOOR_SECONDS), so a 120s client budget abandoned the
+// RPC while the server kept working (#83087 / #88988). Give it 600s — the
+// budget the issue prescribes — so the client waits out the server instead
+// of racing it.
+const SESSION_COMPRESS_TIMEOUT_MS = 600_000
 const WAKE_START_TIMEOUT_MS = 180_000
 
 const wakeDeviceLabel = (device?: WakeInputDeviceStatus): string => {

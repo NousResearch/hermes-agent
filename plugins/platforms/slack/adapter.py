@@ -3333,8 +3333,13 @@ class SlackAdapter(BasePlatformAdapter):
         chat_type: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> bool:
-        """Slack native streaming works in DMs, threads, and channels."""
+        """Return whether Slack's native stream can preserve configured behavior."""
         if self._native_stream_unsupported:
+            return False
+        # Slack's chat.*Stream API contract has no unfurl controls. Route
+        # explicitly configured behavior through the edit-based transport,
+        # whose initial chat.postMessage carries these options.
+        if _slack_unfurl_kwargs(self.config.extra):
             return False
         return self._app is not None
 

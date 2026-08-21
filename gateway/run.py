@@ -20104,6 +20104,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if message_text and isinstance(message_text, str):
                 _clean_message_text, _embedded_ts = _strip_msg_ts(
                     message_text, tz=_evt_tz)
+                # Strip the Discord triggering-message routing note before
+                # persisting so internal metadata is not stored as if the
+                # user wrote it (#71304).  The note is useful for the model
+                # during the turn but must not pollute transcript / memory.
+                import re as _re
+                _clean_message_text = _re.sub(
+                    r"^\[Triggering message id: `[^`]+` — use as `message_id` "
+                    r"for reply/react/pin via the discord tools\.\]\s*\n*",
+                    "",
+                    _clean_message_text,
+                    count=1,
+                ).lstrip()
                 persist_user_message = _clean_message_text
                 _event_epoch = _coerce_msg_ts(_evt_ts, tz=_evt_tz)
                 persist_user_timestamp = (

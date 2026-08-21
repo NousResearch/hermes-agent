@@ -4450,6 +4450,22 @@ def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
     )
 
 
+def _tool_is_read_only(server_name: str, tool_name: str) -> bool:
+    """True only when discovery captured ``readOnlyHint=True`` for the tool.
+
+    Used by the session-expired recovery path to decide whether an
+    automatic retry is safe: a read can be replayed freely, while a
+    write-capable call that failed mid-flight may already have executed
+    server-side and must not be re-run automatically.  Missing metadata
+    (unknown tool, discovery raced, malformed annotations) fails safe to
+    False — i.e. treated as write-capable, no auto-retry.
+    """
+    with _lock:
+        return (
+            _tool_read_only_hints.get(server_name, {}).get(tool_name) is True
+        )
+
+
 def _bump_server_error(server_name: str) -> None:
     """Increment the consecutive-failure count for ``server_name``.
 
@@ -4893,6 +4909,8 @@ def _handle_session_expired_and_retry(
     exc: BaseException,
     retry_call,
     op_description: str,
+    *,
+    call_may_have_side_effects: bool = False,
 ):
     """Trigger a transport reconnect and retry once on session expiry.
 
@@ -4904,18 +4922,39 @@ def _handle_session_expired_and_retry(
     and rebuild them, reusing the existing OAuth provider instance.
     See #13383.
 
+    At-most-once guard for writes (ported from cloudflare/cloudflare-os#168):
+    a "session expired" response normally means the server rejected the
+    request *before* dispatch — but the same failure shape can also be
+    synthesized by a fronting proxy, load balancer, or pod rotation *after*
+    the upstream already accepted and executed the request, and the
+    message-less transport errors this classifier also matches
+    (``ClosedResourceError``, broken pipe, connection closed) routinely fire
+    mid-response, i.e. after dispatch.  For a read the worst case of
+    retrying is a duplicated read; for a write it is a duplicated side
+    effect that MCP offers no way to undo.  So when
+    ``call_may_have_side_effects`` is True this helper still heals the
+    transport (reconnect) but never re-runs the call — it returns a
+    structured "outcome unknown" error instructing the model to verify
+    before re-invoking.  Fails safe: callers pass True unless the tool is
+    positively known to be read-only (``readOnlyHint`` is exactly True).
+
     Args:
         server_name: Name of the MCP server that raised.
         exc: The exception from the failed call.
         retry_call: Zero-arg callable that re-runs the operation,
             returning the same JSON string format as the handler.
         op_description: Human-readable name of the operation (logs).
+        call_may_have_side_effects: True when the failed operation is a
+            write-capable ``tools/call`` whose effect may already have
+            landed server-side. Suppresses the automatic retry.
 
     Returns:
         A JSON string if reconnect + retry was attempted and produced
-        a response, or ``None`` to fall through to the caller's
-        generic error path (not a session-expired error, no server
-        record, reconnect didn't ready in time, or retry also failed).
+        a response (or, for side-effecting calls, the structured
+        outcome-unknown error), or ``None`` to fall through to the
+        caller's generic error path (not a session-expired error, no
+        server record, reconnect didn't ready in time, or retry also
+        failed).
     """
     if not _is_session_expired_error(exc):
         return None
@@ -4928,6 +4967,42 @@ def _handle_session_expired_and_retry(
     loop = _mcp_loop
     if loop is None or not loop.is_running():
         return None
+
+    if call_may_have_side_effects:
+        # Heal the transport so the NEXT call (including a deliberate
+        # re-invocation by the model) lands on a fresh session, but do not
+        # re-run this call automatically — it may already have executed.
+        reconnected = _signal_reconnect_and_wait(
+            server_name,
+            srv,
+            op_description=f"{op_description} (write, no auto-retry)",
+            timeout=15,
+        )
+        if reconnected:
+            # Transport is healthy again; the failure was session state,
+            # not server health — don't leave a breaker strike behind.
+            _reset_server_error(server_name)
+        else:
+            _bump_server_error(server_name)
+        logger.warning(
+            "MCP server '%s': %s failed with a session-expired/transport "
+            "error after the request may have been dispatched; NOT "
+            "auto-retrying a write-capable tool (reconnect %s).",
+            server_name, op_description,
+            "succeeded" if reconnected else "failed",
+        )
+        return tool_error(
+            f"The MCP transport session to '{server_name}' expired while "
+            f"this write-capable call was in flight, so the outcome is "
+            f"UNKNOWN — the operation may or may not have taken effect "
+            f"server-side. It was NOT automatically retried to avoid a "
+            f"duplicate side effect. The connection has "
+            f"{'been re-established' if reconnected else 'not recovered yet'}. "
+            f"Verify whether the operation took effect (e.g. with a "
+            f"read-only tool) before re-invoking it.",
+            outcome_unknown=True,
+            server=server_name,
+        )
 
     logger.info(
         "MCP server '%s': %s failed with session-expired error (%s); "
@@ -5991,9 +6066,19 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # Transport session expiry (#13383): same reconnect flow
             # but skips OAuth recovery because the access token is
             # still valid — only the server-side session is stale.
+            # Write-capable tools are never auto-retried here: the
+            # request may already have executed server-side, and a
+            # blind retry risks a duplicate side effect (see
+            # _handle_session_expired_and_retry; ported from
+            # cloudflare/cloudflare-os#168). Read-only classification
+            # reuses the discovery-time readOnlyHint capture — only a
+            # tool whose annotation is exactly True is retried.
             recovered = _handle_session_expired_and_retry(
                 server_name, exc, _call_once,
                 f"tools/call {tool_name}",
+                call_may_have_side_effects=not _tool_is_read_only(
+                    server_name, tool_name
+                ),
             )
             if recovered is not None:
                 return recovered

@@ -7,9 +7,10 @@ from unittest.mock import patch
 class RecordingMemoryProvider:
     name = "recording"
 
-    def __init__(self):
+    def __init__(self, schemas=None):
         self.init_kwargs = None
         self.init_session_id = None
+        self.schemas = list(schemas or [])
 
     def is_available(self):
         return True
@@ -19,7 +20,7 @@ class RecordingMemoryProvider:
         self.init_kwargs = dict(kwargs)
 
     def get_tool_schemas(self):
-        return []
+        return list(self.schemas)
 
     def shutdown(self):
         pass
@@ -126,6 +127,70 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     assert provider.init_kwargs["platform"] == "feishu"
     assert "warning_callback" not in provider.init_kwargs
     assert "status_callback" not in provider.init_kwargs
+
+
+def test_aiagent_can_enable_provider_while_builtin_memory_stays_skipped():
+    provider = RecordingMemoryProvider(
+        schemas=[
+            {
+                "name": "honcho_search",
+                "description": "Read stored memory.",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ]
+    )
+    cfg = {
+        "memory": {
+            "provider": "recording",
+            "memory_enabled": True,
+            "user_profile_enabled": True,
+        },
+        "agent": {},
+    }
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "memory",
+                        "description": "Write built-in file memory.",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            skip_memory_provider=False,
+            enabled_toolsets=["memory"],
+            session_id="cron-provider-read",
+            platform="cron",
+        )
+
+    assert agent._memory_store is None
+    assert agent._memory_enabled is False
+    assert agent._user_profile_enabled is False
+    assert agent._memory_manager is not None
+    assert provider.init_session_id == "cron-provider-read"
+    assert provider.init_kwargs["platform"] == "cron"
+    assert "memory" not in agent.valid_tool_names
+    assert "honcho_search" in agent.valid_tool_names
 
 
 class CoreShadowProvider:

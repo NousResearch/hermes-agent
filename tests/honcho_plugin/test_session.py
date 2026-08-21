@@ -389,6 +389,148 @@ class TestPerSessionMigrateGuard:
         mock_manager.migrate_memory_files.assert_not_called()
 
 
+class TestHonchoCronReadOnly:
+    def _initialize(self):
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        cfg = HonchoClientConfig(
+            enabled=True,
+            api_key="test-key",
+            recall_mode="hybrid",
+        )
+        provider = HonchoMemoryProvider()
+        manager = MagicMock()
+
+        with (
+            patch(
+                "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+                return_value=cfg,
+            ),
+            patch(
+                "plugins.memory.honcho.client.get_honcho_client",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "plugins.memory.honcho.session.HonchoSessionManager",
+                return_value=manager,
+            ) as manager_cls,
+        ):
+            provider.initialize(
+                "cron-test",
+                platform="cron",
+                agent_context="cron",
+            )
+        return provider, manager, manager_cls
+
+    def test_cron_mode_exposes_read_only_tools_without_remote_setup(self):
+        provider, manager, manager_cls = self._initialize()
+
+        assert provider._cron_read_only is True
+        assert provider._cron_skipped is False
+        assert provider._recall_mode == "tools"
+        assert provider._session_initialized is True
+        assert manager_cls.call_args.kwargs["read_only"] is True
+        manager.open_read_only.assert_called_once_with(provider._session_key)
+        manager.get_or_create.assert_not_called()
+        manager.migrate_memory_files.assert_not_called()
+        assert [schema["name"] for schema in provider.get_tool_schemas()] == [
+            "honcho_profile",
+            "honcho_search",
+            "honcho_context",
+        ]
+        profile_schema = provider.get_tool_schemas()[0]
+        assert "card" not in profile_schema["parameters"]["properties"]
+
+    def test_write_and_reasoning_tools_are_blocked(self):
+        provider, manager, _manager_cls = self._initialize()
+
+        conclude_result = provider.handle_tool_call(
+            "honcho_conclude",
+            {"conclusion": "User prefers dark mode"},
+        )
+        reasoning_result = provider.handle_tool_call(
+            "honcho_reasoning",
+            {"query": "What does the user prefer?"},
+        )
+
+        assert "disabled in cron read-only mode" in conclude_result
+        assert "disabled in cron read-only mode" in reasoning_result
+        manager.create_conclusion.assert_not_called()
+        manager.dialectic_query.assert_not_called()
+
+    def test_profile_update_is_blocked_even_if_caller_supplies_card(self):
+        provider, manager, _manager_cls = self._initialize()
+
+        result = provider.handle_tool_call(
+            "honcho_profile",
+            {"card": ["User prefers dark mode"]},
+        )
+
+        assert "updates are disabled in cron read-only mode" in result
+        manager.set_peer_card.assert_not_called()
+
+    def test_write_lifecycle_hooks_are_noops(self):
+        provider, manager, _manager_cls = self._initialize()
+
+        provider.sync_turn("hello", "hi")
+        provider.on_memory_write("add", "user", "User prefers dark mode")
+        provider.on_session_end([])
+        provider.shutdown()
+
+        manager.get_or_create.assert_not_called()
+        manager.create_conclusion.assert_not_called()
+        manager.flush_all.assert_not_called()
+
+
+class TestReadOnlySessionHandles:
+    def test_open_read_only_does_not_create_or_configure_remote_session(self):
+        import sys
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        cfg = HonchoClientConfig(api_key="test-key", enabled=True)
+        honcho = MagicMock(name="Honcho")
+        read_only_honcho = MagicMock(name="read_only_honcho")
+        honcho.model_copy.return_value = read_only_honcho
+        honcho._workspace_ensured = False
+        session_cls = MagicMock(name="Session")
+        peer_cls = MagicMock(name="Peer")
+        fake_honcho_module = SimpleNamespace(Session=session_cls, Peer=peer_cls)
+        manager = HonchoSessionManager(
+            honcho=honcho,
+            config=cfg,
+            read_only=True,
+        )
+
+        with (
+            patch.dict(sys.modules, {"honcho": fake_honcho_module}),
+            patch(
+                "plugins.memory.honcho.session.get_honcho_client",
+                return_value=honcho,
+            ),
+        ):
+            session = manager.open_read_only("cron:test")
+            peer = manager._get_or_create_peer(session.user_peer_id)
+
+        assert session.key == "cron:test"
+        assert session.messages == []
+        assert manager._sessions_cache["cron-test"] is session_cls.return_value
+        assert peer is peer_cls.return_value
+        session_cls.assert_called_once_with("cron-test", read_only_honcho)
+        peer_cls.assert_called_once_with("user-cron-test", read_only_honcho)
+        honcho.model_copy.assert_called_once_with(deep=False)
+        honcho.session.assert_not_called()
+        honcho.peer.assert_not_called()
+        read_only_honcho.session.assert_not_called()
+        read_only_honcho.peer.assert_not_called()
+        session_cls.return_value.add_peers.assert_not_called()
+        session_cls.return_value.context.assert_not_called()
+        assert manager._async_thread is None
+        assert manager._honcho is read_only_honcho
+        assert honcho._workspace_ensured is False
+        assert read_only_honcho._workspace_ensured is True
+        assert manager._cache["cron:test"] is session
+
+
 class TestChunkMessage:
     def test_short_message_single_chunk(self):
         result = HonchoMemoryProvider._chunk_message("hello world", 100)

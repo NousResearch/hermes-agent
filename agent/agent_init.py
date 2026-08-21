@@ -576,6 +576,7 @@ def init_agent(
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
     skip_memory: bool = False,
+    skip_memory_provider: bool | None = None,
     skip_background_review: bool = False,
     session_db=None,
     parent_session_id: str = None,
@@ -931,6 +932,13 @@ def init_agent(
     # Store toolset filtering options
     agent.enabled_toolsets = enabled_toolsets
     agent.disabled_toolsets = disabled_toolsets
+
+    # ``skip_memory`` remains the compatibility switch for both built-in and
+    # provider memory. A narrower provider-only mode lets cron keep file memory
+    # disabled while explicitly enabling read-only provider tools.
+    if skip_memory_provider is None:
+        skip_memory_provider = skip_memory
+    _provider_only_memory = skip_memory and not skip_memory_provider
     
     # Model response configuration
     agent.max_tokens = max_tokens  # None = use model default
@@ -1558,6 +1566,15 @@ def init_agent(
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
     )
+    if _provider_only_memory:
+        # The memory toolset contains the writable file-backed ``memory`` tool
+        # as well as provider tools injected later. Provider-only sessions must
+        # never advertise that unbacked write tool.
+        agent.tools = [
+            tool
+            for tool in agent.tools
+            if tool.get("function", {}).get("name") != "memory"
+        ]
     
     # Show tool configuration and store valid tool names for validation
     agent.valid_tool_names = set()
@@ -1795,6 +1812,10 @@ def init_agent(
     # broad pseudo-public config object on the agent instance.
     agent._aux_compression_context_length_config = None
 
+    mem_config = _agent_cfg.get("memory", {})
+    if not isinstance(mem_config, dict):
+        mem_config = {}
+
     # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
     agent._memory_store = None
     agent._memory_enabled = False
@@ -1806,10 +1827,10 @@ def init_agent(
     # external memory *provider*, but if the caller also explicitly enables the
     # "memory" toolset it still needs the built-in file-backed store — otherwise
     # the memory tool dispatches with store=None and every call fails (#65429).
-    # So the built-in store is created unless memory is globally disabled, while
-    # the external-provider block below stays gated on skip_memory.
+    # The one narrower mode is provider-only memory: callers such as cron keep
+    # file memory skipped while explicitly allowing provider lookup tools.
     _memory_toolset_requested = "memory" in (agent.enabled_toolsets or [])
-    if not skip_memory or _memory_toolset_requested:
+    if not skip_memory or (_memory_toolset_requested and not _provider_only_memory):
         try:
             from tools.memory_tool import (
                 get_builtin_memory_config,
@@ -1838,7 +1859,7 @@ def init_agent(
     # Memory provider plugin (external — one at a time, alongside built-in)
     # Reads memory.provider from config to select which plugin to activate.
     agent._memory_manager = None
-    if not skip_memory:
+    if not skip_memory_provider:
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
 

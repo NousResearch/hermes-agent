@@ -130,6 +130,7 @@ class HonchoSessionManager:
         config: Any | None = None,
         runtime_user_peer_name: str | None = None,
         runtime_user_peer_name_alt: str | None = None,
+        read_only: bool = False,
     ):
         """
         Initialize the session manager.
@@ -141,12 +142,15 @@ class HonchoSessionManager:
                     write_frequency, observation, etc.).
             runtime_user_peer_name: Gateway user identity for per-user memory scoping.
             runtime_user_peer_name_alt: Optional stable alternate gateway identity.
+            read_only: Disable the async writer for lookup-only sessions.
         """
         self._honcho = honcho
+        self._read_only_source_client: Honcho | None = None
         self._context_tokens = context_tokens
         self._config = config
         self._runtime_user_peer_name = runtime_user_peer_name
         self._runtime_user_peer_name_alt = runtime_user_peer_name_alt
+        self._read_only = read_only
         self._cache: dict[str, HonchoSession] = {}
         self._cache_lock = threading.RLock()
         self._peers_cache: dict[str, Any] = {}
@@ -203,7 +207,7 @@ class HonchoSessionManager:
         self._async_queue: queue.Queue | None = None
         self._async_thread: threading.Thread | None = None
         self._async_thread_lock = threading.Lock()
-        if write_frequency == "async":
+        if write_frequency == "async" and not read_only:
             self._async_queue = queue.Queue()
 
     @property
@@ -218,7 +222,20 @@ class HonchoSessionManager:
         that daemon threads cannot see, migrating every access onto the
         first-built profile's client (#69123, #74065).
         """
-        self._honcho = get_honcho_client(self._config)
+        client = get_honcho_client(self._config)
+        if not self._read_only:
+            self._honcho = client
+            return self._honcho
+
+        # Honcho 2.x's client.peer()/client.session() and every domain read call
+        # first POST a get-or-create workspace request. A shallow client copy
+        # shares the authenticated transport while keeping the SDK's
+        # _workspace_ensured flag isolated from normal writable sessions.
+        if client is not self._read_only_source_client:
+            self._read_only_source_client = client
+            self._honcho = client.model_copy(deep=False)
+            self._honcho._workspace_ensured = True
+        assert self._honcho is not None
         return self._honcho
 
     def _record_auth_failure(self, exc: BaseException) -> None:
@@ -340,14 +357,19 @@ class HonchoSessionManager:
         return result
 
     def _sdk_session(self, session_id: str) -> Any:
-        """Get or create the SDK session; a client rebuild clears the cache, so re-fetch."""
+        """Resolve an SDK session handle, creating remotely only in write mode."""
         while True:
             with self._cache_lock:
                 cached = self._sessions_cache.get(session_id)
                 generation = self._client_generation
             if cached is not None:
                 return cached
-            sdk_session = self.honcho.session(session_id)
+            if self._read_only:
+                from honcho import Session
+
+                sdk_session = Session(session_id, self.honcho)
+            else:
+                sdk_session = self.honcho.session(session_id)
             with self._cache_lock:
                 if self._client_generation == generation:
                     return self._sessions_cache.setdefault(session_id, sdk_session)
@@ -355,14 +377,19 @@ class HonchoSessionManager:
             # discarded transport. Don't cache it — resolve afresh.
 
     def _get_or_create_peer(self, peer_id: str) -> Any:
-        """Get or create a Honcho peer (one get-or-create API call, then cached)."""
+        """Resolve a peer handle, creating remotely only in write mode."""
         while True:
             with self._cache_lock:
                 if peer_id in self._peers_cache:
                     return self._peers_cache[peer_id]
                 generation = self._client_generation
 
-            peer = self._authed_call("peer setup", lambda: self.honcho.peer(peer_id))
+            if self._read_only:
+                from honcho import Peer
+
+                peer = Peer(peer_id, self.honcho)
+            else:
+                peer = self._authed_call("peer setup", lambda: self.honcho.peer(peer_id))
             with self._cache_lock:
                 if self._client_generation == generation:
                     return self._peers_cache.setdefault(peer_id, peer)
@@ -655,6 +682,40 @@ class HonchoSessionManager:
         # Write to cache under lock — only one writer wins
         with self._cache_lock:
             self._cache[key] = session
+        return session
+
+    def open_read_only(self, key: str) -> HonchoSession:
+        """Open local handles for read-only lookup without remote mutation.
+
+        Direct SDK domain-object construction creates only local resource
+        handles. In particular, this path never calls the client's
+        get-or-create helpers, ``add_peers()``, message fetching, or local
+        memory-file migration.
+        """
+        with self._cache_lock:
+            if key in self._cache:
+                return self._cache[key]
+
+        user_peer_id = self._resolve_user_peer_id(key)
+        assistant_peer_id = self._sanitize_id(
+            self._config.ai_peer if self._config else "hermes-assistant"
+        )
+        honcho_session_id = self._sanitize_id(key)
+
+        session = HonchoSession(
+            key=key,
+            user_peer_id=user_peer_id,
+            assistant_peer_id=assistant_peer_id,
+            honcho_session_id=honcho_session_id,
+        )
+        remote_session = self._sdk_session(honcho_session_id)
+
+        with self._cache_lock:
+            existing = self._cache.get(key)
+            if existing is not None:
+                return existing
+            self._cache[key] = session
+            self._sessions_cache[honcho_session_id] = remote_session
         return session
 
     def _flush_session(self, session: HonchoSession) -> bool:

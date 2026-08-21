@@ -12,6 +12,7 @@ import pytest
 from cron.scheduler import (
     SILENT_MARKER,
     _build_job_prompt,
+    _cron_job_requests_memory_provider_tools,
     _deliver_result,
     _merge_mcp_into_per_job_toolsets,
     _resolve_cron_enabled_toolsets,
@@ -117,6 +118,28 @@ class TestPerJobToolsetMcpMerge:
         # _get_platform_tools args: (cfg, "cron")
         assert m_platform.call_args[0][1] == "cron"
         assert set(result) == set(sentinel)
+
+
+class TestCronMemoryProviderOptIn:
+    def test_default_toolset_resolution_is_not_an_opt_in(self):
+        assert not _cron_job_requests_memory_provider_tools({}, {})
+
+    def test_composite_toolset_is_not_an_explicit_memory_opt_in(self):
+        job = {"enabled_toolsets": ["safe"]}
+        assert not _cron_job_requests_memory_provider_tools(job, {})
+
+    def test_per_job_memory_toolset_is_an_opt_in(self):
+        job = {"enabled_toolsets": ["terminal", "memory"]}
+        assert _cron_job_requests_memory_provider_tools(job, {})
+
+    def test_per_job_selection_takes_precedence_over_platform_memory(self):
+        job = {"enabled_toolsets": ["terminal"]}
+        cfg = {"platform_toolsets": {"cron": ["memory"]}}
+        assert not _cron_job_requests_memory_provider_tools(job, cfg)
+
+    def test_cron_platform_memory_toolset_is_an_opt_in(self):
+        cfg = {"platform_toolsets": {"cron": ["terminal", "memory"]}}
+        assert _cron_job_requests_memory_provider_tools({}, cfg)
 
 
 class TestResolveOrigin:
@@ -557,6 +580,8 @@ class TestRunJobSessionPersistence:
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["session_db"] is fake_db
         assert kwargs["platform"] == "cron"
+        assert kwargs["skip_memory"] is True
+        assert kwargs["skip_memory_provider"] is True
         assert kwargs["session_id"].startswith("cron_test-job_")
         original_session_id = kwargs["session_id"]
         fake_db.get_compression_tip.assert_called_once_with(original_session_id)
@@ -610,14 +635,7 @@ class TestRunJobSessionPersistence:
             yield fake_db, mock_agent_cls
 
 
-    def test_run_job_memory_toolset_disabled_in_cron(self, tmp_path):
-        """memory toolset must be disabled in cron sessions — issue #38129.
-
-        Cron agents are constructed with skip_memory=True, so the memory
-        backend is not initialised.  Exposing the memory tool only gives the
-        model an unbacked tool that fails at runtime with
-        "Memory is not available."  Hiding it from the schema prevents that.
-        """
+    def test_run_job_memory_toolset_disabled_without_explicit_opt_in(self, tmp_path):
         job = {
             "id": "memory-hide-job",
             "name": "test",
@@ -627,31 +645,94 @@ class TestRunJobSessionPersistence:
             run_job(job)
 
         kwargs = mock_agent_cls.call_args.kwargs
-        assert "memory" in (kwargs["disabled_toolsets"] or []), (
-            "memory toolset should be disabled in cron to match skip_memory=True"
+        assert "memory" in (kwargs["disabled_toolsets"] or [])
+        assert kwargs["skip_memory"] is True
+        assert kwargs["skip_memory_provider"] is True
+
+    def test_run_job_memory_toolset_enables_only_provider_memory(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "memory:\n"
+            "  provider: honcho\n",
+            encoding="utf-8",
         )
-
-    def test_run_job_disables_memory_even_when_per_job_enables_it(self, tmp_path):
-        """Cron runs pass skip_memory=True, so memory must not be exposed.
-
-        A cron job can request the memory tool through enabled_toolsets, but
-        there is no MemoryStore injected for cron agents.  Keep memory in the
-        disabled set so AIAgent filters the unbacked tool out before the model
-        can call it and receive "Memory is not available" failures.
-        """
         job = {
-            "id": "memory-toolset-job",
+            "id": "memory-provider-tool-job",
             "name": "test",
-            "prompt": "remember what you learn",
-            "enabled_toolsets": ["memory", "file"],
+            "prompt": "hello",
+            "enabled_toolsets": ["memory"],
         }
-        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
             run_job(job)
 
         kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["enabled_toolsets"] == ["memory"]
         assert kwargs["skip_memory"] is True
-        assert kwargs["enabled_toolsets"] == ["memory", "file"]
+        assert kwargs["skip_memory_provider"] is False
+        assert "memory" not in kwargs["disabled_toolsets"]
+
+    def test_user_disabled_memory_overrides_per_job_provider_opt_in(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "memory:\n"
+            "  provider: honcho\n"
+            "agent:\n"
+            "  disabled_toolsets:\n"
+            "    - memory\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "disabled-memory-provider-job",
+            "name": "test",
+            "prompt": "hello",
+            "enabled_toolsets": ["memory"],
+        }
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
         assert "memory" in kwargs["disabled_toolsets"]
+        assert kwargs["skip_memory_provider"] is True
+
+    def test_platform_memory_toolset_enables_provider_memory(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "memory:\n"
+            "  provider: honcho\n"
+            "platform_toolsets:\n"
+            "  cron:\n"
+            "    - memory\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "platform-memory-provider-job",
+            "name": "test",
+            "prompt": "hello",
+        }
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert "memory" in kwargs["enabled_toolsets"]
+        assert "memory" not in kwargs["disabled_toolsets"]
+        assert kwargs["skip_memory"] is True
+        assert kwargs["skip_memory_provider"] is False
+
+    def test_non_honcho_provider_stays_disabled_after_memory_opt_in(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "memory:\n"
+            "  provider: supermemory\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "non-honcho-memory-provider-job",
+            "name": "test",
+            "prompt": "hello",
+            "enabled_toolsets": ["memory"],
+        }
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert "memory" in kwargs["disabled_toolsets"]
+        assert kwargs["skip_memory_provider"] is True
 
     def test_tick_skips_due_jobs_while_dispatch_is_paused(self, tmp_path):
         """The drain gate runs before advancing a due job's schedule."""

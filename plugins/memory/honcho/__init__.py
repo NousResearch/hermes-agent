@@ -254,6 +254,29 @@ CONCLUDE_SCHEMA = {
 
 ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, REASONING_SCHEMA, CONTEXT_SCHEMA, CONCLUDE_SCHEMA]
 
+READ_ONLY_PROFILE_SCHEMA = {
+    "name": "honcho_profile",
+    "description": (
+        "Retrieve a peer card from Honcho — a curated list of key facts about "
+        "that peer (name, role, preferences, communication style, patterns)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "peer": PROFILE_SCHEMA["parameters"]["properties"]["peer"],
+        },
+        "required": [],
+    },
+}
+READ_ONLY_TOOL_SCHEMAS = [
+    READ_ONLY_PROFILE_SCHEMA,
+    SEARCH_SCHEMA,
+    CONTEXT_SCHEMA,
+]
+READ_ONLY_TOOL_NAMES = frozenset(
+    schema["name"] for schema in READ_ONLY_TOOL_SCHEMAS
+)
+
 
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
@@ -321,8 +344,10 @@ class HonchoMemoryProvider(MemoryProvider):
         self._init_auth_failure: Optional[str] = None
         self._init_auth_notice_emitted = False
 
-        # Cron and flush contexts disable the plugin entirely.
+        # Flush contexts disable the plugin; explicitly opted-in cron sessions
+        # use the provider's read-only tool surface.
         self._cron_skipped = False
+        self._cron_read_only = False
 
     @property
     def name(self) -> str:
@@ -374,11 +399,19 @@ class HonchoMemoryProvider(MemoryProvider):
         try:
             agent_context = kwargs.get("agent_context", "")
             platform = kwargs.get("platform", "cli")
-            if agent_context in {"cron", "flush"} or platform == "cron":
-                logger.debug("Honcho skipped: cron/flush context (agent_context=%s, platform=%s)",
+            if agent_context == "flush":
+                logger.debug("Honcho skipped: flush context (agent_context=%s, platform=%s)",
                              agent_context, platform)
                 self._cron_skipped = True
                 return
+            if agent_context == "cron" or platform == "cron":
+                logger.debug(
+                    "Honcho read-only mode: cron context "
+                    "(agent_context=%s, platform=%s)",
+                    agent_context,
+                    platform,
+                )
+                self._cron_read_only = True
 
             from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
             from plugins.memory.honcho.session import HonchoSessionManager
@@ -390,7 +423,9 @@ class HonchoMemoryProvider(MemoryProvider):
 
             self._config = cfg
 
-            self._recall_mode = cfg.recall_mode  # "context", "tools", or "hybrid"
+            self._recall_mode = (
+                "tools" if self._cron_read_only else cfg.recall_mode
+            )  # "context", "tools", or "hybrid"
             logger.debug("Honcho recall_mode: %s", self._recall_mode)
 
             self._injection_frequency = cfg.injection_frequency
@@ -411,6 +446,13 @@ class HonchoMemoryProvider(MemoryProvider):
             self._lazy_init_kwargs = dict(kwargs)
             self._lazy_init_session_id = session_id
             self._session_key = self._resolve_session_key(cfg, session_id, **kwargs)
+
+            if self._cron_read_only:
+                # This path creates only local SDK resource handles. It must
+                # be ready before tool injection, but must never create or
+                # configure a remote session or migrate local memory files.
+                self._ensure_session()
+                return
 
             # Network-backed session creation can block on Honcho service or DB
             # outages. Startup must fail open for context/hybrid modes, where
@@ -506,16 +548,24 @@ class HonchoMemoryProvider(MemoryProvider):
         from plugins.memory.honcho.session import HonchoSessionManager
 
         client = get_honcho_client(cfg)
-        self._manager = HonchoSessionManager(
-            honcho=client,
-            config=cfg,
-            context_tokens=cfg.context_tokens,
-            runtime_user_peer_name=kwargs.get("user_id") or None,
-            runtime_user_peer_name_alt=kwargs.get("user_id_alt") or None,
-        )
+        manager_kwargs = {
+            "honcho": client,
+            "config": cfg,
+            "context_tokens": cfg.context_tokens,
+            "runtime_user_peer_name": kwargs.get("user_id") or None,
+            "runtime_user_peer_name_alt": kwargs.get("user_id_alt") or None,
+        }
+        if self._cron_read_only:
+            manager_kwargs["read_only"] = True
+        self._manager = HonchoSessionManager(**manager_kwargs)
 
         self._session_key = self._resolve_session_key(cfg, session_id, **kwargs)
         logger.debug("Honcho session key resolved: %s", self._session_key)
+
+        if self._cron_read_only:
+            self._manager.open_read_only(self._session_key)
+            self._session_initialized = True
+            return
 
         # Create the remote session before running startup-only migration and
         # prewarm work. Do not mark the provider ready until this method's
@@ -688,6 +738,14 @@ class HonchoMemoryProvider(MemoryProvider):
         if not self._manager or not self._session_key:
             if not self._config:
                 return ""
+
+        if self._cron_read_only:
+            return (
+                "# Honcho Memory\n"
+                "Active in cron read-only mode. Use honcho_profile, "
+                "honcho_search, or honcho_context to look up stored memory. "
+                "This session cannot write to Honcho."
+            )
 
         if self._recall_mode == "context":
             header = (
@@ -963,7 +1021,7 @@ class HonchoMemoryProvider(MemoryProvider):
 
         Context and dialectic refreshes have independent cadence controls.
         """
-        if self._cron_skipped:
+        if self._cron_skipped or self._cron_read_only:
             return
         # Tools-only mode has no automatic prefetch.
         if self._recall_mode == "tools":
@@ -1413,7 +1471,7 @@ class HonchoMemoryProvider(MemoryProvider):
         Honors saveMessages: false — the provider then never persists raw
         turns to Honcho (read/tools paths stay fully functional).
         """
-        if self._cron_skipped:
+        if self._cron_skipped or self._cron_read_only:
             return
         # ``saveMessages`` is the operator's hard write gate. Previously it
         # was parsed into HonchoClientConfig but never enforced here, so a
@@ -1477,7 +1535,7 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if action != "add" or target != "user" or not content:
             return
-        if self._cron_skipped:
+        if self._cron_skipped or self._cron_read_only:
             return
         # ``saveMessages`` is the operator's hard write gate; the memory-tool
         # mirror is an automatic Honcho mutation path and must respect it too,
@@ -1501,7 +1559,7 @@ class HonchoMemoryProvider(MemoryProvider):
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Flush all pending messages to Honcho on session end."""
-        if self._cron_skipped:
+        if self._cron_skipped or self._cron_read_only:
             return
         if not getattr(self._config, "save_messages", True):
             return
@@ -1524,6 +1582,8 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return []
+        if self._cron_read_only:
+            return list(READ_ONLY_TOOL_SCHEMAS)
         if self._recall_mode == "context":
             return []
         return list(ALL_TOOL_SCHEMAS)
@@ -1534,6 +1594,10 @@ class HonchoMemoryProvider(MemoryProvider):
 
         if self._cron_skipped:
             return tool_error("Honcho is not active (cron context).")
+        if self._cron_read_only and tool_name not in READ_ONLY_TOOL_NAMES:
+            return tool_error(
+                "Honcho write and reasoning tools are disabled in cron read-only mode."
+            )
 
         if not self._session_initialized:
             if self._init_thread and self._init_thread.is_alive():
@@ -1553,6 +1617,10 @@ class HonchoMemoryProvider(MemoryProvider):
                 peer = args.get("peer", "user")
                 card_update = args.get("card")
                 if card_update:
+                    if self._cron_read_only:
+                        return tool_error(
+                            "Honcho profile updates are disabled in cron read-only mode."
+                        )
                     result = self._manager.set_peer_card(self._session_key, card_update, peer=peer)
                     if result is None:
                         return tool_error("Failed to update peer card.")
@@ -1672,6 +1740,8 @@ class HonchoMemoryProvider(MemoryProvider):
             return tool_error(f"Honcho {tool_name} failed: {e}")
 
     def shutdown(self) -> None:
+        if self._cron_read_only:
+            return
         for t in (self._prefetch_thread, self._sync_thread, getattr(self, "_memwrite_thread", None)):
             if t and t.is_alive():
                 t.join(timeout=5.0)

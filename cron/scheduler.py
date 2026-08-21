@@ -355,14 +355,20 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
-def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
+def _resolve_cron_disabled_toolsets(
+    cfg: dict,
+    *,
+    allow_memory_provider: bool = False,
+) -> list[str]:
     """Toolsets a cron-spawned agent must never receive.
 
-    Three toolsets are always disabled in cron context regardless of config:
+    Interactive toolsets stay disabled in cron context regardless of config:
       - ``messaging`` — interactive, needs a live gateway session
       - ``clarify`` — interactive, blocks waiting for user input
-      - ``memory`` — cron agents are constructed with ``skip_memory=True``, so
-        exposing this tool only gives the model an unbacked tool that fails
+
+    ``memory`` is denied by default and removed from the policy denylist only
+    when an explicit cron memory-toolset opt-in makes read-only provider tools
+    available. The user-level denylist below still wins.
 
     ``cronjob`` is policy-denied by default (loop prevention, not a security
     boundary) and config-gated: setting ``cron.allow_agent_scheduling: true``
@@ -377,9 +383,11 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """
     cron_cfg = (cfg or {}).get("cron") or {}
     if cron_cfg.get("allow_agent_scheduling"):
-        disabled = ["messaging", "clarify", "memory"]
+        disabled = ["messaging", "clarify"]
     else:
-        disabled = ["cronjob", "messaging", "clarify", "memory"]
+        disabled = ["cronjob", "messaging", "clarify"]
+    if not allow_memory_provider:
+        disabled.append("memory")
     agent_cfg = (cfg or {}).get("agent") or {}
     from agent.skill_utils import parse_config_string_list
 
@@ -495,6 +503,29 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
             job.get("id", "?"),
         )
     return resolve_reasoning_config(cfg if isinstance(cfg, dict) else {}, str(model))
+
+
+def _cron_job_requests_memory_provider_tools(job: dict, cfg: dict) -> bool:
+    """Return whether cron explicitly opts into memory-provider tools.
+
+    The resolved cron toolset may include ``memory`` through composite
+    expansion, so it is not proof of user intent. Only a per-job
+    ``enabled_toolsets`` selection or an explicit ``platform_toolsets.cron``
+    entry unlocks provider initialization. A per-job list takes precedence
+    over the platform setting, matching ``_resolve_cron_enabled_toolsets``.
+    """
+    per_job = job.get("enabled_toolsets")
+    if isinstance(per_job, list):
+        return "memory" in {str(toolset) for toolset in per_job}
+
+    try:
+        platform_toolsets = (cfg or {}).get("platform_toolsets") or {}
+        cron_toolsets = platform_toolsets.get("cron")
+    except AttributeError:
+        return False
+    if not isinstance(cron_toolsets, list):
+        return False
+    return "memory" in {str(toolset) for toolset in cron_toolsets}
 
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
@@ -5785,6 +5816,29 @@ def run_job(
                 job_id, _mcp_exc,
             )
 
+        _cron_enabled_toolsets = _resolve_cron_enabled_toolsets(job, _cfg)
+        _cron_memory_provider_opt_in = _cron_job_requests_memory_provider_tools(
+            job, _cfg
+        )
+        if _cron_memory_provider_opt_in:
+            _cfg_dict = _cfg if isinstance(_cfg, dict) else {}
+            _memory_cfg = _cfg_dict.get("memory") or {}
+            _memory_provider = (
+                str(_memory_cfg.get("provider") or "").strip().lower()
+                if isinstance(_memory_cfg, dict)
+                else ""
+            )
+            # This opt-in is deliberately Honcho-specific: Honcho supplies the
+            # audited cron read-only surface. Other providers retain the
+            # historical skip_memory boundary and must not be activated here.
+            _cron_memory_provider_opt_in = _memory_provider == "honcho"
+        _cron_disabled_toolsets = _resolve_cron_disabled_toolsets(
+            _cfg,
+            allow_memory_provider=_cron_memory_provider_opt_in,
+        )
+        if "memory" in _cron_disabled_toolsets:
+            _cron_memory_provider_opt_in = False
+
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -5804,8 +5858,8 @@ def run_job(
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
             openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
-            enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
-            disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
+            enabled_toolsets=_cron_enabled_toolsets,
+            disabled_toolsets=_cron_disabled_toolsets,
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
             # HERMES_HOME. When a workdir is configured, also inject project
@@ -5814,6 +5868,10 @@ def run_job(
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
             skip_memory=True,  # Cron system prompts would corrupt user representations
+            # Provider tools remain off unless the job or cron platform
+            # explicitly selects the memory toolset. Built-in file memory
+            # stays disabled even when provider lookup is enabled.
+            skip_memory_provider=not _cron_memory_provider_opt_in,
             skip_background_review=True,  # Cron has no human-in-the-loop need for skill/memory review forks (~30K tok/event)
             platform="cron",
             session_id=_cron_session_id,

@@ -616,6 +616,77 @@ def _requires_argument(args_hint: str) -> bool:
     return args_hint.strip().startswith("<")
 
 
+def _alias_label() -> str:
+    """Return the localized ``alias`` label used in gateway help lines."""
+    try:
+        from agent.i18n import t
+    except Exception:  # pragma: no cover - i18n is optional at import time
+        return "alias"
+    value = t("gateway.help.alias")
+    # A blank catalog entry is the "not translated yet" marker -- same
+    # convention as ``localized_command_description``.  ``t`` echoing the key
+    # back means the entry is absent entirely.
+    if value == "gateway.help.alias" or not value.strip():
+        return "alias"
+    return value
+
+
+def localized_command_description(name: str, description: str) -> str:
+    """Return the ``display.language`` translation of a command description.
+
+    Falls back to ``description`` -- the registry's English text, which is the
+    single source of truth -- in three cases:
+
+    * the catalog has no entry at all (``t`` echoes the key back).  Normal for
+      plugin and skill commands, which are not in the catalogs;
+    * the entry is **blank**.  Untranslated catalogs carry every key with an
+      empty value: that keeps the ``en.yaml`` key-parity test meaningful while
+      leaving exactly one copy of the English wording (in ``COMMAND_REGISTRY``),
+      so a description edited in the registry can never be shadowed by a stale
+      duplicate;
+    * the lookup raises, because a broken catalog must not take out the menus.
+
+    Command *names* are never localized: Telegram's Bot API only accepts
+    latin letters, digits, and underscores.
+    """
+    key = f"command_descriptions.{name}"
+    try:
+        from agent.i18n import t
+    except Exception:  # pragma: no cover - i18n is optional at import time
+        return description
+    try:
+        value = t(key)
+    except Exception:  # pragma: no cover - a broken catalog must not break menus
+        logger.debug("command description lookup failed for %r", name, exc_info=True)
+        return description
+    if value == key or not value.strip():
+        return description
+    return value
+
+
+# https://core.telegram.org/bots/api#botcommand -- "Description of the command;
+# 1-256 characters".  The limit is counted in characters, not bytes.
+_TELEGRAM_MAX_DESCRIPTION_CHARS = 256
+
+
+def _clamp_telegram_description(name: str, description: str) -> str:
+    """Clamp a BotCommand description to Telegram's documented limit.
+
+    ``setMyCommands`` rejects the *entire* payload when any single description
+    is too long, so one oversized entry would drop the whole menu rather than
+    just itself.  Both untrusted sources are clamped here at the call site:
+    plugin/skill descriptions (arbitrary third-party metadata) and catalog
+    translations, which routinely run longer than their English baseline.
+    """
+    if len(description) <= _TELEGRAM_MAX_DESCRIPTION_CHARS:
+        return description
+    logger.warning(
+        "Telegram description for /%s is %d chars (limit %d); truncating",
+        name, len(description), _TELEGRAM_MAX_DESCRIPTION_CHARS,
+    )
+    return description[: _TELEGRAM_MAX_DESCRIPTION_CHARS - 1] + "…"
+
+
 def gateway_help_lines() -> list[str]:
     """Generate gateway help text lines from the registry."""
     overrides = _resolve_config_gates()
@@ -630,8 +701,10 @@ def gateway_help_lines() -> list[str]:
             if a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name:
                 continue
             alias_parts.append(f"`/{a}`")
-        alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
-        lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
+        alias_label = _alias_label()
+        alias_note = f" ({alias_label}: {', '.join(alias_parts)})" if alias_parts else ""
+        description = localized_command_description(cmd.name, cmd.description)
+        lines.append(f"`/{cmd.name}{args}` -- {description}{alias_note}")
     return lines
 
 
@@ -691,13 +764,23 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
         # the menu hurts discoverability (issue #24312).
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
-            result.append((tg_name, cmd.description))
+            # Look the translation up by canonical name -- ``tg_name`` has
+            # hyphens rewritten to underscores for the Bot API.
+            result.append(
+                (
+                    tg_name,
+                    _clamp_telegram_description(
+                        cmd.name,
+                        localized_command_description(cmd.name, cmd.description),
+                    ),
+                )
+            )
     for name, description, args_hint in _iter_plugin_command_entries():
         if _requires_argument(args_hint):
             continue
         tg_name = _sanitize_telegram_name(name)
         if tg_name:
-            result.append((tg_name, description))
+            result.append((tg_name, _clamp_telegram_description(name, description)))
     return result
 
 

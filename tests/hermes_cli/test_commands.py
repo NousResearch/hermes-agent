@@ -1,8 +1,13 @@
 """Tests for the central command registry and autocomplete."""
 
+from pathlib import Path
+
+import pytest
+import yaml
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
+from agent import i18n
 from hermes_cli.commands import (
     COMMAND_REGISTRY,
     COMMANDS,
@@ -15,12 +20,16 @@ from hermes_cli.commands import (
     _CMD_NAME_LIMIT,
     _SLACK_RESERVED_COMMANDS,
     _SLACK_VIA_HERMES_ONLY,
+    _TELEGRAM_MAX_DESCRIPTION_CHARS,
     _TG_NAME_LIMIT,
+    _alias_label,
     _clamp_command_names,
+    _clamp_telegram_description,
     _clamp_telegram_names,
     _sanitize_telegram_name,
     discord_skill_commands,
     gateway_help_lines,
+    localized_command_description,
     resolve_command,
     slack_app_manifest,
     slack_native_slashes,
@@ -1036,3 +1045,253 @@ class TestPluginCommandEnumeration:
         slack_names = set(slack_subcommand_map())
         assert "status" in tg_names
         assert "status" in slack_names
+
+
+class TestLocalizedCommandDescriptions:
+    """`display.language` localizes /help and Telegram menu descriptions."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_i18n_cache(self):
+        from agent import i18n
+
+        i18n.reset_language_cache()
+        yield
+        i18n.reset_language_cache()
+
+    def test_unknown_command_falls_back_to_registry_text(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "ru")
+        assert (
+            localized_command_description("no-such-command", "Registry text")
+            == "Registry text"
+        )
+
+    def test_english_keeps_registry_descriptions(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "en")
+        descriptions = dict(telegram_bot_commands())
+        assert descriptions["help"] == "Show available commands"
+
+    def test_russian_translates_menu_descriptions(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "ru")
+        descriptions = dict(telegram_bot_commands())
+        assert descriptions["help"] == "Помощь по командам"
+        assert descriptions["new"] == "Новая сессия"
+        # Hyphenated names are looked up by canonical name, not the
+        # underscore-sanitized Telegram name.
+        assert descriptions["reload_mcp"] == "Перезагрузить MCP-серверы"
+
+    def test_untranslated_locale_falls_back_to_english(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        descriptions = dict(telegram_bot_commands())
+        assert descriptions["help"] == "Show available commands"
+
+    def test_gateway_help_lines_are_localized(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "ru")
+        joined = "\n".join(gateway_help_lines())
+        assert "Помощь по командам" in joined
+        assert "алиас:" in joined
+
+    def test_gateway_help_lines_stay_english_by_default(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "en")
+        joined = "\n".join(gateway_help_lines())
+        assert "Show available commands" in joined
+        assert "alias:" in joined
+        assert "Помощь по командам" not in joined
+
+
+class TestCommandDescriptionCatalogConsistency:
+    """`command_descriptions` must stay in lockstep with COMMAND_REGISTRY.
+
+    The catalog shadows the registry at runtime (see
+    ``localized_command_description``), so a description edited in
+    ``COMMAND_REGISTRY`` without a matching catalog edit silently serves stale
+    text in `/help` and the Telegram menu -- in *every* locale, English
+    included.  These tests pin that invariant at CI time.
+    """
+
+    LOCALES_DIR = Path(__file__).resolve().parents[2] / "locales"
+
+    def _catalog(self, lang: str) -> dict[str, str]:
+        with (self.LOCALES_DIR / f"{lang}.yaml").open(encoding="utf-8") as f:
+            return yaml.safe_load(f).get("command_descriptions") or {}
+
+    def _registry(self) -> dict[str, str]:
+        return {cmd.name: cmd.description for cmd in COMMAND_REGISTRY}
+
+    def test_catalog_keys_are_real_commands(self):
+        """No orphan keys: a renamed/removed command must not linger."""
+        orphans = sorted(set(self._catalog("en")) - set(self._registry()))
+        assert not orphans, (
+            f"en.yaml command_descriptions has keys with no COMMAND_REGISTRY "
+            f"entry: {orphans}"
+        )
+
+    def test_every_registry_command_has_a_catalog_key(self):
+        """No gaps: a newly added command must get a catalog entry."""
+        missing = sorted(set(self._registry()) - set(self._catalog("en")))
+        assert not missing, (
+            f"COMMAND_REGISTRY commands missing from en.yaml "
+            f"command_descriptions: {missing}"
+        )
+
+    def test_english_catalog_matches_registry_text(self):
+        """The English baseline must be byte-identical to the registry."""
+        catalog, registry = self._catalog("en"), self._registry()
+        drifted = {
+            name: (registry[name], catalog[name])
+            for name in set(catalog) & set(registry)
+            if catalog[name] != registry[name]
+        }
+        assert not drifted, (
+            "en.yaml command_descriptions drifted from COMMAND_REGISTRY "
+            f"(registry, catalog): {drifted}"
+        )
+
+    @pytest.mark.parametrize("lang", list(i18n.SUPPORTED_LANGUAGES))
+    def test_descriptions_fit_telegram_limit(self, lang: str):
+        """Every catalog entry must fit Telegram's 256-character cap."""
+        too_long = {
+            name: len(text)
+            for name, text in self._catalog(lang).items()
+            if len(text) > _TELEGRAM_MAX_DESCRIPTION_CHARS
+        }
+        assert not too_long, (
+            f"{lang}.yaml descriptions exceed Telegram's "
+            f"{_TELEGRAM_MAX_DESCRIPTION_CHARS}-character limit: {too_long}"
+        )
+
+
+class TestTelegramDescriptionClamp:
+    """Oversized descriptions must not sink the whole setMyCommands payload."""
+
+    def test_short_description_is_untouched(self):
+        assert _clamp_telegram_description("help", "Short") == "Short"
+
+    def test_boundary_length_is_untouched(self):
+        exact = "x" * _TELEGRAM_MAX_DESCRIPTION_CHARS
+        assert _clamp_telegram_description("help", exact) == exact
+
+    def test_oversized_description_is_truncated(self):
+        clamped = _clamp_telegram_description("help", "x" * 400)
+        assert len(clamped) == _TELEGRAM_MAX_DESCRIPTION_CHARS
+        assert clamped.endswith("…")
+
+    def test_plugin_descriptions_are_clamped(self, monkeypatch):
+        """Third-party plugin metadata is untrusted input, so clamp it too."""
+        monkeypatch.setattr(
+            "hermes_cli.commands._iter_plugin_command_entries",
+            lambda: [("noisyplugin", "y" * 500, "")],
+        )
+        descriptions = dict(telegram_bot_commands())
+        assert len(descriptions["noisyplugin"]) == _TELEGRAM_MAX_DESCRIPTION_CHARS
+
+
+class TestUntranslatedCatalogsFallBackToRegistry:
+    """Untranslated catalogs carry blank values, never English copies.
+
+    Blank is the "not translated yet" marker: it keeps every catalog key-parity
+    clean against ``en.yaml`` while leaving exactly one copy of the English
+    wording (``COMMAND_REGISTRY``).  A duplicated English string would shadow
+    the registry and silently go stale the next time a description is edited.
+    """
+
+    LOCALES_DIR = Path(__file__).resolve().parents[2] / "locales"
+
+    @pytest.fixture(autouse=True)
+    def _clear_i18n_cache(self):
+        i18n.reset_language_cache()
+        yield
+        i18n.reset_language_cache()
+
+    def _catalog(self, lang: str) -> dict[str, str]:
+        with (self.LOCALES_DIR / f"{lang}.yaml").open(encoding="utf-8") as f:
+            return yaml.safe_load(f).get("command_descriptions") or {}
+
+    @pytest.mark.parametrize(
+        "lang", [l for l in i18n.SUPPORTED_LANGUAGES if l != "en"]
+    )
+    def test_no_catalog_duplicates_the_english_baseline(self, lang: str):
+        """A translation is either real or blank -- never a copy of English."""
+        english = self._catalog("en")
+        copied = sorted(
+            name
+            for name, text in self._catalog(lang).items()
+            if text.strip() and text == english.get(name)
+        )
+        assert not copied, (
+            f"{lang}.yaml duplicates the English wording for {copied}; leave the "
+            f"value blank instead so the registry stays the single source of truth"
+        )
+
+    @pytest.mark.parametrize(
+        "lang", [l for l in i18n.SUPPORTED_LANGUAGES if l not in {"en", "ru"}]
+    )
+    def test_untranslated_catalog_values_are_blank(self, lang: str):
+        """Locales nobody has translated yet carry the keys, but no text."""
+        non_blank = sorted(
+            name for name, text in self._catalog(lang).items() if text.strip()
+        )
+        assert not non_blank, f"{lang}.yaml unexpectedly has text for {non_blank}"
+
+    def test_blank_entry_falls_back_to_registry_text(self, monkeypatch):
+        """The whole point: blank resolves to the *current* registry wording."""
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        assert (
+            localized_command_description("save", "Registry wording, edited today")
+            == "Registry wording, edited today"
+        )
+
+    def test_whitespace_only_entry_is_treated_as_blank(self, monkeypatch):
+        monkeypatch.setattr("agent.i18n.t", lambda key, **kw: "   ")
+        assert (
+            localized_command_description("save", "Registry text") == "Registry text"
+        )
+
+    def test_untranslated_menu_tracks_the_registry_exactly(self, monkeypatch):
+        """Every built-in entry in an untranslated locale mirrors the registry.
+
+        This is the regression guard for the stale-copy failure mode: if a
+        catalog ever re-introduces English duplicates, an edit to
+        ``COMMAND_REGISTRY`` would break this test instead of silently shipping
+        stale menu text.
+        """
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        registry = {cmd.name: cmd.description for cmd in COMMAND_REGISTRY}
+        for tg_name, description in telegram_bot_commands():
+            canonical = tg_name.replace("_", "-")
+            expected = registry.get(tg_name) or registry.get(canonical)
+            if expected is None:  # plugin/skill command, not in the registry
+                continue
+            assert description == expected, (
+                f"/{tg_name} in an untranslated locale should mirror the "
+                f"registry text {expected!r}, got {description!r}"
+            )
+
+    def test_ru_still_ships_real_translations(self, monkeypatch):
+        """A/B guard: blanking the others must not blank the translated one."""
+        monkeypatch.setenv("HERMES_LANGUAGE", "ru")
+        descriptions = dict(telegram_bot_commands())
+        assert descriptions["help"] == "Помощь по командам"
+        assert descriptions["save"].startswith("Экспортировать")
+
+
+class TestAliasLabelFallback:
+    """`gateway.help.alias` follows the same blank-means-fallback convention."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_i18n_cache(self):
+        i18n.reset_language_cache()
+        yield
+        i18n.reset_language_cache()
+
+    def test_blank_alias_label_falls_back_to_english(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        assert _alias_label() == "alias"
+        assert "alias:" in "\n".join(gateway_help_lines())
+
+    def test_whitespace_alias_label_falls_back(self, monkeypatch):
+        monkeypatch.setattr("agent.i18n.t", lambda key, **kw: "  ")
+        assert _alias_label() == "alias"
+
+    def test_translated_alias_label_is_used(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "ru")
+        assert _alias_label() == "алиас"

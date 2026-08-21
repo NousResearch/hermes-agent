@@ -1389,9 +1389,11 @@ DEFAULT_CONFIG = {
         "focus_saved_tool_progress": "all",
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a
-        # handful of gateway slash-command replies).  Does NOT affect agent
-        # responses, log lines, tool outputs, or slash-command descriptions.
-        # Supported: en, zh, ja, de, es, fr, tr, uk.  Unknown values fall back to en.
+        # handful of gateway slash-command replies, and the slash-command
+        # descriptions in `/help` and the Telegram menu).  Does NOT affect
+        # agent responses, log lines, or tool outputs.  Supported: en, zh,
+        # zh-hant, ja, de, es, fr, tr, uk, af, ko, it, ga, pt, ru, hu, ar.
+        # Unknown values fall back to en.
         "language": "en",
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.

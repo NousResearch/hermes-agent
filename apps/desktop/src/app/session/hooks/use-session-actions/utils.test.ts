@@ -1168,6 +1168,118 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(preserveLocalPendingTurnMessages(next, [...next, settledLocalStream])).toBe(next)
   })
 
+  // #81xxx: a tool-call turn commits as ONE merged assistant row (narration +
+  // tool calls + final answer coalesced by toChatMessages), so neither local
+  // bubble equals it and both used to be re-appended — the reply rendered
+  // twice. Image-generation turns hit this on every hydrate.
+  it('does not re-append the bubbles of a turn the transcript merged into one row', () => {
+    const previous = [
+      msg('1-user', 'user', 'generate the image'),
+      msg('assistant-stream-a', 'assistant', 'Switching provider off Codex.', { pending: false, interim: true }),
+      msg('assistant-stream-b', 'assistant', "Here's Alia — same pose.", { pending: false })
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'generate the image'),
+      msg('2-assistant-stored', 'assistant', "Switching provider off Codex.Here's Alia — same pose.")
+    ]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved.filter(message => message.role === 'assistant')).toHaveLength(1)
+    expect(preserved).toBe(next)
+  })
+
+  // The ordering half of the same bug: preserved rows are appended to the END,
+  // so a stale copy of an older turn lands BELOW a newer committed turn and the
+  // transcript stops reading chronologically.
+  it('does not append a stale merged-turn bubble after a newer committed turn', () => {
+    const previous = [
+      msg('1-user', 'user', 'question A'),
+      msg('assistant-stream-a1', 'assistant', 'narration A', { pending: false, interim: true }),
+      msg('assistant-stream-a2', 'assistant', 'answer A', { pending: false })
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'question A'),
+      msg('2-assistant-stored', 'assistant', 'narration Aanswer A'),
+      msg('3-user-stored', 'user', 'question B')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).at(-1)).toMatchObject({ id: '3-user-stored' })
+  })
+
+  // The over-drop guard on the run reconstruction: a settled reply with no
+  // authoritative counterpart at its ordinal must survive even when a committed
+  // answer happens to contain its words. Only an exact reconstruction may drop.
+  it('keeps a settled reply that an unrelated committed answer merely contains', () => {
+    const previous = [
+      msg('1-user', 'user', 'q'),
+      msg('assistant-stream-a', 'assistant', 'narration', { pending: false, interim: true }),
+      msg('assistant-stream-b', 'assistant', 'ok', { pending: false })
+    ]
+
+    const next = [msg('1-user', 'user', 'q'), msg('2-assistant', 'assistant', 'narration and this is not ok at all')]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toContain('assistant-stream-b')
+  })
+
+  // Data loss guard. A settled bubble carrying only reasoning / tool calls adds
+  // no text to the reconstruction, so a run must not extend across it and claim
+  // it: the renderer holds the ONLY copy of that structure, and the committed
+  // text does not account for it. Found by adversarial testing of the run
+  // matcher — it regressed against HEAD before this guard existed.
+  it('does not drop an uncommitted text-less bubble trailing a matched run', () => {
+    const structural: ChatMessage = {
+      id: 'assistant-stream-structural',
+      role: 'assistant',
+      parts: [
+        { type: 'reasoning', text: 'thinking' },
+        { type: 'tool-call', toolCallId: 't1', toolName: 'terminal', result: 'x' }
+      ],
+      pending: false
+    } as ChatMessage
+
+    const previous = [
+      msg('1-user', 'user', 'q'),
+      msg('assistant-stream-a', 'assistant', 'narration', { pending: false, interim: true }),
+      msg('assistant-stream-b', 'assistant', 'answer', { pending: false }),
+      structural
+    ]
+
+    const next = [msg('1-user-stored', 'user', 'q'), msg('2-assistant-stored', 'assistant', 'narrationanswer')]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toContain(
+      'assistant-stream-structural'
+    )
+  })
+
+  // Reconstruction runs on every hydrate, so its cost must not scale with how
+  // many bubbles the renderer is holding. The naive "join every candidate run"
+  // form measured 1.1s at 120 settled bubbles and 8.4s at 240 — a main-thread
+  // freeze worse than the duplicate being fixed. Bounding the run by the
+  // longest committed reply keeps it flat; this guards that bound, not a
+  // specific timing (the threshold is ~100x the observed ~1ms, so it fails on
+  // a return to quadratic/cubic growth and not on a slow machine).
+  it('does not scale superlinearly with the number of settled local bubbles', () => {
+    const worstCase = (count: number) => {
+      const previous: ChatMessage[] = []
+
+      for (let index = 0; index < count; index += 1) {
+        previous.push(msg(`assistant-stream-${index}`, 'assistant', `bubble ${index} `.repeat(40), { pending: false }))
+      }
+
+      // Nothing matches, so every run is explored to its bound.
+      return { next: [msg('auth-1', 'assistant', 'an unrelated committed answer')], previous }
+    }
+
+    const { next, previous } = worstCase(240)
+    const startedAt = performance.now()
+    preserveLocalPendingTurnMessages(next, previous)
+
+    expect(performance.now() - startedAt).toBeLessThan(100)
+  })
+
   // The reply finished locally but the gateway had not committed it when the
   // session was reopened — the local row is the only copy and must survive.
   it('keeps a settled stream row the authoritative history has not committed', () => {

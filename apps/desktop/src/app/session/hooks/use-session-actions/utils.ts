@@ -485,6 +485,112 @@ const withAuthoritativeTurnState = (local: ChatMessage, authoritative: ChatMessa
   return merged
 }
 
+/** Collapse whitespace runs so a bubble join can't defeat the reconstruction. */
+const normalizeWhitespace = (value: string): string => value.replace(/\s+/g, ' ').trim()
+
+const visibleReplyText = (message: ChatMessage): string => textWithoutReferenceLines(chatMessageText(message))
+
+/**
+ * Local settled assistant rows whose reply the authoritative transcript already
+ * renders — identified by RECONSTRUCTING the committed row from them.
+ *
+ * A settled stream row the transcript already carries must be dropped, or it is
+ * painted a second time. The previous test for that was exact text equality
+ * against some authoritative row, which misses the shape a tool-call turn
+ * actually commits in: `toChatMessages` coalesces a whole turn (sealed interim
+ * narration, tool calls, final answer) into ONE assistant message, so the
+ * committed text is the CONCATENATION of the local bubbles. Neither bubble
+ * equals it, so both survived — the answer rendered twice, and because
+ * preserved rows are appended to the END, the stale copy also landed after any
+ * newer turn the transcript had already committed, which is what breaks
+ * chronological order in a long session.
+ *
+ * Matching a contiguous RUN of local bubbles against the merged row is what
+ * makes this safe. A bare `includes` would let an unrelated authoritative
+ * answer that merely contains a short reply ("ok", "Done.") silently swallow
+ * it; requiring the run to reconstruct the committed text exactly cannot.
+ *
+ * Cost is bounded by the longest committed reply, not by transcript length: a
+ * run is abandoned as soon as its reconstruction outgrows the largest
+ * authoritative row, since appending more bubbles can only make it longer. The
+ * naive "try every run" form was measured at 1.1s for 120 settled bubbles and
+ * 8.4s for 240 — a main-thread freeze worse than the duplicate it fixes —
+ * because each candidate re-joined and re-normalized the whole slice. Here the
+ * reconstruction is accumulated incrementally instead.
+ */
+function repliesCarriedByAuthoritative(
+  nextMessages: ChatMessage[],
+  settledLocalReplies: readonly ChatMessage[]
+): Set<string> {
+  const covered = new Set<string>()
+
+  if (!settledLocalReplies.length) {
+    return covered
+  }
+
+  const authoritativeTexts = new Set(
+    nextMessages
+      .filter(message => message.role === 'assistant')
+      .map(message => normalizeWhitespace(visibleReplyText(message)))
+      .filter(Boolean)
+  )
+
+  if (!authoritativeTexts.size) {
+    return covered
+  }
+
+  // No run whose reconstruction is longer than the largest committed reply can
+  // ever match, and a run only grows — so this is the inner loop's hard stop.
+  let longestAuthoritative = 0
+
+  for (const text of authoritativeTexts) {
+    longestAuthoritative = Math.max(longestAuthoritative, text.length)
+  }
+
+  // Normalizing each bubble in isolation would be wrong: the merged row is the
+  // join of the RAW texts, and a bubble ending in whitespace next to one
+  // starting with it collapses to a single space only when normalized together.
+  const rawTexts = settledLocalReplies.map(visibleReplyText)
+
+  for (let start = 0; start < settledLocalReplies.length; start += 1) {
+    let accumulated = ''
+    // Longest match wins: a turn's bubbles belong to the row that contains all
+    // of them, not to a shorter coincidental prefix match.
+    let matchedEnd = -1
+
+    for (let end = start; end < settledLocalReplies.length; end += 1) {
+      accumulated += rawTexts[end]
+      const reconstructed = normalizeWhitespace(accumulated)
+
+      if (reconstructed.length > longestAuthoritative) {
+        break
+      }
+
+      // A text-less bubble (reasoning / tool calls only) contributes nothing to
+      // the reconstruction, so extending the run across it would claim — and
+      // therefore DROP — a row the committed text does not account for. Its
+      // structure is the renderer's only copy, so that is silent data loss.
+      // Only a bubble that actually contributed text may close a run.
+      if (reconstructed && rawTexts[end].trim() && authoritativeTexts.has(reconstructed)) {
+        matchedEnd = end
+      }
+    }
+
+    if (matchedEnd < 0) {
+      continue
+    }
+
+    for (let index = start; index <= matchedEnd; index += 1) {
+      covered.add(settledLocalReplies[index].id)
+    }
+
+    // Resume after the claimed run — `start += 1` advances past matchedEnd.
+    start = matchedEnd
+  }
+
+  return covered
+}
+
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
   previousMessages: ChatMessage[]
@@ -544,6 +650,22 @@ export function preserveLocalPendingTurnMessages(
   }
 
   const latestAuthoritativeUser = [...nextMessages].reverse().find(message => message.role === 'user')
+
+  // Settled local reply bubbles, in transcript order — the run a committed
+  // tool-call turn is reconstructed from (see repliesCarriedByAuthoritative).
+  //
+  // Deliberately WIDER than the `isPendingAssistant` test used in the loop
+  // below: a standalone `assistant-interim-*` bubble is never preserved on its
+  // own, but its text IS part of the merged row, so it has to take part in the
+  // reconstruction or the run can no longer rebuild what the backend committed.
+  const settledLocalReplies = previousMessages.filter(
+    message =>
+      message.role === 'assistant' &&
+      message.pending !== true &&
+      (message.interim === true || message.id.startsWith('assistant-stream-'))
+  )
+
+  const repliesAlreadyCommitted = repliesCarriedByAuthoritative(nextMessages, settledLocalReplies)
   const preserved: ChatMessage[] = []
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
@@ -599,17 +721,11 @@ export function preserveLocalPendingTurnMessages(
     // the authoritative transcript already carries under its committed id is
     // stale: ordinal pairing can't see it, because the commit shifted the row
     // one ordinal earlier, and re-appending it renders the same answer twice
-    // (#70209). Only text-identical rows are dropped — a settled row the backend
-    // has NOT committed yet is the only copy of that reply and must survive.
-    if (
-      isPendingAssistant &&
-      message.pending !== true &&
-      nextMessages.some(
-        candidate =>
-          candidate.role === 'assistant' &&
-          textWithoutReferenceLines(chatMessageText(candidate)) === textWithoutReferenceLines(chatMessageText(message))
-      )
-    ) {
+    // (#70209). The committed row may be the whole turn merged into one bubble,
+    // so the match is made by reconstructing it from the run of local bubbles —
+    // a settled row the backend has NOT committed yet is the only copy of that
+    // reply and must survive.
+    if (isPendingAssistant && message.pending !== true && repliesAlreadyCommitted.has(message.id)) {
       continue
     }
 

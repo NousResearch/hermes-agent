@@ -43,6 +43,8 @@ import shlex
 import stat
 import time
 import threading
+import contextvars
+from contextlib import contextmanager
 import atexit
 import shutil
 import subprocess
@@ -791,7 +793,7 @@ def _sudo_nopasswd_works() -> bool:
     cache) so an expired sudo timestamp cannot make a later command silently
     block waiting for a password.
     """
-    terminal_env = os.getenv("TERMINAL_ENV", "local").strip().lower() or "local"
+    terminal_env = str(_terminal_value("TERMINAL_ENV", "local")).strip().lower() or "local"
     if terminal_env != "local":
         return False
 
@@ -1087,7 +1089,42 @@ Working directory: use 'workdir' for per-command cwd. When a command changes the
 PTY: set pty=true for interactive CLIs (they hang without it). Pipe git output to cat if it might page.
 """
 
-# Global state for environment lifecycle management
+_terminal_config_scope: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+    "terminal_config_scope", default=None
+)
+
+
+@contextmanager
+def terminal_config_scope(config: Dict[str, Any]):
+    """Use an explicit terminal config for this async/thread context."""
+    token = _terminal_config_scope.set(dict(config))
+    try:
+        yield
+    finally:
+        _terminal_config_scope.reset(token)
+
+
+def get_terminal_config_scope() -> Optional[Dict[str, Any]]:
+    """Return the active explicit terminal config, if one is installed."""
+    config = _terminal_config_scope.get()
+    return dict(config) if config is not None else None
+
+
+def _get_degraded_mode() -> str:
+    scoped = get_terminal_config_scope()
+    if scoped is not None:
+        return str(scoped.get("TERMINAL_DEGRADED_MODE", "warn")).strip().lower()
+    return str(os.getenv("TERMINAL_DEGRADED_MODE", "warn")).strip().lower()
+
+
+def _terminal_value(name: str, default: Any = None) -> Any:
+    """Read a terminal setting from the active scope, then process env."""
+    scoped = get_terminal_config_scope()
+    if scoped is not None and name in scoped:
+        return scoped[name]
+    return os.getenv(name, default)
+
+
 _active_environments: Dict[str, Any] = {}
 _last_activity: Dict[str, float] = {}
 _env_lock = threading.Lock()
@@ -1327,6 +1364,11 @@ def _docker_session_isolation_enabled() -> bool:
     ``container_persistent: true`` the documented ONE-long-lived-container
     contract is unchanged.
     """
+    scoped = get_terminal_config_scope()
+    if scoped is not None:
+        return str(scoped.get("TERMINAL_ENV", "local")) == "docker" and str(
+            scoped.get("TERMINAL_CONTAINER_PERSISTENT", "true")
+        ).lower() not in {"true", "1", "yes"}
     _ensure_terminal_env_bridged()
     if os.getenv("TERMINAL_ENV", "local") != "docker":
         return False
@@ -1382,11 +1424,13 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     ``delegate_task`` children keep sharing the parent's container via the
     alias registry (``register_container_alias``).
     """
+    scoped = get_terminal_config_scope()
+    profile_prefix = str(scoped.get("__profile_key")) + ":" if scoped and scoped.get("__profile_key") else ""
     if task_id and _has_isolation_overrides(task_id):
-        return task_id
+        return profile_prefix + task_id
     if task_id and _docker_session_isolation_enabled():
-        return _resolve_container_alias(task_id)
-    return "default"
+        return profile_prefix + _resolve_container_alias(task_id)
+    return profile_prefix + "default"
 
 
 def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
@@ -1455,13 +1499,13 @@ def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Op
 
 # Configuration from environment variables
 
-def _parse_env_var(name: str, default: str, converter: Any = int, type_label: str = "integer"):
+def _parse_env_var(name: str, default: str, converter: Any = int, type_label: str = "integer", values: Optional[Dict[str, Any]] = None):
     """Parse an environment variable with *converter*, raising a clear error on bad values.
 
     Without this wrapper, a single malformed env var (e.g. TERMINAL_TIMEOUT=5m)
     causes an unhandled ValueError that kills every terminal command.
     """
-    raw = os.getenv(name, default)
+    raw = (values.get(name, default) if values is not None else os.getenv(name, default))
     try:
         return converter(raw)
     except (ValueError, json.JSONDecodeError):
@@ -1482,7 +1526,7 @@ def _safe_getcwd() -> str:
     try:
         return os.getcwd()
     except FileNotFoundError:
-        return os.getenv("TERMINAL_CWD") or os.path.expanduser("~")
+        return _terminal_value("TERMINAL_CWD") or os.path.expanduser("~")
 
 
 # Path prefixes that identify a *host* working directory which cannot exist
@@ -1570,13 +1614,23 @@ def _ensure_terminal_env_bridged() -> None:
 
 
 def _get_env_config() -> Dict[str, Any]:
-    """Get terminal environment configuration from environment variables."""
+    """Get terminal environment configuration from explicit scope or env."""
+    scoped = get_terminal_config_scope()
+    if scoped is not None:
+        return _get_env_config_from_values(scoped)
+    return _get_env_config_from_values(os.environ)
+
+
+def _get_env_config_from_values(values: Dict[str, Any]) -> Dict[str, Any]:
+    """Build terminal config from a mapping without mutating process env."""
+    def getenv(name: str, default: Any = None):
+        value = values.get(name, default)
+        return default if value is None else value
+
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
-    _ensure_terminal_env_bridged()
-    env_type = os.getenv("TERMINAL_ENV", "local")
-    
-    mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
+    env_type = str(getenv("TERMINAL_ENV", "local"))
+    mount_docker_cwd = str(getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false")).lower() in {"true", "1", "yes"}
     container_backend = env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
     docker_backend = env_type == "docker"
 
@@ -1585,20 +1639,20 @@ def _get_env_config() -> Dict[str, Any]:
     # until a backend that can consume them is selected; a stale or invalid
     # Docker value should not make local terminal/execute_code unusable.
     if container_backend:
-        container_cpu = _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number")
-        container_memory = _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120")
-        container_disk = _parse_env_var("TERMINAL_CONTAINER_DISK", "51200")
+        container_cpu = _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number", values)
+        container_memory = _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120", values=values)
+        container_disk = _parse_env_var("TERMINAL_CONTAINER_DISK", "51200", values=values)
     else:
         container_cpu = 1.0
         container_memory = 5120
         container_disk = 51200
 
     if docker_backend:
-        docker_forward_env = _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON")
-        docker_volumes = _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON")
-        docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON")
-        docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON")
-        docker_shm_size = os.getenv("TERMINAL_DOCKER_SHM_SIZE", "1g")
+        docker_forward_env = _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON", values)
+        docker_volumes = _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON", values)
+        docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON", values)
+        docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON", values)
+        docker_shm_size = getenv("TERMINAL_DOCKER_SHM_SIZE", "1g")
     else:
         docker_forward_env = []
         docker_volumes = []
@@ -1622,13 +1676,13 @@ def _get_env_config() -> Dict[str, Any]:
     # If Docker cwd passthrough is explicitly enabled, remap the host path to
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
-    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    cwd = getenv("TERMINAL_CWD", default_cwd)
     from hermes_cli.config import _is_ssh_remote_tilde_cwd
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
-        docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
+        docker_cwd_source = getenv("TERMINAL_CWD") or _safe_getcwd()
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
             any(candidate.startswith(p) for p in _HOST_CWD_PREFIXES)
@@ -1646,41 +1700,41 @@ def _get_env_config() -> Dict[str, Any]:
 
     return {
         "env_type": env_type,
-        "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
-        "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
+        "modal_mode": coerce_modal_mode(getenv("TERMINAL_MODAL_MODE", "auto")),
+        "docker_image": getenv("TERMINAL_DOCKER_IMAGE", default_image),
         "docker_forward_env": docker_forward_env,
-        "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
-        "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
-        "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
-        "vercel_runtime": os.getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
+        "singularity_image": getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
+        "modal_image": getenv("TERMINAL_MODAL_IMAGE", default_image),
+        "daytona_image": getenv("TERMINAL_DAYTONA_IMAGE", default_image),
+        "vercel_runtime": getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
-        "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
-        "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
+        "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180", values=values),
+        "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300", values=values),
         # SSH-specific config
-        "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
-        "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
-        "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
-        "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
+        "ssh_host": getenv("TERMINAL_SSH_HOST", ""),
+        "ssh_user": getenv("TERMINAL_SSH_USER", ""),
+        "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22", values=values),
+        "ssh_key": getenv("TERMINAL_SSH_KEY", ""),
         # Persistent shell: SSH defaults to the config-level persistent_shell
         # setting (true by default for non-local backends); local is always opt-in.
         # Per-backend env vars override if explicitly set.
-        "ssh_persistent": os.getenv(
+        "ssh_persistent": getenv(
             "TERMINAL_SSH_PERSISTENT",
-            os.getenv("TERMINAL_PERSISTENT_SHELL", "true"),
+            getenv("TERMINAL_PERSISTENT_SHELL", "true"),
         ).lower() in {"true", "1", "yes"},
-        "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
+        "local_persistent": getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
         # Container resource config (applies to docker, singularity, modal,
         # daytona, and vercel_sandbox -- ignored for local/ssh)
         "container_cpu": container_cpu,
         "container_memory": container_memory,     # MB (default 5GB)
         "container_disk": container_disk,        # MB (default 50GB)
-        "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
+        "container_persistent": getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
         "docker_volumes": docker_volumes,
         "docker_env": docker_env,
-        "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
-        "docker_network": os.getenv("TERMINAL_DOCKER_NETWORK", "true").lower() in {"true", "1", "yes"},
+        "docker_run_as_host_user": getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
+        "docker_network": getenv("TERMINAL_DOCKER_NETWORK", "true").lower() in {"true", "1", "yes"},
         "docker_extra_args": docker_extra_args,
         "docker_shm_size": docker_shm_size,
         # Cross-process container reuse (issue #20561).  The docs claim
@@ -1689,14 +1743,14 @@ def _get_env_config() -> Dict[str, Any]:
         # attaching to it instead of always starting a fresh one.  Set to
         # ``false`` for hard per-process isolation (no reuse, container is
         # removed on exit).
-        "docker_persist_across_processes": os.getenv(
+        "docker_persist_across_processes": getenv(
             "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true"
         ).lower() in {"true", "1", "yes"},
         # Startup orphan reaper for hermes-tagged containers left behind by
         # crashed / SIGKILL'd previous processes that bypassed atexit.
         # Conservative: only sweeps Exited containers older than 2× the
         # idle-reap window AND scoped to the current profile. Issue #20561.
-        "docker_orphan_reaper": os.getenv(
+        "docker_orphan_reaper": getenv(
             "TERMINAL_DOCKER_ORPHAN_REAPER", "true"
         ).lower() in {"true", "1", "yes"},
     }
@@ -3624,7 +3678,7 @@ def terminal_tool(
         #   warn (default) — return a structured degraded result the model
         #                    can act on (reason + retry hint, no traceback).
         #   fail           — preserve the historical error+traceback result.
-        degraded_mode = os.getenv("TERMINAL_DEGRADED_MODE", "warn").strip().lower()
+        degraded_mode = _get_degraded_mode()
         if degraded_mode == "fail":
             import traceback
             tb_str = traceback.format_exc()

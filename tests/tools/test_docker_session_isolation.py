@@ -31,6 +31,7 @@ import os
 import pytest
 
 from tools import terminal_tool
+from tools.environments.docker import _sandbox_path_component
 
 
 @pytest.fixture(autouse=True)
@@ -60,6 +61,15 @@ def _clean_state(monkeypatch):
 def _enable_isolation(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "docker")
     monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "false")
+
+
+def test_profile_qualified_task_identity_is_safe_for_docker_mount_paths():
+    raw = "/Users/simonne/.hermes/profiles/agent:default"
+    safe = _sandbox_path_component(raw)
+    assert ":" not in safe
+    assert "/" not in safe
+    import hashlib
+    assert safe.endswith("-" + hashlib.sha256(raw.encode()).hexdigest()[:12])
 
 
 def _disable_isolation(monkeypatch):

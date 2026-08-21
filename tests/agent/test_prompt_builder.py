@@ -794,6 +794,23 @@ class TestEnvironmentHints:
         assert "Terminal backend: docker" in result
         assert "inside" in result.lower()
 
+    def test_build_environment_hints_uses_scoped_profile_backend(self, monkeypatch):
+        """Multiplexed profile config must beat the gateway process environment."""
+        import agent.prompt_builder as _pb
+        from tools.terminal_tool import terminal_config_scope
+
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _t: None)
+        _pb._clear_backend_probe_cache()
+
+        with terminal_config_scope({"TERMINAL_ENV": "docker", "__profile_key": "/profile/agent"}):
+            result = _pb.build_environment_hints()
+
+        assert "Terminal backend: docker" in result
+        assert "Host: macOS" not in result
+        assert "User home directory:" not in result
+
     def test_build_environment_hints_uses_terminal_cwd_over_launch_dir(self, monkeypatch, tmp_path):
         """THE BUG: gateway/cron set TERMINAL_CWD but the prompt emitted os.getcwd()
         (the daemon launch dir). Regression for #24882/#24969/#27383/#29265."""

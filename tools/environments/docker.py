@@ -116,6 +116,22 @@ def _load_hermes_env_vars() -> dict[str, str]:
 _LABEL_VALUE_OK_RE = re.compile(r"[^A-Za-z0-9_.-]")
 
 
+def _sandbox_path_component(value: str) -> str:
+    """Return a stable, filesystem-safe directory name for a task identity.
+
+    Task identities may include profile-qualified paths such as
+    ``/Users/alice/.hermes/profiles/agent:default``.  Passing that raw value to
+    ``Path / task_id`` is unsafe: the colon is interpreted by Docker as a bind
+    mount separator when the resulting path is used in ``-v``.  Keep the
+    readable sanitized prefix and add a digest so distinct identities that
+    normalize similarly do not share persistent state.
+    """
+    raw = str(value or "default")
+    readable = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("_") or "default"
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+    return f"{readable[:48]}-{digest}"
+
+
 def _sanitize_label_value(value: str) -> str:
     """Coerce *value* into a Docker label-safe form (alnum + ``_.-``, ≤63 chars).
 
@@ -980,7 +996,7 @@ class DockerEnvironment(BaseEnvironment):
         self._home_dir: Optional[str] = None
         writable_args = []
         if self._persistent:
-            sandbox = get_sandbox_dir() / "docker" / task_id
+            sandbox = get_sandbox_dir() / "docker" / _sandbox_path_component(task_id)
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
             writable_args.extend([

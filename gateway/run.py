@@ -2245,7 +2245,21 @@ def _profile_runtime_scope(profile_home: "Path"):
     hydrate_profile_secret_sources(Path(profile_home))
     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
     try:
-        yield
+        from hermes_cli.config import apply_terminal_config_to_env, load_config
+
+        terminal_env = apply_terminal_config_to_env(
+            env={}, config=load_config(), override=True
+        )
+        terminal_env["__profile_key"] = str(profile_home)
+    except Exception:
+        logger.exception("profile terminal config scope failed")
+        reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
+        raise
+    try:
+        from tools.terminal_tool import terminal_config_scope
+        with terminal_config_scope(terminal_env):
+            yield
     finally:
         reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)

@@ -1518,6 +1518,39 @@ class TestRunPreUpdateBackup:
         assert "Creating pre-update backup" in out
         assert len(self._zips(hermes_home)) == 1
 
+    def test_full_mode_names_lock_contention_instead_of_blaming_the_backup(
+        self, hermes_home, capsys, monkeypatch
+    ):
+        """When another process owns the backup slot for the whole wait, say so.
+
+        This used to print "no files found or write failed", which sent an
+        investigation looking for a broken backup that was working fine.
+        """
+        import hermes_cli.backup as backup_mod
+
+        self._set_mode(hermes_home, "full")
+        # Don't actually wait out the update-path timeout in a test.
+        monkeypatch.setattr(backup_mod, "_PRE_UPDATE_LOCK_TIMEOUT", 0)
+
+        from hermes_cli.main import _run_pre_update_backup
+
+        import time as _t
+
+        started = _t.monotonic()
+        with backup_mod._backup_operation_lock(hermes_home):
+            _run_pre_update_backup(Namespace(no_backup=False, backup=True))
+        elapsed = _t.monotonic() - started
+
+        # The patched timeout must actually reach the call. A default argument
+        # binds at def time, so a timeout passed that way is unoverridable and
+        # this test would sit through the real 180s wait instead of failing.
+        assert elapsed < 30, f"pre-update backup ignored the patched timeout ({elapsed:.0f}s)"
+
+        out = capsys.readouterr().out
+        assert "another Hermes backup held the backup slot" in out
+        assert "no files found" not in out
+        assert not self._zips(hermes_home)
+
 
 
 

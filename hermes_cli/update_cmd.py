@@ -3322,6 +3322,7 @@ def _run_pre_update_backup(args) -> Optional[str]:
     snapshot_id = None
     try:
         from hermes_cli.backup import (
+            _PRE_UPDATE_LOCK_TIMEOUT,
             _quick_snapshot_root,
             create_quick_snapshot,
             verify_sqlite_integrity,
@@ -3336,6 +3337,7 @@ def _run_pre_update_backup(args) -> Optional[str]:
             label="pre-update",
             keep=_PRE_UPDATE_SNAPSHOT_KEEP,
             max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+            lock_timeout=_PRE_UPDATE_LOCK_TIMEOUT,
         )
 
         # After the snapshot, verify the source state.db is still intact.
@@ -3428,7 +3430,11 @@ def _run_pre_update_backup(args) -> Optional[str]:
         return snapshot_id
 
     try:
-        from hermes_cli.backup import create_pre_update_backup
+        from hermes_cli.backup import (
+            _PRE_UPDATE_LOCK_TIMEOUT,
+            BackupInProgressError,
+            create_pre_update_backup,
+        )
     except Exception as exc:
         print(
             f"⚠ Pre-update backup: could not load backup module ({exc}); continuing update."
@@ -3446,7 +3452,31 @@ def _run_pre_update_backup(args) -> Optional[str]:
     print("◆ Creating pre-update backup...")
     t0 = _time.monotonic()
     try:
-        out_path = create_pre_update_backup(keep=int(_keep))
+        # Pass the timeout explicitly rather than leaning on the default: a
+        # default argument binds at def time, which makes the wait impossible to
+        # override and impossible to test without actually waiting it out.
+        out_path = create_pre_update_backup(
+            keep=int(_keep),
+            lock_timeout=_PRE_UPDATE_LOCK_TIMEOUT,
+            raise_if_busy=True,
+        )
+    except BackupInProgressError:
+        # Distinct from a failed write: another process held the backup slot for
+        # the whole wait.  Saying "no files found" here sent a past investigation
+        # looking for a broken backup that was working fine.
+        print(
+            "  ⚠ Backup skipped: another Hermes backup held the backup slot "
+            "for the full wait."
+        )
+        print(
+            "    Nothing is wrong with the backup itself. Re-run 'hermes update "
+            "--backup' once it finishes,"
+        )
+        print(
+            "    or run 'hermes backup' by hand before updating. Continuing with update."
+        )
+        print()
+        return snapshot_id
     except Exception as exc:  # defensive — helper already swallows, but just in case
         print(f"  ⚠ Backup failed: {exc}")
         print("  Continuing with update.")
@@ -3456,7 +3486,10 @@ def _run_pre_update_backup(args) -> Optional[str]:
     elapsed = _time.monotonic() - t0
 
     if out_path is None:
-        print("  ⚠ Backup skipped (no files found or write failed); continuing update.")
+        print(
+            "  ⚠ Backup skipped: nothing to archive, or the archive could not "
+            "be written; continuing update."
+        )
         print()
         return snapshot_id
 

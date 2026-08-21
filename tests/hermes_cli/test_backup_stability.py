@@ -10,6 +10,7 @@ from hermes_cli.backup import (
     _atomic_output_path,
     _backup_operation_lock,
     _write_full_zip_backup,
+    create_pre_update_backup,
     create_quick_snapshot,
     list_quick_snapshots,
 )
@@ -103,3 +104,63 @@ def test_failed_automatic_backup_preserves_previous_archive(tmp_path, monkeypatc
     assert _write_full_zip_backup(archive, home) is None
     assert archive.read_bytes() == b"previous-valid-backup"
     assert list(tmp_path.glob(".*.partial")) == []
+
+
+def test_busy_slot_is_distinguishable_from_a_failed_write(tmp_path) -> None:
+    """A held lock and an unwritable archive both returned None, so callers
+    could not tell "another backup is running" from "the backup is broken".
+    ``raise_if_busy`` separates them."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+    archive = tmp_path / "automatic.zip"
+
+    with _backup_operation_lock(home):
+        # Default: still swallowed, so existing callers are unaffected.
+        assert _write_full_zip_backup(archive, home, lock_timeout=0) is None
+        assert not archive.exists()
+
+        with pytest.raises(BackupInProgressError):
+            _write_full_zip_backup(archive, home, lock_timeout=0, raise_if_busy=True)
+
+
+def test_pre_update_backup_reports_a_busy_slot_when_asked(tmp_path) -> None:
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+
+    with _backup_operation_lock(home):
+        assert create_pre_update_backup(hermes_home=home, lock_timeout=0) is None
+
+        with pytest.raises(BackupInProgressError):
+            create_pre_update_backup(
+                hermes_home=home, lock_timeout=0, raise_if_busy=True
+            )
+
+    # Slot free again: the same call now produces a real archive, which is the
+    # point — the skip was never about the backup being broken.
+    out = create_pre_update_backup(hermes_home=home, lock_timeout=0)
+    assert out is not None and out.exists()
+
+
+def test_pre_update_backup_waits_for_the_slot(tmp_path, monkeypatch) -> None:
+    """The update path must wait for a busy slot rather than lose a 0.25s race
+    and skip the only rollback point the update has."""
+    import hermes_cli.backup as backup_mod
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+
+    waited: list[float] = []
+    real_lock = backup_mod._backup_operation_lock
+
+    def recording_lock(hermes_home, timeout_seconds=backup_mod._BACKUP_LOCK_DEFAULT_TIMEOUT):
+        waited.append(timeout_seconds)
+        return real_lock(hermes_home, timeout_seconds=timeout_seconds)
+
+    monkeypatch.setattr(backup_mod, "_backup_operation_lock", recording_lock)
+
+    assert create_pre_update_backup(hermes_home=home) is not None
+    assert waited == [backup_mod._PRE_UPDATE_LOCK_TIMEOUT]
+    assert backup_mod._PRE_UPDATE_LOCK_TIMEOUT > backup_mod._BACKUP_LOCK_DEFAULT_TIMEOUT

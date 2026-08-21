@@ -159,14 +159,46 @@ class _SQLiteBackupTimeout(RuntimeError):
     """Raised when a SQLite snapshot remains busy past its deadline."""
 
 
+# Default wait for the shared backup slot.  Short on purpose: an interactive
+# `hermes backup` should fail fast rather than hang behind a scheduled one.
+_BACKUP_LOCK_DEFAULT_TIMEOUT = 0.25
+
+# Wait for the slot on the `hermes update` path.  A pre-update backup is the
+# only rollback an update has, so it is worth blocking for: losing a 0.25s race
+# with a concurrent snapshot used to silently skip the backup and continue the
+# update unprotected.  Bounded so a wedged backup process cannot stall an update
+# indefinitely.
+_PRE_UPDATE_LOCK_TIMEOUT = 180.0
+
+# Emit one "still waiting" line after this long so a multi-minute wait does not
+# look like a hang.
+_BACKUP_LOCK_WAIT_NOTICE_AFTER = 2.0
+
+
 @contextmanager
-def _backup_operation_lock(hermes_home: Path, timeout_seconds: float = 0.25):
+def _backup_operation_lock(
+    hermes_home: Path,
+    timeout_seconds: float = _BACKUP_LOCK_DEFAULT_TIMEOUT,
+):
     """Acquire one cross-process backup slot for full and quick snapshots."""
     lock_path = hermes_home / ".backup.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+b")
     acquired = False
-    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    started = time.monotonic()
+    deadline = started + max(0.0, timeout_seconds)
+    notified = False
+
+    def _notice() -> None:
+        nonlocal notified
+        if notified or time.monotonic() - started < _BACKUP_LOCK_WAIT_NOTICE_AFTER:
+            return
+        notified = True
+        logger.warning(
+            "Waiting for the Hermes backup slot (another backup is running); "
+            "up to %.0fs.",
+            max(0.0, timeout_seconds),
+        )
     try:
         if os.name == "nt":
             import msvcrt
@@ -183,6 +215,7 @@ def _backup_operation_lock(hermes_home: Path, timeout_seconds: float = 0.25):
                 except (OSError, PermissionError):
                     if time.monotonic() >= deadline:
                         raise BackupInProgressError("another Hermes backup is already running")
+                    _notice()
                     time.sleep(0.05)
         else:
             import fcntl
@@ -195,6 +228,7 @@ def _backup_operation_lock(hermes_home: Path, timeout_seconds: float = 0.25):
                 except (BlockingIOError, OSError):
                     if time.monotonic() >= deadline:
                         raise BackupInProgressError("another Hermes backup is already running")
+                    _notice()
                     time.sleep(0.05)
 
         yield
@@ -1323,10 +1357,11 @@ def create_quick_snapshot(
     hermes_home: Optional[Path] = None,
     keep: Optional[int] = None,
     max_file_size: Optional[int] = None,
+    lock_timeout: float = _BACKUP_LOCK_DEFAULT_TIMEOUT,
 ) -> Optional[str]:
     """Create one atomic quick snapshot while holding the shared backup slot."""
     home = hermes_home or get_hermes_home()
-    with _backup_operation_lock(home):
+    with _backup_operation_lock(home, timeout_seconds=lock_timeout):
         return _create_quick_snapshot_locked(
             label=label,
             hermes_home=home,
@@ -1925,13 +1960,26 @@ def run_quick_backup(args) -> None:
 # Shared full-zip backup helper
 # ---------------------------------------------------------------------------
 
-def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
-    """Single-flight wrapper for automatic full zip backups."""
+def _write_full_zip_backup(
+    out_path: Path,
+    hermes_root: Path,
+    lock_timeout: float = _BACKUP_LOCK_DEFAULT_TIMEOUT,
+    raise_if_busy: bool = False,
+) -> Optional[Path]:
+    """Single-flight wrapper for automatic full zip backups.
+
+    ``raise_if_busy`` lets a caller tell "another backup holds the slot" apart
+    from "there was nothing to back up / the write failed".  Both used to
+    collapse into ``None``, so ``hermes update`` reported a lock conflict as
+    "no files found or write failed".
+    """
     try:
-        with _backup_operation_lock(hermes_root):
+        with _backup_operation_lock(hermes_root, timeout_seconds=lock_timeout):
             return _write_full_zip_backup_locked(out_path, hermes_root)
     except BackupInProgressError as exc:
         logger.warning("Full-zip backup skipped: %s", exc)
+        if raise_if_busy:
+            raise
         return None
 
 
@@ -2083,6 +2131,8 @@ def _prune_pre_update_backups(backup_dir: Path, keep: int) -> int:
 def create_pre_update_backup(
     hermes_home: Optional[Path] = None,
     keep: int = _PRE_UPDATE_DEFAULT_KEEP,
+    lock_timeout: float = _PRE_UPDATE_LOCK_TIMEOUT,
+    raise_if_busy: bool = False,
 ) -> Optional[Path]:
     """Create a full zip backup of HERMES_HOME under ``backups/``.
 
@@ -2092,7 +2142,14 @@ def create_pre_update_backup(
 
     Returns the path to the created zip, or ``None`` if no files were
     found or the backup could not be created.  Never raises — the caller
-    (``hermes update``) should continue even if the backup fails.
+    (``hermes update``) should continue even if the backup fails — except
+    when ``raise_if_busy`` is set, which re-raises
+    :class:`BackupInProgressError` so the caller can say so accurately.
+
+    Waits up to ``lock_timeout`` seconds for the shared backup slot
+    (``_PRE_UPDATE_LOCK_TIMEOUT``, far longer than the interactive default):
+    an update that silently skips its own rollback point is worse than an
+    update that waits.
     """
     hermes_root = hermes_home or get_default_hermes_root()
     if not hermes_root.is_dir():
@@ -2108,7 +2165,12 @@ def create_pre_update_backup(
     stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
     out_path = backup_dir / f"{_PRE_UPDATE_PREFIX}{stamp}.zip"
 
-    result = _write_full_zip_backup(out_path, hermes_root)
+    result = _write_full_zip_backup(
+        out_path,
+        hermes_root,
+        lock_timeout=lock_timeout,
+        raise_if_busy=raise_if_busy,
+    )
     if result is None:
         return None
 

@@ -494,6 +494,49 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 1
 
+    def test_bare_path_directory_token_does_not_block(self, monkeypatch, tmp_path):
+        """t_adc7bb45: a bare-path token that resolves to an existing directory
+        must be skipped by the walker, not surfaced as a referenced script.
+        Otherwise the harness/repo root literals in command bodies trip
+        ``_read_referenced_script``'s regular-file check and falsely fail closed.
+        The walker is the only layer that yields paths for scanning, so once
+        directories are filtered out, ``_read_referenced_script`` is never
+        called on them and the guard no longer fails closed for harmless
+        path literals in the command body.
+        """
+        from cron.lifecycle_guard import _iter_referenced_shell_scripts
+
+        fake_dir = tmp_path / "harness-root"
+        fake_dir.mkdir()
+
+        # Walker must not yield the directory literal even when it appears as
+        # the executable token (the bare-path branch).
+        yielded = list(
+            _iter_referenced_shell_scripts(str(fake_dir), cwd="/")
+        )
+        assert fake_dir not in yielded, (
+            f"directory token {fake_dir} should be skipped by walker, "
+            f"got {yielded!r}"
+        )
+
+    def test_bare_path_genuine_script_still_yielded(self, monkeypatch, tmp_path):
+        """Counterpart to the directory skip: a bare-path token whose resolved
+        target is a real script still flows through the walker so the
+        recursive scan can detect lifecycle verbs inside it.
+        """
+        from cron.lifecycle_guard import _iter_referenced_shell_scripts
+
+        script = tmp_path / "do-stuff.sh"
+        script.write_text("#!/bin/bash\necho hello\n", encoding="utf-8")
+
+        # Invocation where the script is the executable itself (bare-path).
+        yielded = list(
+            _iter_referenced_shell_scripts(str(script), cwd="/")
+        )
+        assert script in yielded, (
+            f"genuine script {script} should still be yielded, got {yielded!r}"
+        )
+
     def test_quoted_launchctl_submit_text_is_not_blocked(self, monkeypatch):
         import tools.terminal_tool as tt
 

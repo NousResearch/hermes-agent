@@ -423,7 +423,15 @@ def _iter_referenced_shell_scripts(
         if executable.strip("/"):
             if "/" in executable or executable.endswith((".sh", ".bash", ".zsh")):
                 resolved = _resolve_terminal_script_path(executable, cwd)
-                if resolved is not None:
+                # Tokens that resolve to existing directories are not
+                # referenced scripts — yielding them trips the
+                # regular-file check and returns ``unsafe=True`` for any
+                # path-shaped literal in the command body (e.g. a harness
+                # root like ``/tmp/tabjoy-e2e`` or a repo root like
+                # ``/home/hermes/workspace/tabjoy``; t_adc7bb45). Non-regular
+                # files fed to ``sh``/``bash`` directly are still caught
+                # by the shell-executable branch above (#84337 follow-up).
+                if resolved is not None and not resolved.is_dir():
                     yield resolved
 
 

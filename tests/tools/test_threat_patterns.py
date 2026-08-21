@@ -260,3 +260,42 @@ class TestNFKCNormalisation:
 
     def test_benign_content_not_flagged_by_normalisation(self):
         assert scan_for_threats("Refactor the parser module.", scope="context") == []
+
+
+# =========================================================================
+# ssh_access_write — write-verb-gated SSH path pattern
+# =========================================================================
+
+
+class TestSshAccessWritePattern:
+    """The bare `~/.ssh` mention pattern blocked operational documentation
+    (VPS recovery notes, SSH config write-ups). The pattern now requires a
+    write/append verb before the SSH path so only backdoor-insertion shapes
+    fire, while `authorized_keys` (a separate strict rule) is unchanged."""
+
+    def test_write_to_ssh_path_still_flags(self):
+        for text in (
+            "echo 'ssh-ed25519 AAAA' >> ~/.ssh/authorized_keys",
+            "cp /tmp/evil.sh $HOME/.ssh/id_rsa",
+            "cat stolen_key > ~/.ssh/id_ed25519",
+            "tee -a $HOME/.ssh/config <<EOF",
+        ):
+            findings = scan_for_threats(text, scope="strict")
+            assert "ssh_access_write" in findings, text
+
+    def test_read_only_mentions_are_not_flagged(self):
+        for text in (
+            "The VPS recovery doc explains how to rotate keys in ~/.ssh/known_hosts",
+            "Check permissions on $HOME/.ssh — it must be 700",
+            "SSH config lives at ~/.ssh/config on every Unix",
+            "Restore access by copying the backup into ~/backup first, then ~/.ssh",
+        ):
+            findings = scan_for_threats(text, scope="strict")
+            ssh_findings = [f for f in findings if f.startswith("ssh_access")]
+            assert not ssh_findings, (text, ssh_findings)
+
+    def test_authorized_keys_rule_is_unchanged(self):
+        # The sibling rule keys on the file name alone — unaffected by the
+        # verb gating on ssh_access_write.
+        findings = scan_for_threats("documented ~/.ssh/authorized_keys layout", scope="strict")
+        assert "ssh_backdoor" in findings

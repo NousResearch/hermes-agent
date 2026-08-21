@@ -1098,6 +1098,15 @@ class TestGetAnthropicMaxOutput:
         from agent.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("claude-opus-4-6") == 128_000
 
+    def test_bp_ark_code_latest(self):
+        from agent.anthropic_adapter import (
+            _ANTHROPIC_DEFAULT_OUTPUT_LIMIT,
+            _get_anthropic_max_output,
+        )
+        assert _get_anthropic_max_output("bp/ark-code-latest") == 32_768
+        # Must not silently fall back to the default ceiling
+        assert _get_anthropic_max_output("bp/ark-code-latest") != _ANTHROPIC_DEFAULT_OUTPUT_LIMIT
+
 
 
 

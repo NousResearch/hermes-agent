@@ -20,7 +20,7 @@ import json
 import logging
 import time
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 
@@ -682,6 +682,7 @@ def run_codex_app_server_turn(
     messages: List[Dict[str, Any]],
     effective_task_id: str,
     should_review_memory: bool = False,
+    active_system_prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Codex app-server runtime path. Hands the entire turn to a `codex
     app-server` subprocess and projects its events back into Hermes'
@@ -739,6 +740,19 @@ def run_codex_app_server_turn(
         # users see no live tool-progress or interim commentary while
         # codex_app_server is running — only the final answer (#33200).
         # Supersedes the narrower item/started-only bridge from #38835.
+        # Build the effective system prompt for the codex thread. This
+        # mirrors how the standard conversation loop composes it from the
+        # base system prompt + ephemeral_system_prompt (channel overrides,
+        # memory, SOUL.md).  Without this, codex_app_server receives no
+        # persona, memory, or per-channel instructions (#74712).
+        _instructions: Optional[str] = None
+        if active_system_prompt:
+            _instructions = active_system_prompt
+            _ephemeral = getattr(agent, "ephemeral_system_prompt", None)
+            if _ephemeral:
+                _instructions = (_instructions + "\n\n" + _ephemeral).strip()
+        elif getattr(agent, "ephemeral_system_prompt", None):
+            _instructions = agent.ephemeral_system_prompt
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             approval_callback=approval_callback,
@@ -747,6 +761,7 @@ def run_codex_app_server_turn(
                 auto_approve_apply_patch=auto_approve_requests,
             ),
             on_event=make_codex_app_server_event_bridge(agent),
+            instructions=_instructions,
         )
 
     # NOTE: the user message is ALREADY appended to messages by the

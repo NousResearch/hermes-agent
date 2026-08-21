@@ -5470,6 +5470,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # not the background process_loop thread.
         self._pending_relaunch: list[str] | None = None
         self._last_ctrl_c_time = 0
+        self._last_idle_ctrl_c_time = 0
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
@@ -17544,6 +17545,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._last_turn_interrupted = False
         self._should_exit = False
         self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
+        self._last_idle_ctrl_c_time = 0  # Idle-path double Ctrl+C timer (separate from agent path)
 
         # Give plugin manager a CLI reference so plugins can inject messages
         from hermes_cli.plugins import get_plugin_manager
@@ -18492,7 +18494,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             0. Cancel active voice recording
             1. Cancel active sudo/approval/clarify prompt
             2. Interrupt the running agent (first press)
-            3. Force exit (second press within 2s, or when idle)
+            3. Force exit (second press within 2s)
             """
             now = time.time()
 
@@ -18512,6 +18514,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 threading.Thread(
                     target=_recorder_ref.cancel, daemon=True
                 ).start()
+                self._last_idle_ctrl_c_time = 0
                 event.app.invalidate()
                 return
 
@@ -18520,6 +18523,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if self._slash_confirm_state:
                 self._submit_slash_confirm_response("cancel")
                 event.app.current_buffer.reset()
+                self._last_idle_ctrl_c_time = 0
                 event.app.invalidate()
                 return
 
@@ -18527,6 +18531,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if self._model_picker_state:
                 self._close_model_picker()
                 event.app.current_buffer.reset()
+                self._last_idle_ctrl_c_time = 0
                 event.app.invalidate()
                 return
 
@@ -18558,6 +18563,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # If we only cleared overlays and the agent is NOT running, stop here
             # (don't fall through to the interrupt/exit path).
             if _overlay_cleared and not (self._agent_running and self.agent):
+                self._last_idle_ctrl_c_time = 0
                 return
 
             if self._agent_running and self.agent:
@@ -18571,14 +18577,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
                 request_hard_interrupt(self.agent)
             # If there's text or images, clear them (like bash).
-            # If everything is already empty, exit.
+            # If everything is already empty, exit (with double Ctrl+C guard).
             elif event.app.current_buffer.text or self._attached_images:
                 event.app.current_buffer.reset()
                 self._attached_images.clear()
+                self._last_idle_ctrl_c_time = 0
                 event.app.invalidate()
             else:
-                self._should_exit = True
-                event.app.exit()
+                if now - self._last_idle_ctrl_c_time < 2.0:
+                    print("\n⚡ Force exiting...")
+                    self._should_exit = True
+                    event.app.exit()
+                    return
+                self._last_idle_ctrl_c_time = now
+                _cprint(f"\n{_DIM}Press Ctrl+C again to exit.{_RST}")
+                event.app.invalidate()
 
         # Ctrl+Shift+C: no binding needed. Terminal emulators (GNOME Terminal,
         # iTerm2, kitty, Windows Terminal, etc.) intercept Ctrl+Shift+C before

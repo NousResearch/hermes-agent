@@ -9563,9 +9563,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         print(f"  Started:     {self.session_start.strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"  Config File: {config_path} {config_status}")
         print()
-    
-    def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Return recent CLI sessions for in-chat browsing/resume affordances."""
+
+    # Maximum number of sessions shown by /sessions and /resume (bare), and
+    # the same limit used for numbered-index resolution in /resume <number>.
+    # All three paths must use the same limit so row N in the displayed table
+    # always resolves to the same session. See #80750.
+    _SESSIONS_LIST_LIMIT = 20
+
+    def _list_recent_sessions(
+        self,
+        limit: int = 10,
+        *,
+        include_all_sources: bool = True,
+        include_unnamed: bool = True,
+        search_query: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return recent sessions for in-chat browsing/resume affordances."""
         if not self._session_db:
             return []
         try:
@@ -9575,20 +9588,36 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._session_db,
                 source="cli",
                 current_session_id=self.session_id,
-                include_all_sources=False,
-                include_unnamed=True,
+                include_all_sources=include_all_sources,
+                include_unnamed=include_unnamed,
+                search_query=search_query,
                 limit=limit,
                 exclude_sources=["kanban", "tool"],
             )
         except Exception:
             return []
 
-    def _show_recent_sessions(self, *, reason: str = "history", limit: int = 10) -> bool:
+    def _show_recent_sessions(
+        self,
+        *,
+        reason: str = "history",
+        limit: int | None = None,
+        include_all_sources: bool = True,
+        include_unnamed: bool = True,
+        search_query: str | None = None,
+    ) -> bool:
         """Render recent sessions inline from the active chat TUI.
 
         Returns True when something was shown, False if no session list was available.
         """
-        sessions = self._list_recent_sessions(limit=limit)
+        if limit is None:
+            limit = self._SESSIONS_LIST_LIMIT
+        sessions = self._list_recent_sessions(
+            limit=limit,
+            include_all_sources=include_all_sources,
+            include_unnamed=include_unnamed,
+            search_query=search_query,
+        )
         if not sessions:
             return False
 
@@ -9597,16 +9626,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _cli_visible_print()
         if reason == "history":
             _cli_visible_print("(._.) No messages in the current chat yet — here are recent sessions you can resume:")
+        elif search_query:
+            _cli_visible_print(f"  Sessions matching \"{search_query}\":")
         else:
             _cli_visible_print("  Recent sessions:")
         _cli_visible_print()
-        _cli_visible_print(f"  {'#':<3} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-        _cli_visible_print(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
+        _cli_visible_print(f"  {'#':<3} {'Title':<32} {'Src':<8} {'Preview':<36} {'Last Active':<13} {'ID'}")
+        _cli_visible_print(f"  {'─' * 3} {'─' * 32} {'─' * 8} {'─' * 36} {'─' * 13} {'─' * 24}")
         for idx, session in enumerate(sessions, start=1):
             title = session.get("title") or "—"
-            preview = (session.get("preview") or "")[:38]
+            preview = (session.get("preview") or "")[:34]
             last_active = _relative_time(session.get("last_active"))
-            _cli_visible_print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
+            src = (session.get("source") or "")[:8]
+            _cli_visible_print(f"  {idx:<3} {title:<32} {src:<8} {preview:<36} {last_active:<13} {session['id']}")
         _cli_visible_print()
         _cli_visible_print("  Use /resume <number>, /resume <session id>, or /resume <session title> to continue.")
         _cli_visible_print("  Example: /resume 2")

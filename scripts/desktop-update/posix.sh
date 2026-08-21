@@ -222,12 +222,18 @@ start_ui() {
   log "shim: app window on 127.0.0.1:$port"
 }
 
-stop_ui() { # error state leaves the window up for the user to read
+stop_ui() { # error/manual state keeps the window up briefly so a watching
+  # user can read the message, then closes it. The outcome is durably
+  # written to .hermes-update-result.json and surfaced in a dialog on the
+  # next Desktop boot, so the shim window never lingers indefinitely.
+  if [ "${1:-}" = "leave-window" ]; then
+    sleep "${HERMES_UPDATE_SHIM_GRACE_SECONDS:-15}"
+  fi
   if [ -n "$UI_SERVER_PID" ]; then
     # The server ignores TERM/HUP (see start_ui) — KILL is its off switch.
     { kill -9 "$UI_SERVER_PID" && wait "$UI_SERVER_PID"; } 2>/dev/null
   fi
-  if [ "${1:-}" != "leave-window" ] && [ -n "$UI_BROWSER_PID" ]; then
+  if [ -n "$UI_BROWSER_PID" ]; then
     { kill "$UI_BROWSER_PID" && wait "$UI_BROWSER_PID"; } 2>/dev/null
   fi
   UI_SERVER_PID="" UI_BROWSER_PID=""

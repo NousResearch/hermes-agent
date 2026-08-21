@@ -73,15 +73,22 @@ A non-default terminal backend runs LLM-emitted shell commands
 inside a container, remote host, or cloud sandbox. The file tools
 (`read_file`, `write_file`, `patch`) also run through this backend,
 since they are implemented on top of the shell contract — they
-cannot reach paths the backend doesn't expose.
+cannot reach paths the backend doesn't expose. The code-execution
+tool follows the configured terminal backend: with a non-local
+backend, the generated Python script runs in that backend; with the
+local backend, it runs as a host subprocess.
 
-What this confines: anything the agent does by issuing shell or
-file operations. What this does **not** confine: everything the
-agent does in its own Python process. That includes the
-code-execution tool (spawned as a host subprocess), MCP subprocesses
-(spawned from the agent's environment), plugin loading, hook
-dispatch, and skill loading (all imported into the agent
-interpreter).
+What this confines: the agent's direct shell and file operations and,
+for non-local backends, the Python script executed by the
+code-execution tool. Code-execution scripts can still call a limited
+set of Hermes tools through an RPC bridge; those calls are dispatched
+by the parent agent and follow each called tool's own boundary. What
+terminal-backend isolation does **not** confine: everything else the
+agent does in its own Python process. That includes MCP subprocesses
+(spawned from the agent's environment), plugin loading, hook dispatch,
+and skill loading (all imported into the agent interpreter), plus
+host- or provider-backed tools such as browser automation, computer
+use, and web search.
 
 Terminal-backend isolation is the right posture when the concern is
 LLM-emitted destructive shell or unwanted file-tool writes, and the

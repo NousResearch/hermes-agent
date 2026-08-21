@@ -2084,8 +2084,7 @@ class GatewaySlashCommandsMixin:
                                         _persist_model_cfg.pop("api_mode", None)
                                 else:
                                     clear_model_endpoint_credentials(_persist_model_cfg, clear_base_url=True)
-                                from hermes_cli.config import save_config
-                                save_config(_persist_cfg)
+                                atomic_config_write(config_path, _persist_cfg)
                             except Exception as e:
                                 logger.warning("Failed to persist model switch: %s", e)
 
@@ -2410,8 +2409,7 @@ class GatewaySlashCommandsMixin:
                             model_cfg.pop("api_mode", None)
                     else:
                         clear_model_endpoint_credentials(model_cfg, clear_base_url=True)
-                    from hermes_cli.config import save_config
-                    save_config(cfg)
+                    atomic_config_write(config_path, cfg)
                 except Exception as e:
                     logger.warning("Failed to persist model switch: %s", e)
 

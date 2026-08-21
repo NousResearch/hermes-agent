@@ -199,6 +199,8 @@ _ALWAYS_BLOCKED_NETWORKS = (
 # to 198.18.0.0/15 behind local proxy/benchmark infrastructure.
 _TRUSTED_PRIVATE_IP_HOSTS = frozenset({
     "multimedia.nt.qq.com.cn",
+    "bots.qq.com",
+    "api.sgroup.qq.com",
 })
 
 _MAX_SSRF_CONNECT_IPS = 8

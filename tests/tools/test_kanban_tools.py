@@ -8,6 +8,7 @@ Verifies:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -1134,3 +1135,21 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+def test_attachments_list_surfaces_digest_and_lineage_fields(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    payload = b"inspectable custody"
+    with kb.connect() as conn:
+        kb.store_attachment_bytes(conn, worker_env, "evidence.bin", payload)
+
+    result = json.loads(kt._handle_attachments({}))
+    assert result["ok"] is True
+    attachment = result["attachments"][0]
+    assert attachment["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert attachment["source_path"] is None
+    assert attachment["source_run_id"] is None
+    assert attachment["artifact_role"] is None
+    assert attachment["capture_key"] is None

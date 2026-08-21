@@ -22,6 +22,7 @@ from concurrent.futures import Future, TimeoutError
 from typing import Any, Callable, Mapping, Optional
 
 from agent.interrupt_compat import request_hard_interrupt
+from hermes_constants import VALID_REASONING_EFFORTS
 
 PUBLIC_CONTRACT_VERSION = 1
 _MAX_GOAL_CHARS = 16_000
@@ -29,6 +30,11 @@ _MAX_CONTEXT_CHARS = 32_000
 _MAX_METADATA_BYTES = 8_192
 _MAX_RESULT_CHARS = 32_000
 _TERMINAL_RETENTION_SECONDS = 3_600
+
+# Effort levels a caller may pin on a child. "none" disables thinking for the
+# child outright (parse_reasoning_effort maps it to {"enabled": False}); the
+# rest are the same ladder the main agent accepts.
+_VALID_CHILD_EFFORTS = frozenset(VALID_REASONING_EFFORTS) | {"none"}
 
 
 class SubagentLifecycleError(ValueError):
@@ -53,6 +59,7 @@ class SubagentLaunchRequest:
     context: Optional[str] = None
     role: str = "leaf"
     model: Optional[str] = None
+    reasoning_effort: Optional[str] = None
     allowed_toolsets: Optional[tuple[str, ...]] = None
     blocked_tools: tuple[str, ...] = ()
     working_directory: Optional[str] = None
@@ -74,6 +81,7 @@ class SubagentHandle:
     role: str
     depth: int
     capability: str
+    reasoning_effort: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -230,6 +238,7 @@ class SubagentLifecycleService:
             if request.allowed_toolsets
             else None,
             model=request.model,
+            override_reasoning_effort=request.reasoning_effort,
             max_iterations=DEFAULT_MAX_ITERATIONS,
             task_count=1,
             parent_agent=parent,
@@ -250,6 +259,7 @@ class SubagentLifecycleService:
             getattr(child, "_delegate_role", request.role),
             int(getattr(child, "_delegate_depth", 1) or 1),
             self._capability(subagent_id, parent_session_id, created),
+            self._reasoning_effort(child),
         )
         record = _Record(handle, SubagentState.PENDING, created, agent=child)
         with _REGISTRY.lock:
@@ -367,6 +377,10 @@ class SubagentLifecycleService:
             or not math.isfinite(handle.created_at)
             or (handle.provider is not None and not isinstance(handle.provider, str))
             or (handle.model is not None and not isinstance(handle.model, str))
+            or (
+                handle.reasoning_effort is not None
+                and handle.reasoning_effort not in _VALID_CHILD_EFFORTS
+            )
             or not isinstance(handle.role, str)
             or type(handle.depth) is not int
             or not isinstance(handle.capability, str)
@@ -385,6 +399,14 @@ class SubagentLifecycleService:
             return None
         with _REGISTRY.lock:
             return _REGISTRY.records.get(handle.subagent_id)
+
+    @staticmethod
+    def _reasoning_effort(child: Any) -> Optional[str]:
+        config = getattr(child, "reasoning_config", None)
+        if not isinstance(config, Mapping) or not config.get("enabled"):
+            return None
+        effort = config.get("effort")
+        return str(effort) if effort in _VALID_CHILD_EFFORTS else None
 
     @staticmethod
     def _cleanup_locked() -> None:
@@ -503,6 +525,15 @@ class SubagentLifecycleService:
             )
         if request.role not in {"leaf", "orchestrator"}:
             raise SubagentLifecycleError("role must be 'leaf' or 'orchestrator'.")
+        if (
+            request.reasoning_effort is not None
+            and request.reasoning_effort not in _VALID_CHILD_EFFORTS
+        ):
+            raise SubagentLifecycleError(
+                "reasoning_effort must be one of: "
+                + ", ".join(sorted(_VALID_CHILD_EFFORTS))
+                + "."
+            )
         if request.timeout_seconds is not None:
             raise SubagentLifecycleError(
                 "Per-launch timeout is not supported; configure delegation timeout explicitly."

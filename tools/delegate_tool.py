@@ -843,6 +843,28 @@ def _normalize_role(r: Optional[str]) -> str:
     return "leaf"
 
 
+def _normalize_child_reasoning_effort(value: Optional[str]) -> Optional[str]:
+    """Normalise a caller-provided child reasoning level.
+
+    None/empty -> None (inherit). Valid levels (plus "none" = disable
+    thinking) pass through lowercased. Unknown strings degrade to None with
+    a warning so a typo inherits instead of failing the spawn — matching
+    the silent-degrade pattern of _normalize_role and the existing
+    delegation.reasoning_effort config handling in _build_child_agent.
+    """
+    if value is None or not str(value).strip():
+        return None
+    from hermes_constants import VALID_REASONING_EFFORTS
+
+    norm = str(value).strip().lower()
+    if norm in VALID_REASONING_EFFORTS or norm in {"none", "false", "disabled"}:
+        return norm
+    logger.warning(
+        "Unknown delegate_task reasoning_effort=%r, inheriting parent level", value
+    )
+    return None
+
+
 def _get_max_concurrent_children() -> int:
     """Read delegation.max_concurrent_children from config, falling back to
     DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (10).
@@ -1591,6 +1613,9 @@ def _build_child_agent(
     override_api_mode: Optional[str] = None,
     override_request_overrides: Optional[Dict[str, Any]] = None,
     override_max_tokens: Optional[int] = None,
+    # Public lifecycle callers may request an exact per-child effort without
+    # changing global delegation config. None preserves existing inheritance.
+    override_reasoning_effort: Optional[str] = None,
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
@@ -1819,7 +1844,8 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config: explicit public-lifecycle override >
+    # delegation config > parent inherit.
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     try:
@@ -1827,19 +1853,24 @@ def _build_child_agent(
         # False (``reasoning_effort: false``) to "" and inherit the parent
         # instead of disabling thinking for children.
         delegation_effort = delegation_cfg.get("reasoning_effort")
-        if delegation_effort or delegation_effort is False:
+        selected_effort = (
+            override_reasoning_effort
+            if override_reasoning_effort is not None
+            else delegation_effort
+        )
+        if selected_effort or selected_effort is False:
             from hermes_constants import parse_reasoning_effort
 
-            parsed = parse_reasoning_effort(delegation_effort)
+            parsed = parse_reasoning_effort(selected_effort)
             if parsed is not None:
                 child_reasoning = parsed
             else:
                 logger.warning(
-                    "Unknown delegation.reasoning_effort '%s', inheriting parent level",
-                    delegation_effort,
+                    "Unknown child reasoning effort '%s', inheriting parent level",
+                    selected_effort,
                 )
     except Exception as exc:
-        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+        logger.debug("Could not load child reasoning effort: %s", exc)
 
     # Inherit the parent's fallback provider chain so subagents can recover
     # from rate-limits and credential exhaustion exactly like the top-level
@@ -3605,6 +3636,7 @@ def delegate_task(
     action: Optional[str] = None,
     subagent_id: Optional[str] = None,
     message: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -3625,6 +3657,10 @@ def delegate_task(
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    The optional 'reasoning_effort' pins the child's thinking level
+    ("none" disables it); omitted, children inherit the parent's level or
+    the delegation.reasoning_effort config. Per-task beats top-level.
 
     Returns JSON with results array, one entry per task.
     """
@@ -3655,6 +3691,8 @@ def delegate_task(
 
     # Normalise the top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
+    # Same treatment for the optional child reasoning level (None = inherit).
+    top_reasoning_effort = _normalize_child_reasoning_effort(reasoning_effort)
 
     # Background (async) delegation now applies to BOTH single tasks and
     # batches. A batch is dispatched as ONE async unit: the whole fan-out runs
@@ -3829,6 +3867,12 @@ def delegate_task(
         # Per-task role beats top-level; normalise again so unknown
         # per-task values warn and degrade to leaf uniformly.
         effective_role = _normalize_role(t.get("role") or top_role)
+        # Per-task reasoning beats top-level; None inherits (parent level or
+        # delegation.reasoning_effort config, resolved in _build_child_agent).
+        effective_reasoning = (
+            _normalize_child_reasoning_effort(t.get("reasoning_effort"))
+            or top_reasoning_effort
+        )
         # T1-24: schema'd tasks get the contract appended to their context
         # so the child knows the expected output shape before it starts.
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
@@ -3857,6 +3901,7 @@ def delegate_task(
                 override_max_tokens=creds.get("max_output_tokens"),
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
+                override_reasoning_effort=effective_reasoning,
                 role=effective_role,
             )
         except ValueError as exc:
@@ -4776,6 +4821,18 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "reasoning_effort": {
+                            "type": "string",
+                            "enum": [
+                                "none", "minimal", "low", "medium",
+                                "high", "xhigh", "max", "ultra",
+                            ],
+                            "description": (
+                                "Per-task reasoning override. See top-level "
+                                "'reasoning_effort' for semantics; beats the "
+                                "top-level value for this task."
+                            ),
+                        },
                         "output_schema": {
                             "type": "object",
                             "description": (
@@ -4801,6 +4858,24 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "reasoning_effort": {
+                "type": "string",
+                "enum": [
+                    "none", "minimal", "low", "medium",
+                    "high", "xhigh", "max", "ultra",
+                ],
+                "description": (
+                    "Optional reasoning level for the child(ren). Omit to "
+                    "inherit the parent's level (or the "
+                    "delegation.reasoning_effort config, when set). Use a "
+                    "lower level ('low', 'minimal') for mechanical subtasks "
+                    "and a higher one ('high', 'xhigh') for analysis-heavy "
+                    "work; 'none' disables thinking for the child. Levels "
+                    "the child's model cannot honor degrade the same way "
+                    "the main agent's do. Per-task reasoning_effort beats "
+                    "this top-level value."
+                ),
             },
             "output_schema": {
                 "type": "object",
@@ -4918,6 +4993,7 @@ registry.register(
         action=args.get("action"),
         subagent_id=args.get("subagent_id"),
         message=args.get("message"),
+        reasoning_effort=args.get("reasoning_effort"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

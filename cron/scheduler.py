@@ -3603,7 +3603,9 @@ def _sweep_mcp_orphans() -> None:
 def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     """Run one due job via the shared ``run_one_job`` body."""
     # Claim only when the worker actually starts, so a queued lease can't expire first.
-    claimed = claim_job_for_fire(job["id"], return_job=True)
+    # The ticker reserved the next recurring slot before dispatch, so the claim
+    # must not advance it a second time.
+    claimed = claim_job_for_fire(job["id"], return_job=True, advance_schedule=False)
     if not claimed:
         finish_execution(
             job["execution_id"], success=False, error="Fire claim lost; execution was not started.")

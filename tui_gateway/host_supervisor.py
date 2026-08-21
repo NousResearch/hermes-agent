@@ -19,6 +19,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,20 @@ MUTATOR_ROUTE_TABLE: dict[str, str] = {
 _REGISTRY_NAME = "dashboard-compute-host.json"
 _RESPAWN_WINDOW_SECS = 300.0
 _SHUTDOWN_TIMEOUT_SECS = 10.0
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingTurn:
+    sid: str
+    client_request_id: str
+    callback: Callable[[dict], None] | None
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingControl:
+    sid: str
+    client_request_id: str
+    response_queue: queue.Queue[dict]
 
 
 def append_log_record(path: str | Path, record: str) -> None:
@@ -165,8 +180,8 @@ class HostSupervisor:
         self._closing = False
         self._stopped_respawning = False
         self._restart_times: list[float] = []
-        self._pending_turns: dict[str, tuple[str, Callable[[dict], None] | None]] = {}
-        self._pending_controls: dict[str, queue.Queue[dict]] = {}
+        self._pending_turns: dict[str, _PendingTurn] = {}
+        self._pending_controls: dict[str, _PendingControl] = {}
         self._stderr_tail: list[str] = []
         self._last_progress_counter = 0
 
@@ -242,13 +257,19 @@ class HostSupervisor:
         on_complete: Callable[[dict], None] | None = None,
     ) -> str:
         self.start()
-        request_id = str(frame.get("request_id") or uuid.uuid4().hex)
+        client_request_id = str(frame.get("request_id") or uuid.uuid4().hex)
+        request_id = uuid.uuid4().hex
         sid = str(frame.get("sid") or "")
         payload = dict(frame)
         payload["type"] = "turn.start"
         payload["request_id"] = request_id
+        payload["client_request_id"] = client_request_id
         with self._lock:
-            self._pending_turns[request_id] = (sid, on_complete)
+            self._pending_turns[request_id] = _PendingTurn(
+                sid=sid,
+                client_request_id=client_request_id,
+                callback=on_complete,
+            )
         try:
             self._send_frame(payload)
         except Exception as exc:
@@ -258,6 +279,7 @@ class HostSupervisor:
                 "type": "turn.error",
                 "sid": sid,
                 "request_id": request_id,
+                "client_request_id": client_request_id,
                 "reason": "send_failed",
                 "message": str(exc),
             }
@@ -290,20 +312,30 @@ class HostSupervisor:
         if route_name not in MUTATOR_ROUTE_TABLE:
             raise ValueError(f"unclassified host mutator route: {route_name}")
         self.start()
-        request_id = str((payload or {}).get("request_id") or uuid.uuid4().hex)
+        client_request_id = str((payload or {}).get("request_id") or uuid.uuid4().hex)
+        request_id = uuid.uuid4().hex
         frame = dict(payload or {})
         frame.setdefault("type", "control")
         frame["sid"] = sid
         frame["route_name"] = route_name
         frame["request_id"] = request_id
+        frame["client_request_id"] = client_request_id
         q: queue.Queue[dict] | None = None
         if wait:
             q = queue.Queue(maxsize=1)
             with self._lock:
-                self._pending_controls[request_id] = q
+                self._pending_controls[request_id] = _PendingControl(
+                    sid=sid,
+                    client_request_id=client_request_id,
+                    response_queue=q,
+                )
         self._send_frame(frame)
         if not wait or q is None:
-            return {"status": "sent", "request_id": request_id}
+            return {
+                "status": "sent",
+                "request_id": request_id,
+                "client_request_id": client_request_id,
+            }
         try:
             return q.get(timeout=timeout)
         finally:
@@ -431,37 +463,57 @@ class HostSupervisor:
             self._complete_turn(frame)
             return
         if ftype in {"control.ack", "control.error", "interrupt.ack", "reload_mcp.ack", "shutdown.ack"}:
-            request_id = str(frame.get("request_id") or "")
-            with self._lock:
-                q = self._pending_controls.get(request_id)
-            if q is not None:
-                try:
-                    q.put_nowait(frame)
-                except queue.Full:
-                    pass
+            self._complete_control(frame)
             return
         if ftype == "error" and frame.get("request_id"):
-            request_id = str(frame.get("request_id") or "")
-            with self._lock:
-                q = self._pending_controls.get(request_id)
-            if q is not None:
-                try:
-                    q.put_nowait(frame)
-                except queue.Full:
-                    pass
+            self._complete_control(frame)
 
     def _complete_turn(self, frame: dict[str, Any]) -> None:
         request_id = str(frame.get("request_id") or "")
+        frame_sid = str(frame.get("sid") or "")
         with self._lock:
-            pending = self._pending_turns.pop(request_id, None)
+            pending = self._pending_turns.get(request_id)
+            if pending is not None and pending.sid == frame_sid:
+                self._pending_turns.pop(request_id, None)
         if pending is None:
             return
-        _sid, cb = pending
-        if cb is not None:
+        if pending.sid != frame_sid:
+            logger.warning(
+                "ignoring compute host turn completion with mismatched sid: request_id=%s expected=%s got=%s",
+                request_id,
+                pending.sid,
+                frame_sid,
+            )
+            return
+        completed = dict(frame)
+        completed["client_request_id"] = pending.client_request_id
+        if pending.callback is not None:
             try:
-                cb(frame)
+                pending.callback(completed)
             except Exception:
                 logger.exception("compute host turn completion callback failed")
+
+    def _complete_control(self, frame: dict[str, Any]) -> None:
+        request_id = str(frame.get("request_id") or "")
+        frame_sid = str(frame.get("sid") or "")
+        with self._lock:
+            pending = self._pending_controls.get(request_id)
+        if pending is None:
+            return
+        if pending.sid != frame_sid:
+            logger.warning(
+                "ignoring compute host control completion with mismatched sid: request_id=%s expected=%s got=%s",
+                request_id,
+                pending.sid,
+                frame_sid,
+            )
+            return
+        completed = dict(frame)
+        completed["client_request_id"] = pending.client_request_id
+        try:
+            pending.response_queue.put_nowait(completed)
+        except queue.Full:
+            pass
 
     def _wait_for_exit(self, proc: subprocess.Popen[str]) -> None:
         code = proc.wait()
@@ -479,11 +531,12 @@ class HostSupervisor:
         with self._lock:
             pending = self._pending_turns
             self._pending_turns = {}
-        for request_id, (sid, cb) in pending.items():
+        for request_id, item in pending.items():
             frame = {
                 "type": "turn.error",
-                "sid": sid,
+                "sid": item.sid,
                 "request_id": request_id,
+                "client_request_id": item.client_request_id,
                 "reason": reason,
                 "message": message,
             }
@@ -493,14 +546,14 @@ class HostSupervisor:
                     "method": "event",
                     "params": {
                         "type": "error",
-                        "session_id": sid,
+                        "session_id": item.sid,
                         "payload": {"message": message, "reason": reason},
                     },
                 }
             )
-            if cb is not None:
+            if item.callback is not None:
                 try:
-                    cb(frame)
+                    item.callback(frame)
                 except Exception:
                     logger.exception("compute host error callback failed")
 

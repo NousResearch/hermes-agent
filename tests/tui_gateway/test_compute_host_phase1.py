@@ -100,6 +100,93 @@ def test_supervisor_startup_reconcile_pid_reuse_guard(tmp_path, monkeypatch):
     assert not registry.exists()
 
 
+def test_supervisor_isolates_duplicate_client_turn_ids_by_session(tmp_path, monkeypatch):
+    supervisor = HostSupervisor(
+        registry_path=tmp_path / "registry.json",
+        autostart=False,
+    )
+    sent: list[dict] = []
+    completed: list[tuple[str, dict]] = []
+    monkeypatch.setattr(supervisor, "start", lambda: None)
+    monkeypatch.setattr(supervisor, "_send_frame", lambda frame: sent.append(dict(frame)))
+
+    first_id = supervisor.submit_turn(
+        {"sid": "s1", "request_id": "1", "text": "first"},
+        on_complete=lambda frame: completed.append(("s1", frame)),
+    )
+    second_id = supervisor.submit_turn(
+        {"sid": "s2", "request_id": "1", "text": "second"},
+        on_complete=lambda frame: completed.append(("s2", frame)),
+    )
+
+    assert first_id != second_id
+    assert [frame["request_id"] for frame in sent] == [first_id, second_id]
+    assert [frame["client_request_id"] for frame in sent] == ["1", "1"]
+
+    # A terminal frame cannot consume another session's pending turn, even if
+    # it carries a valid internal correlation ID.
+    supervisor._complete_turn({"type": "turn.end", "sid": "s2", "request_id": first_id})
+    assert completed == []
+    assert first_id in supervisor._pending_turns
+
+    supervisor._complete_turn({"type": "turn.end", "sid": "s1", "request_id": first_id})
+    supervisor._complete_turn({"type": "turn.end", "sid": "s2", "request_id": second_id})
+
+    assert [(owner, frame["sid"]) for owner, frame in completed] == [
+        ("s1", "s1"),
+        ("s2", "s2"),
+    ]
+    assert [frame["client_request_id"] for _, frame in completed] == ["1", "1"]
+
+
+def test_supervisor_isolates_duplicate_client_control_ids_by_session(tmp_path, monkeypatch):
+    supervisor = HostSupervisor(
+        registry_path=tmp_path / "registry.json",
+        autostart=False,
+    )
+    sent: list[dict] = []
+    results: dict[str, dict] = {}
+    monkeypatch.setattr(supervisor, "start", lambda: None)
+    monkeypatch.setattr(supervisor, "_send_frame", lambda frame: sent.append(dict(frame)))
+
+    def run_control(sid: str) -> None:
+        results[sid] = supervisor.control(
+            sid,
+            route_name="session.save",
+            payload={"request_id": "1"},
+            timeout=2.0,
+        )
+
+    threads = [threading.Thread(target=run_control, args=(sid,)) for sid in ("s1", "s2")]
+    for thread in threads:
+        thread.start()
+    deadline = time.monotonic() + 2.0
+    while len(sent) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(sent) == 2
+
+    by_sid = {frame["sid"]: frame for frame in sent}
+    assert by_sid["s1"]["request_id"] != by_sid["s2"]["request_id"]
+    assert {frame["client_request_id"] for frame in sent} == {"1"}
+
+    first_id = by_sid["s1"]["request_id"]
+    supervisor._complete_control(
+        {"type": "control.ack", "sid": "s2", "request_id": first_id}
+    )
+    assert "s1" not in results
+
+    for sid, frame in by_sid.items():
+        supervisor._complete_control(
+            {"type": "control.ack", "sid": sid, "request_id": frame["request_id"]}
+        )
+    for thread in threads:
+        thread.join(timeout=2.0)
+
+    assert set(results) == {"s1", "s2"}
+    assert {result["sid"] for result in results.values()} == {"s1", "s2"}
+    assert {result["client_request_id"] for result in results.values()} == {"1"}
+
+
 def _make_compress_host_session(events: list) -> dict:
     class _Agent:
         model = "host-model"

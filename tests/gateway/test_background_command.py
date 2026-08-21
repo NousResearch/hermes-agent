@@ -101,6 +101,7 @@ class TestRunBackgroundTask:
         runner = _make_runner()
         mock_adapter = AsyncMock()
         mock_adapter.send = AsyncMock()
+        mock_adapter.toolsets_for_source = MagicMock(return_value=None)
         runner.adapters[Platform.TELEGRAM] = mock_adapter
 
         source = SessionSource(
@@ -124,6 +125,7 @@ class TestRunBackgroundTask:
         runner = _make_runner()
         mock_adapter = AsyncMock()
         mock_adapter.send = AsyncMock()
+        mock_adapter.toolsets_for_source = MagicMock(return_value=None)
         mock_adapter.extract_media = MagicMock(return_value=([], "Hello from background!"))
         mock_adapter.extract_images = MagicMock(return_value=([], "Hello from background!"))
         runner.adapters[Platform.TELEGRAM] = mock_adapter
@@ -169,6 +171,12 @@ class TestRunBackgroundTask:
         assert agent_kwargs["checkpoint_max_file_size_mb"] == 3
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
+        peer_recorder = getattr(runner.session_store, "_record_gateway_session_peer")
+        peer_recorder.assert_called_once()
+        peer_call = peer_recorder.call_args
+        assert peer_call.args[0] == "bg_test"
+        assert peer_call.args[2] is source
+        assert peer_call.kwargs["display_name"] == "Background task"
 
 
 # ---------------------------------------------------------------------------

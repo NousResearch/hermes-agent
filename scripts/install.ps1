@@ -600,7 +600,10 @@ function Write-NpmDebugLogTail {
     }
     $tail = $null
     try {
-        $tail = Get-Content -LiteralPath $logPath -Tail $TailLines -ErrorAction Stop
+        # npm writes this log itself, as UTF-8 with no BOM. Get-Content has no
+        # BOM to sniff and falls back to the ANSI code page, so the codec has to
+        # be stated. See the note above _Invoke-NativeWithTimeout.
+        $tail = Get-Content -LiteralPath $logPath -Tail $TailLines -Encoding UTF8 -ErrorAction Stop
     } catch {
         Write-Warn "Could not read npm debug log ${logPath}: $($_.Exception.Message)"
         return
@@ -3299,13 +3302,21 @@ function Install-NodeDeps {
         [string]$exePath, [string]$argLine, [string]$workDir,
         [string]$logPath, [int]$timeoutSec
     ) {
+        # cmd.exe redirects the child's bytes into $logPath verbatim: no
+        # PowerShell decode happens on the way in, so the file carries the
+        # child's own encoding and no BOM.  Node-based children (npm, npx,
+        # playwright) write UTF-8.  Every Get-Content that reads this file
+        # therefore has to say -Encoding UTF8 -- without a BOM to sniff it
+        # would otherwise decode with the machine ANSI code page, which is
+        # the one thing the [Console]::OutputEncoding line near the top of
+        # this script cannot help with (that only fixes the display side).
         $cmdLine = "/d /s /c "" ""$exePath"" $argLine > ""$logPath"" 2>&1 """
         $proc = Start-Process -FilePath $env:ComSpec -ArgumentList $cmdLine `
             -WorkingDirectory $workDir -NoNewWindow -PassThru
         $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSec)
         $shown = 0
         function _Drain-NewLines([string]$path, [ref]$count) {
-            $lines = @(Get-Content $path -ErrorAction SilentlyContinue)
+            $lines = @(Get-Content $path -Encoding UTF8 -ErrorAction SilentlyContinue)
             if ($lines.Count -gt $count.Value) {
                 $lines[$count.Value..($lines.Count - 1)] | ForEach-Object {
                     Write-Host "    $_" -ForegroundColor DarkGray
@@ -3364,7 +3375,7 @@ function Install-NodeDeps {
                 Write-Warn "$label npm install failed -- exit code $code"
             }
             if (Test-Path $logPath) {
-                $errText = (Get-Content $logPath -Raw -ErrorAction SilentlyContinue)
+                $errText = (Get-Content $logPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)
                 if ($errText) {
                     $snippet = if ($errText.Length -gt 1200) { $errText.Substring(0, 1200) + "..." } else { $errText }
                     Write-Info "  npm output:"
@@ -3472,7 +3483,7 @@ function Install-NodeDeps {
                         Write-Warn "Playwright Chromium install failed -- exit code $pwCode"
                         Write-Warn "Browser tools will not work until Chromium is installed."
                         if (Test-Path $pwLog) {
-                            $pwErr = Get-Content $pwLog -Raw -ErrorAction SilentlyContinue
+                            $pwErr = Get-Content $pwLog -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
                             if ($pwErr) {
                                 $snippet = if ($pwErr.Length -gt 1200) { $pwErr.Substring(0, 1200) + "..." } else { $pwErr }
                                 Write-Info "  playwright output:"

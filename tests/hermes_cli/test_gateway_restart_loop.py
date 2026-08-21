@@ -664,6 +664,23 @@ class TestLifecycleGuardModule:
         )
         check_gateway_lifecycle("clean prompt", str(script))
 
+    def test_bash_arithmetic_division_not_blocked(self, tmp_path):
+        """#87280: a .sh cron script using bash arithmetic division
+        $(( x / y )) must NOT be blocked.
+
+        Before the fix for #77131, the shell-script reference walk
+        tokenized the bare "/" operator as an executable path resolving
+        to the filesystem root, which failed the regular-file check and
+        hard-blocked every innocent .sh script containing arithmetic.
+        """
+        from cron.lifecycle_guard import check_gateway_lifecycle
+        script = tmp_path / "report.sh"
+        script.write_text(
+            "#!/usr/bin/env bash\n"
+            "echo $(( (100 - 50) / 86400 ))\n"
+        )
+        check_gateway_lifecycle(None, str(script))
+
     def test_python_script_with_literal_lifecycle_command_still_blocked(
         self, tmp_path
     ):

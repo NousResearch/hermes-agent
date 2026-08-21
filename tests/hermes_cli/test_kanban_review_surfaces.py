@@ -361,6 +361,91 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
         assert cli_after.status == "running"
 
 
+def test_goal_mode_review_handoff_fail_open_on_transport_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Transient judge transport errors must not block request-review (#83610)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    with kb.connect() as conn:
+        tool_task = kb.create_task(
+            conn,
+            title="Goal-mode tool task",
+            assignee="builder",
+            goal_mode=True,
+        )
+        claimed = kb.claim_task(conn, tool_task, claimer="builder:1")
+        assert claimed is not None
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tool_task)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
+
+    from tools import kanban_tools as tools
+
+    monkeypatch.setattr(tools, "_goal_judge_available", lambda: True)
+    monkeypatch.setattr(
+        tools,
+        "judge_goal",
+        lambda *args, **kwargs: (
+            "continue",
+            "judge error: ConnectError",
+            False,
+            None,
+            True,
+        ),
+    )
+    ok = json.loads(tools._handle_request_review({"summary": "Looks ready."}))
+    assert ok.get("ok") is True
+    assert ok.get("status") == "review"
+    with kb.connect() as conn:
+        tool_after = kb.get_task(conn, tool_task)
+        assert tool_after is not None
+        assert tool_after.status == "review"
+
+    with kb.connect() as conn:
+        cli_task = kb.create_task(
+            conn,
+            title="Goal-mode CLI task",
+            assignee="builder",
+            goal_mode=True,
+        )
+        cli_claimed = kb.claim_task(conn, cli_task, claimer="builder:2")
+        assert cli_claimed is not None
+    monkeypatch.setenv("HERMES_KANBAN_TASK", cli_task)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(cli_claimed.current_run_id))
+
+    import agent.auxiliary_client as auxiliary_client
+    from hermes_cli import goals
+
+    monkeypatch.setattr(
+        auxiliary_client,
+        "get_text_auxiliary_client",
+        lambda purpose: (object(), "judge-model"),
+    )
+    monkeypatch.setattr(
+        goals,
+        "judge_goal",
+        lambda *args, **kwargs: (
+            "continue",
+            "judge error: ConnectError",
+            False,
+            None,
+            True,
+        ),
+    )
+    output = kc.run_slash(f"request-review {cli_task} --summary 'Looks ready.'")
+    assert "rejected by judge" not in output
+    with kb.connect() as conn:
+        cli_after = kb.get_task(conn, cli_task)
+        assert cli_after is not None
+        assert cli_after.status == "review"
+
+
 def test_goal_loop_stops_after_reviewer_requests_changes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

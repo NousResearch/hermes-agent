@@ -257,8 +257,9 @@ def _goal_mode_handoff_rejection(task, evidence: str) -> Optional[str]:
         return None
     verdict = "done"
     reason = ""
+    transport_failed = False
     try:
-        verdict, reason, _, _, _ = judge_goal(
+        verdict, reason, _, _, transport_failed = judge_goal(
             goal=f"{task.title}\n\n{task.body or ''}".strip(),
             last_response=evidence.strip(),
         )
@@ -270,6 +271,8 @@ def _goal_mode_handoff_rejection(task, evidence: str) -> Optional[str]:
             judge_exc,
             exc_info=True,
         )
+    if transport_failed or verdict == "skipped":
+        return None
     return reason if verdict != "done" else None
 
 

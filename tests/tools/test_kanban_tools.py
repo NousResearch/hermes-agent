@@ -215,6 +215,79 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
         conn2.close()
 
 
+class TestGoalModeHandoffRejectionTool:
+    """Unit tests for tools.kanban_tools._goal_mode_handoff_rejection (#83610)."""
+
+    @staticmethod
+    def _task():
+        import types
+
+        return types.SimpleNamespace(
+            goal_mode=True,
+            title="Review handoff",
+            body="request independent review",
+        )
+
+    @pytest.mark.parametrize(
+        ("judge_return", "judge_side_effect", "expected"),
+        [
+            (
+                ("continue", "criteria not met", False, None, False),
+                None,
+                "criteria not met",
+            ),
+            (
+                ("continue", "judge error: ConnectError", False, None, True),
+                None,
+                None,
+            ),
+            (
+                ("skipped", "empty goal", False, None, False),
+                None,
+                None,
+            ),
+            (
+                ("done", "achieved", False, None, False),
+                None,
+                None,
+            ),
+            (
+                None,
+                RuntimeError("boom"),
+                None,
+            ),
+        ],
+        ids=[
+            "real_rejection",
+            "transport_failure",
+            "skipped",
+            "success",
+            "exception",
+        ],
+    )
+    def test_handoff_rejection_matrix(
+        self,
+        monkeypatch,
+        judge_return,
+        judge_side_effect,
+        expected,
+    ):
+        from tools import kanban_tools as kt
+
+        monkeypatch.setattr(kt, "_goal_judge_available", lambda: True)
+        if judge_side_effect is not None:
+            monkeypatch.setattr(
+                kt,
+                "judge_goal",
+                lambda **kw: (_ for _ in ()).throw(judge_side_effect),
+            )
+        else:
+            monkeypatch.setattr(kt, "judge_goal", lambda **kw: judge_return)
+
+        result = kt._goal_mode_handoff_rejection(self._task(), "implementation complete")
+        assert result == expected
+
+
 def test_block_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_block({"reason": "need clarification"})
@@ -254,6 +327,74 @@ def _make_goal_mode_worker_env(monkeypatch, tmp_path):
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
     return goal_task_id
+
+
+def test_complete_goal_mode_fail_open_on_transport_failure(monkeypatch, tmp_path):
+    """Transient judge transport errors must not block kanban_complete (#83610)."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(kt, "_goal_judge_available", lambda: True)
+    monkeypatch.setattr(
+        kt,
+        "judge_goal",
+        lambda **kw: (
+            "continue",
+            "judge error: ConnectError",
+            False,
+            None,
+            True,
+        ),
+    )
+
+    out = json.loads(kt._handle_complete({"summary": "implementation complete"}))
+    assert out.get("ok") is True
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "done"
+    finally:
+        conn.close()
+
+
+def test_request_review_goal_mode_fail_open_on_transport_failure(monkeypatch, tmp_path):
+    """Transient judge transport errors must not block kanban_request_review (#83610)."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    conn = kb.connect()
+    try:
+        run = kb.latest_run(conn, tid)
+        assert run is not None
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run.id))
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(kt, "_goal_judge_available", lambda: True)
+    monkeypatch.setattr(
+        kt,
+        "judge_goal",
+        lambda **kw: (
+            "continue",
+            "judge error: ConnectError",
+            False,
+            None,
+            True,
+        ),
+    )
+
+    out = json.loads(kt._handle_request_review({"summary": "implementation complete"}))
+    assert out.get("ok") is True
+    assert out.get("status") == "review"
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "review"
+    finally:
+        conn.close()
 
 
 def test_block_goal_mode_rejects_missing_kind(monkeypatch, tmp_path):

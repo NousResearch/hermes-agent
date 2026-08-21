@@ -2306,6 +2306,76 @@ def _origin_delivery_thread(origin: dict):
     return origin.get("thread_id")
 
 
+def _resolve_origin_delivery_targets(job: dict) -> list[dict]:
+    """Resolve one or more possible delivery targets for `deliver=origin` jobs.
+
+    Known platforms resolve back to the exact origin chat/thread. Unknown origin
+    platforms (for example, the Hermes WebUI session platform) now fall back to
+    every connected home channel so the job still reaches users instead of
+    failing with an unrecognized platform error.
+    """
+    origin = _resolve_origin(job)
+    job_id = job.get("id") or job.get("name", "?")
+
+    if not origin:
+        # Origin missing (e.g. job created via API/script) — try each platform's
+        # home channel as a fallback instead of silently dropping.
+        for platform_name in _iter_home_target_platforms():
+            chat_id = _get_home_target_chat_id(platform_name)
+            if chat_id:
+                logger.info(
+                    "Job '%s' has deliver=origin but no origin; falling back to %s home channel",
+                    job_id,
+                    platform_name,
+                )
+                return [
+                    {
+                        "platform": platform_name,
+                        "chat_id": chat_id,
+                        "thread_id": _get_home_target_thread_id(platform_name),
+                    }
+                ]
+        return []
+
+    platform_name = str(origin.get("platform") or "").lower()
+    if not platform_name:
+        return []
+
+    if _is_known_delivery_platform(platform_name):
+        chat_id = origin.get("chat_id")
+        if chat_id is None:
+            return []
+        return [
+            {
+                "platform": platform_name,
+                "chat_id": str(chat_id),
+                "thread_id": _origin_delivery_thread(origin),
+            }
+        ]
+
+    logger.info(
+        "Job '%s' has deliver=origin from unsupported platform '%s'; falling back to home channels",
+        job_id,
+        platform_name,
+    )
+
+    # Preserve existing behavior for webui/other non-scheduled platforms by
+    # delivering to every configured home channel.
+    targets: list[dict] = []
+    for fallback_platform in _iter_home_target_platforms():
+        chat_id = _get_home_target_chat_id(fallback_platform)
+        if not chat_id:
+            continue
+        targets.append(
+            {
+                "platform": fallback_platform,
+                "chat_id": chat_id,
+                "thread_id": _get_home_target_thread_id(fallback_platform),
+            }
+        )
+    return targets
+
+
 def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
     """Resolve one concrete auto-delivery target for a cron job."""
 
@@ -2322,27 +2392,18 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         return _resolve_bot_chat_target(job, bot_chat_profile)
 
     if deliver_value == "origin":
-        if origin:
+        if not origin:
+            return None
+        platform_name = str(origin.get("platform") or "").lower()
+        if platform_name and _is_known_delivery_platform(platform_name):
+            chat_id = origin.get("chat_id")
+            if chat_id is None:
+                return None
             return {
-                "platform": origin["platform"],
-                "chat_id": str(origin["chat_id"]),
+                "platform": platform_name,
+                "chat_id": str(chat_id),
                 "thread_id": _origin_delivery_thread(origin),
             }
-        # Origin missing (e.g. job created via API/script) — try each
-        # platform's home channel as a fallback instead of silently dropping.
-        for platform_name in _iter_home_target_platforms():
-            chat_id = _get_home_target_chat_id(platform_name)
-            if chat_id:
-                logger.info(
-                    "Job '%s' has deliver=origin but no origin; falling back to %s home channel",
-                    job.get("name", job.get("id", "?")),
-                    platform_name,
-                )
-                return {
-                    "platform": platform_name,
-                    "chat_id": chat_id,
-                    "thread_id": _get_home_target_thread_id(platform_name),
-                }
         return None
 
     if ":" in deliver_value:
@@ -2666,6 +2727,18 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
     seen = set()
     targets = []
     for part in parts:
+        if part == "origin":
+            for target in _resolve_origin_delivery_targets(job):
+                key = (
+                    target["platform"].lower(),
+                    str(target["chat_id"]),
+                    target.get("thread_id"),
+                )
+                if key not in seen:
+                    seen.add(key)
+                    targets.append(target)
+            continue
+
         target = _resolve_single_delivery_target(job, part)
         if target:
             key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))

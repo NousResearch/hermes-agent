@@ -16,9 +16,12 @@ from cron.scheduler import (
     _merge_mcp_into_per_job_toolsets,
     _resolve_cron_enabled_toolsets,
     _resolve_delivery_target,
+    _resolve_delivery_targets,
     _resolve_origin,
     _send_media_via_adapter,
     _summarize_cron_failure_for_delivery,
+    _HOME_TARGET_ENV_VARS,
+    _LEGACY_HOME_TARGET_ENV_VARS,
     run_job,
 )
 from tools.env_passthrough import clear_env_passthrough
@@ -195,6 +198,38 @@ class TestResolveDeliveryTarget:
             "chat_id": "-1001",
             "thread_id": "17585",
         }
+
+    def test_origin_delivery_from_unknown_platform_falls_back_to_all_home_channels(self, monkeypatch):
+        for var in set(_HOME_TARGET_ENV_VARS.values()) | set(_LEGACY_HOME_TARGET_ENV_VARS.values()):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
+        monkeypatch.setenv("WHATSAPP_HOME_CHANNEL", "+999")
+
+        job = {
+            "deliver": "origin",
+            "origin": {
+                "platform": "webui",
+                "chat_id": "home-chat",
+            },
+        }
+
+        targets = _resolve_delivery_targets(job)
+        assert {target["platform"] for target in targets} == {"telegram", "whatsapp"}
+        assert {target["chat_id"] for target in targets} == {"-111", "+999"}
+
+    def test_origin_delivery_from_unknown_platform_without_home_channels_drops_target(self, monkeypatch):
+        for var in set(_HOME_TARGET_ENV_VARS.values()) | set(_LEGACY_HOME_TARGET_ENV_VARS.values()):
+            monkeypatch.delenv(var, raising=False)
+
+        job = {
+            "deliver": "origin",
+            "origin": {
+                "platform": "webui",
+                "chat_id": "home-chat",
+            },
+        }
+
+        assert _resolve_delivery_targets(job) == []
 
 
     def test_bare_platform_delivery_uses_home_root_instead_of_origin_thread(self, monkeypatch):

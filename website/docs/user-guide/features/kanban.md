@@ -625,7 +625,7 @@ And the two auxiliary LLM slots:
 
 ### Architecture
 
-The GUI is strictly a **read-through-the-DB + write-through-kanban_db** layer with no domain logic of its own:
+The bundled GUI is a **read-through-the-DB + write-through-kanban_db** layer with no domain logic of its own. External observability plugins can use the sanitized signal read surface described below instead of consuming the full board model.
 
 <!-- ascii-guard-ignore -->
 ```
@@ -655,6 +655,8 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 
 | Method | Path | Purpose |
 |---|---|---|
+| `GET` | `/capabilities` | Advertise versioned, additive Kanban API capabilities |
+| `GET` / `HEAD` | `/read-model/signal?board=<slug>` | Bounded, sanitized task/link/run projection for observability-only plugins |
 | `GET` | `/board?tenant=<name>&include_archived=…` | Full board grouped by status column, plus tenants + assignees for filter dropdowns |
 | `GET` | `/tasks/:id` | Task + comments + events + links |
 | `POST` | `/tasks` | Create (wraps `kanban_db.create_task`, accepts `triage: bool` and `parents: [id, …]`) |
@@ -672,9 +674,20 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 | `DELETE` | `/links?parent_id=…&child_id=…` | Remove a dependency |
 | `POST` | `/dispatch?max=…&dry_run=…` | Nudge the dispatcher — skip the 60 s wait |
 | `GET` | `/config` | Read `dashboard.kanban` preferences from `config.yaml` — `default_tenant`, `lane_by_profile`, `include_archived_by_default`, `render_markdown` |
-| `WS` | `/events?since=<event_id>` | Live stream of `task_events` rows |
+| `WS` | `/events?since=<event_id>` | Legacy live stream of `task_events` rows, including payloads |
+| `WS` | `/events?view=signal&board=<slug>&since=<event_id>&generation=<generation>` | Strict, allowlisted event stream with generation/reset recovery |
 
-Every handler is a thin wrapper — the plugin is ~700 lines of Python (router + WebSocket tail + bulk batcher + config reader) and adds no new business logic. A tiny `_conn()` helper auto-initializes `kanban.db` on every read and write, so a fresh install works whether the user opened the dashboard first, hit the REST API directly, or ran `hermes kanban init`.
+Every handler is a thin wrapper and adds no new task-domain logic. Mutation and full-board routes use `_conn()` to initialize the schema. The signal routes only open an existing board through a private `mode=rw` + `query_only` connection and fail closed when signal state is not materialized.
+
+### Sanitized signal contract
+
+`GET /read-model/signal` is intended for status views, graph visualizations, and other observability-only dashboard plugins. It requires one explicit canonical `board` parameter, rejects duplicate or unknown parameters, returns `Cache-Control: private, no-store`, and advertises `kanban.read_model.signal.v1` plus `kanban.events.signal.v1`.
+
+The projection exposes only bounded task identity/status/timing fields, parent-child links, and bounded run identity/status/timing fields. It never returns task titles, bodies, results, prompts, workspace or branch paths, claim locks, raw errors, summaries, metadata, or event payloads.
+
+When `truncated` is `true`, tasks are partial and links and runs cover only that visible task set. Clients must not infer board-wide completeness or compute integral board metrics from that response; they should render an explicit partial state or fail closed.
+
+Signal WebSocket frames carry `generation`, `cursor`, `reset`, and allowlisted event identity fields. Event-history deletion rotates the generation in the same SQLite transaction. Fresh streams may use `since=0` without `generation`; reconnects with `since>0` must send the generation received with their snapshot or prior frame. A mismatch returns an initial `reset: true`, and the client must fetch a fresh signal read model before applying more events. Omitting `view` preserves the legacy WebSocket protocol unchanged.
 
 ### Dashboard config
 
@@ -693,17 +706,19 @@ Each key is optional and falls back to the shown default.
 
 ### Security model
 
-The dashboard's HTTP auth middleware [explicitly skips `/api/plugins/`](./extending-the-dashboard#backend-api-routes) — plugin routes are unauthenticated by design because the dashboard binds to localhost by default. That means the kanban REST surface is reachable from any process on the host.
+The dashboard's HTTP auth middleware protects `/api/plugins/...` routes with the same session gate used by core API routes. Use the Plugin SDK's `fetchJSON` or `authedFetch`; do not read or assemble credentials in plugin code.
 
-The WebSocket takes one additional step: it requires the dashboard's ephemeral session token as a `?token=…` query parameter (browsers can't set `Authorization` on an upgrade request), matching the pattern used by the in-browser PTY bridge.
+WebSocket clients must use the SDK's `buildWsUrl`. The canonical upgrade gate accepts the correct credential for the active mode: loopback session token, gated single-use ticket, or server-internal credential.
 
-If you run `hermes dashboard --host 0.0.0.0`, every plugin route — kanban included — becomes reachable from the network. **Don't do that on a shared host.** The board contains task bodies, comments, and workspace paths; an attacker reaching these routes gets read access to your entire collaboration surface and can also create / reassign / archive tasks.
+Binding the dashboard beyond loopback still increases exposure. Anyone who obtains a valid dashboard session can access the full legacy board surface, including task bodies, comments, and workspace paths. Prefer the signal surface for plugins that need only operational status.
 
 Tasks in `~/.hermes/kanban.db` are profile-agnostic on purpose (that's the coordination primitive). If you open the dashboard with `hermes -p <profile> dashboard`, the board still shows tasks created by any other profile on the host. Same user owns all profiles, but this is worth knowing if multiple personas coexist.
 
 ### Live updates
 
-`task_events` is an append-only SQLite table with a monotonic `id`. The WebSocket endpoint holds each client's last-seen event id and pushes new rows as they land. When a burst of events arrives, the frontend reloads the (very cheap) board endpoint — simpler and more correct than trying to patch local state from every event kind. WAL mode means the read loop never blocks the dispatcher's `BEGIN IMMEDIATE` claim transactions.
+`task_events` normally grows with a monotonic `id`. The legacy WebSocket holds each client's last-seen event id and pushes new rows as they land. When a burst arrives, the frontend reloads the board endpoint instead of patching local state from every event kind.
+
+Retention or hard deletion can create cursor gaps. The signal WebSocket therefore includes a durable event generation and emits `reset: true` after history changes. WAL mode lets both streams read alongside the dispatcher's `BEGIN IMMEDIATE` claim transactions.
 
 ### Extending it
 

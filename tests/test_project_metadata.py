@@ -166,6 +166,32 @@ def test_dingtalk_extra_includes_qrcode_for_qr_auth():
     assert any(dep.startswith("qrcode") for dep in dingtalk_extra)
 
 
+def test_wake_sherpa_declares_text2token_runtime_deps():
+    """sherpa_onnx.text2token imports BOTH sentencepiece and pypinyin
+    unconditionally — before any tokens_type branching — even for the
+    English BPE phrases the wake word uses. sherpa-onnx declares neither,
+    so if the [wake] extra (eager desktop install) or the "wake.sherpa"
+    lazy-install entry omits either, the sherpa engine dies on the first
+    text2token() call with `No module named 'pypinyin'` and the listener
+    never arms (#74719). Both surfaces must carry both deps."""
+    from tools.lazy_deps import LAZY_DEPS
+
+    required = {"sentencepiece", "pypinyin"}
+
+    wake_extra_pkgs = set(_exact_pins(_load_optional_dependencies()["wake"]))
+    assert required <= wake_extra_pkgs, (
+        "[wake] extra must pin sherpa_onnx.text2token's undeclared runtime "
+        f"deps {sorted(required)}; missing {sorted(required - wake_extra_pkgs)}"
+    )
+
+    sherpa_lazy_pkgs = set(_exact_pins(LAZY_DEPS["wake.sherpa"]))
+    assert required <= sherpa_lazy_pkgs, (
+        "LAZY_DEPS['wake.sherpa'] must pin sherpa_onnx.text2token's "
+        f"undeclared runtime deps {sorted(required)}; missing "
+        f"{sorted(required - sherpa_lazy_pkgs)}"
+    )
+
+
 
 
 

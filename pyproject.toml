@@ -209,7 +209,13 @@ wake = [
   "openwakeword==0.6.0",
   "onnxruntime==1.27.0",
   "sherpa-onnx==1.13.4",
+  # sentencepiece and pypinyin are both imported unconditionally by
+  # sherpa_onnx.text2token (runtime phrase tokenization) even for English
+  # BPE phrases, yet sherpa-onnx declares neither — without pypinyin the
+  # sherpa engine raises `No module named 'pypinyin'` and the listener never
+  # arms. Mirrored in tools/lazy_deps.py ("wake.sherpa").
   "sentencepiece==0.2.2",
+  "pypinyin==0.55.0",
   "pvporcupine==4.0.3",
   "sounddevice==0.5.5",
   "numpy==2.4.3",

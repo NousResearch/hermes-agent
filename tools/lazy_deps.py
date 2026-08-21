@@ -172,11 +172,15 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "numpy==2.4.3",
     ),
     # Open-vocabulary keyword spotting: any typed phrase, zero training.
-    # sentencepiece is required by sherpa_onnx.text2token (runtime phrase
-    # tokenization) even though sherpa-onnx doesn't declare it.
+    # sentencepiece AND pypinyin are both required by sherpa_onnx.text2token
+    # (runtime phrase tokenization) even for English BPE phrases, yet
+    # sherpa-onnx declares neither. Without pypinyin, ensure() would report
+    # the feature satisfied while the first text2token() call dies with
+    # `No module named 'pypinyin'` and the listener never arms (#74719).
     "wake.sherpa": (
         "sherpa-onnx==1.13.4",
         "sentencepiece==0.2.2",
+        "pypinyin==0.55.0",
         "sounddevice==0.5.5",
         "numpy==2.4.3",
     ),

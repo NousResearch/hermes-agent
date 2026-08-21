@@ -1,7 +1,10 @@
-"""Tests for docker container_config key propagation in file_tools."""
+"""Tests for container configuration propagation in file tools."""
 
-from unittest.mock import patch, MagicMock
+import threading
+import unittest.mock as mock
+
 import tools.file_tools as file_tools
+import tools.terminal_tool as terminal_tool
 
 
 def _make_env_config(**overrides):
@@ -18,9 +21,18 @@ def _make_env_config(**overrides):
         "container_memory": 4096,
         "container_disk": 20480,
         "container_persistent": False,
-        "docker_volumes": [],
+        "modal_mode": "managed",
+        "vercel_runtime": "python3.13",
+        "docker_volumes": ["/example-host:/example-container:ro"],
         "docker_mount_cwd_to_workspace": True,
-        "docker_forward_env": ["MY_SECRET", "API_KEY"],
+        "docker_forward_env": ["EXAMPLE_FORWARD"],
+        "docker_env": {"EXAMPLE_STATIC": "enabled"},
+        "docker_run_as_host_user": True,
+        "docker_extra_args": ["--label", "example=true"],
+        "docker_shm_size": "2g",
+        "docker_network": False,
+        "docker_persist_across_processes": False,
+        "docker_orphan_reaper": False,
     }
     base.update(overrides)
     return base
@@ -29,31 +41,35 @@ def _make_env_config(**overrides):
 class TestFileToolsContainerConfig:
     def _run(self, env_config, task_id, task_env_overrides=None):
         captured = {}
-        mock_env = MagicMock()
+        mock_env = mock.MagicMock()
 
         def fake_create_env(**kwargs):
             captured.update(kwargs)
             return mock_env
 
-        with patch("tools.terminal_tool._get_env_config", return_value=env_config), \
-             patch("tools.terminal_tool._task_env_overrides", task_env_overrides or {}), \
-             patch("tools.terminal_tool._active_environments", {}), \
-             patch("tools.terminal_tool._creation_locks", {}), \
-             patch("tools.terminal_tool._creation_locks_lock", __import__("threading").Lock()), \
-             patch("tools.terminal_tool._create_environment", side_effect=fake_create_env), \
-             patch("tools.terminal_tool._start_cleanup_thread"), \
-             patch("tools.terminal_tool._check_disk_usage_warning"), \
-             patch("tools.file_tools._file_ops_cache", {}), \
-             patch("tools.file_tools._file_ops_lock", __import__("threading").Lock()):
+        with (
+            mock.patch("tools.terminal_tool._get_env_config", return_value=env_config),
+            mock.patch("tools.terminal_tool._task_env_overrides", task_env_overrides or {}),
+            mock.patch("tools.terminal_tool._active_environments", {}),
+            mock.patch("tools.terminal_tool._creation_locks", {}),
+            mock.patch("tools.terminal_tool._creation_locks_lock", threading.Lock()),
+            mock.patch("tools.terminal_tool._create_environment", side_effect=fake_create_env),
+            mock.patch("tools.terminal_tool._start_cleanup_thread"),
+            mock.patch("tools.terminal_tool._check_disk_usage_warning"),
+            mock.patch("tools.file_tools._file_ops_cache", {}),
+            mock.patch("tools.file_tools._file_ops_lock", threading.Lock()),
+        ):
             file_tools._get_file_ops(task_id)
 
         return captured
 
-    def test_docker_mount_cwd_to_workspace_passed(self):
-        """docker_mount_cwd_to_workspace is forwarded to container_config."""
-        cc = self._run(_make_env_config(docker_mount_cwd_to_workspace=True), "t1").get("container_config", {})
-        assert cc.get("docker_mount_cwd_to_workspace") is True
+    def test_file_first_creator_forwards_canonical_container_config(self):
+        """A file-first replacement must preserve mount and lifecycle policy."""
+        env_config = _make_env_config()
 
+        captured = self._run(env_config, "file-first-after-cleanup")
+
+        assert captured["container_config"] == terminal_tool._container_config_from_config(env_config)
 
     def test_cwd_only_raw_task_override_reaches_file_environment(self):
         """CWD-only task overrides collapse to default but must keep their cwd."""

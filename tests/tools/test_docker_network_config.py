@@ -18,33 +18,56 @@ def test_terminal_env_config_reads_docker_network_toggle(monkeypatch):
     assert config["docker_network"] is False
 
 
-def test_sibling_container_config_sites_carry_docker_network():
-    """Every container_config dict that carries docker_run_as_host_user must
-    also carry docker_network — otherwise that code path silently falls back
-    to networked containers while the terminal path honors the lockdown
-    (the probe/exec asymmetry reported on issue #46358).
-    """
-    import ast
-    import inspect
+def test_parsed_container_config_reaches_docker_constructor(monkeypatch):
+    """Docker creation must preserve parsed security and lifecycle settings."""
+    env_values = {
+        "TERMINAL_ENV": "docker",
+        "TERMINAL_CWD": "/root",
+        "TERMINAL_DOCKER_FORWARD_ENV": '["EXAMPLE_FORWARD"]',
+        "TERMINAL_DOCKER_ENV": '{"EXAMPLE_STATIC": "enabled"}',
+        "TERMINAL_DOCKER_EXTRA_ARGS": '["--label", "example=true"]',
+        "TERMINAL_DOCKER_SHM_SIZE": "2g",
+        "TERMINAL_DOCKER_NETWORK": "false",
+        "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES": "false",
+        "TERMINAL_DOCKER_ORPHAN_REAPER": "false",
+    }
+    for name, value in env_values.items():
+        monkeypatch.setenv(name, value)
 
-    import tools.code_execution_tool as code_execution_tool
-    import tools.file_tools as file_tools
+    # Keep this test focused on the real environment-variable parser instead
+    # of allowing a developer's config.yaml to overwrite the isolated values.
+    monkeypatch.setattr(terminal_tool, "_ensure_terminal_env_bridged", lambda: None)
 
-    for module in (terminal_tool, file_tools, code_execution_tool):
-        tree = ast.parse(inspect.getsource(module))
-        sites = 0
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Dict):
-                continue
-            keys = {k.value for k in node.keys if isinstance(k, ast.Constant)}
-            if "docker_run_as_host_user" in keys:
-                sites += 1
-                assert "docker_network" in keys, (
-                    f"{module.__name__} builds a container_config with "
-                    f"docker_run_as_host_user but without docker_network "
-                    f"(line {node.lineno})"
-                )
-        assert sites >= 1, f"expected at least one container_config site in {module.__name__}"
+    constructor_args = {}
+    reaper_configs = []
+
+    def fake_docker_environment(**kwargs):
+        constructor_args.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(terminal_tool, "_DockerEnvironment", fake_docker_environment)
+    monkeypatch.setattr(terminal_tool, "_maybe_reap_docker_orphans", reaper_configs.append)
+    monkeypatch.setattr(terminal_tool, "_docker_session_isolation_enabled", lambda: False)
+
+    config = terminal_tool._get_env_config()
+    container_config = terminal_tool._container_config_from_config(config)
+    terminal_tool._create_environment(
+        env_type="docker",
+        image=config["docker_image"],
+        cwd=config["cwd"],
+        timeout=config["timeout"],
+        container_config=container_config,
+        task_id="default",
+    )
+
+    assert constructor_args["forward_env"] == ["EXAMPLE_FORWARD"]
+    assert constructor_args["env"] == {"EXAMPLE_STATIC": "enabled"}
+    assert constructor_args["extra_args"] == ["--label", "example=true"]
+    assert constructor_args["shm_size"] == "2g"
+    assert constructor_args["network"] is False
+    assert constructor_args["persist_across_processes"] is False
+    assert reaper_configs == [container_config]
+    assert reaper_configs[0]["docker_orphan_reaper"] is False
 
 
 def _reuse_guard_harness(monkeypatch, *, existing_mode: str, network: bool):

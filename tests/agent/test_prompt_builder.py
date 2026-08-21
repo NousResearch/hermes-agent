@@ -858,6 +858,57 @@ class TestEnvironmentHints:
         assert "Linux 6.8.0" in line
         assert "root" in line
 
+    def test_probe_remote_backend_forwards_canonical_container_config(self, monkeypatch):
+        """The probe must preserve network lockdown and all sibling settings."""
+        import agent.prompt_builder as prompt_builder
+        import tools.terminal_tool as terminal_tool
+
+        config = {
+            "env_type": "docker",
+            "docker_image": "test-image:latest",
+            "cwd": "/workspace",
+            "host_cwd": None,
+            "timeout": 180,
+            "container_cpu": 2,
+            "container_memory": 4096,
+            "container_disk": 20480,
+            "container_persistent": False,
+            "modal_mode": "managed",
+            "vercel_runtime": "python3.13",
+            "docker_volumes": ["/example-host:/example-container:ro"],
+            "docker_mount_cwd_to_workspace": True,
+            "docker_forward_env": ["EXAMPLE_FORWARD"],
+            "docker_env": {"EXAMPLE_STATIC": "enabled"},
+            "docker_run_as_host_user": True,
+            "docker_extra_args": ["--label", "example=true"],
+            "docker_shm_size": "2g",
+            "docker_network": False,
+            "docker_persist_across_processes": False,
+            "docker_orphan_reaper": False,
+        }
+        captured = {}
+
+        class _FakeEnv:
+            def execute(self, cmd, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": "os=Linux\nkernel=test\nhome=/root\ncwd=/workspace\nuser=root\n",
+                }
+
+        def _fake_create_environment(**kwargs):
+            captured.update(kwargs)
+            return _FakeEnv()
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: config)
+        monkeypatch.setattr(terminal_tool, "_create_environment", _fake_create_environment)
+        prompt_builder._clear_backend_probe_cache()
+
+        result = prompt_builder._probe_remote_backend("docker")
+
+        assert result is not None
+        assert captured["container_config"] == terminal_tool._container_config_from_config(config)
+
 
     def test_environment_hint_from_env_var_is_appended(self, monkeypatch):
         """HERMES_ENVIRONMENT_HINT lets an embedder describe the runtime env."""
@@ -1056,5 +1107,3 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-

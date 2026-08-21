@@ -83,6 +83,19 @@ class TestGenerateBash:
         assert "_hermes_completion()" in out
         assert "complete -F _hermes_completion hermes" in out
 
+    def test_header_recommends_bash_completion_dir_not_bashrc(self):
+        """#88201: the header must recommend the lazy-load completions dir
+        as the primary install path. Directing users to paste completion
+        code into ~/.bashrc is the documented anti-pattern (#9785's own
+        warning) — it slows every shell start and breaks the
+        bash-completion autoload convention."""
+        out = generate_bash(_make_parser())
+        assert "~/.local/share/bash-completion/completions" in out
+        # The bare "Add to ~/.bashrc" guidance must be gone; the bashrc
+        # eval may only appear as a labeled fallback.
+        assert "Add to ~/.bashrc" not in out
+        assert "eval" in out  # fallback still shown
+
 
     def test_valid_bash_syntax(self):
         """Script must pass `bash -n` syntax check."""

@@ -98,8 +98,12 @@ def generate_bash(parser: argparse.ArgumentParser) -> str:
     cases_str = "\n".join(cases)
 
     return f"""# Hermes Agent bash completion
-# Add to ~/.bashrc:
-#   eval "$(hermes completion bash)"
+# Install where bash-completion lazy-loads it (preferred — keeps startup
+# fast and never touches ~/.bashrc):
+#   mkdir -p ~/.local/share/bash-completion/completions
+#   hermes completion bash > ~/.local/share/bash-completion/completions/hermes
+# Fallback (systems without the bash-completion package):
+#   eval "$(hermes completion bash)"   # add to ~/.bashrc
 
 _hermes_profiles() {{
     local profiles_dir="$HOME/.hermes/profiles"

@@ -775,14 +775,24 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
 
 @router.get("/api/profiles")
 async def list_profiles_endpoint():
+    """List profiles and disclose whether reduced fallback data was used."""
     from hermes_cli import profiles as profiles_mod
     try:
         loop = asyncio.get_running_loop()
         profiles = await loop.run_in_executor(None, profiles_mod.list_profiles)
-        return {"profiles": [_profile_to_dict(p) for p in profiles]}
+        return {
+            "profiles": [_profile_to_dict(p) for p in profiles],
+            "provenance": {"source": "canonical", "degraded": False},
+        }
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
-        return {"profiles": _fallback_profile_dicts(profiles_mod)}
+        return {
+            "profiles": _fallback_profile_dicts(profiles_mod),
+            "provenance": {
+                "source": "filesystem_fallback",
+                "degraded": True,
+            },
+        }
 
 
 @router.post("/api/profiles")

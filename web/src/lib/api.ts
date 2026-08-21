@@ -648,7 +648,7 @@ export const api = {
 
   // Profiles
   getProfiles: () =>
-    fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
+    fetchJSON<ProfilesResponse>("/api/profiles"),
   getActiveProfile: () =>
     fetchJSON<ActiveProfileInfo>("/api/profiles/active"),
   setActiveProfile: (name: string) =>
@@ -2185,6 +2185,16 @@ export interface ProfileInfo {
   distribution_version: string | null;
   distribution_source: string | null;
   has_alias: boolean;
+}
+
+export type ProfilesSource = "canonical" | "filesystem_fallback";
+
+export interface ProfilesResponse {
+  profiles: ProfileInfo[];
+  provenance: {
+    source: ProfilesSource;
+    degraded: boolean;
+  };
 }
 
 export interface ModelsAnalyticsModelEntry {

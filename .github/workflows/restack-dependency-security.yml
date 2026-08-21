@@ -1,27 +1,27 @@
 name: Restack dependency-security remediation
 
 on:
+  pull_request:
   push:
     branches:
       - restack/pr89479-current-main
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: dependency-security-restack-${{ github.ref }}
+  group: dependency-security-restack-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
   generate-and-verify:
-    if: ${{ github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[generated]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - name: Check out exact restack branch
+      - name: Check out exact restack object
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref_name }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
 
       - name: Set up Node
@@ -60,54 +60,21 @@ jobs:
           npm audit --workspace ui-tui --audit-level=high
           npm audit --workspace apps/desktop --audit-level=high
 
-      - name: Publish exact generated object
-        env:
-          BRANCH: ${{ github.ref_name }}
+      - name: Package exact generated files
         run: |
           set -euo pipefail
-          git config user.name 'Axl Ibiza, MBA'
-          git config user.email 'andrexibiza@gmail.com'
+          mkdir -p generated/apps/desktop/scripts
+          cp .npmrc package.json package-lock.json uv.lock generated/
+          cp apps/desktop/package.json generated/apps/desktop/package.json
+          cp apps/desktop/scripts/packaged-app-layout.mjs generated/apps/desktop/scripts/
+          cp apps/desktop/scripts/packaged-app-layout.test.mjs generated/apps/desktop/scripts/
+          cp apps/desktop/scripts/test-desktop.mjs generated/apps/desktop/scripts/
+          find generated -type f -print0 | sort -z | xargs -0 sha256sum > generated/SHA256SUMS
 
-          git rm -- .github/workflows/restack-dependency-security.yml .github/scripts/restack_dependency_security.py
-          git add -- \
-            .npmrc \
-            apps/desktop/package.json \
-            apps/desktop/scripts/packaged-app-layout.mjs \
-            apps/desktop/scripts/packaged-app-layout.test.mjs \
-            apps/desktop/scripts/test-desktop.mjs \
-            package.json \
-            package-lock.json \
-            uv.lock
-
-          git diff --cached --check
-
-          python3 - <<'PY'
-          import subprocess
-
-          expected = {
-              '.github/scripts/restack_dependency_security.py',
-              '.github/workflows/restack-dependency-security.yml',
-              '.npmrc',
-              'apps/desktop/package.json',
-              'apps/desktop/scripts/packaged-app-layout.mjs',
-              'apps/desktop/scripts/packaged-app-layout.test.mjs',
-              'apps/desktop/scripts/test-desktop.mjs',
-              'package-lock.json',
-              'package.json',
-              'uv.lock',
-          }
-          actual = set(subprocess.check_output(
-              ['git', 'diff', '--cached', '--name-only'], text=True
-          ).splitlines())
-          if actual != expected:
-              raise SystemExit(
-                  f'unexpected staged paths\nexpected={sorted(expected)}\nactual={sorted(actual)}'
-              )
-          PY
-
-          git commit -m 'fix(deps): restack advisory remediation on current main [generated]' \
-            -m 'Reapply schmitzi8’s Electron/extractor/Linux-layout repair from #89479, adopt orcaspainting-dev’s scoped Nano ID override from #90486, preserve current-main dependency movement, and regenerate the npm and Python lock graphs.' \
-            -m 'Co-authored-by: schmitzi8 <281458983+schmitzi8@users.noreply.github.com>' \
-            -m 'Co-authored-by: orcaspainting-dev <264355715+orcaspainting-dev@users.noreply.github.com>'
-
-          git push origin "HEAD:${BRANCH}"
+      - name: Upload exact-object generation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-security-restack-${{ github.event.pull_request.head.sha || github.sha }}
+          path: generated/
+          if-no-files-found: error
+          retention-days: 7

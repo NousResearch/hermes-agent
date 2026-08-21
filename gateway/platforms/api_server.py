@@ -2,8 +2,8 @@
 OpenAI-compatible API server platform adapter.
 
 Exposes an HTTP server with endpoints:
-- POST /v1/chat/completions        — OpenAI Chat Completions format (stateless; opt-in session continuity via X-Hermes-Session-Id header; opt-in long-term memory scoping via X-Hermes-Session-Key header)
-- POST /v1/responses               — OpenAI Responses API format (stateful via previous_response_id; X-Hermes-Session-Key supported)
+- POST /v1/chat/completions        — OpenAI Chat Completions format (stateless; opt-in session continuity via X-Hermes-Session-Id header; opt-in long-term memory scoping via X-Hermes-Session-Key header; opt-in per-user identity via X-Hermes-User header)
+- POST /v1/responses               — OpenAI Responses API format (stateful via previous_response_id; X-Hermes-Session-Key + X-Hermes-User supported)
 - GET  /v1/responses/{response_id} — Retrieve a stored response
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent and any configured model_routes aliases
@@ -996,7 +996,10 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
+    "Access-Control-Allow-Headers": (
+        "Authorization, Content-Type, Idempotency-Key, "
+        "X-Hermes-User, X-Hermes-Session-Key, X-Hermes-Session-Id"
+    ),
 }
 
 
@@ -1264,9 +1267,26 @@ class _IdempotencyCache:
 _idem_cache = _IdempotencyCache()
 
 
-def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
+def _make_request_fingerprint(
+    body: Dict[str, Any],
+    keys: List[str],
+    *,
+    user_id: Optional[str] = None,
+    gateway_session_key: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> str:
+    """Fingerprint request body keys plus validated memory-scope identity.
+
+    Identity slots (``user_id``, session key/id) are **always** hashed —
+    absent values become empty strings — so single-user callers keep a
+    stable fingerprint while an ``Idempotency-Key`` reused across different
+    authenticated end-users cannot reclaim another user's completion.
+    """
     from hashlib import sha256
     subset = {k: body.get(k) for k in keys}
+    subset["__hermes_user_id"] = user_id or ""
+    subset["__hermes_gateway_session_key"] = gateway_session_key or ""
+    subset["__hermes_session_id"] = session_id or ""
     return sha256(repr(subset).encode("utf-8")).hexdigest()
 
 
@@ -2177,6 +2197,55 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return raw, None
 
+    def _parse_user_header(
+        self, request: "web.Request"
+    ) -> tuple[Optional[str], Optional["web.Response"]]:
+        """Extract and validate the ``X-Hermes-User`` header.
+
+        Opt-in end-user identity for multi-user API deployments. When
+        present after successful ``API_SERVER_KEY`` auth, the value is
+        threaded to ``AIAgent(user_id=...)`` so downstream consumers
+        (Honcho ``runtime_user_peer_name`` / ``user_peer_aliases``,
+        session scoping) receive a stable per-user identity.
+
+        Independent of ``X-Hermes-Session-Key`` (channel) and
+        ``X-Hermes-Session-Id`` (transcript): callers may send any, all,
+        or none.
+
+        Behaviour:
+        - Header absent → ``(None, None)`` (historical anonymous / peer_name fallback).
+        - No API key configured → header ignored (``(None, None)``); never
+          trusted without ``API_SERVER_KEY``.
+        - Control characters / oversize → ``400``.
+        - Valid → ``(sanitized_value, None)``.
+        """
+        raw = request.headers.get("X-Hermes-User", "").strip()
+        if not raw:
+            return None, None
+
+        if not self._api_key:
+            # Issue contract: unauthenticated / no-key deployments ignore
+            # the header rather than treating it as a hard error.
+            logger.warning(
+                "X-Hermes-User ignored: no API key configured. "
+                "Set API_SERVER_KEY to enable per-user identity."
+            )
+            return None, None
+
+        if re.search(r'[\r\n\x00]', raw):
+            return None, web.json_response(
+                {"error": {"message": "Invalid user id", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        if len(raw) > self._MAX_SESSION_HEADER_LEN:
+            return None, web.json_response(
+                {"error": {"message": "User id too long", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        return raw, None
+
     # ------------------------------------------------------------------
     # Session DB helper
     # ------------------------------------------------------------------
@@ -2655,6 +2724,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        user_id: Optional[str] = None,
         requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None,
         model_options: Optional[Dict[str, Any]] = None,
@@ -2676,6 +2746,10 @@ class APIServerAdapter(BasePlatformAdapter):
         key is meant to persist across transcripts so long-term memory
         providers (e.g. Honcho) can scope their per-chat state correctly
         — matching the semantics of the native gateway's ``session_key``.
+
+        ``user_id`` is an optional end-user identity from ``X-Hermes-User``.
+        Threaded to ``AIAgent(user_id=...)`` so Honcho and other memory
+        providers can map the caller to a peer via ``user_peer_aliases``.
 
         ``route`` is an optional ``model_routes`` entry (per-client model
         routing).  When set — and no session ``/model`` override exists for
@@ -2972,6 +3046,8 @@ class APIServerAdapter(BasePlatformAdapter):
             "reasoning_config": reasoning_config,
             "gateway_session_key": gateway_session_key,
         }
+        if user_id:
+            agent_kwargs["user_id"] = user_id
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
 
@@ -3201,6 +3277,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
+                "user_header": "X-Hermes-User",
                 "cors": bool(self._cors_origins),
             },
             "endpoints": {
@@ -3735,6 +3812,9 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        user_id, uid_err = self._parse_user_header(request)
+        if uid_err is not None:
+            return uid_err
         session_id = request.match_info["session_id"]
         session, err = await self._get_existing_session_or_404(session_id)
         if err:
@@ -3806,6 +3886,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
+            user_id=user_id,
             route=route,
             session_model=session_model,
             requested_runtime=runtime_request.get("requested") or {},
@@ -3818,6 +3899,8 @@ class APIServerAdapter(BasePlatformAdapter):
         headers = {"X-Hermes-Session-Id": effective_session_id or session_id}
         if gateway_session_key:
             headers["X-Hermes-Session-Key"] = gateway_session_key
+        if user_id:
+            headers["X-Hermes-User"] = user_id
         runtime = {}
         if isinstance(result, dict):
             runtime = result.get("runtime") or {}
@@ -3852,6 +3935,9 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        user_id, uid_err = self._parse_user_header(request)
+        if uid_err is not None:
+            return uid_err
         session_id = request.match_info["session_id"]
         session, err = await self._get_existing_session_or_404(session_id)
         if err:
@@ -3979,6 +4065,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_progress_callback=_tool_progress,
                     active_run_id=run_id,
                     gateway_session_key=gateway_session_key,
+                    user_id=user_id,
                     route=route,
                     session_model=session_model,
                     requested_runtime=runtime_request.get("requested") or {},
@@ -4077,6 +4164,8 @@ class APIServerAdapter(BasePlatformAdapter):
         }
         if gateway_session_key:
             headers["X-Hermes-Session-Key"] = gateway_session_key
+        if user_id:
+            headers["X-Hermes-User"] = user_id
         response = web.StreamResponse(status=200, headers=headers)
         await response.prepare(request)
         try:
@@ -4235,6 +4324,12 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+
+        # Opt-in per-user identity via X-Hermes-User (see _parse_user_header).
+        # Threaded to AIAgent(user_id=...) for Honcho / memory peer mapping.
+        user_id, uid_err = self._parse_user_header(request)
+        if uid_err is not None:
+            return uid_err
 
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
@@ -4401,6 +4496,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                user_id=user_id,
                 **agent_overrides,
                 route=route,
             ))
@@ -4412,6 +4508,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 request, completion_id, model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                user_id=user_id,
             )
 
         # Non-streaming: run the agent (with optional Idempotency-Key)
@@ -4422,6 +4519,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                user_id=user_id,
                 **agent_overrides,
                 route=route,
             )
@@ -4431,6 +4529,9 @@ class APIServerAdapter(BasePlatformAdapter):
             fp = _make_request_fingerprint(
                 body,
                 keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream"],
+                user_id=user_id,
+                gateway_session_key=gateway_session_key,
+                session_id=session_id,
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
@@ -4472,6 +4573,8 @@ class APIServerAdapter(BasePlatformAdapter):
         }
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        if user_id:
+            response_headers["X-Hermes-User"] = user_id
 
         # Hard-fail path: no usable assistant text AND a real failure → 5xx
         # with OpenAI-style error envelope so SDK clients raise instead of
@@ -4533,7 +4636,7 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str = None,
-        gateway_session_key: str = None,
+        gateway_session_key: str = None, user_id: str = None,
     ) -> "web.StreamResponse":
         """Write real streaming SSE from agent's stream_delta_callback queue.
 
@@ -4556,6 +4659,8 @@ class APIServerAdapter(BasePlatformAdapter):
             sse_headers["X-Hermes-Session-Id"] = session_id
         if gateway_session_key:
             sse_headers["X-Hermes-Session-Key"] = gateway_session_key
+        if user_id:
+            sse_headers["X-Hermes-User"] = user_id
         response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
 
@@ -4740,6 +4845,7 @@ class APIServerAdapter(BasePlatformAdapter):
         store: bool,
         session_id: str,
         gateway_session_key: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> "web.StreamResponse":
         """Write an SSE stream for POST /v1/responses (OpenAI Responses API).
 
@@ -4782,6 +4888,8 @@ class APIServerAdapter(BasePlatformAdapter):
             sse_headers["X-Hermes-Session-Id"] = session_id
         if gateway_session_key:
             sse_headers["X-Hermes-Session-Key"] = gateway_session_key
+        if user_id:
+            sse_headers["X-Hermes-User"] = user_id
         response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
 
@@ -5343,6 +5451,9 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        user_id, uid_err = self._parse_user_header(request)
+        if uid_err is not None:
+            return uid_err
 
         # Parse request body
         try:
@@ -5512,6 +5623,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                user_id=user_id,
                 **agent_overrides,
                 route=route,
             ))
@@ -5538,6 +5650,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 store=store,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                user_id=user_id,
             )
 
         async def _compute_response():
@@ -5547,6 +5660,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                user_id=user_id,
                 **agent_overrides,
                 route=route,
             )
@@ -5565,6 +5679,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     "model_options",
                     "tools",
                 ],
+                user_id=user_id,
+                gateway_session_key=gateway_session_key,
+                session_id=session_id,
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
@@ -5650,6 +5767,8 @@ class APIServerAdapter(BasePlatformAdapter):
         response_headers = {"X-Hermes-Session-Id": _effective_session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        if user_id:
+            response_headers["X-Hermes-User"] = user_id
         return web.json_response(response_data, headers=response_headers)
 
     # ------------------------------------------------------------------
@@ -6330,6 +6449,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         active_run_id: Optional[str] = None,
         gateway_session_key: Optional[str] = None,
+        user_id: Optional[str] = None,
         requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None,
         model_options: Optional[Dict[str, Any]] = None,
@@ -6393,6 +6513,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_start_callback=tool_start_callback,
                         tool_complete_callback=tool_complete_callback,
                         gateway_session_key=gateway_session_key,
+                        user_id=user_id,
                         requested_model=requested_model,
                         requested_provider=requested_provider,
                         model_options=model_options,
@@ -6685,6 +6806,9 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        user_id, uid_err = self._parse_user_header(request)
+        if uid_err is not None:
+            return uid_err
 
         # Enforce concurrency limit (shared across all agent-serving
         # endpoints; configurable via gateway.api_server.max_concurrent_runs).
@@ -6838,6 +6962,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         stream_delta_callback=_text_cb,
                         tool_progress_callback=event_cb,
                         gateway_session_key=gateway_session_key,
+                        user_id=user_id,
                         requested_model=agent_overrides.get("requested_model"),
                         requested_provider=agent_overrides.get("requested_provider"),
                         model_options=agent_overrides.get("model_options"),
@@ -7085,9 +7210,11 @@ class APIServerAdapter(BasePlatformAdapter):
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
 
-        response_headers = (
-            {"X-Hermes-Session-Key": gateway_session_key} if gateway_session_key else {}
-        )
+        response_headers: Dict[str, str] = {}
+        if gateway_session_key:
+            response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        if user_id:
+            response_headers["X-Hermes-User"] = user_id
         return web.json_response(
             {"run_id": run_id, "status": "started"},
             status=202,

@@ -501,6 +501,30 @@ X-Hermes-Session-Key: agent:main:webui:dm:user-42
 
 Rules: max 256 chars, control characters (`\r`, `\n`, `\x00`) are rejected, and the value is echoed back on responses (JSON + SSE). `/v1/capabilities` advertises support via `"session_key_header": "X-Hermes-Session-Key"`. Without the key, Honcho's `per-session` strategy produces a different scope per `session_id` — exactly the behavior Hermes had before.
 
+## Per-user identity (`X-Hermes-User`)
+
+When a single Hermes API instance serves multiple end-users (family/team behind a reverse proxy, multi-user Open WebUI, etc.), pass an optional `X-Hermes-User` so long-term memory providers can distinguish people. Hermes threads the value to `AIAgent(user_id=...)`, which Honcho maps through `user_peer_aliases` (or falls back to `peer_name` when the header is absent).
+
+```http
+POST /v1/chat/completions HTTP/1.1
+Authorization: Bearer ***
+X-Hermes-User: oliver
+X-Hermes-Session-Key: agent:main:webui:dm:oliver
+X-Hermes-Session-Id: transcript-alpha
+```
+
+Rules:
+
+- Max 256 characters; control characters (`\r`, `\n`, `\x00`) are rejected (`400`).
+- Only honored when `API_SERVER_KEY` is configured and the request passes Bearer auth. Without an API key the header is ignored (never trusted).
+- Echoed on success for `/v1/chat/completions`, `/v1/responses`, `/v1/runs` (202), and session-chat endpoints (including SSE).
+- Advertised on `/v1/capabilities` as `"user_header": "X-Hermes-User"`.
+- Browser CORS preflight allows the header when `API_SERVER_CORS_ORIGINS` permits the origin.
+- `Idempotency-Key` fingerprints **always** include identity slots (`user_id`, session key/id), even when those headers are absent (hashed as empty strings). That keeps fingerprints stable for single-user callers while ensuring two authenticated users who reuse the same `Idempotency-Key` + body never share a cached completion.
+- This header supplies identity only. It does **not** enforce API-server `allowed_users` / allowlist gating — that remains a separate concern. Downstream consumers (e.g. Honcho `user_peer_aliases`) can use the value once it is present.
+
+`X-Hermes-User` (person), `X-Hermes-Session-Key` (channel), and `X-Hermes-Session-Id` (transcript) are independent — send any, all, or none.
+
 ## System Prompt Handling
 
 When a frontend sends a `system` message (Chat Completions) or `instructions` field (Responses API), hermes-agent **layers it on top** of its core system prompt. Your agent keeps all its tools, memory, and skills — the frontend's system prompt adds extra instructions.

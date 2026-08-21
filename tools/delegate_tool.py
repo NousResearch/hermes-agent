@@ -2328,6 +2328,42 @@ def _trim_summary_with_footer(
     return model_text, spill_path
 
 
+def _parent_used_tokens(parent_agent, compressor, context_length: int) -> int:
+    """Tokens currently OCCUPYING the parent's context window.
+
+    Must be occupancy, not lifetime spend.  ``agent.session_prompt_tokens`` is
+    a session-CUMULATIVE billing counter — ``+=`` on every API call
+    (conversation_loop.py, codex_runtime.py), reset only at explicit session
+    boundaries (``reset_session_state``), never by compaction.  It therefore
+    grows without bound while the conversation itself stays the same size, and
+    crosses ``context_length`` after a handful of ordinary tool-loop
+    iterations.  ``ContextCompressor.last_prompt_tokens`` is the prompt size
+    the provider actually reported for the most recent request — the real
+    occupancy signal, and what the compressor's own threshold checks use.
+
+    Resolution order mirrors ``hermes_cli/context_switch_guard._estimate_tokens``:
+
+    1. ``last_prompt_tokens`` — the last request's real prompt size.
+    2. ``last_real_prompt_tokens`` — covers the one-turn window right after a
+       compaction, where ``last_prompt_tokens`` is parked at the ``-1``
+       sentinel while ``awaiting_real_usage_after_compression`` is set.
+    3. ``session_prompt_tokens``, clamped to ``context_length`` — last-resort
+       fallback (no compressor telemetry yet, e.g. delegating before the first
+       API call).  Clamping keeps a cumulative counter from driving headroom
+       arbitrarily negative; at worst it reports "full", never "full ten times
+       over".
+    """
+    for source in ("last_prompt_tokens", "last_real_prompt_tokens"):
+        value = getattr(compressor, source, 0)
+        if isinstance(value, (int, float)) and value > 0:
+            return int(value)
+
+    session_tokens = getattr(parent_agent, "session_prompt_tokens", 0)
+    if not isinstance(session_tokens, (int, float)) or session_tokens < 0:
+        return 0
+    return min(int(session_tokens), context_length)
+
+
 def _parent_summary_char_budget(parent_agent, n_summaries: int) -> Optional[int]:
     """Per-summary character budget sized against the parent's *remaining*
     context headroom, split across the batch.
@@ -2335,8 +2371,9 @@ def _parent_summary_char_budget(parent_agent, n_summaries: int) -> Optional[int]
     The overflow this guards against is N summaries entering the parent
     context at once (batch fan-out), not any single summary being large.  We
     take a fraction of the headroom the parent has left (resolved context
-    length minus what's already in its prompt) and divide it across the batch,
-    converting tokens→chars at the standard ~4 chars/token estimate.
+    length minus what's already in its prompt, per :func:`_parent_used_tokens`)
+    and divide it across the batch, converting tokens→chars at the standard
+    ~4 chars/token estimate.
 
     Returns the per-summary char budget, or None when the parent's context
     state is unknown (no compressor / no token count) — in which case the
@@ -2348,9 +2385,7 @@ def _parent_summary_char_budget(parent_agent, n_summaries: int) -> Optional[int]
         if not isinstance(context_length, int) or context_length <= 0:
             return None
 
-        used_tokens = getattr(parent_agent, "session_prompt_tokens", 0)
-        if not isinstance(used_tokens, (int, float)) or used_tokens < 0:
-            used_tokens = 0
+        used_tokens = _parent_used_tokens(parent_agent, compressor, context_length)
 
         # Reserve the compressor's output budget so we measure INPUT headroom.
         reserved = getattr(compressor, "max_tokens", 0) or 0

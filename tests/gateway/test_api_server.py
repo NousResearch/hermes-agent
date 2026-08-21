@@ -428,6 +428,31 @@ class TestAgentExecution:
         assert mock_agent._gateway_turn_process_task_id == ""
         assert mock_agent._gateway_turn_process_baseline == frozenset()
 
+    @pytest.mark.asyncio
+    async def test_run_agent_forwards_transient_user_message_prefix(self, adapter):
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="session-123",
+                persist_user_message="hello",
+                transient_user_message_prefix="[routing note]\n\n",
+            )
+
+        mock_agent.run_conversation.assert_called_once_with(
+            user_message="hello",
+            conversation_history=[],
+            task_id="session-123",
+            persist_user_message="hello",
+            transient_user_message_prefix="[routing note]\n\n",
+        )
+
 
 class TestDisconnectedAgentReap:
     """#76188 review: SSE disconnect handlers must reap only the background
@@ -983,6 +1008,312 @@ class TestChatCompletionsEndpoint:
             data = await resp.json()
             assert "messages" in data["error"]["message"]
 
+    @pytest.mark.asyncio
+    async def test_empty_messages_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/chat/completions", json={"model": "test", "messages": []})
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_authenticated_proxy_can_preserve_clean_user_content(
+        self,
+        auth_adapter,
+        stream,
+    ):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={
+                        "model": "test",
+                        "messages": [
+                            {"role": "user", "content": "hello"},
+                        ],
+                        "hermes_persist_user_message": "hello",
+                        "hermes_transient_user_message_prefix": "[routing note]\n\n",
+                        "stream": stream,
+                    },
+                )
+                if stream:
+                    await resp.text()
+
+        assert resp.status == 200
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["user_message"] == "hello"
+        assert kwargs["persist_user_message"] == "hello"
+        assert kwargs["transient_user_message_prefix"] == "[routing note]\n\n"
+
+    @pytest.mark.asyncio
+    async def test_transient_prefix_participates_in_idempotency_fingerprint(
+        self, auth_adapter
+    ):
+        app = _create_app(auth_adapter)
+        request_body = {
+            "model": "test",
+            "messages": [{"role": "user", "content": "hello"}],
+            "hermes_persist_user_message": "hello",
+        }
+        headers = {
+            "Authorization": "Bearer sk-secret",
+            "Idempotency-Key": "transient-prefix",
+        }
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                first = await cli.post(
+                    "/v1/chat/completions",
+                    headers=headers,
+                    json=request_body,
+                )
+                second = await cli.post(
+                    "/v1/chat/completions",
+                    headers=headers,
+                    json={
+                        **request_body,
+                        "hermes_transient_user_message_prefix": "[routing note]\n\n",
+                    },
+                )
+
+        assert first.status == 200
+        assert second.status == 200
+        assert mock_run.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_persist_override_participates_in_idempotency_fingerprint(
+        self, auth_adapter
+    ):
+        app = _create_app(auth_adapter)
+        request_body = {
+            "model": "test",
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+        headers = {
+            "Authorization": "Bearer sk-secret",
+            "Idempotency-Key": "persist-content",
+        }
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                first = await cli.post(
+                    "/v1/chat/completions",
+                    headers=headers,
+                    json={**request_body, "hermes_persist_user_message": "hello"},
+                )
+                second = await cli.post(
+                    "/v1/chat/completions",
+                    headers=headers,
+                    json={**request_body, "hermes_persist_user_message": "goodbye"},
+                )
+
+        assert first.status == 200
+        assert second.status == 200
+        assert mock_run.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_persist_override_requires_configured_authentication(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "test",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "hermes_persist_user_message": "hello",
+                },
+            )
+            data = await resp.json()
+
+        assert resp.status == 400
+        assert data["error"]["param"] == "hermes_persist_user_message"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("invalid_value", [True, 1, [], {}])
+    async def test_persist_override_rejects_non_string_content(
+        self,
+        auth_adapter,
+        invalid_value,
+    ):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "hermes_persist_user_message": invalid_value,
+                    },
+                )
+            data = await resp.json()
+
+        assert resp.status == 400
+        assert data["error"]["param"] == "hermes_persist_user_message"
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("authorization", [None, "Bearer wrong"])
+    async def test_persist_override_rejects_missing_or_invalid_credentials(
+        self,
+        auth_adapter,
+        authorization,
+    ):
+        app = _create_app(auth_adapter)
+        headers = {"Authorization": authorization} if authorization else {}
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "hermes_persist_user_message": "hello",
+                    },
+                )
+
+        assert resp.status == 401
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("persist_value", "expect_forwarded"),
+        [(None, False), ("", True)],
+    )
+    async def test_persist_override_defines_null_and_empty_string_semantics(
+        self,
+        auth_adapter,
+        persist_value,
+        expect_forwarded,
+    ):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "hermes_persist_user_message": persist_value,
+                    },
+                )
+
+        assert resp.status == 200
+        kwargs = mock_run.call_args.kwargs
+        if expect_forwarded:
+            assert kwargs["persist_user_message"] == ""
+        else:
+            assert kwargs["persist_user_message"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("adapter_fixture", "body", "expected_param"),
+        [
+            (
+                "adapter",
+                {
+                    "hermes_persist_user_message": "hello",
+                    "hermes_transient_user_message_prefix": "[routing note]\n\n",
+                },
+                "hermes_persist_user_message",
+            ),
+            (
+                "auth_adapter",
+                {
+                    "hermes_persist_user_message": "hello",
+                    "hermes_transient_user_message_prefix": False,
+                },
+                "hermes_transient_user_message_prefix",
+            ),
+            (
+                "auth_adapter",
+                {"hermes_transient_user_message_prefix": "[routing note]\n\n"},
+                "hermes_transient_user_message_prefix",
+            ),
+        ],
+    )
+    async def test_transient_prefix_rejects_invalid_boundary_combinations(
+        self,
+        request,
+        adapter_fixture,
+        body,
+        expected_param,
+    ):
+        target_adapter = request.getfixturevalue(adapter_fixture)
+        app = _create_app(target_adapter)
+        headers = (
+            {"Authorization": "Bearer sk-secret"}
+            if adapter_fixture == "auth_adapter"
+            else {}
+        )
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(target_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        **body,
+                    },
+                )
+                data = await resp.json()
+
+        assert resp.status == 400
+        assert data["error"]["param"] == expected_param
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_passes_request_model_provider_options(self, adapter):
+        app = _create_app(adapter)
+        model_options = {
+            "reasoning": {"enabled": True, "effort": "high"},
+            "reasoning_effort": "high",
+            "service_tier": "priority",
+            "fast": True,
+        }
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "MiniMax-M3",
+                        "provider": "minimax",
+                        "model_options": model_options,
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+
+        assert resp.status == 200
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["requested_model"] == "MiniMax-M3"
+        assert kwargs["requested_provider"] == "minimax"
+        assert kwargs["model_options"] == model_options
 
     @pytest.mark.asyncio
     async def test_chat_completions_stream_passes_request_model_provider_options(self, adapter):

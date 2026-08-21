@@ -8475,6 +8475,7 @@ class AIAgent:
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         persist_user_display_metadata: Optional[Dict[str, Any]] = None,
+        transient_user_message_prefix: Optional[str] = None,
         moa_config: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
@@ -8840,6 +8841,7 @@ class AIAgent:
                         persist_user_timestamp=persist_user_timestamp,
                         persist_user_display_kind=persist_user_display_kind,
                         persist_user_display_metadata=persist_user_display_metadata,
+                        transient_user_message_prefix=transient_user_message_prefix,
                         moa_config=moa_config,
                     )
                 finally:

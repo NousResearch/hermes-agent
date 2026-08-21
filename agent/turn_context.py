@@ -404,9 +404,11 @@ class TurnContext:
     """Values produced by the turn prologue and consumed by the turn loop."""
 
     # Sanitized inbound message (surrogates stripped).
-    user_message: str
+    user_message: Any
     # Clean message preserved for transcripts / memory queries (no nudge injection).
     original_user_message: Any
+    # API-only current-turn prefix, excluded from compression and persistence.
+    transient_user_message_prefix: Optional[str]
     # Working message list for this turn (loop appends to it).
     messages: List[Dict[str, Any]]
     # May be reset to None by preflight compression (new session created).
@@ -437,6 +439,7 @@ def build_turn_context(
     stream_callback,
     persist_user_message: Optional[Any],
     persist_user_timestamp: Optional[float] = None,
+    transient_user_message_prefix: Optional[str] = None,
     *,
     persist_user_display_kind: Optional[str] = None,
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
@@ -545,11 +548,17 @@ def build_turn_context(
     if isinstance(persist_user_message, str):
         persist_user_message = sanitize_surrogates(persist_user_message)
 
+    if isinstance(transient_user_message_prefix, str):
+        transient_user_message_prefix = sanitize_surrogates(
+            transient_user_message_prefix
+        )
+
     # Store stream callback for _interruptible_api_call to pick up.
     agent._stream_callback = stream_callback
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = persist_user_message
     agent._persist_user_message_timestamp = persist_user_timestamp
+
     # Generate unique task_id if not provided to isolate VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
@@ -1455,6 +1464,7 @@ def build_turn_context(
     return TurnContext(
         user_message=user_message,
         original_user_message=original_user_message,
+        transient_user_message_prefix=transient_user_message_prefix,
         messages=messages,
         conversation_history=conversation_history,
         active_system_prompt=active_system_prompt,

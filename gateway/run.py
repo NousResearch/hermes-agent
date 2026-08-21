@@ -6377,6 +6377,30 @@ class TurnRunner:
                         )
                     if any(p.get("type") == "image_url" for p in _parts):
                         _run_message: Any = _parts
+                        if isinstance(_persist_user_message_override, str):
+                            # A string override cannot replace multimodal
+                            # content at the persistence boundary. Preserve
+                            # the image parts while replacing only the
+                            # model-facing text with the clean authored text.
+                            _persist_parts = [dict(part) for part in _parts]
+                            _model_base = (
+                                (ctx.message or "").strip()
+                                or "What do you see in this image?"
+                            )
+                            _clean_base = (
+                                _persist_user_message_override.strip()
+                                or "What do you see in this image?"
+                            )
+                            _model_text = _persist_parts[0].get("text")
+                            if (
+                                _persist_parts[0].get("type") == "text"
+                                and isinstance(_model_text, str)
+                                and _model_text.startswith(_model_base)
+                            ):
+                                _persist_parts[0]["text"] = (
+                                    _clean_base + _model_text[len(_model_base):]
+                                )
+                                _persist_user_message_override = _persist_parts
                     else:
                         # All images failed to read — fall back to plain text.
                         _run_message = ctx.message
@@ -6413,6 +6437,10 @@ class TurnRunner:
                 _conversation_kwargs["moa_config"] = ctx.moa_config
             if _persist_user_timestamp_override is not None:
                 _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
+            if ctx.transient_user_message_prefix is not None:
+                _conversation_kwargs["transient_user_message_prefix"] = (
+                    ctx.transient_user_message_prefix
+                )
             result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
         finally:
             unregister_gateway_notify(_approval_session_key)
@@ -18348,25 +18376,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 context_note = _build_document_context_note(display_name, agent_path, mtype)
                 message_text = f"{context_note}\n\n{message_text}"
 
-        # Discord: surface the triggering message id per-turn on the user
-        # message rather than in the cached system prompt. message_id changes
-        # every turn, so baking it into build_session_context_prompt() would
-        # bust the agent-cache signature and rebuild the AIAgent every message
-        # (destroying prompt caching). The static IDs block points the agent
-        # here; the volatile id rides the per-turn user content.
-        if (
-            source is not None
-            and getattr(source, "platform", None) == Platform.DISCORD
-            and getattr(event, "message_id", None)
-        ):
-            from gateway.session import _discord_tools_loaded as _disc_tools_loaded
-            if _disc_tools_loaded():
-                message_text = (
-                    f"[Triggering message id: `{event.message_id}` — use as "
-                    f"`message_id` for reply/react/pin via the discord tools.]\n\n"
-                    f"{message_text}"
-                )
-
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer — even when the quoted text
             # already appears in history. The prefix isn't deduplication, it's
@@ -18526,6 +18535,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             for transcript in successful_transcripts
             if transcript.strip()
         )
+    def _discord_tools_loaded_for_source(self, source: SessionSource) -> bool:
+        """Check Discord tool availability under the routed profile scope."""
+        from gateway.session import _discord_tools_loaded
+
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                return _discord_tools_loaded()
+        return _discord_tools_loaded()
 
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
         state = self._peek_session_state(session_key)
@@ -18993,6 +19010,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_display_kind = (
             "internal_notification" if getattr(event, "internal", False) else None
         )
+        transient_user_message_prefix = None
         try:
             _pcfg = _load_gateway_config()
             _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
@@ -20086,6 +20104,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if message_text is None:
             return
 
+        # Capture the clean authored representation before exception-prone
+        # timestamp preprocessing. The Discord routing prefix is transported
+        # separately and is never inserted into this canonical message.
+        if isinstance(message_text, str):
+            persist_user_message = message_text
+
         # Capture the platform event time as message metadata and keep the
         # persisted transcript clean (strip any leading timestamp prefix).
         # This runs regardless of the toggle so storage stays clean and the
@@ -20101,7 +20125,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             _evt_tz = _get_evt_tz()
             _evt_ts = getattr(event, "timestamp", None)
-            if message_text and isinstance(message_text, str):
+            if isinstance(message_text, str):
                 _clean_message_text, _embedded_ts = _strip_msg_ts(
                     message_text, tz=_evt_tz)
                 persist_user_message = _clean_message_text
@@ -20121,6 +20145,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     message_text = _clean_message_text
         except Exception as _ts_err:
             logger.debug("Message timestamp injection failed (non-fatal): %s", _ts_err)
+
+        # Discord: surface the volatile triggering message id on the model's
+        # current user message only after capturing the clean persistence
+        # override above. Keeping it in a separate transient prefix preserves
+        # prompt caching and keeps it out of canonical transcript state.
+        if (
+            source is not None
+            and source.platform == Platform.DISCORD
+            and getattr(event, "message_id", None)
+        ):
+            if self._discord_tools_loaded_for_source(source):
+                transient_user_message_prefix = (
+                    f"[Triggering message id: `{event.message_id}` — use as "
+                    "`message_id` for reply/react/pin via the discord tools.]\n\n"
+                )
 
         # Stage the collected must-deliver notes for this turn's agent run
         # (one-shot; consumed in run_sync).  Staged AFTER the message_text
@@ -20172,6 +20211,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=event.message_type,
+                transient_user_message_prefix=transient_user_message_prefix,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -27590,6 +27630,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_key: str = None,
         run_generation: Optional[int] = None,
         event_message_id: Optional[str] = None,
+        persist_user_message: Optional[str] = None,
+        transient_user_message_prefix: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of
         running a local AIAgent.
@@ -27634,6 +27676,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
         except Exception:
             proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
+        if transient_user_message_prefix is not None and not proxy_key:
+            return {
+                "final_response": (
+                    "⚠️ Proxy mode requires GATEWAY_PROXY_KEY and a matching "
+                    "API_SERVER_KEY on the remote server to forward transient "
+                    "routing metadata safely."
+                ),
+                "messages": [],
+                "api_calls": 0,
+                "tools": [],
+            }
 
         def _run_still_current() -> bool:
             if run_generation is None or not session_key:
@@ -27676,6 +27729,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "messages": api_messages,
             "stream": True,
         }
+        if proxy_key and persist_user_message is not None:
+            # Internal proxy extension: the final user message remains clean.
+            # The remote agent applies any transient routing prefix only while
+            # constructing the current provider request.
+            body["hermes_persist_user_message"] = persist_user_message
+            if transient_user_message_prefix is not None:
+                body["hermes_transient_user_message_prefix"] = (
+                    transient_user_message_prefix
+                )
 
         # Set up platform streaming if available -------------------------
         _stream_consumer = None
@@ -27882,6 +27944,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        transient_user_message_prefix: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -27902,6 +27965,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                transient_user_message_prefix=transient_user_message_prefix,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -27915,6 +27979,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                transient_user_message_prefix=transient_user_message_prefix,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -28058,6 +28123,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        transient_user_message_prefix: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -28082,6 +28148,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=event_message_id,
+                persist_user_message=persist_user_message,
+                transient_user_message_prefix=transient_user_message_prefix,
             )
 
         from run_agent import AIAgent
@@ -28366,6 +28434,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             moa_config=moa_config,
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
+            transient_user_message_prefix=transient_user_message_prefix,
             persist_user_display_kind=persist_user_display_kind,
         )
         turn_runner = TurnRunner(self, turn_ctx)

@@ -29,6 +29,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.conversation_loop import _apply_transient_user_message_prefix
 from agent.memory_manager import build_memory_context_block
 from agent.turn_context import build_turn_context, compose_user_api_content
 from hermes_state import SessionDB
@@ -49,6 +50,15 @@ class TestComposeUserApiContent:
         assert out == "hello" + "\n\n" + fenced + "\n\n" + "PLUGIN-CTX"
 
 
+
+    def test_transient_prefix_preserves_compaction_merged_content(self):
+        routing_note = "[Triggering message id: `message-1`]"
+        merged = "[prior context]\ncompaction summary\n\nhello"
+
+        assert _apply_transient_user_message_prefix(
+            merged,
+            f"{routing_note}\n\n",
+        ) == f"{routing_note}\n\n{merged}"
 
 
 # ---------------------------------------------------------------------------
@@ -546,6 +556,146 @@ class TestWireInvariant:
         current = _user_messages(_chat_requests(handler)[0])[-1]
         assert current["content"] == "second question\n\nPLUGIN-CTX"
 
+    def test_transient_prefix_reaches_current_turn_but_not_replay(self, wire_env):
+        """Current-turn routing metadata must never become replayable history."""
+        make_agent, handler, db, sid = wire_env
+        routing_note = "[Triggering message id: `message-1`]"
+        routing_prefix = f"{routing_note}\n\n"
+        stable_model_message = "MODEL-SWITCH\n\nhello please"
+
+        agent1 = make_agent()
+        agent1.run_conversation(
+            stable_model_message,
+            conversation_history=[],
+            task_id="t1",
+            persist_user_message="hello please",
+            transient_user_message_prefix=routing_prefix,
+        )
+
+        current_turn = _user_messages(_chat_requests(handler)[0])[0]["content"]
+        assert current_turn.startswith(routing_prefix)
+        assert "MODEL-SWITCH" in current_turn
+
+        history = db.get_messages_as_conversation(sid)
+        assert history[0]["content"] == "hello please"
+        assert history[0]["api_content"] == (
+            "MODEL-SWITCH\n\nhello please\n\nPLUGIN-CTX"
+        )
+        assert routing_note not in json.dumps(history[0])
+
+        handler.captured_requests = []
+        agent2 = make_agent()
+        agent2.run_conversation(
+            "second question",
+            conversation_history=history,
+            task_id="t2",
+        )
+
+        replayed_history = _user_messages(_chat_requests(handler)[0])[0]["content"]
+        assert replayed_history == "MODEL-SWITCH\n\nhello please\n\nPLUGIN-CTX"
+        assert routing_note not in replayed_history
+
+    @pytest.mark.parametrize("caption", ["describe this", ""])
+    def test_transient_multimodal_prefix_is_wire_only(self, wire_env, caption):
+        """Native image payloads keep routing context on the wire, never in SQLite."""
+        make_agent, handler, db, sid = wire_env
+        routing_note = "[Triggering message id: `message-1`]"
+        routing_prefix = f"{routing_note}\n\n"
+        clean_text = caption or "What do you see in this image?"
+        image_part = {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,AAAA"},
+        }
+        clean_content = [
+            {"type": "text", "text": clean_text},
+            image_part,
+        ]
+
+        agent = make_agent()
+        setattr(agent, "_model_supports_vision", lambda: True)
+        agent.run_conversation(
+            clean_content,
+            conversation_history=[],
+            task_id="t-image",
+            persist_user_message=clean_content,
+            transient_user_message_prefix=routing_prefix,
+        )
+
+        sent = _user_messages(_chat_requests(handler)[0])[0]["content"]
+        assert sent[0]["text"].startswith(routing_prefix)
+        assert clean_text in sent[0]["text"]
+        assert sent[1] == clean_content[1]
+        rows = db.get_messages(sid)
+        replay = db.get_messages_as_conversation(sid)
+        assert routing_note not in json.dumps(rows)
+        assert routing_note not in json.dumps(replay)
+        assert clean_text in rows[0]["content"]
+
+    @pytest.mark.parametrize("caption", ["describe this", ""])
+    def test_transient_multimodal_prefix_preserves_preflight_merge(
+        self, wire_env, caption
+    ):
+        """Compression output, image parts, and routing prefix all reach the wire."""
+        make_agent, handler, db, sid = wire_env
+        routing_note = "[Triggering message id: `message-1`]"
+        routing_prefix = f"{routing_note}\n\n"
+        clean_text = caption or "What do you see in this image?"
+        image_part = {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,AAAA"},
+        }
+        clean_content = [
+            {"type": "text", "text": clean_text},
+            image_part,
+        ]
+        seen = {}
+        calls = {"n": 0}
+
+        agent = make_agent()
+        setattr(agent, "_model_supports_vision", lambda: True)
+        agent.compression_enabled = True
+
+        def _should_compress(_tokens):
+            calls["n"] += 1
+            return calls["n"] == 1
+
+        agent.context_compressor = types.SimpleNamespace(
+            protect_first_n=0,
+            protect_last_n=0,
+            threshold_tokens=1,
+            context_length=1000,
+            last_prompt_tokens=-1,
+            should_compress=_should_compress,
+            should_defer_preflight_to_real_usage=lambda _t: False,
+            get_active_compression_failure_cooldown=lambda: None,
+        )
+
+        def _compress(messages, _system, approx_tokens=None, task_id=None):
+            seen["messages"] = json.loads(json.dumps(messages))
+            current = json.loads(json.dumps(messages[-1]))
+            current["content"][0]["text"] = (
+                "[Prior context]\nSUMMARY\n" + current["content"][0]["text"]
+            )
+            return [current], "SYSTEM"
+
+        setattr(agent, "_compress_context", _compress)
+        agent.run_conversation(
+            clean_content,
+            conversation_history=[],
+            task_id="t-image-merge",
+            persist_user_message=clean_content,
+            transient_user_message_prefix=routing_prefix,
+        )
+
+        assert routing_note not in json.dumps(seen["messages"])
+        sent = _user_messages(_chat_requests(handler)[0])[0]["content"]
+        assert sent[0]["text"].startswith(routing_prefix)
+        assert "[Prior context]\nSUMMARY" in sent[0]["text"]
+        assert clean_text in sent[0]["text"]
+        assert sent[1] == image_part
+        assert routing_note not in json.dumps(db.get_messages(sid))
+        assert routing_note not in json.dumps(db.get_messages_as_conversation(sid))
+
 
 # ---------------------------------------------------------------------------
 # Review fixes: re-anchoring, MoA, in-place compaction backfill, override
@@ -932,17 +1082,25 @@ class TestSessionRowExistsBeforePreflightCompaction:
             return calls["n"] == 1  # compress once, then stop
 
         seen = {}
-        compacted = [
-            {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
-            {"role": "user", "content": "hello"},
-        ]
-
         def _compress(_messages, **_kwargs):
             # The ordering invariant under test: the row must already exist
             # when compression starts — the DB writes right after this call
             # (archive_and_compact / child create_session) reference it.
             seen["row_at_compress"] = db.get_session(sid)
-            return compacted
+            seen["messages_at_compress"] = json.loads(json.dumps(_messages))
+            serialized = json.dumps(_messages)
+            leaked_note = (
+                "\n[Triggering message id: `message-1`]"
+                if "message-1" in serialized
+                else ""
+            )
+            return [
+                {
+                    "role": "assistant",
+                    "content": f"[CONTEXT COMPACTION] summary{leaked_note}",
+                },
+                {"role": "user", "content": _messages[-1]["content"]},
+            ]
 
         compressor = MagicMock()
         compressor.protect_first_n = 0
@@ -975,8 +1133,15 @@ class TestSessionRowExistsBeforePreflightCompaction:
         sid = "sess-fresh-inplace"
         try:
             agent, seen = self._make_agent(db, sid, in_place=True)
+            routing_note = "[Triggering message id: `message-1`]"
             with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
-                ctx = _build(agent, conversation_history=self._oversized_history())
+                ctx = _build(
+                    agent,
+                    conversation_history=self._oversized_history(),
+                    user_message="hello",
+                    persist_user_message="hello",
+                    transient_user_message_prefix=f"{routing_note}\n\n",
+                )
 
             # The row was created before compression started — without it the
             # FK on messages.session_id rejects the compacted rows and the
@@ -986,8 +1151,12 @@ class TestSessionRowExistsBeforePreflightCompaction:
             assert agent._last_compaction_in_place is True
             contents = [m["content"] for m in db.get_messages(sid)]
             assert "[CONTEXT COMPACTION] summary" in contents
+            assert routing_note not in json.dumps(seen["messages_at_compress"])
+            assert routing_note not in json.dumps(db.get_messages(sid))
+            assert routing_note not in json.dumps(db.get_messages_as_conversation(sid))
             # And the live context is the compacted set.
             assert ctx.messages[ctx.current_turn_user_idx]["content"] == "hello"
+            assert ctx.transient_user_message_prefix == f"{routing_note}\n\n"
         finally:
             db.close()
 
@@ -996,8 +1165,15 @@ class TestSessionRowExistsBeforePreflightCompaction:
         sid = "sess-fresh-rot"
         try:
             agent, seen = self._make_agent(db, sid, in_place=False)
+            routing_note = "[Triggering message id: `message-1`]"
             with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
-                _build(agent, conversation_history=self._oversized_history())
+                ctx = _build(
+                    agent,
+                    conversation_history=self._oversized_history(),
+                    user_message="hello",
+                    persist_user_message="hello",
+                    transient_user_message_prefix=f"{routing_note}\n\n",
+                )
 
             # The parent row existed before compression started — the child
             # INSERT's parent_session_id FK needs it; without it
@@ -1012,6 +1188,12 @@ class TestSessionRowExistsBeforePreflightCompaction:
             parent_row = db.get_session(sid)
             assert parent_row is not None
             assert parent_row["end_reason"] == "compression"
+            assert routing_note not in json.dumps(seen["messages_at_compress"])
+            assert routing_note not in json.dumps(db.get_messages(child))
+            assert routing_note not in json.dumps(
+                db.get_messages_as_conversation(child)
+            )
+            assert ctx.transient_user_message_prefix == f"{routing_note}\n\n"
         finally:
             db.close()
 

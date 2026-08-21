@@ -16,6 +16,7 @@ resolved through :func:`_ra` so those patches keep working.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -1481,6 +1482,28 @@ def _rewrite_system_content_blocks(system_message: dict, effective: str) -> bool
                 content[1]["text"] = tail
                 return True
     return False
+def _apply_transient_user_message_prefix(
+    current_content: Any,
+    prefix: Optional[str],
+) -> Any:
+    """Prepend current-turn-only text without mutating canonical content."""
+    if not prefix:
+        return copy.deepcopy(current_content)
+    if isinstance(current_content, str):
+        return prefix + current_content
+    if isinstance(current_content, list):
+        result = copy.deepcopy(current_content)
+        for part in result:
+            if (
+                isinstance(part, dict)
+                and part.get("type") == "text"
+                and isinstance(part.get("text"), str)
+            ):
+                part["text"] = prefix + part["text"]
+                return result
+        result.insert(0, {"type": "text", "text": prefix.rstrip()})
+        return result
+    return copy.deepcopy(current_content)
 
 
 def _sync_failover_system_message(agent, api_messages, active_system_prompt):
@@ -1770,6 +1793,7 @@ def run_conversation(
     persist_user_timestamp: Optional[float] = None,
     persist_user_display_kind: Optional[str] = None,
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
+    transient_user_message_prefix: Optional[str] = None,
     moa_config: Optional[dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
@@ -1784,8 +1808,7 @@ def run_conversation(
             Used by the TTS pipeline to start audio generation before the full response.
             When None (default), API calls use the standard non-streaming path.
         persist_user_message: Optional clean user message to store in
-            transcripts/history when user_message contains API-only
-            synthetic prefixes.
+            transcripts/history when the model input differs from authored content.
         persist_user_timestamp: Optional platform event timestamp to store
             as metadata on that persisted user message.
         persist_user_display_kind: Optional presentation type for a
@@ -1796,6 +1819,8 @@ def run_conversation(
         persist_user_display_metadata: Optional payload for that event
             (e.g. a delegation's task count).
                 or queuing follow-up prefetch work.
+        transient_user_message_prefix: Optional current-turn-only text prepended
+            after compression when constructing the live provider request.
 
     Returns:
         Dict: Complete conversation result with final response and message history
@@ -1870,6 +1895,7 @@ def run_conversation(
         stream_callback,
         persist_user_message,
         persist_user_timestamp,
+        transient_user_message_prefix,
         persist_user_display_kind=persist_user_display_kind,
         persist_user_display_metadata=persist_user_display_metadata,
         restore_or_build_system_prompt=_restore_or_build_system_prompt,
@@ -1885,6 +1911,7 @@ def run_conversation(
     )
     user_message = _ctx.user_message
     original_user_message = _ctx.original_user_message
+    _transient_user_message_prefix = _ctx.transient_user_message_prefix
     messages = _ctx.messages
     conversation_history = _ctx.conversation_history
     active_system_prompt = _ctx.active_system_prompt
@@ -1969,8 +1996,12 @@ def run_conversation(
     # See agent/transports/codex_app_server_session.py for the adapter
     # and references/codex-app-server-runtime.md for the rationale.
     if agent.api_mode == "codex_app_server":
+        _codex_user_message = _apply_transient_user_message_prefix(
+            user_message,
+            _transient_user_message_prefix,
+        )
         return agent._run_codex_app_server_turn(
-            user_message=user_message,
+            user_message=_codex_user_message,
             original_user_message=original_user_message,
             messages=messages,
             effective_task_id=effective_task_id,
@@ -2239,7 +2270,25 @@ def run_conversation(
             # never mutated beyond the api_content stamp, so nothing leaks
             # into the clean transcript content.
             if idx == current_turn_user_idx and msg.get("role") == "user":
-                if isinstance(_api_content, str) and _api_content:
+                if _transient_user_message_prefix:
+                    # Current-turn-only routing metadata is composed onto this
+                    # request copy after preflight compression and persistence.
+                    # It never enters ``messages`` or replayable api_content.
+                    _request_user_content = _apply_transient_user_message_prefix(
+                        api_msg.get("content", ""),
+                        _transient_user_message_prefix,
+                    )
+                    _composed = compose_user_api_content(
+                        _request_user_content,
+                        _ext_prefetch_cache,
+                        _plugin_user_context,
+                    )
+                    api_msg["content"] = (
+                        _composed
+                        if _composed is not None
+                        else _request_user_content
+                    )
+                elif isinstance(_api_content, str) and _api_content:
                     # Stamped by the prologue from the same composition —
                     # reuse it so the persisted sidecar and the wire cannot
                     # drift, and so every pass this turn sends identical

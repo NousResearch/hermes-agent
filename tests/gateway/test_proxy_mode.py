@@ -159,11 +159,77 @@ class TestRunAgentProxyDispatch:
             session_id="test-session-123",
             session_key="test-key",
             run_generation=7,
+            persist_user_message="hi",
+            transient_user_message_prefix="[routing note]\n\n",
         )
 
         assert result["final_response"] == "Hello from remote!"
         runner._run_agent_via_proxy.assert_called_once()
         assert runner._run_agent_via_proxy.call_args.kwargs["run_generation"] == 7
+        assert runner._run_agent_via_proxy.call_args.kwargs["persist_user_message"] == "hi"
+        assert runner._run_agent_via_proxy.call_args.kwargs[
+            "transient_user_message_prefix"
+        ] == "[routing note]\n\n"
+
+    @pytest.mark.asyncio
+    async def test_unauthenticated_proxy_preserves_legacy_request_body(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        response = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[
+                'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+                "data: [DONE]\n\n"
+            ],
+        )
+        session = _FakeSession(response)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session), patch("aiohttp.ClientTimeout"):
+                result = await runner._run_agent(
+                    message="hi",
+                    context_prompt="",
+                    history=[],
+                    source=_make_source(),
+                    session_id="test-session",
+                    persist_user_message="hi",
+                )
+
+        assert result["final_response"] == "ok"
+        assert session.captured_headers is not None
+        assert session.captured_json is not None
+        assert "Authorization" not in session.captured_headers
+        assert "hermes_persist_user_message" not in session.captured_json
+        assert "hermes_transient_user_message_prefix" not in session.captured_json
+
+    @pytest.mark.asyncio
+    async def test_transient_prefix_requires_authenticated_proxy(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        session = _FakeSession(_FakeSSEResponse(status=200))
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session), patch("aiohttp.ClientTimeout"):
+                result = await runner._run_agent(
+                    message="hi",
+                    context_prompt="",
+                    history=[],
+                    source=_make_source(Platform.DISCORD),
+                    session_id="test-session",
+                    persist_user_message="hi",
+                    transient_user_message_prefix="[routing note]\n\n",
+                )
+
+        assert result["api_calls"] == 0
+        assert "GATEWAY_PROXY_KEY" in result["final_response"]
+        assert "API_SERVER_KEY" in result["final_response"]
+        assert session.captured_url is None
 
 
 class TestRunAgentViaProxy:
@@ -198,6 +264,8 @@ class TestRunAgentViaProxy:
                         ],
                         source=source,
                         session_id="session-abc",
+                        persist_user_message="How are you?",
+                        transient_user_message_prefix="[routing note]\n\n",
                     )
 
         # Verify request URL
@@ -214,7 +282,14 @@ class TestRunAgentViaProxy:
         assert messages[0] == {"role": "system", "content": "You are helpful."}
         assert messages[1] == {"role": "user", "content": "Hello"}
         assert messages[2] == {"role": "assistant", "content": "Hi there!"}
-        assert messages[3] == {"role": "user", "content": "How are you?"}
+        assert messages[3] == {
+            "role": "user",
+            "content": "How are you?",
+        }
+        assert session.captured_json["hermes_persist_user_message"] == "How are you?"
+        assert session.captured_json["hermes_transient_user_message_prefix"] == (
+            "[routing note]\n\n"
+        )
 
         # Verify streaming is requested
         assert session.captured_json["stream"] is True

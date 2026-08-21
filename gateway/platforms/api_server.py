@@ -4227,6 +4227,57 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
+        # Authenticated gateway proxies may preserve a clean user-authored value
+        # for transcript storage and attach current-turn-only routing context as
+        # a separate prefix. Never expose these hidden controls on an
+        # unauthenticated API server.
+        persist_user_message = body.get("hermes_persist_user_message")
+        if persist_user_message is not None:
+            if not self._api_key:
+                return web.json_response(
+                    _openai_error(
+                        "hermes_persist_user_message requires API authentication",
+                        param="hermes_persist_user_message",
+                    ),
+                    status=400,
+                )
+            if not isinstance(persist_user_message, str):
+                return web.json_response(
+                    _openai_error(
+                        "hermes_persist_user_message must be a string",
+                        param="hermes_persist_user_message",
+                    ),
+                    status=400,
+                )
+        transient_user_message_prefix = body.get(
+            "hermes_transient_user_message_prefix"
+        )
+        if transient_user_message_prefix is not None:
+            if not self._api_key:
+                return web.json_response(
+                    _openai_error(
+                        "hermes_transient_user_message_prefix requires API authentication",
+                        param="hermes_transient_user_message_prefix",
+                    ),
+                    status=400,
+                )
+            if not isinstance(transient_user_message_prefix, str):
+                return web.json_response(
+                    _openai_error(
+                        "hermes_transient_user_message_prefix must be a string",
+                        param="hermes_transient_user_message_prefix",
+                    ),
+                    status=400,
+                )
+            if persist_user_message is None:
+                return web.json_response(
+                    _openai_error(
+                        "hermes_transient_user_message_prefix requires hermes_persist_user_message",
+                        param="hermes_transient_user_message_prefix",
+                    ),
+                    status=400,
+                )
+
         # Allow caller to scope long-term memory (e.g. Honcho) with a
         # stable per-channel identifier via X-Hermes-Session-Key.  This
         # is independent of X-Hermes-Session-Id: the key persists across
@@ -4401,6 +4452,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                persist_user_message=persist_user_message,
+                **(
+                    {"transient_user_message_prefix": transient_user_message_prefix}
+                    if transient_user_message_prefix is not None
+                    else {}
+                ),
                 **agent_overrides,
                 route=route,
             ))
@@ -4422,6 +4479,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                persist_user_message=persist_user_message,
+                **(
+                    {"transient_user_message_prefix": transient_user_message_prefix}
+                    if transient_user_message_prefix is not None
+                    else {}
+                ),
                 **agent_overrides,
                 route=route,
             )
@@ -4430,7 +4493,17 @@ class APIServerAdapter(BasePlatformAdapter):
         if idempotency_key:
             fp = _make_request_fingerprint(
                 body,
-                keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream"],
+                keys=[
+                    "model",
+                    "provider",
+                    "model_options",
+                    "messages",
+                    "tools",
+                    "tool_choice",
+                    "stream",
+                    "hermes_persist_user_message",
+                    "hermes_transient_user_message_prefix",
+                ],
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
@@ -6330,6 +6403,8 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         active_run_id: Optional[str] = None,
         gateway_session_key: Optional[str] = None,
+        persist_user_message: Optional[str] = None,
+        transient_user_message_prefix: Optional[str] = None,
         requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None,
         model_options: Optional[Dict[str, Any]] = None,
@@ -6418,11 +6493,18 @@ class APIServerAdapter(BasePlatformAdapter):
                     # ``agent_ref``, and only /v1/runs has a run_id, so neither
                     # is a usable hook for the rest.
                     self._shutdown_interruptible_agents[id(agent)] = agent
-                    result = agent.run_conversation(
-                        user_message=user_message,
-                        conversation_history=conversation_history,
-                        task_id=effective_task_id,
-                    )
+                    _conversation_kwargs = {
+                        "user_message": user_message,
+                        "conversation_history": conversation_history,
+                        "task_id": effective_task_id,
+                    }
+                    if persist_user_message is not None:
+                        _conversation_kwargs["persist_user_message"] = persist_user_message
+                    if transient_user_message_prefix is not None:
+                        _conversation_kwargs["transient_user_message_prefix"] = (
+                            transient_user_message_prefix
+                        )
+                    result = agent.run_conversation(**_conversation_kwargs)
                     usage = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,

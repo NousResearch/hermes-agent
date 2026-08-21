@@ -7,7 +7,11 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
-from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
+from agent.model_metadata import (
+    _URL_TO_PROVIDER,
+    fetch_endpoint_model_metadata,
+    fetch_model_metadata,
+)
 from utils import base_url_host_matches, base_url_hostname
 
 logger = logging.getLogger(__name__)
@@ -1238,6 +1242,45 @@ def _pricing_entry_from_metadata(
     )
 
 
+
+def _models_dev_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
+    """Return models.dev pricing only for a trusted direct provider route.
+
+    A mapped provider slug does not establish the commercial terms for an
+    arbitrary custom/proxy endpoint. When an endpoint is configured, require
+    its hostname to be a registered direct host for the same models.dev
+    provider; an absent endpoint remains the direct-provider case.
+    """
+    if not route.provider or not route.model:
+        return None
+    try:
+        from agent.models_dev import PROVIDER_TO_MODELS_DEV, get_model_info
+
+        models_dev_provider = PROVIDER_TO_MODELS_DEV.get(route.provider)
+        if not models_dev_provider:
+            return None
+        if route.base_url and not any(
+            PROVIDER_TO_MODELS_DEV.get(provider) == models_dev_provider
+            and base_url_host_matches(route.base_url, domain.lstrip("."))
+            for domain, provider in _URL_TO_PROVIDER.items()
+        ):
+            return None
+        model_info = get_model_info(route.provider, route.model)
+    except Exception:
+        return None
+    if model_info is None or not model_info.has_cost_data():
+        return None
+    return PricingEntry(
+        input_cost_per_million=_to_decimal(model_info.cost_input),
+        output_cost_per_million=_to_decimal(model_info.cost_output),
+        cache_read_cost_per_million=_to_decimal(model_info.cost_cache_read),
+        cache_write_cost_per_million=_to_decimal(model_info.cost_cache_write),
+        source="provider_models_api",
+        source_url="https://models.dev",
+        pricing_version="models.dev",
+        fetched_at=_UTC_NOW(),
+    )
+
 def get_pricing_entry(
     model_name: str,
     provider: Optional[str] = None,
@@ -1265,7 +1308,10 @@ def get_pricing_entry(
         )
         if entry:
             return entry
-    return _lookup_official_docs_pricing(route)
+    official = _lookup_official_docs_pricing(route)
+    if official:
+        return official
+    return _models_dev_pricing_entry(route)
 
 
 def normalize_usage(

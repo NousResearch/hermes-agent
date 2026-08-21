@@ -1,3 +1,4 @@
+from decimal import Decimal
 from types import SimpleNamespace
 
 from agent.usage_pricing import (
@@ -11,10 +12,86 @@ from agent.usage_pricing import (
 from decimal import Decimal
 
 
+def test_unknown_named_provider_uses_models_dev_pricing_after_snapshot_miss(monkeypatch):
+    """A known provider absent from the local snapshot can still price from models.dev."""
+    from agent.models_dev import ModelInfo
+
+    expected = ModelInfo(
+        id="mimo-v2-flash",
+        name="MiMo V2 Flash",
+        family="mimo",
+        provider_id="xiaomi",
+        cost_input=0.6,
+        cost_output=2.4,
+        cost_cache_read=0.06,
+        cost_cache_write=0.75,
+    )
+    calls = []
+
+    def fake_get_model_info(provider, model):
+        calls.append((provider, model))
+        return expected
+
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr("agent.models_dev.get_model_info", fake_get_model_info)
+
+    entry = get_pricing_entry(
+        "mimo-v2-flash",
+        provider="xiaomi",
+        base_url="https://api.xiaomimimo.com/v1",
+    )
+
+    assert calls == [("xiaomi", "mimo-v2-flash")]
+    assert entry is not None
+    assert entry.input_cost_per_million == Decimal("0.6")
+    assert entry.output_cost_per_million == Decimal("2.4")
+    assert entry.cache_read_cost_per_million == Decimal("0.06")
+    assert entry.cache_write_cost_per_million == Decimal("0.75")
+    assert entry.source == "provider_models_api"
+    assert entry.source_url == "https://models.dev"
 
 
+def test_generic_custom_route_does_not_guess_models_dev_provider(monkeypatch):
+    """A custom endpoint lacks trusted vendor identity, so it must stay unpriced."""
+    calls = []
+
+    def fake_get_model_info(provider, model):
+        calls.append((provider, model))
+        raise AssertionError("custom routes must not query models.dev")
+
+    monkeypatch.setattr("agent.models_dev.get_model_info", fake_get_model_info)
+
+    entry = get_pricing_entry("mimo-v2-flash", provider="custom")
+
+    assert entry is None
+    assert calls == []
 
 
+def test_mapped_provider_behind_custom_proxy_does_not_use_models_dev(monkeypatch):
+    """A provider slug alone cannot price an arbitrary proxy endpoint."""
+    calls = []
+
+    def fake_get_model_info(provider, model):
+        calls.append((provider, model))
+        raise AssertionError("custom proxy routes must not query models.dev")
+
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr("agent.models_dev.get_model_info", fake_get_model_info)
+
+    entry = get_pricing_entry(
+        "mimo-v2-flash",
+        provider="xiaomi",
+        base_url="https://llm-proxy.example/v1",
+    )
+
+    assert entry is None
+    assert calls == []
 
 
 def test_normalize_usage_reads_deepseek_native_cache_hit_tokens():

@@ -21219,27 +21219,47 @@ def main(
         try:
             query, single_query_images = _collect_query_images(query, image)
             # Kanban workers spawn with ``hermes chat -q "work kanban task <id>"``;
-            # the actual task description lives in the task body. Mirror the
-            # gateway/CLI behaviour for inbound images by scanning the body for
-            # local image paths and http(s) image URLs and attaching them to the
-            # worker's first turn. Without this, users who paste a screenshot
-            # path or URL into a kanban task body never get it routed to the
-            # model's vision input.
+            # load the authoritative bounded task context into that first user
+            # turn before the agent starts. This keeps worker orientation off
+            # the tool-result transport: a large ``kanban_show`` response can be
+            # spilled or transformed into an opaque content reference before
+            # the model sees it. Failure is fatal here — running a worker with
+            # no assignment is worse than letting the dispatcher record/retry a
+            # bounded bootstrap failure.
             single_query_image_urls: list[str] = []
             _kanban_task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
             if _kanban_task_id:
                 try:
                     from hermes_cli import kanban_db as _kb
-                    from agent.image_routing import extract_image_refs as _extract_refs
 
                     _conn = _kb.connect()
                     try:
                         _task = _kb.get_task(_conn, _kanban_task_id)
+                        query = _kb.build_worker_query(
+                            _conn,
+                            _kanban_task_id,
+                            query if isinstance(query, str) else "",
+                        )
                     finally:
                         try:
                             _conn.close()
                         except Exception:
                             pass
+                except Exception as _exc:
+                    print(
+                        f"Error: failed to load kanban task context for "
+                        f"{_kanban_task_id}: {_exc}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+
+                # Mirror inbound image handling by attaching local paths and
+                # http(s) URLs from the task body to the same enriched turn.
+                # Image discovery is best-effort; authoritative text context
+                # above is not.
+                try:
+                    from agent.image_routing import extract_image_refs as _extract_refs
+
                     _body = getattr(_task, "body", "") if _task is not None else ""
                     if _body:
                         _kb_paths, _kb_urls = _extract_refs(_body)

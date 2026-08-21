@@ -159,9 +159,22 @@ def apply_managed_overlay(config: dict) -> dict:
         if not managed:
             return config
         # Imported lazily to avoid an import cycle (config imports managed_scope).
-        from hermes_cli.config import _deep_merge, _expand_env_vars, _normalize_root_model_keys
+        from hermes_cli.config import (
+            _deep_merge,
+            _expand_env_vars,
+            _normalize_providers_string,
+            _normalize_root_model_keys,
+        )
 
-        managed_expanded = _normalize_root_model_keys(_expand_env_vars(managed))
+        # Decode a JSON-string-typed ``providers`` scalar BEFORE env-expansion,
+        # exactly as _load_config_impl's managed branch does. Without this, a
+        # ``providers: '{...}'`` string in the managed file survives as a string
+        # and _deep_merge splices it over a valid user ``providers`` mapping —
+        # managed wins at the leaf, so a correct user config would lose its
+        # custom providers. Decoding first also lets ``${VAR}`` refs inside the
+        # block expand normally once it lands in the dict.
+        managed_decoded = _normalize_providers_string(managed)
+        managed_expanded = _normalize_root_model_keys(_expand_env_vars(managed_decoded))
         # A bare ``model: x/y`` string in the managed file must merge as
         # ``model.default`` — otherwise _deep_merge would replace the caller's
         # ``model`` dict with a string and break every ``cfg["model"]["..."]``

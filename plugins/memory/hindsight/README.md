@@ -44,6 +44,36 @@ hindsight-embed -p hermes ui start
 
 Points the plugin at an existing Hindsight instance you're already running (Docker, self-hosted, etc.). No daemon management — just a URL and an optional API key.
 
+## Mental Models
+
+Hindsight supports injecting custom long-term persona and preference templates directly into Hermes core prompts via two mental models: `user_model_id` and `agent_model_id`.
+
+> [!IMPORTANT]
+> **Pre-requisite:** You must create these mental models in Hindsight first (either via the Hindsight Web UI or API) before configuring their IDs in Hermes.
+
+> [!NOTE]
+> **System-prompt injection is opt-in:** Setting a `user_model_id` or `agent_model_id` enables per-turn update injection by itself. To also inject the model into the system prompt at session start, set `use_user_mental_model_for_profile: true` or `use_agent_mental_model_for_soul: true` (top-level or per-bank).
+
+### User Profile (`user_model_id`)
+This mental model is injected right after the core user profile block in the system prompt. It describes who you are and what you expect.
+
+A recommended prompt to generate a simple, highly effective user model is based on Honcho's dialectic start:
+> *"Who is this person? What are their preferences, goals, and working style? Focus on facts that would help an AI assistant be immediately useful."*
+
+> [!NOTE]
+> **Replacing the Local Model:** The contents of `user_model_id` will still be appended even if the core built-in `USER.md` is disabled (by setting `user_profile_enabled: false` in the core config). This allows the Hindsight-managed mental model to cleanly replace the local memory file entirely.
+
+### Agent Profile (`agent_model_id`)
+This mental model is injected right after the `soul.md` persona block, acting as an extension of the agent's core soul/identity.
+
+> [!WARNING]
+> **Treat the Agent Model with Caution:** Because this content is appended directly to the agent's core self-representation (`soul.md`), overly restrictive, conflicting, or poorly designed agent models can destabilize the agent's behavioral guardrails or corrupt its persona. In general, it is not recommended to use `agent_model_id` unless you are actively curious about experimenting with evolving agent personas and are comfortable with highly unpredictable results.
+
+### Dynamic Per-Turn Updates
+In addition to the initial system prompt injection, Hindsight continuously monitors the configured mental models for updates during the conversation:
+* If the contents of `user_model_id` or `agent_model_id` change server-side (e.g., via background Hindsight profiling, updates from other sessions, or manual edits), the provider automatically detects the change.
+* The updated mental model content is dynamically appended directly to the user message context on that turn, wrapped in `<user-context>` and `<agent-context>` tags respectively, ensuring the agent is always aligned with the latest state.
+
 ## Config
 
 Config file: `~/.hermes/hindsight/config.json`
@@ -63,6 +93,9 @@ Config file: `~/.hermes/hindsight/config.json`
 | `bank_id_template` | — | Optional template to derive the bank name dynamically. Placeholders: `{profile}`, `{workspace}`, `{platform}`, `{user}`, `{session}`. Example: `hermes-{profile}` isolates memory per active Hermes profile. Empty placeholders collapse cleanly (e.g. `hermes-{user}` with no user becomes `hermes`). |
 | `bank_mission` | — | Reflect mission (identity/framing for reflect reasoning). Applied via Banks API. |
 | `bank_retain_mission` | — | Retain mission (steers what gets extracted). Applied via Banks API. |
+| `user_model_id` | — | Hindsight mental model ID for the user. Maps to environment variable `HINDSIGHT_USER_MODEL_ID`. |
+| `agent_model_id` | — | **WARNING: High Risk.** Extends the agent's core identity (`soul.md`). Setting this value is not recommended unless experimenting with evolving personas, as it can cause highly unpredictable results. **It is highly recommended to read this manual's warning section before configuring this value.** Maps to environment variable `HINDSIGHT_AGENT_MODEL_ID`. |
+| `cache_ttl` | `300` | Cache TTL in seconds (5 minutes) for both mental models. Maps to environment variable `HINDSIGHT_CACHE_TTL`. |
 
 ### Recall
 

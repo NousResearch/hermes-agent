@@ -4620,3 +4620,219 @@ class TestFastModelTier:
             _FAST_MODEL_TASKS
         )
         assert not overlap
+
+
+# ── Plugin hooks for auxiliary calls (#79733) ──────────────────────────────
+
+
+class TestAuxiliaryCallPluginHooks:
+    """auxiliary_client.call_llm() fires pre/post_api_request plugin hooks.
+
+    Every auxiliary task (approval, title_generation, compression, vision,
+    web_extract, session_search, ...) funnels through call_llm()'s relay
+    boundary. Before #79733 those calls never fired any plugin hook, so
+    hook-based observability plugins (Langfuse, NeMo Relay, cost guards) were
+    structurally blind to them. These tests pin the hook contract: the
+    auxiliary task name is surfaced as both ``task`` and ``task_id`` (plus
+    ``auxiliary=True``), pre/post share one api_request_id, and errors are
+    reported on post_api_request.
+    """
+
+    def _make_response(self):
+        """A chat-completions-shaped response carrying full usage details."""
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content="ok"),
+                finish_reason="stop",
+            )],
+            usage=SimpleNamespace(
+                prompt_tokens=10,
+                completion_tokens=5,
+                prompt_tokens_details=SimpleNamespace(
+                    cached_tokens=2, cache_write_tokens=3,
+                ),
+                completion_tokens_details=SimpleNamespace(reasoning_tokens=1),
+            ),
+            model="mock-model",
+        )
+
+    def _patch_call_llm(self, monkeypatch, client):
+        """Patch the resolution/validation chain so call_llm uses ``client``."""
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda *a, **k: ("openrouter", "mock-model", None, None, None),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client",
+            lambda *a, **k: (client, "mock-model"),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._validate_llm_response",
+            lambda resp, _task, **_kw: resp,
+        )
+        return client
+
+    def _capture_hooks(self, monkeypatch):
+        """Route lifecycle hooks into a captured list; has_hook → True."""
+        hook_calls = []
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        return hook_calls
+
+    def test_call_llm_fires_hooks_on_success(self, monkeypatch):
+        messages = [{"role": "user", "content": "hello"}]
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+        response = self._make_response()
+        client.chat.completions.create.return_value = response
+        self._patch_call_llm(monkeypatch, client)
+        hook_calls = self._capture_hooks(monkeypatch)
+
+        result = call_llm(task="title_generation", messages=messages)
+
+        assert result is response
+        names = [name for name, _ in hook_calls]
+        assert names == ["pre_api_request", "post_api_request"]
+
+        pre = hook_calls[0][1]
+        assert pre["task"] == "title_generation"
+        assert pre["task_id"] == "title_generation"
+        assert pre["auxiliary"] is True
+        assert pre["api_call_count"] == 1
+        assert pre["api_request_id"].startswith("aux-")
+        assert pre["request_messages"] == messages
+        assert pre["model"] == "mock-model"
+        assert pre["provider"] == "openrouter"
+        assert pre["base_url"] == "https://openrouter.ai/api/v1"
+        assert pre["streaming"] is False
+        assert pre["started_at"] > 0
+
+        post = hook_calls[1][1]
+        assert post["api_request_id"] == pre["api_request_id"]
+        assert post["response"] is response
+        assert post["finish_reason"] == "stop"
+        assert post["api_duration"] >= 0
+        assert post["usage"] == {
+            "input_tokens": 5,
+            "output_tokens": 5,
+            "cache_read_tokens": 2,
+            "cache_write_tokens": 3,
+            "reasoning_tokens": 1,
+        }
+        # Same task scoping on the completion side.
+        assert post["task"] == "title_generation"
+        assert post["auxiliary"] is True
+
+    def test_call_llm_fires_post_hook_with_error(self, monkeypatch):
+        messages = [{"role": "user", "content": "hello"}]
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+        boom = RuntimeError("boom")
+        client.chat.completions.create.side_effect = boom
+        self._patch_call_llm(monkeypatch, client)
+        hook_calls = self._capture_hooks(monkeypatch)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            call_llm(task="session_search", messages=messages)
+
+        names = [name for name, _ in hook_calls]
+        assert names == ["pre_api_request", "post_api_request"]
+        pre = hook_calls[0][1]
+        post = hook_calls[1][1]
+        assert post["api_request_id"] == pre["api_request_id"]
+        assert post["error"] is boom
+        assert post["error_type"] == "RuntimeError"
+        assert post["task"] == "session_search"
+        assert post["api_duration"] >= 0
+
+    def test_async_call_llm_fires_hooks_on_success(self, monkeypatch):
+        messages = [{"role": "user", "content": "hello"}]
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+        response = self._make_response()
+        client.chat.completions.create = AsyncMock(return_value=response)
+        self._patch_call_llm(monkeypatch, client)
+        hook_calls = self._capture_hooks(monkeypatch)
+
+        async def _run():
+            return await async_call_llm(task="web_extract", messages=messages)
+
+        import asyncio
+
+        result = asyncio.run(_run())
+
+        assert result is response
+        names = [name for name, _ in hook_calls]
+        assert names == ["pre_api_request", "post_api_request"]
+        pre = hook_calls[0][1]
+        post = hook_calls[1][1]
+        assert pre["task"] == "web_extract"
+        assert pre["request_messages"] == messages
+        assert post["api_request_id"] == pre["api_request_id"]
+        assert post["response"] is response
+
+    def test_streaming_call_fires_hooks_with_streaming_flag(self, monkeypatch):
+        messages = [{"role": "user", "content": "hello"}]
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+        stream = iter([SimpleNamespace(choices=[])])
+        client.chat.completions.create.return_value = stream
+        self._patch_call_llm(monkeypatch, client)
+        hook_calls = self._capture_hooks(monkeypatch)
+
+        result = call_llm(
+            task="moa_aggregator",
+            provider="openrouter",
+            model="mock-model",
+            messages=messages,
+            stream=True,
+        )
+
+        assert result is stream
+        names = [name for name, _ in hook_calls]
+        assert names == ["pre_api_request", "post_api_request"]
+        assert hook_calls[0][1]["streaming"] is True
+        assert hook_calls[1][1]["streaming"] is True
+        assert hook_calls[1][1]["api_request_id"] == hook_calls[0][1]["api_request_id"]
+        assert hook_calls[1][1]["task"] == "moa_aggregator"
+
+    def test_no_hook_registered_skips_invoke(self, monkeypatch):
+        messages = [{"role": "user", "content": "hello"}]
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+        response = self._make_response()
+        client.chat.completions.create.return_value = response
+        self._patch_call_llm(monkeypatch, client)
+
+        invoked = []
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda *a, **k: invoked.append((a, k)),
+        )
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: False)
+
+        result = call_llm(task="title_generation", messages=messages)
+
+        assert result is response
+        assert invoked == []
+
+    def test_raising_hook_does_not_break_aux_call(self, monkeypatch):
+        messages = [{"role": "user", "content": "hello"}]
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+        response = self._make_response()
+        client.chat.completions.create.return_value = response
+        self._patch_call_llm(monkeypatch, client)
+
+        def _boom(*a, **k):
+            raise RuntimeError("hook failed")
+
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _boom)
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+
+        result = call_llm(task="compression", messages=messages)
+
+        assert result is response

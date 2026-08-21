@@ -3324,6 +3324,198 @@ def _relay_auxiliary_metadata(
     }
 
 
+# ── Plugin hooks for auxiliary calls (#79733) ───────────────────────────────
+# Every auxiliary LLM call funnels through the ``_relay_*`` helpers below,
+# which now fire the same pre_api_request / post_api_request plugin hooks the
+# main loop fires per API call (agent/conversation_loop.py). Before this,
+# hook-based observability plugins (Langfuse, NeMo Relay, cost guards) were
+# structurally blind to approval / title_generation / compression / vision /
+# web_extract / session_search calls. The auxiliary task name is surfaced as
+# both ``task`` and ``task_id`` (plus ``auxiliary=True``) so plugins can tell
+# auxiliary calls apart from main-turn calls. Everything here is fail-open:
+# a raising hook or a missing plugin never breaks the auxiliary call.
+
+def _aux_hook_usage_summary(response: Any, *, provider: str | None = None) -> dict:
+    """Best-effort canonical usage summary for the post_api_request hook payload.
+
+    Mirrors the usage normalisation in ``agent.aux_accounting.record_aux_usage``
+    (``usage_pricing.normalize_usage``) so hook consumers see the same token
+    buckets the storage layer records.
+    """
+    try:
+        raw_usage = getattr(response, "usage", None)
+        if raw_usage is None:
+            return {}
+        from agent.usage_pricing import normalize_usage
+
+        usage = normalize_usage(raw_usage, provider=provider)
+        summary = {
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+        }
+        if usage.cache_read_tokens:
+            summary["cache_read_tokens"] = usage.cache_read_tokens
+        if usage.cache_write_tokens:
+            summary["cache_write_tokens"] = usage.cache_write_tokens
+        if usage.reasoning_tokens:
+            summary["reasoning_tokens"] = usage.reasoning_tokens
+        return summary
+    except Exception:
+        return {}
+
+
+def _aux_hook_finish_reason(response: Any) -> str:
+    """Best-effort finish_reason for the post_api_request hook payload."""
+    try:
+        choices = getattr(response, "choices", None)
+        if choices:
+            return str(getattr(choices[0], "finish_reason", "") or "")
+    except Exception:
+        pass
+    return ""
+
+
+def _aux_api_hook_identity(
+    *,
+    metadata: dict[str, Any],
+    client: Any,
+    model_name: str,
+    provider_name: str,
+    api_mode: str | None,
+) -> Dict[str, Any]:
+    """Shared hook identity kwargs for one auxiliary provider attempt."""
+    task = str(metadata.get("auxiliary_task") or "")
+    return {
+        "task_id": task,
+        "task": task,
+        "auxiliary": True,
+        "turn_id": "",
+        "api_request_id": str(metadata.get("api_request_id") or ""),
+        "api_call_count": int(metadata.get("retry_count") or 0) + 1,
+        "session_id": "",
+        "platform": "",
+        "model": model_name,
+        "provider": provider_name,
+        "base_url": str(getattr(client, "base_url", "") or ""),
+        "api_mode": str(api_mode or ""),
+    }
+
+
+def _aux_fire_api_hook(
+    hook_name: str,
+    identity: Dict[str, Any],
+    *,
+    started_at: float,
+    ended_at: Optional[float] = None,
+    response: Any = None,
+    error: Optional[BaseException] = None,
+    request_messages: Any = None,
+    streaming: bool = False,
+) -> None:
+    """Fire one pre_api_request / post_api_request hook for an auxiliary call.
+
+    Gated on ``has_hook`` and fail-open, matching the main loop's per-API-call
+    hook pattern (agent/conversation_loop.py).
+    """
+    try:
+        from hermes_cli.lifecycle import has_hook as _has_hook, invoke_hook as _invoke_hook
+
+        if not _has_hook(hook_name):
+            return
+        payload = dict(identity)
+        payload.update(started_at=started_at, streaming=streaming)
+        if hook_name == "pre_api_request":
+            payload["request_messages"] = (
+                list(request_messages) if isinstance(request_messages, list) else []
+            )
+        else:
+            ended_at = ended_at or time.time()
+            payload.update(ended_at=ended_at, api_duration=max(0.0, ended_at - started_at))
+            if error is not None:
+                payload.update(error=error, error_type=type(error).__name__)
+            else:
+                payload["response"] = response
+                payload["usage"] = _aux_hook_usage_summary(
+                    response, provider=identity.get("provider") or ""
+                )
+                payload["finish_reason"] = _aux_hook_finish_reason(response)
+        _invoke_hook(hook_name, **payload)
+    except Exception:
+        pass
+
+
+def _aux_invoke_with_hooks(
+    call_fn: Callable[[], Any],
+    *,
+    client: Any,
+    kwargs: dict[str, Any],
+    provider_name: str,
+    model_name: str,
+    api_mode: str | None,
+    metadata: dict[str, Any],
+    streaming: bool = False,
+) -> Any:
+    """Run one synchronous auxiliary provider call wrapped in API hooks."""
+    identity = _aux_api_hook_identity(
+        metadata=metadata, client=client, model_name=model_name,
+        provider_name=provider_name, api_mode=api_mode,
+    )
+    started_at = time.time()
+    _aux_fire_api_hook(
+        "pre_api_request", identity, started_at=started_at,
+        request_messages=kwargs.get("messages"), streaming=streaming,
+    )
+    try:
+        result = call_fn()
+    except Exception as exc:
+        _aux_fire_api_hook(
+            "post_api_request", identity, started_at=started_at,
+            ended_at=time.time(), error=exc, streaming=streaming,
+        )
+        raise
+    _aux_fire_api_hook(
+        "post_api_request", identity, started_at=started_at,
+        ended_at=time.time(), response=result, streaming=streaming,
+    )
+    return result
+
+
+async def _aux_invoke_with_hooks_async(
+    call_fn: Callable[[], Any],
+    *,
+    client: Any,
+    kwargs: dict[str, Any],
+    provider_name: str,
+    model_name: str,
+    api_mode: str | None,
+    metadata: dict[str, Any],
+    streaming: bool = False,
+) -> Any:
+    """Run one asynchronous auxiliary provider call wrapped in API hooks."""
+    identity = _aux_api_hook_identity(
+        metadata=metadata, client=client, model_name=model_name,
+        provider_name=provider_name, api_mode=api_mode,
+    )
+    started_at = time.time()
+    _aux_fire_api_hook(
+        "pre_api_request", identity, started_at=started_at,
+        request_messages=kwargs.get("messages"), streaming=streaming,
+    )
+    try:
+        result = await call_fn()
+    except Exception as exc:
+        _aux_fire_api_hook(
+            "post_api_request", identity, started_at=started_at,
+            ended_at=time.time(), error=exc, streaming=streaming,
+        )
+        raise
+    _aux_fire_api_hook(
+        "post_api_request", identity, started_at=started_at,
+        ended_at=time.time(), response=result, streaming=streaming,
+    )
+    return result
+
+
 def _relay_sync_completion(
     client: Any,
     kwargs: dict[str, Any],
@@ -3340,15 +3532,27 @@ def _relay_sync_completion(
     if route is None:
         return _run_protected_sync_provider_call(callback, kwargs)
     provider_name, fallback_model, metadata = route
-    from agent import relay_llm
 
-    return relay_llm.execute_current(
-        kwargs,
-        lambda request: _run_protected_sync_provider_call(callback, request),
-        name=provider_name,
+    def _call() -> Any:
+        from agent import relay_llm
+
+        return relay_llm.execute_current(
+            kwargs,
+            lambda request: _run_protected_sync_provider_call(callback, request),
+            name=provider_name,
+            model_name=str(kwargs.get("model") or fallback_model),
+            metadata=metadata,
+            defer_logical_completion=True,
+        )
+
+    return _aux_invoke_with_hooks(
+        _call,
+        client=client,
+        kwargs=kwargs,
+        provider_name=provider_name,
         model_name=str(kwargs.get("model") or fallback_model),
+        api_mode=api_mode,
         metadata=metadata,
-        defer_logical_completion=True,
     )
 
 
@@ -3365,15 +3569,27 @@ async def _relay_async_completion(
     if route is None:
         return await callback(kwargs)
     provider_name, fallback_model, metadata = route
-    from agent import relay_llm
 
-    return await relay_llm.execute_current_async(
-        kwargs,
-        callback,
-        name=provider_name,
+    async def _call() -> Any:
+        from agent import relay_llm
+
+        return await relay_llm.execute_current_async(
+            kwargs,
+            callback,
+            name=provider_name,
+            model_name=str(kwargs.get("model") or fallback_model),
+            metadata=metadata,
+            defer_logical_completion=True,
+        )
+
+    return await _aux_invoke_with_hooks_async(
+        _call,
+        client=client,
+        kwargs=kwargs,
+        provider_name=provider_name,
         model_name=str(kwargs.get("model") or fallback_model),
+        api_mode=api_mode,
         metadata=metadata,
-        defer_logical_completion=True,
     )
 
 
@@ -3388,16 +3604,29 @@ def _relay_sync_stream(
     if route is None:
         return client.chat.completions.create(**kwargs)
     provider_name, fallback_model, metadata = route
-    from agent import relay_llm
 
-    return relay_llm.stream_current(
-        kwargs,
-        lambda request: client.chat.completions.create(**request),
-        name=provider_name,
+    def _call() -> Any:
+        from agent import relay_llm
+
+        return relay_llm.stream_current(
+            kwargs,
+            lambda request: client.chat.completions.create(**request),
+            name=provider_name,
+            model_name=str(kwargs.get("model") or fallback_model),
+            finalizer=dict,
+            metadata=metadata,
+            completed_response_predicate=lambda value: hasattr(value, "choices"),
+        )
+
+    return _aux_invoke_with_hooks(
+        _call,
+        client=client,
+        kwargs=kwargs,
+        provider_name=provider_name,
         model_name=str(kwargs.get("model") or fallback_model),
-        finalizer=dict,
+        api_mode=api_mode,
         metadata=metadata,
-        completed_response_predicate=lambda value: hasattr(value, "choices"),
+        streaming=True,
     )
 _RUNTIME_MAIN_COMPAT_SNAPSHOT: Tuple[Any, ...] = ("", "", "", "", "", "")
 _RUNTIME_MAIN_COMPAT_LOCK = threading.Lock()

@@ -19,6 +19,7 @@ import pytest
 
 import hermes_state
 from hermes_state import (
+    SessionDB,
     apply_wal_with_fallback,
     is_sqlite_wal_reset_vulnerable,
     sqlite_source_id,
@@ -239,7 +240,7 @@ class TestNoDowngradeUnderConcurrentOpeners:
                     conn.execute("PRAGMA journal_mode").fetchone()
                 with caplog.at_level("WARNING", logger="hermes_state"):
                     mode = apply_wal_with_fallback(conn, db_label="locked_wal.db")
-                assert mode == "wal"
+                assert mode is None
                 assert any(
                     "concurrent openers" in r.getMessage() for r in caplog.records
                 )
@@ -258,6 +259,76 @@ class TestNoDowngradeUnderConcurrentOpeners:
             assert check.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
         finally:
             check.close()
+
+    def test_session_db_disables_read_pool_when_mode_probe_is_indeterminate(
+        self, tmp_path, monkeypatch
+    ):
+        """Unknown mode must not enable the lock-free SessionDB read pool."""
+        monkeypatch.setattr(
+            hermes_state,
+            "is_sqlite_wal_reset_vulnerable",
+            lambda version_info=None: True,
+        )
+        monkeypatch.setattr(hermes_state, "resolve_journal_mode", lambda: "wal")
+        db_path = tmp_path / "indeterminate-delete.db"
+        seed = sqlite3.connect(str(db_path))
+        try:
+            assert seed.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
+        finally:
+            seed.close()
+
+        monkeypatch.setattr(hermes_state, "_on_disk_journal_mode", lambda conn: None)
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db._wal_active is False
+            assert db._conn is not None
+            assert (
+                db._conn.execute("PRAGMA journal_mode").fetchone()[0].lower()
+                == "delete"
+            )
+        finally:
+            db.close()
+
+        check = sqlite3.connect(str(db_path))
+        try:
+            assert (
+                check.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
+            )
+        finally:
+            check.close()
+
+    def test_session_db_reconnect_disables_read_pool_when_probe_is_indeterminate(
+        self, tmp_path, monkeypatch
+    ):
+        """The not-a-database reconnect must apply the same conservative gate."""
+        monkeypatch.setattr(
+            hermes_state,
+            "is_sqlite_wal_reset_vulnerable",
+            lambda version_info=None: True,
+        )
+        monkeypatch.setattr(hermes_state, "resolve_journal_mode", lambda: "wal")
+        db_path = tmp_path / "reconnect-indeterminate-delete.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db._wal_active is False
+            assert db._conn is not None
+            assert (
+                db._conn.execute("PRAGMA journal_mode").fetchone()[0].lower()
+                == "delete"
+            )
+
+            monkeypatch.setattr(
+                hermes_state, "_on_disk_journal_mode", lambda conn: None
+            )
+            assert db._reconnect_after_notadb() is True
+            assert db._wal_active is False
+            assert db._conn is not None
+            assert (
+                db._conn.execute("PRAGMA journal_mode").fetchone()[0].lower()
+                == "delete"
+            )
+        finally:
+            db.close()
 
     def test_exclusively_owned_fresh_db_still_downgrades(
         self, tmp_path, monkeypatch, caplog

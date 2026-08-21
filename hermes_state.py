@@ -1066,10 +1066,12 @@ def apply_wal_with_fallback(
     *,
     db_label: str = "state.db",
     require_wal: bool = False,
-) -> str:
+) -> Optional[str]:
     """Set ``journal_mode=WAL`` on ``conn``, falling back to DELETE on failure.
 
-    Returns the journal mode actually set (``"wal"`` or ``"delete"``).
+    Returns the journal mode confirmed to be active (``"wal"`` or
+    ``"delete"``), or ``None`` when the mode cannot be observed without an
+    unsafe live journal-mode change.
 
     On WAL-incompatible filesystems (NFS, SMB, some FUSE, ZFS), SQLite either
     raises ``OperationalError("locking protocol")`` /
@@ -1282,16 +1284,17 @@ def _apply_delete_for_wal_reset_bug(
     *,
     db_label: str,
     require_delete: bool = False,
-) -> str:
+) -> Optional[str]:
     """Avoid enabling WAL when the linked SQLite has the WAL-reset bug.
 
     - Already-WAL on disk: leave WAL alone (no live downgrade) and warn.
     - Mode unreadable (probe blocked by a concurrent opener's locks):
       ownership is not provably exclusive — leave the journal mode alone
-      and warn.  Never treat "could not read the mode" as "not WAL": that
-      exact confusion let a vulnerable-SQLite process flip a live WAL
-      state.db to DELETE under a concurrent WAL writer, destroying its
-      committed-but-uncheckpointed transactions.
+      and warn, returning ``None`` because the active mode is unknown. Never
+      treat "could not read the mode" as "not WAL": that exact confusion let
+      a vulnerable-SQLite process flip a live WAL state.db to DELETE under a
+      concurrent WAL writer, destroying its committed-but-uncheckpointed
+      transactions.
     - Otherwise: set DELETE (refusing to wait out concurrent openers) and
       warn.
     - For an explicit operator request, verify SQLite accepted DELETE.
@@ -1319,7 +1322,7 @@ def _apply_delete_for_wal_reset_bug(
                 "this process does not exclusively own"
             )
         _log_wal_reset_bug_once(db_label, kept_wal=True, indeterminate=True)
-        return "wal"
+        return None
 
     actual = ""
     try:

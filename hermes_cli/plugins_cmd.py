@@ -1685,6 +1685,21 @@ def _resolve_tool_override_grant(
             "everything the agent routes through that tool.\n"
             "  Grant it? [y/N] "
         )
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            # Redirected stdout swallows the prompt while stdin still waits
+            # on an answer the operator never saw — an indistinguishable
+            # deadlock for wrapper scripts / CI steps. Fail closed with the
+            # docstring's promised deny-on-non-interactive (never
+            # implemented) instead, same guard as the capability-consent
+            # prompt above (#89600).
+            console.print(
+                "[yellow]Non-interactive session: tool-override grant "
+                "denied (fail closed).[/yellow] Re-run "
+                f"`hermes plugins enable {key} --allow-tool-override` "
+                "to grant this later."
+            )
+            _set_plugin_entry_flag(key, "allow_tool_override", False)
+            return
         try:
             answer = console.input(prompt).strip().lower()
         except (EOFError, KeyboardInterrupt):

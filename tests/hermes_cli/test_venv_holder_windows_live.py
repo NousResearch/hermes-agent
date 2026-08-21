@@ -201,14 +201,14 @@ class TestAncestorExclusion:
             "from hermes_cli.update_cmd import _detect_venv_python_processes\n"
             "import psutil\n"
             "from gateway.status import looks_like_gateway_command_line\n"
-            "parent = psutil.Process(os.getppid())\n"
-            "parent_cmdline = ' '.join(parent.cmdline() or [])\n"
+            "# The venv shim makes every spawn a launcher/worker CHAIN, so the\n"
+            "# gateway is an ANCESTOR, not necessarily the direct parent —\n"
+            "# find it the same way the pause machinery would: by argv.\n"
+            "gw = [int(a.pid) for a in psutil.Process().parents()\n"
+            "      if looks_like_gateway_command_line(' '.join(a.cmdline() or []))]\n"
             "matches = _detect_venv_python_processes()\n"
-            "print(json.dumps({'ppid': os.getppid(),"
-            " 'pids': [p for p, _, _ in matches],"
-            " 'parent_cmdline': parent_cmdline,"
-            " 'parent_exe': parent.exe() or '',"
-            " 'matcher_says_gateway': looks_like_gateway_command_line(parent_cmdline)}))\n",
+            "print(json.dumps({'gateway_ancestors': gw,"
+            " 'pids': [p for p, _, _ in matches]}))\n",
             encoding="utf-8",
         )
         parent_oneliner = (
@@ -240,9 +240,13 @@ class TestAncestorExclusion:
         line = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else "{}"
         payload = json.loads(line)
         assert payload, f"child scan produced no output: {result.stderr[-500:]}"
-        # The gateway parent must be visible to the scan so the pause
-        # machinery can stop it (#87594). Plain ancestor-exclusion hides it.
-        assert payload["ppid"] in payload["pids"], (
+        assert payload["gateway_ancestors"], (
+            f"harness broke: no gateway-argv ancestor found: {payload}"
+        )
+        # The gateway ancestor must be visible to the scan so the pause
+        # machinery can stop it (#87594). Blanket ancestor-exclusion hid it.
+        visible = set(payload["gateway_ancestors"]) & set(payload["pids"])
+        assert visible, (
             "gateway ancestor invisible to venv scan — /update from the "
             f"gateway can never pause it (#87594): {payload}"
         )

@@ -106,6 +106,7 @@ class TestProviderMapping:
         assert PROVIDER_TO_MODELS_DEV["stepfun"] == "stepfun"
         assert PROVIDER_TO_MODELS_DEV["kilocode"] == "kilo"
         assert PROVIDER_TO_MODELS_DEV["ai-gateway"] == "vercel"
+        assert PROVIDER_TO_MODELS_DEV["bedrock"] == "amazon-bedrock"
 
     def test_xai_oauth_uses_xai_catalog(self):
         assert PROVIDER_TO_MODELS_DEV["xai"] == "xai"
@@ -824,6 +825,42 @@ class TestGetModelCapabilities:
             caps = get_model_capabilities("gemini", "weird-model")
         assert caps is not None
         assert caps.supports_vision is False
+
+
+    def test_bedrock_opus_regional_slug_vision(self):
+        """Bedrock regional Opus slugs must resolve to vision-capable.
+
+        Regression: the ``bedrock`` provider was missing from
+        PROVIDER_TO_MODELS_DEV, so get_model_capabilities("bedrock", ...)
+        returned None for every Bedrock model. Image routing in auto mode
+        then fell back to the text pipeline (vision_analyze) instead of
+        attaching images natively, even though Opus supports vision
+        (hermes-agent image_routing issue: native vision lost with an
+        explicit auxiliary.vision fallback configured).
+        """
+        registry = {
+            "amazon-bedrock": {"id": "amazon-bedrock", "models": {
+                "us.anthropic.claude-opus-4-6-v1": {
+                    "id": "us.anthropic.claude-opus-4-6-v1",
+                    "attachment": True,
+                    "tool_call": True,
+                    "modalities": {"input": ["text", "image", "pdf"]},
+                    "limit": {"context": 1000000, "output": 128000},
+                },
+                "anthropic.claude-sonnet-4-6": {
+                    "id": "anthropic.claude-sonnet-4-6",
+                    "attachment": True,
+                    "tool_call": True,
+                    "modalities": {"input": ["text", "image", "pdf"]},
+                    "limit": {"context": 1000000, "output": 128000},
+                },
+            }},
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            caps = get_model_capabilities("bedrock", "us.anthropic.claude-opus-4-6-v1")
+        assert caps is not None
+        assert caps.supports_vision is True
+        assert caps.supports_tools is True
 
 
 # ---------------------------------------------------------------------------

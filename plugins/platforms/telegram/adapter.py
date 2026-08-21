@@ -750,6 +750,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # declines drafts so transport=auto uses edit-in-place + rich finalize
         # instead of MDV2 drafts that jump to sendRichMessage at the end.
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
+        # Opt-in conversational splitting (#4445): deliver blank-line-separated
+        # paragraphs as separate Telegram bubbles instead of one long message.
+        # Shared split_outgoing_* extra keys (see BasePlatformAdapter).
+        self._init_conversational_split_config()
         # Latched off after a capability failure on sendRichMessage /
         # sendRichMessageDraft (e.g. older python-telegram-bot without the
         # endpoint) so later sends skip the doomed rich attempt entirely.
@@ -1886,40 +1890,6 @@ class TelegramAdapter(BasePlatformAdapter):
             if context is not None:
                 stack.append(context)
         return False
-
-    def _coerce_bool_extra(self, key: str, default: bool = False) -> bool:
-        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
-        if value is None:
-            return default
-        if isinstance(value, str):
-            lowered = value.strip().lower()
-            if lowered in {"true", "1", "yes", "on"}:
-                return True
-            if lowered in {"false", "0", "no", "off"}:
-                return False
-            return default
-        return bool(value)
-
-    def _coerce_float_extra(
-        self,
-        key: str,
-        default: float,
-        *,
-        min_value: Optional[float] = None,
-        max_value: Optional[float] = None,
-    ) -> float:
-        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
-        if value is None:
-            return default
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError):
-            return default
-        if min_value is not None:
-            parsed = max(parsed, min_value)
-        if max_value is not None:
-            parsed = min(parsed, max_value)
-        return parsed
 
     def _link_preview_kwargs(self) -> Dict[str, Any]:
         if not getattr(self, "_disable_link_previews", False):
@@ -5172,11 +5142,14 @@ class TelegramAdapter(BasePlatformAdapter):
                                 pass  # Typing failures are non-fatal
                     return rich_result
 
-            # Format and split message if needed
+            # Format, optionally split into conversational bubbles, then apply
+            # the existing length chunking to every part.
             formatted = self.format_message(content)
-            chunks = self.truncate_message(
-                formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
-            )
+            chunks = []
+            for part in self._outgoing_message_parts(formatted):
+                chunks.extend(self.truncate_message(
+                    part, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
+                ))
             if len(chunks) > 1:
                 # truncate_message appends a raw " (1/2)" suffix. Escape the
                 # MarkdownV2-special parentheses so Telegram doesn't reject the
@@ -5401,6 +5374,16 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
+
+                # Pace multi-bubble delivery when conversational splitting is
+                # enabled; the legacy multi-chunk path stays delay-free.
+                if (
+                    i < len(chunks) - 1
+                    and getattr(self, "_split_outgoing_on_blank_lines", False)
+                ):
+                    await asyncio.sleep(
+                        getattr(self, "_split_outgoing_delay_seconds", 0.6)
+                    )
 
             # Re-trigger typing indicator after sending a message.
             # Telegram clears the typing state when a new message is delivered,

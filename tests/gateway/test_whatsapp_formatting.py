@@ -183,6 +183,71 @@ class TestSendChunking:
 
 
 # ---------------------------------------------------------------------------
+# send() conversational splitting (shared split_outgoing_* opt-in)
+# ---------------------------------------------------------------------------
+
+class TestSendConversationalSplit:
+    """Opt-in blank-line splitting shared via BasePlatformAdapter."""
+
+    def _mock_bridge(self, adapter):
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+    def _sent_texts(self, adapter):
+        return [
+            c.kwargs["json"]["message"]
+            for c in adapter._http_session.post.call_args_list
+        ]
+
+    @pytest.mark.asyncio
+    async def test_blank_line_split_is_opt_in(self):
+        adapter = _make_adapter()
+        self._mock_bridge(adapter)
+
+        await adapter.send("chat1", "one\n\ntwo")
+
+        assert self._sent_texts(adapter) == ["one\n\ntwo"]
+
+    @pytest.mark.asyncio
+    async def test_blank_lines_split_bubbles_but_single_newlines_do_not(self):
+        adapter = _make_adapter()
+        adapter._split_outgoing_on_blank_lines = True
+        adapter._split_outgoing_delay_seconds = 0.0
+        self._mock_bridge(adapter)
+
+        await adapter.send("chat1", "one\n\ntwo\nthree")
+
+        assert self._sent_texts(adapter) == ["one", "two\nthree"]
+
+    @pytest.mark.asyncio
+    async def test_configured_split_delay_paces_bubbles(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._split_outgoing_on_blank_lines = True
+        adapter._split_outgoing_delay_seconds = 1.25
+        self._mock_bridge(adapter)
+        sleep = AsyncMock()
+        monkeypatch.setattr(asyncio, "sleep", sleep)
+
+        await adapter.send("chat1", "one\n\ntwo")
+
+        assert len(self._sent_texts(adapter)) == 2
+        assert [c.args[0] for c in sleep.await_args_list] == [1.25]
+
+    @pytest.mark.asyncio
+    async def test_legacy_chunk_delay_unchanged_when_opted_out(self, monkeypatch):
+        adapter = _make_adapter()
+        self._mock_bridge(adapter)
+        sleep = AsyncMock()
+        monkeypatch.setattr(asyncio, "sleep", sleep)
+
+        await adapter.send("chat1", "a " * 3000)
+
+        assert len(self._sent_texts(adapter)) > 1
+        assert all(c.args[0] == 0.3 for c in sleep.await_args_list)
+
+
+# ---------------------------------------------------------------------------
 # bridge event metadata
 # ---------------------------------------------------------------------------
 

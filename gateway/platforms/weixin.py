@@ -1266,25 +1266,6 @@ class WeixinAdapter(BasePlatformAdapter):
                 self._token = str(persisted.get("token") or "").strip()
                 self._base_url = str(persisted.get("base_url") or self._base_url).strip().rstrip("/")
 
-    def _coerce_float_extra(self, key: str, default: float) -> float:
-        """Read a float from ``config.extra``, guarding against bad/non-finite values.
-
-        The result is fed directly to ``asyncio.sleep()``, so NaN/Inf and
-        unparseable values fall back to ``default``.
-        """
-        import math
-
-        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
-        if value is None:
-            return float(default)
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError):
-            return float(default)
-        if not math.isfinite(parsed) or parsed < 0:
-            return float(default)
-        return parsed
-
     @staticmethod
     def _coerce_list(value: Any) -> List[str]:
         if value is None:

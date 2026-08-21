@@ -801,6 +801,11 @@ class PhotonAdapter(BasePlatformAdapter):
         # markdown() builder renders them (or degrades them readably).
         self.supports_code_blocks = _markdown_enabled()
 
+        # Opt-in conversational splitting: deliver blank-line-separated
+        # paragraphs as separate iMessage/Photon bubbles instead of one long
+        # message. Shared split_outgoing_* extra keys (see BasePlatformAdapter).
+        self._init_conversational_split_config()
+
         # Runtime state
         self._sidecar_proc: Optional[subprocess.Popen] = None
         self._sidecar_supervisor_task: Optional[asyncio.Task] = None
@@ -1992,7 +1997,34 @@ class PhotonAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return await self._sidecar_send(chat_id, self.format_message(content))
+        # Opt-in conversational splitting (shared split_outgoing_* keys):
+        # blank-line-separated paragraphs become separate bubbles. With the
+        # opt-in off (default) parts == [formatted] and this is exactly one
+        # _sidecar_send call, as before. Each part is still individually
+        # truncated by _sidecar_send's MAX_MESSAGE_LENGTH guard.
+        parts = self._outgoing_message_parts(self.format_message(content))
+        if len(parts) == 1:
+            return await self._sidecar_send(chat_id, parts[0])
+
+        message_ids: List[str] = []
+        for i, part in enumerate(parts):
+            result = await self._sidecar_send(chat_id, part)
+            if not result.success:
+                # Surface the failing part's result unchanged (error class /
+                # retryability); earlier bubbles were already delivered —
+                # same mid-sequence contract as Telegram's chunked send.
+                return result
+            if result.message_id:
+                message_ids.append(str(result.message_id))
+            if i < len(parts) - 1:
+                await asyncio.sleep(
+                    getattr(self, "_split_outgoing_delay_seconds", 0.6)
+                )
+        return SendResult(
+            success=True,
+            message_id=message_ids[0] if message_ids else None,
+            raw_response={"message_ids": message_ids},
+        )
 
     # -- Clarify (native iMessage poll) ------------------------------------
     #

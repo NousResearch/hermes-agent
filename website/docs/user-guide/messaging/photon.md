@@ -195,6 +195,34 @@ Common issues:
 - **Sidecar won't start** — confirm `node --version` is 18.17+ and that
   `hermes photon install-sidecar` completed without errors.
 
+## Optional Multi-Bubble Replies
+
+By default, Hermes sends one message per reply. You can opt into splitting a
+reply at blank lines so separate paragraphs arrive as separate iMessage /
+Photon bubbles:
+
+```yaml
+# ~/.hermes/config.yaml
+gateway:
+  platforms:
+    photon:
+      extra:
+        split_outgoing_on_blank_lines: true
+        split_outgoing_delay_seconds: 0.6
+        split_outgoing_max_parts: 4
+```
+
+With this option enabled, `First paragraph.\n\nSecond paragraph.` sends two
+bubbles. A single newline stays within one bubble, and blank lines inside
+triple-backtick fenced code blocks do not split the code block.
+
+`split_outgoing_max_parts` limits the number of paragraph-based parts
+(default `4`); any remaining paragraphs are merged into the final part rather
+than discarded. `split_outgoing_delay_seconds` controls the pause between
+bubbles (default `0.6`). Each bubble is still subject to the adapter's usual
+per-message length limit. The same three keys (same defaults) work on
+Telegram and WhatsApp.
+
 ## Limits today
 
 - **Inbound attachments are metadata-only.** Inbound events carry the

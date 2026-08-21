@@ -487,24 +487,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
 
-    def _coerce_float_extra(self, key: str, default: float) -> float:
-        """Read a float from ``config.extra``, guarding against bad/non-finite values.
-
-        The result is fed directly to ``asyncio.sleep()``, so NaN/Inf and
-        unparseable values fall back to ``default``.
-        """
-        import math
-
-        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
-        if value is None:
-            return float(default)
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError):
-            return float(default)
-        if not math.isfinite(parsed) or parsed < 0:
-            return float(default)
-        return parsed
+        # Opt-in conversational splitting: deliver blank-line-separated
+        # paragraphs as separate WhatsApp bubbles instead of one long message.
+        # Shared split_outgoing_* extra keys (see BasePlatformAdapter).
+        self._init_conversational_split_config()
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """
@@ -949,9 +935,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:
             import aiohttp
 
-            # Format and chunk the message
+            # Format, optionally split into conversational bubbles (shared
+            # split_outgoing_* opt-in), then apply length chunking to every
+            # part. With splitting off (default), parts == [formatted] and the
+            # chunk list is identical to the pre-split behavior.
             formatted = self.format_message(content)
-            chunks = self.truncate_message(formatted, self._outgoing_chunk_limit())
+            chunks: list[str] = []
+            for part in self._outgoing_message_parts(formatted):
+                chunks.extend(
+                    self.truncate_message(part, self._outgoing_chunk_limit())
+                )
 
             sent_message_ids: list[str] = []
             last_message_id = None
@@ -979,8 +972,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         error = await resp.text()
                         return SendResult(success=False, error=error)
 
-                # Small delay between chunks to avoid rate limiting
-                if len(chunks) > 1:
+                # Small delay between chunks to avoid rate limiting. With
+                # conversational splitting opted in, bubbles are paced with
+                # the configured split delay instead (between sends only).
+                if getattr(self, "_split_outgoing_on_blank_lines", False):
+                    if idx < len(chunks) - 1:
+                        await asyncio.sleep(
+                            getattr(self, "_split_outgoing_delay_seconds", 0.6)
+                        )
+                elif len(chunks) > 1:
                     await asyncio.sleep(0.3)
 
             return SendResult(

@@ -9,6 +9,7 @@ import asyncio
 import inspect
 import ipaddress
 import logging
+import math
 import os
 import random
 import re
@@ -7247,7 +7248,136 @@ class BasePlatformAdapter(ABC):
         Default implementation returns content as-is.
         """
         return content
-    
+
+    # ------------------------------------------------------------------
+    # Shared ``config.extra`` coercion + opt-in conversational splitting.
+    #
+    # The ``split_outgoing_*`` keys are a channel-agnostic opt-in shared by
+    # the Telegram, WhatsApp, and Photon adapters: blank-line-separated
+    # paragraphs in a reply are delivered as separate platform messages
+    # ("bubbles") instead of one long message.
+
+    def _coerce_bool_extra(self, key: str, default: bool = False) -> bool:
+        """Read a bool from ``config.extra``, accepting common string spellings."""
+        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
+        if value is None:
+            return default
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "1", "yes", "on"}:
+                return True
+            if lowered in {"false", "0", "no", "off"}:
+                return False
+            return default
+        return bool(value)
+
+    def _coerce_float_extra(
+        self,
+        key: str,
+        default: float,
+        *,
+        min_value: Optional[float] = None,
+        max_value: Optional[float] = None,
+    ) -> float:
+        """Read a float from ``config.extra``, guarding against bad values.
+
+        The result is typically fed to ``asyncio.sleep()``, so NaN/Inf and
+        unparseable values fall back to ``default``. With an explicit
+        ``min_value``/``max_value`` the parsed value is clamped into range;
+        without an explicit floor, negative values fall back to ``default``.
+        """
+        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
+        if value is None:
+            return float(default)
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        if not math.isfinite(parsed):
+            return float(default)
+        if min_value is None and parsed < 0:
+            return float(default)
+        if min_value is not None:
+            parsed = max(parsed, min_value)
+        if max_value is not None:
+            parsed = min(parsed, max_value)
+        return parsed
+
+    def _init_conversational_split_config(self) -> None:
+        """Read the shared opt-in ``split_outgoing_*`` extra keys.
+
+        Adapters that support conversational multi-bubble replies call this
+        from ``__init__`` and route their outbound text through
+        ``_outgoing_message_parts()`` in ``send()``. Same keys and defaults
+        on every platform:
+
+        - ``split_outgoing_on_blank_lines`` (default ``False``)
+        - ``split_outgoing_delay_seconds`` (default ``0.6``)
+        - ``split_outgoing_max_parts`` (default ``4``)
+        """
+        self._split_outgoing_on_blank_lines: bool = self._coerce_bool_extra(
+            "split_outgoing_on_blank_lines", False
+        )
+        self._split_outgoing_delay_seconds: float = self._coerce_float_extra(
+            "split_outgoing_delay_seconds", 0.6, min_value=0.0
+        )
+        extra = getattr(self.config, "extra", None) or {}
+        try:
+            self._split_outgoing_max_parts = int(
+                extra.get("split_outgoing_max_parts", 4)
+            )
+        except (TypeError, ValueError):
+            self._split_outgoing_max_parts = 4
+        if self._split_outgoing_max_parts < 1:
+            self._split_outgoing_max_parts = 4
+
+    def _outgoing_message_parts(self, formatted: str) -> List[str]:
+        """Split on blank lines outside triple-backtick fenced code blocks.
+
+        Returns ``[formatted]`` unchanged unless the adapter opted into
+        ``split_outgoing_on_blank_lines`` (see
+        ``_init_conversational_split_config``). Reads the split attributes
+        via ``getattr`` because tests build adapters via ``__new__`` without
+        running ``__init__``.
+        """
+        if not getattr(self, "_split_outgoing_on_blank_lines", False):
+            return [formatted]
+
+        parts: List[str] = []
+        current: List[str] = []
+        in_fence = False
+
+        for line in formatted.split("\n"):
+            stripped = line.lstrip()
+            indent = len(line) - len(stripped)
+
+            if indent <= 3 and re.match(r"```(?!`)", stripped):
+                if in_fence:
+                    if re.fullmatch(r"[ \t]{0,3}```[ \t]*", line):
+                        in_fence = False
+                else:
+                    in_fence = True
+
+            if not line.strip() and not in_fence:
+                part = "\n".join(current).strip()
+                if part:
+                    parts.append(part)
+                current = []
+                continue
+
+            current.append(line)
+
+        final_part = "\n".join(current).strip()
+        if final_part:
+            parts.append(final_part)
+        if len(parts) <= 1:
+            return [formatted]
+
+        max_parts = getattr(self, "_split_outgoing_max_parts", 4)
+        if max_parts > 0 and len(parts) > max_parts:
+            return parts[: max_parts - 1] + ["\n\n".join(parts[max_parts - 1 :])]
+        return parts
+
     @staticmethod
     def truncate_message(
         content: str,

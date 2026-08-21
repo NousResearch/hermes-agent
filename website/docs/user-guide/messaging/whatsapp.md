@@ -208,6 +208,23 @@ Standard Markdown in AI responses is automatically converted to WhatsApp's nativ
 
 Code blocks and inline code are preserved as-is since WhatsApp supports triple-backtick formatting natively.
 
+### Multi-Bubble Replies (Optional)
+
+By default, Hermes sends one formatted reply per response (plus additional chunks only when it exceeds the length limit above). You can opt into splitting a reply at blank lines so separate paragraphs arrive as separate WhatsApp bubbles:
+
+```yaml
+# ~/.hermes/config.yaml
+gateway:
+  platforms:
+    whatsapp:
+      extra:
+        split_outgoing_on_blank_lines: true
+        split_outgoing_delay_seconds: 0.6
+        split_outgoing_max_parts: 4
+```
+
+A single newline stays within one bubble, and blank lines inside triple-backtick fenced code blocks do not split the code block. `split_outgoing_max_parts` limits the number of paragraph-based parts (default `4`); any remaining paragraphs are merged into the final part rather than discarded. `split_outgoing_delay_seconds` controls the pause between bubbles (default `0.6`); length-based chunking still applies to every part. The same three keys (same defaults) work on Telegram and Photon/iMessage.
+
 ### Tool Progress
 
 When the agent calls tools (web search, file operations, etc.), WhatsApp displays real-time progress indicators showing which tool is running. This is enabled by default — no configuration needed.

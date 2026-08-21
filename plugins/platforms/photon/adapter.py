@@ -206,7 +206,10 @@ def _sidecar_pid_alive(pid: Any) -> bool:
 _DEDUP_MAX_SIZE = 4000
 _DEDUP_WINDOW_SECONDS = 48 * 3600
 
-_FFFC_WAIT_SECONDS = 15.0  # Timeout for waiting on an attachment after a U+FFFC placeholder.
+# Apple may split one mixed iMessage bubble into a text precursor and a later
+# attachment event. Keep the window short so ordinary text is not delayed.
+_OBJECT_REPLACEMENT_CHAR = "\ufffc"
+_MIXED_EVENT_COALESCE_SECONDS = 4.0
 
 # Resolved lazily on first use: the installed plugin tree when writable (dev
 # installs), or a mirror on the durable data volume when the install tree
@@ -836,7 +839,22 @@ class PhotonAdapter(BasePlatformAdapter):
         # Last time we sent a typing indicator per chat, for cooldown gating.
         self._typing_last_sent: Dict[str, float] = {}
 
-        self._pending_fffc: Dict[str, tuple[float, Any]] = {}  # chat_key → (timestamp, asyncio.Task)
+        # Pending marker-bearing captions or empty attachment precursors keyed
+        # by (space, sender). A matching media event consumes the precursor so
+        # the gateway receives one turn with both text and bytes.
+        self._pending_attachment_text: Dict[
+            tuple[str, str], Dict[str, Any]
+        ] = {}
+        self._mixed_event_coalesce_seconds = max(
+            0.0,
+            _coerce_float(
+                _first_set(
+                    extra.get("mixed_event_coalesce_seconds"),
+                    os.getenv("PHOTON_MIXED_EVENT_COALESCE_SECONDS"),
+                ),
+                _MIXED_EVENT_COALESCE_SECONDS,
+            ),
+        )
 
         # Group-chat mention gating (parity with BlueBubbles). When enabled,
         # group messages are ignored unless they match a wake word; DMs are
@@ -997,11 +1015,12 @@ class PhotonAdapter(BasePlatformAdapter):
                     pass
                 except Exception:
                     pass
-        # Cancel any pending U+FFFC placeholder tasks.
-        for chat_key, (_, fffc_task) in list(self._pending_fffc.items()):
-            if fffc_task and not fffc_task.done():
-                fffc_task.cancel()
-        self._pending_fffc.clear()
+        # Cancel any pending split-message coalescing tasks.
+        for pending in self._pending_attachment_text.values():
+            task = pending.get("task")
+            if isinstance(task, asyncio.Task) and not task.done():
+                task.cancel()
+        self._pending_attachment_text.clear()
         await self._stop_sidecar()
         if self._http_client is not None:
             try:
@@ -1190,13 +1209,36 @@ class PhotonAdapter(BasePlatformAdapter):
                 del seen[old]
         return False
 
-    async def _fffc_timeout_handler(self, chat_key: str, message_id: str) -> None:
-        await asyncio.sleep(_FFFC_WAIT_SECONDS)
-        if self._pending_fffc.pop(chat_key, None):
-            logger.warning(
-                "[photon] wait for attachment was too long, can't retrieve attachment data "
-                "(message %s, chat %s)", message_id, chat_key,
-            )
+    @staticmethod
+    def _clean_object_replacement_marker(text: str) -> str:
+        """Remove Apple's invisible attachment placeholder from a caption."""
+        return text.replace(_OBJECT_REPLACEMENT_CHAR, "").strip()
+
+    async def _flush_pending_attachment_text(
+        self, key: tuple[str, str]
+    ) -> None:
+        """Dispatch a held caption when no matching media event arrives."""
+        try:
+            await asyncio.sleep(self._mixed_event_coalesce_seconds)
+        except asyncio.CancelledError:
+            return
+
+        pending = self._pending_attachment_text.get(key)
+        if not pending or pending.get("task") is not asyncio.current_task():
+            return
+        self._pending_attachment_text.pop(key, None)
+
+        # An empty event only has meaning as an attachment precursor. A real
+        # caption remains useful on its own and must not be lost.
+        if pending.get("drop_if_unmatched"):
+            logger.info("[photon] suppressing unmatched empty attachment precursor")
+            return
+        message_event = pending["event"]
+        self._record_last_inbound(key[0], message_event.message_id)
+        try:
+            await self.handle_message(message_event)
+        except Exception:
+            logger.exception("[photon] delayed attachment caption dispatch failed")
 
     async def _dispatch_inbound(self, event: Dict[str, Any]) -> None:
         """Normalize a sidecar inbound event and dispatch it to the gateway.
@@ -1333,27 +1375,14 @@ class PhotonAdapter(BasePlatformAdapter):
                 )
             )
             return
-        # U+FFFC placeholder — wait for the real attachment instead of
-        # dispatching. Detected before _record_last_inbound so the placeholder
-        # is not recorded as the reaction target — the real attachment will be.
-        if ctype == "text" and (content.get("text") or "").strip() == "\ufffc":
-            chat_key = space_id
-            prev = self._pending_fffc.pop(chat_key, None)
-            if prev and prev[1] and not prev[1].done():
-                prev[1].cancel()
-            task = asyncio.create_task(
-                self._fffc_timeout_handler(chat_key, event.get("messageId") or "")
-            )
-            self._pending_fffc[chat_key] = (time.monotonic(), task)
-            logger.debug("[photon] U+FFFC placeholder received — waiting for attachment")
-            return
-
-        # Cancel any pending U+FFFC timeout — the real message arrived.
-        if ctype in {"attachment", "voice"}:
-            prev = self._pending_fffc.pop(space_id, None)
-            if prev and prev[1] and not prev[1].done():
-                prev[1].cancel()
-                logger.debug("[photon] attachment arrived — cancelling U+FFFC timeout")
+        raw_text = content.get("text") or "" if ctype == "text" else ""
+        has_object_replacement_marker = (
+            ctype == "text" and _OBJECT_REPLACEMENT_CHAR in raw_text
+        )
+        is_empty_text_precursor = ctype == "text" and not raw_text.strip()
+        is_attachment_precursor = (
+            has_object_replacement_marker or is_empty_text_precursor
+        )
 
         # Preview art for an immediately preceding URL/richlink should not
         # become a second user prompt. Suppress before recording it as the
@@ -1368,7 +1397,8 @@ class PhotonAdapter(BasePlatformAdapter):
         # the chat's latest inbound so `add_reaction` can target it when the
         # caller doesn't pass an explicit message id. Recorded before the
         # mention gate: a reaction to a non-wake-word group message is valid.
-        self._record_last_inbound(space_id, event.get("messageId"))
+        if not is_attachment_precursor:
+            self._record_last_inbound(space_id, event.get("messageId"))
         if ctype == "poll_option":
             # A native poll vote. A *selection* carries the chosen option text
             # straight to the agent as if the user had typed it — the gateway's
@@ -1401,7 +1431,7 @@ class PhotonAdapter(BasePlatformAdapter):
             )
             return
         if ctype == "text":
-            text = content.get("text") or ""
+            text = self._clean_object_replacement_marker(raw_text)
             mtype = MessageType.TEXT
         elif ctype in {"attachment", "voice"}:
             text, mtype, media_urls, media_types = _normalize_binary_payload(content)
@@ -1448,18 +1478,56 @@ class PhotonAdapter(BasePlatformAdapter):
             text = f"[Photon content type not handled: {ctype}]"
             mtype = MessageType.TEXT
 
+        pending_key = (space_id, sender_id)
+        is_media_event = ctype in {"attachment", "voice"} or (
+            ctype == "group" and bool(media_urls)
+        )
+        raw_message: Dict[str, Any] = event
+        pending_mention_authorized = False
+
+        # A caption and its media may arrive as separate Photon events. Merge
+        # them before mention gating so a group attachment inherits the wake
+        # word decision already made for its held caption.
+        if is_media_event:
+            pending = self._pending_attachment_text.pop(pending_key, None)
+            if pending:
+                task = pending.get("task")
+                if isinstance(task, asyncio.Task):
+                    task.cancel()
+                pending_event = pending["event"]
+                pending_mention_authorized = bool(
+                    pending.get("mention_authorized")
+                )
+                caption = (pending_event.text or "").strip()
+                if caption:
+                    if text in {"", "(attachment)", "(voice)"}:
+                        text = caption
+                    elif caption not in text:
+                        text = f"{caption}\n{text}"
+                if pending_event.timestamp < timestamp:
+                    timestamp = pending_event.timestamp
+                raw_message = {
+                    "coalescedPhotonEvents": True,
+                    "textEvent": pending_event.raw_message,
+                    "mediaEvent": event,
+                }
+
         # Group-mention gating (parity with BlueBubbles). In group chats with
         # require_mention enabled, drop messages that don't hit a wake word;
         # strip the leading wake word from the ones that do. DMs are never
         # gated.
+        mention_authorized = chat_type != "group" or not self.require_mention
         if chat_type == "group" and self.require_mention:
-            if not self._message_matches_mention_patterns(text):
+            mention_matched = self._message_matches_mention_patterns(text)
+            if not pending_mention_authorized and not mention_matched:
                 logger.debug(
                     "[photon] ignoring group message "
                     "(require_mention=true, no mention pattern matched)"
                 )
                 return
-            text = self._clean_mention_text(text)
+            if not pending_mention_authorized:
+                text = self._clean_mention_text(text)
+            mention_authorized = True
 
         self._record_recent_richlink(space_id, _richlink_url_from_content(content) or text)
 
@@ -1475,11 +1543,34 @@ class PhotonAdapter(BasePlatformAdapter):
             message_type=mtype,
             source=source,
             message_id=event.get("messageId"),
-            raw_message=event,
+            raw_message=raw_message,
             timestamp=timestamp,
             media_urls=media_urls,
             media_types=media_types,
         )
+
+        if is_attachment_precursor:
+            previous = self._pending_attachment_text.pop(pending_key, None)
+            if previous:
+                task = previous.get("task")
+                if isinstance(task, asyncio.Task):
+                    task.cancel()
+                if not previous.get("drop_if_unmatched"):
+                    previous_event = previous["event"]
+                    self._record_last_inbound(pending_key[0], previous_event.message_id)
+                    await self.handle_message(previous_event)
+            task = asyncio.get_running_loop().create_task(
+                self._flush_pending_attachment_text(pending_key)
+            )
+            self._pending_attachment_text[pending_key] = {
+                "event": message_event,
+                "task": task,
+                "drop_if_unmatched": not bool(text.strip()),
+                "mention_authorized": mention_authorized,
+            }
+            logger.debug("[photon] attachment text precursor received; waiting for media")
+            return
+
         await self.handle_message(message_event)
 
     # -- Sidecar lifecycle -------------------------------------------------

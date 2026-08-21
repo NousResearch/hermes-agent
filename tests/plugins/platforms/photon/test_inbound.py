@@ -130,7 +130,7 @@ def test_check_requirements_without_node(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 # ---------------------------------------------------------------------------
-# CAF attachment promotion + U+FFFC placeholder tests
+# CAF attachment promotion + split attachment event tests
 # ---------------------------------------------------------------------------
 
 _CAF_BYTES = b"caff" + b"\x00" * 60  # Minimal CAF header magic
@@ -191,15 +191,15 @@ async def test_fffc_placeholder_no_dispatch(
     captured = _capture(adapter, monkeypatch)
 
     event = _dm_event("\ufffc", msg_id="spc-msg-fffc")
-    chat_key = event["space"]["id"]
+    pending_key = (event["space"]["id"], event["sender"]["id"])
     await adapter._dispatch_inbound(event)
 
     assert len(captured) == 0
-    assert chat_key in adapter._pending_fffc
+    assert pending_key in adapter._pending_attachment_text
 
 
 @pytest.mark.asyncio
-async def test_disconnect_cancels_pending_fffc_tasks(
+async def test_disconnect_cancels_pending_attachment_tasks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """disconnect() cancels any pending U+FFFC placeholder tasks."""
@@ -207,7 +207,7 @@ async def test_disconnect_cancels_pending_fffc_tasks(
     _capture(adapter, monkeypatch)
 
     await adapter._dispatch_inbound(_dm_event("\ufffc", msg_id="spc-msg-fffc"))
-    assert len(adapter._pending_fffc) == 1
+    assert len(adapter._pending_attachment_text) == 1
 
     async def _noop_stop_sidecar():
         pass
@@ -220,4 +220,136 @@ async def test_disconnect_cancels_pending_fffc_tasks(
 
     await adapter.disconnect()
 
-    assert len(adapter._pending_fffc) == 0
+    assert len(adapter._pending_attachment_text) == 0
+
+
+@pytest.mark.asyncio
+async def test_split_caption_and_attachment_dispatch_as_one_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A marker-bearing caption is preserved on the later image event."""
+    monkeypatch.setenv("PHOTON_MIXED_EVENT_COALESCE_SECONDS", "0.05")
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+    raw = base64.b64decode(_PNG_1X1_B64)
+
+    await adapter._dispatch_inbound(
+        _dm_event("\ufffcRead this label", msg_id="spc-msg-caption")
+    )
+    assert captured == []
+
+    await adapter._dispatch_inbound(
+        _attachment_event(
+            {
+                "name": "label.png",
+                "mimeType": "image/png",
+                "size": len(raw),
+                "data": _PNG_1X1_B64,
+                "encoding": "base64",
+            },
+            msg_id="spc-msg-media",
+        )
+    )
+
+    assert len(captured) == 1
+    event = captured[0]
+    assert event.text == "Read this label"
+    assert event.message_type == MessageType.PHOTO
+    assert event.raw_message["coalescedPhotonEvents"] is True
+    assert event.raw_message["textEvent"]["messageId"] == "spc-msg-caption"
+    cached = Path(event.media_urls[0])
+    try:
+        assert cached.read_bytes() == raw
+    finally:
+        cached.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_split_caption_flushes_when_attachment_never_arrives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real caption survives when Photon never emits its media event."""
+    monkeypatch.setenv("PHOTON_MIXED_EVENT_COALESCE_SECONDS", "0.01")
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    await adapter._dispatch_inbound(
+        _dm_event("Keep this caption\ufffc", msg_id="spc-msg-caption-only")
+    )
+    await asyncio.sleep(0.03)
+
+    assert len(captured) == 1
+    assert captured[0].text == "Keep this caption"
+
+
+@pytest.mark.asyncio
+async def test_empty_precursor_and_attachment_dispatch_as_one_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuinely empty precursor is suppressed but still pairs with media."""
+    monkeypatch.setenv("PHOTON_MIXED_EVENT_COALESCE_SECONDS", "0.05")
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+    raw = base64.b64decode(_PNG_1X1_B64)
+
+    await adapter._dispatch_inbound(_dm_event("", msg_id="spc-msg-empty"))
+    await adapter._dispatch_inbound(
+        _attachment_event(
+            {
+                "name": "delayed.png",
+                "mimeType": "image/png",
+                "size": len(raw),
+                "data": _PNG_1X1_B64,
+                "encoding": "base64",
+            },
+            msg_id="spc-msg-delayed-media",
+        )
+    )
+
+    assert len(captured) == 1
+    assert captured[0].message_type == MessageType.PHOTO
+    assert captured[0].raw_message["coalescedPhotonEvents"] is True
+    cached = Path(captured[0].media_urls[0])
+    cached.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_unmatched_empty_precursor_is_suppressed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTON_MIXED_EVENT_COALESCE_SECONDS", "0.01")
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    await adapter._dispatch_inbound(_dm_event("", msg_id="spc-msg-empty-only"))
+    await asyncio.sleep(0.03)
+
+    assert captured == []
+
+
+@pytest.mark.asyncio
+async def test_repeated_empty_precursors_do_not_dispatch_empty_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTON_MIXED_EVENT_COALESCE_SECONDS", "0.01")
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    await adapter._dispatch_inbound(_dm_event("", msg_id="spc-msg-empty-one"))
+    await adapter._dispatch_inbound(_dm_event("", msg_id="spc-msg-empty-two"))
+    await asyncio.sleep(0.03)
+
+    assert captured == []
+
+
+@pytest.mark.asyncio
+async def test_plain_text_is_not_delayed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    await adapter._dispatch_inbound(_dm_event("ordinary text"))
+
+    assert len(captured) == 1
+    assert captured[0].text == "ordinary text"

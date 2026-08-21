@@ -133,6 +133,11 @@ DEFAULT_CONFIG = {
         # on flaky primaries; raise it if you prefer to tolerate longer
         # provider hiccups on a single provider.
         "api_max_retries": 3,
+        # Transport-failure fallback threshold: number of consecutive
+        # transport-layer failures (timeout/overloaded) before the agent
+        # switches to the fallback model.  Lower to 1 for fast failover on
+        # flaky primaries; raise to tolerate longer provider hiccups.
+        "transport_fallback_threshold": 2,
         # Empty-response retry guard (NS-503).  The empty-retry loop
         # re-sends the full conversation input at full price on every
         # attempt; these settings stop it from re-billing *deterministic*

@@ -593,6 +593,7 @@ _AUTH_PATTERNS = [
     "invalid token",
     "token expired",
     "token revoked",
+    "failed to extract accountid from token",
     "access denied",
 ]
 

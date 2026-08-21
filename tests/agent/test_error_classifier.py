@@ -658,6 +658,13 @@ class TestClassifyApiError:
 
 
 
+    def test_message_account_id_token_extraction_failure_is_auth(self):
+        e = Exception("Failed to extract accountId from token")
+        result = classify_api_error(e, provider="openai-codex")
+        assert result.reason == FailoverReason.auth
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
 
 
     # ── Message-only usage limit disambiguation (no status code) ──

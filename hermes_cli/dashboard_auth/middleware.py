@@ -38,6 +38,7 @@ from hermes_cli.dashboard_auth.cookies import (
     set_sso_attempt_cookie,
 )
 from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
+from hermes_cli.dashboard_auth.download_ticket import verify_download_ticket
 
 _log = logging.getLogger(__name__)
 
@@ -341,6 +342,14 @@ async def gated_auth_middleware(
 
     path = request.url.path
     if _path_is_public(path):
+        return await call_next(request)
+
+    # Short-lived signed download tickets (external viewers like WPS open a
+    # plain GET URL and can attach neither cookie nor header): a valid
+    # ticket for this exact file bypasses the cookie gate but still hits
+    # every file-level guard inside the route handler (managed-root
+    # resolution, sensitive-path denylist, size cap).
+    if path == "/api/files/download" and verify_download_ticket(request):
         return await call_next(request)
 
     # RFC 8252 native-app bearer path (goal: no session cookies). The desktop

@@ -2699,6 +2699,42 @@ async def stream_managed_file(request: Request, path: str):
     )
 
 
+@app.get("/api/files/download-ticket")
+async def download_ticket(request: Request, path: str):
+    """Mint a short-lived signed URL for an external viewer (WPS etc.).
+
+    Same auth as every other sensitive route (session cookie through the
+    gate, or ``_require_token`` in loopback mode); the returned URL carries
+    an HMAC-signed ``exp``/``sig`` pair that lets a cookie-less external
+    viewer stream exactly this one file for a few minutes. The file-level
+    guards below run *now* so a ticket is never minted for a missing,
+    non-file, or sensitive path.
+    """
+    _require_token(request)
+    policy, target, _display_path = _resolve_managed_path(path, request)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    if not target.is_file():
+        raise HTTPException(status_code=400, detail="Path is not a file")
+    if _is_sensitive_path(target):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+
+    from hermes_cli.dashboard_auth.download_ticket import build_download_url
+    from hermes_cli.dashboard_auth.prefix import resolve_public_url
+
+    # Behind a reverse proxy, ``request.base_url`` can expose the internal
+    # scheme/host, which the external viewer cannot reach. When the operator
+    # declared a public URL (HERMES_DASHBOARD_PUBLIC_URL / dashboard.public_url)
+    # prefer it so the minted link points at the externally reachable base;
+    # otherwise fall back to the request-derived base.
+    base = resolve_public_url() or str(request.base_url).rstrip("/")
+    return {
+        "ok": True,
+        "url": build_download_url(base, str(target)),
+        "path": str(target),
+    }
+
+
 @app.post("/api/files/upload")
 async def upload_managed_file(payload: ManagedFileUpload, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)

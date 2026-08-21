@@ -1066,6 +1066,29 @@ def test_home_channels_lists_only_platforms_with_home(client, with_home_channels
         assert h["subscribed"] is False
 
 
+def test_dashboard_created_task_subscribes_all_configured_home_channels(
+    client, with_home_channels,
+):
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Notify homes when finished"},
+    )
+    assert response.status_code == 200, response.text
+    task_id = response.json()["task"]["id"]
+
+    with kb.connect() as conn:
+        subscriptions = kb.list_notify_subs(conn, task_id)
+
+    assert {
+        (sub["platform"], sub["chat_id"], sub["thread_id"])
+        for sub in subscriptions
+    } == {
+        ("telegram", "1234567", "42"),
+        ("discord", "9999999", ""),
+    }
+    assert {sub["notifier_profile"] for sub in subscriptions} == {"default"}
+
+
 # ---------------------------------------------------------------------------
 # Recovery endpoints (reclaim + reassign) and warnings field
 # ---------------------------------------------------------------------------

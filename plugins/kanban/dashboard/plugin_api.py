@@ -648,6 +648,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             project_id=payload.project_id,
             board=board,
         )
+        _subscribe_task_to_configured_homes(conn, task_id)
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
         # Surface a dispatcher-presence warning so the UI can show a
@@ -2044,9 +2045,9 @@ def get_config():
 #
 # Home channels are a first-class gateway concept — each configured platform
 # can have exactly one (chat_id, thread_id, name) it considers "home". The
-# dashboard surfaces these as per-task toggles so a user can opt a specific
-# task into receiving terminal notifications (completed / blocked / gave_up)
-# at their telegram/discord/slack home, without touching the CLI.
+# dashboard-created tasks subscribe to every configured home by default so
+# terminal notifications (completed / blocked / gave_up) reach the user's
+# telegram/discord/slack homes. Per-task toggles let users opt back out.
 #
 # The wire format mirrors kanban_db.add_notify_sub — (task_id, platform,
 # chat_id, thread_id) — so toggle-on creates exactly the same row the
@@ -2092,6 +2093,30 @@ def _active_profile_name() -> str:
         return get_active_profile_name() or "default"
     except Exception:
         return "default"
+
+
+def _subscribe_task_to_configured_homes(conn: sqlite3.Connection, task_id: str) -> None:
+    """Best-effort subscribe a dashboard-created task to every home channel."""
+    notifier_profile = _active_profile_name()
+    for home in _configured_home_channels():
+        try:
+            kanban_db.add_notify_sub(
+                conn,
+                task_id=task_id,
+                platform=home["platform"],
+                chat_id=home["chat_id"],
+                thread_id=home["thread_id"] or None,
+                notifier_profile=notifier_profile,
+            )
+        except Exception as exc:
+            # A stale channel configuration must not turn a successfully
+            # persisted task into a misleading HTTP 500 response.
+            log.warning(
+                "kanban dashboard auto-subscribe failed for task %s on %s: %s",
+                task_id,
+                home["platform"],
+                exc,
+            )
 
 
 def _home_sub_matches(sub: dict, home: dict) -> bool:

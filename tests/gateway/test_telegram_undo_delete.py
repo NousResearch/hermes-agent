@@ -150,4 +150,3 @@ async def test_telegram_undo_deletes_split_assistant_message_ids(session_store):
         ("77", "402"),
         ("77", "403"),
     ]
-

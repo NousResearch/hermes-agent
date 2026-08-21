@@ -125,6 +125,20 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
     ("grok-4.5", 300),
     ("grok-4.6", 300),
     ("grok-4-fast-non-reasoning", 180),
+    # Kimi / Moonshot — K2.x and K3 are reasoning models that emit a
+    # thinking phase before the first content token.  K3 has 1M
+    # context; at long context (>40K tokens) the reasoning phase can
+    # take 80+ seconds before the first token and at very long context
+    # (>80K) it can exceed the 180s default stale-timeout floor,
+    # surfacing as ``BrokenPipeError``/``RemoteProtocolError`` mid-think.
+    # The ``kimi`` entry matches ``kimi-k3``, ``kimi-k2p6`` etc. (the
+    # slug after aggregator-prefix strip, e.g.
+    # ``accounts/fireworks/models/kimi-k3``); the ``k3`` entry catches
+    # the bare slug used by the Kimi Coding Plan.  Both are start-of-slug
+    # anchored, so ``k3`` never over-matches ``k3s`` or an embedded
+    # ``...-k3``.  300s matches the QwQ-32B / o3-mini tier.
+    ("kimi", 300),
+    ("k3", 300),
 )
 
 

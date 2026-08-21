@@ -85,6 +85,14 @@ import pytest
     ("x-ai/grok-4.5", 300.0),
     ("x-ai/grok-4.6", 300.0),
     ("x-ai/grok-4-fast-non-reasoning", 180.0),
+    # Kimi / Moonshot reasoning family.  `kimi` matches the slug after
+    # aggregator-prefix strip; `k3` matches the bare Kimi Coding slug.
+    ("accounts/fireworks/models/kimi-k3", 300.0),
+    ("kimi-k3", 300.0),
+    ("kimi-k2p6", 300.0),
+    ("moonshot/kimi-k3", 300.0),
+    ("k3", 300.0),
+    ("k3-code", 300.0),
 ])
 def test_reasoning_stale_timeout_floor_positive_cases(model, expected):
     from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
@@ -95,10 +103,49 @@ def test_reasoning_stale_timeout_floor_positive_cases(model, expected):
     )
 
 
-
-
-
-
+@pytest.mark.parametrize("model", [
+    # Non-reasoning chat models — no floor.
+    "gpt-4o",
+    "gpt-5",
+    "claude-3-5-sonnet-20240620",
+    "llama-3.3-70b-instruct",
+    "gemini-2.5-pro",
+    # Start-of-slug anchor traps — the slug must be at the START of
+    # the bare model name (after aggregator-prefix strip).  Bare
+    # substring matching would over-match these.
+    "olmo-1",
+    "olmo-13b",
+    "llama-4-70b-o1-preview",     # embedded `o1-preview`, NOT start of slug
+    "some-model-o3-mini-fork",    # embedded `o3-mini`, NOT start of slug
+    # Bare "grok" must not over-match non-reasoning Grok SKUs.
+    "x-ai/grok-3",
+    "x-ai/grok-4",
+    "x-ai/grok-4-0709",
+    "x-ai/grok-code-fast-1",
+    # Qwen2 must not match Qwen3 (different family).
+    "qwen2-72b-instruct",
+    # Non-reasoning DeepSeek chat must not match the v4 reasoning entries.
+    "deepseek-chat",
+    "deepseek/deepseek-chat",
+    "some-deepseek-v4-flash",     # embedded v4 slug, NOT start of slug
+    # Kimi `k3` anchor traps — `k3` must be at the START of the slug
+    # with a separator/end after it, so these must NOT match.
+    "k3s",                        # k3 followed by `s`, not a separator
+    "k3s-1.28",                   # Kubernetes distro, not Kimi
+    "some-model-k3",              # embedded `k3`, NOT start of slug
+    "kimix-7b",                   # `kimi` prefix but no separator after
+    # Empty / None / non-string inputs — must return None, not raise.
+    "",
+    None,
+    12345,
+    [],
+])
+def test_reasoning_stale_timeout_floor_negative_cases(model):
+    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+    assert get_reasoning_stale_timeout_floor(model) is None, (
+        f"get_reasoning_stale_timeout_floor({model!r}) must return None "
+        f"for non-reasoning models and start-of-slug-anchor traps."
+    )
 
 # ── integration: _resolved_api_call_stale_timeout_base ─────────────────────
 

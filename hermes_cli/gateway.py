@@ -632,7 +632,7 @@ def _scan_gateway_pids(
                     current_cmd = ""
         else:
             # Try /proc first (works in Docker without procps installed),
-            # fall back to ps -A eww.
+            # fall back to `ps -Aww` (BSD-safe; see below).
             _found_via_proc = False
             if os.path.isdir("/proc"):
                 try:
@@ -1773,7 +1773,14 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     # under KeepAlive.SuccessfulExit=false) and any systemd unit reachable
     # from a host that got past the gate above (#83683, #85344).
     try:
-        own |= _get_service_pids()
+        # all_profiles=True: the reaper's process scan sees every profile's
+        # gateway (and on macOS the now-working ps fallback surfaces sibling
+        # launchd gateways, #73626), so the service exclusion must cover the
+        # whole ai.hermes.gateway* fleet — not just the current profile's
+        # label — or a sibling profile's launchd gateway is misclassified as
+        # an unsupervised orphan and reaped. Same class as the update-sweep
+        # fix in #74075.
+        own |= _get_service_pids(all_profiles=True)
     except Exception:
         pass
     # On Windows there is no systemd/launchd service query at all

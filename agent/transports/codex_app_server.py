@@ -25,6 +25,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from agent.deadline import kill_process_tree
 from tools.environments.local import hermes_subprocess_env
 
 # Default minimum codex version we test against. The PR sets this from the
@@ -183,10 +184,18 @@ class CodexAppServerClient:
         return result
 
     def close(self, timeout: float = 3.0) -> None:
-        """Close stdin and wait for the subprocess to exit, escalating to kill."""
+        """Close stdin and wait for the subprocess tree to exit.
+
+        Codex app-server can own stdio MCP descendants that move into their
+        own process groups. If the app-server root exits first, those children
+        reparent and a later parent walk can no longer find them, so snapshot
+        descendants before retiring the root and sweep the proven process
+        identities after the root has had its graceful window.
+        """
         if self._closed:
             return
         self._closed = True
+        descendants = self._snapshot_descendants()
         try:
             if self._proc.stdin and not self._proc.stdin.closed:
                 self._proc.stdin.close()
@@ -196,11 +205,56 @@ class CodexAppServerClient:
             self._proc.terminate()
             self._proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
+            kill_process_tree(self._proc.pid)
             try:
-                self._proc.kill()
                 self._proc.wait(timeout=1.0)
             except Exception:
                 pass
+        except Exception:
+            pass
+        finally:
+            self._terminate_snapshotted_descendants(descendants)
+
+    def _snapshot_descendants(self) -> list[Any]:
+        """Return psutil Process handles for current descendants, if available."""
+        try:
+            import psutil
+
+            return psutil.Process(int(self._proc.pid)).children(recursive=True)
+        except Exception:
+            return []
+
+    @staticmethod
+    def _terminate_snapshotted_descendants(descendants: list[Any]) -> None:
+        """Terminate pre-close descendants without trusting recycled PIDs."""
+        if not descendants:
+            return
+        try:
+            import psutil
+        except Exception:
+            psutil = None  # type: ignore[assignment]
+
+        live = []
+        for child in reversed(descendants):
+            try:
+                if child.is_running():
+                    child.terminate()
+                    live.append(child)
+            except Exception:
+                continue
+        if psutil is not None and live:
+            try:
+                _, alive = psutil.wait_procs(live, timeout=1.0)
+            except Exception:
+                alive = live
+        else:
+            alive = live
+        for child in alive:
+            try:
+                if child.is_running():
+                    child.kill()
+            except Exception:
+                continue
 
     def __enter__(self) -> "CodexAppServerClient":
         return self

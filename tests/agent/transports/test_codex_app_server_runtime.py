@@ -111,6 +111,88 @@ class TestCodexAppServerModule:
         assert "-32600" in str(err)
 
 
+
+
+class TestCodexAppServerClose:
+    """Lifecycle tests for retiring the optional Codex app-server transport."""
+
+    @pytest.mark.live_system_guard_bypass
+    def test_close_reaps_independent_descendant_process_group(self, tmp_path):
+        """A Codex-owned MCP child that calls setsid must not survive close().
+
+        Regression ported from openclaw/openclaw#126285: killing only the
+        app-server root lets independently grouped stdio MCP descendants live
+        past client retirement. The fake codex binary below spawns a long-lived
+        child in its own session, records its PID, and exits promptly on root
+        SIGTERM; close() must still reap the child.
+        """
+        import os
+        import stat
+        import sys
+        import time
+
+        import psutil
+
+        from agent.transports.codex_app_server import CodexAppServerClient
+
+        child_pid_file = tmp_path / "child.pid"
+        fake_codex = tmp_path / "fake_codex.py"
+        fake_codex.write_text(
+            f"#!{sys.executable}\n"
+            """
+import os
+import signal
+import subprocess
+import sys
+import time
+
+child = subprocess.Popen(
+    [sys.executable, "-c", "import time; time.sleep(60)"],
+    start_new_session=True,
+)
+with open(os.environ["CHILD_PID_FILE"], "w", encoding="utf-8") as fh:
+    fh.write(str(child.pid))
+
+def _exit(_sig, _frame):
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, _exit)
+while True:
+    time.sleep(1)
+""".lstrip()
+        )
+        fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+
+        client = CodexAppServerClient(
+            codex_bin=str(fake_codex),
+            env={"CHILD_PID_FILE": str(child_pid_file)},
+        )
+        try:
+            deadline = time.time() + 5
+            while not child_pid_file.exists() and time.time() < deadline:
+                time.sleep(0.05)
+            assert child_pid_file.exists(), "fake codex did not report child PID"
+            child_pid = int(child_pid_file.read_text())
+            assert psutil.pid_exists(child_pid)
+
+            client.close(timeout=1.0)
+
+            deadline = time.time() + 5
+            while psutil.pid_exists(child_pid) and time.time() < deadline:
+                time.sleep(0.05)
+            assert not psutil.pid_exists(child_pid), (
+                "Codex app-server close() left an independently grouped "
+                f"descendant alive: pid={child_pid}"
+            )
+        finally:
+            client.close(timeout=0.1)
+            if child_pid_file.exists():
+                try:
+                    os.kill(int(child_pid_file.read_text()), 9)
+                except ProcessLookupError:
+                    pass
+
+
 class TestSpawnEnvIsolation:
     """The codex spawn must NOT rewrite HOME — codex's shell tool spawns
     subprocesses (gh, git, npm, aws, gcloud, ...) that need to find their

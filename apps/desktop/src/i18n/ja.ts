@@ -2647,6 +2647,10 @@ export const ja = defineLocale({
       reload: 'ページを再読み込み',
       address: 'アドレス',
       addressPlaceholder: 'アドレスを入力',
+      pick: 'ページ要素をチャットに選択',
+      pickCancel: '要素の選択をキャンセル',
+      pickFailed: 'ページ要素を選べませんでした',
+      pickUnavailable: 'このプレビューでは要素ピッカーを実行できません。',
       blankPageBody: '上のアドレス欄に入力するか、Hermes にページを開くよう頼んでください。',
       finishedRestarting: message =>
         `Hermes がプレビューサーバーの再起動を完了しました${message ? `: ${message}` : ''}`,

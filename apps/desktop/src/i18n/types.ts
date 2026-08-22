@@ -2563,6 +2563,10 @@ export interface Translations {
       reload: string
       address: string
       addressPlaceholder: string
+      pick: string
+      pickCancel: string
+      pickFailed: string
+      pickUnavailable: string
       blankPageBody: string
       finishedRestarting: (message?: string) => string
       failedRestarting: (message: string) => string

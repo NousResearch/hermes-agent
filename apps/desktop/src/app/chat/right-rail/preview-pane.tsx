@@ -6,6 +6,7 @@ import { useStore } from '@nanostores/react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
 import { Tip } from '@/components/ui/tooltip'
@@ -31,6 +32,7 @@ import {
 } from './preview-console'
 import { type ConsoleEntry } from './preview-console-state'
 import { previewConsoleState } from './preview-console-store'
+import { CANCEL_PICKER_SCRIPT, formatPickedElement, isPickerResult, PICKER_SCRIPT } from './preview-element-picker'
 import { LocalFilePreview, PreviewEmptyState } from './preview-file'
 import { type PreviewInputEvent, registerPreviewInput } from './preview-input'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
@@ -213,6 +215,10 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
   const [currentUrl, setCurrentUrl] = useState(target.url)
+  const [picking, setPicking] = useState(false)
+  // The pick lives across an await, so the handlers need the CURRENT answer to
+  // "is a pick still wanted", not the one captured when it started.
+  const pickingRef = useRef(false)
   const [devtoolsOpen, setDevtoolsOpen] = useState(false)
   const [history, setHistory] = useState({ back: false, forward: false })
   const [loading, setLoading] = useState(true)
@@ -407,6 +413,76 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     },
     [copy.unreachableDescription]
   )
+
+  const stopPicking = useCallback(() => {
+    pickingRef.current = false
+    setPicking(false)
+    void webviewRef.current?.executeJavaScript?.(CANCEL_PICKER_SCRIPT).catch(() => undefined)
+  }, [])
+
+  const startPicking = useCallback(async () => {
+    const webview = webviewRef.current
+
+    if (!webview?.executeJavaScript) {
+      notify({ kind: 'error', message: copy.pickUnavailable, title: copy.pickFailed })
+
+      return
+    }
+
+    pickingRef.current = true
+    setPicking(true)
+
+    try {
+      const raw = await webview.executeJavaScript(PICKER_SCRIPT)
+
+      // Cancelled while the guest was still holding the promise — a navigation
+      // or a second click on the button. Nothing to insert either way.
+      if (!pickingRef.current || !isPickerResult(raw) || raw.status === 'cancelled') {
+        return
+      }
+
+      requestComposerInsert(formatPickedElement(raw.element), { mode: 'block' })
+      requestComposerFocus('active')
+    } catch (error) {
+      // A cancel tears the guest's execution context down, which rejects the
+      // pending promise. That is the cancel working, not a failure to report.
+      if (pickingRef.current) {
+        notifyError(error, copy.pickFailed)
+      }
+    } finally {
+      pickingRef.current = false
+      setPicking(false)
+    }
+  }, [copy.pickFailed, copy.pickUnavailable])
+
+  // Escape has to work from the app side too: the user starts a pick by
+  // clicking a toolbar button, so the keystroke that follows usually lands in
+  // this window rather than in the guest page.
+  useEffect(() => {
+    if (!picking) {
+      return
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        stopPicking()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown, { capture: true })
+
+    return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
+  }, [picking, stopPicking])
+
+  const togglePicking = useCallback(() => {
+    if (pickingRef.current) {
+      stopPicking()
+
+      return
+    }
+
+    void startPicking()
+  }, [startPicking, stopPicking])
 
   const goBack = useCallback(() => {
     const webview = webviewRef.current
@@ -786,7 +862,18 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       setLoading(false)
     }
 
-    const onStart = () => setLoading(true)
+    const onStart = () => {
+      setLoading(true)
+
+      // The overlay belongs to the document that is going away, and the next
+      // one starts clean — so a navigation ends the pick rather than leaving a
+      // toolbar button lit over a page that has no picker in it.
+      if (pickingRef.current) {
+        pickingRef.current = false
+        setPicking(false)
+        void webview.executeJavaScript?.(CANCEL_PICKER_SCRIPT).catch(() => undefined)
+      }
+    }
 
     const onStop = () => {
       setLoading(false)
@@ -962,6 +1049,8 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
             onReload={reloadPreview}
             onToggleConsole={() => consoleState.setOpen(open => !open)}
             onToggleDevTools={toggleDevTools}
+            onTogglePick={togglePicking}
+            picking={picking}
             url={currentUrl}
           />
         )}

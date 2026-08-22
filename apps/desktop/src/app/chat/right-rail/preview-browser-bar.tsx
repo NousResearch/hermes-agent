@@ -35,6 +35,10 @@ interface PreviewBrowserBarProps {
   onReload: () => void
   onToggleConsole: () => void
   onToggleDevTools: () => void
+  /** Enter element-pick mode, or leave it if it is already on. */
+  onTogglePick: () => void
+  /** True while the guest page is waiting for the user to click an element. */
+  picking: boolean
   /** The page's CURRENT address (it moves as the user navigates), not the
    *  target the tab was opened with. */
   url: string
@@ -98,6 +102,8 @@ export function PreviewBrowserBar({
   onReload,
   onToggleConsole,
   onToggleDevTools,
+  onTogglePick,
+  picking,
   url
 }: PreviewBrowserBarProps) {
   const { t } = useI18n()
@@ -184,6 +190,15 @@ export function PreviewBrowserBar({
         icon={<Codicon name="link-external" size="0.8125rem" />}
         label={t.preview.openInBrowser}
         onSelect={onOpenExternal}
+      />
+      {/* Pick sits with DevTools rather than with the address: both act on the
+          page that is loaded, and both are how a person points at one node in
+          it. This one hands the node to the chat instead of to an inspector. */}
+      <PaneStripGlyph
+        active={picking}
+        icon={<Codicon name="inspect" size="0.8125rem" />}
+        label={picking ? copy.pickCancel : copy.pick}
+        onSelect={onTogglePick}
       />
       <PaneStripGlyph
         active={consoleOpen}

@@ -16,6 +16,8 @@ const baseProps = {
   onReload: vi.fn(),
   onToggleConsole: vi.fn(),
   onToggleDevTools: vi.fn(),
+  onTogglePick: vi.fn(),
+  picking: false,
   url: 'https://example.com'
 }
 
@@ -272,5 +274,29 @@ describe('PreviewBrowserBar', () => {
     // code-block copy icon (inline appearance, overlay on the field's edge).
     expect(copyButton.parentElement?.contains(address)).toBe(true)
     expect(copyButton.className).toContain('absolute')
+  })
+})
+
+describe('element pick control', () => {
+  it('offers the pick verb and hands the click to the pane', () => {
+    const onTogglePick = vi.fn()
+    const rendered = render(<PreviewBrowserBar {...baseProps} onTogglePick={onTogglePick} />)
+
+    const button = rendered.getByRole('button', { name: 'Select page element for chat' })
+
+    // A toggle that is off still says so — `aria-pressed="false"`, the same
+    // as the console and DevTools glyphs beside it.
+    expect(button.getAttribute('aria-pressed')).toBe('false')
+    fireEvent.click(button)
+    expect(onTogglePick).toHaveBeenCalledTimes(1)
+  })
+
+  it('turns into a cancel while a pick is in flight', () => {
+    const rendered = render(<PreviewBrowserBar {...baseProps} picking />)
+
+    const button = rendered.getByRole('button', { name: 'Cancel element pick' })
+
+    expect(button.getAttribute('aria-pressed')).toBe('true')
+    expect(rendered.queryByRole('button', { name: 'Select page element for chat' })).toBeNull()
   })
 })

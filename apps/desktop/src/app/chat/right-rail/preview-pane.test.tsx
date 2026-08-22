@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { onComposerInsertRequest } from '@/app/chat/composer/focus'
 import { $connection } from '@/store/session'
 
 import { forgetPreviewConsole, previewConsoleState } from './preview-console-store'
@@ -123,6 +124,7 @@ describe('PreviewPane console state', () => {
     })
 
     expect(rendered.queryByRole('textbox', { name: 'Address' })).not.toBeNull()
+    expect(rendered.queryByRole('button', { name: 'Select page element for chat' })).not.toBeNull()
 
     await act(async () => {
       rendered.rerender(
@@ -189,6 +191,137 @@ describe('PreviewPane console state', () => {
     // forward, so the load lands a microtask later.
     await waitFor(() => expect(loadURL).toHaveBeenCalledWith('http://localhost:4000/app'))
     expect(webview.getAttribute('src')).toBe('http://localhost:5174')
+  })
+
+  // Pointing at a node beats describing it: the block the picker writes is the
+  // selector, the text, and the markup the agent would otherwise have to ask
+  // for, so the next message can just say what to change about it.
+  it('inserts the picked element into the composer', async () => {
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{ kind: 'url', label: 'Preview', source: 'http://localhost:5174', url: 'http://localhost:5174' }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+
+    const executeJavaScript = vi.fn(async () => ({
+      element: { pageTitle: 'Example', pageUrl: 'http://localhost:5174/', selector: '#cta', tagName: 'a' },
+      status: 'selected'
+    }))
+
+    Object.assign(webview, { executeJavaScript })
+
+    const inserted: string[] = []
+    const stop = onComposerInsertRequest(detail => inserted.push(detail.text))
+
+    await act(async () => {
+      fireEvent.click(rendered.getByRole('button', { name: 'Select page element for chat' }))
+    })
+
+    await waitFor(() => expect(inserted).toHaveLength(1))
+    expect(inserted[0]).toContain('## Element')
+    expect(inserted[0]).toContain('Selector: #cta')
+    // Back to the pick verb: the pick is over, so the button must not still
+    // read as a live cancel.
+    expect(rendered.queryByRole('button', { name: 'Select page element for chat' })).not.toBeNull()
+
+    stop()
+  })
+
+  // The pick starts with a click on the toolbar, so the keyboard is pointed at
+  // the app, not at the page — Escape has to be answered on both sides.
+  it('cancels a pick on Escape from the app window', async () => {
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{ kind: 'url', label: 'Preview', source: 'http://localhost:5174', url: 'http://localhost:5174' }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+    const scripts: string[] = []
+
+    Object.assign(webview, {
+      executeJavaScript: vi.fn(async (code: string) => {
+        scripts.push(code)
+
+        return scripts.length === 1 ? new Promise(() => undefined) : undefined
+      })
+    })
+
+    await act(async () => {
+      fireEvent.click(rendered.getByRole('button', { name: 'Select page element for chat' }))
+    })
+
+    await waitFor(() => expect(rendered.queryByRole('button', { name: 'Cancel element pick' })).not.toBeNull())
+
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'Escape' })
+    })
+
+    await waitFor(() => expect(rendered.queryByRole('button', { name: 'Select page element for chat' })).not.toBeNull())
+    expect(scripts.at(-1)).toContain('__hermesWebElementPicker')
+  })
+
+  // The overlay belongs to the document that is leaving. Without this the
+  // button stays lit over a page with no picker in it, and the rejected
+  // in-flight promise reports a failure the user did not cause.
+  it('cancels an in-flight pick when the page navigates', async () => {
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{ kind: 'url', label: 'Preview', source: 'http://localhost:5174', url: 'http://localhost:5174' }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+    const scripts: string[] = []
+    let rejectPick: (error: Error) => void = () => undefined
+
+    const executeJavaScript = vi.fn(async (code: string) => {
+      scripts.push(code)
+
+      if (scripts.length === 1) {
+        return new Promise((_resolve, reject) => {
+          rejectPick = reject
+        })
+      }
+
+      return undefined
+    })
+
+    Object.assign(webview, { executeJavaScript })
+
+    const inserted: string[] = []
+    const stop = onComposerInsertRequest(detail => inserted.push(detail.text))
+
+    await act(async () => {
+      fireEvent.click(rendered.getByRole('button', { name: 'Select page element for chat' }))
+    })
+
+    await waitFor(() => expect(rendered.queryByRole('button', { name: 'Cancel element pick' })).not.toBeNull())
+
+    await act(async () => {
+      webview.dispatchEvent(new Event('did-start-loading'))
+      // The destroyed execution context is what a real cancel looks like from
+      // the renderer's side.
+      rejectPick(new Error('Script failed to execute'))
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(rendered.queryByRole('button', { name: 'Select page element for chat' })).not.toBeNull())
+    expect(scripts.at(-1)).toContain('__hermesWebElementPicker')
+    expect(inserted).toHaveLength(0)
+
+    stop()
   })
 
   // The webview always runs on THIS machine, so a remote agent's localhost is

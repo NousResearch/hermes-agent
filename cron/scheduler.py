@@ -552,6 +552,9 @@ from cron.executions import create_execution, finish_execution, mark_execution_r
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+# Deferred-commit monitors use this exact marker for a transient verification
+# failure: no delivery and no hash commit, so the same observation retries.
+MONITOR_RETRY_MARKER = "[MONITOR_RETRY]"
 
 # Canonical silence tokens recognized in cron output.  Cron's contract is
 # intentionally looser than the gateway's exact-whole-response rule: the cron
@@ -638,6 +641,9 @@ _INFLIGHT_MIN_ALLOWANCE_MINUTES = 30.0
 # every fire) must not inherit the stale flag. Legacy dispatch paths without
 # a registered fire owner fall back to storing the bare job ID.
 _interrupted_job_ids: set = set()
+# Executions that crossed the post-delivery commit linearization point. A
+# shutdown arriving after this point must not retroactively interrupt them.
+_monitor_commit_in_progress: set = set()
 
 
 class _CancelEventLike(Protocol):
@@ -1118,7 +1124,19 @@ def mark_running_jobs_interrupted(
                 fire for fire in active_fires
                 if (fire[1], fire[2]) in only_owners
             ]
-        registered_ids = {job_id for _t, job_id, _o, _p in active_fires}
+        committing_job_ids = {
+            fire[1]
+            for fire in active_fires
+            if fire[0] is not None and fire[0] in _monitor_commit_in_progress
+        }
+        active_fires = [
+            fire
+            for fire in active_fires
+            if fire[0] is None or fire[0] not in _monitor_commit_in_progress
+        ]
+        registered_ids = {
+            job_id for _t, job_id, _o, _p in active_fires
+        } | committing_job_ids
         if only_owners is None:
             active_fires.extend(
                 (None, job_id, None, _get_hermes_home())
@@ -5037,6 +5055,7 @@ def run_job(
     job: dict,
     *,
     defer_agent_teardown: Optional[list] = None,
+    defer_monitor_commit: Optional[list] = None,
     extra_prompt: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None,
 ) -> tuple[bool, str, str, Optional[str]]:
@@ -5233,6 +5252,24 @@ def run_job(
         # through the existing per-run context seam and fall through to a
         # normal agent run.
         _monitor_context = _mon.context_block
+        if job.get("monitor_commit_policy") == "after_delivery":
+            pending_commit = {
+                "new_hash": _mon.new_hash,
+                "output": _mon.output,
+            }
+            # The defer list is the only channel that crosses the process
+            # boundary; the job-dict key is a same-process fallback for
+            # callers that don't pass `defer_monitor_commit`, popped by the
+            # decision point (run_one_job) in the same execution. Never
+            # persist this key - it is scratch state for one run.
+            job["_monitor_pending_commit"] = pending_commit
+            if defer_monitor_commit is not None:
+                defer_monitor_commit.append(pending_commit)
+            logger.info(
+                "Job '%s': staged deferred monitor commit hash=%s",
+                job_id,
+                str(_mon.new_hash or "")[:12],
+            )
         if _monitor_context:
             extra_prompt = (
                 f"{_monitor_context}\n\n{extra_prompt}" if extra_prompt else _monitor_context
@@ -6652,11 +6689,14 @@ def run_one_job(
         )
     finally:
         with _running_lock:
+            _monitor_commit_in_progress.discard(execution_token)
+            _interrupted_job_ids.discard(execution_token)
             executions = _running_fire_owners.get(job["id"])
             if executions is not None:
                 executions.pop(execution_token, None)
                 if not executions:
                     _running_fire_owners.pop(job["id"], None)
+                    _interrupted_job_ids.discard(job["id"])
 
 
 def _run_one_job_body(
@@ -6704,6 +6744,7 @@ def _run_one_job_body(
         execution_id = create_execution(job["id"], source="direct")["id"]
     delivery_attempted = False
     delivery_error = None
+    delivery_failed = False
     try:
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
@@ -6752,17 +6793,20 @@ def _run_one_job_body(
         # below once delivery is done. Defense-in-depth alongside the
         # interpreter-shutdown guard in _deliver_result.
         _deferred_agents: list = []
+        _deferred_monitor_commits: list = []
         try:
             if fire_claim_lost is None:
                 success, output, final_response, error = run_job(
                     job,
                     defer_agent_teardown=_deferred_agents,
+                    defer_monitor_commit=_deferred_monitor_commits,
                     extra_prompt=extra_prompt,
                 )
             else:
                 success, output, final_response, error = run_job(
                     job,
                     defer_agent_teardown=_deferred_agents,
+                    defer_monitor_commit=_deferred_monitor_commits,
                     extra_prompt=extra_prompt,
                     cancel_event=fire_claim_lost,
                 )
@@ -6816,6 +6860,7 @@ def _run_one_job_body(
         # deferred agent is still torn down. Otherwise the outer `except` would
         # swallow the error and leak the agent's subprocesses/clients (#10200).
         blocked_config = False
+        monitor_retry = False
         side_effect_ownership_lost = False
         try:
             with _side_effect_fence() as owns_output:
@@ -6899,6 +6944,47 @@ def _run_one_job_body(
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.
             should_deliver = bool(deliver_content.strip())
+            pending_monitor_payload = job.get("_monitor_pending_commit")
+            pending_requires_delivery = False
+            if (
+                job.get("monitor_commit_policy") == "after_delivery"
+                and isinstance(pending_monitor_payload, dict)
+            ):
+                try:
+                    pending_doc = json.loads(
+                        str(pending_monitor_payload.get("output") or "")
+                    )
+                    pending_requires_delivery = bool(
+                        pending_doc.get("events", {})
+                        .get("event", {})
+                        .get("requires_delivery")
+                        is True
+                    )
+                except (json.JSONDecodeError, AttributeError, TypeError):
+                    pending_requires_delivery = False
+            monitor_retry = (
+                success
+                and job.get("monitor_commit_policy") == "after_delivery"
+                and bool(pending_monitor_payload)
+                and (
+                    deliver_content.strip() == MONITOR_RETRY_MARKER
+                    or (
+                        pending_requires_delivery
+                        and (
+                            _is_cron_silence_response(deliver_content)
+                            or _normalize_deliver_value(
+                                job.get("deliver", "local")
+                            ) == "local"
+                        )
+                    )
+                )
+            )
+            if monitor_retry:
+                logger.info(
+                    "Job '%s': agent requested monitor retry — suppressing delivery and hash commit",
+                    job["id"],
+                )
+                should_deliver = False
             if blocked_config_silent or drift_skip_silent:
                 should_deliver = False
             unresolved_origin = False
@@ -6935,11 +7021,17 @@ def _run_one_job_body(
                             adapters=adapters,
                             loop=loop,
                         )
+                        if delivery_error is not None:
+                            delivery_failed = True
+                            delivery_error = str(delivery_error) or "DeliveryError"
                 except Exception as de:
                     if isinstance(de, _FireClaimLostDuringSideEffect):
                         raise
-                    delivery_error = str(de)
+                    delivery_failed = True
+                    delivery_error = str(de) or type(de).__name__
                     logger.error("Delivery failed for job %s: %s", job["id"], de)
+            if pending_requires_delivery and (unresolved_origin or delivery_failed):
+                monitor_retry = True
         except _FireClaimLostDuringSideEffect:
             side_effect_ownership_lost = True
         finally:
@@ -6984,7 +7076,7 @@ def _run_one_job_body(
 
         interrupted = _consume_interrupted_flag(job["id"], execution_token)
         if interrupted:
-            if delivery_error:
+            if delivery_failed:
                 # The gateway shutdown already wrote last_status for this run,
                 # so mark_job_run is skipped below — but it could not know that
                 # the notice we just tried to send never left the process (the
@@ -7008,11 +7100,78 @@ def _run_one_job_body(
             )
             return True
 
+        pending_monitor = (
+            _deferred_monitor_commits[-1]
+            if _deferred_monitor_commits
+            else job.get("_monitor_pending_commit")
+        )
+        job.pop("_monitor_pending_commit", None)
+        logger.info(
+            "Job '%s': deferred monitor commit decision pending=%s success=%s "
+            "retry=%s delivery_failed=%s unresolved_origin=%s",
+            job["id"],
+            bool(pending_monitor),
+            success,
+            monitor_retry,
+            delivery_failed,
+            unresolved_origin,
+        )
+        monitor_commit_ownership_lost = False
+        if (
+            pending_monitor
+            and success
+            and not monitor_retry
+            and not delivery_failed
+            and not unresolved_origin
+        ):
+            from cron.monitor import commit_monitor_state
+
+            with _side_effect_fence() as owns_monitor_commit:
+                commit_linearized = False
+                with _running_lock:
+                    interrupted_at_commit = (
+                        execution_token is not None
+                        and execution_token in _interrupted_job_ids
+                    ) or job["id"] in _interrupted_job_ids
+                    if interrupted_at_commit:
+                        if execution_token is not None:
+                            _interrupted_job_ids.discard(execution_token)
+                        _interrupted_job_ids.discard(job["id"])
+                    if (
+                        not owns_monitor_commit
+                        or (
+                            fire_claim_lost is not None
+                            and fire_claim_lost.is_set()
+                        )
+                        or interrupted_at_commit
+                    ):
+                        monitor_commit_ownership_lost = True
+                    else:
+                        if execution_token is not None:
+                            _monitor_commit_in_progress.add(execution_token)
+                        commit_linearized = True
+                if commit_linearized:
+                    commit_monitor_state(
+                        job["id"],
+                        pending_monitor.get("new_hash"),
+                        pending_monitor.get("output") or "",
+                    )
+                    logger.info(
+                        "Job '%s': deferred monitor commit persisted hash=%s",
+                        job["id"],
+                        str(pending_monitor.get("new_hash") or "")[:12],
+                    )
+        if monitor_commit_ownership_lost:
+            success = False
+            error = "Fire claim ownership lost before monitor state commit."
+
         mark_kwargs = {"delivery_error": delivery_error}
         if fire_owner is not None:
             mark_kwargs["expected_fire_owner"] = fire_owner
         if blocked_config:
             mark_kwargs["status"] = "blocked_config"
+        elif monitor_retry:
+            mark_kwargs["status"] = "monitor_retry"
         marked = mark_job_run(job["id"], success, error, **mark_kwargs)
         if fire_owner is not None and not marked:
             finish_execution(
@@ -7022,7 +7181,7 @@ def _run_one_job_body(
             )
             return True
         normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
-        if delivery_error:
+        if delivery_failed:
             delivery_outcome = "failed"
         elif should_deliver and unresolved_origin:
             delivery_outcome = "not_configured"
@@ -7081,14 +7240,18 @@ def _run_one_job_body(
                     adapters=adapters,
                     loop=loop,
                 )
+                if delivery_error is not None:
+                    delivery_failed = True
+                    delivery_error = str(delivery_error) or "DeliveryError"
             except Exception as delivery_exc:
-                delivery_error = str(delivery_exc)
+                delivery_failed = True
+                delivery_error = str(delivery_exc) or type(delivery_exc).__name__
                 logger.error(
                     "Delivery failed for job %s: %s", job["id"], delivery_exc
                 )
-            if not delivery_error and normalized_deliver == "origin":
+            if not delivery_failed and normalized_deliver == "origin":
                 unresolved_origin = not _resolve_delivery_targets(job)
-            if delivery_error:
+            if delivery_failed:
                 delivery_outcome = "failed"
             elif unresolved_origin:
                 delivery_outcome = "not_configured"

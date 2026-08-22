@@ -226,4 +226,4 @@ class TestDeliveryErrorIsRecordedWhenTheNoticeCannotBeSent:
         )
         # The recovery branch hangs off the interrupted-flag short-circuit,
         # not off a second mark_job_run call.
-        assert "if interrupted:" in src and "if delivery_error:" in src
+        assert "if interrupted:" in src and "if delivery_failed:" in src

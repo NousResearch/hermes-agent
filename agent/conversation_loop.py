@@ -460,6 +460,43 @@ def _is_stale_copilot_credential_error(status_code: Optional[int], error_message
     )
 
 
+def _looks_like_material_interim_content(text: str) -> bool:
+    """Return True for mid-turn text that is likely more than progress narration."""
+    if not isinstance(text, str):
+        return False
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if len(normalized) < 20:
+        return False
+    if len(normalized) >= 160:
+        return True
+    if "\n" in text and len(normalized) >= 60:
+        return True
+    if re.search(r"https?://|```|^\s*[-*]\s+", text, re.MULTILINE):
+        return True
+    if re.search(
+        r"(?i)\b(total|subtotal|price|quote|cost|shipping|postage|"
+        r"deposit|terms|refund|deadline|delivery|eta)\b",
+        normalized,
+    ):
+        return True
+    return bool(
+        re.search(
+            r"(?i)(?:\bRM\s*\d|\$\s*\d|\b\d+\s*x\s*(?:RM|\$)|"
+            r"\b\d+(?:\.\d+)?\s*(?:usd|eur|gbp)\b)",
+            normalized,
+        )
+    )
+
+
+def _final_response_covers_interim_content(
+    final_response: str,
+    interim_content: str,
+) -> bool:
+    final_norm = re.sub(r"\s+", " ", final_response or "").strip().lower()
+    interim_norm = re.sub(r"\s+", " ", interim_content or "").strip().lower()
+    return bool(final_norm and interim_norm and interim_norm in final_norm)
+
+
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
@@ -2266,6 +2303,7 @@ def run_conversation(
             # Strip length-continuation marks; not every transport drops underscore keys.
             api_msg.pop("_length_continuation_fragment", None)
             api_msg.pop("_length_continuation_nudge", None)
+            api_msg.pop("_undelivered_interim_synthetic", None)
             # Strip Codex Responses API fields (call_id, response_item_id) for
             # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
             # Uses new dicts so the internal messages list retains the fields
@@ -7316,7 +7354,15 @@ def run_conversation(
                 # still only an ephemeral in-memory projection. Emit interim
                 # commentary only after the canonical SessionDB append above.
                 if not duplicate_previous_interim:
-                    agent._emit_interim_assistant_message(assistant_msg)
+                    interim_delivered = agent._emit_interim_assistant_message(assistant_msg)
+                    clean_turn_content = agent._strip_think_blocks(turn_content).strip()
+                    if (
+                        clean_turn_content
+                        and not interim_delivered
+                        and _looks_like_material_interim_content(clean_turn_content)
+                    ):
+                        agent._undelivered_tool_call_content = clean_turn_content
+                        agent._undelivered_tool_call_content_nudged = False
 
                 # Close any open streaming display (response box, reasoning
                 # box) before tool execution begins.  Intermediate turns may
@@ -8098,9 +8144,52 @@ def run_conversation(
                         or messages[-1].get("_empty_recovery_synthetic")
                         or messages[-1].get("_empty_terminal_sentinel")
                         or messages[-1].get("_dropped_toolcall_nudge")
+                        or messages[-1].get("_undelivered_interim_synthetic")
                     )
                 ):
                     messages.pop()
+
+                undelivered_interim = getattr(agent, "_undelivered_tool_call_content", None)
+                if (
+                    undelivered_interim
+                    and not getattr(agent, "_undelivered_tool_call_content_nudged", False)
+                    and not _final_response_covers_interim_content(final_response, undelivered_interim)
+                ):
+                    agent._undelivered_tool_call_content_nudged = True
+                    final_msg["finish_reason"] = "undelivered_interim_recovery"
+                    final_msg["_undelivered_interim_synthetic"] = True
+                    messages.append(final_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[System: internal reconciliation — the user sees none of this. "
+                            "An assistant message generated while tool calls were running was "
+                            "never delivered to the user, and the draft final response below "
+                            "has not been sent either. Your next message replaces the draft "
+                            "and is delivered to the user verbatim as the actual reply.\n\n"
+                            "Write the complete, final user-facing reply now: start from the "
+                            "draft and merge in any user-facing facts, numbers, instructions, "
+                            "or decisions from the undelivered text that the user still "
+                            "needs; skip anything that was only progress narration. If the "
+                            "draft already covers everything, repeat the draft verbatim.\n\n"
+                            "Never respond ABOUT the draft or this check — no verdicts like "
+                            "'the draft is accurate', 'already shown to the user', or 'no "
+                            "changes needed', and no mention of drafts, reviews, or hidden "
+                            "messages. Output only the reply itself.\n\n"
+                            f"Undelivered assistant text:\n{undelivered_interim}\n\n"
+                            f"Draft final response:\n{final_response}]"
+                        ),
+                        "_undelivered_interim_synthetic": True,
+                    })
+                    agent._session_messages = messages
+                    logger.info(
+                        "Final response omitted undelivered tool-call content; "
+                        "nudging model to reconcile it"
+                    )
+                    continue
+
+                agent._undelivered_tool_call_content = None
+                agent._undelivered_tool_call_content_nudged = False
 
                 try:
                     from agent.verification_stop import (

@@ -536,6 +536,7 @@ class Metrics:
         self.push_failed = 0
         self.tasks_completed = 0
         self.tasks_failed = 0
+        self.tasks_late_results = 0
         self.anti_loop_triggers = 0
         self.rate_limit_triggers = 0
         self._start_time = time.time()
@@ -561,6 +562,7 @@ class Metrics:
             "push_failed": self.push_failed,
             "tasks_completed": self.tasks_completed,
             "tasks_failed": self.tasks_failed,
+            "tasks_late_results": self.tasks_late_results,
             "anti_loop_triggers": self.anti_loop_triggers,
             "rate_limit_triggers": self.rate_limit_triggers,
             "avg_latency_ms": round(self.avg_latency() * 1000, 1),
@@ -748,12 +750,17 @@ class TaskStore:
             return page, next_offset, total
         return page, next_offset
 
-    def fail_orphans(self, timeout_seconds: int = 300) -> list[str]:
+    def fail_orphans(self, timeout_seconds: int = 300, skip: Optional[set[str]] = None) -> list[str]:
+        """Fail non-terminal tasks older than ``timeout_seconds``. ``skip``
+        holds ids that still have a live waiter (including detached
+        late-result tasks) and must be left running."""
+        skip = skip or set()
         with self._lock:
             now = time.time()
             stale = [
                 tid for tid, rec in self._tasks.items()
                 if rec["state"] not in TERMINAL_STATES
+                and tid not in skip
                 and now - rec["created_at"] > timeout_seconds
             ]
         failed = []

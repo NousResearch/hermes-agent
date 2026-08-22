@@ -16,6 +16,7 @@ import json
 import os
 import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import Future
@@ -689,6 +690,111 @@ class TestReplyCapture:
             adapter._pop_pending("task-ok")
 
 
+class TestLateResults:
+    """Reply-window expiry must not discard work that is still running
+    (#78007 point 3): the task detaches, stays WORKING, and the eventual
+    outcome is recorded instead of dropped."""
+
+    @staticmethod
+    def _pending_for(adapter, task_id, context_id, started_ago=10_000.0):
+        rec = adapter.tasks.create(task_id, context_id, "peer-late", "", "")
+        adapter.tasks.set_state(task_id, protocol.STATE_WORKING)
+        fut = adapter._add_pending(task_id, context_id)
+        return {
+            "task_id": task_id,
+            "context_id": context_id,
+            "peer": "peer-late",
+            "future": fut,
+            "created_iso": rec["created_iso"],
+            "started": time.time() - started_ago,
+        }
+
+    @staticmethod
+    def _wait_for(predicate, timeout=3.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def test_expired_window_detaches_instead_of_failing(self, monkeypatch):
+        monkeypatch.delenv("A2A_LATE_RESULT_GRACE", raising=False)
+        adapter = _bare_adapter()
+        pending = self._pending_for(adapter, "task-late-detach", "ctx-late-detach")
+        try:
+            state, note = adapter._await_reply(pending)
+            assert state == protocol.STATE_WORKING
+            assert "task-late-detach" in note
+            assert adapter.tasks.get("task-late-detach")["state"] == protocol.STATE_WORKING
+            assert "task-late-detach" in adapter._pending
+        finally:
+            adapter._resolve_task("task-late-detach", protocol.STATE_CANCELED, "")
+            self._wait_for(
+                lambda: adapter.tasks.get("task-late-detach")["state"] in protocol.TERMINAL_STATES)
+
+    def test_late_reply_is_recorded_not_dropped(self, monkeypatch):
+        monkeypatch.delenv("A2A_LATE_RESULT_GRACE", raising=False)
+        adapter = _bare_adapter()
+        pending = self._pending_for(adapter, "task-late-reply", "ctx-late-reply")
+        before = protocol.metrics.tasks_late_results
+
+        state, _ = adapter._await_reply(pending)
+        assert state == protocol.STATE_WORKING
+
+        asyncio.run(adapter.send(
+            "ctx-late-reply", "LATE_RESULT_PAYLOAD", metadata={"notify": True}))
+
+        assert self._wait_for(
+            lambda: adapter.tasks.get("task-late-reply")["state"] == protocol.STATE_COMPLETED)
+        rec = adapter.tasks.get("task-late-reply")
+        assert rec["reply"] == "LATE_RESULT_PAYLOAD"
+        assert protocol.metrics.tasks_late_results == before + 1
+        assert "task-late-reply" not in adapter._pending
+
+    def test_grace_zero_restores_legacy_failure(self, monkeypatch):
+        monkeypatch.setenv("A2A_LATE_RESULT_GRACE", "0")
+        adapter = _bare_adapter()
+        pending = self._pending_for(adapter, "task-late-legacy", "ctx-late-legacy")
+        try:
+            state, msg = adapter._await_reply(pending)
+            assert state == protocol.STATE_FAILED
+            assert msg == "[agent did not reply in time]"
+        finally:
+            adapter._pop_pending("task-late-legacy")
+
+    def test_grace_expiry_fails_the_task(self, monkeypatch):
+        monkeypatch.setenv("A2A_LATE_RESULT_GRACE", "0.2")
+        adapter = _bare_adapter()
+        pending = self._pending_for(adapter, "task-late-grace", "ctx-late-grace")
+        state, _ = adapter._await_reply(pending)
+        assert state == protocol.STATE_WORKING
+        assert self._wait_for(
+            lambda: adapter.tasks.get("task-late-grace")["state"] == protocol.STATE_FAILED)
+        assert "grace window" in adapter.tasks.get("task-late-grace")["reply"]
+        assert "task-late-grace" not in adapter._pending
+
+    def test_boundary_result_beats_detach(self, monkeypatch):
+        monkeypatch.delenv("A2A_LATE_RESULT_GRACE", raising=False)
+        adapter = _bare_adapter()
+        pending = self._pending_for(adapter, "task-late-boundary", "ctx-late-boundary")
+        adapter._resolve_task("task-late-boundary", protocol.STATE_COMPLETED, "just in time")
+        try:
+            state, reply = adapter._await_reply(pending)
+            assert (state, reply) == (protocol.STATE_COMPLETED, "just in time")
+        finally:
+            adapter._pop_pending("task-late-boundary")
+
+    def test_watchdog_skips_live_pending_tasks(self):
+        adapter = _bare_adapter()
+        adapter.tasks.create("task-late-live", "ctx-late-live", "peer-late", "", "")
+        adapter.tasks.set_state("task-late-live", protocol.STATE_WORKING)
+        adapter.tasks._tasks["task-late-live"]["created_at"] -= 9_999
+        assert adapter.tasks.fail_orphans(300, skip={"task-late-live"}) == []
+        assert adapter.tasks.get("task-late-live")["state"] == protocol.STATE_WORKING
+        assert "task-late-live" in adapter.tasks.fail_orphans(300)
+
+
 # --------------------------------------------------------------------------
 # Adapter RPC handlers (driven directly, no HTTP)
 # --------------------------------------------------------------------------
@@ -1123,12 +1229,14 @@ class TestInboundRoundTrip:
 
         asyncio.run(run())
 
-    def test_timeout_returns_failed_not_completed(self, monkeypatch):
-        """When the agent never replies, the task must FAIL (and count as a
-        failure), not report success."""
+    def test_timeout_returns_working_then_failed(self, monkeypatch):
+        """When the agent never replies, the caller gets a WORKING task at the
+        reply deadline (never a synthetic success) and the task fails once the
+        late-result grace expires."""
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
         monkeypatch.setenv("A2A_REPLY_TIMEOUT", "1")
+        monkeypatch.setenv("A2A_LATE_RESULT_GRACE", "0.5")
         adapter, base = _make_live_adapter(monkeypatch, reply_fn=lambda e: None)
 
         async def run():
@@ -1137,12 +1245,15 @@ class TestInboundRoundTrip:
             completed_before = protocol.metrics.tasks_completed
             resp = await asyncio.to_thread(_post_json, base + "/", _send_body("are you there"))
             task = resp["result"]
-            assert task["status"]["state"] == "TASK_STATE_FAILED"
+            assert task["status"]["state"] == "TASK_STATE_WORKING"
+            deadline = time.time() + 3.0
+            rec = adapter.tasks.get(task["id"])
+            while time.time() < deadline and rec["state"] not in protocol.TERMINAL_STATES:
+                await asyncio.sleep(0.05)
+                rec = adapter.tasks.get(task["id"])
+            assert rec["state"] == "TASK_STATE_FAILED"
             assert protocol.metrics.tasks_failed == failed_before + 1
             assert protocol.metrics.tasks_completed == completed_before
-            # The task store agrees.
-            rec = adapter.tasks.get(task["id"])
-            assert rec["state"] == "TASK_STATE_FAILED"
             await adapter.disconnect()
 
         asyncio.run(run())

@@ -299,6 +299,12 @@ def a2a_call(args: dict, **_: Any) -> str:
             "\n\n(The peer needs more input — answer by calling a2a_call again "
             f"with context_id '{reply_ctx}'.)"
         )
+    elif state == protocol.STATE_WORKING:
+        body += (
+            "\n\n(The peer is still working: its reply window closed but the "
+            "task keeps running server-side. Call a2a_call again later with "
+            f"context_id '{reply_ctx}' to pick up the outcome.)"
+        )
     return f"{header}\n{body}"
 
 

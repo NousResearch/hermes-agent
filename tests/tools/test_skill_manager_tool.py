@@ -947,3 +947,67 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+# ---------------------------------------------------------------------------
+# Curator dry-run read-only gate (#87793)
+# ---------------------------------------------------------------------------
+
+class TestCuratorDryRunGate:
+    """`hermes curator run --dry-run` must be mechanically read-only: the
+    prompt banner alone was not a guarantee — the forked reviewer holds real
+    mutating tools and was observed creating/patching skills during a
+    preview. While set_curator_dry_run(True) is active every mutating
+    skill_manage action is refused; the flag resets cleanly."""
+
+    @pytest.mark.parametrize(
+        "action,kwargs",
+        [
+            ("create", {"content": VALID_SKILL_CONTENT}),
+            ("edit", {"content": VALID_SKILL_CONTENT_2}),
+            ("patch", {"old_string": "Step 1", "new_string": "Step zero"}),
+            ("delete", {}),
+            ("write_file", {"file_path": "references/x.md", "file_content": "x"}),
+            ("remove_file", {"file_path": "references/x.md"}),
+        ],
+    )
+    def test_mutating_actions_fail_closed_during_dry_run(
+        self, tmp_path, action, kwargs
+    ):
+        from tools.skill_manager_tool import curator_dry_run_scope
+
+        # A real target so the block cannot be attributed to a missing skill.
+        with _skill_dir(tmp_path):
+            _create_skill("test-skill", VALID_SKILL_CONTENT)
+            with curator_dry_run_scope(True):
+                result = json.loads(
+                    skill_manage(action=action, name="test-skill", **kwargs)
+                )
+
+            assert result["success"] is False
+            assert "dry-run is read-only" in result["error"]
+            # Nothing changed on disk despite the action being well-formed.
+            skill_md = tmp_path / "test-skill" / "SKILL.md"
+            assert skill_md.exists()
+            assert "A test skill for unit testing." in skill_md.read_text(
+                encoding="utf-8"
+            )
+            assert not (tmp_path / ".archive").exists()
+
+    def test_gate_resets_cleanly(self, tmp_path):
+        from tools.skill_manager_tool import curator_dry_run_scope
+
+        with _skill_dir(tmp_path):
+            with curator_dry_run_scope(True):
+                pass
+
+            result = json.loads(
+                skill_manage(
+                    action="create",
+                    name="fresh-skill",
+                    content=VALID_SKILL_CONTENT.replace(
+                        "test-skill", "fresh-skill"
+                    ),
+                )
+            )
+            assert result["success"] is True, result

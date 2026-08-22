@@ -37,6 +37,7 @@ import logging
 import re
 import shutil
 import contextvars as _ctxvars
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -55,6 +56,37 @@ logger = logging.getLogger(__name__)
 _background_review_read_paths: "_ctxvars.ContextVar[frozenset[str]]" = _ctxvars.ContextVar(
     "background_review_read_paths", default=frozenset()
 )
+
+# Set around the curator's forked review agent while a --dry-run pass is in
+# flight. Dry-run is documented as read-only ("no state changes, no archives,
+# no consolidation"), but the guard used to be a prompt banner only — the
+# fork runs with real mutating tools, so a noncompliant model could create
+# and patch skills during a preview (#87793). This is the mechanical
+# fail-closed backstop: mutating skill_manage actions are refused while the
+# flag is set, regardless of what the prompt asked for.
+_curator_dry_run: "_ctxvars.ContextVar[bool]" = _ctxvars.ContextVar(
+    "curator_dry_run", default=False
+)
+
+_MUTATING_ACTIONS = frozenset(
+    {"create", "edit", "patch", "delete", "write_file", "remove_file"}
+)
+
+
+@contextmanager
+def curator_dry_run_scope(enabled: bool):
+    """Mark the current context as a read-only curator dry-run pass.
+
+    Entering with ``enabled=True`` refuses mutating ``skill_manage``
+    actions until the block exits — the flag can never leak past the
+    dry-run pass that set it (a stale True would brick skill_manage for
+    the whole process).
+    """
+    token = _curator_dry_run.set(bool(enabled))
+    try:
+        yield
+    finally:
+        _curator_dry_run.reset(token)
 
 
 def mark_background_review_skill_read(path: Path) -> None:
@@ -1562,6 +1594,21 @@ def skill_manage(
     preflight = _background_review_preflight(action, name)
     if preflight is not None:
         return json.dumps(preflight, ensure_ascii=False)
+
+    # Read-only backstop for `hermes curator run --dry-run` (#87793): the
+    # dry-run contract is report-only, but the forked reviewer holds real
+    # mutating tools. Refuse mutating actions while the dry-run flag is set;
+    # read actions (list/view/history) pass through untouched so the report
+    # has everything it needs. The error is returned to the fork, which the
+    # dry-run banner already directs to describe actions rather than take
+    # them — this only fires when the model disobeys.
+    if _curator_dry_run.get() and action in _MUTATING_ACTIONS:
+        return tool_error(
+            "blocked: curator dry-run is read-only — skill_manage "
+            f"action={action!r} was refused. Describe what you WOULD do "
+            "instead of performing it.",
+            success=False,
+        )
 
     # Approval gate: when on, stages the write for review (skills are too large
     # to review inline, so they always stage regardless of origin); when off

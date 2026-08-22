@@ -116,6 +116,7 @@ class FactRetriever:
         # Sort by score descending, return top limit
         scored.sort(key=lambda x: x["score"], reverse=True)
         results = scored[:limit]
+        self._mark_retrieved(results)
         # Strip raw HRR bytes — callers expect JSON-serializable dicts
         for fact in results:
             fact.pop("hrr_vector", None)
@@ -199,7 +200,9 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._mark_retrieved(results)
+        return results
 
     def related(
         self,
@@ -269,7 +272,9 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._mark_retrieved(results)
+        return results
 
     def reason(
         self,
@@ -347,7 +352,9 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._mark_retrieved(results)
+        return results
 
     def contradict(
         self,
@@ -490,7 +497,19 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._mark_retrieved(results)
+        return results
+
+    def _mark_retrieved(self, facts: list[dict]) -> None:
+        """Record that returned facts were retrieved by a user/tool query."""
+        fact_ids = [fact["fact_id"] for fact in facts if "fact_id" in fact]
+        try:
+            self.store.mark_retrieved(fact_ids)
+        except Exception:
+            # Retrieval counters are advisory; never fail a memory lookup over
+            # usage-metric bookkeeping.
+            pass
 
     def _fts_candidates(
         self,

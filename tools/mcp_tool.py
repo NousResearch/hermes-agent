@@ -116,6 +116,7 @@ from datetime import datetime
 from typing import Any, Coroutine, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
+from agent.redact import _redact_strict_url_credentials, redact_credential_url
 from tools.registry import tool_error
 from tools.ansi_strip import strip_unicode_tags
 
@@ -743,9 +744,13 @@ def _sanitize_error(text: str) -> str:
     """Strip credential-like patterns from error text before returning to LLM.
 
     Replaces tokens, keys, and other secrets with [REDACTED] to prevent
-    accidental credential exposure in tool error responses.
+    accidental credential exposure in tool error responses. URL query values
+    that the plain pattern does not name (e.g. ``signature``,
+    ``x-amz-signature``, ``code``) are additionally masked with strict
+    credential-URL redaction.
     """
-    return _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
+    masked = _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
+    return _redact_strict_url_credentials(masked)
 
 
 def _exc_str(exc: BaseException) -> str:
@@ -1461,23 +1466,23 @@ def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
         parsed = urlparse(stripped)
     except Exception as exc:  # urlparse is very permissive — belt and braces
         raise InvalidMcpUrlError(
-            f"Invalid MCP URL for '{server_name}': {stripped!r} ({exc})"
+            f"Invalid MCP URL for '{server_name}': {redact_credential_url(stripped)!r} ({redact_credential_url(exc)})"
         ) from exc
     if parsed.scheme.lower() not in {"http", "https"}:
         raise InvalidMcpUrlError(
             f"Invalid MCP URL for '{server_name}': scheme must be http or "
-            f"https, got {parsed.scheme!r} ({stripped!r})"
+            f"https, got {parsed.scheme!r} ({redact_credential_url(stripped)!r})"
         )
     if not parsed.netloc:
         raise InvalidMcpUrlError(
-            f"Invalid MCP URL for '{server_name}': missing host ({stripped!r})"
+            f"Invalid MCP URL for '{server_name}': missing host ({redact_credential_url(stripped)!r})"
         )
     # ``urlparse`` accepts ``http://:8080`` (empty host, explicit port).
     # Reject that — we need a real host.
     if not parsed.hostname:
         raise InvalidMcpUrlError(
             f"Invalid MCP URL for '{server_name}': missing hostname "
-            f"({stripped!r})"
+            f"({redact_credential_url(stripped)!r})"
         )
     return stripped
 
@@ -2928,7 +2933,7 @@ class MCPServerTask:
                         logger.warning(
                             "MCP server '%s' keepalive failed, triggering "
                             "reconnect (state: connected → degraded): %s: %s",
-                            self.name, type(root).__name__, root,
+                            self.name, type(root).__name__, redact_credential_url(root),
                         )
                         self._reconnect_event.set()
                         break
@@ -3324,7 +3329,7 @@ class MCPServerTask:
             return  # Looks like a real MCP endpoint.
 
         raise NonMcpEndpointError(
-            f"MCP server '{self.name}' at {url} returned Content-Type "
+            f"MCP server '{self.name}' at {redact_credential_url(url)} returned Content-Type "
             f"'{ct_base}', not an MCP response (expected one of: "
             f"{', '.join(self._MCP_CONTENT_TYPES)}). The URL most likely "
             "points at a web page rather than an MCP endpoint — check it "
@@ -3430,7 +3435,7 @@ class MCPServerTask:
                     self.name, url, config.get("oauth"),
                 )
             except Exception as exc:
-                logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
+                logger.warning("MCP OAuth setup failed for '%s': %s", self.name, redact_credential_url(exc))
                 raise
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
@@ -3915,7 +3920,7 @@ class MCPServerTask:
                     logger.warning(
                         "MCP server '%s': lazy reconnect after stdio recycle "
                         "failed, marking unavailable while retrying: %s: %s",
-                        self.name, type(root).__name__, root,
+                        self.name, type(root).__name__, redact_credential_url(root),
                     )
                     self._recycled_reason = None
 
@@ -3945,14 +3950,14 @@ class MCPServerTask:
                                 "with `hermes mcp login %s` "
                                 "(state: connecting → parked): %s: %s",
                                 self.name, self.name,
-                                type(root).__name__, root,
+                                type(root).__name__, redact_credential_url(root),
                             )
                         else:
                             logger.warning(
                                 "MCP server '%s' failed initial connection with a "
                                 "permanent error, parking without retries "
                                 "(state: connecting → parked): %s: %s",
-                                self.name, type(root).__name__, root,
+                                self.name, type(root).__name__, redact_credential_url(root),
                             )
                         self._error = exc
                         self._ready.set()
@@ -3984,7 +3989,7 @@ class MCPServerTask:
                             "%d attempts, parking until a reconnect is "
                             "requested (state: connecting → parked): %s: %s",
                             self.name, _MAX_INITIAL_CONNECT_RETRIES,
-                            type(root).__name__, root,
+                            type(root).__name__, redact_credential_url(root),
                         )
                         self._error = exc
                         self._ready.set()
@@ -4014,7 +4019,7 @@ class MCPServerTask:
                         "(attempt %d/%d), retrying in %.0fs: %s: %s",
                         self.name, initial_retries,
                         _MAX_INITIAL_CONNECT_RETRIES, backoff,
-                        type(root).__name__, root,
+                        type(root).__name__, redact_credential_url(root),
                     )
                     await asyncio.sleep(_jittered(backoff))
                     backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
@@ -4030,7 +4035,7 @@ class MCPServerTask:
                 if self._shutdown_event.is_set():
                     logger.debug(
                         "MCP server '%s' disconnected during shutdown: %s: %s",
-                        self.name, type(root).__name__, root,
+                        self.name, type(root).__name__, redact_credential_url(root),
                     )
                     return
 
@@ -4044,7 +4049,7 @@ class MCPServerTask:
                         "without retries; will self-probe every %ds "
                         "(state: connected → parked): %s: %s",
                         self.name, _PARKED_RETRY_INTERVAL,
-                        type(root).__name__, root,
+                        type(root).__name__, redact_credential_url(root),
                     )
                     self._was_parked = True
                     self._deregister_tools()
@@ -4072,7 +4077,7 @@ class MCPServerTask:
                         "(state: degraded → parked): %s: %s",
                         self.name, _MAX_RECONNECT_RETRIES,
                         _PARKED_RETRY_INTERVAL,
-                        type(root).__name__, root,
+                        type(root).__name__, redact_credential_url(root),
                     )
                     # Do NOT return — exiting the task orphans the server:
                     # nothing would ever listen for _reconnect_event again
@@ -4113,7 +4118,7 @@ class MCPServerTask:
                     "MCP server '%s' connection lost (attempt %d/%d), "
                     "reconnecting in %.0fs: %s: %s",
                     self.name, self._reconnect_retries, _MAX_RECONNECT_RETRIES,
-                    backoff, type(root).__name__, root,
+                    backoff, type(root).__name__, redact_credential_url(root),
                 )
                 await asyncio.sleep(_jittered(backoff))
                 backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)

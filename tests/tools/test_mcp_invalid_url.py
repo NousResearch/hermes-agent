@@ -81,3 +81,15 @@ class TestErrorIsValueError:
             pass  # expected
         else:
             pytest.fail("expected ValueError")
+
+
+class TestCredentialRedaction:
+    """Invalid credential-bearing URLs must not leak raw query values."""
+
+    def test_wrong_scheme_redacts_query_values(self):
+        url = "ftp://host/mcp?access_token=supersecret"
+        with pytest.raises(InvalidMcpUrlError) as exc_info:
+            _validate_remote_mcp_url("ctx", url)
+        message = str(exc_info.value)
+        assert "access_token=***" in message
+        assert "supersecret" not in message

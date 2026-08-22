@@ -130,6 +130,16 @@ def test_non_mcp_content_type_raises(content_type):
     assert "bad_srv" in msg
     assert "application/json" in msg and "text/event-stream" in msg
 
+def test_non_mcp_content_type_redacts_query_values():
+    task = _make_task("cred_srv")
+    with _serve(_handler(status=200, content_type="text/html")) as base:
+        url = f"{base}/mcp?access_token=supersecret"
+        with pytest.raises(NonMcpEndpointError) as exc_info:
+            asyncio.run(task._preflight_content_type(url, timeout=5.0))
+    msg = str(exc_info.value)
+    assert "access_token=***" in msg
+    assert "supersecret" not in msg
+
 
 # ---------------------------------------------------------------------------
 # Pass-through: valid MCP content types, ambiguous, and error responses

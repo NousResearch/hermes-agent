@@ -44,6 +44,9 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
     "signature",      # pre-signed URL signatures
     "x-amz-signature",
 })
+_CANONICAL_SENSITIVE_QUERY_PARAMS = frozenset(
+    name.replace("-", "_") for name in _SENSITIVE_QUERY_PARAMS
+)
 
 # Sensitive form-urlencoded / JSON body key names (case-insensitive exact match).
 # Exact match, NOT substring — "token_count" and "session_id" must NOT match.
@@ -679,7 +682,10 @@ def _redact_strict_url_credentials(text: str) -> str:
     values and URL userinfo.
     """
     def _redact_param(match: re.Match) -> str:
-        if _canonical_url_param_name(match.group(2)) not in _SENSITIVE_QUERY_PARAMS:
+        if (
+            _canonical_url_param_name(match.group(2))
+            not in _CANONICAL_SENSITIVE_QUERY_PARAMS
+        ):
             return match.group(0)
         return f"{match.group(1)}{match.group(2)}=***"
 
@@ -694,30 +700,21 @@ def _redact_strict_url_credentials(text: str) -> str:
     return _STRICT_URL_USERINFO_RE.sub(_redact_userinfo, text)
 
 
-def redact_cdp_url(value: object) -> str:
-    """Mask secrets in a CDP/browser endpoint URL before it is logged.
+def redact_credential_url(value: object) -> str:
+    """Mask secrets in a credential-bearing endpoint URL before display.
 
-    The global ``redact_sensitive_text`` deliberately passes web-URL query
-    params and ``user:pass@`` userinfo through unmasked (OAuth callbacks,
-    magic-link / pre-signed URLs the agent is meant to follow -- see the
-    web-URL note above). CDP discovery endpoints are NOT such a workflow:
-    their query-string tokens and userinfo passwords are pure credentials
-    that must never reach the logs. So for CDP URLs we opt INTO the two URL
-    redactors that the global pass leaves off.
-
-    This is the single source of truth for redacting a CDP URL that is passed
-    *directly* to a log or error message. Callers that instead need to redact an
-    exception whose text embeds the URL (e.g. a ``websockets`` connect error)
-    should route that through their own error-text helper, which delegates here
-    -- see ``tools.browser_supervisor._redact_cdp_error_text``.
+    Use this at configuration or discovery boundaries where query values and
+    userinfo are credentials, not workflow inputs that must round-trip unchanged.
     """
     text = redact_sensitive_text("" if value is None else str(value))
     if not text:
         return text
-    text = _redact_url_query_params(text)
-    text = _redact_url_userinfo(text)
-    return text
+    return _redact_strict_url_credentials(text)
 
+
+def redact_cdp_url(value: object) -> str:
+    """Mask secrets in a CDP/browser endpoint URL before it is logged."""
+    return redact_credential_url(value)
 
 def _redact_http_request_target_query_params(text: str) -> str:
     """Redact sensitive query params in HTTP access-log request targets."""

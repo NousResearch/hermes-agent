@@ -1328,6 +1328,33 @@ class TestSanitizeError:
         result = _sanitize_error("normal error message")
         assert result == "normal error message"
 
+    def test_masks_url_query_names_outside_plain_pattern(self):
+        from tools.mcp_tool import _sanitize_error
+
+        text = (
+            "connect https://host/mcp?signature=secretA&"
+            "x-amz-signature=secretB&code=secretC&page=1 failed"
+        )
+        result = _sanitize_error(text)
+        assert "secretA" not in result
+        assert "secretB" not in result
+        assert "secretC" not in result
+        assert "signature=***" in result
+        assert "x-amz-signature=***" in result
+        assert "code=***" in result
+        assert "page=1" in result
+
+    def test_format_connect_error_redacts_query_credentials(self):
+        from tools.mcp_tool import _format_connect_error
+
+        exc = ConnectionError(
+            "connect failed https://host/mcp?code=supersecret&x=1"
+        )
+        message = _format_connect_error(exc)
+        assert "supersecret" not in message
+        assert "code=***" in message
+        assert "x=1" in message
+
 # ---------------------------------------------------------------------------
 # HTTP config
 # ---------------------------------------------------------------------------

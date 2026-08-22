@@ -2440,6 +2440,12 @@ def _run_single_child(
     Run a pre-built child agent. Called from within a thread.
     Returns a structured result dict.
     """
+    # claude-p tasks are not in-process agents: they run as a bounded,
+    # scrubbed `claude -p` subprocess. Branch before any AIAgent bookkeeping
+    # so the native path below stays byte-for-byte unchanged.
+    if isinstance(child, ClaudePChildSpec):
+        return _run_claude_p_child(task_index, goal, child, parent_agent)
+
     child_start = time.monotonic()
 
     # Get the progress callback from the child agent
@@ -3490,6 +3496,216 @@ def _finalize_child_results(
                 logger.debug("Subagent cost rollup failed", exc_info=True)
 
 
+class ClaudePChildSpec:
+    """Stand-in for a native child when a task routes to the claude-p backend.
+
+    Deliberately NOT an ``AIAgent``: a claude-p task runs as a bounded,
+    scrubbed ``claude -p`` subprocess, not an in-process agent loop. This
+    object carries only what the dispatch/result path needs, and exposes the
+    same handful of attributes ``_run_single_child``'s bookkeeping reads so
+    the native path stays untouched.
+    """
+
+    def __init__(
+        self,
+        *,
+        task_index: int,
+        goal: str,
+        context: Optional[str],
+        params: Dict[str, Any],
+        route_decision: Optional[Dict[str, Any]],
+        output_schema: Optional[Dict[str, Any]],
+        workdir: str,
+        role: str = "leaf",
+    ):
+        import uuid as _uuid
+
+        self.task_index = task_index
+        self.goal = goal
+        self.context = context
+        self.params = dict(params or {})
+        self.workdir = workdir
+        self.model = self.params.get("model")
+        self.session_id = str(_uuid.uuid4())
+        self._subagent_id = f"sa-{task_index}-{_uuid.uuid4().hex[:8]}"
+        self._delegate_role = role
+        self._delegate_route_decision = dict(route_decision or {})
+        self._delegate_output_schema = output_schema
+        self._live_transcript_path = None
+        self._delegation_id = None
+        self.tool_progress_callback = None
+        #: Set once the child process has actually been spawned. A task that
+        #: has started running tools must never be rerouted — see
+        #: ``_run_claude_p_child``.
+        self.tools_started = False
+
+    @property
+    def write_capable(self) -> bool:
+        return bool(self.params.get("write_capable"))
+
+    def close(self) -> None:  # parity with AIAgent.close()
+        return None
+
+
+def _build_claude_p_prompt(goal: str, context: Optional[str]) -> str:
+    """Build the self-contained prompt handed to ``claude -p`` as one argv."""
+    parts = [
+        "You are a focused subagent working on a specific delegated task.",
+        "Do not commit, push, open or modify pull requests, publish, deploy, "
+        "send messages, make payments, access credentials, or broaden permissions. "
+        "If any of those actions are required, stop and report the blocker to "
+        "the parent instead.",
+        "",
+        f"YOUR TASK:\n{goal}",
+    ]
+    if context and str(context).strip():
+        parts.append(f"\nCONTEXT:\n{context}")
+    parts.append(
+        "\nComplete this task, then reply with a tight summary of what you "
+        "did, what you found, any files you changed, and any issues hit. "
+        "Lead with outcomes; do not replay your whole process."
+    )
+    return "\n".join(parts)
+
+
+def _run_claude_p_child(
+    task_index: int,
+    goal: str,
+    spec: "ClaudePChildSpec",
+    parent_agent=None,
+) -> Dict[str, Any]:
+    """Execute one claude-p task and normalize it into a delegate result entry.
+
+    The child's self-report is untrusted: the parent remains responsible for
+    inspecting diffs, running tests, and verifying external side effects.
+    Nothing here logs or returns raw stderr, the command line (which contains
+    the task body), the child environment, or raw malformed output.
+    """
+    from agent.claude_p_backend import (
+        ClaudePRunRequest,
+        note_route_failure,
+        run_claude_p_task,
+    )
+
+    params = spec.params
+    request = ClaudePRunRequest(
+        prompt=_build_claude_p_prompt(goal, spec.context),
+        model=str(params.get("model") or ""),
+        difficulty=str(params.get("difficulty") or "standard"),
+        workdir=spec.workdir,
+        tool_profile=str(params.get("tool_profile") or "read_only"),
+        max_turns=int(params.get("max_turns") or 40),
+        max_budget_usd=float(params.get("max_budget_usd") or 5.0),
+        timeout_seconds=float(params.get("timeout_seconds") or 900),
+        session_id=spec.session_id,
+    )
+
+    spec.tools_started = True
+    result = run_claude_p_task(request, write_capable=spec.write_capable)
+
+    schema_valid: Optional[bool] = None
+    schema_errors: List[str] = []
+    schema_retries = 0
+    output_schema = spec._delegate_output_schema
+    if isinstance(output_schema, dict) and result.status == "completed":
+        from dataclasses import replace
+        from tools.delegation_output_schema import build_retry_message, validate_output
+
+        schema_valid, schema_errors = validate_output(result.summary or "", output_schema)
+        remaining_turns = max(0, request.max_turns - (result.num_turns or 0))
+        remaining_budget = (
+            max(0.0, request.max_budget_usd - result.cost_usd)
+            if result.cost_usd is not None
+            else 0.0
+        )
+        remaining_timeout = max(0.0, request.timeout_seconds - result.duration_seconds)
+        if (
+            not schema_valid
+            and (result.summary or "").strip()
+            and result.claude_session_id
+            and remaining_turns >= 1
+            and remaining_budget >= 0.01
+            and remaining_timeout >= 1.0
+        ):
+            schema_retries = 1
+            retry_request = replace(
+                request,
+                prompt=build_retry_message(schema_errors),
+                max_turns=remaining_turns,
+                max_budget_usd=remaining_budget,
+                timeout_seconds=remaining_timeout,
+                resume_session_id=result.claude_session_id,
+            )
+            retry = run_claude_p_task(
+                retry_request,
+                write_capable=spec.write_capable,
+            )
+            total_cost = (
+                (result.cost_usd or 0.0) + (retry.cost_usd or 0.0)
+                if result.cost_usd is not None or retry.cost_usd is not None
+                else None
+            )
+            result = replace(
+                retry,
+                duration_seconds=result.duration_seconds + retry.duration_seconds,
+                num_turns=(result.num_turns or 0) + (retry.num_turns or 0),
+                cost_usd=total_cost,
+                tokens={
+                    "input": result.tokens.get("input", 0)
+                    + retry.tokens.get("input", 0),
+                    "output": result.tokens.get("output", 0)
+                    + retry.tokens.get("output", 0),
+                },
+            )
+            schema_valid, schema_errors = validate_output(
+                result.summary or "", output_schema
+            )
+
+    # A pre-start failure (rate limit / overload / billing / unavailable)
+    # cools the route down so the NEXT selection picks another route. This is
+    # never a mid-flight reroute: the task itself is already finished here.
+    if result.exit_reason in {"unavailable", "spawn_error"}:
+        route_id = params.get("route_id")
+        if route_id:
+            note_route_failure(
+                str(route_id),
+                retry_after_seconds=float(params.get("cooldown_seconds") or 60),
+            )
+
+    entry: Dict[str, Any] = {
+        "task_index": task_index,
+        "status": "completed" if result.status == "completed" else result.status,
+        "summary": result.summary,
+        "api_calls": result.num_turns or 0,
+        "duration_seconds": round(result.duration_seconds, 2),
+        "model": result.model,
+        "exit_reason": result.exit_reason,
+        "truncated": result.exit_reason in {"error_max_turns", "error_budget"},
+        "tokens": dict(result.tokens),
+        "tool_trace": [],
+        "_child_role": spec._delegate_role,
+        "_child_cost_usd": float(result.cost_usd or 0.0),
+        "cost_usd": round(float(result.cost_usd or 0.0), 6),
+        "cost_status": "reported" if result.cost_usd is not None else "unknown",
+        # Opaque per-task session id for bounded resume. Kept in the result
+        # metadata only — never persisted into the usage cache.
+        "claude_session_id": result.claude_session_id,
+    }
+    if result.error:
+        entry["error"] = result.error
+    if result.model_usage:
+        # Post-run aggregates only. NEVER a remaining-quota claim: the Claude
+        # CLI exposes no machine-readable subscription allowance.
+        entry["model_usage"] = result.model_usage
+    if isinstance(output_schema, dict):
+        entry["schema_valid"] = bool(schema_valid)
+        if schema_retries:
+            entry["schema_retries"] = schema_retries
+        if not schema_valid and schema_errors:
+            entry["schema_errors"] = schema_errors
+    return entry
+
+
 def _public_route_metadata(child) -> Optional[Dict[str, Any]]:
     """Return prompt-safe route observability without raw quota values."""
     decision = getattr(child, "_delegate_route_decision", None)
@@ -3515,9 +3731,11 @@ def _public_route_metadata(child) -> Optional[Dict[str, Any]]:
         return "not_eligible"
 
     exclusion_codes = sorted({_code(item) for item in decision.get("exclusions") or ()})
+    backend = "claude-p" if decision.get("provider") == "claude-p" else "native"
     return {
         "id": decision.get("route_id"),
         "provider": decision.get("provider"),
+        "backend": backend,
         "model": decision.get("model"),
         "model_class": decision.get("model_class"),
         "difficulty": decision.get("difficulty"),
@@ -3932,6 +4150,21 @@ def delegate_task(
             from tools.delegation_output_schema import append_output_contract
 
             _child_context = append_output_contract(_child_context, _task_schema)
+        if task_creds.get("backend") == "claude-p":
+            child = ClaudePChildSpec(
+                task_index=i,
+                goal=t["goal"],
+                context=_child_context,
+                params=task_creds.get("claude_p") or {},
+                route_decision=task_creds.get("route_decision"),
+                output_schema=_task_schema,
+                workdir=_resolve_workspace_hint(parent_agent) or os.getcwd(),
+                role=effective_role,
+            )
+            if live_deleg_id:
+                child._delegation_id = live_deleg_id
+            children.append((i, t, child))
+            continue
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i,
@@ -4546,9 +4779,18 @@ def _available_route_providers(routes) -> frozenset:
     cached for the call so a 12-route catalog costs at most two probes.
     """
     from hermes_cli.runtime_provider import resolve_runtime_provider
+    from agent.delegation_routing import CLAUDE_P_PROVIDER
 
     available = set()
     for provider in {r.provider for r in routes}:
+        if provider == CLAUDE_P_PROVIDER:
+            # The claude-p backend authenticates through the local CLI's own
+            # subscription session, not an API key, so it is probed with a
+            # bounded `claude auth status --json` call whose result is
+            # projected down to booleans before it ever reaches this set.
+            if _claude_p_available():
+                available.add(provider)
+            continue
         try:
             runtime = resolve_runtime_provider(requested=provider, target_model=None)
         except Exception as exc:
@@ -4559,6 +4801,28 @@ def _available_route_providers(routes) -> frozenset:
         if runtime and runtime.get("api_key"):
             available.add(provider)
     return frozenset(available)
+
+
+def _claude_p_available() -> bool:
+    """Bounded availability probe for the claude-p backend (booleans only)."""
+    try:
+        from agent.claude_p_backend import check_claude_availability
+
+        return check_claude_availability().available
+    except Exception as exc:
+        logger.debug("claude-p availability probe failed: %s", type(exc).__name__)
+        return False
+
+
+def _claude_p_cooling_down(routes) -> frozenset:
+    """Route ids currently in a bounded post-failure cooldown."""
+    try:
+        from agent.claude_p_backend import is_route_in_cooldown
+    except Exception:
+        return frozenset()
+    return frozenset(
+        r.id for r in routes if getattr(r, "is_claude_p", False) and is_route_in_cooldown(r.id)
+    )
 
 
 def _route_request_from_args(task: dict, top_level: Optional[dict] = None) -> "Any":
@@ -4633,7 +4897,7 @@ def _resolve_routed_credentials(
     ``build_usage_view``, never on this path.
     """
     from agent import delegation_usage_cache as _duc
-    from agent.delegation_routing import select_route
+    from agent.delegation_routing import CLAUDE_P_BACKEND, select_route
     from dataclasses import asdict
 
     context = route_context if route_context is not None else {}
@@ -4651,7 +4915,11 @@ def _resolve_routed_credentials(
     usage = context["usage_view"]
 
     decision = select_route(
-        catalog, request, usage=usage, available_providers=available
+        catalog,
+        request,
+        usage=usage,
+        available_providers=available,
+        cooling_down_route_ids=_claude_p_cooling_down(catalog.routes),
     )
     if not decision.selected:
         raise ValueError(
@@ -4660,6 +4928,39 @@ def _resolve_routed_credentials(
             f"Adjust delegation.routes, sign in to the provider, or pass an "
             f"explicit route id."
         )
+
+    selected_route = next(
+        (r for r in catalog.routes if r.id == decision.route_id), None
+    )
+    if selected_route is not None and selected_route.is_claude_p:
+        # The claude-p backend never resolves an API key or a runtime
+        # provider: doing so would be exactly the API-billing substitution
+        # this backend exists to avoid. Execution parameters travel instead.
+        return {
+            "model": decision.model,
+            "provider": decision.provider,
+            "backend": CLAUDE_P_BACKEND,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+            "request_overrides": {},
+            "max_output_tokens": None,
+            "provider_project_id": None,
+            "command": None,
+            "args": [],
+            "claude_p": {
+                "route_id": selected_route.id,
+                "model": selected_route.model,
+                "tool_profile": selected_route.tool_profile,
+                "max_turns": selected_route.max_turns,
+                "max_budget_usd": selected_route.max_budget_usd,
+                "timeout_seconds": selected_route.timeout_seconds,
+                "cooldown_seconds": selected_route.cooldown_seconds,
+                "write_capable": selected_route.write_capable,
+                "difficulty": decision.difficulty,
+            },
+            "route_decision": asdict(decision),
+        }
 
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -4690,6 +4991,7 @@ def _resolve_routed_credentials(
     return {
         "model": decision.model or runtime.get("model") or None,
         "provider": decision.provider,
+        "backend": "native",
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),

@@ -17,11 +17,14 @@ owns the two halves of that contract:
   Cached usage is supplied by :mod:`agent.delegation_usage_cache`, which
   refreshes out of band.
 
-Only native backends are routable in this revision: ``openai-codex`` and
-``google-antigravity``.  CLI-shelling backends (``agy -p``, ``codex exec``,
-OpenCode, arbitrary commands) and Claude execution are deliberately not
-accepted by the validator — a config naming one fails loudly rather than
-silently degrading to a different provider.
+Two backends are routable: ``native`` (``openai-codex`` and
+``google-antigravity``) and ``claude-p``, a single, deliberately narrow
+external-CLI backend that shells out to ``claude -p`` (Claude Code print
+mode) so a route can consume the operator's Claude Pro/Max subscription.
+Every other CLI-shelling backend (``agy -p``, ``codex exec``, OpenCode,
+arbitrary commands) and Anthropic API-key provider substitution remain
+deliberately unsupported — a config naming one fails loudly rather than
+silently degrading to a different provider or backend.
 """
 
 from __future__ import annotations
@@ -33,7 +36,10 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 
 __all__ = [
     "BUILTIN_CAPABILITIES",
+    "CLAUDE_P_BACKEND",
+    "CLAUDE_P_TOOL_PROFILES",
     "NATIVE_ROUTABLE_PROVIDERS",
+    "ROUTABLE_BACKENDS",
     "DelegationRoute",
     "ModelClass",
     "ProviderUsage",
@@ -101,6 +107,35 @@ NATIVE_ROUTABLE_PROVIDERS: frozenset[str] = frozenset(
     {"openai-codex", "google-antigravity"}
 )
 
+#: The single external-CLI backend this PR supports: Claude Code print mode
+#: (``claude -p``), used only to consume a Claude Pro/Max subscription. Its
+#: provider slug is fixed and does not belong to ``NATIVE_ROUTABLE_PROVIDERS``
+#: — it is never dispatched through the native in-process agent path.
+CLAUDE_P_BACKEND = "claude-p"
+CLAUDE_P_PROVIDER = "claude-p"
+
+#: Backends a route may declare. ``native`` dispatches through the in-process
+#: AIAgent path; ``claude-p`` shells out to the ``claude`` CLI. No other
+#: backend string is ever accepted.
+ROUTABLE_BACKENDS: frozenset[str] = frozenset({"native", CLAUDE_P_BACKEND})
+
+#: Fixed, least-privilege tool profiles a ``claude-p`` route may select via
+#: its ``tool_profile`` field. Never an arbitrary CLI/tool string.
+CLAUDE_P_TOOL_PROFILES: frozenset[str] = frozenset({"read_only", "review", "coding"})
+DEFAULT_CLAUDE_P_TOOL_PROFILE = "read_only"
+
+#: Bounded defaults/ceilings for a claude-p child. The ceilings are hard: a
+#: route asking for more is clamped, never trusted, so a config typo cannot
+#: hand an external CLI an unbounded turn/spend/wall-clock budget.
+DEFAULT_CLAUDE_P_MAX_TURNS = 40
+MAX_CLAUDE_P_MAX_TURNS = 200
+DEFAULT_CLAUDE_P_MAX_BUDGET_USD = 5.0
+MAX_CLAUDE_P_MAX_BUDGET_USD = 50.0
+DEFAULT_CLAUDE_P_TIMEOUT_SECONDS = 900
+MAX_CLAUDE_P_TIMEOUT_SECONDS = 3600
+DEFAULT_CLAUDE_P_COOLDOWN_SECONDS = 60
+MAX_CLAUDE_P_COOLDOWN_SECONDS = 3600
+
 #: Policies for a route whose usage is unknown or expired.  ``fixed_priority``
 #: keeps the route eligible at its configured priority — never treating the
 #: unknown as "unlimited" (which would overrun a depleted account) nor as
@@ -125,7 +160,25 @@ class DelegationRoute:
     reserve_remaining_percent: float = 0.0
     usage_window_prefixes: tuple[str, ...] = ()
     backend: str = "native"
+    #: Only meaningful for ``backend == "claude-p"``: which fixed, least-
+    #: privilege tool allowlist the child CLI is launched with. Defaults to
+    #: read-only; ``coding`` must be opted into explicitly in route config.
+    tool_profile: str = "read_only"
+    #: Bounded execution limits for the claude-p child process.
+    max_turns: int = 40
+    max_budget_usd: float = 5.0
+    timeout_seconds: int = 900
+    cooldown_seconds: int = 60
     enabled: bool = True
+
+    @property
+    def is_claude_p(self) -> bool:
+        return self.backend == CLAUDE_P_BACKEND
+
+    @property
+    def write_capable(self) -> bool:
+        """True when this route's tool profile can modify the workdir."""
+        return self.is_claude_p and self.tool_profile == "coding"
 
 
 @dataclass(frozen=True)
@@ -225,6 +278,33 @@ def _parse_int(raw: Any, key: str, *, where: str, default: int, minimum: int = 0
     return value
 
 
+def _parse_bounded_int(
+    raw: Any, key: str, *, where: str, default: int, ceiling: int, minimum: int = 1
+) -> int:
+    """Parse an integer and clamp it into ``[minimum, ceiling]``.
+
+    Clamping rather than rejecting keeps a slightly-too-large config working
+    while guaranteeing the external CLI can never be handed an unbounded
+    budget.
+    """
+    value = _parse_int(raw, key, where=where, default=default, minimum=minimum)
+    return min(ceiling, value)
+
+
+def _parse_bounded_float(
+    raw: Any, key: str, *, where: str, default: float, ceiling: float, minimum: float
+) -> float:
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        raise RouteConfigError(f"{where}: '{key}' must be a number") from None
+    if not math.isfinite(value) or value < minimum:
+        raise RouteConfigError(f"{where}: '{key}'={raw!r} must be >= {minimum}")
+    return min(ceiling, value)
+
+
 def _parse_route(raw: Any, index: int) -> DelegationRoute:
     where = f"delegation.routes[{index}]"
     if not isinstance(raw, Mapping):
@@ -234,22 +314,54 @@ def _parse_route(raw: Any, index: int) -> DelegationRoute:
     where = f"delegation.routes[{index}] (id={route_id!r})"
 
     backend = str(raw.get("backend") or "native").strip().lower()
-    if backend != "native":
+    if backend not in ROUTABLE_BACKENDS:
+        supported = ", ".join(sorted(ROUTABLE_BACKENDS))
         raise RouteConfigError(
-            f"{where}: unsupported 'backend' {backend!r}; only 'native' is routable "
-            f"(CLI-shelling backends are not supported)"
+            f"{where}: unsupported 'backend' {backend!r} (supported: {supported}). "
+            f"Arbitrary CLI-shelling backends are not routable."
         )
 
     provider = _require_str(raw, "provider", where=where).lower()
-    if provider not in NATIVE_ROUTABLE_PROVIDERS:
+    tool_profile = DEFAULT_CLAUDE_P_TOOL_PROFILE
+    if backend == CLAUDE_P_BACKEND:
+        # The claude-p backend has exactly one provider slug: it always runs
+        # the local `claude` CLI against the operator's subscription. Naming a
+        # native provider here would silently redirect subscription work onto
+        # API billing, so it is a loud config error.
+        if provider != CLAUDE_P_PROVIDER:
+            raise RouteConfigError(
+                f"{where}: backend 'claude-p' requires provider 'claude-p' "
+                f"(got {provider!r}); it never substitutes an API-key provider."
+            )
+        tool_profile = str(
+            raw.get("tool_profile") or DEFAULT_CLAUDE_P_TOOL_PROFILE
+        ).strip().lower()
+        if tool_profile not in CLAUDE_P_TOOL_PROFILES:
+            valid = ", ".join(sorted(CLAUDE_P_TOOL_PROFILES))
+            raise RouteConfigError(
+                f"{where}: unknown 'tool_profile' {raw.get('tool_profile')!r} "
+                f"(expected one of: {valid})"
+            )
+    elif provider not in NATIVE_ROUTABLE_PROVIDERS:
         supported = ", ".join(sorted(NATIVE_ROUTABLE_PROVIDERS))
         raise RouteConfigError(
             f"{where}: unsupported native 'provider' {provider!r} (supported: {supported})"
+        )
+    elif raw.get("tool_profile") is not None:
+        raise RouteConfigError(
+            f"{where}: 'tool_profile' only applies to backend 'claude-p'"
         )
 
     window_prefixes_raw = raw.get("usage_window_prefixes") or ()
     if isinstance(window_prefixes_raw, str) or not isinstance(window_prefixes_raw, Iterable):
         raise RouteConfigError(f"{where}: 'usage_window_prefixes' must be a list of strings")
+
+    capabilities = _parse_capabilities(raw.get("capabilities"), where=where)
+    if backend == CLAUDE_P_BACKEND and "coding" in capabilities and tool_profile != "coding":
+        raise RouteConfigError(
+            f"{where}: capability 'coding' requires tool_profile 'coding'; "
+            f"profile {tool_profile!r} cannot edit files"
+        )
 
     return DelegationRoute(
         id=route_id,
@@ -257,7 +369,7 @@ def _parse_route(raw: Any, index: int) -> DelegationRoute:
         model=_require_str(raw, "model", where=where),
         model_class=_parse_model_class(raw.get("model_class"), where=where),
         task_difficulties=_parse_difficulties(raw.get("task_difficulties"), where=where),
-        capabilities=_parse_capabilities(raw.get("capabilities"), where=where),
+        capabilities=capabilities,
         priority=_parse_int(raw.get("priority"), "priority", where=where, default=100),
         reserve_remaining_percent=_parse_percent(
             raw.get("reserve_remaining_percent"), "reserve_remaining_percent", where=where
@@ -266,6 +378,26 @@ def _parse_route(raw: Any, index: int) -> DelegationRoute:
             str(p).strip() for p in window_prefixes_raw if str(p).strip()
         ),
         backend=backend,
+        tool_profile=tool_profile,
+        max_turns=_parse_bounded_int(
+            raw.get("max_turns"), "max_turns", where=where,
+            default=DEFAULT_CLAUDE_P_MAX_TURNS, ceiling=MAX_CLAUDE_P_MAX_TURNS,
+        ),
+        max_budget_usd=_parse_bounded_float(
+            raw.get("max_budget_usd"), "max_budget_usd", where=where,
+            default=DEFAULT_CLAUDE_P_MAX_BUDGET_USD,
+            ceiling=MAX_CLAUDE_P_MAX_BUDGET_USD, minimum=0.01,
+        ),
+        timeout_seconds=_parse_bounded_int(
+            raw.get("timeout_seconds"), "timeout_seconds", where=where,
+            default=DEFAULT_CLAUDE_P_TIMEOUT_SECONDS,
+            ceiling=MAX_CLAUDE_P_TIMEOUT_SECONDS,
+        ),
+        cooldown_seconds=_parse_bounded_int(
+            raw.get("cooldown_seconds"), "cooldown_seconds", where=where,
+            default=DEFAULT_CLAUDE_P_COOLDOWN_SECONDS,
+            ceiling=MAX_CLAUDE_P_COOLDOWN_SECONDS,
+        ),
         enabled=bool(raw.get("enabled", True)),
     )
 
@@ -435,14 +567,20 @@ def _matches_request(
     available_providers: frozenset[str],
     *,
     check_difficulty: bool = True,
+    cooling_down_route_ids: frozenset[str] = frozenset(),
 ) -> Optional[str]:
     """Return a human-readable rejection reason, or None when the route fits."""
     if not route.enabled:
         return f"route {route.id!r} is disabled"
-    if route.backend != "native":
-        return f"route {route.id!r} uses non-native backend {route.backend!r}"
+    if route.backend not in ROUTABLE_BACKENDS:
+        return f"route {route.id!r} uses unsupported backend {route.backend!r}"
     if route.provider not in available_providers:
         return f"provider {route.provider!r} is not available (not authenticated or not installed)"
+    if route.id in cooling_down_route_ids:
+        # A recent pre-start rate-limit/overload/billing failure. Bounded and
+        # decided BEFORE execution, so the next route is chosen cleanly; it is
+        # never consulted once a task has started running tools.
+        return f"route {route.id!r} is in a bounded cooldown after a recent startup failure"
     if check_difficulty and request.difficulty not in route.task_difficulties:
         return (
             f"route {route.id!r} does not serve difficulty {request.difficulty.value!r}"
@@ -504,6 +642,7 @@ def select_route(
     *,
     usage: UsageView,
     available_providers: frozenset[str],
+    cooling_down_route_ids: frozenset[str] = frozenset(),
 ) -> RouteDecision:
     """Pick a route deterministically. Pure: never performs I/O.
 
@@ -538,6 +677,7 @@ def select_route(
             request,
             available_providers,
             check_difficulty=False,
+            cooling_down_route_ids=cooling_down_route_ids,
         )
         if rejection:
             return RouteDecision(
@@ -571,7 +711,10 @@ def select_route(
     rejections: list[str] = []
     eligible: list[DelegationRoute] = []
     for route in catalog.routes:
-        rejection = _matches_request(route, request, available_providers)
+        rejection = _matches_request(
+            route, request, available_providers,
+            cooling_down_route_ids=cooling_down_route_ids,
+        )
         if rejection:
             rejections.append(rejection)
             continue

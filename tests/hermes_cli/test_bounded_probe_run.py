@@ -38,6 +38,21 @@ def test_success_returns_completed_process():
     assert result.stdout.strip() == "ok"
 
 
+def test_explicit_environment_replaces_inherited_environment():
+    result = bounded_probe_run(
+        [
+            _PY,
+            "-c",
+            "import os; print(os.getenv('SAFE_ONLY')); print(os.getenv('HOME'))",
+        ],
+        timeout=30,
+        env={"SAFE_ONLY": "projected"},
+    )
+    assert result is not None
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == ["projected", "None"]
+
+
 def test_nonzero_exit_is_returned_not_swallowed():
     """Unlike bounded_git_probe, callers see the real returncode — the gateway
     scan branches on ``returncode != 0`` to trip the wmic→powershell fallback."""
@@ -52,6 +67,7 @@ def test_spawn_failure_returns_none():
     assert result is None
 
 
+@pytest.mark.live_system_guard_bypass
 def test_timeout_returns_none_within_bounded_time():
     """A child that sleeps past the timeout must produce ``None`` promptly —
     timeout + tree-kill + 1s bounded drain, not an unbounded join."""

@@ -332,6 +332,14 @@ def build_route_usage_view(
         route_id = str(getattr(route, "id", "") or "").strip()
         if not provider or not route_id:
             continue
+        if str(getattr(route, "backend", "native")).strip().lower() == "claude-p":
+            # Claude Pro/Max exposes no supported machine-readable remaining
+            # allowance endpoint. Keep usage explicitly unknown without
+            # probing/scraping the CLI or fabricating a cache record.
+            entries[route_id] = ProviderUsage(
+                provider=provider, freshness="unknown"
+            )
+            continue
         entry = read_provider_usage(
             provider,
             ttl_seconds=ttl_seconds,

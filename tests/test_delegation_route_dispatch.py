@@ -236,6 +236,7 @@ class TestChildIsolation:
         assert metadata == {
             "id": "codex-standard",
             "provider": "openai-codex",
+            "backend": "native",
             "model": "gpt-5.6-sol",
             "model_class": "advanced",
             "difficulty": "standard",

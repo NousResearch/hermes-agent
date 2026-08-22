@@ -346,6 +346,82 @@ class TestSessionLifecycle:
         assert session["cwd"] == "/work/repo"
         assert session["git_branch"] == "pets-feature"
 
+    def test_live_parent_child_does_not_inherit_gateway_routing_keys(self, db):
+        """Owner inheritance must not copy gateway routing metadata."""
+        db.create_session(
+            session_id="parent",
+            source="telegram",
+            user_id="u1",
+            session_key="telegram:u1:c1",
+            chat_id="c1",
+            chat_type="private",
+            thread_id="t1",
+            display_name="Chat One",
+            origin_json='{"p":"telegram"}',
+        )
+
+        db.create_session(
+            session_id="sub", source="subagent", parent_session_id="parent"
+        )
+
+        sub = db.get_session("sub")
+        assert sub["session_key"] is None
+        assert sub["chat_id"] is None
+        assert sub["chat_type"] is None
+        assert sub["thread_id"] is None
+        assert sub["display_name"] is None
+        assert sub["origin_json"] is None
+
+    def test_live_parent_child_inherits_owner(self, db):
+        """A delegate/subagent child inherits ``user_id`` from its live parent."""
+        db.create_session(
+            session_id="parent", source="acp", user_id="dev@example.com"
+        )
+        db.create_session(
+            session_id="sub", source="subagent", parent_session_id="parent"
+        )
+
+        assert db.get_session("sub")["user_id"] == "dev@example.com"
+        assert db.get_session("sub")["session_key"] is None
+
+    def test_child_owner_inheritance_is_null_fill_only(self, db):
+        """An explicitly-owned child keeps its own owner."""
+        db.create_session(
+            session_id="parent", source="acp", user_id="spawner@example.com"
+        )
+        db.create_session(
+            session_id="sub",
+            source="subagent",
+            parent_session_id="parent",
+            user_id="explicit@example.com",
+        )
+
+        assert db.get_session("sub")["user_id"] == "explicit@example.com"
+
+    def test_multi_generation_lineage_inherits_owner(self, db):
+        """Owner propagates down a chain of live-parent children."""
+        db.create_session(
+            session_id="root", source="acp", user_id="dev@example.com"
+        )
+        db.create_session(
+            session_id="gen1", source="subagent", parent_session_id="root"
+        )
+        db.create_session(
+            session_id="gen2", source="subagent", parent_session_id="gen1"
+        )
+
+        assert db.get_session("gen1")["user_id"] == "dev@example.com"
+        assert db.get_session("gen2")["user_id"] == "dev@example.com"
+
+    def test_untagged_parent_leaves_child_owner_null(self, db):
+        """A child of an unowned parent stays untagged."""
+        db.create_session(session_id="parent", source="cli")
+        db.create_session(
+            session_id="sub", source="subagent", parent_session_id="parent"
+        )
+
+        assert db.get_session("sub")["user_id"] is None
+
 
 
 

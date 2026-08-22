@@ -16,9 +16,21 @@ import pytest
 import plugins.platforms.photon.sidecar_paths as sidecar_paths
 
 
+# Mirrors the real sidecar layout: manifest files plus index.mjs and the
+# sibling modules it imports.
+_SOURCE_FILES = (
+    "package.json",
+    "package-lock.json",
+    "index.mjs",
+    "patch-spectrum-mixed-attachments.mjs",
+    "send-format.mjs",
+    "stream-staleness.mjs",
+)
+
+
 def _seed_source(source: Path, *, with_node_modules: bool = False) -> None:
     source.mkdir(parents=True, exist_ok=True)
-    for name in sidecar_paths._MIRROR_FILES:
+    for name in _SOURCE_FILES:
         (source / name).write_text(f"// {name}\n", encoding="utf-8")
     if with_node_modules:
         (source / "node_modules").mkdir()
@@ -86,6 +98,61 @@ def test_mirror_refresh_updates_changed_files_and_keeps_node_modules(
     assert resolved == mirror
     assert (mirror / "index.mjs").read_text(encoding="utf-8") == "// index.mjs v2\n"
     assert (mirror / "node_modules" / "installed.txt").exists()
+
+
+def test_mirror_includes_sibling_mjs_modules(tmp_path, monkeypatch) -> None:
+    """Regression for #85046.
+
+    index.mjs imports send-format.mjs and stream-staleness.mjs. A mirror
+    missing either leaves the sidecar dead at boot with
+    ERR_MODULE_NOT_FOUND, while `photon status` still reports the npm deps
+    as installed.
+    """
+    monkeypatch.delenv("PHOTON_SIDECAR_DIR", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    source = tmp_path / "src"
+    _seed_source(source)
+    _freeze_writability(monkeypatch, writable=False)
+
+    mirror = sidecar_paths.resolve_sidecar_dir(source)
+
+    for name in _SOURCE_FILES:
+        assert (mirror / name).is_file(), f"{name} missing from mirror"
+
+
+def test_mirror_picks_up_newly_added_mjs_module(tmp_path, monkeypatch) -> None:
+    """A module extracted from index.mjs upstream needs no manifest edit."""
+    monkeypatch.delenv("PHOTON_SIDECAR_DIR", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    source = tmp_path / "src"
+    _seed_source(source)
+    _freeze_writability(monkeypatch, writable=False)
+
+    mirror = sidecar_paths.resolve_sidecar_dir(source)
+    assert not (mirror / "future-module.mjs").exists()
+
+    (source / "future-module.mjs").write_text("// new\n", encoding="utf-8")
+    resolved = sidecar_paths.resolve_sidecar_dir(source)
+
+    assert resolved == mirror
+    assert (mirror / "future-module.mjs").read_text(encoding="utf-8") == "// new\n"
+
+
+def test_mirror_excludes_node_modules(tmp_path, monkeypatch) -> None:
+    """node_modules is npm's to manage; the mirror never copies it."""
+    monkeypatch.delenv("PHOTON_SIDECAR_DIR", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    source = tmp_path / "src"
+    _seed_source(source, with_node_modules=True)
+    # Stale marker forces the mirror path rather than run-in-place.
+    os.utime(source / "package-lock.json", (2000.0, 2000.0))
+    os.utime(source / "node_modules" / ".package-lock.json", (1000.0, 1000.0))
+    _freeze_writability(monkeypatch, writable=False)
+
+    mirror = sidecar_paths.resolve_sidecar_dir(source)
+
+    assert mirror != source
+    assert not (mirror / "node_modules").exists()
 
 
 def test_dir_writable_probe(tmp_path) -> None:

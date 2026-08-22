@@ -48,12 +48,31 @@ SOURCE_SIDECAR_DIR = Path(__file__).parent / "sidecar"
 # The files that define the sidecar. Mirrored into the writable runtime dir
 # when the install tree is read-only. node_modules is deliberately absent —
 # it is either baked (managed image) or installed by npm in the mirror.
+#
+# The .mjs sources are matched by glob rather than listed by name: index.mjs
+# imports sibling modules (send-format.mjs, stream-staleness.mjs, ...) that
+# are extracted from it over time, and a hand-maintained manifest silently
+# drops each new one — the mirror then holds an index.mjs whose imports do
+# not resolve and the sidecar exits at boot with ERR_MODULE_NOT_FOUND.
+_MIRROR_GLOBS = ("*.mjs",)
 _MIRROR_FILES = (
-    "index.mjs",
     "package.json",
     "package-lock.json",
-    "patch-spectrum-mixed-attachments.mjs",
 )
+
+
+def _mirror_sources(source: Path) -> list[Path]:
+    """Every sidecar source file that must exist in the runtime mirror."""
+    found: dict[str, Path] = {}
+    for name in _MIRROR_FILES:
+        candidate = source / name
+        if candidate.is_file():
+            found[name] = candidate
+    for pattern in _MIRROR_GLOBS:
+        for candidate in sorted(source.glob(pattern)):
+            if candidate.is_file():
+                found[candidate.name] = candidate
+    return list(found.values())
 
 
 def dir_writable(path: Path) -> bool:
@@ -122,11 +141,8 @@ def resolve_sidecar_dir(source_dir: Optional[Path] = None) -> Path:
     mirror = get_hermes_home() / "photon" / "sidecar"
     try:
         mirror.mkdir(parents=True, exist_ok=True)
-        for name in _MIRROR_FILES:
-            src = source / name
-            if not src.exists():
-                continue
-            dst = mirror / name
+        for src in _mirror_sources(source):
+            dst = mirror / src.name
             if not dst.exists() or not filecmp.cmp(str(src), str(dst), shallow=False):
                 shutil.copy2(str(src), str(dst))
         return mirror

@@ -62,6 +62,121 @@ def _get_scoped_secret(name, default=None):
 
 logger = logging.getLogger(__name__)
 
+# Bounds every WS/session teardown await (ws.close()/session.close()) so a
+# wedged CLOSE-WAIT socket can't block the reconnect ladder or disconnect()
+# forever. Refs: NousResearch/hermes-agent#67470
+_DRAIN_TIMEOUT = 5.0
+# Bounds each receive_json()/send_json() in the auth handshake ladder so a server that
+# accepts the socket but never responds can't freeze _ws_connect() forever.
+# Refs: NousResearch/hermes-agent#67470
+_HANDSHAKE_TIMEOUT = 30.0
+
+
+# Durable, module-level (NOT adapter-instance-level) retention for in-flight
+# teardown tasks. An adapter-local set is collected right along with the
+# adapter itself once nothing else roots it -- e.g. a platform reload
+# dropping the old adapter object while one of its closes is still running
+# detached in the background silently destroys that task mid-flight (probe:
+# GC removed both the adapter and the tracked task's weak references and
+# emitted "Task was destroyed but it is pending!"). Rooting tasks here
+# instead means a close keeps running to completion -- or forever, if it's
+# fundamentally broken, see the IRREDUCIBLE RESIDUAL note in
+# _run_bounded_close below -- even after the adapter that started it is
+# gone. Entries remove themselves via a done-callback once the task
+# actually finishes. Refs: NousResearch/hermes-agent#67470 (Sol xhigh
+# mechanism review).
+_TEARDOWN_REGISTRY: Set["asyncio.Task"] = set()
+
+
+def _retain(task: "asyncio.Task") -> "asyncio.Task":
+    """Root *task* at module scope so it outlives whatever created it."""
+    _TEARDOWN_REGISTRY.add(task)
+    task.add_done_callback(_TEARDOWN_REGISTRY.discard)
+    return task
+
+
+async def _close_quietly(closeable: Any, label: str, context: str) -> None:
+    """Run ``closeable.close()`` to completion, swallowing every outcome.
+
+    Including a close-originated ``CancelledError`` (#67470 Sol xhigh
+    mechanism review): a ``close()`` that raises ``CancelledError`` on its
+    own -- not from an external ``task.cancel()`` -- must not abort
+    whatever cleanup sequence is waiting on it (previously it aborted
+    ``_close_both()``/``_full_teardown()`` and skipped every close after
+    it). Because this always runs as its own task, that exception only
+    marks THIS task done; it never propagates into the caller's control
+    flow the way it did when ``close()`` was awaited inline.
+    """
+    try:
+        await closeable.close()
+    except asyncio.CancelledError:
+        logger.debug(
+            "[%s] %s close raised CancelledError from within close() "
+            "itself (non-fatal, swallowed; best-effort teardown, #67470)",
+            context, label,
+        )
+    except Exception as e:
+        logger.debug("[%s] %s close failed (non-fatal): %s", context, label, e)
+
+
+async def _run_bounded_close(closeable: Any, label: str, *, context: str) -> None:
+    """Bounded-abandon close of *closeable*: bounds the CALLER's wait to
+    ``_DRAIN_TIMEOUT`` without ever waiting for a cancellation-resistant
+    close to finish.
+
+    Replaces the previous ``asyncio.wait_for(closeable.close(),
+    timeout=...)`` (#67470 review, egilewski): ``wait_for``'s timeout path
+    cancels the awaited coroutine and then WAITS for that cancellation to
+    actually complete -- so a ``close()`` that catches/suppresses
+    ``CancelledError`` and keeps running its own cleanup left ``wait_for``
+    (and everything downstream of it) pending indefinitely (probe:
+    ``_DRAIN_TIMEOUT=0.05``, still pending after 0.20s -- confirmed by Sol
+    xhigh's exhaustive mechanism review, #67470).
+
+    The fix creates the close as its OWN task before any await (so no
+    cancellation can land before the task exists), retains it durably
+    (``_retain``), and observes it with ``asyncio.wait(timeout=...)``
+    instead. ``asyncio.wait`` just watches with a deadline -- on timeout it
+    returns without touching the task, so on deadline we simply return: the
+    close keeps running, detached, retained so it isn't garbage collected
+    mid-flight (rather than cancelled, which could destroy its only
+    remaining chance to finish). A cancellation landing on the CALLER of
+    this function propagates normally out of the ``asyncio.wait`` above,
+    but likewise never reaches the inner close task -- ``asyncio.wait``
+    does not cancel its members on the waiter's own cancellation, which is
+    exactly the "abandon, don't wait" behavior this mechanism needs.
+
+    IRREDUCIBLE RESIDUAL: this bounds the CALLER's progress, not physical
+    closure -- it does NOT prove the resource was ever actually released.
+    That is true even for a single, ordinary ``close()`` failure (an
+    exception, a ``TimeoutError``, a self-raised ``CancelledError``): only
+    one close attempt is ever made per call site, so any failure on that
+    one attempt already means physical closure is unproven, not just the
+    hangs-or-raises-forever case (Sol xhigh mechanism re-review, #67470).
+    No generic wrapper can distinguish "close() failed but the resource is
+    actually fine" from "close() failed and it's still open" -- best-effort
+    abandonment/swallowing is the correct behavior here, not a workaround.
+    Two more properties of the SAME residual, not new gaps: (1) an
+    event-loop shutdown that force-cancels every remaining task
+    (``asyncio.run()``'s own teardown) can still block on a
+    cancellation-resistant orphan, or skip creating a later close's task
+    entirely if it cancels an outer ``_close_both()``/``_full_teardown()``
+    sequence before that later close is even reached -- both are
+    properties of the runner's shutdown, not of this adapter, and no
+    per-close mechanism here can change them; (2) this function cannot
+    tell a close-originated ``CancelledError`` (see ``_close_quietly``)
+    apart from one delivered by an external shutdown cancelling this exact
+    task, so its log message is a best guess, not a certainty.
+    """
+    task = _retain(asyncio.create_task(_close_quietly(closeable, label, context)))
+    _, pending = await asyncio.wait({task}, timeout=_DRAIN_TIMEOUT)
+    if pending:
+        logger.warning(
+            "[%s] %s close did not finish within %.0fs; abandoning it "
+            "(best-effort teardown, #67470)",
+            context, label, _DRAIN_TIMEOUT,
+        )
+
 
 def check_ha_requirements() -> bool:
     """Check if Home Assistant runtime dependencies are available."""
@@ -96,6 +211,12 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         self._ws: Optional["aiohttp.ClientWebSocketResponse"] = None
         self._rest_session: Optional["aiohttp.ClientSession"] = None
         self._listen_task: Optional[asyncio.Task] = None
+        # Strong references for in-flight closes started by
+        # _cancel_safe_close() that got shielded away from a caller's
+        # cancellation (#67470 review, egilewski): asyncio requires holding
+        # a reference to a shielded task or it can be garbage-collected
+        # mid-close, silently dropping the very cleanup being protected.
+        self._teardown_tasks: Set["asyncio.Task"] = set()
         self._msg_id: int = 0
 
         # Configuration from extra
@@ -168,72 +289,261 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         ws_url = self._hass_url.replace("https://", "wss://").replace("http://", "ws://")
         ws_url = f"{ws_url}/api/websocket"
 
-        self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
-        )
-        self._ws = await self._session.ws_connect(ws_url, heartbeat=30, timeout=30)
+        # Build into a local first (#67470). The previous code assigned
+        # self._session before attempting ws_connect(); if ws_connect()
+        # raised, that session was left dangling — referenced by self._session
+        # but never connected — until the next reconnect loop's cleanup
+        # happened to close it. Only wire self._session/self._ws up once the
+        # socket is actually usable, and close the local on failure.
+        session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+        try:
+            ws = await session.ws_connect(ws_url, heartbeat=30, timeout=30)
+        except (asyncio.CancelledError, Exception):
+            # CancelledError derives from BaseException, not Exception, so a
+            # plain `except Exception` here misses it entirely -- and since
+            # self._session isn't assigned until below, cancellation at this
+            # await left the freshly created session unreachable by
+            # disconnect()'s cleanup too, leaking it outright (#67470
+            # review, egilewski: probe showed session.close awaited 0
+            # times). Catching both in one arm and closing cancel-safely
+            # covers the plain-failure and cancellation paths the same way,
+            # including a second cancellation racing in while this close is
+            # still running.
+            await self._cancel_safe_close(session, "WS session")
+            raise
 
-        # Step 1: Receive auth_required
-        msg = await self._ws.receive_json()
-        if msg.get("type") != "auth_required":
-            logger.error("Expected auth_required, got: %s", msg.get("type"))
+        self._session = session
+        self._ws = ws
+
+        try:
+            # Step 1: Receive auth_required
+            msg = await asyncio.wait_for(self._ws.receive_json(), timeout=_HANDSHAKE_TIMEOUT)
+            if msg.get("type") != "auth_required":
+                logger.error("[%s] Expected auth_required, got: %s", self.name, msg.get("type"))
+                await self._cleanup_ws()
+                return False
+
+            # Step 2: Send auth
+            await asyncio.wait_for(
+                self._ws.send_json({
+                    "type": "auth",
+                    "access_token": self._hass_token,
+                }),
+                timeout=_HANDSHAKE_TIMEOUT,
+            )
+
+            # Step 3: Wait for auth_ok
+            msg = await asyncio.wait_for(self._ws.receive_json(), timeout=_HANDSHAKE_TIMEOUT)
+            if msg.get("type") != "auth_ok":
+                logger.error("[%s] Auth failed: %s", self.name, msg)
+                await self._cleanup_ws()
+                return False
+
+            # Step 4: Subscribe to state_changed events
+            sub_id = self._next_id()
+            await asyncio.wait_for(
+                self._ws.send_json({
+                    "id": sub_id,
+                    "type": "subscribe_events",
+                    "event_type": "state_changed",
+                }),
+                timeout=_HANDSHAKE_TIMEOUT,
+            )
+
+            # Verify subscription acknowledgement
+            msg = await asyncio.wait_for(self._ws.receive_json(), timeout=_HANDSHAKE_TIMEOUT)
+            if not msg.get("success"):
+                logger.error("[%s] Failed to subscribe to events: %s", self.name, msg)
+                await self._cleanup_ws()
+                return False
+        except asyncio.TimeoutError:
+            # A server that accepts the socket but never responds must not
+            # freeze the handshake ladder forever (#67470).
+            logger.error(
+                "[%s] HA WebSocket auth handshake timed out after %.0fs",
+                self.name, _HANDSHAKE_TIMEOUT,
+            )
             await self._cleanup_ws()
             return False
-
-        # Step 2: Send auth
-        await self._ws.send_json({
-            "type": "auth",
-            "access_token": self._hass_token,
-        })
-
-        # Step 3: Wait for auth_ok
-        msg = await self._ws.receive_json()
-        if msg.get("type") != "auth_ok":
-            logger.error("Auth failed: %s", msg)
+        except asyncio.CancelledError:
             await self._cleanup_ws()
-            return False
-
-        # Step 4: Subscribe to state_changed events
-        sub_id = self._next_id()
-        await self._ws.send_json({
-            "id": sub_id,
-            "type": "subscribe_events",
-            "event_type": "state_changed",
-        })
-
-        # Verify subscription acknowledgement
-        msg = await self._ws.receive_json()
-        if not msg.get("success"):
-            logger.error("Failed to subscribe to events: %s", msg)
+            raise
+        except Exception as e:
+            # Any other handshake failure (send/receive raising a client
+            # error, malformed frame, ...) must also tear the connection down
+            # here rather than leaking it to a later loop pass (#67470).
+            logger.error("[%s] HA WebSocket handshake failed: %s", self.name, e)
             await self._cleanup_ws()
             return False
 
         return True
 
+    async def _bounded_close(self, closeable: Any, label: str) -> None:
+        """Bound the caller's wait on ``closeable.close()`` to ``_DRAIN_TIMEOUT``
+        via the bounded-abandon primitive.
+
+        The previous ``asyncio.wait_for(closeable.close(), ...)`` cancels
+        close() on timeout and then WAITS for that cancellation to finish, so a
+        close() that suppresses its own cancellation left this pending
+        indefinitely (probe: still pending after 0.20s at ``_DRAIN_TIMEOUT=0.05``;
+        #67470, egilewski). ``_run_bounded_close`` runs the close as its own
+        retained task and only observes it with ``asyncio.wait(timeout=...)``,
+        abandoning it on deadline. See ``_run_bounded_close`` for the mechanism
+        and its documented residual.
+        """
+        await _run_bounded_close(closeable, label, context=self.name)
+
+    def _track_teardown(self, coro: Any) -> "asyncio.Task":
+        """Wrap *coro* in a task retained in ``self._teardown_tasks``.
+
+        A shielded await only protects the awaited task from being
+        cancelled; it does not keep the task alive on its own, and asyncio
+        can garbage-collect an unreferenced task mid-flight. Retaining it
+        here (removed via the done callback once it finishes) is what makes
+        shielding actually work (#67470 review, egilewski).
+        """
+        task = asyncio.create_task(coro)
+        self._teardown_tasks.add(task)
+        task.add_done_callback(self._teardown_tasks.discard)
+        return task
+
+    async def _cancel_safe_close(self, closeable: Any, label: str) -> None:
+        """Close *closeable* so the close survives a cancellation landing
+        on the caller while it's in flight.
+
+        ``_bounded_close()`` alone isn't enough: if the coroutine calling it
+        is cancelled a second time while the close is still running,
+        that second cancellation interrupts the bounded close await
+        before ``close()`` finishes, leaking the resource exactly like
+        the original
+        unhandled-CancelledError bug it was meant to fix (#67470 review,
+        egilewski -- verified empirically: a bare `except
+        asyncio.CancelledError: await self._bounded_close(...); raise`
+        completes 0 closes under a second cancellation arriving mid-close).
+
+        Running the close as a task tracked in ``self._teardown_tasks`` and
+        shielding the await fixes this: a second cancellation is delivered
+        to this coroutine (so it still propagates to the caller promptly,
+        cancellation is never swallowed) but the close keeps running
+        detached in the background instead of being interrupted, and stays
+        referenced so it isn't garbage-collected before it finishes. It
+        keeps running to completion on its own even if nothing ever awaits
+        it again -- disconnect() does not drain leftover tasks here (that
+        was tried and removed: it deadlocks when two teardown tasks each
+        end up waiting on the other, see _full_teardown()'s comment).
+        """
+        task = self._track_teardown(self._bounded_close(closeable, label))
+        await asyncio.shield(task)
+
+    async def _cancel_task_bounded(self, task: Optional["asyncio.Task"], label: str) -> None:
+        """Cancel *task* and await it, bounded by ``_DRAIN_TIMEOUT``.
+
+        A truly wedged task can ignore cancellation (blocked in an
+        uncancellable await); an unbounded ``await task`` there would hang
+        ``disconnect()`` — the very stall this fix removes.
+        On timeout the zombie is logged and abandoned: staying deaf is worse
+        than leaking one stuck task (#67470).
+        """
+        if task is None:
+            return
+        task.cancel()
+        # asyncio.wait (not wait_for): wait_for's timeout path cancels the
+        # future and then AWAITS that cancellation completing, so a task that
+        # swallows CancelledError would hang it — the very stall being fixed.
+        # asyncio.wait just observes with a deadline and never raises.
+        done, pending = await asyncio.wait({task}, timeout=_DRAIN_TIMEOUT)
+        if pending:
+            logger.error(
+                "[%s] %s did not exit within %.0fs of cancellation; "
+                "abandoning it",
+                self.name, label, _DRAIN_TIMEOUT,
+            )
+            return
+        for finished in done:
+            try:
+                finished.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.debug(
+                    "[%s] %s raised on cancel (non-fatal): %s",
+                    self.name, label, e,
+                )
+
     async def _cleanup_ws(self) -> None:
-        """Close WebSocket and session."""
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
-        self._ws = None
-        if self._session and not self._session.closed:
-            await self._session.close()
-        self._session = None
+        """Close WebSocket and session, each bounded by ``_DRAIN_TIMEOUT`` so
+        one wedged close can't skip the other resource's teardown (#67470).
+
+        Both fields are detached to locals *before either close starts*,
+        and both closes run inside a single tracked, shielded teardown task
+        (#67470 review, egilewski, round 2): closing them as two separate
+        shielded steps still left a gap -- a cancellation landing after the
+        WebSocket close finishes but before the session field is detached
+        skipped the session close entirely, leaving self._session
+        non-None but with no further code left running to ever close it
+        (only closed if some *later* call happens to run _cleanup_ws()
+        again). Running both closes as one shielded unit means a
+        cancellation landing anywhere in this coroutine still lets the
+        whole thing -- both resources -- finish closing in the background.
+        """
+        ws, self._ws = self._ws, None
+        session, self._session = self._session, None
+
+        async def _close_both() -> None:
+            if ws is not None and not ws.closed:
+                await self._bounded_close(ws, "WebSocket")
+            if session is not None and not session.closed:
+                await self._bounded_close(session, "WS session")
+
+        if ws is not None or session is not None:
+            task = self._track_teardown(_close_both())
+            await asyncio.shield(task)
 
     async def disconnect(self) -> None:
         """Disconnect from Home Assistant."""
         self._running = False
-        if self._listen_task:
-            self._listen_task.cancel()
-            try:
-                await self._listen_task
-            except asyncio.CancelledError:
-                pass
-            self._listen_task = None
+        # The whole teardown sequence runs as one tracked, shielded unit
+        # (#67470 review, egilewski, round 3): disconnect() has several
+        # sequential stages (cancel listener, close WS/session, close
+        # REST session), each separated by its own await. A cancellation
+        # landing at any earlier stage previously aborted the whole
+        # coroutine, leaving every later stage's resources untouched --
+        # e.g. cancelling during the WS/session close left the REST
+        # session assigned and never closed at all. Wrapping it all in
+        # one shielded task means disconnect() still propagates a
+        # cancellation to its caller promptly, but every stage still
+        # runs to completion in the background regardless of where that
+        # cancellation landed.
+        task = self._track_teardown(self._full_teardown())
+        await asyncio.shield(task)
+
+    async def _full_teardown(self) -> None:
+        """The complete disconnect() sequence; see the comment in
+        disconnect() for why this runs as a single shielded unit."""
+        await self._cancel_task_bounded(self._listen_task, "listen task")
+        self._listen_task = None
 
         await self._cleanup_ws()
-        if self._rest_session and not self._rest_session.closed:
-            await self._rest_session.close()
-        self._rest_session = None
+        # Detach before awaiting the close (#67470 review, egilewski, round
+        # 2): clearing the field only *after* the close returned meant a
+        # cancellation racing in on this disconnect() call left
+        # self._rest_session still assigned to a session whose close was
+        # already running in the background; a later disconnect() retry
+        # would see closed=False and close() it a second time.
+        rest_session, self._rest_session = self._rest_session, None
+        if rest_session is not None and not rest_session.closed:
+            await self._bounded_close(rest_session, "REST session")
+
+        # No extra drain of self._teardown_tasks here on purpose: it isn't
+        # needed for correctness (every tracked task keeps running to
+        # completion on its own regardless of whether anyone awaits it --
+        # that's the whole point of _track_teardown()), and waiting on the
+        # whole set here is actively wrong -- if this _full_teardown() run
+        # was itself started by disconnect() being called again while a
+        # prior _full_teardown() is still finishing up in the background,
+        # the two tasks would each end up in the other's wait set,
+        # deadlocking until _DRAIN_TIMEOUT (empirically confirmed while
+        # writing the regression for a cancel-then-retry disconnect()).
         logger.info("[%s] Disconnected", self.name)
 
     # ------------------------------------------------------------------

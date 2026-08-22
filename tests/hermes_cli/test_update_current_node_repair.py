@@ -21,6 +21,7 @@ def test_current_checkout_repairs_failed_node_deps(capsys):
     with patch.object(
         update_cmd, "_update_node_dependencies", return_value=["ui-tui, web workspaces"]
     ), patch.object(update_cmd, "_m") as m:
+        m.return_value._npm_lockfile_changed.return_value = True
         update_cmd._repair_node_deps_on_current_checkout(completion)
 
     m.return_value._build_web_ui.assert_not_called()
@@ -37,6 +38,7 @@ def test_current_checkout_healthy_node_deps_reports_up_to_date():
     with patch.object(
         update_cmd, "_update_node_dependencies", return_value=[]
     ), patch.object(update_cmd, "_m") as m:
+        m.return_value._npm_lockfile_changed.return_value = False
         update_cmd._repair_node_deps_on_current_checkout(completion)
 
     # The refresh pairs with the web build like every other call site.

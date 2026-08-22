@@ -2919,19 +2919,40 @@ def _repair_node_deps_on_current_checkout(print_completion) -> None:
     the web toolchain never landed), so this is a cheap no-op on healthy
     installs and a real repair after a failed one.
     """
+    from hermes_constants import get_default_hermes_root
+
+    shared_hermes_root = get_default_hermes_root()
+    node_repair_needed = _m()._npm_lockfile_changed(shared_hermes_root)
     node_failures = _update_node_dependencies()
+    if (
+        not node_failures
+        and node_repair_needed
+        and _m()._npm_lockfile_changed(shared_hermes_root)
+    ):
+        node_failures = ["dependency health check"]
+
     if node_failures:
-        print(f"  ⚠ Node.js refresh failed for: {', '.join(node_failures)}")
-        print("    Fix npm and re-run `hermes update`.")
+        if node_failures == ["dependency health check"]:
+            print("  ⚠ Node.js dependencies remain incomplete after repair attempt.")
+        else:
+            print(f"  ⚠ Node.js refresh failed for: {', '.join(node_failures)}")
+            print("    Fix npm and re-run `hermes update`.")
+        _finish_dashboard_update_cleanup(node_failures)
         print_completion(
             "⚠ Checkout is current, but Node.js dependencies could not be repaired."
         )
         return
+
     # Pair the refresh with the web build like every other
     # _update_node_dependencies call site; it staleness-checks internally,
     # so this is a no-op when nothing changed.
     _m()._build_web_ui(_m().PROJECT_ROOT / "web")
-    print_completion("✓ Already up to date!")
+    if node_repair_needed:
+        print("✓ Node.js dependencies repaired!")
+        _finish_dashboard_update_cleanup([])
+        print_completion("✓ Update complete!")
+    else:
+        print_completion("✓ Already up to date!")
 
 
 def _update_node_dependencies() -> list[str]:

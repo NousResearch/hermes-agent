@@ -157,6 +157,34 @@ def test_reset_aux_to_auto_resets_plugin_tasks(tmp_path, monkeypatch, patched_ma
     assert cfg["auxiliary"]["my_aux"]["model"] == ""
 
 
+# ── _apply_aux_choice_to_all includes plugin tasks ───────────────────────────
+
+
+def test_apply_aux_choice_to_all_includes_plugin_tasks(tmp_path, monkeypatch, patched_manager):
+    """Apply-all writes the shared choice to plugin-registered aux tasks too."""
+    from pathlib import Path
+    from hermes_cli.config import load_config
+    from hermes_cli.main import _apply_aux_choice_to_all
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".hermes").mkdir(exist_ok=True)
+
+    manifest = PluginManifest(name="plug")
+    ctx = PluginContext(manifest, patched_manager)
+    ctx.register_auxiliary_task(
+        key="my_aux",
+        display_name="My Aux",
+        description="d",
+    )
+
+    _apply_aux_choice_to_all(provider="openrouter", model="gpt-4o")
+
+    cfg = load_config()
+    assert cfg["auxiliary"]["my_aux"]["provider"] == "openrouter"
+    assert cfg["auxiliary"]["my_aux"]["model"] == "gpt-4o"
+
+
 # ── auxiliary_client._get_auxiliary_task_config defaults layering ────────────
 
 

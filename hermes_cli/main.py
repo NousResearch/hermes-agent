@@ -4136,6 +4136,41 @@ def _format_aux_current(task_cfg: dict) -> str:
     return provider
 
 
+def _format_aux_all_current(cfg: dict) -> str:
+    """Summarize routing across ALL aux tasks (incl. delegation) for the menu.
+
+    Returns a single shared value when every slot resolves identically
+    (all "auto", or all the same provider·model), otherwise "mixed".
+    """
+    aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
+    seen: set[tuple[str, str, str]] = set()
+    for task, _name, _desc in _all_aux_tasks():
+        entry = aux.get(task, {}) if isinstance(aux.get(task), dict) else {}
+        base_url = str(entry.get("base_url") or "").strip()
+        provider = str(entry.get("provider") or "auto").strip() or "auto"
+        model = str(entry.get("model") or "").strip()
+        seen.add((base_url, provider, model))
+    dele = _delegation_cfg_as_task(cfg)
+    seen.add(
+        (
+            str(dele.get("base_url") or "").strip(),
+            str(dele.get("provider") or "auto").strip() or "auto",
+            str(dele.get("model") or "").strip(),
+        )
+    )
+    if len(seen) <= 1:
+        base_url, provider, model = next(iter(seen))
+        if base_url:
+            short = base_url.replace("https://", "").replace("http://", "").rstrip("/")
+            return f"custom ({short})" + (f" · {model}" if model else "")
+        if provider == "auto":
+            return "auto" + (f" · {model}" if model else "")
+        if model:
+            return f"{provider} · {model}"
+        return provider
+    return "mixed (configured per task)"
+
+
 def _delegation_cfg_as_task(cfg: dict) -> dict:
     """Project the top-level ``delegation`` section into aux-task shape.
 
@@ -4258,6 +4293,42 @@ def _reset_aux_to_auto() -> int:
     return count
 
 
+def _apply_aux_choice_to_all(
+    provider: str,
+    model: str = "",
+    base_url: str = "",
+    api_key: str = "",
+) -> int:
+    """Apply one provider/model to every aux task, including delegation.
+
+    One-shot apply: writes the choice into each ``auxiliary.<task>`` slot and
+    the top-level ``delegation`` section. Each task goes through
+    ``_save_aux_choice`` so the delegation special-case (``auto`` stored as an
+    empty provider) and per-task preservation of timeouts/extra_body are
+    handled identically to the single-task flow. Returns the number of tasks
+    written.
+    """
+    count = 0
+    for task, _name, _desc in _all_aux_tasks():
+        _save_aux_choice(
+            task,
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+        )
+        count += 1
+    _save_aux_choice(
+        _DELEGATION_TASK_KEY,
+        provider=provider,
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+    )
+    count += 1
+    return count
+
+
 def _aux_config_menu() -> None:
     """Top-level auxiliary-model picker — choose a task to configure.
 
@@ -4300,6 +4371,7 @@ def _aux_config_menu() -> None:
                 f"{name.ljust(name_col)}{('(' + desc + ')').ljust(desc_col)}{current}"
             )
             entries.append((task_key, label))
+        entries.append(("__set_all__", "Set one provider/model for all auxiliary tasks..."))
         entries.append(("__reset__", "Reset all to auto"))
         entries.append(("__back__", "Back"))
 
@@ -4312,6 +4384,9 @@ def _aux_config_menu() -> None:
         key = entries[idx][0]
         if key == "__back__":
             return
+        if key == "__set_all__":
+            _aux_select_apply_all()
+            continue
         if key == "__reset__":
             n = _reset_aux_to_auto()
             if n:
@@ -4322,6 +4397,141 @@ def _aux_config_menu() -> None:
             continue
         # Otherwise configure the specific task
         _aux_select_for_task(key)
+
+
+def _aux_select_apply_all() -> None:
+    """Pick ONE provider+model and apply it to every auxiliary task.
+
+    One-shot apply: the choice is written into each ``auxiliary.<task>`` slot
+    (and the top-level ``delegation`` section) now. Slots stay independently
+    tweakable afterwards via the per-task flow.
+    """
+    from hermes_cli.config import load_config
+    from hermes_cli.inventory import build_aux_picker_rows, format_aux_picker_entries
+
+    cfg = load_config()
+
+    print()
+    print(f"  Configure ALL auxiliary tasks — current: {_format_aux_all_current(cfg)}")
+    print()
+
+    # Gather authenticated providers (has credentials + curated model list)
+    try:
+        providers = build_aux_picker_rows(
+            current_provider="",
+            current_model="",
+            current_base_url="",
+        )
+    except Exception as exc:
+        print(f"Could not detect authenticated providers: {exc}")
+        providers = []
+
+    entries: list[tuple[str, str, list[str]]] = [
+        ("__auto__", "auto (recommended)", []),
+    ]
+    entries.extend(format_aux_picker_entries(providers))
+    entries.append(("__custom__", "Custom endpoint (direct URL)", []))
+    entries.append(("__back__", "Back", []))
+
+    idx = _prompt_provider_choice([label for _, label, _ in entries], default=0)
+    if idx is None:
+        return
+    slug, _label, models = entries[idx]
+
+    if slug == "__back__":
+        return
+
+    if slug == "__auto__":
+        n = _reset_aux_to_auto()
+        if n:
+            print(f"Reset {n} auxiliary task(s) to auto.")
+        else:
+            print("All auxiliary tasks were already set to auto.")
+        return
+
+    if slug == "__custom__":
+        _aux_apply_all_custom()
+        return
+
+    _aux_apply_all_provider_model(slug, models)
+
+
+def _aux_apply_all_provider_model(provider_slug: str, curated_models: list) -> None:
+    """Pick a model under an already-authenticated provider, apply it to all aux tasks."""
+    from hermes_cli.auth import _prompt_model_selection
+    from hermes_cli.models import get_pricing_for_provider
+
+    # Fetch live pricing for this provider (non-blocking)
+    pricing: dict = {}
+    try:
+        pricing = get_pricing_for_provider(provider_slug) or {}
+    except Exception:
+        pricing = {}
+
+    model_list = list(curated_models)
+
+    if not model_list:
+        print(f"No curated model list for {provider_slug}.")
+        print("Enter a model slug manually (blank = use provider default):")
+        try:
+            val = input("Model: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        selected = val or ""
+    else:
+        selected = _prompt_model_selection(
+            model_list,
+            current_model="",
+            pricing=pricing,
+            confirm_provider=provider_slug,
+        )
+        if selected is None:
+            print("No change.")
+            return
+
+    n = _apply_aux_choice_to_all(provider=provider_slug, model=selected or "")
+    if selected:
+        print(f"Applied {provider_slug} · {selected} to {n} auxiliary task(s).")
+    else:
+        print(f"Applied {provider_slug} (provider default model) to {n} auxiliary task(s).")
+
+
+def _aux_apply_all_custom() -> None:
+    """Prompt for a direct OpenAI-compatible endpoint, apply it to all aux tasks."""
+    from hermes_cli.secret_prompt import masked_secret_prompt
+
+    print()
+    print("  Custom endpoint for ALL auxiliary tasks")
+    print("  Provide an OpenAI-compatible base URL (e.g. http://localhost:11434/v1)")
+    print()
+    try:
+        url = input("Base URL: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+    if not url:
+        print("No URL provided. No change.")
+        return
+    try:
+        model = input("Model slug (optional): ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+    try:
+        api_key = masked_secret_prompt(
+            "API key (optional, blank = use OPENAI_API_KEY): "
+        ).strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+
+    n = _apply_aux_choice_to_all(
+        provider="custom", model=model, base_url=url, api_key=api_key
+    )
+    short_url = url.replace("https://", "").replace("http://", "").rstrip("/")
+    suffix = f" · {model}" if model else ""
+    print(f"Applied custom ({short_url}){suffix} to {n} auxiliary task(s).")
 
 
 def _aux_select_for_task(task: str) -> None:

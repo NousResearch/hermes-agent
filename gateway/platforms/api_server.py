@@ -2370,6 +2370,31 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.debug("SessionDB unavailable for API server: %s", e)
             return None
 
+    def _effective_agent_session_key(
+        self,
+        gateway_session_key: Optional[str],
+        session_id: Optional[str],
+    ) -> str:
+        """Resolve the stable ownership scope for an API agent turn."""
+        if gateway_session_key:
+            return gateway_session_key
+        sid = str(session_id or "").strip()
+        if not sid:
+            return ""
+        try:
+            db = self._ensure_session_db()
+            row = db.get_session(sid) if db is not None else None
+            inherited = str((row or {}).get("session_key") or "").strip()
+            if inherited:
+                return inherited
+        except Exception:
+            logger.debug(
+                "Could not resolve API session ownership scope for %s",
+                sid,
+                exc_info=True,
+            )
+        return sid
+
     async def _ensure_session_db_async(self):
         """Async variant for request handlers: offload the SQLite open/schema
         init off the single aiohttp event-loop thread.
@@ -2799,12 +2824,12 @@ class APIServerAdapter(BasePlatformAdapter):
         from config.yaml platform_toolsets.api_server (same as all other
         gateway platforms), falling back to the hermes-api-server default.
 
-        ``gateway_session_key`` is a stable per-channel identifier supplied
-        by the client (via ``X-Hermes-Session-Key``).  Unlike ``session_id``
-        which scopes the short-term transcript and rotates on /new, this
-        key is meant to persist across transcripts so long-term memory
-        providers (e.g. Honcho) can scope their per-chat state correctly
-        — matching the semantics of the native gateway's ``session_key``.
+        ``gateway_session_key`` is the effective ownership scope for this API
+        turn. Clients may supply a stable per-channel identifier via
+        ``X-Hermes-Session-Key``; otherwise the request's ``session_id`` is
+        used so agent-facing history tools still fail closed. Unlike
+        ``session_id``, an explicit key persists across transcripts so
+        long-term memory providers can preserve native gateway semantics.
 
         ``route`` is an optional ``model_routes`` entry (per-client model
         routing).  When set — and no session ``/model`` override exists for
@@ -7187,9 +7212,12 @@ class APIServerAdapter(BasePlatformAdapter):
             from gateway.session_context import clear_session_vars
 
             with self._profile_scope(request_profile):
+                effective_session_key = self._effective_agent_session_key(
+                    gateway_session_key, session_id
+                )
                 tokens = self._bind_api_server_session(
                     chat_id=session_id or "",
-                    session_key=gateway_session_key or session_id or "",
+                    session_key=effective_session_key,
                     session_id=session_id or "",
                     browser_control_principal=request_browser_control_principal,
                     browser_control_transport_family=(
@@ -7205,7 +7233,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_progress_callback=tool_progress_callback,
                         tool_start_callback=tool_start_callback,
                         tool_complete_callback=tool_complete_callback,
-                        gateway_session_key=gateway_session_key,
+                        gateway_session_key=effective_session_key,
                         requested_model=requested_model,
                         requested_provider=requested_provider,
                         model_options=model_options,
@@ -7651,12 +7679,15 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                     return
                 with self._profile_scope(request_profile):
+                    effective_session_key = self._effective_agent_session_key(
+                        gateway_session_key, session_id
+                    )
                     agent = self._create_agent(
                         ephemeral_system_prompt=ephemeral_system_prompt,
                         session_id=session_id,
                         stream_delta_callback=_text_cb,
                         tool_progress_callback=event_cb,
-                        gateway_session_key=gateway_session_key,
+                        gateway_session_key=effective_session_key,
                         requested_model=agent_overrides.get("requested_model"),
                         requested_provider=agent_overrides.get("requested_provider"),
                         model_options=agent_overrides.get("model_options"),

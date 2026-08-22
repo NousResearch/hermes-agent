@@ -9078,39 +9078,54 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         last_active = session_row.get("last_active") or session_row.get("started_at")
         return float(last_active or 0) > float(last_read)
 
-    def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
-        """Look up a session by exact title. Returns session dict or None."""
+    def get_session_by_title(
+        self, title: str, session_key: str = None
+    ) -> Optional[Dict[str, Any]]:
+        """Look up an exact title, optionally within one gateway scope."""
+        where = "WHERE s.title = ?"
+        params: List[Any] = [title]
+        if session_key:
+            where += " AND s.session_key = ?"
+            params.append(session_key)
         with self._read_ctx() as conn:
             cursor = conn.execute(
                 "SELECT s.*, "
                 "COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
                 "FROM sessions s "
                 "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
-                "WHERE s.title = ?",
-                (title,),
+                f"{where}",
+                params,
             )
             row = cursor.fetchone()
         return self._session_row_dict(row) if row else None
 
-    def resolve_session_by_title(self, title: str) -> Optional[str]:
+    def resolve_session_by_title(
+        self, title: str, session_key: str = None
+    ) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest in a lineage.
 
         If the exact title exists, returns that session's ID.
         If not, searches for "title #N" variants and returns the latest one.
         If the exact title exists AND numbered variants exist, returns the
         latest numbered variant (the most recent continuation).
+        Pass ``session_key`` to resolve only within one gateway conversation.
         """
         # First try exact match
-        exact = self.get_session_by_title(title)
+        exact = self.get_session_by_title(title, session_key=session_key)
 
         # Also search for numbered variants: "title #2", "title #3", etc.
         # Escape SQL LIKE wildcards (%, _) in the title to prevent false matches
         escaped = _escape_like(title)
+        numbered_where = "WHERE title LIKE ? ESCAPE '\\'"
+        numbered_params: List[Any] = [f"{escaped} #%"]
+        if session_key:
+            numbered_where += " AND session_key = ?"
+            numbered_params.append(session_key)
         with self._read_ctx() as conn:
             cursor = conn.execute(
                 "SELECT id, title, started_at FROM sessions "
-                "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
-                (f"{escaped} #%",),
+                f"{numbered_where} ORDER BY started_at DESC",
+                numbered_params,
             )
             numbered = cursor.fetchall()
 
@@ -9156,7 +9171,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return f"{base} #{max_num + 1}"
 
-    def get_compression_tip(self, session_id: str) -> Optional[str]:
+    def get_compression_tip(
+        self, session_id: str, session_key: str = None
+    ) -> Optional[str]:
         """Walk the compression-continuation chain forward and return the tip.
 
         A compression continuation is a child of a session whose
@@ -9179,6 +9196,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         current = session_id
         seen = {current} if current else set()
+        scope_clause = "AND child.session_key = ?" if session_key else ""
         # Bound the walk defensively — compression chains this deep are
         # pathological and shouldn't happen in practice. 100 = plenty.
         for _ in range(100):
@@ -9193,6 +9211,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
                       AND COALESCE(child.source, '') != 'tool'
+                      {scope_clause}
                     ORDER BY
                       CASE
                         WHEN child.end_reason = 'compression' THEN 0
@@ -9204,7 +9223,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                       child.id DESC
                     LIMIT 1
                     """,
-                    (current,),
+                    (current, session_key) if session_key else (current,),
                 )
                 row = cursor.fetchone()
             if row is None:
@@ -9466,6 +9485,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     f"{where_sql} AND {combined}" if where_sql else f"WHERE {combined}"
                 )
             _sel = self._compact_session_cols() if compact_rows else "s.*"
+            chain_scope_sql = "AND child.session_key = ?" if session_key else ""
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (
                     SELECT s.id, s.id FROM sessions s {where_sql}
@@ -9478,6 +9498,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
                       AND COALESCE(child.source, '') != 'tool'
+                      {chain_scope_sql}
                 ),
                 chain_max AS (
                     SELECT
@@ -9504,9 +9525,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
                 LIMIT ? OFFSET ?
             """
-            # WHERE params apply twice (CTE seed + outer select); the id filter
+            # WHERE params apply twice (CTE seed + outer select); the lineage
+            # scope sits between them in the recursive term, and the id filter
             # only applies to the outer select.
-            params = params + params + id_params + [limit, offset]
+            params = (
+                params
+                + ([session_key] if session_key else [])
+                + params
+                + id_params
+                + [limit, offset]
+            )
         else:
             _sel = self._compact_session_cols() if compact_rows else "s.*"
             query = f"""
@@ -9595,7 +9623,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             for s in sessions:
                 if s.get("end_reason") != "compression":
                     continue
-                tip_id = self.get_compression_tip(s["id"])
+                tip_id = self.get_compression_tip(
+                    s["id"], session_key=session_key
+                )
                 if tip_id != s["id"]:
                     tip_ids_by_root[s["id"]] = tip_id
 

@@ -99,7 +99,7 @@ class TestSchema:
             "sort",
             "profile",
         ]
-        assert parameters == [*historical_prefix, "detail"]
+        assert parameters == [*historical_prefix, "detail", "caller_session_key"]
 
 
 class TestFormatTimestamp:
@@ -171,6 +171,294 @@ class TestBrowseShape:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
 
+
+class TestGatewayOwnershipScope:
+    @staticmethod
+    def _seed(db):
+        db.create_session(
+            "owned-current", source="telegram", session_key="telegram:dm:owner"
+        )
+        db.create_session(
+            "owned-history", source="telegram", session_key="telegram:dm:owner"
+        )
+        owned_mid = db.append_message(
+            "owned-history", role="user", content="private scope needle owned"
+        )
+        db.create_session(
+            "other-history", source="telegram", session_key="telegram:dm:other"
+        )
+        other_mid = db.append_message(
+            "other-history", role="user", content="private scope needle other"
+        )
+        return owned_mid, other_mid
+
+    def test_browse_only_lists_sessions_in_the_callers_gateway_scope(self, db):
+        self._seed(db)
+
+        result = json.loads(
+            session_search(
+                db=db,
+                current_session_id="owned-current",
+                caller_session_key="telegram:dm:owner",
+            )
+        )
+
+        assert {row["session_id"] for row in result["results"]} == {
+            "owned-history"
+        }
+
+    def test_browse_does_not_project_to_foreign_compression_child(self, db):
+        db.create_session(
+            "owned-compression-root",
+            source="telegram",
+            session_key="telegram:dm:owner",
+        )
+        db.append_message(
+            "owned-compression-root", role="user", content="owned root preview"
+        )
+        db.end_session("owned-compression-root", "compression")
+        db.create_session(
+            "foreign-compression-child",
+            source="telegram",
+            session_key="telegram:dm:other",
+            parent_session_id="owned-compression-root",
+        )
+        db.append_message(
+            "foreign-compression-child",
+            role="user",
+            content="foreign projected preview",
+        )
+
+        result = json.loads(
+            session_search(db=db, caller_session_key="telegram:dm:owner")
+        )
+
+        assert [row["session_id"] for row in result["results"]] == [
+            "owned-compression-root"
+        ]
+        assert "foreign projected preview" not in json.dumps(result)
+
+    def test_discovery_only_returns_hits_in_the_callers_gateway_scope(self, db):
+        self._seed(db)
+
+        result = json.loads(
+            session_search(
+                query="private scope needle",
+                detail="full",
+                limit=10,
+                db=db,
+                current_session_id="owned-current",
+                caller_session_key="telegram:dm:owner",
+            )
+        )
+
+        assert {row["session_id"] for row in result["results"]} == {
+            "owned-history"
+        }
+        assert "other" not in json.dumps(result)
+
+    def test_discovery_scopes_before_ranking_limit(self, db, monkeypatch):
+        monkeypatch.setattr(
+            "tools.session_search_tool._DISCOVER_SCAN_LIMIT", 3
+        )
+        db.create_session(
+            "owned-low-rank", source="telegram", session_key="telegram:dm:owner"
+        )
+        db.append_message(
+            "owned-low-rank",
+            role="user",
+            content="scope starvation needle " + ("unrelated filler " * 200),
+        )
+        for index in range(4):
+            sid = f"foreign-high-rank-{index}"
+            db.create_session(
+                sid, source="telegram", session_key="telegram:dm:other"
+            )
+            db.append_message(
+                sid,
+                role="user",
+                content="scope starvation needle scope starvation needle",
+            )
+
+        result = json.loads(
+            session_search(
+                query="scope starvation needle",
+                detail="full",
+                limit=10,
+                db=db,
+                caller_session_key="telegram:dm:owner",
+            )
+        )
+
+        assert [row["session_id"] for row in result["results"]] == [
+            "owned-low-rank"
+        ]
+
+    def test_title_match_resolves_within_the_callers_gateway_scope(self, db):
+        db.create_session(
+            "owned-title", source="telegram", session_key="telegram:dm:owner"
+        )
+        db.set_session_title("owned-title", "Shared Plan")
+        db.create_session(
+            "foreign-title", source="telegram", session_key="telegram:dm:other"
+        )
+        db.set_session_title("foreign-title", "Shared Plan #2")
+
+        result = json.loads(
+            session_search(
+                query="Shared Plan",
+                detail="full",
+                db=db,
+                caller_session_key="telegram:dm:owner",
+            )
+        )
+
+        assert [row["session_id"] for row in result["results"]] == [
+            "owned-title"
+        ]
+
+    def test_title_match_does_not_hydrate_foreign_lineage_parent(self, db):
+        db.create_session(
+            "foreign-parent", source="telegram", session_key="telegram:dm:other"
+        )
+        db.set_session_title("foreign-parent", "Foreign Parent Secret")
+        db.create_session(
+            "owned-child",
+            source="telegram",
+            session_key="telegram:dm:owner",
+            parent_session_id="foreign-parent",
+        )
+        db.set_session_title("owned-child", "Owned Child Plan")
+        db.append_message("owned-child", role="user", content="owned child content")
+
+        result = json.loads(
+            session_search(
+                query="Owned Child Plan",
+                detail="full",
+                db=db,
+                caller_session_key="telegram:dm:owner",
+            )
+        )
+
+        assert [row["session_id"] for row in result["results"]] == ["owned-child"]
+        assert result["results"][0]["title"] == "Owned Child Plan"
+        assert "Foreign Parent Secret" not in json.dumps(result)
+        assert "parent_session_id" not in result["results"][0]
+
+    @pytest.mark.parametrize("shape", ["read", "scroll"])
+    def test_direct_lookup_rejects_another_gateway_scope(self, db, shape):
+        _, other_mid = self._seed(db)
+        kwargs = {"session_id": "other-history"}
+        if shape == "scroll":
+            kwargs["around_message_id"] = other_mid
+
+        result = json.loads(
+            session_search(
+                db=db,
+                current_session_id="owned-current",
+                caller_session_key="telegram:dm:owner",
+                **kwargs,
+            )
+        )
+
+        assert result["success"] is False
+        assert "not found" in result["error"].lower()
+
+    @pytest.mark.parametrize("shape", ["read", "scroll"])
+    def test_direct_lookup_allows_the_same_gateway_scope(self, db, shape):
+        owned_mid, _ = self._seed(db)
+        kwargs = {"session_id": "owned-history"}
+        if shape == "scroll":
+            kwargs["around_message_id"] = owned_mid
+
+        result = json.loads(
+            session_search(
+                db=db,
+                current_session_id="owned-current",
+                caller_session_key="telegram:dm:owner",
+                **kwargs,
+            )
+        )
+
+        assert result["success"] is True
+        assert result["session_id"] == "owned-history"
+
+    def test_scroll_rebind_rejects_child_from_another_gateway_scope(self, db):
+        db.create_session(
+            "owned-parent", source="telegram", session_key="telegram:dm:owner"
+        )
+        db.create_session(
+            "foreign-child",
+            source="telegram",
+            session_key="telegram:dm:other",
+            parent_session_id="owned-parent",
+        )
+        foreign_mid = db.append_message(
+            "foreign-child", role="user", content="foreign child transcript"
+        )
+
+        result = json.loads(
+            session_search(
+                db=db,
+                session_id="owned-parent",
+                around_message_id=foreign_mid,
+                caller_session_key="telegram:dm:owner",
+            )
+        )
+
+        assert result["success"] is False
+        assert "foreign child transcript" not in json.dumps(result)
+
+    def test_scoped_lookup_fails_closed_for_legacy_row_without_session_key(self, db):
+        db.create_session("legacy", source="telegram")
+        db.append_message("legacy", role="user", content="legacy private text")
+
+        result = json.loads(
+            session_search(
+                db=db,
+                session_id="legacy",
+                caller_session_key="telegram:dm:owner",
+            )
+        )
+
+        assert result["success"] is False
+        assert "not found" in result["error"].lower()
+
+    def test_scoped_call_rejects_explicit_and_automatic_cross_profile_lookup(
+        self, db, monkeypatch
+    ):
+        self._seed(db)
+        resolved = []
+        located = []
+        monkeypatch.setattr(
+            "tools.session_search_tool._resolve_profile_db",
+            lambda profile: resolved.append(profile),
+        )
+        monkeypatch.setattr(
+            "tools.session_search_tool._locate_session_db",
+            lambda sid: located.append(sid),
+        )
+
+        explicit = json.loads(
+            session_search(
+                db=db,
+                session_id="foreign",
+                profile="work",
+                caller_session_key="telegram:dm:owner",
+            )
+        )
+        automatic = json.loads(
+            session_search(
+                db=db,
+                session_id="missing",
+                caller_session_key="telegram:dm:owner",
+            )
+        )
+
+        assert explicit["success"] is False
+        assert automatic["success"] is False
+        assert resolved == []
+        assert located == []
 
 # =========================================================================
 # Discovery shape (with query)

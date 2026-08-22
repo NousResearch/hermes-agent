@@ -1345,6 +1345,7 @@ class SessionSearchMixin:
         role_filter: List[str] = None,
         limit: int = 20,
         offset: int = 0,
+        session_key: str = None,
     ) -> Optional[List[Dict[str, Any]]]:
         """Run a search against a substring-capable FTS index.
 
@@ -1381,6 +1382,9 @@ class SessionSearchMixin:
         if exclude_sources is not None:
             tri_where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
             tri_params.extend(exclude_sources)
+        if session_key:
+            tri_where.append("s.session_key = ?")
+            tri_params.append(session_key)
         if role_filter:
             tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
             tri_params.extend(role_filter)
@@ -1422,6 +1426,7 @@ class SessionSearchMixin:
         sort: str = None,
         include_inactive: bool = False,
         fields: Optional[Collection[str]] = None,
+        session_key: str = None,
     ) -> List[Dict[str, Any]]:
         """Instrumented wrapper around :meth:`_search_messages_impl`.
 
@@ -1444,6 +1449,7 @@ class SessionSearchMixin:
                 sort=sort,
                 include_inactive=include_inactive,
                 fields=fields,
+                session_key=session_key,
             )
             return rows
         finally:
@@ -1553,6 +1559,7 @@ class SessionSearchMixin:
         offset: int,
         sort: Optional[str],
         include_inactive: bool,
+        session_key: Optional[str],
     ) -> List[Dict[str, Any]]:
         """Search canonical messages while derived FTS state is stale."""
         predicate, params, snippet_term = self._compile_like_boolean_query(query)
@@ -1570,6 +1577,9 @@ class SessionSearchMixin:
                 f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})"
             )
             params.extend(exclude_sources)
+        if session_key:
+            where.append("s.session_key = ?")
+            params.append(session_key)
         if role_filter:
             where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
             params.extend(role_filter)
@@ -1716,6 +1726,7 @@ class SessionSearchMixin:
         sort: str = None,
         include_inactive: bool = False,
         fields: Optional[Collection[str]] = None,
+        session_key: str = None,
     ) -> List[Dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
@@ -1731,6 +1742,10 @@ class SessionSearchMixin:
         ``fields`` selects a result projection; omitting it preserves the
         complete legacy result. Context is only loaded when that projection
         consumes it.
+
+        ``session_key`` scopes every search backend before ranking and LIMIT,
+        so matches from other gateway conversations cannot consume the result
+        window.
 
         ``sort`` controls temporal ordering:
           - ``None`` (default): FTS5 BM25 relevance only. Time-neutral.
@@ -1768,6 +1783,7 @@ class SessionSearchMixin:
                 offset=offset,
                 sort=sort,
                 include_inactive=include_inactive,
+                session_key=session_key,
             )
             return self._finalize_search_matches(
                 matches, result_fields=result_fields
@@ -1812,6 +1828,10 @@ class SessionSearchMixin:
             exclude_placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({exclude_placeholders})")
             params.extend(exclude_sources)
+
+        if session_key:
+            where_clauses.append("s.session_key = ?")
+            params.append(session_key)
 
         if role_filter:
             role_placeholders = ",".join("?" for _ in role_filter)
@@ -1907,6 +1927,9 @@ class SessionSearchMixin:
                 if exclude_sources is not None:
                     cjk_where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
                     cjk_params.extend(exclude_sources)
+                if session_key:
+                    cjk_where.append("s.session_key = ?")
+                    cjk_params.append(session_key)
                 if role_filter:
                     cjk_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     cjk_params.extend(role_filter)
@@ -1995,6 +2018,9 @@ class SessionSearchMixin:
                 if exclude_sources is not None:
                     tri_where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
                     tri_params.extend(exclude_sources)
+                if session_key:
+                    tri_where.append("s.session_key = ?")
+                    tri_params.append(session_key)
                 if role_filter:
                     tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     tri_params.extend(role_filter)
@@ -2088,6 +2114,9 @@ class SessionSearchMixin:
                 if exclude_sources is not None:
                     like_where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
                     like_params.extend(exclude_sources)
+                if session_key:
+                    like_where.append("s.session_key = ?")
+                    like_params.append(session_key)
                 if role_filter:
                     like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     like_params.extend(role_filter)
@@ -2150,6 +2179,7 @@ class SessionSearchMixin:
                     source_filter=source_filter,
                     exclude_sources=exclude_sources,
                     role_filter=role_filter,
+                    session_key=session_key,
                 )
                 seen_ids = {m["id"] for m in matches}
                 matches.extend(m for m in gap_matches if m["id"] not in seen_ids)
@@ -2190,6 +2220,7 @@ class SessionSearchMixin:
                     role_filter=role_filter,
                     limit=limit,
                     offset=offset,
+                    session_key=session_key,
                 )
                 if cjk_fb:
                     matches = cjk_fb
@@ -2207,6 +2238,7 @@ class SessionSearchMixin:
                     role_filter=role_filter,
                     limit=limit,
                     offset=offset,
+                    session_key=session_key,
                 )
                 if tri_matches:
                     matches = tri_matches
@@ -2222,6 +2254,7 @@ class SessionSearchMixin:
         source_filter: Optional[List[str]] = None,
         exclude_sources: Optional[List[str]] = None,
         role_filter: Optional[List[str]] = None,
+        session_key: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """LIKE-scan the rows the deferred rebuild hasn't indexed yet.
 
@@ -2264,6 +2297,9 @@ class SessionSearchMixin:
         if exclude_sources is not None:
             where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
             params.extend(exclude_sources)
+        if session_key:
+            where.append("s.session_key = ?")
+            params.append(session_key)
         if role_filter:
             where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
             params.extend(role_filter)

@@ -669,6 +669,7 @@ class AIAgent:
                 system_prompt=self._cached_system_prompt,
                 user_id=None,
                 parent_session_id=self._parent_session_id,
+                session_key=getattr(self, "_gateway_session_key", None),
                 cwd=_launch_cwd_for_session(source),
                 profile_name=_profile_for_session,
             )

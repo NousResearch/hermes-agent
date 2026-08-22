@@ -2560,6 +2560,157 @@ class TestAgentRuntimePostHookOwnershipSync:
             tool_name for tool_name, _ in self._CASES
         }
 
+    def test_session_search_forwards_gateway_scope_and_requested_profile(
+        self, agent, monkeypatch
+    ):
+        captured = {}
+        session_db = object()
+        monkeypatch.setattr(
+            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            lambda *args, **kwargs: (None, None),
+        )
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: False)
+        monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: session_db)
+        monkeypatch.setattr(
+            "tools.session_search_tool.session_search",
+            lambda **kwargs: captured.update(kwargs) or '{"success":true}',
+        )
+        agent._gateway_session_key = "telegram:dm:owner"
+        agent.session_id = "current-session"
+
+        result = agent._invoke_tool(
+            "session_search",
+            {"query": "needle", "profile": "work"},
+            "task-1",
+            tool_call_id="call-1",
+        )
+
+        assert json.loads(result)["success"] is True
+        assert captured["db"] is session_db
+        assert captured["current_session_id"] == "current-session"
+        assert captured["caller_session_key"] == "telegram:dm:owner"
+        assert captured["profile"] == "work"
+
+    def test_sequential_session_search_forwards_gateway_scope_and_requested_profile(
+        self, agent, monkeypatch
+    ):
+        captured = {}
+        session_db = object()
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: False)
+        monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: session_db)
+        monkeypatch.setattr(
+            "tools.session_search_tool.session_search",
+            lambda **kwargs: captured.update(kwargs) or '{"success":true}',
+        )
+        agent._gateway_session_key = "telegram:dm:owner"
+        agent.session_id = "current-session"
+        tool_call = _mock_tool_call(
+            name="session_search",
+            arguments=json.dumps({"query": "needle", "profile": "work"}),
+            call_id="session-search-sequential",
+        )
+
+        agent._execute_tool_calls(
+            _mock_assistant_msg(content="", tool_calls=[tool_call]),
+            [],
+            "task-sequential",
+        )
+
+        assert captured["db"] is session_db
+        assert captured["current_session_id"] == "current-session"
+        assert captured["caller_session_key"] == "telegram:dm:owner"
+        assert captured["profile"] == "work"
+
+    @pytest.mark.parametrize(
+        "tool_args",
+        [
+            {},
+            {"query": "private scope needle", "detail": "full", "limit": 10},
+            {"session_id": "other-history"},
+        ],
+        ids=["browse", "discovery", "direct-read"],
+    )
+    def test_sequential_session_search_rejects_foreign_gateway_transcript(
+        self, agent, monkeypatch, tmp_path, tool_args
+    ):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            "owned-current", source="telegram", session_key="telegram:dm:owner"
+        )
+        db.create_session(
+            "owned-history", source="telegram", session_key="telegram:dm:owner"
+        )
+        db.append_message(
+            "owned-history", role="user", content="private scope needle owned"
+        )
+        db.create_session(
+            "other-history", source="telegram", session_key="telegram:dm:other"
+        )
+        db.append_message(
+            "other-history", role="user", content="private scope needle other"
+        )
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: False)
+        monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: db)
+        agent._gateway_session_key = "telegram:dm:owner"
+        agent.session_id = "owned-current"
+        messages = []
+        tool_call = _mock_tool_call(
+            name="session_search",
+            arguments=json.dumps(tool_args),
+            call_id="session-search-sequential",
+        )
+
+        try:
+            agent._execute_tool_calls(
+                _mock_assistant_msg(content="", tool_calls=[tool_call]),
+                messages,
+                "task-sequential",
+            )
+        finally:
+            db.close()
+
+        result = json.loads(messages[-1]["content"])
+        assert "private scope needle other" not in json.dumps(result)
+        if tool_args.get("session_id"):
+            assert result["success"] is False
+            assert "not found" in result["error"].lower()
+        else:
+            assert {row["session_id"] for row in result["results"]} == {
+                "owned-history"
+            }
+
+    def test_api_agent_persists_gateway_scope_on_lazy_session_creation(
+        self, agent, tmp_path
+    ):
+        from hermes_state import SessionDB
+        from tools.session_search_tool import session_search
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        agent._session_db = db
+        agent._session_db_created = False
+        agent._persist_disabled = False
+        agent.platform = "api_server"
+        agent.session_id = "api-created-session"
+        agent._gateway_session_key = "api-conversation-scope"
+
+        try:
+            agent._ensure_db_session()
+
+            row = db.get_session("api-created-session")
+            assert row["session_key"] == "api-conversation-scope"
+            result = json.loads(
+                session_search(
+                    session_id="api-created-session",
+                    db=db,
+                    caller_session_key="api-conversation-scope",
+                )
+            )
+            assert result["success"] is True
+        finally:
+            db.close()
+
 
 class TestPathsOverlap:
     """Unit tests for the _paths_overlap helper."""

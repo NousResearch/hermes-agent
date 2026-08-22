@@ -148,12 +148,18 @@ class TestStartRun:
                 assert status["object"] == "hermes.run"
 
     @pytest.mark.asyncio
-    async def test_start_binds_chat_id_for_delegation_wake_target(self, adapter):
-        """/v1/runs must bind the raw session id as the api_server chat_id
-        (like every other agent-entry route does via _run_agent): the async
+    async def test_start_binds_session_id_for_wake_target_and_agent_scope(self, adapter):
+        """/v1/runs must bind the raw session id as chat id and agent scope.
+
+        The chat-id binding provides the delegation wake target, while the
+        agent scope prevents an API run without X-Hermes-Session-Key from
+        receiving trusted local-operator session-search access.
+
+        Like every other agent-entry route does via _run_agent, the async
         delegation dispatch reads HERMES_SESSION_CHAT_ID to pick its wake
-        self-post target, and an empty binding forces background delegations
-        on this route back to synchronous execution."""
+        self-post target; an empty binding forces background delegations on
+        this route back to synchronous execution.
+        """
         app = _create_runs_app(adapter)
         captured = {}
 
@@ -191,6 +197,7 @@ class TestStartRun:
         assert captured.get("origin_session_id") == "runs-raw-sid", (
             "runs route must bind chat_id so delegation dispatch sees a wake target"
         )
+        assert mock_create.call_args.kwargs["gateway_session_key"] == "runs-raw-sid"
 
 
     @pytest.mark.asyncio

@@ -18,6 +18,7 @@ class TestRegistry:
         assert get_provider_profile("nous-portal").name == "nous"
         assert get_provider_profile("qwen").name == "qwen-oauth"
         assert get_provider_profile("qwen-portal").name == "qwen-oauth"
+        assert get_provider_profile("mindshub-ai").name == "mindshub"
 
     def test_unknown_provider_returns_none(self):
         assert get_provider_profile("nonexistent-provider") is None
@@ -405,6 +406,26 @@ class TestOpenRouterProfile:
             model="anthropic/claude-fable-5",
         )
         assert tl == {"verbosity": "high"}
+
+
+class TestMindsHubProfile:
+    def test_discovery(self):
+        p = get_provider_profile("mindshub")
+        assert p is not None
+        assert p.name == "mindshub"
+
+    def test_base_url(self):
+        p = get_provider_profile("mindshub")
+        assert p.base_url == "https://api.mindshub.ai/v1"
+
+    def test_no_special_temperature(self):
+        p = get_provider_profile("mindshub")
+        assert p.fixed_temperature is None
+
+    def test_reasoning_effort_passthrough(self):
+        p = get_provider_profile("mindshub")
+        _, tl = p.build_api_kwargs_extras(reasoning_config={"enabled": True, "effort": "high"})
+        assert tl == {"reasoning_effort": "high"}
 
 
 class TestNousProfile:

@@ -1,0 +1,5 @@
+name: mindshub-provider
+kind: model-provider
+version: 1.0.0
+description: MindsHub — unified OpenAI/Anthropic-compatible inference gateway
+author: Jorge Torres

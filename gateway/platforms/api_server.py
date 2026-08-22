@@ -2781,6 +2781,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
+        reasoning_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
@@ -3094,6 +3095,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "platform": "api_server",
             "stream_delta_callback": stream_delta_callback,
             "tool_progress_callback": tool_progress_callback,
+            "reasoning_callback": reasoning_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
             "session_db": self._ensure_session_db(),
@@ -5114,7 +5116,7 @@ class APIServerAdapter(BasePlatformAdapter):
             _stream_q = ThreadSafeAsyncQueue()
 
             def _on_delta(delta):
-                # Filter out None — the agent fires stream_delta_callback(None)
+                # Filter out None - the agent fires stream_delta_callback(None)
                 # to signal the CLI display to close its response box before
                 # tool execution, but the SSE writer uses None as end-of-stream
                 # sentinel.  Forwarding it would prematurely close the HTTP
@@ -5125,6 +5127,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 # put_threadsafe (not put_nowait) is required here.
                 if delta is not None:
                     _stream_q.put_threadsafe(delta)
+
+            def _on_reasoning(text):
+                # Route the model's real chain-of-thought (reasoning_content
+                # delta) onto the SSE stream as delta.reasoning_content, tagged
+                # so _emit can distinguish it from content. Lets OpenAI-
+                # compatible clients that read delta.reasoning_content (GLM/
+                # DeepSeek/Kimi thinking models) render true reasoning instead
+                # of nothing or a content echo.
+                if text:
+                    _stream_q.put_threadsafe(("__reasoning__", text))
 
             # Track which tool_call_ids we've emitted a "running" lifecycle
             # event for, so a "completed" event without a matching "running"
@@ -5189,6 +5201,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
+                reasoning_callback=_on_reasoning,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
@@ -5376,6 +5389,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 """
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     await response.write(_sse_frame(item[1], event="hermes.tool.progress"))
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__reasoning__":
+                    reasoning_chunk = {
+                        "id": completion_id, "object": "chat.completion.chunk",
+                        "created": created, "model": model,
+                        "choices": [{"index": 0, "delta": {"reasoning_content": item[1]}, "finish_reason": None}],
+                    }
+                    await response.write(_sse_frame(reasoning_chunk))
                 else:
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
@@ -7128,6 +7148,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
+        reasoning_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
@@ -7203,6 +7224,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         session_id=session_id,
                         stream_delta_callback=stream_delta_callback,
                         tool_progress_callback=tool_progress_callback,
+                        reasoning_callback=reasoning_callback,
                         tool_start_callback=tool_start_callback,
                         tool_complete_callback=tool_complete_callback,
                         gateway_session_key=gateway_session_key,
@@ -7617,6 +7639,28 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
+        # Wire reasoning_callback so the model's real chain-of-thought
+        # (reasoning_content / reasoning delta field from GLM/DeepSeek/Kimi/
+        # Qwen thinking models) flows through as reasoning.delta events.
+        # This replaces the old path that emitted content[:500] as a fake
+        # "thinking" block (conversation_loop no longer does that for
+        # top-level agents). Non-thinking models simply never fire this
+        # callback, so no spurious reasoning block is shown.
+        def _reasoning_cb(text: Optional[str]) -> None:
+            if not text:
+                return
+            if run_id not in self._run_streams:
+                return
+            try:
+                loop.call_soon_threadsafe(_put_event_if_active, {
+                    "event": "reasoning.delta",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "text": text,
+                })
+            except Exception:
+                pass
+
         self._set_run_status(
             run_id,
             "queued",
@@ -7656,6 +7700,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         session_id=session_id,
                         stream_delta_callback=_text_cb,
                         tool_progress_callback=event_cb,
+                        reasoning_callback=_reasoning_cb,
                         gateway_session_key=gateway_session_key,
                         requested_model=agent_overrides.get("requested_model"),
                         requested_provider=agent_overrides.get("requested_provider"),

@@ -6718,23 +6718,23 @@ def run_conversation(
 
             # Notify progress callback of model's thinking (used by subagent
             # delegation to relay the child's reasoning to the parent display).
-            if (assistant_message.content and agent.tool_progress_callback):
-                _think_text = assistant_message.content.strip()
-                # Strip reasoning XML tags that shouldn't leak to parent display
+            # NOTE: top-level agents must NOT emit reasoning.available from
+            # content - that duplicates the answer as a fake "thinking" block
+            # (the "思考过程 == 回答" bug). Real reasoning is streamed via
+            # reasoning_callback (_fire_reasoning_delta), which the gateway
+            # wires to its own reasoning.available / delta.reasoning_content
+            # transport. Only subagents relay their first content line here,
+            # because a child's content IS the parent's reasoning surface.
+            if (assistant_message.content and agent.tool_progress_callback
+                    and getattr(agent, '_delegate_depth', 0) > 0):
                 _think_text = re.sub(
-                    r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>', '', _think_text
+                    r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>', '',
+                    assistant_message.content.strip(),
                 ).strip()
-                # For subagents: relay first line to parent display (existing behaviour).
-                # For all agents with a structured callback: emit reasoning.available event.
                 first_line = _think_text.split('\n')[0][:80] if _think_text else ""
-                if first_line and getattr(agent, '_delegate_depth', 0) > 0:
+                if first_line:
                     try:
                         agent.tool_progress_callback("_thinking", first_line)
-                    except Exception:
-                        pass
-                elif _think_text:
-                    try:
-                        agent.tool_progress_callback("reasoning.available", "_thinking", _think_text[:500], None)
                     except Exception:
                         pass
             

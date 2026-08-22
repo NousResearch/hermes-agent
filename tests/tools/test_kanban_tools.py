@@ -550,6 +550,155 @@ def test_worker_lifecycle_through_tools(worker_env):
 # System-prompt guidance injection
 # ---------------------------------------------------------------------------
 
+def test_kanban_guidance_not_in_normal_prompt(monkeypatch, tmp_path):
+    """A normal chat session (no HERMES_KANBAN_TASK) must NOT have
+    KANBAN_GUIDANCE in its system prompt."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from tools.registry import invalidate_check_fn_cache
+    from model_tools import _clear_tool_defs_cache
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+    from run_agent import AIAgent
+    a = AIAgent(
+        api_key="test",
+        base_url="https://openrouter.ai/api/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    prompt = a._build_system_prompt()
+    assert "You are a Kanban worker" not in prompt
+    assert "kanban_show()" not in prompt
+
+
+def test_kanban_guidance_not_in_orchestrator_profile_prompt(monkeypatch, tmp_path):
+    """A profile with the ``kanban`` toolset enabled but NO
+    ``HERMES_KANBAN_TASK`` (orchestrator profiles, and notably cron agents
+    on such profiles, issue #68592) gets the kanban tool surface — but must
+    NOT get the WORKER task-execution protocol, whose mandatory first step
+    ``kanban_show()`` fails with "task_id is required" when no task id
+    exists."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from tools.registry import invalidate_check_fn_cache
+    from model_tools import _clear_tool_defs_cache
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+    from run_agent import AIAgent
+    a = AIAgent(
+        api_key="test",
+        base_url="https://openrouter.ai/api/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    prompt = a._build_system_prompt()
+    # The tool surface IS present for orchestrator profiles...
+    assert "kanban_show" in a.valid_tool_names, (
+        "test setup: kanban toolset should expose kanban tools"
+    )
+    # ...but the worker lifecycle protocol must not be injected.
+    assert "Kanban task execution protocol" not in prompt
+    assert "kanban_show()` first" not in prompt
+    # The board-routing guidance IS injected instead — the routing rules
+    # (profile discovery, parents deps, no phantom ids) were folded into
+    # the always-injected guidance when the standalone orchestrator skill
+    # was removed, and must survive the worker/orchestrator split.
+    assert "Kanban board guidance" in prompt
+    assert "unknown assignee" in prompt
+
+
+def test_kanban_guidance_fallback_three_way_split(monkeypatch, tmp_path):
+    """The system_prompt fallback (code paths that bypass agent_init leave
+    ``_kanban_worker_guidance`` unset → None) mirrors the same three-way
+    split as agent_init: worker protocol iff HERMES_KANBAN_TASK, board
+    guidance for tool-only."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from tools.registry import invalidate_check_fn_cache
+    from model_tools import _clear_tool_defs_cache
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+    from run_agent import AIAgent
+    from agent.system_prompt import invalidate_system_prompt
+    a = AIAgent(
+        api_key="test",
+        base_url="https://openrouter.ai/api/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    assert "kanban_show" in a.valid_tool_names
+    # Simulate a code path that bypassed agent_init's resolution.
+    del a._kanban_worker_guidance
+
+    invalidate_system_prompt(a)
+    prompt = a._build_system_prompt()
+    assert "Kanban board guidance" in prompt
+    assert "Kanban task execution protocol" not in prompt
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fallback")
+    invalidate_system_prompt(a)
+    prompt = a._build_system_prompt()
+    assert "Kanban task execution protocol" in prompt
+    assert "Kanban board guidance" not in prompt
+
+
+def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
+    """A worker session (HERMES_KANBAN_TASK set) MUST have the full
+    lifecycle guidance in its system prompt."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from tools.registry import invalidate_check_fn_cache
+    from model_tools import _clear_tool_defs_cache
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+    from run_agent import AIAgent
+    a = AIAgent(
+        api_key="test",
+        base_url="https://openrouter.ai/api/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    prompt = a._build_system_prompt()
+    # Header phrase (identity-free — SOUL.md owns identity, layer 3 is protocol)
+    assert "Kanban task execution protocol" in prompt
+    # Lifecycle signals
+    assert "kanban_show()" in prompt
+    assert "kanban_complete" in prompt
+    assert "kanban_block" in prompt
+    assert "kanban_create" in prompt
+    # Anti-shell guidance
+    assert "Do not shell out" in prompt or "tools — they work" in prompt
+
 
 def test_kanban_guidance_prompt_size_bounded():
     """KANBAN_GUIDANCE is injected into every kanban-capable process's system

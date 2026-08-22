@@ -516,6 +516,28 @@ class TestWeixinContentDedup:
     with different message_ids, bypassing message_id deduplication.
     """
 
+    def test_outbound_echo_from_bot_account_is_not_ingested(self):
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        adapter._dedup.is_duplicate = Mock(return_value=False)
+        adapter._token_store.set = Mock()
+
+        outbound_echo = {
+            "from_user_id": adapter._account_id,
+            "message_id": "outbound-event-id",
+            "context_token": "must-not-be-stored",
+            "item_list": [
+                {"type": 1, "text_item": {"text": "sent notification echo"}}
+            ],
+        }
+
+        asyncio.run(adapter._process_message(outbound_echo))
+
+        assert adapter.handle_message.await_count == 0
+        adapter._dedup.is_duplicate.assert_not_called()
+        adapter._token_store.set.assert_not_called()
+
     def test_duplicate_content_with_different_message_ids_is_dropped(self):
         adapter = _make_adapter()
         adapter._poll_session = object()
@@ -827,4 +849,3 @@ class TestWeixinVoiceGatewayHandoff:
             "VOICE event body leaked Tencent's STT text — runner would trust "
             "the wrong transcript instead of re-transcribing (#27300)."
         )
-

@@ -574,10 +574,29 @@ class GatewayAuthorizationMixin:
             except Exception:
                 pass
 
-        # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
+        # Weixin may explicitly open groups while keeping DMs paired or
+        # allowlisted. Its startup guard uses WEIXIN_ALLOW_ALL_USERS as the
+        # opt-in for group_policy=open, but that flag must not silently open
+        # restrictive DMs. Other platforms and open Weixin DMs keep the
+        # existing allow-all behavior.
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
-        if platform_allow_all_var and _auth_env(platform_allow_all_var).lower() in {"true", "1", "yes"}:
-            return True
+        platform_allow_all = bool(
+            platform_allow_all_var
+            and _auth_env(platform_allow_all_var).lower() in {"true", "1", "yes"}
+        )
+        if platform_allow_all:
+            if (
+                source.platform == Platform.WEIXIN
+                and source.chat_type not in {"group", "forum", "channel"}
+            ):
+                dm_policy = self._adapter_dm_policy(
+                    source.platform,
+                    profile=source.profile,
+                )
+                if dm_policy not in {"pairing", "allowlist", "disabled"}:
+                    return True
+            else:
+                return True
 
         # Adapter-verified role auth: the Discord adapter already confirmed the
         # user holds a role in DISCORD_ALLOWED_ROLES before dispatching the message.

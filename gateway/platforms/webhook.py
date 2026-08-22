@@ -460,6 +460,14 @@ class WebhookAdapter(BasePlatformAdapter):
             self._prune_seen_deliveries(now)
         return True
 
+    def _release_delivery_id(self, delivery_id: str) -> None:
+        """Release a direct-delivery ID when the target did not accept it.
+
+        Idempotency is committed only after a successful ``deliver_only``
+        target send. Agent-mode IDs keep their existing at-most-once behavior.
+        """
+        self._seen_deliveries.pop(delivery_id, None)
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
 
@@ -879,6 +887,7 @@ class WebhookAdapter(BasePlatformAdapter):
                     route_name,
                     delivery_id,
                 )
+                self._release_delivery_id(delivery_id)
                 return web.json_response(
                     {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id},
                     status=502,
@@ -902,6 +911,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 delivery["deliver"],
                 result.error,
             )
+            self._release_delivery_id(delivery_id)
             return web.json_response(
                 {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id},
                 status=502,

@@ -470,9 +470,15 @@ TOOL_CATEGORIES = {
                 ],
                 "stt_provider": "elevenlabs",
             },
-            # Mistral Voxtral STT intentionally omitted — mistralai PyPI
-            # package quarantined (malicious 2.4.6 release, 2026-05-12).
-            # Restore alongside the dashboard stt.provider option.
+            {
+                "name": "Mistral Voxtral",
+                "badge": "free",
+                "tag": "Voxtral 25_05 — Mistral's STT",
+                "env_vars": [
+                    {"key": "MISTRAL_API_KEY", "prompt": "Mistral API key", "url": "https://console.mistral.ai/api-keys"},
+                ],
+                "stt_provider": "mistral",
+            },
             {
                 "name": "DeepInfra",
                 "badge": "paid",

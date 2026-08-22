@@ -14,7 +14,17 @@
  * tree AFTER that stamp commit, the running renderer is provably missing
  * desktop changes the installed runtime has:
  *
+ *   git merge-base --is-ancestor <stampCommit> HEAD
  *   git rev-list --count <stampCommit>..HEAD -- apps/desktop
+ *
+ * The ancestry check has to come first, because `A..HEAD` only means "how far
+ * HEAD is ahead of A" when A is an ancestor of HEAD. When it is not, the range
+ * degenerates to HEAD's own history and the count stops describing skew at
+ * all: an update that rewrote the tree into a synthetic root leaves a stamp
+ * commit that still resolves but sits on a disconnected graph, so the count is
+ * a permanent >= 1 even when apps/desktop is byte-identical (#92233). Resolving
+ * the stamp is not enough — an unknown commit already exits non-zero below, but
+ * a merely *unrelated* one exits 0 with a positive count.
  *
  * Scoping to `apps/desktop/` keeps this quiet for the common case where the
  * repo advances with agent-only changes — a shell built before those is not
@@ -22,8 +32,9 @@
  *
  * Fail-quiet by design: no stamp (dev runs), a fallback all-zero stamp
  * (non-git build), an unknown commit (stamp predates a shallow clone's
- * history), or any git failure all report "not stale". This warning must
- * never false-positive — it tells users their install is torn.
+ * history), a stamp that is not an ancestor of HEAD, or any git failure all
+ * report "not stale". This warning must never false-positive — it tells users
+ * their install is torn.
  *
  * Pure + injectable so it is testable without booting Electron or git.
  */
@@ -63,6 +74,25 @@ export async function detectBundleSkew(
   }
 
   try {
+    // Exit 0 = ancestor, 1 = unrelated or diverged, anything else = git could
+    // not answer (unknown object, shallow clone, not a repo). Only the first
+    // makes the commit count below a statement about skew, and the other two
+    // are the same "unknowable" the branches above already answer quietly.
+    //
+    // Deliberately not falling back to comparing apps/desktop CONTENT here.
+    // Differing content would prove the build and the tree disagree, but not
+    // which way round: a user sitting on an older checkout than their build
+    // would be told "app build out of date" backwards. Ancestry is what makes
+    // this a proof that the renderer PREDATES the tree, which is the claim the
+    // warning actually makes.
+    const ancestry = await runGit(['merge-base', '--is-ancestor', stamp.commit, 'HEAD'], {
+      cwd: repoRoot
+    })
+
+    if (ancestry.code !== 0) {
+      return NOT_STALE
+    }
+
     const result = await runGit(['rev-list', '--count', `${stamp.commit}..HEAD`, '--', 'apps/desktop'], {
       cwd: repoRoot
     })

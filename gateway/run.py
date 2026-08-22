@@ -22421,7 +22421,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
             media_files, cleaned = adapter.extract_media(response)
-            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            safe_media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            # The streamed text has already been shown.  Slack otherwise only
+            # gets a gateway log entry when an explicit attachment directive is
+            # rejected by the safety boundary, which looks like a successful
+            # delivery to the user.  Keep the rejected path in logs only.
+            delivery_failed = len(safe_media_files) != len(media_files)
+            media_files = safe_media_files
             # Do NOT deduplicate explicit MEDIA tags against prior turns here
             # (#73771). This rescan is already EXPLICIT-ONLY (see docstring):
             # a MEDIA: directive in the final streamed reply is the model
@@ -22467,37 +22473,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(
+                    result = await adapter.send_multiple_images(
                         chat_id=event.source.chat_id,
                         images=images,
                         metadata=_thread_meta,
                     )
+                    if result is False or getattr(result, "success", True) is False:
+                        delivery_failed = True
                 except Exception as e:
+                    delivery_failed = True
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
 
             for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        result = await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
                             metadata=_thread_meta,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        result = await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
+                        result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=media_path,
                             metadata=_thread_meta,
                         )
+                    if result is False or getattr(result, "success", True) is False:
+                        delivery_failed = True
                 except Exception as e:
+                    delivery_failed = True
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+
+            if delivery_failed and event.source.platform == Platform.SLACK:
+                try:
+                    await adapter.send(
+                        event.source.chat_id,
+                        "I couldn't attach one or more requested files, so they were not delivered.",
+                        metadata=_thread_meta,
+                    )
+                except Exception:
+                    logger.debug("[%s] Post-stream delivery failure notice failed", adapter.name)
 
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)

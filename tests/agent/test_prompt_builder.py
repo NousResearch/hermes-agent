@@ -44,6 +44,11 @@ from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatu
 
 
 class TestGuidanceConstants:
+    def test_slack_attachment_guidance_uses_approved_document_cache(self):
+        slack = PLATFORM_HINTS["slack"]
+        assert "$HERMES_HOME/cache/documents" in slack
+        assert "do not claim it was delivered" in slack
+
     def test_memory_guidance_discourages_task_logs(self):
         assert "durable facts" in MEMORY_GUIDANCE
         assert "Do NOT save task progress" in MEMORY_GUIDANCE
@@ -1056,5 +1061,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

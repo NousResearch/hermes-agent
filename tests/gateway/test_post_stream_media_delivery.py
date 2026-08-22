@@ -14,6 +14,7 @@ there. This file pins the asymmetry.
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from urllib.parse import quote
 
 import pytest
 
@@ -56,6 +57,7 @@ def _adapter():
         send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
         send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
         send_multiple_images=AsyncMock(return_value=SendResult(success=True, message_id="imgs")),
+        send=AsyncMock(return_value=SendResult(success=True, message_id="notice")),
     )
 
 
@@ -108,6 +110,87 @@ async def test_explicit_media_tag_still_delivers_post_stream(tmp_path, monkeypat
     adapter.send_multiple_images.assert_awaited_once()
     images_kwargs = adapter.send_multiple_images.await_args.kwargs
     assert images_kwargs["chat_id"] == "C123CHAN"
-    assert str(media_file) in images_kwargs["images"][0][0]
+    assert images_kwargs["images"][0][0] == f"file://{quote(str(media_file))}"
 
 
+@pytest.mark.asyncio
+async def test_streamed_slack_delivers_one_cached_pdf(tmp_path, monkeypatch):
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "report.pdf")
+    adapter = _adapter()
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({}), f"Your report is ready.\nMEDIA:{media_file}", _event(), adapter,
+    )
+
+    adapter.send_document.assert_awaited_once()
+    assert adapter.send_document.await_args.kwargs["file_path"] == str(media_file)
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streamed_slack_delivers_multiple_cached_pdfs(tmp_path, monkeypatch):
+    first = _allowed_media_path(tmp_path, monkeypatch, "first.pdf")
+    second = _allowed_media_path(tmp_path, monkeypatch, "second.pdf")
+    adapter = _adapter()
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({}), f"MEDIA:{first}\nMEDIA:{second}", _event(), adapter,
+    )
+
+    assert adapter.send_document.await_count == 2
+    assert [call.kwargs["file_path"] for call in adapter.send_document.await_args_list] == [
+        str(first), str(second),
+    ]
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streamed_slack_rejected_media_path_gets_generic_failure_notice(tmp_path, monkeypatch):
+    _allowed_media_path(tmp_path, monkeypatch, "allowed.pdf")
+    monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+    monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+    rejected = tmp_path / "outside-cache.pdf"
+    rejected.write_bytes(b"pdf")
+    adapter = _adapter()
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({}), f"MEDIA:{rejected}", _event(), adapter,
+    )
+
+    adapter.send_document.assert_not_awaited()
+    adapter.send.assert_awaited_once()
+    notice = adapter.send.await_args.args[1]
+    assert "couldn't attach" in notice
+    assert str(rejected) not in notice
+
+
+@pytest.mark.asyncio
+async def test_streamed_slack_failed_pdf_upload_gets_generic_failure_notice(tmp_path, monkeypatch):
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "report.pdf")
+    adapter = _adapter()
+    adapter.send_document.return_value = SendResult(success=False, error="upload failed")
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({}), f"MEDIA:{media_file}", _event(), adapter,
+    )
+
+    adapter.send.assert_awaited_once()
+    notice = adapter.send.await_args.args[1]
+    assert "couldn't attach" in notice
+    assert str(media_file) not in notice
+
+
+@pytest.mark.asyncio
+async def test_streamed_slack_raised_pdf_upload_gets_generic_failure_notice(tmp_path, monkeypatch):
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "report.pdf")
+    adapter = _adapter()
+    adapter.send_document.side_effect = RuntimeError("provider unavailable")
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({}), f"MEDIA:{media_file}", _event(), adapter,
+    )
+
+    adapter.send.assert_awaited_once()
+    notice = adapter.send.await_args.args[1]
+    assert "couldn't attach" in notice
+    assert str(media_file) not in notice

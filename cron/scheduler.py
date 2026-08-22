@@ -3928,6 +3928,7 @@ def _windows_cron_bootstrap_argv(
 def _run_job_script(
     script_path: str,
     workdir: Optional[str] = None,
+    job_env: Optional[dict[str, str]] = None,
     cancel_event: Optional[_CancelEventLike] = None,
 ) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
@@ -4059,6 +4060,8 @@ def _run_job_script(
             }
         env = build_subprocess_env()
         env.update(env_overlay)
+        if job_env:
+            env.update(job_env)
         # Use the job's workdir as the subprocess cwd when configured,
         # otherwise default to the scripts-dir parent (back-compat).
         # NEVER mutate the Python process cwd — that would leak into
@@ -4121,6 +4124,7 @@ def _run_job_script_with_claim_heartbeat(
     job: dict,
     script_path: str,
     workdir: Optional[str] = None,
+    job_env: Optional[dict[str, str]] = None,
     cancel_event: Optional[_CancelEventLike] = None,
 ) -> tuple[bool, str]:
     """Run a cron script while keeping its owned one-shot claim fresh.
@@ -4143,7 +4147,7 @@ def _run_job_script_with_claim_heartbeat(
         and schedule.get("kind") == "once"
         and owner
     ):
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script(script_path, workdir=workdir, job_env=job_env, cancel_event=cancel_event)
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -4174,10 +4178,10 @@ def _run_job_script_with_claim_heartbeat(
             job_id,
             exc_info=True,
         )
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script(script_path, workdir=workdir, job_env=job_env, cancel_event=cancel_event)
 
     try:
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script(script_path, workdir=workdir, job_env=job_env, cancel_event=cancel_event)
     finally:
         stop.set()
         # Event.wait() wakes immediately.  Keep completion bounded if the
@@ -5118,7 +5122,14 @@ def run_job(
 
         try:
             ok, output = _run_job_script_with_claim_heartbeat(
-                job, script_path, workdir=_job_workdir, cancel_event=cancel_event,
+                job,
+                script_path,
+                workdir=_job_workdir,
+                job_env={
+                    "HERMES_CRON_JOB_ID": str(job_id),
+                    "HERMES_CRON_OCCURRENCE_AT": str(job.get("next_run_at") or ""),
+                },
+                cancel_event=cancel_event,
             )
         except Exception as exc:
             logger.exception(

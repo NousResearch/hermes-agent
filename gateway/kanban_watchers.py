@@ -79,15 +79,19 @@ def _run_in_fresh_context(func: Callable[..., Any], /, *args: Any) -> Any:
 
     ``asyncio.to_thread`` copies the calling task's context onto the worker
     thread. Supervised Kanban ticks are process-owned writers; if that copy
-    still carries a ``delegate_task`` child marker (spawn-time snapshot or a
-    later polluted task), ``write_txn`` false-trips. An empty Context keeps
-    the DB guard intact for real children without exempting dispatcher writes.
+    still carries a ``delegate_task`` child marker, ``write_txn``
+    false-trips. Since watchers spawn from a fresh ``Context``
+    (``_spawn_supervised``), this offload-boundary scrub is defense in
+    depth: it covers non-supervised spawn paths and any task context frozen
+    before spawn isolation shipped. An empty Context keeps the DB guard
+    intact for real children without exempting dispatcher writes.
     """
     return Context().run(func, *args)
 
 
 async def _to_thread_process_service(func: Callable[..., Any], /, *args: Any) -> Any:
-    """Offload blocking dispatcher work without inheriting request-local ContextVars."""
+    """Offload blocking process-service work (dispatcher + notifier writers)
+    without inheriting request-local ContextVars."""
     return await asyncio.to_thread(_run_in_fresh_context, func, *args)
 
 
@@ -496,7 +500,7 @@ class GatewayKanbanWatchersMixin:
                     except ValueError:
                         # Unknown platform string; skip and advance cursor so
                         # we don't replay forever.
-                        await asyncio.to_thread(
+                        await _to_thread_process_service(
                             self._kanban_advance, sub, d["cursor"], board_slug,
                         )
                         continue
@@ -516,7 +520,7 @@ class GatewayKanbanWatchersMixin:
                             "kanban notifier: adapter %s disconnected before delivery for %s; rewinding claim",
                             platform_str, sub["task_id"],
                         )
-                        await asyncio.to_thread(
+                        await _to_thread_process_service(
                             self._kanban_rewind,
                             sub,
                             d["cursor"],
@@ -745,10 +749,10 @@ class GatewayKanbanWatchersMixin:
                                     "%s on %s after %d consecutive send failures",
                                     sub["task_id"], platform_str, fails,
                                 )
-                                await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
+                                await _to_thread_process_service(self._kanban_unsub, sub, board_slug)
                                 sub_fail_counts.pop(sub_key, None)
                             else:
-                                await asyncio.to_thread(
+                                await _to_thread_process_service(
                                     self._kanban_rewind,
                                     sub,
                                     d["cursor"],
@@ -868,13 +872,13 @@ class GatewayKanbanWatchersMixin:
                                         "%s on %s after %d consecutive wake failures",
                                         sub["task_id"], platform_str, fails,
                                     )
-                                    await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
+                                    await _to_thread_process_service(self._kanban_unsub, sub, board_slug)
                                     sub_fail_counts.pop(sub_key, None)
                                 else:
                                     # Rewind the pre-send claim so the next
                                     # tick retries the self-post — the event
                                     # is NOT lost.
-                                    await asyncio.to_thread(
+                                    await _to_thread_process_service(
                                         self._kanban_rewind,
                                         sub,
                                         d["cursor"],
@@ -968,13 +972,13 @@ class GatewayKanbanWatchersMixin:
                                         "%s on %s after %d consecutive wake failures",
                                         sub["task_id"], platform_str, fails,
                                     )
-                                    await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
+                                    await _to_thread_process_service(self._kanban_unsub, sub, board_slug)
                                     sub_fail_counts.pop(sub_key, None)
                                 else:
                                     # Rewind the pre-send claim so the next
                                     # tick retries the wake — the event is
                                     # NOT lost.
-                                    await asyncio.to_thread(
+                                    await _to_thread_process_service(
                                         self._kanban_rewind,
                                         sub,
                                         d["cursor"],
@@ -988,7 +992,7 @@ class GatewayKanbanWatchersMixin:
                         # push subs): advance cursor. The cursor is the dedup
                         # mechanism — it prevents re-delivery of the same
                         # event on subsequent ticks.
-                        await asyncio.to_thread(
+                        await _to_thread_process_service(
                             self._kanban_advance, sub, d["cursor"], board_slug,
                         )
                         if not _is_push_adapter:
@@ -1018,7 +1022,7 @@ class GatewayKanbanWatchersMixin:
                                     sub["task_id"], _wk_err, exc_info=True,
                                 )
                         if task_terminal:
-                            await asyncio.to_thread(
+                            await _to_thread_process_service(
                                 self._kanban_unsub, sub, board_slug,
                             )
             except Exception as exc:

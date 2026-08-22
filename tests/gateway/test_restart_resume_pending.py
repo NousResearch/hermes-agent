@@ -1102,7 +1102,8 @@ async def test_startup_restore_gate_releases_when_boot_path_send_hangs(
         return None
 
     runner._send_restart_notification = never_returns
-    runner._redeliver_pending_obligations = AsyncMock(return_value=0)
+    runner._claim_pending_obligations = AsyncMock(return_value=[])
+    runner._redeliver_claimed_obligations = AsyncMock(return_value=0)
 
     seen: list[str] = []
 
@@ -1133,7 +1134,11 @@ async def test_startup_restore_gate_releases_when_boot_path_send_hangs(
     )
     assert runner._startup_restore_queue == []
     assert runner._startup_restore_in_progress is False
-    runner._redeliver_pending_obligations.assert_not_awaited()
+    # The DB half (claim + resume clear) runs inline BEFORE the abandonable
+    # send task, so it must have completed even though the boot send hung;
+    # the network half never ran because the hung notification precedes it.
+    runner._claim_pending_obligations.assert_awaited_once()
+    runner._redeliver_claimed_obligations.assert_not_awaited()
 
     hung.set()
     leftover = [t for t in list(runner._background_tasks) if not t.done()]
@@ -1149,13 +1154,15 @@ async def test_startup_boot_sends_still_run_when_they_finish_quickly(monkeypatch
     runner, _adapter = make_restart_runner()
     runner._background_tasks = set()
     runner._send_restart_notification = AsyncMock(return_value=None)
-    runner._redeliver_pending_obligations = AsyncMock(return_value=0)
+    runner._claim_pending_obligations = AsyncMock(return_value=[])
+    runner._redeliver_claimed_obligations = AsyncMock(return_value=0)
 
     await runner._await_startup_boot_sends(
         planned_restart_notification_pending=False,
     )
 
     runner._send_restart_notification.assert_awaited_once()
-    runner._redeliver_pending_obligations.assert_awaited_once()
+    runner._claim_pending_obligations.assert_awaited_once()
+    runner._redeliver_claimed_obligations.assert_awaited_once()
 
 

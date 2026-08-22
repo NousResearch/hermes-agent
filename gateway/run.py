@@ -11920,12 +11920,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         startup-restore gate.  Logs a late failure that would otherwise be
         swallowed once the task is discarded from ``_background_tasks``.
         Cancellation is expected (shutdown) and is not an error."""
+        GatewayRunner._log_late_background_failure(
+            task,
+            "background startup auto-resume task failed after gate release",
+            level=logging.DEBUG,
+        )
+
+    @staticmethod
+    def _log_late_background_failure(
+        task: "asyncio.Task", message: str, *, level: int = logging.WARNING
+    ) -> None:
+        """Shared done-callback body for boot-path tasks that outlive the
+        startup-restore gate: surface a late failure that would otherwise be
+        swallowed once the task is discarded from ``_background_tasks``.
+        Cancellation is expected (shutdown) and is not an error."""
         if task.cancelled():
             return
         exc = task.exception()
         if exc is not None:
-            logger.debug(
-                "background startup auto-resume task failed after gate release",
+            logger.log(
+                level,
+                message,
                 exc_info=(type(exc), exc, exc.__traceback__),
             )
 
@@ -11945,7 +11960,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         This uses the same bounded ``asyncio.wait`` the resume gate already
         uses: on timeout we return and let the sends finish in the
         background. Tasks are not cancelled.
+
+        The ledger claim + ``resume_pending`` clear happen INLINE here,
+        before the send task exists: they are pure DB work (no network,
+        bounded by claimed-row count), and deferring them into the send
+        task left a window where a hung restart notification ahead of the
+        redelivery step let the gate expire with zero rows claimed — the
+        resume scheduler then replayed turns whose answers were already in
+        the ledger, and the background task later redelivered them too
+        (duplicate delivery + re-paid turn).
         """
+        claimed = await self._claim_pending_obligations()
+
         async def _boot_sends() -> None:
             await self._send_restart_notification()
             if planned_restart_notification_pending:
@@ -11955,7 +11981,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 finally:
                     _clear_planned_restart_notification()
-            await self._redeliver_pending_obligations()
+            await self._redeliver_claimed_obligations(claimed)
 
         boot_task = asyncio.create_task(_boot_sends())
         timeout = _startup_restore_drain_timeout_secs()
@@ -11982,43 +12008,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     @staticmethod
     def _log_background_boot_send_result(task: "asyncio.Task") -> None:
         """Done-callback for boot-path sends that outlived the restore gate."""
-        if task.cancelled():
-            return
-        exc = task.exception()
-        if exc is not None:
-            logger.warning(
-                "background boot-path send failed after gate release: %s",
-                exc,
-                exc_info=(type(exc), exc, exc.__traceback__),
-            )
+        GatewayRunner._log_late_background_failure(
+            task, "background boot-path send failed after gate release: see traceback"
+        )
 
-    async def _redeliver_pending_obligations(self) -> int:
-        """Redeliver final responses recorded in the delivery ledger by a
-        previous (now dead) gateway process.
+    async def _claim_pending_obligations(self) -> list:
+        """Claim recoverable delivery-ledger rows and clear their
+        ``resume_pending`` flags. Pure DB work — no network sends.
 
-        Runs at startup BEFORE ``_schedule_resume_pending_sessions``. A
+        Runs INLINE at startup BEFORE ``_schedule_resume_pending_sessions``
+        and before the (bounded, abandonable) boot-send task exists. A
         session with a recoverable obligation already produced its answer —
-        the turn completed and only delivery is owed — so this method sends
-        the stored text and clears ``resume_pending`` for that session,
-        preventing the resume path from re-running (and re-paying for) a
-        turn whose output we hold.
+        the turn completed and only delivery is owed — so clearing
+        ``resume_pending`` here prevents the resume path from re-running
+        (and re-paying for) a turn whose output we hold, regardless of how
+        long the sends ahead of redelivery take (#91969).
 
         Crash-ambiguity contract (see gateway/delivery_ledger.py):
         rows that were mid-send or previously rejected carry a visible
         recovered-reply marker so a possible duplicate is labeled, never
-        silent. Returns the number of redeliveries attempted.
+        silent. Returns the claimed rows for redelivery.
         """
         try:
             from gateway.delivery_ledger import (
-                RECOVERED_MARKER,
                 ledger_enabled,
-                mark_delivered,
-                mark_failed,
                 sweep_recoverable,
             )
 
             if not await asyncio.to_thread(ledger_enabled):
-                return 0
+                return []
             # Only claim rows we can actually send this boot: self.adapters
             # holds a platform only after its connect() succeeded, and each
             # claim spends one of the row's three redelivery attempts.
@@ -12030,17 +12048,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         except Exception:
             logger.debug("delivery ledger sweep failed", exc_info=True)
-            return 0
+            return []
         if not claimed:
-            return 0
+            return []
 
         # Clear resume_pending for EVERY claimed row up front, before any
         # send. Claiming already spent one of the row's redelivery attempts —
         # the answer is in the ledger, so the resume path must never re-run
-        # these turns. Doing this per-row as the loop reaches each send left
-        # a window: when a slow/flood-limited send held the loop past the
-        # inbound-gate timeout, _schedule_resume_pending_sessions could
-        # replay turns for rows the loop had not reached yet (#91969).
+        # these turns (#91969).
         for row in claimed:
             session_key = row.get("session_key") or ""
             if not session_key:
@@ -12052,6 +12067,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "clear_resume_pending failed for %s", session_key,
                     exc_info=True,
                 )
+        return claimed
+
+    async def _redeliver_claimed_obligations(self, claimed: list) -> int:
+        """Redeliver final responses for rows already claimed (and
+        resume-cleared) by :meth:`_claim_pending_obligations`.
+
+        Network half of the split — runs inside the bounded boot-send task,
+        so a flood-limited send can be abandoned by the restore gate without
+        reopening the turn-replay window. Returns redeliveries attempted.
+        """
+        if not claimed:
+            return 0
+        try:
+            from gateway.delivery_ledger import (
+                RECOVERED_MARKER,
+                mark_delivered,
+                mark_failed,
+            )
+        except Exception:
+            logger.debug("delivery ledger import failed", exc_info=True)
+            return 0
 
         redelivered = 0
         for row in claimed:
@@ -12106,6 +12142,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 logger.debug("delivery ledger update failed", exc_info=True)
         return redelivered
+
+    async def _redeliver_pending_obligations(self) -> int:
+        """Claim + redeliver in one call — composition of
+        :meth:`_claim_pending_obligations` and
+        :meth:`_redeliver_claimed_obligations`.
+
+        Kept as the stable public shape (tests and any external callers
+        drive this name); the startup path calls the two halves separately
+        so the DB half can run inline before the abandonable send task.
+        """
+        return await self._redeliver_claimed_obligations(
+            await self._claim_pending_obligations()
+        )
 
     def _schedule_resume_pending_sessions(self, platform=None) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.

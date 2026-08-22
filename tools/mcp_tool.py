@@ -94,6 +94,7 @@ Thread safety:
     free-threading).
 """
 
+import ast
 import asyncio
 import contextvars
 import concurrent.futures
@@ -106,6 +107,7 @@ import math
 import os
 import random
 import re
+import shlex
 import shutil
 import sys
 import threading
@@ -1038,6 +1040,48 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
         resolved_env = _prepend_path(resolved_env, command_dir)
 
     return resolved_command, resolved_env
+
+
+def _coerce_mcp_stdio_args(args: Any) -> List[str]:
+    """Turn config ``args`` into an argv list.
+
+    YAML can persist a list as a quoted JSON/Python-literal string
+    (``args: '["-y", "pkg"]'``). Unpacking that string into the watchdog
+    wrapper treats every character as an argv token — ``[`` becomes the
+    first argument and ``npx`` dies with ``Invalid tag name "["`` (#79519).
+    Legacy plain strings are shell-split so ``args: -y 'pkg with spaces'``
+    remains usable. Structured-looking values must decode to a list; failing
+    clearly is safer than spawning a malformed one-token command.
+    """
+    if args is None:
+        return []
+    if isinstance(args, (list, tuple)):
+        return [str(item) for item in args]
+    if isinstance(args, str):
+        text = args.strip()
+        if not text:
+            return []
+        if text[:1] in "[{":
+            try:
+                parsed: Any = json.loads(text)
+            except json.JSONDecodeError:
+                try:
+                    parsed = ast.literal_eval(text)
+                except (ValueError, SyntaxError) as exc:
+                    raise ValueError(
+                        "MCP stdio args look structured but are not a valid "
+                        "JSON or Python list"
+                    ) from exc
+            if not isinstance(parsed, (list, tuple)):
+                raise ValueError(
+                    "MCP stdio args must decode to a JSON or Python list"
+                )
+            return [str(item) for item in parsed]
+        try:
+            return shlex.split(args)
+        except ValueError as exc:
+            raise ValueError("MCP stdio args contain invalid shell quoting") from exc
+    return [str(args)]
 
 
 def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
@@ -3010,7 +3054,7 @@ class MCPServerTask:
             )
 
         command = config.get("command")
-        args = config.get("args", [])
+        args = _coerce_mcp_stdio_args(config.get("args", []))
         user_env = config.get("env")
 
         if not command:

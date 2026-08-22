@@ -38,3 +38,37 @@ def test_wrap_command_uses_stable_parent_pid_and_preserves_command_tail():
         *command_args,
     ]
     assert "--create-time" not in wrapped_args
+
+
+def test_coerce_mcp_stdio_args_parses_json_and_python_repr():
+    """A YAML-quoted list must not be unpacked as characters (#79519)."""
+    assert mcp_tool._coerce_mcp_stdio_args(["-y", "pkg"]) == ["-y", "pkg"]
+    assert mcp_tool._coerce_mcp_stdio_args('["-y", "hermes-atlas-mcp"]') == [
+        "-y",
+        "hermes-atlas-mcp",
+    ]
+    assert mcp_tool._coerce_mcp_stdio_args("['-y', 'hermes-atlas-mcp']") == [
+        "-y",
+        "hermes-atlas-mcp",
+    ]
+    assert mcp_tool._coerce_mcp_stdio_args(None) == []
+    assert mcp_tool._coerce_mcp_stdio_args("-y") == ["-y"]
+    assert mcp_tool._coerce_mcp_stdio_args("-y 'pkg with spaces'") == [
+        "-y",
+        "pkg with spaces",
+    ]
+    assert mcp_tool._coerce_mcp_stdio_args('"npx"') == ["npx"]
+
+
+@pytest.mark.parametrize("invalid_args", ['{"flag": true}', "[not valid]"])
+def test_coerce_mcp_stdio_args_rejects_non_list_structured_values(invalid_args):
+    with pytest.raises(ValueError, match="JSON or Python list|must decode"):
+        mcp_tool._coerce_mcp_stdio_args(invalid_args)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="watchdog wrapping is POSIX-only")
+def test_wrap_does_not_split_stringified_args_into_characters():
+    coerced = mcp_tool._coerce_mcp_stdio_args('["-y", "hermes-atlas-mcp"]')
+    _command, wrapped_args = mcp_tool._wrap_command_with_watchdog("npx", coerced)
+    assert wrapped_args[-3:] == ["npx", "-y", "hermes-atlas-mcp"]
+    assert "[" not in wrapped_args

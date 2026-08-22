@@ -382,12 +382,12 @@ async function removeLockfile(ssh, ownershipId) {
 }
 
 async function remotePidAlive(ssh, pid) {
-  if (!pid || !Number.isInteger(Number(pid))) {
+  if (!Number.isInteger(pid) || pid <= 0 || pid > 4194304) {
     return false
   }
 
   try {
-    const out = (await ssh.exec(`kill -0 ${Number(pid)} 2>/dev/null && echo ALIVE || echo DEAD`)).trim()
+    const out = (await ssh.exec(`kill -0 ${pid} 2>/dev/null && echo ALIVE || echo DEAD`)).trim()
 
     return out === 'ALIVE'
   } catch (cause) {
@@ -409,30 +409,40 @@ async function pidIsOurDashboard(
   ownershipId = '',
   profile = ''
 ) {
-  if (!pid || !/^[0-9a-f]{16}$/.test(String(spawnNonce || '')) || !hermesPath) {
+  if (
+    !Number.isInteger(pid) ||
+    pid <= 0 ||
+    pid > 4194304 ||
+    !/^[0-9a-f]{16}$/.test(String(spawnNonce || '')) ||
+    (ownershipId && !/^[0-9a-f]{32}$/.test(String(ownershipId))) ||
+    !hermesPath
+  ) {
     return false
   }
 
   try {
     const script =
       'import os,shlex,subprocess,sys\n' +
-      `pid=${Number(pid)}\n` +
-      `expected=os.path.expanduser(${shq(hermesPath)})\n` +
+      `pid=${pid}\n` +
+      `expected=os.path.expanduser(${JSON.stringify(String(hermesPath))})\n` +
       // The installer-facing launcher is intentionally preserved for invocation
       // (#74411), but it may `exec python <install-dir>/hermes`, leaving neither
       // launcher nor HERMES_HOME-derived entrypoint in argv. The ownership-scoped
       // token path + random nonce + exact profile below are the alternative proof.
-      `hermes_home=os.path.expanduser(${shq(hermesHome)}) if ${shq(hermesHome)} else ""\n` +
+      `hermes_home=os.path.expanduser(${JSON.stringify(String(hermesHome))}) if ${JSON.stringify(String(hermesHome))} else ""\n` +
       'expected_entries={expected}\n' +
       'if hermes_home:\n' +
       ' expected_entries.add(os.path.join(hermes_home,"hermes-agent","venv","bin","hermes"))\n' +
-      `expected_token=os.path.expanduser(${shq(ownershipId ? spawnTokenPath(ownershipId, spawnNonce) : '')})\n` +
-      `expected_profile=${shq(profile)}\n` +
-      `nonce=${shq(spawnNonce)}\n` +
+      ' expected_entries.add(os.path.join(hermes_home,"hermes-agent","hermes"))\n' +
+      `expected_token=os.path.expanduser(${JSON.stringify(ownershipId ? spawnTokenPath(ownershipId, spawnNonce) : '')})\n` +
+      `expected_profile=${JSON.stringify(String(profile))}\n` +
+      `nonce=${JSON.stringify(String(spawnNonce))}\n` +
       'try:\n' +
       ' raw=open(f"/proc/{pid}/cmdline","rb").read()\n' +
       ' args=[x.decode("utf-8","surrogateescape") for x in raw.split(b"\\0") if x]\n' +
+      ' argv_exact=True\n' +
       'except OSError:\n' +
+      ' argv_exact=False\n' +
       ' try:\n' +
       '  line=subprocess.check_output(["ps","-ww","-o","command=","-p",str(pid)],text=True).strip()\n' +
       ' except subprocess.CalledProcessError:\n' +
@@ -442,22 +452,33 @@ async function pidIsOurDashboard(
       'ok=False\n' +
       'try:\n' +
       ' serve=args.index("serve")\n' +
-      ' owner=args.index("--ssh-owner-nonce",serve+1)\n' +
-      ' token=args.index("--ssh-session-token-file",serve+1) if expected_token else -1\n' +
+      ' unique_options=("--ssh-owner-nonce","--ssh-session-token-file","--host","--port")\n' +
+      ' if any(sum(arg==name or arg.startswith(name+"=") for arg in args)>1 for name in unique_options):raise ValueError\n' +
+      ' def option(name,start=0,end=None):\n' +
+      '  matches=[(i,arg) for i,arg in enumerate(args[start:end],start) if arg==name or arg.startswith(name+"=")]\n' +
+      '  if len(matches)>1:raise ValueError\n' +
+      '  if not matches:return None\n' +
+      '  i,arg=matches[0]\n' +
+      '  if arg==name:\n' +
+      '   if i+1>=len(args) or (end is not None and i+1>=end):raise ValueError\n' +
+      '   return args[i+1]\n' +
+      '  return arg.split("=",1)[1]\n' +
+      ' owner=option("--ssh-owner-nonce",serve+1)\n' +
+      ' token=option("--ssh-session-token-file",serve+1)\n' +
+      ' host=option("--host",serve+1)\n' +
+      ' port=option("--port",serve+1)\n' +
+      ' profile_value=option("--profile",0,serve)\n' +
+      ' profile_count=sum(arg=="--profile" or arg.startswith("--profile=") for arg in args)\n' +
       ' isolated=args.index("--isolated",serve+1)\n' +
-      ' profile_arg=args.index("--profile") if expected_profile else -1\n' +
       ' serve_count=args.count("serve")\n' +
-      ' owner_count=args.count("--ssh-owner-nonce")\n' +
-      ' token_count=args.count("--ssh-session-token-file")\n' +
       ' isolated_count=args.count("--isolated")\n' +
-      ' profile_count=args.count("--profile")\n' +
       ' direct=args[0] in expected_entries\n' +
       ' python_entry=len(args)>1 and args[1] in expected_entries and os.path.basename(args[0]).startswith("python")\n' +
-      ' token_ok=not expected_token or args[token+1]==expected_token\n' +
+      ' token_ok=not expected_token or (token is not None and os.path.normpath(token)==os.path.normpath(expected_token))\n' +
       ' isolated_ok=isolated_count==1 and isolated>serve\n' +
-      ' profile_ok=(profile_count==1 and profile_arg<serve and args[profile_arg+1]==expected_profile) if expected_profile else profile_count==0\n' +
-      ' spawn_proof=bool(expected_token) and owner_count==1 and token_count==1 and token_ok and profile_ok\n' +
-      ' ok=(direct or python_entry or spawn_proof) and serve_count==1 and isolated_ok and owner_count==1 and args[owner+1]==nonce and token_ok and profile_ok\n' +
+      ' profile_ok=(profile_count==1 and profile_value==expected_profile) if expected_profile else profile_count==0\n' +
+      ' spawn_proof=bool(expected_token) and argv_exact and token_ok and host=="127.0.0.1" and port=="0" and profile_ok\n' +
+      ' ok=(direct or python_entry or spawn_proof) and serve_count==1 and isolated_ok and owner==nonce and token_ok and profile_ok\n' +
       'except (ValueError,IndexError):pass\n' +
       'print("OWNED" if ok else "FOREIGN")'
 

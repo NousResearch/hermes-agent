@@ -1839,8 +1839,8 @@ def _video_to_base64_data_url(video_path: Path, mime_type: Optional[str] = None)
 
 
 def _terminal_backend_is_local() -> bool:
-    backend = os.getenv("TERMINAL_ENV", "local").strip().lower()
-    return backend in ("", "local")
+    from tools.terminal_tool import resolve_terminal_backend
+    return resolve_terminal_backend() in ("", "local")
 
 
 def _is_path_like_video_source(value: str) -> bool:

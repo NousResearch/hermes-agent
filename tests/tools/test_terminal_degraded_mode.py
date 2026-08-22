@@ -27,9 +27,8 @@ def isolated_env(tmp_path, monkeypatch):
     import tools.terminal_tool as tt
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    # The one-shot config bridge would overwrite our TERMINAL_* test vars
-    # from the developer's real config.yaml; mark it as already attempted.
-    monkeypatch.setattr(tt, "_terminal_config_bridge_attempted", True)
+    # Isolated HERMES_HOME means no config.yaml exists, so the snapshot
+    # bridge cannot overwrite our TERMINAL_* test vars.
 
     def _clear():
         with tt._env_lock:

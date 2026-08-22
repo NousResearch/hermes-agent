@@ -44,8 +44,6 @@ def _clean_state(monkeypatch):
     with terminal_tool._session_cwd_lock:
         before_cwd = dict(terminal_tool._session_cwd)
         terminal_tool._session_cwd.clear()
-    # The config→env bridge is one-shot; mark it done so tests control env vars.
-    monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", True)
     yield
     terminal_tool._task_env_overrides.clear()
     terminal_tool._task_env_overrides.update(before_overrides)

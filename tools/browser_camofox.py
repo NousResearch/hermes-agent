@@ -511,6 +511,32 @@ def _delete(path: str, body: dict = None, timeout: Optional[int] = None) -> dict
 # Tool implementations
 # ---------------------------------------------------------------------------
 
+def _navigate_redirect_block_reason(final_url: str, task_id: Optional[str]) -> Optional[str]:
+    """Return ``"metadata"`` / ``"private"`` when a navigated final URL must be blocked.
+
+    Mirrors the post-redirect SSRF logic in ``browser_tool.browser_navigate`` for
+    the Camofox path: the always-blocked cloud-metadata floor fires for every
+    backend, and the ordinary private-address check fires only when the SSRF
+    guard is active (non-local terminal backend, not a local sidecar,
+    ``allow_private_urls`` unset).  ``final_url`` is the URL the Camofox server
+    reports after following redirects.  Returns ``None`` when navigation may
+    proceed.  Imports are deferred to call time to avoid a circular import.
+    """
+    if not final_url:
+        return None
+    from tools.browser_tool import (
+        _eval_ssrf_guard_active,
+        _is_always_blocked_url,
+        _is_safe_url,
+    )
+
+    if _is_always_blocked_url(final_url):
+        return "metadata"
+    if _eval_ssrf_guard_active(task_id or "default") and not _is_safe_url(final_url):
+        return "private"
+    return None
+
+
 def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
     """Navigate to a URL via Camofox."""
     try:
@@ -553,6 +579,35 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
                 f"{rewrite_info['from']} -> {rewrite_info['to']}"
             )
         vnc = get_vnc_url()
+
+        # Post-redirect SSRF check — mirror browser_tool.browser_navigate.
+        # The Camofox browser runs on the host side, so a server-side redirect
+        # from a public URL can land on a private/internal/metadata address the
+        # terminal sandbox cannot reach.  The pre-nav check only saw the initial
+        # URL, so re-check the final URL the navigate returned BEFORE returning
+        # the auto-snapshot (which would otherwise leak the private content).
+        # The always-blocked floor (cloud metadata / IMDS) is unconditional;
+        # the private-address check applies only when the SSRF guard is active
+        # (non-local terminal backend, not a local sidecar, allow_private_urls
+        # unset), matching the non-Camofox path.
+        blocked_reason = _navigate_redirect_block_reason(result["url"], task_id)
+        if blocked_reason:
+            try:
+                _post(
+                    f"/tabs/{session['tab_id']}/navigate",
+                    {"userId": session["user_id"], "url": "about:blank"},
+                    timeout=10,
+                )
+            except Exception:
+                pass  # Best-effort: clearing the private page prevents snapshot leaks.
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "Blocked: redirect landed on a cloud metadata endpoint"
+                    if blocked_reason == "metadata"
+                    else "Blocked: redirect landed on a private/internal address"
+                ),
+            }, ensure_ascii=False)
         if vnc:
             result["vnc_url"] = vnc
             result["vnc_hint"] = (
@@ -763,6 +818,13 @@ def camofox_back(task_id: Optional[str] = None) -> str:
             f"/tabs/{session['tab_id']}/back",
             {"userId": session["user_id"]},
         )
+        # Browser history can land on a private/internal/cloud-metadata address
+        # the pre-nav check never saw — re-check the post-back page, matching
+        # browser_tool.browser_back and every other content-returning entry
+        # point (snapshot/click/type/press all call _camofox_private_page_block).
+        blocked = _camofox_private_page_block(session, task_id, "go back")
+        if blocked:
+            return blocked
         return json.dumps({"success": True, "url": data.get("url", "")})
     except Exception as e:
         return tool_error(str(e), success=False)

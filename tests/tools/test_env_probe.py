@@ -317,3 +317,15 @@ class TestRunBoundedByTimeout:
         assert elapsed < 3.0, f"_run blocked on grandchild for {elapsed:.1f}s"
         assert rc == 0, f"expected clean exit, got rc={rc} err={err!r}"
         assert out == "ok"
+
+
+class TestUnknownBackendSkipsHostProbe:
+    """When the backend is unconfirmed ("unknown" — config bridge failed),
+    the host-Python probe must not report host state as the agent's terminal."""
+
+    def test_unknown_returns_empty(self, monkeypatch):
+        import tools.terminal_tool as terminal_tool
+
+        monkeypatch.setattr(terminal_tool, "resolve_terminal_backend", lambda: "unknown")
+        monkeypatch.setattr(env_probe, "_python_version_of", lambda b: None)
+        assert env_probe.get_environment_probe_line() == ""

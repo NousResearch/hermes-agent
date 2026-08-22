@@ -1000,3 +1000,33 @@ class TestNotFoundCache:
         assert _check_not_found_cache("read", "/tmp/never-exists-notify", tid) is None, (
             "notify_other_tool_call must clear cached misses"
         )
+
+
+class TestUnknownBackendFailsClosed:
+    """When the terminal backend cannot be confirmed (config bridge failed),
+    path resolution must fail closed to sandbox-relative handling rather than
+    dereferencing host paths for a possibly-isolated backend."""
+
+    def test_uses_container_paths_true_for_unknown(self, monkeypatch):
+        import tools.file_tools as file_tools
+
+        monkeypatch.setattr(
+            file_tools, "_terminal_env_type_for_task", lambda task_id="default": "unknown"
+        )
+        assert file_tools._uses_container_paths() is True
+
+    def test_uses_container_paths_false_for_local(self, monkeypatch):
+        import tools.file_tools as file_tools
+
+        monkeypatch.setattr(
+            file_tools, "_terminal_env_type_for_task", lambda task_id="default": "local"
+        )
+        assert file_tools._uses_container_paths() is False
+
+    def test_uses_container_paths_true_for_docker(self, monkeypatch):
+        import tools.file_tools as file_tools
+
+        monkeypatch.setattr(
+            file_tools, "_terminal_env_type_for_task", lambda task_id="default": "docker"
+        )
+        assert file_tools._uses_container_paths() is True

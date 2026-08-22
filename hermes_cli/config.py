@@ -3572,7 +3572,29 @@ def apply_terminal_config_to_env(
     file_has_terminal_config = isinstance(raw_terminal_cfg, dict)
     if not file_has_terminal_config:
         raw_terminal_cfg = {}
-    should_override = file_has_terminal_config if override is None else override
+
+    # Managed-scope terminal keys (administrator-pinned config in /etc/hermes)
+    # are authoritative on the same terms as explicit user keys.  Without this,
+    # an admin's ``terminal.backend: docker`` would lose to a stale
+    # ``TERMINAL_ENV=local`` in the process environment and silently downgrade
+    # an isolated backend to host execution — managed_scope §4.1 deliberately
+    # inverts the usual env-over-config precedence for pinned leaves, so the
+    # bridge must honor that inversion too.
+    from hermes_cli import managed_scope
+
+    managed_terminal_keys = {
+        key[len("terminal."):]
+        for key in managed_scope.managed_config_keys()
+        if key.startswith("terminal.")
+    }
+    managed_terminal_keys &= set(TERMINAL_CONFIG_ENV_MAP)
+    has_managed_terminal_config = bool(managed_terminal_keys)
+
+    should_override = (
+        (file_has_terminal_config or has_managed_terminal_config)
+        if override is None
+        else override
+    )
 
     cfg = config if config is not None else load_config_readonly()
     terminal_cfg = cfg.get("terminal", {}) if isinstance(cfg, dict) else {}
@@ -3580,11 +3602,19 @@ def apply_terminal_config_to_env(
         return target
 
     # A caller-supplied config is its own source of explicit keys.  For the
-    # normal merged-config path, only keys present in raw config.yaml may
-    # override existing env values; keys inherited from DEFAULT_CONFIG are
-    # backfill-only.
-    explicit_keys = terminal_cfg.keys() if config is not None else raw_terminal_cfg.keys()
-    backend_is_explicit = config is not None or "backend" in raw_terminal_cfg
+    # normal merged-config path, only keys present in raw config.yaml (user or
+    # managed) may override existing env values; keys inherited from
+    # DEFAULT_CONFIG are backfill-only.
+    explicit_keys = (
+        terminal_cfg.keys()
+        if config is not None
+        else set(raw_terminal_cfg.keys()) | managed_terminal_keys
+    )
+    backend_is_explicit = (
+        config is not None
+        or "backend" in raw_terminal_cfg
+        or "backend" in managed_terminal_keys
+    )
     if backend_is_explicit:
         terminal_backend = str(
             terminal_cfg.get("backend") or target.get("TERMINAL_ENV") or ""

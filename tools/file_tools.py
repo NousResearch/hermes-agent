@@ -203,9 +203,13 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
             if "daytona" in name:
                 return "daytona"
         cfg = _get_env_config()
-        return str(cfg.get("env_type") or os.getenv("TERMINAL_ENV") or "local").lower()
+        return str(cfg.get("env_type") or "local").lower()
     except Exception:
-        return str(os.getenv("TERMINAL_ENV") or "local").lower()
+        try:
+            from tools.terminal_tool import resolve_terminal_backend
+            return resolve_terminal_backend()
+        except Exception:
+            return "unknown"
 
 
 def _uses_container_paths(task_id: str = "default") -> bool:
@@ -214,7 +218,13 @@ def _uses_container_paths(task_id: str = "default") -> bool:
         container_backends = _CONTAINER_BACKENDS
     except Exception:
         container_backends = _CONTAINER_PATH_BACKENDS_FALLBACK
-    return _terminal_env_type_for_task(task_id) in container_backends
+    env_type = _terminal_env_type_for_task(task_id)
+    # Fail closed: when the backend cannot be confirmed ("unknown" sentinel,
+    # e.g. config bridge failed), treat paths as container/sandbox-relative so
+    # file tools never dereference host paths for a possibly-isolated backend.
+    if env_type == "unknown":
+        return True
+    return env_type in container_backends
 
 
 def _normalize_without_host_deref(path: str | Path | PurePosixPath) -> PurePosixPath:

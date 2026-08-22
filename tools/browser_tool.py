@@ -982,13 +982,23 @@ def _is_local_backend() -> bool:
     # non-local; keep the two helpers in agreement.
     if _get_cdp_override_raw():
         return False
+    # Resolve the terminal backend BEFORE the Camofox shortcut below.  Camofox
+    # runs as a host-side sidecar service, so it is only a trusted "local"
+    # backend when the terminal also runs locally.  With the terminal in a
+    # container (docker, modal, daytona, ssh, singularity), the host-side
+    # Camofox service can reach internal networks the terminal sandbox cannot,
+    # so SSRF protection must stay enabled for Camofox too.  Resolve through
+    # terminal_tool's bridged snapshot so a config.yaml terminal.backend:
+    # docker is honored on cold start; an uncertain backend fails closed
+    # (non-local) rather than skipping the SSRF gate.
+    from tools.terminal_tool import resolve_terminal_backend
+    terminal_backend = resolve_terminal_backend()
     if _is_camofox_mode():
-        return True
+        return terminal_backend in ("local", "")
     if _get_cloud_provider() is not None:
         return False
     # When terminal runs in a container, browser on host can access
     # internal networks the terminal can't → treat as non-local.
-    terminal_backend = os.getenv("TERMINAL_ENV", "local").strip().lower()
     return terminal_backend in ("local", "")
 
 

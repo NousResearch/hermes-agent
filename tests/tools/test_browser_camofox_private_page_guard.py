@@ -168,3 +168,139 @@ def test_guard_inactive_does_not_probe(monkeypatch, _session):
 
     assert out["success"] is True
     assert out["element_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Post-redirect SSRF guard on camofox_navigate (P1: redirect chain to
+# private/metadata leaks the auto-snapshot) and camofox_back guard (P2).
+# ---------------------------------------------------------------------------
+
+
+def _mock_navigate_http(monkeypatch, final_url, snapshot_body):
+    """Route navigate through a fake Camofox server that follows a redirect and
+    returns *final_url*, and whose /snapshot returns *snapshot_body*."""
+    monkeypatch.setattr(browser_camofox, "_get_session", lambda task_id: {"tab_id": "tab-1", "user_id": "user-1"})
+    monkeypatch.setattr(browser_camofox, "_ensure_tab", lambda task_id, url: {"tab_id": "tab-1", "user_id": "user-1"})
+
+    nav_calls = []
+
+    def fake_post(path, body=None, timeout=None):
+        if "navigate" in path:
+            nav_calls.append(body)
+            return {"ok": True, "url": final_url, "title": "redirected"}
+        return {"ok": True, "url": final_url}
+
+    monkeypatch.setattr(browser_camofox, "_post", fake_post)
+    monkeypatch.setattr(
+        browser_camofox,
+        "_get",
+        lambda path, params=None: {"snapshot": snapshot_body, "refsCount": 1},
+    )
+    return nav_calls
+
+
+def test_camofox_navigate_blocks_redirect_to_metadata(monkeypatch, _session):
+    """Public URL 302->IMDS: camofox_navigate must fail closed BEFORE the auto-snapshot.
+
+    Regression for the Camofox redirect-chain SSRF leak: browser_navigate routed
+    through camofox_navigate before any post-redirect check, and the auto-snapshot
+    returned the landing page content.
+    """
+    from tools import browser_tool
+
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: True)
+    nav_calls = _mock_navigate_http(
+        monkeypatch,
+        final_url="http://169.254.169.254/latest/meta-data/",
+        snapshot_body="<pre>arn:aws:iam::123456789012:role/leaked</pre>",
+    )
+
+    out = json.loads(browser_camofox.camofox_navigate("https://example.com/r", task_id="t1"))
+
+    assert out["success"] is False
+    assert "metadata endpoint" in out["error"]
+    assert "snapshot" not in out, "leaked snapshot must not be returned"
+    # The private page must be cleared (about:blank) to prevent later snapshot leaks.
+    assert nav_calls[-1]["url"] == "about:blank"
+
+
+def test_camofox_navigate_blocks_redirect_to_private(monkeypatch, _session):
+    """Public URL 302->RFC1918 with the SSRF guard active: blocked, no snapshot."""
+    from tools import browser_tool
+
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: True)
+    nav_calls = _mock_navigate_http(
+        monkeypatch,
+        final_url="http://10.0.0.5/admin",
+        snapshot_body="<h1>internal admin</h1>",
+    )
+
+    out = json.loads(browser_camofox.camofox_navigate("https://example.com/r", task_id="t1"))
+
+    assert out["success"] is False
+    assert "private/internal address" in out["error"]
+    assert "snapshot" not in out
+    assert nav_calls[-1]["url"] == "about:blank"
+
+
+def test_camofox_navigate_allows_public_redirect_when_guard_inactive(monkeypatch, _session):
+    """SSRF guard inactive (local terminal): redirect to private is allowed, matching
+    the local browser behavior; the auto-snapshot is returned."""
+    from tools import browser_tool
+
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: False)
+    _mock_navigate_http(
+        monkeypatch,
+        final_url="http://10.0.0.5/admin",
+        snapshot_body="<h1>internal admin</h1>",
+    )
+
+    out = json.loads(browser_camofox.camofox_navigate("https://example.com/r", task_id="t1"))
+
+    assert out["success"] is True
+    assert out["url"] == "http://10.0.0.5/admin"
+    assert "internal admin" in out["snapshot"]
+
+
+def test_camofox_back_blocks_private_post_back_page(monkeypatch, _session):
+    """camofox_back must apply the private-page guard like every other Camofox
+    content-returning action (snapshot/click/type/press)."""
+    from tools import browser_tool
+
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(
+        browser_tool,
+        "_camofox_current_page_private_url",
+        lambda tab_id, user_id: "http://169.254.169.254/latest/meta-data/",
+    )
+
+    # The back HTTP call itself succeeds (matching browser_back: history nav runs,
+    # then the post-back page is re-checked), and the guard must block the result.
+    monkeypatch.setattr(
+        browser_camofox,
+        "_post",
+        lambda path, body=None, timeout=None: {"ok": True, "url": "http://169.254.169.254/latest/meta-data/"},
+    )
+
+    out = json.loads(browser_camofox.camofox_back(task_id="t1"))
+
+    assert out["success"] is False
+    assert "private or internal address" in out["error"]
+
+
+def test_camofox_back_still_runs_when_page_public(monkeypatch, _session):
+    """Post-back page public: camofox_back returns the URL normally."""
+    from tools import browser_tool
+
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(browser_tool, "_camofox_current_page_private_url", lambda tab_id, user_id: None)
+
+    def fake_post(path, body=None, timeout=None):
+        return {"ok": True, "url": "https://example.com/prev"}
+
+    monkeypatch.setattr(browser_camofox, "_post", fake_post)
+
+    out = json.loads(browser_camofox.camofox_back(task_id="t1"))
+
+    assert out["success"] is True
+    assert out["url"] == "https://example.com/prev"

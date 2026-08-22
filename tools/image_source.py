@@ -213,9 +213,12 @@ def _is_local_terminal_backend() -> bool:
     """True when the terminal backend runs directly on the host.
 
     Mirrors ``tools.browser_tool._is_local_backend`` and terminal_tool's own
-    dispatch, which key off ``TERMINAL_ENV``.
+    dispatch.  Resolves through terminal_tool's bridged config snapshot so a
+    config.yaml ``terminal.backend: docker`` is honored on cold start; an
+    uncertain backend fails closed (non-local).
     """
-    return os.getenv("TERMINAL_ENV", "local").strip().lower() in ("local", "")
+    from tools.terminal_tool import resolve_terminal_backend
+    return resolve_terminal_backend() in ("local", "")
 
 
 def _media_cache_roots() -> list:

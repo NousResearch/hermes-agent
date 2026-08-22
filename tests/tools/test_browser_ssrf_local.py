@@ -97,6 +97,49 @@ class TestPreNavigationSsrf:
 
         assert result["success"] is True
 
+    # -- Camofox + container terminal: SSRF stays active (#61882 P1) ----------
+
+    def test_camofox_with_docker_terminal_blocks_private_url(
+        self, monkeypatch, _common_patches
+    ):
+        """A host-side Camofox service is NOT local when the terminal runs in
+        a container — SSRF protection must stay enabled so a model-controlled
+        navigation can't reach private/internal services on the host (#61882).
+        """
+        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: True)
+        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: False)
+
+        result = json.loads(browser_tool.browser_navigate(self.PRIVATE_URL))
+
+        assert result["success"] is False
+        assert "private or internal address" in result["error"]
+
+    def test_camofox_with_local_terminal_allows_private_url(
+        self, monkeypatch, _common_patches
+    ):
+        """Camofox + local terminal is still a trusted local backend — the
+        Docker gate above must not over-block the pure-local case (#61882).
+        """
+        from tools import browser_camofox
+
+        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: True)
+        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: False)
+        monkeypatch.setattr(
+            browser_camofox,
+            "camofox_navigate",
+            lambda url, task_id: json.dumps(_make_browser_result(url)),
+        )
+
+        result = json.loads(browser_tool.browser_navigate(self.PRIVATE_URL))
+
+        assert result["success"] is True
+
     # -- Always-blocked floor: hybrid routing bypass regression (#16234) -------
 
     # Hybrid-routing feature flips auto_local_this_nav=True for private URLs,
@@ -175,13 +218,19 @@ class TestIsLocalBackend:
         assert browser_tool._is_local_backend() is True
 
 
-    def test_camofox_overrides_container_backend(self, monkeypatch):
-        """Camofox mode always counts as local, even with container terminal."""
+    def test_camofox_with_container_terminal_is_not_local(self, monkeypatch):
+        """Camofox is local ONLY when the terminal is also local.
+
+        A host-side Camofox service combined with a container terminal
+        (terminal.backend: docker) can reach internal networks the terminal
+        sandbox cannot, so it must not be classified as a trusted local
+        backend — otherwise SSRF protection would be skipped (#61882 P1).
+        """
         monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: True)
         monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
         monkeypatch.setenv("TERMINAL_ENV", "docker")
 
-        assert browser_tool._is_local_backend() is True
+        assert browser_tool._is_local_backend() is False
 
 
 # ---------------------------------------------------------------------------

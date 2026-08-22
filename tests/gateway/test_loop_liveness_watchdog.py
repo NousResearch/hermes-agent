@@ -175,7 +175,7 @@ def test_gateway_config_loop_watchdog_tuning_round_trip():
     assert default.loop_watchdog is True
     assert default.loop_watchdog_probe_interval_s == 30.0
     assert default.loop_watchdog_probe_timeout_s == 10.0
-    assert default.loop_watchdog_max_strikes == 8
+    assert default.loop_watchdog_max_strikes == 3
 
     # Explicit values round-trip
     cfg = GatewayConfig.from_dict(
@@ -217,7 +217,7 @@ def test_gateway_config_loop_watchdog_tuning_round_trip():
     )
     assert clamped.loop_watchdog_probe_interval_s == 30.0
     assert clamped.loop_watchdog_probe_timeout_s == 10.0
-    assert clamped.loop_watchdog_max_strikes == 8
+    assert clamped.loop_watchdog_max_strikes == 3
 
 
 def test_gateway_runner_liveness_guards_start_and_stop():
@@ -247,7 +247,7 @@ def test_gateway_runner_liveness_guards_start_and_stop():
         loop,
         probe_interval=30.0,
         probe_timeout=10.0,
-        max_strikes=8,
+        max_strikes=3,
     )
     assert runner._loop_floor_timer_handle is floor_timer
     assert runner._loop_liveness_watchdog is watchdog

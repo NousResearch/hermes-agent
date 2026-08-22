@@ -12349,19 +12349,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         watchdog = getattr(self, "_loop_liveness_watchdog", None)
         if watchdog is None or not watchdog.is_alive():
             try:
-                interval = 30.0
-                timeout = 10.0
-                strikes = 8
+                from gateway.shutdown_watchdog import (
+                    DEFAULT_LOOP_WATCHDOG_INTERVAL_S as _WD_INTERVAL,
+                    DEFAULT_LOOP_WATCHDOG_MAX_STRIKES as _WD_STRIKES,
+                    DEFAULT_LOOP_WATCHDOG_TIMEOUT_S as _WD_TIMEOUT,
+                )
+
+                interval = _WD_INTERVAL
+                timeout = _WD_TIMEOUT
+                strikes = _WD_STRIKES
                 if config is not None:
                     interval = getattr(
-                        config, "loop_watchdog_probe_interval_s", 30.0
-                    ) or 30.0
+                        config, "loop_watchdog_probe_interval_s", _WD_INTERVAL
+                    ) or _WD_INTERVAL
                     timeout = getattr(
-                        config, "loop_watchdog_probe_timeout_s", 10.0
-                    ) or 10.0
+                        config, "loop_watchdog_probe_timeout_s", _WD_TIMEOUT
+                    ) or _WD_TIMEOUT
                     strikes = getattr(
-                        config, "loop_watchdog_max_strikes", 8
-                    ) or 8
+                        config, "loop_watchdog_max_strikes", _WD_STRIKES
+                    ) or _WD_STRIKES
                 self._loop_liveness_watchdog = start_loop_liveness_watchdog(
                     loop,
                     probe_interval=float(interval),

@@ -18,6 +18,11 @@ from enum import Enum
 
 from hermes_cli.config import get_hermes_home
 from agent.secret_scope import current_secret_scope, get_secret as _get_secret
+from gateway.shutdown_watchdog import (
+    DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
+    DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
+    DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
+)
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -993,13 +998,15 @@ class GatewayConfig:
     # the full tolerance window) still escalates to a supervised restart.
     loop_watchdog: bool = True
     # Seconds the watchdog waits between liveness probes.
-    loop_watchdog_probe_interval_s: float = 30.0
+    loop_watchdog_probe_interval_s: float = DEFAULT_LOOP_WATCHDOG_INTERVAL_S
     # Seconds a single probe may go unprocessed before it counts as a miss.
-    loop_watchdog_probe_timeout_s: float = 10.0
+    loop_watchdog_probe_timeout_s: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
     # Consecutive missed probes allowed before the watchdog hard-exits.
-    # Default raised from 3 to 8: a transient reconnect stall (~60-120s) is
-    # tolerated while a genuine multi-minute wedge still escalates.
-    loop_watchdog_max_strikes: int = 8
+    # Default stays at 3 (~90-120s of sustained loop block): the transient
+    # false-positive class (the watchdog's own on-loop heartbeat fsync)
+    # is fixed at the root by the off-loop write + two-witness probe, so
+    # raising this fleet-wide would only delay genuine-wedge recovery.
+    loop_watchdog_max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
 
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
@@ -1230,26 +1237,26 @@ class GatewayConfig:
             data.get("loop_watchdog_probe_interval_s")
             if "loop_watchdog_probe_interval_s" in data
             else nested_gateway.get("loop_watchdog_probe_interval_s"),
-            30.0,
+            DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
         )
         loop_watchdog_probe_timeout_s = _coerce_float(
             data.get("loop_watchdog_probe_timeout_s")
             if "loop_watchdog_probe_timeout_s" in data
             else nested_gateway.get("loop_watchdog_probe_timeout_s"),
-            10.0,
+            DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
         )
         loop_watchdog_max_strikes = _coerce_int(
             data.get("loop_watchdog_max_strikes")
             if "loop_watchdog_max_strikes" in data
             else nested_gateway.get("loop_watchdog_max_strikes"),
-            8,
+            DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
         )
         if loop_watchdog_probe_interval_s < 1.0:
-            loop_watchdog_probe_interval_s = 30.0
+            loop_watchdog_probe_interval_s = DEFAULT_LOOP_WATCHDOG_INTERVAL_S
         if loop_watchdog_probe_timeout_s < 1.0:
-            loop_watchdog_probe_timeout_s = 10.0
+            loop_watchdog_probe_timeout_s = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
         if loop_watchdog_max_strikes < 1:
-            loop_watchdog_max_strikes = 8
+            loop_watchdog_max_strikes = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
         if multiplex_profiles is None and isinstance(nested_gateway, dict):
             # Also honor gateway.multiplex_profiles written by
             # ``hermes config set gateway.multiplex_profiles true``.

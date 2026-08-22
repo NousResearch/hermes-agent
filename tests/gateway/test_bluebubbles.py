@@ -438,3 +438,235 @@ class TestBlueBubblesWebhookRegistration:
         assert len(deleted_ids) == 2
 
 
+
+
+class TestBlueBubblesStaleRegistrationCleanup:
+    """Regressions for duplicate webhook delivery via stale registrations.
+
+    ``_find_registered_webhooks`` returns *every* registration matching this
+    URL. Keeping one compliant registration is not enough: any additional
+    registration (typically an older one still subscribed to
+    ``updated-message``) keeps delivering a second copy of each iMessage.
+    These cover both list orderings so the fix cannot regress into an
+    order-dependent early return.
+    """
+
+    @staticmethod
+    def _adapter_with_registrations(monkeypatch, registrations, delete_ok=True):
+        adapter = _make_adapter(monkeypatch)
+        deleted_ids = []
+        posted = []
+
+        async def mock_get(*args, **kwargs):
+            class R:
+                status_code = 200
+                def raise_for_status(self):
+                    pass
+                def json(self):
+                    return {"status": 200, "data": registrations}
+            return R()
+
+        async def mock_post(*args, **kwargs):
+            posted.append((args, kwargs))
+            class R:
+                status_code = 200
+                def raise_for_status(self):
+                    pass
+                def json(self):
+                    return {"status": 200, "data": {"id": 99}}
+            return R()
+
+        async def mock_delete(*args, **kwargs):
+            # Bound via the mock client's type dict, so args[0] is the client
+            # instance and args[1] is the request URL.
+            url_arg = args[1] if len(args) > 1 else (args[0] if args else "")
+            deleted_ids.append(str(url_arg))
+            class R:
+                status_code = 200 if delete_ok else 500
+                def raise_for_status(self_inner):
+                    if not delete_ok:
+                        raise Exception("delete failed")
+            return R()
+
+        adapter.client = type(
+            "MockClient", (),
+            {"get": mock_get, "post": mock_post, "delete": mock_delete},
+        )()
+        return adapter, deleted_ids, posted
+
+    @pytest.mark.asyncio
+    async def test_stale_registration_after_compliant_one_is_removed(self, monkeypatch):
+        """Compliant entry FIRST, stale entry second — stale must still be deleted."""
+        adapter, deleted_ids, _ = self._adapter_with_registrations(
+            monkeypatch, []
+        )
+        url = adapter._webhook_register_url
+        adapter, deleted_ids, _ = self._adapter_with_registrations(
+            monkeypatch,
+            [
+                {"id": 1, "url": url, "events": ["new-message"]},
+                {"id": 2, "url": url, "events": ["new-message", "updated-message"]},
+            ],
+        )
+
+        ok = await adapter._register_webhook()
+
+        assert ok is True
+        assert len(deleted_ids) == 1, "the stale second registration must be deleted"
+        assert "2" in deleted_ids[0]
+
+    @pytest.mark.asyncio
+    async def test_stale_registration_before_compliant_one_is_removed(self, monkeypatch):
+        """Stale entry FIRST — the compliant one is kept, stale still deleted."""
+        adapter, deleted_ids, _ = self._adapter_with_registrations(monkeypatch, [])
+        url = adapter._webhook_register_url
+        adapter, deleted_ids, posted = self._adapter_with_registrations(
+            monkeypatch,
+            [
+                {"id": 2, "url": url, "events": ["new-message", "updated-message"]},
+                {"id": 1, "url": url, "events": ["new-message"]},
+            ],
+        )
+
+        ok = await adapter._register_webhook()
+
+        assert ok is True
+        assert len(deleted_ids) == 1
+        assert "2" in deleted_ids[0]
+        assert not posted, "a compliant registration already exists; no re-POST"
+
+    @pytest.mark.asyncio
+    async def test_all_stale_registrations_removed_then_reregistered(self, monkeypatch):
+        """No compliant entry — every stale one is purged and one POST replaces them."""
+        adapter, _, _ = self._adapter_with_registrations(monkeypatch, [])
+        url = adapter._webhook_register_url
+        adapter, deleted_ids, posted = self._adapter_with_registrations(
+            monkeypatch,
+            [
+                {"id": 1, "url": url, "events": ["new-message", "updated-message"]},
+                {"id": 2, "url": url, "events": ["updated-message"]},
+            ],
+        )
+
+        ok = await adapter._register_webhook()
+
+        assert ok is True
+        assert len(deleted_ids) == 2, "all stale registrations must be purged"
+        assert len(posted) == 1, "exactly one fresh registration is created"
+
+    @pytest.mark.asyncio
+    async def test_failed_stale_delete_does_not_register_replacement(self, monkeypatch):
+        """A failed DELETE must abort — never leave stale + new both active."""
+        adapter, _, _ = self._adapter_with_registrations(monkeypatch, [])
+        url = adapter._webhook_register_url
+        adapter, deleted_ids, posted = self._adapter_with_registrations(
+            monkeypatch,
+            [{"id": 1, "url": url, "events": ["new-message", "updated-message"]}],
+            delete_ok=False,
+        )
+
+        ok = await adapter._register_webhook()
+
+        assert ok is False, "cleanup failure must be reported, not swallowed"
+        assert not posted, "no replacement POST when stale cleanup failed"
+
+
+class TestBlueBubblesInboundDedup:
+    """Regressions for duplicate inbound processing of one iMessage GUID."""
+
+    @staticmethod
+    def _payload(guid, event="new-message", text="hello there"):
+        return {
+            "type": event,
+            "data": {
+                "guid": guid,
+                "text": text,
+                "handle": {"address": "+15550000000"},
+                "isFromMe": False,
+                "isGroup": False,
+                "chats": [{"guid": "iMessage;-;+15550000000"}],
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_replayed_guid_is_processed_once(self, monkeypatch):
+        """A repeated webhook for the same GUID must not fan out twice."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        first = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._payload("guid-replay"))
+        )
+        await asyncio.sleep(0)
+        second = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._payload("guid-replay"))
+        )
+        await asyncio.sleep(0)
+
+        assert first.status == 200 and second.status == 200
+        assert len(handled) == 1, "duplicate GUID must be dropped"
+
+    @pytest.mark.asyncio
+    async def test_distinct_guids_both_processed(self, monkeypatch):
+        """Dedup must not swallow genuinely different messages."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._payload("guid-a"))
+        )
+        await asyncio.sleep(0)
+        await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._payload("guid-b", text="second message"))
+        )
+        await asyncio.sleep(0)
+
+        assert len(handled) == 2
+
+    @pytest.mark.asyncio
+    async def test_dedup_entry_expires_after_ttl(self, monkeypatch):
+        """Once the TTL lapses the same GUID may be processed again."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._payload("guid-ttl"))
+        )
+        await asyncio.sleep(0)
+
+        # Age the recorded entry past the dedup window.
+        for key in list(adapter._dedup._seen):
+            adapter._dedup._seen[key] -= (adapter._dedup._ttl + 1)
+
+        await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._payload("guid-ttl"))
+        )
+        await asyncio.sleep(0)
+
+        assert len(handled) == 2, "entry should have expired from the dedup cache"
+
+    @pytest.mark.asyncio
+    async def test_dedup_cache_is_bounded(self, monkeypatch):
+        """The shared helper must cap growth under sustained unique traffic."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        max_size = adapter._dedup._max_size
+
+        for i in range(max_size + 250):
+            adapter._dedup.is_duplicate(f"guid-{i}")
+
+        assert len(adapter._dedup._seen) <= max_size

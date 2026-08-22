@@ -1,0 +1,81 @@
+[
+  {
+    "id": "generic-lah-prefix",
+    "mission": "LAH_999 Improve campaign intelligence.",
+    "expected_decision": "AMBIGUOUS",
+    "expected_not_route_to": ["lah-core"]
+  },
+  {
+    "id": "runtime-memory",
+    "mission": "Implement runtime telemetry and update operational memory.",
+    "expected_decision": "RESOLVED",
+    "expected_implementation_repo": "openclaw-runtime",
+    "expected_execution_repo": "openclaw-runtime",
+    "expected_memory_repo": "cartelogic-v2",
+    "expected_write_allowed_repos": ["openclaw-runtime", "cartelogic-v2"]
+  },
+  {
+    "id": "memory-runtime-order-independent",
+    "mission": "Update operational memory and then implement runtime telemetry.",
+    "expected_decision": "RESOLVED",
+    "expected_implementation_repo": "openclaw-runtime",
+    "expected_execution_repo": "openclaw-runtime",
+    "expected_memory_repo": "cartelogic-v2",
+    "expected_write_allowed_repos": ["openclaw-runtime", "cartelogic-v2"]
+  },
+  {
+    "id": "archived-memory",
+    "mission": "Update the archived OpenClaw agent-memory files.",
+    "expected_decision": "BLOCKED",
+    "expected_write_allowed_repos": []
+  },
+  {
+    "id": "skills-authority",
+    "mission": "Update lah-stack-skills shared agent instructions.",
+    "expected_decision": "RESOLVED",
+    "expected_implementation_repo": "lah-stack-skills",
+    "expected_skill_knowledge_repo": "lah-stack-skills",
+    "expected_not_route_to": ["hermes-agent"]
+  },
+  {
+    "id": "business-assets",
+    "mission": "Update business offer registry and creative assets.",
+    "expected_decision": "RESOLVED",
+    "expected_business_asset_repo": "lah-stack-biz-assets",
+    "expected_implementation_repo": "lah-stack-biz-assets",
+    "expected_not_route_to": ["lah-brain"]
+  },
+  {
+    "id": "explicit-runtime-conflict",
+    "mission": "In lah-core, update the gateway runtime.",
+    "expected_decision": "BLOCKED",
+    "expected_not_route_to": ["lah-core"]
+  },
+  {
+    "id": "codegraph-cannot-resolve-conflict",
+    "mission": "LAH_1616 — Ajouter un snippet PHP wp-content",
+    "expected_decision": "AMBIGUOUS",
+    "expected_not_route_to": []
+  },
+  {
+    "id": "openclaw-808",
+    "mission": "OPENCLAW_808 — Développer adaptateur mémoire Qdrant",
+    "expected_decision": "RESOLVED",
+    "expected_implementation_repo": "openclaw-runtime",
+    "expected_execution_repo": "openclaw-runtime"
+  },
+  {
+    "id": "explicit-memory",
+    "mission": "In cartelogic-v2, update operational memory.",
+    "expected_decision": "RESOLVED",
+    "expected_primary_role": "MEMORY",
+    "expected_memory_repo": "cartelogic-v2",
+    "expected_write_allowed_repos": ["cartelogic-v2"]
+  },
+  {
+    "id": "context-read-only",
+    "mission": "Review discovery platform context for a runtime design.",
+    "expected_decision": "RESOLVED",
+    "expected_write_allowed_repos": []
+  }
+]

@@ -2162,14 +2162,16 @@ def _build_skills_system_prompt_inner(
                     continue
                 seen.add(name)
                 if desc:
-                    index_lines.append(f"    - {name}: {desc}")
+                    index_lines.append(
+                        f"    - invocation_name: {name} | description: {desc}"
+                    )
                 else:
-                    index_lines.append(f"    - {name}")
+                    index_lines.append(f"    - invocation_name: {name}")
 
         result = (
             "## Skills (mandatory)\n"
             "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
+            "to your task, you MUST load it with skill_view(name=<invocation_name>) and follow its instructions. "
             "Err on the side of loading — it is always better to have context you don't need "
             "than to miss critical steps, pitfalls, or established workflows. "
             "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
@@ -2178,6 +2180,10 @@ def _build_skills_system_prompt_inner(
             "Skills also encode the user's preferred approach, conventions, and quality standards "
             "for tasks like code review, planning, and testing — load them even for tasks you "
             "already know how to do, because the skill defines how it should be done here.\n"
+            "In this catalog, invocation_name is the canonical machine identifier. Category is "
+            "organizational metadata only; filesystem path is implementation metadata. Never "
+            "prefix invocation_name with category. Ordinary local skills use invocation_name "
+            "exactly; plugin skills use namespace:skill.\n"
             "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
             "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
             "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "

@@ -1,0 +1,49 @@
+{
+  "continuity_type": "LAH_STACK_OPERATIONAL_CONTINUITY",
+  "date": "<ISO_DATE>",
+  "latest_completed_mission": "<MISSION_ID>",
+  "verdict": "<MISSION_ID>_READY",
+  "source_state": {
+    "post_885_status": "draft",
+    "biz17_executed": false,
+    "remaining_assets": 23
+  },
+  "gates": {
+    "codegraph_first": "PASS_OR_FAIL",
+    "superpowers_plan": "PRESENT_OR_MISSING",
+    "fastsafe": "PASS_OR_FAIL",
+    "subagents_parallelism": "PRESENT_OR_MISSING"
+  },
+  "loop": {
+    "dry_run_only": true,
+    "public_publish": false,
+    "wordpress_mutation": false
+  },
+  "pr": {
+    "created": true,
+    "number": "<number_or_null>",
+    "url": "<url_or_null>",
+    "merged": true,
+    "merge_commit": "<sha_or_null>"
+  },
+  "memory": {
+    "locked": true,
+    "commit": "<sha_or_null>",
+    "records_after": "<number_or_null>",
+    "verify": "OK_FAIL_OR_NULL"
+  },
+  "safety": {
+    "public_publish": false,
+    "biz17_execution": false,
+    "wordpress_mutation": false,
+    "telegram_live_calls": false,
+    "provider_calls": false,
+    "llm_generation_calls": false,
+    "scheduler_activation": false,
+    "deploy": false,
+    "ad_spend": false,
+    "force_push": false,
+    "secrets_printed": false
+  },
+  "next_action": "<PROCHAINE_MISSION>"
+}

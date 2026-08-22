@@ -187,6 +187,45 @@ class TestFindAllSkills:
             _make_skill(tmp_path, "axolotl", category="mlops")
 
             # .git internals are not skills.
+            skills = _find_all_skills()
+
+        assert {s["name"] for s in skills} == {"skill-a", "skill-b", "axolotl"}
+        assert [s["category"] for s in skills if s["name"] == "axolotl"] == ["mlops"]
+
+    def test_exposes_invocation_name_separately_from_category_and_path(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "lah-repo-router", category="software-development")
+            skill = _find_all_skills()[0]
+        assert skill["invocation_name"] == "lah-repo-router"
+        assert skill["name"] == "lah-repo-router"
+        assert skill["category"] == "software-development"
+        assert skill["path"] == "software-development/lah-repo-router/SKILL.md"
+
+    def test_description_from_body_when_missing(self, tmp_path):
+        """If no description in frontmatter, first non-header line is used."""
+        skill_dir = tmp_path / "no-desc"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: no-desc\n---\n\n# Heading\n\nFirst paragraph.\n"
+        )
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skills = _find_all_skills()
+        assert skills[0]["description"] == "First paragraph."
+
+    def test_long_description_truncated(self, tmp_path):
+        long_desc = "x" * (MAX_DESCRIPTION_LENGTH + 100)
+        skill_dir = tmp_path / "long-desc"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: long\ndescription: {long_desc}\n---\n\nBody.\n"
+        )
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skills = _find_all_skills()
+        assert len(skills[0]["description"]) <= MAX_DESCRIPTION_LENGTH
+
+    def test_skips_git_directories(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "real-skill")
             git_dir = tmp_path / ".git" / "fake-skill"
             git_dir.mkdir(parents=True)
             (git_dir / "SKILL.md").write_text(
@@ -214,8 +253,7 @@ class TestFindAllSkills:
 
             skills = _find_all_skills()
 
-        assert {s["name"] for s in skills} == {"skill-a", "skill-b", "axolotl"}
-        assert [s["category"] for s in skills if s["name"] == "axolotl"] == ["mlops"]
+        assert {s["name"] for s in skills} == {"real-skill"}
 
 
     def test_description_falls_back_to_body_and_is_truncated(self, tmp_path):

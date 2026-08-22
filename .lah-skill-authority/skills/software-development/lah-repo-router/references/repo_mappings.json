@@ -1,0 +1,149 @@
+{
+  "schema_version": "4",
+  "schemaVersion": 4,
+  "ontology_version": "LAH_ROUTER_ONTOLOGY_V4",
+  "canonical_authority": "this file is the sole executable routing ontology",
+  "inventoryTimestamp": "2026-08-16T00:00:00Z",
+  "historical_prefixes": {
+    "lah": "lah-core",
+    "lahb": "lah-brain",
+    "openclaw": "openclaw-runtime",
+    "cloe": "openclaw-runtime",
+    "cartelogic": "cartelogic-v2",
+    "tools": "lah-stack-tools"
+  },
+  "repositories": [
+    {
+      "repository_id": "openclaw-runtime",
+      "roles": ["IMPLEMENTATION", "EXECUTION_RUNTIME"],
+      "aliases": ["openclaw-runtime", "openclaw", "runtime", "gateway", "cloe", "exoclick"],
+      "strong_signals": ["provider runtime", "provider adapter", "gateway runtime", "runtime telemetry", "runtime supervisor", "campaign play pause runtime", "exoclick", "crakrevenue provider", "postback receiver", "openclaw mvp"],
+      "positive_signals": ["runtime", "gateway", "provider", "adapter", "supervisor", "campaign", "campaign intelligence", "telemetry", "qdrant"],
+      "negative_signals": ["wordpress", "wp-content", "php snippet", "operational memory", "skill knowledge", "creative assets", "business os"],
+      "exclusive_surfaces": ["lah-openclaw-mvp", "gateway-runtime", "provider boundary", "execution boundary"],
+      "write_policy": "write_allowed",
+      "canonical_checkout": "/home/deploy/lah-stack-repos/openclaw-runtime",
+      "evidence": ["openclaw-runtime/AGENTS.md", "openclaw-runtime/CLAUDE.md", "lah-openclaw-mvp runtime source"]
+    },
+    {
+      "repository_id": "lah-brain",
+      "roles": ["IMPLEMENTATION", "GOVERNANCE"],
+      "aliases": ["lah-brain", "brain", "lahb", "business-os", "knowledge-engine"],
+      "strong_signals": ["kill decision", "kill threshold", "scale decision", "scale threshold", "economic decision engine", "bankroll", "reconciliation engine", "profit loop", "exploration engine", "approval checklist", "operator governance", "business os"],
+      "positive_signals": ["decision", "threshold", "kill", "scale", "bankroll", "reconciliation", "profit", "exploration", "approval", "governance", "campaign"],
+      "negative_signals": ["gateway runtime", "provider boundary", "wordpress", "wp-content", "operational memory", "creative assets"],
+      "exclusive_surfaces": ["decision intelligence", "economic reasoning", "operator governance", "business-os"],
+      "write_policy": "write_allowed",
+      "canonical_checkout": "/home/deploy/lah-stack-repos/lah-brain",
+      "evidence": ["lah-brain/AGENTS.md", "lah-brain/CLAUDE.md", "src/bankroll-engine.js", "src/reconciliation-engine.js", "src/scale-engine.js"]
+    },
+    {
+      "repository_id": "lah-core",
+      "roles": ["IMPLEMENTATION"],
+      "aliases": ["lah-core", "wordpress", "wp", "landing", "php", "snippet", "wp-content", "beacon", "offer router", "resolver"],
+      "strong_signals": ["wordpress", "wp-content", "php snippet", "landing page runtime", "landing engine", "beacon tracking", "offer router", "offer resolver", "global crakrevenue postback", "postback endpoint"],
+      "positive_signals": ["landing", "snippet", "beacon", "offer", "resolver", "tracking", "postback", "crakrevenue"],
+      "negative_signals": ["gateway runtime", "provider boundary", "operational memory", "skill knowledge", "business os", "creative assets"],
+      "exclusive_surfaces": ["wordpress-plugins", "wp-content", "php-snippets", "landing-engine", "affiliate postback"],
+      "write_policy": "write_allowed",
+      "canonical_checkout": "/home/deploy/lah-stack-repos/lah-core",
+      "evidence": ["lah-core/AGENTS.md", "snippets/lah-offer-router-v2.7.php", "test/dual-funnel-postback-dims-simulation.php"]
+    },
+    {
+      "repository_id": "cartelogic-v2",
+      "roles": ["MEMORY", "CONTEXT"],
+      "aliases": ["cartelogic-v2", "cartelogic", "memory", "memoire", "mémoire", "operational memory", "observation", "observations", "decision log", "context"],
+      "strong_signals": ["operational memory", "active operational memory", "memory authority", "record observation", "decision log", "context reconstruction", "historical mission lookup", "cartelogic operational memory"],
+      "positive_signals": ["memory", "observation", "decision log", "context", "history", "reconstruct"],
+      "negative_signals": ["archived openclaw agent-memory", "legacy agent-memory", "wordpress", "gateway runtime", "business os"],
+      "exclusive_surfaces": ["v2/operational", "observations", "docs/lah-stack", "context cli"],
+      "write_policy": "requires_explicit_scope",
+      "canonical_checkout": "/home/deploy/lah-stack-repos/cartelogic-v2",
+      "evidence": ["cartelogic-v2/CLAUDE.md", "v2/operational", "memory/operational_memory.jsonl"]
+    },
+    {
+      "repository_id": "lah-stack-skills",
+      "roles": ["SKILL_KNOWLEDGE"],
+      "aliases": ["lah-stack-skills", "stack skills", "codex skill", "workflow skill", "shared agent instructions"],
+      "strong_signals": ["lah-stack-skills", "codex workflow skill", "hermes reusable skill", "shared agent instructions", "reusable workflow", "skill reference material", "stack skills"],
+      "positive_signals": ["skill", "workflow", "agent instructions", "knowledge", "reference pattern"],
+      "negative_signals": ["hermes dashboard provider", "gateway runtime", "operational memory"],
+      "exclusive_surfaces": ["SKILL.md", "references", "workflow patterns", "shared agent knowledge"],
+      "write_policy": "write_allowed",
+      "canonical_checkout": "/home/deploy/lah-stack-repos/lah-stack-skills",
+      "evidence": ["lah-stack-skills/SKILL.md", "lah-stack-skills/references/"]
+    },
+    {
+      "repository_id": "lah-stack-biz-assets",
+      "roles": ["BUSINESS_ASSET"],
+      "aliases": ["lah-stack-biz-assets", "biz-assets", "creative assets", "niche assets", "content assets"],
+      "strong_signals": ["creative assets", "business offer registry", "offer registry and creative assets", "niche assets", "affiliate business registry", "content drafts"],
+      "positive_signals": ["assets", "creative", "niche", "content", "offer registry", "business registry"],
+      "negative_signals": ["business os", "decision engine", "gateway runtime", "wordpress plugins", "live publishing"],
+      "exclusive_surfaces": ["niche-content-drafts", "asset-registry.json", "adult-cam", "dating", "ai-companion", "hentai"],
+      "write_policy": "write_allowed",
+      "canonical_checkout": "/home/deploy/lah-stack-repos/lah-stack-biz-assets",
+      "evidence": ["lah-stack-biz-assets/README.md", "asset-registry.json", "draft-only asset metadata"]
+    },
+    {
+      "repository_id": "lah-stack-tools",
+      "roles": ["IMPLEMENTATION"],
+      "aliases": ["lah-stack-tools", "tools", "operator tooling", "operator packet", "lah-start", "lah-guard"],
+      "strong_signals": ["operator tooling", "operator packet", "mission dispatch", "lah-start", "lah-guard", "maintenance authority"],
+      "positive_signals": ["tools", "operator", "guard", "launcher", "orchestrator", "dispatch"],
+      "negative_signals": ["wordpress", "gateway runtime", "operational memory", "creative assets"],
+      "exclusive_surfaces": ["mission-dispatch", "operator-packets", "bin-scripts", "orchestrators"],
+      "write_policy": "write_allowed",
+      "canonical_checkout": "/home/deploy/lah-stack-repos/lah-stack-tools",
+      "evidence": ["lah-stack-tools/AGENTS.md", "lah-stack-tools/CLAUDE.md"]
+    },
+    {
+      "repository_id": "lah-discovery-platform",
+      "roles": ["CONTEXT"],
+      "aliases": ["lah-discovery-platform", "discovery platform", "discovery", "ADR", "infra specification"],
+      "strong_signals": ["discovery platform design", "platform design docs", "infrastructure specification", "ADR on discovery platform"],
+      "positive_signals": ["discovery", "platform", "ADR", "design docs", "infra specs"],
+      "negative_signals": ["production code", "live configuration", "memory operations"],
+      "exclusive_surfaces": ["platform-design-docs", "adrs", "infra-specifications"],
+      "write_policy": "requires_explicit_scope",
+      "canonical_checkout": "/home/deploy/lah-stack-repos/lah-discovery-platform",
+      "evidence": ["lah-discovery-platform source and design docs"]
+    },
+    {
+      "repository_id": "hermes-agent",
+      "roles": ["IMPLEMENTATION", "EXECUTION_RUNTIME", "CONTEXT"],
+      "aliases": ["hermes-agent", "hermes", "Hermes dashboard", "agent framework", "dashboard provider"],
+      "strong_signals": ["Hermes dashboard", "Hermes provider configuration", "agent framework", "dashboard recovery", "observability hooks", "Hermes observability plugin", "Hermes core runtime", "Hermes ContextCompiler", "Hermes model_tools dispatch", "Hermes durable mission checkpoint", "Hermes turn context", "Hermes provider message assembly"],
+      "positive_signals": ["Hermes", "dashboard", "agent framework", "provider configuration", "observability hooks"],
+      "negative_signals": ["LAH Stack operational", "wordpress", "business assets", "specific LAH mission"],
+      "exclusive_surfaces": ["hermes_cli", "agent", "plugins", "dashboard", "skills"],
+      "write_policy": "requires_explicit_scope",
+      "canonical_checkout": "/home/deploy/hermes-agent",
+      "evidence": ["hermes-agent/AGENTS.md", "hermes-agent/README.md", "plugins/observability/"]
+    },
+    {
+      "repository_id": "cloe-diagnostic-orchestrator",
+      "roles": ["IMPLEMENTATION", "EXECUTION_RUNTIME"],
+      "aliases": ["cloe-diagnostic-orchestrator", "diagnostic orchestrator", "Governor", "DiagnosticService"],
+      "strong_signals": ["diagnostic orchestrator", "DiagnosticService", "Governor stop logic", "real operator validation"],
+      "positive_signals": ["diagnostic", "Governor", "stop logic", "runtime diagnostics"],
+      "negative_signals": ["gateway runtime", "wordpress", "business assets", "operational memory"],
+      "exclusive_surfaces": ["diagnostic-engine", "Governor", "DiagnosticService"],
+      "write_policy": "write_allowed",
+      "canonical_checkout": "/home/deploy/lah-stack-repos/cloe-diagnostic-orchestrator",
+      "evidence": ["cloe-diagnostic-orchestrator/AGENTS.md", "DiagnosticService", "Governor"]
+    },
+    {
+      "repository_id": "cartelogic-remote-memory",
+      "roles": ["EXECUTION_RUNTIME"],
+      "aliases": ["cartelogic remote memory", "remote memory service", "memory server"],
+      "strong_signals": ["remote memory service", "systemd memory service"],
+      "positive_signals": ["remote memory", "memory service", "memory server"],
+      "negative_signals": ["operational memory", "context routing", "observations ledger"],
+      "exclusive_surfaces": ["remote-memory-service", "systemd-memory-service"],
+      "write_policy": "requires_explicit_scope",
+      "canonical_checkout": "/home/deploy/cartelogic-remote-memory",
+      "evidence": ["cartelogic-remote-memory service files"]
+    }
+  ]
+}

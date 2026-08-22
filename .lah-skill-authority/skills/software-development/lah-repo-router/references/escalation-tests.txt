@@ -1,0 +1,4 @@
+# Schema v4 regression corpus pointer
+# Executable source: v4-adversarial-fixtures.json
+# Runner: scripts/test-v4-router.cjs
+# Historical v3 scenarios are not authoritative routing doctrine.

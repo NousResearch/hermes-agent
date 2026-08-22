@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LAH Repo Router v4 receipt",
+  "type": "object",
+  "required": ["schema_version", "decision", "primary_role", "write_intents", "write_allowed_repos", "role_evidence", "ontology_status", "conflicts", "confidence"],
+  "properties": {
+    "schema_version": {"const": "4"},
+    "decision": {"enum": ["RESOLVED", "AMBIGUOUS", "UNRESOLVED", "BLOCKED"]},
+    "primary_role": {"type": ["string", "null"], "enum": ["IMPLEMENTATION", "EXECUTION_RUNTIME", "GOVERNANCE", "MEMORY", "CONTEXT", "SKILL_KNOWLEDGE", "BUSINESS_ASSET", null]},
+    "repository_authority": {"type": ["string", "null"]},
+    "execution_workspace": {"type": ["string", "null"]},
+    "implementation_repo": {"type": ["string", "null"]},
+    "execution_repo": {"type": ["string", "null"]},
+    "governance_repo": {"type": ["string", "null"]},
+    "memory_repo": {"type": ["string", "null"]},
+    "context_repos": {"type": "array", "items": {"type": "string"}},
+    "skill_knowledge_repo": {"type": ["string", "null"]},
+    "business_asset_repo": {"type": ["string", "null"]},
+    "write_intents": {"type": "array", "items": {"$ref": "#/$defs/writeIntent"}},
+    "write_allowed_repos": {"type": "array", "items": {"type": "string"}},
+    "write_forbidden_roots": {"type": "array", "items": {"type": "string"}},
+    "role_evidence": {"type": "object"},
+    "ontology_status": {"type": "object"},
+    "explicit_target": {"type": ["object", "null"]},
+    "conflicts": {"type": "array", "items": {"type": "object"}},
+    "confidence": {"enum": ["high", "medium", "low"]}
+  },
+  "$defs": {
+    "writeIntent": {
+      "type": "object",
+      "required": ["role", "repo", "scope", "source"],
+      "properties": {
+        "role": {"type": "string"},
+        "repo": {"type": "string"},
+        "scope": {"type": "string"},
+        "source": {"type": "string"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}

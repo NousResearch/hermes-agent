@@ -679,7 +679,8 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
             filters out disabled skills.
 
     Returns:
-        List of skill metadata dicts (name, description, category).
+        List of skill metadata dicts (name, invocation_name, description,
+        category, path).
 
     Results are cached per-session; the cache is invalidated when the scan
     signature changes (dir/category mtimes or the disabled-set) and expires
@@ -772,11 +773,18 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
                 category = _get_category_from_path(skill_md)
 
+                try:
+                    relative_path = str(skill_md.relative_to(SKILLS_DIR))
+                except ValueError:
+                    relative_path = str(skill_md)
+
                 seen_names.add(name)
                 skills.append({
                     "name": name,
+                    "invocation_name": name,
                     "description": description,
                     "category": category,
+                    "path": relative_path,
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:
@@ -805,8 +813,8 @@ def skills_list(category: str = None, task_id: str = None) -> str:
     """
     List all available skills (progressive disclosure tier 1 - minimal metadata).
 
-    Returns only name + description to minimize token usage. Use skill_view() to
-    load full content, tags, related files, etc.
+    Returns canonical invocation_name plus category/path metadata. Use
+    skill_view() to load full content, tags, related files, etc.
 
     Args:
         category: Optional category filter (e.g., "mlops")

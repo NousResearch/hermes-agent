@@ -1,0 +1,62 @@
+{
+  "continuity_type": "LAH_STACK_OPERATIONAL_CONTINUITY",
+  "date": "2026-07-24T22:35:00Z",
+  "latest_completed_mission": "CLOE_STALE_PLUGIN_CONFIGURATION_CLEANUP_AND_REAL_HOST_DASHBOARD_PROOF_V1",
+  "verdict": "CLOE_STALE_PLUGIN_CONFIGURATION_CLEANUP_AND_REAL_HOST_DASHBOARD_PROOF_V1_CERTIFIED_WITH_LIMITATIONS",
+  "source_state": {
+    "pre_cleanup": "openclaw-cloe-harness-poc referenced in 3 config locations (load.paths, entries, allow); empty plugin dir at /home/deploy/.openclaw/plugins/openclaw-cloe-harness-poc",
+    "post_cleanup": "all 3 stale references removed; plugin dir quarantined to openclaw-cloe-harness-poc.quarantined-20260724T223000Z; gateway starts cleanly without it",
+    "host_gateway": "running PID 18132, port 18789, loader active, no stale warnings",
+    "docker_gateway_5turn": "PASSED (agent:cloe-poc:dashboard:5e3c9093-2dd4-4167-8eb3-f8ec3f1e71e3, 5/5 SUCCESS)"
+  },
+  "gates": {
+    "gate0_repo_routing": "PASS (openclaw-runtime)",
+    "gate0_5_existing_infrastructure": "PASS",
+    "gate1_codegraph": "PASS",
+    "gate2_autoresearch": "PASS",
+    "gate3_plan": "SKIPPED (continuation mission)",
+    "gate4_fastsafe": "PASS",
+    "gate5_implementation": "PASS (config cleanup: 3 stale references removed, 1 dir quarantined)",
+    "gate6_validation": "PASS (config validate OK, doctor: no stale warnings)",
+    "gate7_operator_packet": "PRESENT",
+    "gate8_commit": "SKIPPED (no Git changes)",
+    "gate9_pr_merge": "SKIPPED",
+    "gate9_5_operator_testing": "PASS (5-turn dashboard proof via Docker gateway; host gateway sessions.list OK)",
+    "gate10_memory_lock": "PRESENT",
+    "gate11_continuity_json": "PRESENT"
+  },
+  "safety": {
+    "public_publish": false,
+    "wordpress_mutation": false,
+    "telegram_live_calls": false,
+    "provider_calls": false,
+    "llm_generation_calls": false,
+    "scheduler_activation": false,
+    "deploy": false,
+    "secrets_printed": false,
+    "git_state_touched": false,
+    "docker_data_touched": false,
+    "hermes_touched": false
+  },
+  "dashboard_five_turn": {
+    "session_key": "agent:cloe-poc:dashboard:5e3c9093-2dd4-4167-8eb3-f8ec3f1e71e3",
+    "created": true,
+    "total_messages": 10,
+    "user_messages": 5,
+    "assistant_messages": 5,
+    "all_preserved": true,
+    "turns": [
+      {"n": 1, "message": "salut", "dispatch": "SUCCESS", "route": "provider_backed"},
+      {"n": 2, "message": "as-tu des skills ?", "dispatch": "SUCCESS", "route": "provider_backed"},
+      {"n": 3, "message": "quelles sont tes fonctionnalites ?", "dispatch": "SUCCESS", "route": "provider_backed"},
+      {"n": 4, "message": "donne-moi ton statut", "dispatch": "SUCCESS", "route": "provider_backed"},
+      {"n": 5, "message": "qui es-tu ?", "dispatch": "SUCCESS", "route": "cloe_conversation"}
+    ]
+  },
+  "risks": [
+    "CLOE identity wording non-canonical (generic OpenClaw fallback template, not cloe-self-knowledge.js canonical wording).",
+    "Host gateway cannot create new cloe-poc dashboard sessions programmatically (sessions.create requires operator.write scope and AionUI origin). Existing dashboard sessions continue to work.",
+    "The crestodian agent directory exists in .openclaw/agents/ without a matching agents.list entry (unrelated, pre-existing)."
+  ],
+  "next_action": "CLOE_IDENTITY_WORDING_REPAIR_V1 — Align gateway identity response with cloe-self-knowledge.js canonical wording."
+}

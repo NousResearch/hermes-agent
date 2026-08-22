@@ -1,0 +1,105 @@
+# Legacy v3 test mission set — non-authoritative
+# Schema v4 certification uses v4-adversarial-fixtures.json.
+# Retained only for historical comparison; never use as routing doctrine.
+#
+# Format: one mission per line
+# Lines starting with # are comments
+
+# === Existing scenarios (18 preserved from v2) ===
+LAH_123 — Ajouter un plugin WordPress
+LAHB_456 — Route /api/v1/knowledge du Business OS
+OPENCLAW_789 — Déployer MVP gateway
+CARTELOGIC_101 — Enregistrer observation mémoire
+Créer un article de blog dating
+Mettre à jour thème WordPress
+Ajouter route /extract gateway
+Bug parser PHP landing shell
+Mettre à jour docs discovery platform
+Publier contenu adult-cam (draft)
+Mettre à jour mémoire dans lah-brain
+LAHB Réparer route 500
+Snippet PHP dans lah-core
+Itérer observations de cartelogic-v2
+TOOLS Vérifier lah-start.mjs
+Ajouter niche adult-cam
+# === The two originally ambiguous cases ===
+TOOLS_202 — Opérator packet pour guard
+Ajouter skill Hermes dans lah-stack-tools
+
+# === NEW: Canonical repository vs duplicate workspace (v3 requirement) ===
+# These verify that workspaces don't compete as independent repository authorities
+TOOLS_303 — Valider operator packet sur workspace operator
+TOOLS_404 — Déployer une mise à jour sur l'environnement live
+TOOLS_505 — Vérifier le state des worktrees de lah-stack-tools
+
+# === NEW: Operator workspace selection after authority resolution ===
+# Repository authority is clear (lah-stack-tools), workspace selection needed
+TOOLS_606 — Générer un operator packet pour cloe bridge
+TOOLS_707 — Mettre à jour codegraph confidence refinements sur le workspace live
+
+# === NEW: Development workspace selection ===
+OPENCLAW_808 — Développer l'adaptateur mémoire Qdrant
+OPENCLAW_909 — Tester le memory adapter sur le workspace dev
+
+# === NEW: Worktree recognition (worktrees in lah-stack-worktrees/) ===
+# These should resolve to lah-stack-tools repository authority
+Autonomous core cleanroom worktree — vérifier l'état
+Memory federation tools worktree — vérifier le sync
+
+# === NEW: Implementation repo different from memory repo ===
+# These must separate implementation authority from memory authority
+LAH_1010 — Implémenter une feature lah-core et enregistrer la décision mémoire dans cartelogic
+TOOLS_1111 — Développer un nouvel operator guard et journaliser la décision
+OPENCLAW_1212 — Déployer un nouveau route gateway avec observation mémoire
+
+# === NEW: Context repository read-only by default ===
+# These must verify that context repos don't allow writes without explicit scope
+Mettre à jour un ADR sur la discovery platform
+Modifier une spécification infra sur lah-discovery-platform
+Mettre à jour le dashboard recovery dans hermes-agent
+
+# === NEW: Explicit mission scope enabling a requires_explicit_scope repo ===
+Mission explicite: Mettre à jour les documents de design sur lah-discovery-platform
+Mission explicite: Modifier la mémoire operationnelle dans cartelogic-v2
+Mission explicite: Patch du framework agent dans hermes-agent
+
+# === NEW: Production path remaining forbidden (always_forbidden) ===
+# These must detect and report forbidden paths
+Modifier le Business OS dans /opt/data/openclaw/business-os/
+Mettre à jour les receipts dans /var/lib/lah-hermes-host-worker/receipts/
+
+# === NEW: Explicit target vs functional ownership conflict ===
+# These must produce AMBIGUOUS with EXPLICIT_TARGET_OWNERSHIP_CONFLICT code
+Ajouter un plugin WordPress dans lah-stack-tools
+Mettre à jour le gateway runtime dans lah-core
+
+# === NEW: Overlapping prefixes (LAHB_ vs LAH_) ===
+LAHB_1313 — Ajouter une route Business OS
+LAH_1414 — Créer un plugin landing shell
+LAHB_1515 — Réparer le stockage lah-brain
+LAH_1616 — Ajouter un snippet PHP wp-content
+
+# === NEW: Exact alias and word-boundary behavior ===
+# These must not false-match
+Mettre à jour lah-core
+Publier sur lah-brain
+Configurer openclaw-runtime
+
+# === NEW: Ambiguous memory authority ===
+Enregistrer une observation importante
+Lire la mémoire opérationnelle du système
+
+# === NEW: Ambiguous workspace but clear repository authority ===
+TOOLS_1717 — Développer sur un workspace non spécifié
+
+# === NEW: Cross-repository mission with minimal candidate set ===
+# These missions span implementation + memory
+Migrer un plugin WordPress et enregistrer le plan de mémoire dans cartelogic-v2
+Déployer le gateway et mettre à jour les observations
+
+# === NEW: cloe-diagnostic-orchestrator repository ===
+# These must resolve to cloe-diagnostic-orchestrator
+Mettre à jour le cloe-diagnostic-orchestrator
+Lot F cloe-diagnostic-orchestrator — multi-iteration loop
+Mission explicite: cloe-diagnostic-orchestrator lot-d intégration
+CLOE_ diagnostic orchestrator lot-f — vérifier la boucle

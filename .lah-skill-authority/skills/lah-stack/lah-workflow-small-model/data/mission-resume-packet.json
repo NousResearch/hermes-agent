@@ -1,0 +1,37 @@
+{
+  "version": "1.0.0",
+  "mission_id": "LAH_FAST_CAMPAIGN_PROVIDER_CANARY_V3",
+  "mission_type": "BUILD_AND_CERTIFY",
+  "current_checkpoint": "PENDING_OPERATOR_APPROVAL",
+  "next_action": "APPROVE_AND_EXECUTE",
+  "known_facts": {
+    "LAHB_URL": "https://leanframeworklab.com",
+    "internal_runtime": "lah-openclaw-mvp:4000",
+    "execution_seam": "LAHB → governed runtime → compiler → ExoClick",
+    "banner_mapping_certified": true,
+    "approval_readback_verified": true
+  },
+  "resolved_blockers": [],
+  "blocking_unknowns": [],
+  "authorization_state": {
+    "operator_approved": false,
+    "approval_id": "approval_1787149585840_d8937b09"
+  },
+  "provider_state": {},
+  "approval_ids": [
+    "approval_1787149585840_d8937b09"
+  ],
+  "campaign_ids": [],
+  "compiled_packet_ids": [],
+  "canonical_context_fingerprint": "d9a2167b6d03adc7ce891cbdb1f255309e641c66f35a6f279cdd219ebc3c5ff8",
+  "forbidden_rediscovery": [
+    "LAHB",
+    "PORT_4000",
+    "PORT_18789",
+    "OPENCLAW_INTERNAL_URL"
+  ],
+  "last_verified_at": "2026-08-19T14:49:31.404Z",
+  "created_at": "2026-08-19T14:49:31.404Z",
+  "updated_at": "2026-08-19T14:49:31.404Z",
+  "packet_id": "e69b34ea38b81b38278de022a6cb2fc9cb1e9fb251372a393f545d660a725d62"
+}

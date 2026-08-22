@@ -584,6 +584,17 @@ def build_turn_context(
     _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
     if callable(_reset_consol):
         _reset_consol()
+    from agent.governed_skill_state import GovernedSkillState, classify_governed_mission
+    _governed = classify_governed_mission(user_message)
+    _authority = {"valid": True, "errors": []}
+    if _governed:
+        from tools.skill_authority import load_runtime_authority_status
+        _authority = load_runtime_authority_status()
+    agent._governed_skill_state = GovernedSkillState(
+        governed=_governed,
+        authority_valid=bool(_authority.get("valid")),
+        authority_errors=tuple(_authority.get("errors") or ()),
+    )
     agent._vision_supported = True
 
     # Pre-turn connection health check: clean up dead TCP connections.

@@ -1,0 +1,107 @@
+{
+  "mission": "HERMES_CODEGRAPH_MANDATORY_BOOTSTRAP_AND_STACK_KNOWLEDGE_GATE_V1",
+  "mode": "BUILD_AND_CERTIFY",
+  "workflow": "lah-workflow-small-model",
+  "timestamp": "2026-08-19T15:30:00.000Z",
+  "verdict": "HERMES_CODEGRAPH_BOOTSTRAP_CERTIFIED",
+
+  "workflow_authority": {
+    "PRIMARY_WORKFLOW": "lah-workflow-small-model",
+    "LAH_WORKFLOW_PRIMARY_SELECTION": false,
+    "LEGACY_REFERENCE": "lah-workflow",
+    "DUPLICATE_WORKFLOW_AUTHORITY_PRESENT": true,
+    "authority_duplication_repair": "PIN_LAH_WORKFLOW_SMALL_MODEL_IN_USAGE_JSON",
+    "authority_duplication_repair_status": "APPLIED",
+    "authority_duplication_repair_method": "hermes curator pin lah-workflow-small-model",
+    "authority_duplication_repair_evidence": "lah-workflow-small-model.pinned=true in ~/.hermes/skills/.usage.json; lah-workflow.pinned=false remains"
+  },
+
+  "codegraph_bootstrap": {
+    "CODEGRAPH_BOOTSTRAP_ENFORCED": true,
+    "startup_sequence": [
+      "LOAD_CONTEXT",
+      "VERIFY_FINGERPRINT",
+      "LOAD_RESUME_PACKET",
+      "CODEGRAPH_BOOTSTRAP",
+      "IDENTIFY_NEXT_ACTION",
+      "EXECUTE"
+    ],
+    "files_modified": [
+      "scripts/startup-orchestrator.js — Added CODEGRAPH_BOOTSTRAP step (v1.1.0), lah_context_resolve() function, child_process/path/url imports, updated exports",
+      "scripts/convergence-governor.js — Added codegraphBootstrapCompleted, codegraphBootstrapReceipt, codegraphBootstrapBlockedCount state; setCodeGraphBootstrap(), isCodeGraphBootstrapCompleted(), getCodeGraphMetrics() methods; CODEGRAPH_BOOTSTRAP_REQUIRED in STOP_REASON; codegraph_bootstrap in generateReceipt(); bootstrap gate blocks discovery in recordAction() before bootstrap completes"
+    ],
+    "lah_context_resolve": {
+      "implemented": true,
+      "location": "scripts/startup-orchestrator.js",
+      "description": "Mandatory CodeGraph bootstrap for mission startup. Checks CodeGraph freshness, refreshes if stale/missing, loads mission context packet. Returns structured receipt with phase, can_proceed, and optional receipt fields."
+    }
+  },
+
+  "convergence_governor": {
+    "CONVERGENCE_GOVERNOR_ACTIVE": true,
+    "codegraph_gate": {
+      "blocks_discovery_before_bootstrap": true,
+      "allows_discovery_after_bootstrap": true,
+      "stop_reason": "CODEGRAPH_BOOTSTRAP_REQUIRED",
+      "metrics_included": ["codegraph_bootstrap_blocked_count"]
+    }
+  },
+
+  "certified_architecture_context": {
+    "CERTIFIED_CONTEXT_ACTIVE": true,
+    "fact_count": 17,
+    "source": "seeded_from_certified_evidence_only",
+    "fingerprint": "d9a2167b6d03adc7ce891cbdb1f255309e641c66f35a6f279cdd219ebc3c5ff8"
+  },
+
+  "resume_packet": {
+    "RESUME_PACKET_ACTIVE": true,
+    "mission_id": "LAH_FAST_CAMPAIGN_PROVIDER_CANARY_V3",
+    "checkpoint": "PENDING_OPERATOR_APPROVAL",
+    "next_action": "APPROVE_AND_EXECUTE",
+    "approval_id": "approval_1787149585840_d8937b09"
+  },
+
+  "llm_bypass": {
+    "LLM_CAN_BYPASS_CODEGRAPH": false,
+    "enforcement": "Convergence governor blocks all discovery actions before CodeGraph bootstrap completes. No LLM path can skip the bootstrap gate."
+  },
+
+  "tests": {
+    "total": 12,
+    "passed": 12,
+    "failed": 0,
+    "blocked": 0,
+    "test_file": "tests/codegraph-bootstrap-tests.js",
+    "results": {
+      "T01": "PASS — CodeGraph bootstrap is mandatory",
+      "T02": "PASS — lah_context_resolve returns structured receipt",
+      "T03": "PASS — Fresh CodeGraph artifacts allow bootstrap",
+      "T04": "PASS — Stale CodeGraph artifacts trigger refresh",
+      "T05": "PASS — Missing CodeGraph artifacts trigger refresh",
+      "T06": "PASS — Convergence governor blocks discovery before bootstrap",
+      "T07": "PASS — Convergence governor allows discovery after bootstrap",
+      "T08": "PASS — Startup orchestrator includes CODEGRAPH_BOOTSTRAP",
+      "T09": "PASS — Startup orchestrator blocks mission start when bootstrap fails",
+      "T10": "PASS — lah-workflow-small-model is primary workflow authority",
+      "T11": "PASS — lah-workflow is LEGACY_REFERENCE only",
+      "T12": "PASS — CodeGraph bootstrap receipt has all required fields"
+    }
+  },
+
+  "canary_mission": {
+    "status": "PENDING_OPERATOR_APPROVAL",
+    "mission_id": "LAH_FAST_CAMPAIGN_PROVIDER_CANARY_V3",
+    "note": "Canary mission execution requires explicit operator approval per directive 2026-08-13. Hermes prepares the packet but does not trigger provider mutations."
+  },
+
+  "certification_fields": {
+    "PRIMARY_WORKFLOW": "lah-workflow-small-model",
+    "LAH_WORKFLOW_PRIMARY_SELECTION": false,
+    "CODEGRAPH_BOOTSTRAP_ENFORCED": true,
+    "CONVERGENCE_GOVERNOR_ACTIVE": true,
+    "CERTIFIED_CONTEXT_ACTIVE": true,
+    "RESUME_PACKET_ACTIVE": true,
+    "LLM_CAN_BYPASS_CODEGRAPH": false
+  }
+}

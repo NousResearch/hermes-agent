@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "authoring_authority": "home-deploy-lah-skill-authority",
+  "skills": {
+    "lah-repo-router": {
+      "invocation_name": "lah-repo-router",
+      "source_repo": "home-deploy",
+      "source_path": "/home/deploy/.lah-skill-authority/skills/software-development/lah-repo-router",
+      "runtime_path": "software-development/lah-repo-router"
+    },
+    "mission-decomposer": {
+      "invocation_name": "mission-decomposer",
+      "source_repo": "home-deploy",
+      "source_path": "/home/deploy/.lah-skill-authority/skills/software-development/mission-decomposer",
+      "runtime_path": "software-development/mission-decomposer"
+    },
+    "lah-workflow": {
+      "invocation_name": "lah-workflow",
+      "source_repo": "home-deploy",
+      "source_path": "/home/deploy/.lah-skill-authority/skills/lah-stack/lah-workflow",
+      "runtime_path": "lah-stack/lah-workflow"
+    },
+    "lah-workflow-small-model": {
+      "invocation_name": "lah-workflow-small-model",
+      "source_repo": "home-deploy",
+      "source_path": "/home/deploy/.lah-skill-authority/skills/lah-stack/lah-workflow-small-model",
+      "runtime_path": "lah-stack/lah-workflow-small-model"
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "router_version": "4",
+  "canonical_source": "leanframeworklab/lah-stack-skills",
+  "canonical_subpath": "lah-repo-router",
+  "schema_version": "4",
+  "fingerprint_algorithm": "sha256(raw canonical JSON bytes)",
+  "mapping_fingerprint": "186bf4814f80ca3e8225471131d82932bb64c2109df9a1f4be552f21402b268c",
+  "source_authority": "Git canonical source",
+  "execution_authority": "Hermes installed dry-run-route.sh",
+  "derived_installations": ["Hermes", "Codex"],
+  "semantic_artifacts": [
+    "SKILL.md",
+    "scripts/dry-run-route.sh",
+    "scripts/dry-run-route.cjs",
+    "references/repo_mappings.json",
+    "references/receipt-schema-v4.json",
+    "references/v4-adversarial-fixtures.json",
+    "templates/codex-SKILL.md"
+  ],
+  "installation_contract": "scripts/sync-installations.cjs",
+  "drift_validator": "scripts/validate-installation-drift.cjs",
+  "final_authority_receipt": {
+    "mission": "LAH_REPO_ROUTER_V4_CANONICAL_GIT_AUTHORITY_FINALIZE_P2",
+    "router_version": "4",
+    "schema_version": "4",
+    "canonical_repo": "leanframeworklab/lah-stack-skills",
+    "canonical_path": "lah-repo-router",
+    "canonical_commit": "711ff6888fb234a888a65edb84eadbf40f98e90e",
+    "mapping_fingerprint": "e93ef413f50f02244b71be01b405b09d8994657c3f931d41a193f12d8ecfd0a0",
+    "source_to_hermes": "PASS",
+    "source_to_codex": "PASS",
+    "hermes_to_codex": "PASS",
+    "semantic_change": "NONE",
+    "certification": "PASS"
+  }
+}

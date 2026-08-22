@@ -385,18 +385,18 @@ def _build_skill_message(
                         supporting.append(rel)
 
     if supporting and skill_dir:
-        try:
-            skill_view_target = str(skill_dir.relative_to(SKILLS_DIR))
-        except ValueError:
-            # Skill is from an external dir — use the skill name instead
-            skill_view_target = skill_dir.name
+        # Keep canonical invocation identity separate from implementation path.
+        # The resolver still accepts paths for diagnostics, but model-visible
+        # activation guidance must teach the frontmatter name.
+        skill_view_target = str(loaded_skill.get("name") or skill_dir.name)
         parts.append("")
         parts.append("[This skill has supporting files:]")
         for sf in supporting:
             parts.append(f"- {sf}  ->  {skill_dir / sf}")
         parts.append(
             f'\nLoad any of these with skill_view(name="{skill_view_target}", '
-            f'file_path="<path>"), or run scripts directly by absolute path '
+            f'file_path="<path>"). Invocation name is canonical; '
+            f'filesystem path is "{skill_dir}". Or run scripts directly by absolute path '
             f"(e.g. `node {skill_dir}/scripts/foo.js`)."
         )
 

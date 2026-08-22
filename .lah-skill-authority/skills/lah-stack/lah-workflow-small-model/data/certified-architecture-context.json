@@ -1,0 +1,297 @@
+{
+  "version": "1.0.0",
+  "generated_at": "2026-08-19T14:46:36.569Z",
+  "facts": {
+    "REPO_OWNERSHIP": {
+      "value": {
+        "workspace_clone": "/home/deploy/openclaw-runtime",
+        "canonical_checkout": "/home/deploy/lah-stack-repos/openclaw-runtime",
+        "remote": "github.com-lah-stack",
+        "router_status": "G0_UNRESOLVED_bypassed_direct_reading"
+      },
+      "source_authority": "P0_authority_map.md (2026-08-18)",
+      "fingerprint": "a1b2c3d4-repo-ownership",
+      "certified_at": "2026-08-18T21:00:00Z",
+      "staleness_policy": "never_stale_without_contradiction"
+    },
+    "LAHB": {
+      "value": {
+        "approval_authority": "LAHB (lah-brain)",
+        "canonical_url": "https://leanframeworklab.com",
+        "env_var": "LAHB_URL",
+        "default_url": "https://leanframeworklab.com",
+        "admin_api_key_env": "LAHB_ADMIN_API_KEY",
+        "interface": "REST API /approval_queue + /approvals/:id",
+        "role": "governance and approval authority"
+      },
+      "source_authority": "P0_authority_map.md + lah-workflow-small-model SKILL.md",
+      "fingerprint": "e5f6a7b8-lahb-authority",
+      "certified_at": "2026-08-18T21:00:00Z",
+      "staleness_policy": "never_stale_without_contradiction"
+    },
+    "OPENCLAW_RUNTIME": {
+      "value": {
+        "governed_execution_runtime": "lah-openclaw-mvp container",
+        "role": "governed execution runtime for campaign operations",
+        "container_name": "lah-openclaw-mvp",
+        "code_location": "openclaw-runtime/",
+        "governance_boundary": "approvals in lah-brain (LAHB), execution in openclaw-runtime"
+      },
+      "source_authority": "P0_authority_map.md + lah-workflow-small-model SKILL.md",
+      "fingerprint": "c9d0e1f2-openclaw-runtime",
+      "certified_at": "2026-08-18T21:00:00Z",
+      "staleness_policy": "never_stale_without_contradiction"
+    },
+    "OPENCLAW_INTERNAL_URL": {
+      "value": {
+        "url": "http://lah-openclaw-mvp:4000",
+        "preferred_over": "OPENCLAW_API_URL",
+        "role": "preferred execution URL for governed runtime",
+        "env_var": "OPENCLAW_INTERNAL_URL"
+      },
+      "source_authority": ".env file (openclaw-runtime/lah-openclaw-mvp/.env) + P0_authority_map.md",
+      "fingerprint": "d3e4f5a6-openclaw-internal-url",
+      "certified_at": "2026-08-18T21:00:00Z",
+      "staleness_policy": "never_stale_without_contradiction"
+    },
+    "PORT_4000": {
+      "value": {
+        "port": 4000,
+        "role": "governed runtime (OpenClaw internal)",
+        "NOT_campaign_execution_authority": true,
+        "service": "lah-openclaw-mvp container"
+      },
+      "source_authority": ".env PORT=4000 + P0_authority_map.md",
+      "fingerprint": "f7a8b9c0-port-4000",
+      "certified_at": "2026-08-18T21:00:00Z",
+      "staleness_policy": "never_stale_without_contradiction"
+    },
+    "PORT_18789": {
+      "value": {
+        "port": 18789,
+        "role": "OpenClaw browser gateway",
+        "NOT_campaign_execution_authority": true,
+        "NOT_governed_runtime": true
+      },
+      "source_authority": "P0_authority_map.md + memory directive 2026-08-13",
+      "fingerprint": "g1h2i3j4-port-18789",
+      "certified_at": "2026-08-18T21:00:00Z",
+      "staleness_policy": "never_stale_without_contradiction"
+    },
+    "CAMPAIGN_EXECUTION_PATH": {
+      "value": {
+        "path": [
+          "LAHB",
+          "governed_runtime",
+          "campaign_compiler",
+          "launch_orchestration",
+          "ExoClick"
+        ],
+        "description": "Canonical campaign execution transport",
+        "governed": true
+      },
+      "source_authority": "P0_authority_map.md + lah-workflow-small-model SKILL.md + canary-execution-flow.md",
+      "fingerprint": "k5l6m7n8-campaign-execution-path",
+      "certified_at": "2026-08-18T21:00:00Z",
+      "staleness_policy": "never_stale_without_contradiction"
+    },
+    "COMPILER_AUTHORITY": {
+      "value": {
+        "canonical_file": "services/campaign-compiler/campaign-compiler.js",
+        "repo": "lah-openclaw-mvp",
+        "role": "campaign compilation authority",
+        "output": "compiled_packet with draft_id, draft_hash, status"
+      },
+      "source_authority": "P0_authority_map.md + P0-P8 receipt",
+      "fingerprint": "o9p0q1r2-compiler-authority",
+      "certified_at": "2026-08-18T21:00:00Z",
+      "staleness_policy": "never_stale_without_contradiction"
+    },
+    "LAUNCHER_AUTHORITY": {
+      "value": {
+        "canonical_file": "services/launch-orchestration.js",
+        "repo": "lah-openclaw-mvp",
+        "role": "launch orchestration authority",
+        "function": "advanceLaunchSession()"
+      },
+      "source_authority": "P0_authority_map.md",
+      "fingerprint": "s3t4u5v6-launcher-authority",
+      "certified_at": "2026-08-18T21:00:00Z",
+      "staleness_policy": "never_stale_without_contradiction"
+    },
+    "P6_AUTHORITY": {
+      "value": {
+        "canonical_file": "services/campaign-compiler/p6-provider-readback-certification.js",
+        "role": "provider certification authority (7/7 automatic checks)",
+        "certified_at": "2026-08-18"
+      },
+      "source_authority": "P0-P8 receipt + P6 certification",
+      "fingerprint": "w7x8y9z0-p6-authority",
+      "certified_at": "2026-08-18T21:00:00Z",
+      "staleness_policy": "never_stale_without_contradiction"
+    },
+    "EXOCLICK_AUTHORITY": {
+      "value": {
+        "canonical_files": [
+          "services/exoclick-client.js",
+          "services/exoclick-normalizer.js",
+          "services/exoclick-variation.js"
+        ],
+        "role": "provider mutation and readback authority",
+        "api_base": "https://api.exoclick.com/v2",
+        "live_enabled_env": "EXOCLICK_LIVE_ENABLED",
+        "token_env": "EXOCLICK_API_TOKEN"
+      },
+      "source_authority": "P0_authority_map.md + T04/T05 directives",
+      "fingerprint": "a1b2c3d4-exoclick-authority",
+      "certified_at": "2026-08-18T21:00:00Z",
+      "staleness_policy": "never_stale_without_contradiction"
+    },
+    "TRACKING_AUTHORITY": {
+      "value": {
+        "canonical_file": "lah-brain/src/campaign-factory/tracking-url.factory.js",
+        "function": "buildTrackingUrl()",
+        "contract": "Offer + geo + device + format + macros → tracking URL string",
+        "crakrevenue_builder": "services/crakrevenue-tracking-url-builder.js",
+        "redirect_gateway": "lah-brain/src/redirect-gateway.js",
+        "aff_sub_macro": "{clickid} → aff_sub",
+        "zone_id_macro": "{zone_id} → aff_sub2({zoneid})",
+        "campaign_id_macro": "{campaign_id} → aff_sub3({campaignid})"
+      },
+      "source_authority": "P0_authority_map.md + T05 directive + redirect-gateway.js",
+      "fingerprint": "e5f6a7b8-tracking-authority",
+      "certified_at": "2026-08-18T21:00:00Z",
+      "staleness_policy": "never_stale_without_contradiction"
+    },
+    "SAFETY_AUTHORITY": {
+      "value": {
+        "canonical_files": [
+          "services/launch-safety-bind-phase.js",
+          "services/launch-safety-gates.js",
+          "services/safety/launch-safety-binding.js"
+        ],
+        "role": "campaign + variation Safety authority",
+        "scope": "campaign-level and variation-level hard stops",
+        "binding": "bindCampaignToSafety() + evaluateSafetyCampaignBinding()"
+      },
+      "source_authority": "P0_authority_map.md + lah-workflow-small-model SKILL.md",
+      "fingerprint": "i9j0k1l2-safety-authority",
+      "certified_at": "2026-08-18T21:00:00Z",
+      "staleness_policy": "never_stale_without_contradiction"
+    },
+    "FORMAT_AUTHORITY": {
+      "value": {
+        "canonical_file": "services/exoclick-maps.js",
+        "field": "FORMAT_ID",
+        "runtime_executable_formats": [
+          "popunder",
+          "banner",
+          "native",
+          "video"
+        ],
+        "description": "Format authority — maps catalog format names to ExoClick advertiser_ad_type IDs"
+      },
+      "source_authority": "P0_authority_map.md + format-catalog-reconciliation.md",
+      "fingerprint": "m3n4o5p6-format-authority",
+      "certified_at": "2026-08-18T21:00:00Z",
+      "staleness_policy": "never_stale_without_contradiction"
+    },
+    "APPROVAL_EXECUTION_SEAM": {
+      "value": {
+        "seam": "LAHB approval → executeApprovedAction → OpenClaw → ExoClick",
+        "approval_submission": "POST /approvals/submit with action_type: CAMPAIGN_CREATE_PAUSED",
+        "approval_function": "submitApproval(db, actionType, payload, correlationId)",
+        "execution_function": "executeApprovedAction() in openclaw-client.js",
+        "execution_endpoint": "POST {OPENCLAW_API_URL}/execute",
+        "known_gap": "OpenClaw does NOT expose /execute for campaign creation (404/400)",
+        "workaround": "Direct ExoClick API or dedicated campaign creation service needed"
+      },
+      "source_authority": "canary-execution-flow.md + P0_authority_map.md + P9-P12 receipt",
+      "fingerprint": "q7r8s9t0-approval-execution-seam",
+      "certified_at": "2026-08-18T21:00:00Z",
+      "staleness_policy": "never_stale_without_contradiction"
+    },
+    "CANONICAL_RUNTIME_SERVICES": {
+      "value": {
+        "services": [
+          {
+            "name": "exoclick-normalizer.js",
+            "role": "FORMAT_MAP normalization"
+          },
+          {
+            "name": "exoclick-client.js",
+            "role": "provider mutation (create, readback)"
+          },
+          {
+            "name": "exoclick-variation.js",
+            "role": "variation creation (multipart/form-data)"
+          },
+          {
+            "name": "exoclick-maps.js",
+            "role": "format/device/pricing ID resolution"
+          },
+          {
+            "name": "exoclick-preflight.js",
+            "role": "pre-launch validation"
+          },
+          {
+            "name": "campaign-compiler.js",
+            "role": "deterministic compilation"
+          },
+          {
+            "name": "compile-invariants.js",
+            "role": "safety + attribution contracts"
+          },
+          {
+            "name": "launch-orchestration.js",
+            "role": "state machine for launch sessions"
+          },
+          {
+            "name": "launch-materialization.js",
+            "role": "campaign + variation creation"
+          },
+          {
+            "name": "launch-safety-bind-phase.js",
+            "role": "safety binding"
+          },
+          {
+            "name": "execution-adapter.js",
+            "role": "campaign descriptor from arm"
+          },
+          {
+            "name": "campaign-factory-routing.js",
+            "role": "selection strategy routing"
+          },
+          {
+            "name": "tracking-url.factory.js",
+            "role": "canonical tracking URL builder"
+          },
+          {
+            "name": "crakrevenue-tracking-url-builder.js",
+            "role": "CR tracking + SubID1"
+          },
+          {
+            "name": "redirect-gateway.js",
+            "role": "/go/ token router"
+          }
+        ]
+      },
+      "source_authority": "P0_authority_map.md + canary-execution-flow.md",
+      "fingerprint": "u1v2w3x4-runtime-services",
+      "certified_at": "2026-08-18T21:00:00Z",
+      "staleness_policy": "never_stale_without_contradiction"
+    },
+    "CAMPAIGN_EXECUTION_TRANSPORT": {
+      "value": {
+        "method": "governed execution through LAHB approval → OpenClaw → ExoClick",
+        "mutation_boundary": "LAHB approval is the gate; Hermes never triggers mutation without it",
+        "operator_approval_required": true,
+        "directive_2026_08_13": "PREPARE → INSPECT → remit trigger to operator"
+      },
+      "source_authority": "lah-workflow-small-model SKILL.md + memory directive 2026-08-13",
+      "fingerprint": "y5z6a7b8-campaign-transport",
+      "certified_at": "2026-08-18T21:00:00Z",
+      "staleness_policy": "never_stale_without_contradiction"
+    }
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "mission": "HERMES_CERTIFIED_ARCHITECTURE_CONTEXT_AND_RESUME_PACKET_V1",
+  "mode": "BUILD_AND_CERTIFY",
+  "workflow": "lah-workflow-small-model",
+  "timestamp": "2026-08-19T14:49:31.405Z",
+  "verdict": "HERMES_CERTIFIED_CONTEXT_AND_RESUME_CERTIFIED",
+  "p1_p2_certified_architecture_context": {
+    "fact_count": 17,
+    "source": "seeded_from_certified_evidence_only"
+  },
+  "p3_architecture_fingerprint": {
+    "status": "CONTEXT_VALID",
+    "unchanged": true
+  },
+  "p4_resume_packet": {
+    "loaded": true,
+    "checkpoint": "PENDING_OPERATOR_APPROVAL",
+    "next_action": "APPROVE_AND_EXECUTE",
+    "approval_id": "approval_1787149585840_d8937b09"
+  },
+  "p5_p6_no_rediscovery_gate": {
+    "certified_fact_rediscovery_blocked": 0,
+    "certified_fact_rediscovery_attempts": 0
+  },
+  "p7_p8_startup": {
+    "phase": "RESUME_DIRECT",
+    "resume_direct": true,
+    "next_action_executed": "APPROVE_AND_EXECUTE"
+  },
+  "p13_regression_tests": {
+    "total": 10,
+    "passed": 10,
+    "failed": 0
+  },
+  "p14_metrics": {
+    "startup_tool_calls": 4,
+    "certified_fact_rediscovery_attempts": 0,
+    "certified_fact_rediscovery_blocked": 0,
+    "architecture_context_load_ms": 0,
+    "fingerprint_check_ms": 0,
+    "resume_packet_load_ms": 0,
+    "targeted_drift_discovery_calls": 0,
+    "startup_orientation_actions": 0,
+    "startup_orientation_blocked": 0
+  },
+  "p15_final_acceptance": {
+    "before_tool_calls": 52,
+    "after_tool_calls": 4,
+    "reduction_percent": 92.3,
+    "target_met": true,
+    "first_meaningful_actions": [
+      "load context",
+      "verify current approval",
+      "approve",
+      "execute"
+    ]
+  }
+}

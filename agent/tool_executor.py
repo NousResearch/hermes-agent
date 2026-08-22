@@ -267,6 +267,32 @@ def _max_workers_for_tool_batch(runnable_calls) -> int:
     return min(len(runnable_calls), max_workers)
 
 
+def _governance_preflight(agent, function_name: str, function_args: dict) -> Optional[str]:
+    state = getattr(agent, "_governed_skill_state", None)
+    if state is None:
+        return None
+    decision = state.before_tool(function_name, function_args)
+    return None if decision.allowed else decision.result
+
+
+def _governance_observe(agent, function_name: str, function_args: dict, function_result: Any) -> None:
+    if function_name != "skill_view":
+        return
+    state = getattr(agent, "_governed_skill_state", None)
+    if state is None:
+        return
+    try:
+        data = json.loads(function_result) if isinstance(function_result, str) else function_result
+        requested = function_args.get("name")
+        if requested:
+            state.observe_skill_result(requested, data if isinstance(data, dict) else {})
+    except (TypeError, ValueError):
+        state.observe_skill_result(
+            function_args.get("name", ""),
+            {"success": False, "error": "invalid skill_view result"},
+        )
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so patches like ``run_agent._set_interrupt`` work."""
     import run_agent
@@ -1180,10 +1206,115 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
-        parsed_calls.append(
-            (tool_call, function_name, function_args, [], None, _ts_scope_block)
-        )
+        middleware_trace: list[dict[str, Any]] = []
+        # ── Block evaluation (BEFORE checkpoint preflight) ───────────
+        # We must know whether the tool will execute before touching
+        # checkpoint state (dedup slot, real snapshots).
+        block_result = None
+        blocked_by_guardrail = False
+        governance_block = _governance_preflight(agent, function_name, function_args)
+        if governance_block is not None:
+            block_result = governance_block
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=block_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                status="blocked",
+                error_type="governance_block",
+                error_message="governed mandatory skill gate",
+                middleware_trace=list(middleware_trace),
+            )
+        elif _ts_scope_block is not None:
+            # Out-of-scope tool_call: reject before hooks/guardrails/dispatch.
+            block_result = _ts_scope_block
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=block_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                status="blocked",
+                error_type="tool_scope_block",
+                error_message=_ts_scope_block,
+                middleware_trace=list(middleware_trace),
+            )
+        else:
+            try:
+                from hermes_cli.plugins import get_pre_tool_call_block_message
+                block_message = get_pre_tool_call_block_message(
+                    function_name,
+                    function_args,
+                    task_id=effective_task_id or "",
+                    session_id=getattr(agent, "session_id", "") or "",
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    turn_id=getattr(agent, "_current_turn_id", "") or "",
+                    api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                    middleware_trace=list(middleware_trace),
+                )
+            except Exception:
+                block_message = None
 
+            if block_message is not None:
+                block_result = json.dumps({"error": block_message}, ensure_ascii=False)
+                _emit_terminal_post_tool_call(
+                    agent,
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=block_result,
+                    effective_task_id=effective_task_id,
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    status="blocked",
+                    error_type="plugin_block",
+                    error_message=block_message,
+                    middleware_trace=list(middleware_trace),
+                )
+            else:
+                guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
+                if not guardrail_decision.allows_execution:
+                    block_result = agent._guardrail_block_result(guardrail_decision)
+                    blocked_by_guardrail = True
+                    _emit_terminal_post_tool_call(
+                        agent,
+                        function_name=function_name,
+                        function_args=function_args,
+                        result=block_result,
+                        effective_task_id=effective_task_id,
+                        tool_call_id=getattr(tool_call, "id", "") or "",
+                        status="blocked",
+                        error_type="guardrail_block",
+                        error_message=getattr(guardrail_decision, "message", None) or "Tool blocked by guardrail policy",
+                        middleware_trace=list(middleware_trace),
+                    )
+
+        # ── Checkpoint preflight (only for tools that will execute) ──
+        if block_result is None:
+            # Checkpoint for file-mutating tools
+            if function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
+                try:
+                    file_path = function_args.get("path", "")
+                    if file_path:
+                        work_dir = agent._checkpoint_mgr.get_working_dir_for_path(file_path)
+                        agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
+                except Exception:
+                    pass
+
+            # Checkpoint before destructive terminal commands
+            if function_name == "terminal" and agent._checkpoint_mgr.enabled:
+                try:
+                    cmd = function_args.get("command", "")
+                    if _is_destructive_command(cmd):
+                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                        agent._checkpoint_mgr.ensure_checkpoint(
+                            cwd, f"before terminal: {cmd[:60]}"
+                        )
+                except Exception:
+                    pass
+
+        parsed_calls.append((tool_call, function_name, function_args, middleware_trace, block_result, blocked_by_guardrail))
     # ── Logging / callbacks ──────────────────────────────────────────
     tool_names_str = ", ".join(name for _, name, _, _, _, _ in parsed_calls)
     if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
@@ -1409,6 +1540,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             except Exception as tool_error:
                 result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
+            _governance_observe(agent, function_name, function_args, result)
             duration = time.time() - start
             if not blocked and not dispatched:
                 _emit_terminal_post_tool_call(
@@ -2042,6 +2174,117 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         middleware_trace: list[dict[str, Any]] = []
         _execution_blocked = False
         _execution_dispatched = False
+        function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
+            agent,
+            function_name=function_name,
+            function_args=function_args,
+            effective_task_id=effective_task_id,
+            tool_call_id=getattr(tool_call, "id", "") or "",
+        )
+
+        # Check plugin hooks for a block directive before executing.
+        _block_msg: Optional[str] = None
+        _block_error_type = "plugin_block"
+        _governance_block = _governance_preflight(agent, function_name, function_args)
+        if _governance_block is not None:
+            _block_msg = _governance_block
+            _block_error_type = "governance_block"
+        elif _ts_scope_block is not None:
+            _block_msg = _ts_scope_block
+            _block_error_type = "tool_scope_block"
+        else:
+            try:
+                from hermes_cli.plugins import get_pre_tool_call_block_message
+                _block_msg = get_pre_tool_call_block_message(
+                    function_name,
+                    function_args,
+                    task_id=effective_task_id or "",
+                    session_id=getattr(agent, "session_id", "") or "",
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    turn_id=getattr(agent, "_current_turn_id", "") or "",
+                    api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                    middleware_trace=list(middleware_trace),
+                )
+            except Exception:
+                pass
+
+        _guardrail_block_decision: ToolGuardrailDecision | None = None
+        if _block_msg is None:
+            guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
+            if not guardrail_decision.allows_execution:
+                _guardrail_block_decision = guardrail_decision
+
+        _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
+
+        if _execution_blocked:
+            # Tool blocked by plugin or guardrail policy — skip counters,
+            # callbacks, checkpointing, activity mutation, and real execution.
+            pass
+        # Reset nudge counters when the relevant tool is actually used
+        elif function_name == "memory":
+            agent._turns_since_memory = 0
+        elif function_name == "skill_manage":
+            agent._iters_since_skill = 0
+
+        if not agent.quiet_mode:
+            args_str = json.dumps(function_args, ensure_ascii=False)
+            if agent.verbose_logging:
+                print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())})")
+                print(agent._wrap_verbose("Args: ", json.dumps(function_args, indent=2, ensure_ascii=False)))
+            else:
+                args_preview = args_str[:agent.log_prefix_chars] + "..." if len(args_str) > agent.log_prefix_chars else args_str
+                print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
+
+        if not _execution_blocked:
+            agent._current_tool = function_name
+            agent._touch_activity(f"executing tool: {function_name}")
+
+        # Set activity callback for long-running tool execution (terminal
+        # commands, etc.) so the gateway's inactivity monitor doesn't kill
+        # the agent while a command is running.
+        if not _execution_blocked:
+            try:
+                from tools.environments.base import set_activity_callback
+                set_activity_callback(agent._touch_activity)
+            except Exception:
+                pass
+
+        if not _execution_blocked and agent.tool_progress_callback:
+            try:
+                preview = _build_tool_preview(function_name, function_args)
+                agent.tool_progress_callback("tool.started", function_name, preview, function_args)
+            except Exception as cb_err:
+                logging.debug(f"Tool progress callback error: {cb_err}")
+
+        if not _execution_blocked and agent.tool_start_callback:
+            try:
+                agent.tool_start_callback(tool_call.id, function_name, function_args)
+            except Exception as cb_err:
+                logging.debug(f"Tool start callback error: {cb_err}")
+
+        # Checkpoint: snapshot working dir before file-mutating tools
+        if not _execution_blocked and function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
+            try:
+                file_path = function_args.get("path", "")
+                if file_path:
+                    work_dir = agent._checkpoint_mgr.get_working_dir_for_path(file_path)
+                    agent._checkpoint_mgr.ensure_checkpoint(
+                        work_dir, f"before {function_name}"
+                    )
+            except Exception:
+                pass  # never block tool execution
+
+        # Checkpoint before destructive terminal commands
+        if not _execution_blocked and function_name == "terminal" and agent._checkpoint_mgr.enabled:
+            try:
+                cmd = function_args.get("command", "")
+                if _is_destructive_command(cmd):
+                    cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                    agent._checkpoint_mgr.ensure_checkpoint(
+                        cwd, f"before terminal: {cmd[:60]}"
+                    )
+            except Exception:
+                pass  # never block tool execution
 
         tool_start_time = time.time()
 
@@ -2628,6 +2871,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         _execution_timed_out = isinstance(
             function_result, (_ToolTimeoutResult, _ToolCancelledResult)
         )
+        _governance_observe(agent, function_name, function_args, function_result)
         if isinstance(function_result, str):
             result_preview = function_result if agent.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result

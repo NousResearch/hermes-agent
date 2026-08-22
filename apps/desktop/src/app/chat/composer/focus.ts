@@ -11,7 +11,7 @@
  */
 
 import { queryAllVisible, queryVisible } from '@/components/pane-shell/pane-visibility'
-import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
+import { $activeTreeGroup, $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 
 import type { InlineRefInput } from './inline-refs'
 import { RICH_INPUT_SLOT } from './rich-editor'
@@ -78,20 +78,58 @@ interface SubmitDetail {
 
 let activeTarget: ComposerTarget = 'main'
 
+const composerTargetOf = (el: HTMLElement | undefined): ComposerTarget | null => {
+  const target = el?.dataset.composerTarget
+
+  // Truthy rather than `?? null`: a present-but-empty `data-composer-target` is
+  // not a routing key, and letting `''` through would resolve `'active'` to a
+  // target no composer answers to — the exact class of dropped keystroke this
+  // resolver exists to prevent. Callers fall back to `'main'` on null.
+  return target ? (target as ComposerTarget) : null
+}
+
 /**
  * The chat surface currently on screen (`data-composer-target` hung off each
  * ChatView). Inactive tabs stay mounted with `data-pane-hidden`, so this uses
  * the same visibility policy as every other document-wide surface lookup.
+ *
+ * A SPLIT renders one chat surface per zone and both are visible at once, so
+ * "the" visible surface is ambiguous there. Picking the first DOM match answers
+ * document order — always the leftmost zone — and every keystroke aimed at the
+ * other composer is preventDefault'd and dropped. Resolve a zone identity
+ * instead, through the same ladder the tab verbs use.
  */
 const visibleChatTarget = (): ComposerTarget | null => {
   if (typeof document === 'undefined') {
     return null
   }
 
-  const surface = queryVisible<HTMLElement>('[data-composer-target]')
-  const target = surface?.dataset.composerTarget
+  const surfaces = queryAllVisible<HTMLElement>('[data-composer-target]')
 
-  return target ? (target as ComposerTarget) : null
+  // Only a split can be ambiguous. Short-circuit the single-surface case (the
+  // overwhelmingly common one) before reading any store.
+  if (surfaces.length > 1) {
+    // The hovered → active ladder `tabTargetGroup` walks (pane-shell/tree/store),
+    // so the composer routing key can never disagree with ⌘1…⌘9 / ⌃Tab about
+    // which zone is "the" zone.
+    for (const zone of [$hoveredTreeGroup.get(), $activeTreeGroup.get()]) {
+      const hit = zone
+        ? surfaces.find(el => el.closest<HTMLElement>('[data-tree-group]')?.dataset.treeGroup === zone)
+        : undefined
+
+      if (hit) {
+        return composerTargetOf(hit)
+      }
+    }
+  }
+
+  // Deliberate last resort: document order, NOT null. With nothing hovered and
+  // nothing yet activated there is no identity to resolve, and answering null
+  // would send the routing key to a possibly-buried `'main'` and drop every
+  // keystroke — strictly worse than naming a surface the user can actually see.
+  // Keep this fallback; it reads like a missing guard, but removing it is a
+  // regression.
+  return composerTargetOf(surfaces[0])
 }
 
 /** True when `target` still has a live, on-screen subscriber. */
@@ -409,11 +447,14 @@ export const focusComposerInput = (el: HTMLElement | null) => {
 
 /** Drop focus from the main composer input (status-stack chrome, sidebar, etc.).
  *  Skips inactive tabs — they stay mounted, so an unscoped lookup can land on a
- *  background composer and leave the visible one focused. */
+ *  background composer and leave the visible one focused.
+ *
+ *  A split makes several inputs visible at once, so the identity has to come
+ *  from `activeElement` rather than document order: matching the first visible
+ *  input and then testing it against `activeElement` silently no-ops whenever
+ *  the caret sits in any zone but the leftmost. */
 export const blurComposerInput = () => {
-  const el = queryVisible(`[data-slot="${RICH_INPUT_SLOT}"]`)
-
-  if (el && document.activeElement === el) {
-    el.blur()
-  }
+  queryAllVisible<HTMLElement>(`[data-slot="${RICH_INPUT_SLOT}"]`)
+    .find(candidate => candidate === document.activeElement)
+    ?.blur()
 }

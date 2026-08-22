@@ -31,9 +31,12 @@ logger = logging.getLogger(__name__)
 
 # Endpoints inference-api.nousresearch.com actually serves. Anything else
 # the proxy will reject with 404 — keeps stray clients from leaking weird
-# requests to the upstream.
+# requests to the upstream. /responses is served by the portal (OpenRouter
+# Responses API pass-through); Codex CLI and other Responses-only clients
+# need it.
 _ALLOWED_PATHS: FrozenSet[str] = frozenset(
     {
+        "/responses",
         "/chat/completions",
         "/completions",
         "/embeddings",

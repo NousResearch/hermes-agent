@@ -7,11 +7,16 @@ response is streamed back unmodified, preserving SSE.
 
 The server is intentionally minimal: it does NOT mediate, log, transform,
 or rewrite request/response bodies. It's a credential-attaching forwarder.
+
+One exception: ``GET /v1/models`` responses get their catalog envelope
+translated so both OpenAI-shaped clients (``{"data": [...]}``) and Codex
+CLI (``{"models": [ModelInfo]}``) can consume the upstream catalog.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import signal
 from typing import Optional
@@ -28,6 +33,136 @@ except ImportError:
 from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 
 logger = logging.getLogger(__name__)
+
+# Codex CLI decodes ``GET /v1/models`` into
+# ``codex_protocol::openai_models::ModelsResponse { models: Vec<ModelInfo> }``
+# and silently degrades (fallback metadata) when the requested model is
+# absent. The upstream catalog is OpenRouter-shaped (``{"data": [...]}``),
+# so we translate each entry into the ModelInfo shape Codex requires while
+# keeping the original ``data`` array for OpenAI-shaped clients.
+_REASONING_EFFORTS = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+)
+
+
+def _to_codex_model_info(entry: dict) -> dict:
+    """Map one OpenRouter catalog entry to Codex CLI's ModelInfo shape."""
+    mid = entry.get("id") or entry.get("slug") or "unknown"
+    ctx = entry.get("context_length")
+    if isinstance(ctx, str):
+        try:
+            ctx = int(ctx)
+        except ValueError:
+            ctx = None
+    reasoning = entry.get("reasoning") or {}
+    efforts = reasoning.get("supported_efforts") or []
+    if not isinstance(efforts, list):
+        efforts = []
+    efforts = [e for e in efforts if isinstance(e, str) and e in _REASONING_EFFORTS]
+    supported_params = entry.get("supported_parameters") or []
+    if not isinstance(supported_params, list):
+        supported_params = []
+    info: dict = {
+        "slug": mid,
+        "display_name": entry.get("name") or mid,
+        "description": entry.get("description"),
+        # Codex's legacy-compat deserializer hard-errors when an entry has
+        # neither `base_instructions` nor `model_messages.instructions_template`.
+        # Empty string is present-but-neutral: the real instructions travel
+        # in the API request, not this catalog field.
+        "base_instructions": "",
+        "supported_reasoning_levels": [
+            {"effort": e, "description": e} for e in efforts
+        ],
+        "shell_type": "default",
+        "visibility": "list",
+        "supported_in_api": True,
+        "priority": 0,
+        "support_verbosity": False,
+        "truncation_policy": {"mode": "tokens", "limit": ctx or 200_000},
+        "supports_parallel_tool_calls": "parallel_tool_calls" in supported_params,
+        "experimental_supported_tools": [],
+    }
+    if ctx is not None:
+        info["context_window"] = ctx
+    default_effort = reasoning.get("default_effort")
+    if default_effort in _REASONING_EFFORTS:
+        info["default_reasoning_level"] = default_effort
+    return info
+
+
+def _translate_models_payload(raw: bytes) -> bytes:
+    """Return ``raw`` unchanged unless it is an OpenRouter-shaped catalog."""
+    try:
+        payload = json.loads(raw)
+    except (ValueError, TypeError):
+        return raw
+    data = payload.get("data")
+    if not isinstance(data, list) or "models" in payload:
+        return raw
+    payload.setdefault("object", "list")
+    payload["models"] = [
+        _to_codex_model_info(e) for e in data if isinstance(e, dict)
+    ]
+    return json.dumps(payload).encode("utf-8")
+
+
+def _normalize_responses_input(raw: bytes) -> bytes:
+    """Interleave tool calls with their matching outputs; drop orphans.
+
+    Some portal providers reject Responses API requests whose tool-call
+    history groups calls separately from outputs — the shape Codex emits
+    for parallel tool calls (``function_call, function_call, …,
+    function_call_output, function_call_output, …``) — with a generic 400
+    "Provider returned error". They require each call to be immediately
+    followed by its matching output. Complete pairs are reordered to that
+    canonical interleaved form; orphaned calls/outputs are dropped (an
+    incomplete pair carries no usable tool result anyway).
+    """
+    try:
+        payload = json.loads(raw)
+    except (ValueError, TypeError):
+        return raw
+    items = payload.get("input")
+    if not isinstance(items, list):
+        return raw
+    call_types = ("function_call", "custom_tool_call")
+    out_types = ("function_call_output", "custom_tool_call_output")
+    outputs_by_call: dict = {}
+    for it in items:
+        if isinstance(it, dict) and it.get("type") in out_types:
+            cid = it.get("call_id")
+            if cid is not None:
+                outputs_by_call.setdefault(cid, []).append(it)
+    normalized: list = []
+    emitted: set = set()
+    changed = False
+    for it in items:
+        if not isinstance(it, dict):
+            normalized.append(it)
+            continue
+        it_type = it.get("type")
+        if it_type in call_types:
+            outs = outputs_by_call.get(it.get("call_id"), [])
+            if not outs:
+                changed = True  # orphan call: drop (providers reject it)
+                continue
+            normalized.append(it)
+            for out in outs:
+                if id(out) not in emitted:
+                    normalized.append(out)
+                    emitted.add(id(out))
+                    changed = True
+        elif it_type in out_types:
+            if id(it) not in emitted:
+                changed = True  # orphan output: drop
+                continue
+        else:
+            normalized.append(it)
+    if not changed:
+        return raw
+    payload["input"] = normalized
+    return json.dumps(payload).encode("utf-8")
 
 # Headers we strip when forwarding to the upstream. ``host``/``content-length``
 # are recomputed by aiohttp; ``authorization`` is replaced with our bearer.
@@ -133,6 +268,13 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         # the request body too.
         body = await request.read()
 
+        # Some portal providers reject Responses requests whose tool-call
+        # history groups calls separately from outputs (Codex's parallel-call
+        # shape) with a generic 400. Interleave each call with its matching
+        # output and drop orphans before forwarding.
+        if rel_path == "/responses" and request.method.upper() == "POST" and body:
+            body = _normalize_responses_input(body)
+
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=300)
 
         async def _send_upstream(active_cred: UpstreamCredential):
@@ -214,6 +356,22 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
                 if upstream_resp is None:
                     return session_or_response
                 session = session_or_response
+
+        # /models: translate the catalog envelope for Codex CLI while
+        # preserving the original "data" shape for other OpenAI clients.
+        if (
+            rel_path == "/models"
+            and request.method.upper() == "GET"
+            and upstream_resp.status == 200
+        ):
+            raw = await upstream_resp.read()
+            upstream_resp.release()
+            await session.close()
+            return web.Response(
+                body=_translate_models_payload(raw),
+                status=200,
+                content_type="application/json",
+            )
 
         # Stream response back. Headers first, then chunked body.
         resp = web.StreamResponse(

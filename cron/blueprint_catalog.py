@@ -347,6 +347,52 @@ CATALOG: List[AutomationBlueprint] = [
         tags=("prices", "shopping", "travel", "monitor"),
     ),
     AutomationBlueprint(
+        # Inspired by Energy's (getenergy.com) one-sentence live dashboards:
+        # describe what you want to see, the agent builds a persistent view
+        # and keeps it current from email/web/file sources.
+        key="live-dashboard",
+        title="Live status dashboard",
+        description="A self-updating dashboard for any project or process — "
+        "describe what to track and it refreshes from your email, sites, "
+        "and files.",
+        category="general",
+        schedule_template="{minute} {hour} * * {dow}",
+        prompt_template=(
+            "Load the live-dashboard skill and run the refresh tick for this "
+            "dashboard: {purpose}. Sources: {sources}. Re-read each field from "
+            "its named source, diff against the stored state, mark failed "
+            "reads stale without overwriting last-known-good values, "
+            "regenerate the HTML from the state file, and deliver a short "
+            "summary ONLY on material change or new needs-attention items — "
+            "otherwise respond with [SILENT]. On the first run, execute the "
+            "skill's setup phase first: pin the dashboard contract, verify "
+            "one live read per source, and write the dashboard state file "
+            "and HTML under ~/.hermes/dashboards/."
+        ),
+        slots=[
+            BlueprintSlot(
+                name="purpose", type="text", label="What should it track?",
+                default="the status of an ongoing project or process",
+                help="one sentence — the entities and what you want to see "
+                "about them",
+            ),
+            BlueprintSlot(
+                name="sources", type="text", label="Where does the data live?",
+                default="my email threads about it and the relevant website",
+                help="email, websites, calendars, or files to read each refresh",
+            ),
+            _TIME("08:00"),
+            BlueprintSlot(
+                name="recurrence", type="weekdays", label="Refresh on",
+                default="everyday",
+                options=tuple(WEEKDAY_PRESETS.keys()),
+            ),
+            _DELIVER,
+        ],
+        skills=("live-dashboard",),
+        tags=("dashboard", "monitor", "status"),
+    ),
+    AutomationBlueprint(
         key="competitor-watch",
         title="Competitor news watch",
         description="Track named companies for material news — launches, "

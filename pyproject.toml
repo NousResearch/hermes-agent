@@ -55,6 +55,8 @@ dependencies = [
   "pydantic==2.13.4",
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
   "prompt_toolkit==3.0.52",
+  # Display-width measurement for CJK-safe table/column padding.
+  "wcwidth==0.6.0",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
   "croniter==6.0.0",
   # ``packaging`` is imported directly on three production paths but was never
@@ -146,6 +148,8 @@ dependencies = [
   # Hence the ``sys_platform == 'win32'`` marker: the dep (and its portalocker
   # / pywin32 tree) ships only where it's actually used.
   "concurrent-log-handler==0.9.29; sys_platform == 'win32'",
+  # Cross-process file locking on Windows (POSIX uses fcntl.flock).
+  "portalocker==3.2.0; sys_platform == 'win32'",
   # First-party lifecycle and shared-metrics runtime. Relay 0.6 is the minimum
   # lossless provider-codec contract. Managed calls pass request/response data
   # through this native module in-process; shared metrics installs no network

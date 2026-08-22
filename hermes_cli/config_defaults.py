@@ -1311,6 +1311,10 @@ DEFAULT_CONFIG = {
         # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
+        # Keep a classic-CLI terminal tab/window title in sync with the active
+        # session. Set false for terminals or multiplexers where OSC titles are
+        # undesirable. The Ink TUI manages its own title independently.
+        "terminal_title": True,
         # Stream the model's reasoning/thinking live before the response.
         # Default ON: on thinking models the reasoning phase can run tens of
         # seconds, and with this off the user stares at a spinner the whole

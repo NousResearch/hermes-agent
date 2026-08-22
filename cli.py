@@ -509,6 +509,7 @@ def load_cli_config() -> Dict[str, Any]:
             # enable when a terminal/tmux stack stamps stale prompt chrome into
             # scrollback during fullscreen/restore resizes.
             "cli_rebuild_scrollback_on_redraw": False,
+            "terminal_title": True,
             # Print a one-line summary of resolved modal prompts (approval /
             # clarify) into scrollback so the decision survives the repaint.
             "persist_prompts": True,
@@ -5041,6 +5042,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", True)
+        # The classic prompt_toolkit CLI owns its OSC title lifecycle. The Ink
+        # TUI manages its title in TypeScript, so this setting intentionally
+        # applies only to this surface.
+        self._terminal_title_enabled = bool(
+            CLI_CONFIG["display"].get("terminal_title", True)
+        )
         # reasoning_full: when reasoning display is on, print the post-response
         # recap box uncollapsed instead of clamping to the first 10 lines.
         self.reasoning_full = CLI_CONFIG["display"].get("reasoning_full", False)
@@ -5592,6 +5599,82 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
+
+        self._update_terminal_title()
+
+    def _current_session_title(self) -> str:
+        """Return the current persisted or pending session title."""
+        pending = getattr(self, "_pending_title", None)
+        if pending:
+            return str(pending)
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return ""
+        try:
+            return str(session_db.get_session_title(self.session_id) or "")
+        except Exception:
+            return ""
+
+    def _response_panel_label(self, label: str) -> str:
+        """Append the active session name to a skin response label when present."""
+        session_title = self._current_session_title()
+        base = (label or "⚕ Hermes").rstrip()
+        return f"{base} — {session_title}" if session_title else base
+
+    def _update_terminal_title(
+        self,
+        *,
+        session_title: str | None = None,
+        expected_session_id: str | None = None,
+    ) -> None:
+        """Schedule a best-effort title update on prompt_toolkit's output loop."""
+        if not getattr(self, "_terminal_title_enabled", False):
+            return
+
+        def _write() -> None:
+            try:
+                # Auto-title callbacks run on a background thread. Check the
+                # captured session immediately before the write so a later
+                # session switch cannot let an old callback overwrite the tab.
+                if (
+                    expected_session_id is not None
+                    and self.session_id != expected_session_id
+                ):
+                    return
+                from hermes_cli.skin_engine import get_active_skin
+                from hermes_cli.terminal_title import (
+                    compose_terminal_title,
+                    write_terminal_title,
+                )
+
+                label = get_active_skin().get_branding("response_label", "⚕ Hermes")
+                title = (
+                    self._current_session_title()
+                    if session_title is None
+                    else session_title
+                )
+                write_terminal_title(
+                    compose_terminal_title(
+                        label,
+                        title,
+                        busy=bool(getattr(self, "_agent_running", False)),
+                    ),
+                    getattr(getattr(self, "_app", None), "output", None),
+                )
+            except Exception:
+                pass
+
+        app = getattr(self, "_app", None)
+        if app is None:
+            _write()
+            return
+        try:
+            app.loop.call_soon_threadsafe(_write)
+        except Exception:
+            # A live prompt_toolkit Output must only be touched by its owner
+            # loop. If that loop is unavailable during teardown, skip a
+            # cosmetic update rather than race the renderer.
+            pass
 
     def _claim_active_session(self, surface: str = "cli", *, stderr: bool = False) -> bool:
         """Claim a global active-session slot for this CLI process."""
@@ -7448,6 +7531,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if not text:
             self._flush_reasoning_preview(force=True)
         self._spinner_text = text or ""
+        self._update_terminal_title()
         self._tool_start_time = 0.0  # clear tool timer when switching to thinking
         self._invalidate()
 
@@ -7885,6 +7969,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception:
                 label = "⚕ Hermes"
                 _text_hex = "#FFF8DC"
+            label = self._response_panel_label(label)
             # Build a true-color ANSI escape for the response text color
             # so streamed content matches the Rich Panel appearance.
             try:
@@ -10002,6 +10087,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 print(f"(^_^)v New session started: {title}")
             else:
                 print("(^_^)v New session started!")
+        update_terminal_title = getattr(self, "_update_terminal_title", None)
+        if callable(update_terminal_title):
+            update_terminal_title(session_title=title or "")
 
 
     def _consume_pending_resume_selection(self, text: str) -> bool:
@@ -11946,6 +12034,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                                 if self._session_db.set_session_title(self.session_id, new_title):
                                     self._status_bar_title_checked_at = 0.0
                                     _cprint(f"  Session title set: {new_title}")
+                                    self._update_terminal_title(session_title=new_title)
                                 else:
                                     _cprint("  Session not found in database.")
                             except ValueError as e:
@@ -11959,6 +12048,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             else:
                                 self._pending_title = new_title
                                 _cprint(f"  Session title queued: {new_title} (will be saved on first message)")
+                                self._update_terminal_title(session_title=new_title)
                     else:
                         from hermes_state import format_session_db_unavailable
                         _cprint(f"  {format_session_db_unavailable()}")
@@ -16314,6 +16404,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             _streaming_box_opened = True
                             w = self._scrollback_box_width(getattr(self.console, "width", 80))
                             label = " ⚕ Hermes "
+                            try:
+                                from hermes_cli.skin_engine import get_active_skin
+                                label = get_active_skin().get_branding("response_label", "⚕ Hermes")
+                            except Exception:
+                                pass
+                            label = self._response_panel_label(label)
                             if self.show_timestamps:
                                 label = f"{label}{datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))} "
                             fill = w - 2 - HermesCLI._status_bar_display_width(label)
@@ -16752,6 +16848,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     label = "⚕ Hermes"
                     _resp_color = _maybe_remap_for_light_mode("#CD7F32")
                     _resp_text = _maybe_remap_for_light_mode("#FFF8DC")
+                label = self._response_panel_label(label)
 
                 is_error_response = result and (result.get("failed") or result.get("partial"))
                 already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
@@ -16771,7 +16868,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
                         _render_final_assistant_content(response, mode=self.final_response_markdown),
-                        title=f"[{_resp_color} bold]{label}[/]",
+                        title=f"[{_resp_color} bold]{_escape(label)}[/]",
                         title_align="left",
                         border_style=_resp_color,
                         style=_resp_text,
@@ -16922,6 +17019,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 stop_event.set()
             if tts_thread is not None and tts_thread.is_alive():
                 tts_thread.join(timeout=5)
+            self._update_terminal_title()
     
     def _clear_terminal_on_exit(self):
         """Clear screen + scrollback so nothing is stranded above the exit summary.
@@ -20281,6 +20379,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
                     # Regular chat - run agent
                     self._agent_running = True
+                    self._update_terminal_title()
                     self._interactive_turn = True
                     self._pet_turn_error = False
                     self._pet_reasoning = False
@@ -20292,6 +20391,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""
+                        self._update_terminal_title()
                         self._tool_start_time = 0.0
                         self._pending_tool_info.clear()
                         self._last_scrollback_tool = ""

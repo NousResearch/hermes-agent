@@ -445,7 +445,11 @@ class SessionDBBeckyLoopsStore:
             if str(raw.get("chat_id") or "") != str(chat_id):
                 continue
             thread_id = str(raw.get("thread_id") or "").strip()
-            if not thread_id:
+            # Telegram's General topic is message/thread 1 and cannot be
+            # closed or treated as a Becky loop.  Keep it out of the
+            # projection at the source rather than presenting an action that
+            # Telegram will always reject.
+            if not thread_id or thread_id == "1":
                 continue
             session_id = str(raw.get("id") or "")
             if not session_id:

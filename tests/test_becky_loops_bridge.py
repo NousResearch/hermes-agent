@@ -2356,6 +2356,22 @@ def test_session_store_excludes_branch_delegate_and_tool_children() -> None:
     assert [row["title"] for row in rows] == ["Root"]
 
 
+def test_session_store_excludes_telegram_general_topic() -> None:
+    from gateway.becky_loops import SessionDBBeckyLoopsStore
+
+    db = ProjectionDB()
+    db.rows.append({
+        **db.rows[0],
+        "id": "general",
+        "thread_id": "1",
+        "title": "Cory Ng Test Message",
+    })
+
+    rows = SessionDBBeckyLoopsStore(db).list_topics("123456789")
+
+    assert all(row["title"] != "Cory Ng Test Message" for row in rows)
+
+
 def test_session_store_persists_shortcut_topic_exchange_idempotently() -> None:
     from gateway.becky_loops import SessionDBBeckyLoopsStore
 

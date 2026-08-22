@@ -3853,7 +3853,7 @@ class GatewaySlashCommandsMixin:
             # not be persisted back to the user's file).
             from hermes_cli.config import read_user_config_raw
             user_config = read_user_config_raw(config_path)
-            user_config.setdefault("skills", {})["write_approval"] = bool(enabled)
+            user_config.setdefault("skills", {}).setdefault("write_approval", {})["enabled"] = bool(enabled)
             atomic_config_write(config_path, user_config)
             # New setting must take effect next message → drop cached agent.
             self._evict_cached_agent(session_key)

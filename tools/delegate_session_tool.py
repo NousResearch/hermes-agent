@@ -546,8 +546,23 @@ def delegate_session(
         if not text:
             return tool_error("action='steer' requires message.")
         with _SESSION_LOCK:
-            if record.get("status") != "running":
-                return tool_error("Pi session is not running. Use action='send' for a new follow-up turn.")
+            status = record.get("status")
+            if status == "closed":
+                return tool_error("Pi session is closed. Use action='resume' to reopen it.")
+            if status != "running":
+                # Auto-degrade: the turn already ended, so a live steer is
+                # impossible. Route the message through the send path so the
+                # course-correction is not lost to a race window.
+                _dispatch_turn(record, text, effective_timeout)
+                return json.dumps(
+                    {
+                        "success": True,
+                        "degraded_to_send": True,
+                        "note": "Pi turn had already ended; message was delivered as a new follow-up turn.",
+                        **_summary(record, include_result=False),
+                    },
+                    ensure_ascii=False,
+                )
         try:
             response = client.steer(text, timeout=min(30.0, effective_timeout))
         except Exception as exc:  # noqa: BLE001

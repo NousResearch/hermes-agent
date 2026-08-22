@@ -214,6 +214,38 @@ def test_send_reuses_same_client_and_preserves_followup_history():
     assert final["last_result"]["text"] == "done:second"
 
 
+def test_steer_on_idle_session_degrades_to_send_instead_of_erroring():
+    parent = Parent()
+    started = payload(ds.delegate_session(action="start", parent_agent=parent))
+    sid = started["session_id"]
+    client = FakePiClient.instances[-1]
+
+    payload(ds.delegate_session(action="send", session_id=sid, message="first", parent_agent=parent))
+    wait_for_status(parent, sid, "idle")
+
+    # Race window: turn already ended, but the caller tries to steer.
+    steered = payload(ds.delegate_session(action="steer", session_id=sid, message="focus on tests", parent_agent=parent))
+    assert steered["success"] is True
+    assert steered["degraded_to_send"] is True
+    assert "follow-up" in steered["note"]
+    # No steer was attempted (session was idle); message became a new turn instead.
+    assert client.steers == []
+    final = wait_for_status(parent, sid, "idle")
+    assert client.messages == ["first", "focus on tests"]
+    assert final["last_result"]["text"] == "done:focus on tests"
+
+
+def test_steer_on_closed_session_still_errors_with_resume_hint():
+    parent = Parent()
+    started = payload(ds.delegate_session(action="start", parent_agent=parent))
+    sid = started["session_id"]
+
+    payload(ds.delegate_session(action="stop", session_id=sid, parent_agent=parent))
+
+    result = payload(ds.delegate_session(action="steer", session_id=sid, message="hello", parent_agent=parent))
+    assert result.get("error") or result.get("success") is not True
+
+
 def test_steer_targets_live_session_instead_of_spawning_child_agent():
     parent = Parent()
     started = payload(ds.delegate_session(action="start", parent_agent=parent))

@@ -127,3 +127,33 @@ def test_non_retryable_failure_error_is_summarized_not_raw_html():
     # The original page was tens of kilobytes; a summary is short.
     assert len(error) < 500
     assert len(error) < len(_CLOUDFLARE_CHALLENGE_HTML)
+
+
+def test_generic_non_retryable_abort_stamps_failure_reason_auth():
+    """The generic non-retryable abort must stamp ``failure_reason``.
+
+    Regression for the exit-76 sentinel (#80456): the CLI's kanban exit path
+    reads ``result.get("failure_reason")`` and emits exit 76 only for the
+    six classified reasons (``auth``, ``auth_permanent``, ``overloaded``,
+    ``server_error``, ``model_not_found``, ``provider_policy_blocked``).
+    A plain HTTP 403 classifies as ``FailoverReason.auth`` with
+    ``retryable=False``, which takes this generic abort — and before this
+    fix the returned dict omitted ``failure_reason`` entirely, so the
+    sentinel never fired for its primary target class (kanban workers dying
+    on 401/403). The mocked 403 is the *only* failure the turn can hit
+    (``client.chat.completions.create`` asserted below), so the assertion
+    cannot pass vacuously on some unrelated earlier abort.
+    """
+    agent = _make_agent()
+    agent.client.chat.completions.create.side_effect = _make_403_html_error()
+
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("daily briefing please")
+
+    assert agent.client.chat.completions.create.called
+    assert result.get("failed") is True
+    assert result.get("failure_reason") == "auth"

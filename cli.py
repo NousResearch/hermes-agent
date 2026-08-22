@@ -21394,17 +21394,51 @@ def main(
                         # 5-hour quota window can't trip the circuit breaker and
                         # permanently block the card. Non-kanban runs keep the
                         # plain 0/1 contract automation wrappers expect.
+                        #
+                        # Kanban workers get a second special case: when the run
+                        # failed purely because the provider rejected the very
+                        # first API call on an auth/model/transport error (HTTP
+                        # 401/403/503, "Model is disabled", provider-side
+                        # transient — NOT a 429 quota wall, which the branch
+                        # above already handles as rate_limit), exit with the
+                        # api_error sentinel (76) instead of the generic 1. The
+                        # worker bailed before its first successful tool-call
+                        # turn, so the dispatcher's reap classifier maps this
+                        # to an ``api_error`` exit kind and releases the task
+                        # back to ``ready`` WITHOUT counting a protocol
+                        # violation — retrying a card whose worker never
+                        # actually ran the task must never consume the
+                        # violation streak. Non-kanban runs keep the plain 0/1
+                        # contract automation wrappers expect.
                         _exit_code = 0
                         if isinstance(result, dict) and result.get("failed"):
                             _exit_code = 1
-                            if os.environ.get("HERMES_KANBAN_TASK") and result.get(
-                                "failure_reason"
-                            ) in ("rate_limit", "billing"):
+                            _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
+                            _failure_reason = result.get("failure_reason")
+                            if _kanban_task and _failure_reason in (
+                                "rate_limit", "billing",
+                            ):
                                 try:
                                     from hermes_cli.kanban_db import (
                                         KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
                                     )
                                     _exit_code = _RL_CODE
+                                except Exception:
+                                    _exit_code = 1
+                            elif _kanban_task and _failure_reason in (
+                                # Auth: HTTP 401/403 — transient (refresh) or
+                                # permanent (bad key / "Model is disabled").
+                                "auth", "auth_permanent",
+                                # Provider overloaded / 5xx — transient.
+                                "overloaded", "server_error",
+                                # Model unavailable / policy-blocked endpoint.
+                                "model_not_found", "provider_policy_blocked",
+                            ):
+                                try:
+                                    from hermes_cli.kanban_db import (
+                                        KANBAN_API_ERROR_EXIT_CODE as _API_CODE,
+                                    )
+                                    _exit_code = _API_CODE
                                 except Exception:
                                     _exit_code = 1
                         sys.exit(_exit_code)

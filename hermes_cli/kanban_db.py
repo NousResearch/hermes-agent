@@ -430,6 +430,20 @@ DEFAULT_CRASH_GRACE_SECONDS = 30
 KANBAN_RATE_LIMIT_EXIT_CODE = 75
 
 
+# Sentinel exit code a kanban worker uses to signal "I bailed before my first
+# successful tool-call turn on an API / auth / model error (HTTP 401/403/503,
+# 'Model is disabled', provider-side transient), not because the task failed."
+# The dispatcher's reap classifier maps this to an ``api_error`` exit kind so
+# ``detect_crashed_workers`` releases the task back to ``ready`` WITHOUT
+# counting a protocol violation (the worker never actually ran the task — it
+# died on the provider handshake, so the violation-streak logic must not
+# consume a retry against it). Distinct from ``rate_limited`` (75) so operators
+# can tell quota exhaustion from auth/model failures in the event log. 76 is
+# the next integer up from BSD ``EX_TEMPFAIL`` (75), still well clear of the
+# 0/1/2 codes the worker uses for success / generic failure / usage error.
+KANBAN_API_ERROR_EXIT_CODE = 76
+
+
 def _resolve_crash_grace_seconds() -> int:
     """Return the crash-detection grace period in seconds.
 
@@ -8134,6 +8148,14 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
       provider rate-limited / exhausted quota, NOT because the task failed.
       ``detect_crashed_workers`` releases the task back to ``ready`` without
       counting a failure, so a long quota window can't trip the breaker.
+    * ``"api_error"`` — ``WIFEXITED`` with status
+      ``KANBAN_API_ERROR_EXIT_CODE``. The worker bailed before its first
+      successful tool-call turn on an API / auth / model error (HTTP
+      401/403/503, "Model is disabled", provider-side transient). It never
+      actually ran the task, so ``detect_crashed_workers`` releases it back
+      to ``ready`` WITHOUT counting a protocol violation. Distinct from
+      ``rate_limited`` so operators can separate auth/model failures from
+      quota exhaustion.
     * ``"nonzero_exit"`` — ``WIFEXITED`` with non-zero status. Real error.
     * ``"signaled"`` — ``WIFSIGNALED`` (OOM killer, SIGKILL, etc). Real crash.
     * ``"unknown"`` — pid was not in the reap registry (either reaped by
@@ -8141,8 +8163,8 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
       back to existing crashed-counter behavior.
 
     ``code`` is the exit status (for ``clean_exit`` / ``rate_limited`` /
-    ``nonzero_exit``) or the signal number (for ``signaled``), or ``None``
-    for ``unknown``.
+    ``api_error`` / ``nonzero_exit``) or the signal number (for
+    ``"signaled"``), or ``None`` for ``unknown``.
     """
     entry = _recent_worker_exits.get(int(pid))
     if entry is None:
@@ -8155,6 +8177,8 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
                 return ("clean_exit", 0)
             if code == KANBAN_RATE_LIMIT_EXIT_CODE:
                 return ("rate_limited", code)
+            if code == KANBAN_API_ERROR_EXIT_CODE:
+                return ("api_error", code)
             return ("nonzero_exit", code)
         if os.WIFSIGNALED(raw):
             return ("signaled", os.WTERMSIG(raw))
@@ -8809,6 +8833,10 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     * ``rate_limited`` runs are neutral and skipped: a quota wall says nothing
       about the task, exactly as it is neutral for the unified
       ``consecutive_failures`` counter.
+    * ``api_error`` runs are neutral and skipped: the worker bailed before its
+      first successful tool-call turn on a provider/auth/model error and never
+      actually ran the task, so it can neither consume nor extend the
+      protocol-violation streak — exactly as ``rate_limited`` is neutral.
     * Any other closed run (completed, plain crash, timeout, spawn failure,
       reclaim, …) breaks the streak, so the bounded retry budget counts ONLY
       protocol violations — mixed failure kinds can neither consume nor
@@ -8829,6 +8857,8 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     for row in rows:
         outcome = row["outcome"] or ""
         if outcome == "rate_limited":
+            continue
+        if outcome == "api_error":
             continue
         if outcome == "crashed":
             is_violation = False
@@ -8879,6 +8909,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """
     crashed: list[str] = []
     rate_limited: list[str] = []
+    api_errors: list[str] = []
     # Per-crash details collected inside the main txn, used after it
     # closes to run ``_record_task_failure`` (which needs its own
     # write_txn so can't nest). ``protocol_violation`` flags the
@@ -8916,6 +8947,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             pid = int(row["worker_pid"])
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
+            api_error_exit = False
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
                 # ``running`` in the DB — it exited without calling
@@ -8963,6 +8995,38 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     "claimer": row["claim_lock"],
                     "exit_code": code,
                 }
+            elif kind == "api_error":
+                # Worker bailed BEFORE its first successful tool-call turn on
+                # an API / auth / model error (HTTP 401/403/503, "Model is
+                # disabled", provider-side transient) — it never actually ran
+                # the task. Like ``rate_limited`` this is NOT a task failure
+                # and NOT a protocol violation (the worker didn't skip the
+                # paperwork, it never got to do the work), so release it back
+                # to ``ready`` WITHOUT counting a failure and WITHOUT
+                # consuming the protocol-violation streak. Distinct event kind
+                # so operators can separate auth/model failures from quota
+                # exhaustion. Surface the REAL provider error (read from the
+                # worker log) in ``last_failure_error`` instead of the generic
+                # protocol-violation text the old clean_exit path stamped.
+                protocol_violation = False
+                api_error_exit = True
+                real_error = _read_worker_api_error(row["id"])
+                if real_error:
+                    error_text = (
+                        f"worker exited before first turn on API/auth error "
+                        f"(exit {code}): {real_error}"
+                    )
+                else:
+                    error_text = (
+                        f"worker exited before first turn on API/auth error "
+                        f"(exit {code}) — see worker log for details"
+                    )
+                event_kind = "api_error"
+                event_payload = {
+                    "pid": pid,
+                    "claimer": row["claim_lock"],
+                    "exit_code": code,
+                }
             else:
                 protocol_violation = False
                 if kind == "nonzero_exit":
@@ -8987,10 +9051,17 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 (retry_status, row["id"], pid, row["claim_lock"]),
             )
             if cur.rowcount == 1:
-                # Rate-limited requeues are a clean release, not a crash —
-                # record the run outcome as ``rate_limited`` so the board
-                # history doesn't show a phantom crash for a quota wall.
-                _run_outcome = "rate_limited" if rate_limited_exit else "crashed"
+                # Rate-limited / API-error requeues are a clean release, not a
+                # crash — record the run outcome distinctly so the board
+                # history doesn't show a phantom crash for a quota wall or a
+                # pre-tool provider bail, and so ``check_respawn_guard`` can
+                # apply the cooldown probe to both.
+                if rate_limited_exit:
+                    _run_outcome = "rate_limited"
+                elif api_error_exit:
+                    _run_outcome = "api_error"
+                else:
+                    _run_outcome = "crashed"
                 run_id = _end_run(
                     conn, row["id"],
                     outcome=_run_outcome, status=_run_outcome,
@@ -9023,6 +9094,20 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                         (error_text[:500], row["id"]),
                     )
                     rate_limited.append(row["id"])
+                elif api_error_exit:
+                    # Stamp the REAL provider error (read from the worker log
+                    # by ``_read_worker_api_error``, with a clear fallback) so
+                    # the board UI and retry worker see the actual cause — not
+                    # the generic protocol-violation text the old clean_exit
+                    # path stamped. As with rate_limited, do NOT touch
+                    # ``consecutive_failures``: the worker never ran the task,
+                    # so this must never trip the breaker or consume the
+                    # violation streak.
+                    conn.execute(
+                        "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                        (error_text[:500], row["id"]),
+                    )
+                    api_errors.append(row["id"])
                 else:
                     if protocol_violation:
                         # Stamp the failure error now: a below-budget
@@ -9146,6 +9231,10 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 board=_board,
                 **hook_fields,
             )
+    # Same side-channel for pre-tool API/auth/model-error requeues (exit 76) —
+    # distinct from rate_limited so callers/tests can tell auth/model bails
+    # from quota walls. Like rate_limited these did NOT count a failure.
+    detect_crashed_workers._last_api_errors = api_errors  # type: ignore[attr-defined]
     return crashed
 
 
@@ -9408,14 +9497,16 @@ def check_respawn_guard(
     ``"rate_limit_cooldown"``
         The task's most recent run ended with the ``rate_limited`` outcome
         (a worker bailed on a provider quota wall via the EX_TEMPFAIL
-        sentinel) within ``_resolve_rate_limit_cooldown_seconds()``. The
-        quota almost certainly hasn't reset yet, so defer the respawn until
-        the cooldown elapses — then allow a cheap probe. This is checked
-        BEFORE ``blocker_auth`` because the rate-limit requeue stamps a
-        quota-flavored ``last_failure_error`` that would otherwise match the
-        auth-blocker regex and park the task forever (the rate-limit path
-        never increments ``consecutive_failures``, so the breaker can't free
-        it). Once the cooldown elapses the task falls through and respawns.
+        sentinel) OR the ``api_error`` outcome (a worker bailed before its
+        first successful tool-call turn on an API/auth/model error via the
+        exit-76 sentinel), within ``_resolve_rate_limit_cooldown_seconds()``.
+        The provider almost certainly hasn't recovered yet, so defer the
+        respawn until the cooldown elapses — then allow a cheap probe. This is
+        checked BEFORE ``blocker_auth`` because both requeue paths stamp a
+        quota/auth-flavored ``last_failure_error`` that would otherwise match
+        the auth-blocker regex and park the task forever (neither path
+        increments ``consecutive_failures``, so the breaker can't free it).
+        Once the cooldown elapses the task falls through and respawns.
 
     ``"blocker_auth"``
         The task's last failure error matches a quota / authentication
@@ -9472,19 +9563,19 @@ def check_respawn_guard(
     ).fetchone()
     if (
         latest_run is not None
-        and latest_run["outcome"] == "rate_limited"
+        and latest_run["outcome"] in ("rate_limited", "api_error")
     ):
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, and skip the
-            # blocker_auth regex so the stamped rate-limit text doesn't
-            # re-trap the task.
+            # blocker_auth regex so the stamped rate-limit / API-error text
+            # doesn't re-trap the task.
             return None
         ended_at = latest_run["ended_at"]
         if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
             return "rate_limit_cooldown"
         # Cooldown elapsed — allow the respawn. Return early so the
-        # blocker_auth check below doesn't catch the rate-limit text we
-        # stamped on the task; this path intentionally retries forever
+        # blocker_auth check below doesn't catch the rate-limit / API-error
+        # text we stamped on the task; this path intentionally retries forever
         # (cheaply, spaced by the cooldown) until quota returns or a real
         # crash/completion supersedes it.
         return None
@@ -10498,6 +10589,77 @@ def _rotate_worker_log(
         log_path.rename(_rotated_log_path(log_path, 1))
     except OSError:
         pass
+
+
+# Signatures a worker log line can carry when the CLI bailed before its first
+# successful tool-call turn on an API / auth / model error. ``detect_crashed_workers``
+# reads the task's last log line on an ``api_error`` sentinel exit to surface the
+# REAL provider message in ``last_failure_error`` (instead of the generic
+# protocol-violation text) — see ``_read_worker_api_error``. These are the
+# concrete error tokens (HTTP statuses, ``AuthenticationError``, "Model is
+# disabled", explicit key/permission denials, provider-overloaded); a bare
+# "switching to fallback provider" line carries no error on its own and is
+# intentionally NOT matched, so the surfaced text is the actual cause.
+_API_ERROR_LOG_SIGNATURES = (
+    "authenticationerror",
+    "model is disabled",
+    "model_disabled",
+    "http 401",
+    "http 403",
+    "http 503",
+    "http 529",
+    "http 500",
+    "http 502",
+    "unauthorized",
+    "forbidden",
+    "model not found",
+    "model_not_found",
+    "permission denied",
+    "access denied",
+    "invalid api key",
+    "invalid_api_key",
+    "overloaded",
+    "disabled",
+)
+
+
+def _read_worker_api_error(task_id: str) -> Optional[str]:
+    """Return the real API/auth/model error text from a task's worker log.
+
+    Called from the ``api_error`` branch of ``detect_crashed_workers`` so the
+    card's ``last_failure_error`` carries the provider's actual message (e.g.
+    ``AuthenticationError [HTTP 401] … Model is disabled``) instead of a generic
+    "API/auth error" stub. Reads the last ~4 KiB of the task's log under
+    ``worker_logs_dir()`` and returns the first trailing non-empty line whose
+    text matches a concrete API-error signature (walked newest-first so the
+    bail line — printed just before any fallback hand-off — is found before
+    later noise). Returns ``None`` if the log is missing, unreadable, or
+    contains no recognizable signature — callers fall back to a clear sentinel
+    message in that case.
+    """
+    try:
+        log_path = worker_logs_dir() / f"{task_id}.log"
+        if not log_path.exists():
+            return None
+        # Read the trailing chunk (last ~4 KiB) — enough to cover the bail
+        # lines without loading a multi-MB rotated log into memory.
+        size = log_path.stat().st_size
+        with open(log_path, "rb") as fh:
+            if size > 4096:
+                fh.seek(size - 4096)
+            tail = fh.read()
+        # Decode best-effort; worker logs are mixed stdout/stderr text.
+        text = tail.decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    # Walk the trailing non-empty lines newest-first; return the first that
+    # carries a concrete API-error signature. Cap length so a verbose stack
+    # trace doesn't blow out the column.
+    for line in reversed([ln.strip() for ln in text.splitlines() if ln.strip()]):
+        lowered = line.lower()
+        if any(sig in lowered for sig in _API_ERROR_LOG_SIGNATURES):
+            return line[:500]
+    return None
 
 
 def _module_hermes_argv() -> list[str]:

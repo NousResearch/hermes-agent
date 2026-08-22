@@ -88,6 +88,28 @@ describe('SearchableSelect', () => {
 
     expect(screen.getByRole('combobox').textContent).toContain('Search…')
   })
+
+  it('opens at a readable width instead of inheriting a narrow trigger width', () => {
+    const { baseElement } = render(<SearchableSelect onChange={vi.fn()} options={options} placeholder="Search…" value="" />)
+
+    fireEvent.click(screen.getByRole('combobox'))
+
+    const content = baseElement.querySelector('[data-slot="popover-content"]')
+
+    expect(content?.className).toContain('w-80')
+    expect(content?.className).toContain('sm:w-96')
+    expect(content?.className).not.toContain('w-[var(--radix-popover-trigger-width)]')
+  })
+
+  it('keeps timezone labels on one line inside the dropdown', () => {
+    render(<SearchableSelect onChange={vi.fn()} options={options} placeholder="Search…" value="" />)
+
+    fireEvent.click(screen.getByRole('combobox'))
+
+    const item = screen.getByText('America/New_York').closest('[data-slot="command-item"]')
+
+    expect(item?.className).toContain('whitespace-nowrap')
+  })
 })
 
 describe('ConfigField searchable routing', () => {

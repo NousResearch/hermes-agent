@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -544,6 +545,34 @@ def _make_hermes_provider_class() -> Optional[type]:
                 # 401 branch so a subsequent cold-load skips discovery.
                 self._persist_oauth_metadata_if_changed()
                 return
+            finally:
+                # The SDK auth-flow holds an AnyIO lock across yields. Bind the
+                # inner generator's lifetime to this outer bridge so httpx
+                # teardown closes it from the same asyncio task that acquired
+                # the lock. Leaving it for async-generator GC can finalize it
+                # from another task, fail AnyIO's ownership check, and wedge
+                # the cached provider permanently (#38193).
+                primary_error = sys.exc_info()[1]
+                try:
+                    await inner.aclose()
+                except BaseException as cleanup_error:
+                    # Preserve the real OAuth failure or cancellation. An
+                    # explicit outer close arrives as GeneratorExit and has no
+                    # user-visible primary error, so a cleanup failure remains
+                    # authoritative in that path.
+                    if primary_error is None or isinstance(primary_error, GeneratorExit):
+                        raise
+                    primary_error.add_note(
+                        "MCP OAuth inner auth-flow cleanup also raised "
+                        f"{type(cleanup_error).__name__}"
+                    )
+                    logger.warning(
+                        "MCP OAuth '%s': inner auth-flow cleanup raised %s while "
+                        "preserving %s",
+                        self._hermes_server_name,
+                        type(cleanup_error).__name__,
+                        type(primary_error).__name__,
+                    )
 
     return HermesMCPOAuthProvider
 

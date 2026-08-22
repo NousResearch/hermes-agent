@@ -383,6 +383,13 @@ class MemoryProvider(ABC):
           ``parent_session_id``, ``platform``, and ``tool_name``.
 
         Use to mirror built-in memory writes to your backend.
+
+        Raise an exception when the write does not reach durable provider
+        storage. MemoryManager logs the failure, exposes it in the memory tool
+        result, and queues the intent locally for bounded replay. Providers
+        that move work to a background thread must propagate asynchronous
+        failures to their own durable retry mechanism; returning successfully
+        declares that the provider accepted durable responsibility for it.
         """
 
     def backup_paths(self) -> List[str]:

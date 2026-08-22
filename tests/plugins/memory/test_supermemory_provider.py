@@ -159,13 +159,8 @@ def test_merge_metadata_stamps_sm_source():
 
 
 def test_shutdown_joins_threads_and_flushes_buffer(provider, monkeypatch):
-    started = threading.Event()
-    release = threading.Event()
-
     def slow_add_memory(content, metadata=None, *, entity_context="",
                         container_tag=None, custom_id=None):
-        started.set()
-        release.wait(timeout=1)
         provider._client.add_calls.append({
             "content": content,
             "metadata": metadata,
@@ -184,12 +179,9 @@ def test_shutdown_joins_threads_and_flushes_buffer(provider, monkeypatch):
     assert provider._sync_thread is None
     assert len(provider._session_turns) == 1
 
-    # on_memory_write still runs on a background thread.
+    # Explicit writes synchronously establish durable provider responsibility.
     provider.on_memory_write("add", "memory", "Jordan likes concise docs")
-    assert started.wait(timeout=1)
-    assert provider._write_thread is not None
-
-    release.set()
+    assert provider._write_thread is None
     provider.shutdown()
 
     # All tracked threads joined and cleared.

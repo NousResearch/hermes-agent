@@ -411,6 +411,21 @@ class TestOnMemoryWrite:
             mock_add.assert_not_called()
         p.shutdown()
 
+    def test_backend_failure_propagates(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RETAINDB_API_KEY", "rdb-test-key")
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(exist_ok=True)
+        p = RetainDBMemoryProvider()
+        p.initialize("test-session", hermes_home=str(hermes_home))
+        with patch.object(
+            p._client,
+            "add_memory",
+            side_effect=RuntimeError("retaindb unavailable"),
+        ):
+            with pytest.raises(RuntimeError, match="retaindb unavailable"):
+                p.on_memory_write("add", "user", "User prefers dark mode")
+        p.shutdown()
+
 
     def test_memory_target_maps_to_type(self, tmp_path, monkeypatch):
         monkeypatch.setenv("RETAINDB_API_KEY", "rdb-test-key")

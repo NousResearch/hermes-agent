@@ -244,12 +244,12 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
         """Mirror built-in memory writes as facts."""
-        if action == "add" and self._store and content:
-            try:
-                category = "user_pref" if target == "user" else "general"
-                self._store.add_fact(content, category=category)
-            except Exception as e:
-                logger.debug("Holographic memory_write mirror failed: %s", e)
+        if action != "add" or not content:
+            return
+        if not self._store:
+            raise RuntimeError("Holographic memory store is not initialized")
+        category = "user_pref" if target == "user" else "general"
+        self._store.add_fact(content, category=category)
 
     def shutdown(self) -> None:
         # Release the shared SQLite connection deterministically on the

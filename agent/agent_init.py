@@ -1875,7 +1875,18 @@ def init_agent(
             if _mem_provider_name and _mem_provider_name.strip():
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 from plugins.memory import load_memory_provider as _load_mem
-                agent._memory_manager = _MemoryManager()
+                agent._memory_manager = _MemoryManager(
+                    external_write_alerts=bool(
+                        mem_config.get("alert_on_provider_write_failure", False)
+                    ),
+                    warning_callback=agent._emit_warning,
+                    outbox_max_entries=int(
+                        mem_config.get("provider_write_outbox_max_entries", 1000)
+                    ),
+                    alert_cooldown_seconds=float(
+                        mem_config.get("provider_write_alert_cooldown_seconds", 3600)
+                    ),
+                )
                 _mp = _load_mem(_mem_provider_name)
                 if _mp and _mp.is_available():
                     agent._memory_manager.add_provider(_mp)

@@ -2140,7 +2140,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 # providers. All gating/op-expansion lives behind the manager
                 # interface (MemoryManager.notify_memory_tool_write).
                 if agent._memory_manager:
-                    agent._memory_manager.notify_memory_tool_write(
+                    mirror_result = agent._memory_manager.notify_memory_tool_write(
                         result,
                         next_args,
                         build_metadata=lambda: agent._build_memory_write_metadata(
@@ -2148,6 +2148,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                             tool_call_id=getattr(tool_call, "id", None),
                         ),
                     )
+                    if mirror_result is not None:
+                        result = mirror_result
                 return result
             function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
                 agent,

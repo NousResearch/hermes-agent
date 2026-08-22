@@ -329,18 +329,13 @@ class ByteRoverMemoryProvider(MemoryProvider):
         if action not in {"add", "replace"} or not content:
             return
 
-        def _write():
-            try:
-                label = "User profile" if target == "user" else "Agent memory"
-                _run_brv(
-                    ["curate", "--", f"[{label}] {content}"],
-                    timeout=_CURATE_TIMEOUT, cwd=self._cwd,
-                )
-            except Exception as e:
-                logger.debug("ByteRover memory mirror failed: %s", e)
-
-        t = threading.Thread(target=_write, daemon=True, name="brv-memwrite")
-        t.start()
+        label = "User profile" if target == "user" else "Agent memory"
+        result = _run_brv(
+            ["curate", "--", f"[{label}] {content}"],
+            timeout=_CURATE_TIMEOUT, cwd=self._cwd,
+        )
+        if result.get("success") is not True:
+            raise RuntimeError(result.get("error") or "ByteRover memory write failed")
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         """Extract insights before context compression discards turns."""

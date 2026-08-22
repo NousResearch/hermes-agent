@@ -828,26 +828,18 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._turn_count = 0
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
-        if not self._active or not self._write_enabled or not self._client:
+        if not self._active or not self._write_enabled:
             return
         if action != "add" or not (content or "").strip():
             return
+        if not self._client:
+            raise RuntimeError("Supermemory client is not initialized")
 
-        def _run():
-            try:
-                self._client.add_memory(
-                    content.strip(),
-                    metadata={"target": target, "type": "explicit_memory"},
-                    entity_context=self._entity_context,
-                )
-            except Exception:
-                logger.debug("Supermemory on_memory_write failed", exc_info=True)
-
-        if self._write_thread and self._write_thread.is_alive():
-            self._write_thread.join(timeout=2.0)
-        self._write_thread = None
-        self._write_thread = threading.Thread(target=_run, daemon=False, name="supermemory-memory-write")
-        self._write_thread.start()
+        self._client.add_memory(
+            content.strip(),
+            metadata={"target": target, "type": "explicit_memory"},
+            entity_context=self._entity_context,
+        )
 
     def shutdown(self) -> None:
         # Emergency fallback (crashes only). Buffer is cleared on normal on_session_end().

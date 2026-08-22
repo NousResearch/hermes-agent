@@ -130,6 +130,26 @@ class MyMemoryProvider(MemoryProvider):
 | `on_memory_write(action, target, content)` | Built-in memory writes | Mirror to your backend |
 | `shutdown()` | Process exit | Clean up connections |
 
+### Memory Write Error Contract
+
+`on_memory_write()` must raise when the explicit memory mirror was not accepted
+into durable provider storage. Hermes logs the provider failure at warning
+level, marks the otherwise-successful built-in memory tool result as degraded,
+and stores the intent in a bounded profile-local outbox for FIFO replay after
+the provider recovers. Duplicate failed intents are coalesced.
+
+If a provider hands the write to a background worker, returning successfully
+means that worker has accepted durable responsibility for retrying it. Do not
+swallow an asynchronous write error at debug level: either keep a provider-owned
+durable queue or arrange for the hook to raise before it returns.
+
+The outbox bound is configured with
+`memory.provider_write_outbox_max_entries` (default `1000` per provider).
+Set `memory.alert_on_provider_write_failure: true` to emit a user-visible
+first-failure warning; `memory.provider_write_alert_cooldown_seconds` controls
+the persistent rate limit. Warning-level logs and in-tool degradation details
+do not require the alert flag.
+
 ## Config Schema
 
 `get_config_schema()` returns a list of field descriptors used by `hermes memory setup`:

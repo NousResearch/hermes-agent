@@ -838,6 +838,16 @@ memory:
   # every N user turns. Set to 0 to disable. Only active when memory is enabled.
   nudge_interval: 10        # Nudge every 10 user turns (0 = disabled)
 
+  # Optional external memory provider. Failed explicit-write mirrors are kept
+  # in a profile-local durable outbox and replayed after provider recovery.
+  provider: ""
+  provider_write_outbox_max_entries: 1000
+
+  # User-visible provider write alerts are opt-in. Warning-level logs and the
+  # memory tool's degraded-write details remain enabled regardless.
+  alert_on_provider_write_failure: false
+  provider_write_alert_cooldown_seconds: 3600
+
 # =============================================================================
 # Session Reset Policy (Messaging Platforms)
 # =============================================================================

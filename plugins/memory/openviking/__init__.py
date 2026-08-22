@@ -4789,36 +4789,22 @@ class OpenVikingMemoryProvider(MemoryProvider):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Mirror successful built-in memory additions to OpenViking."""
-        if action != "add" or not content or not self._ensure_client():
+        if action != "add" or not content:
             return
+        if not self._ensure_client():
+            raise RuntimeError("OpenViking server not connected")
+        if self._shutting_down:
+            raise RuntimeError("OpenViking provider is shutting down")
 
         subdir = _MEMORY_WRITE_TARGET_SUBDIR_MAP.get(target, _DEFAULT_MEMORY_SUBDIR)
         uri = self._build_memory_uri(subdir)
 
-        def _write():
-            try:
-                client = self._new_client()
-                client.post("/api/v1/content/write", {
-                    "uri": uri,
-                    "content": content,
-                    "mode": "create",
-                })
-            except Exception as e:
-                logger.debug("OpenViking memory mirror failed: %s", e)
-            finally:
-                with self._memory_write_lock:
-                    self._memory_write_threads.discard(threading.current_thread())
-
-        t = threading.Thread(target=_write, daemon=True, name="openviking-memwrite")
-        with self._memory_write_lock:
-            if self._shutting_down:
-                return
-            self._memory_write_threads.add(t)
-            try:
-                t.start()
-            except Exception as e:
-                self._memory_write_threads.discard(t)
-                logger.debug("OpenViking memory mirror worker failed to start: %s", e)
+        client = self._new_client()
+        client.post("/api/v1/content/write", {
+            "uri": uri,
+            "content": content,
+            "mode": "create",
+        })
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [

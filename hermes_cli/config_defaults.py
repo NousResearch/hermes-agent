@@ -1896,6 +1896,13 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        # Failed explicit-write mirrors are always queued locally for replay.
+        # This caps the durable backlog independently for each provider.
+        "provider_write_outbox_max_entries": 1000,
+        # User-visible first-failure warnings are opt-in and rate-limited across
+        # short-lived gateway agent instances. Warning-level logs remain on.
+        "alert_on_provider_write_failure": False,
+        "provider_write_alert_cooldown_seconds": 3600,
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

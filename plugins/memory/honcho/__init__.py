@@ -1485,19 +1485,12 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._config and not getattr(self._config, "save_messages", True):
             return
         if self._recall_mode == "tools" and not self._session_ready():
-            return
+            raise RuntimeError("Honcho session is not ready for memory writes")
         if not self._session_ready():
             self._start_session_init_background()
-            return
+            raise RuntimeError("Honcho session is not ready for memory writes")
 
-        def _write():
-            try:
-                self._manager.create_conclusion(self._session_key, content)
-            except Exception as e:
-                logger.debug("Honcho memory mirror failed: %s", e)
-
-        self._memwrite_thread = spawn_context_thread(_write, name="honcho-memwrite")
-        self._memwrite_thread.start()
+        self._manager.create_conclusion(self._session_key, content)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Flush all pending messages to Honcho on session end."""

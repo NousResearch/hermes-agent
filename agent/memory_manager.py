@@ -34,6 +34,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from agent.memory_write_outbox import MemoryWriteOutbox
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
 
@@ -368,7 +369,15 @@ class MemoryManager:
     provider is allowed.  Failures in one provider never block the other.
     """
 
-    def __init__(self, *, external_prefetch_timeout: Optional[float] = None) -> None:
+    def __init__(
+        self,
+        *,
+        external_prefetch_timeout: Optional[float] = None,
+        external_write_alerts: bool = False,
+        warning_callback: Optional[Callable[[str], None]] = None,
+        outbox_max_entries: int = 1000,
+        alert_cooldown_seconds: float = 3600.0,
+    ) -> None:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
         self._has_external: bool = False  # True once a non-builtin provider is added
@@ -398,6 +407,11 @@ class MemoryManager:
             "abandoned_prefetches": 0,
             "active_tasks": 0,
         }
+        self._external_write_alerts = bool(external_write_alerts)
+        self._warning_callback = warning_callback
+        self._outbox_max_entries = max(1, int(outbox_max_entries))
+        self._alert_cooldown_seconds = max(0.0, float(alert_cooldown_seconds))
+        self._write_outbox: Optional[MemoryWriteOutbox] = None
 
     # -- Registration --------------------------------------------------------
 
@@ -1072,29 +1086,138 @@ class MemoryManager:
         target: str,
         content: str,
         metadata: Optional[Dict[str, Any]] = None,
-    ) -> None:
+    ) -> List[Dict[str, Any]]:
         """Notify external providers when the built-in memory tool writes.
 
         Skips the builtin provider itself (it's the source of the write).
+        Failed mirrors are persisted and returned so the tool result can make
+        the degraded external write visible without undoing the built-in write.
         """
+        failures: List[Dict[str, Any]] = []
         for provider in self._providers:
             if provider.name == "builtin":
                 continue
+            replay = self._replay_provider_writes(provider)
+            if replay["remaining"]:
+                error = replay["error"] or "provider write replay is already in progress"
+                queued = self._queue_provider_write(
+                    provider.name, action, target, content, dict(metadata or {})
+                )
+                failures.append({
+                    "provider": provider.name,
+                    "success": False,
+                    "queued": queued,
+                    "error": error[:500],
+                })
+                self._alert_external_write_failure(provider.name, error, queued)
+                continue
             try:
-                metadata_mode = self._provider_memory_write_metadata_mode(provider)
-                if metadata_mode == "keyword":
-                    provider.on_memory_write(
-                        action, target, content, metadata=dict(metadata or {})
-                    )
-                elif metadata_mode == "positional":
-                    provider.on_memory_write(action, target, content, dict(metadata or {}))
-                else:
-                    provider.on_memory_write(action, target, content)
+                self._deliver_memory_write(
+                    provider, action, target, content, dict(metadata or {})
+                )
+                if self._write_outbox and self._write_outbox.pending_count(provider.name) == 0:
+                    self._write_outbox.clear_alert(provider.name)
             except Exception as e:
-                logger.debug(
+                logger.warning(
                     "Memory provider '%s' on_memory_write failed: %s",
                     provider.name, e,
                 )
+                queued = self._queue_provider_write(
+                    provider.name, action, target, content, dict(metadata or {})
+                )
+                failures.append({
+                    "provider": provider.name,
+                    "success": False,
+                    "queued": queued,
+                    "error": str(e)[:500],
+                })
+                self._alert_external_write_failure(provider.name, str(e), queued)
+        return failures
+
+    def _queue_provider_write(
+        self,
+        provider: str,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Dict[str, Any],
+    ) -> bool:
+        try:
+            if self._write_outbox is None:
+                return False
+            enqueue_result = self._write_outbox.enqueue(
+                provider, action, target, content, metadata
+            )
+            if enqueue_result["dropped"] or enqueue_result.get("overflow"):
+                logger.warning(
+                    "Memory provider '%s' outbox reached its %d-entry bound; "
+                    "discarded %d unclaimed write(s), with %d entry(s) still over bound",
+                    provider,
+                    self._outbox_max_entries,
+                    enqueue_result["dropped"],
+                    enqueue_result.get("overflow", 0),
+                )
+            return bool(enqueue_result["queued"])
+        except Exception:
+            logger.exception("Failed to persist memory write for provider '%s'", provider)
+            return False
+
+    def _deliver_memory_write(
+        self,
+        provider: MemoryProvider,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Dict[str, Any],
+    ) -> None:
+        metadata_mode = self._provider_memory_write_metadata_mode(provider)
+        if metadata_mode == "keyword":
+            provider.on_memory_write(action, target, content, metadata=dict(metadata))
+        elif metadata_mode == "positional":
+            provider.on_memory_write(action, target, content, dict(metadata))
+        else:
+            provider.on_memory_write(action, target, content)
+
+    def _replay_provider_writes(self, provider: MemoryProvider) -> Dict[str, Any]:
+        if self._write_outbox is None or provider.name == "builtin":
+            return {"replayed": 0, "remaining": 0, "error": "", "blocked": False}
+        result = self._write_outbox.replay(
+            provider.name,
+            lambda action, target, content, metadata: self._deliver_memory_write(
+                provider, action, target, content, metadata
+            ),
+        )
+        if result["replayed"]:
+            logger.info(
+                "Replayed %d queued memory write(s) to provider '%s'",
+                result["replayed"],
+                provider.name,
+            )
+        if result["error"]:
+            logger.warning(
+                "Memory provider '%s' outbox replay paused with %d write(s) pending: %s",
+                provider.name,
+                result["remaining"],
+                result["error"],
+            )
+        return result
+
+    def _alert_external_write_failure(self, provider: str, error: str, queued: bool) -> None:
+        if (
+            not self._external_write_alerts
+            or self._warning_callback is None
+            or self._write_outbox is None
+            or not self._write_outbox.should_alert(provider, self._alert_cooldown_seconds)
+        ):
+            return
+        recovery = "queued for replay" if queued else "could not be queued"
+        try:
+            self._warning_callback(
+                f"⚠ External memory provider '{provider}' write failed and was {recovery}: "
+                f"{error[:300]}"
+            )
+        except Exception:
+            logger.debug("Memory provider write warning callback failed", exc_info=True)
 
     # Actions the bridge mirrors to external providers. The built-in memory
     # tool can also return non-mutating shapes (errors, staged-for-approval
@@ -1126,7 +1249,7 @@ class MemoryManager:
         tool_args: Dict[str, Any],
         *,
         build_metadata: Optional[Callable[[], Dict[str, Any]]] = None,
-    ) -> None:
+    ) -> Any:
         """Mirror a built-in memory tool call to external providers.
 
         This is the single entry point the agent loop calls after running the
@@ -1144,7 +1267,7 @@ class MemoryManager:
         mirrored op.
         """
         if not self._memory_tool_result_succeeded(tool_result):
-            return
+            return tool_result
 
         target = str(tool_args.get("target") or "memory")
         operations = tool_args.get("operations")
@@ -1157,6 +1280,7 @@ class MemoryManager:
                 "old_text": tool_args.get("old_text"),
             }]
 
+        failures: List[Dict[str, Any]] = []
         for op in raw_operations:
             if not isinstance(op, dict):
                 continue
@@ -1168,14 +1292,29 @@ class MemoryManager:
                 old_text = op.get("old_text")
                 if old_text:
                     metadata["old_text"] = str(old_text)
-                self.on_memory_write(
+                failures.extend(self.on_memory_write(
                     action,
                     target,
                     str(op.get("content") or ""),
                     metadata=metadata,
-                )
+                ))
             except Exception as e:
-                logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
+                logger.warning("notify_memory_tool_write failed for op %s: %s", action, e)
+
+        if not failures:
+            return tool_result
+        parsed = tool_result
+        was_json = isinstance(tool_result, str)
+        if was_json:
+            try:
+                parsed = json.loads(tool_result)
+            except Exception:
+                return tool_result
+        if not isinstance(parsed, dict):
+            return tool_result
+        parsed = dict(parsed)
+        parsed["external_provider_writes"] = failures
+        return json.dumps(parsed, ensure_ascii=False) if was_json else parsed
 
     def on_delegation(self, task: str, result: str, *,
                       child_session_id: str = "", **kwargs) -> None:
@@ -1281,9 +1420,14 @@ class MemoryManager:
         if "hermes_home" not in kwargs:
             from hermes_constants import get_hermes_home
             kwargs["hermes_home"] = str(get_hermes_home())
+        self._write_outbox = MemoryWriteOutbox(
+            kwargs["hermes_home"],
+            max_entries_per_provider=self._outbox_max_entries,
+        )
         for provider in self._providers:
             try:
                 provider.initialize(session_id=session_id, **kwargs)
+                self._replay_provider_writes(provider)
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' initialize failed: %s",

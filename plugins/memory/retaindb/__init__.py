@@ -836,13 +836,12 @@ class RetainDBMemoryProvider(MemoryProvider):
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
         """Mirror built-in memory writes to RetainDB."""
-        if action != "add" or not content or not self._client:
+        if action != "add" or not content:
             return
-        try:
-            memory_type = "preference" if target == "user" else "factual"
-            self._client.add_memory(self._user_id, self._session_id, content, memory_type=memory_type)
-        except Exception as exc:
-            logger.debug("RetainDB memory mirror failed: %s", exc)
+        if not self._client:
+            raise RuntimeError("RetainDB client is not initialized")
+        memory_type = "preference" if target == "user" else "factual"
+        self._client.add_memory(self._user_id, self._session_id, content, memory_type=memory_type)
 
     def shutdown(self) -> None:
         for t in self._prefetch_threads:

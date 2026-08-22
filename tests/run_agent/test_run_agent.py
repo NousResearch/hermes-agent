@@ -1714,6 +1714,33 @@ class TestExecuteToolCalls:
         assert metadata["tool_call_id"] == "mem-1"
         assert messages[-1]["tool_call_id"] == "mem-1"
 
+    def test_sequential_memory_write_emits_provider_degradation(self, agent):
+        tc = _mock_tool_call(
+            name="memory",
+            arguments=json.dumps({
+                "action": "add",
+                "target": "memory",
+                "content": "remember this",
+            }),
+            call_id="mem-1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        degraded = {
+            "success": True,
+            "external_provider_writes": [
+                {"provider": "external", "queued": True, "error": "unavailable"}
+            ],
+        }
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.notify_memory_tool_write.return_value = json.dumps(degraded)
+        agent._memory_store = object()
+
+        with patch("tools.memory_tool.memory_tool", return_value=json.dumps({"success": True})):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert json.loads(messages[-1]["content"]) == degraded
+
     def test_keyboard_interrupt_emits_cancelled_post_tool_hook(self, agent, monkeypatch):
         tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])

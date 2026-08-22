@@ -52,13 +52,8 @@ class TestOnMemoryWrite:
         p._manager.create_conclusion.assert_not_called()
 
     def test_enabled_mirrors(self):
-        import time
-
         p = _provider(save_messages=True)
         p.on_memory_write('add', 'user', 'user likes coffee')
-        deadline = time.time() + 5
-        while time.time() < deadline and not p._manager.create_conclusion.called:
-            time.sleep(0.05)
         p._manager.create_conclusion.assert_called_once()
 
 

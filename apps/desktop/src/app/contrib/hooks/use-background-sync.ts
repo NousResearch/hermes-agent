@@ -8,7 +8,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { $changeEventsAvailable, $cronChangeTick, $sessionsChangeTick } from '@/store/live-sync'
 import { $onBattery, batteryPollInterval } from '@/store/power'
-import { refreshActiveProfile } from '@/store/profile'
+import { normalizeProfileKey, refreshActiveProfile } from '@/store/profile'
 import {
   $activeSessionId,
   $busy,
@@ -26,6 +26,7 @@ import {
   setSessionStalled
 } from '@/store/session-states'
 
+import { sessionStateMatchesOwner, type SessionStateOwner } from '../../session/session-state-cache'
 import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
 
@@ -34,10 +35,16 @@ interface ActiveTranscriptSession {
 }
 
 /** Resolve an active transcript from either local recents or messaging slices. */
-export function resolveActiveTranscriptSession(storedSessionId: string): ActiveTranscriptSession | undefined {
+export function resolveActiveTranscriptSession(
+  storedSessionId: string,
+  ownerProfile: string
+): ActiveTranscriptSession | undefined {
+  const owner = normalizeProfileKey(ownerProfile)
+  const matchesOwner = (session: ActiveTranscriptSession) => normalizeProfileKey(session.profile) === owner
+
   return (
-    $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ??
-    $messagingSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+    $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId) && matchesOwner(session)) ??
+    $messagingSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId) && matchesOwner(session))
   )
 }
 
@@ -46,13 +53,15 @@ export interface ActiveTranscriptRefreshDeps {
   busyRef: MutableRefObject<boolean>
   requestSequenceRef: MutableRefObject<number>
   selectedStoredSessionIdRef: MutableRefObject<string | null>
-  resolveSession: (storedSessionId: string) => ActiveTranscriptSession | null | undefined
+  selectedStoredSessionProfileRef: MutableRefObject<string | null>
+  resolveSession: (storedSessionId: string, ownerProfile: string) => ActiveTranscriptSession | null | undefined
+  sessionStateHasOwner: (sessionId: string, owner: SessionStateOwner) => boolean
   signatureRef: MutableRefObject<Map<string, string>>
-  updateSessionState: (
+  updateOwnedSessionState: (
     sessionId: string,
-    updater: (state: ClientSessionState) => ClientSessionState,
-    storedSessionId?: string | null
-  ) => ClientSessionState
+    owner: SessionStateOwner,
+    updater: (state: ClientSessionState) => ClientSessionState
+  ) => boolean
 }
 
 /** Reconcile one persisted transcript snapshot into the currently viewed session. */
@@ -62,17 +71,20 @@ export async function reconcileActiveTranscript({
   requestSequenceRef,
   resolveSession,
   selectedStoredSessionIdRef,
+  selectedStoredSessionProfileRef,
+  sessionStateHasOwner,
   signatureRef,
-  updateSessionState
+  updateOwnedSessionState
 }: ActiveTranscriptRefreshDeps): Promise<void> {
   const storedSessionId = selectedStoredSessionIdRef.current
+  const storedSessionProfile = selectedStoredSessionProfileRef.current
   const runtimeSessionId = activeSessionIdRef.current
 
-  if (!storedSessionId || !runtimeSessionId || busyRef.current) {
+  if (!storedSessionId || !storedSessionProfile || !runtimeSessionId || busyRef.current) {
     return
   }
 
-  const stored = resolveSession(storedSessionId)
+  const stored = resolveSession(storedSessionId, storedSessionProfile)
 
   if (!stored) {
     return
@@ -82,38 +94,44 @@ export async function reconcileActiveTranscript({
   requestSequenceRef.current = requestId
 
   try {
-    const latest = await getLatestSessionMessages(storedSessionId, stored.profile)
+    const latest = await getLatestSessionMessages(storedSessionId, storedSessionProfile)
 
     if (
       requestId !== requestSequenceRef.current ||
       busyRef.current ||
       selectedStoredSessionIdRef.current !== storedSessionId ||
+      selectedStoredSessionProfileRef.current !== storedSessionProfile ||
       activeSessionIdRef.current !== runtimeSessionId
     ) {
       return
     }
 
-    const signatureKey = `${stored.profile ?? 'default'}:${storedSessionId}`
+    const signatureKey = `${storedSessionProfile}:${storedSessionId}`
     const signature = sessionMessagesSignature(latest.messages)
 
     if (signatureRef.current.get(signatureKey) === signature) {
       return
     }
 
-    signatureRef.current.set(signatureKey, signature)
     const messages = toChatMessages(latest.messages)
+    const owner = { profile: storedSessionProfile, storedSessionId }
 
-    updateSessionState(
-      runtimeSessionId,
-      state => ({
+    if (
+      !updateOwnedSessionState(runtimeSessionId, owner, state => ({
         ...state,
         // The refresh re-reads only the newest tail page; graft it onto any
         // older pages "Show earlier" already backfilled instead of clobbering
         // them (see transcript-backfill).
         messages: preserveLocalAssistantErrors(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages)
-      }),
-      storedSessionId
-    )
+      })) ||
+      !sessionStateHasOwner(runtimeSessionId, owner)
+    ) {
+      return
+    }
+
+    // Only suppress a future refresh after this snapshot was actually accepted
+    // by the captured composite cache owner.
+    signatureRef.current.set(signatureKey, signature)
   } catch {
     // Non-fatal: the next change event or manual resume can hydrate the view.
   }
@@ -158,11 +176,11 @@ interface LiveSessionStatusResponse {
   sessions?: LiveSessionStatusItem[]
 }
 
-// Runtime ids this poll has seen live, per gateway profile. A profile only
-// ever reaps what its OWN snapshot previously reported: background profiles are
-// served by different gateways and never appear in this profile's active_list,
-// so an unscoped reap would dark out every other profile's running rows.
-const liveRuntimeIdsByProfile = new Map<string, Set<string>>()
+// Runtime → stored-session ownership this poll has seen live, per gateway
+// profile. Keeping both ids is load-bearing: a runtime id can be reused between
+// snapshots, including by another profile, and the old snapshot must not reap
+// or rewrite the replacement (ABA).
+const liveRuntimeOwnersByProfile = new Map<string, Map<string, string>>()
 
 /** Restore sidebar liveness after a renderer/backend reconnect. Stream events
  * normally own these states, but events emitted while Desktop was disconnected
@@ -180,7 +198,9 @@ export function rehydrateLiveSessionStatuses(
   nowMs = Date.now(),
   profileKey = 'default'
 ): void {
-  const seen = new Set<string>()
+  const ownerProfile = normalizeProfileKey(profileKey)
+  const occupiedRuntimeIds = new Set<string>()
+  const seen = new Map<string, string>()
 
   for (const session of response.sessions ?? []) {
     const runtimeSessionId = session.id?.trim()
@@ -192,9 +212,23 @@ export function rehydrateLiveSessionStatuses(
       continue
     }
 
-    seen.add(runtimeSessionId)
+    // Even when the durable owner conflicts with the renderer cache, this
+    // profile's current snapshot proves the runtime slot is occupied. Record
+    // that fact before the fail-closed owner check so the absence reaper cannot
+    // misclassify the rejected replacement as disappearance of the old owner.
+    occupiedRuntimeIds.add(runtimeSessionId)
 
     const existing = $sessionStates.get()[runtimeSessionId]
+    const owner = { profile: ownerProfile, storedSessionId }
+
+    // Runtime ids are transport-local and can collide or be reused. Once a
+    // slot exists, this snapshot may touch it only when BOTH durable owner
+    // coordinates still match. Unknown profile provenance also fails closed.
+    if (existing && !sessionStateMatchesOwner(existing, owner)) {
+      continue
+    }
+
+    seen.set(runtimeSessionId, storedSessionId)
 
     // A turn we just submitted is not yet running as far as the backend is
     // concerned, so the snapshot honestly reports it idle — but the local
@@ -213,8 +247,10 @@ export function rehydrateLiveSessionStatuses(
       existing.busy !== busy ||
       existing.needsInput !== needsInput
     ) {
+      const ownedState = existing ?? { ...createClientSessionState(storedSessionId), profile: ownerProfile }
+
       publishSessionState(runtimeSessionId, {
-        ...(existing ?? createClientSessionState(storedSessionId)),
+        ...ownedState,
         busy,
         needsInput,
         storedSessionId
@@ -244,17 +280,21 @@ export function rehydrateLiveSessionStatuses(
   // path so the busy→idle transition fires — that edge is what clears the
   // spinner AND marks the row unread ("your turn"). Only ids this profile
   // previously saw are eligible, so another profile's live rows are untouched.
-  const previouslyLive = liveRuntimeIdsByProfile.get(profileKey)
+  const previouslyLive = liveRuntimeOwnersByProfile.get(ownerProfile)
 
   if (previouslyLive) {
-    for (const runtimeSessionId of previouslyLive) {
-      if (seen.has(runtimeSessionId)) {
+    for (const [runtimeSessionId, storedSessionId] of previouslyLive) {
+      if (occupiedRuntimeIds.has(runtimeSessionId)) {
         continue
       }
 
       const existing = $sessionStates.get()[runtimeSessionId]
+      const owner = { profile: ownerProfile, storedSessionId }
 
-      if (existing?.busy || existing?.needsInput || existing?.awaitingResponse) {
+      if (
+        sessionStateMatchesOwner(existing, owner) &&
+        (existing.busy || existing.needsInput || existing.awaitingResponse)
+      ) {
         publishSessionState(runtimeSessionId, {
           ...existing,
           awaitingResponse: false,
@@ -273,14 +313,14 @@ export function rehydrateLiveSessionStatuses(
     }
   }
 
-  liveRuntimeIdsByProfile.set(profileKey, seen)
+  liveRuntimeOwnersByProfile.set(ownerProfile, seen)
 }
 
 /** Forget every profile's live-runtime bookkeeping. A gateway wipe already
  *  drops the session states these ids point at, so a carried-over set would
  *  only reap runtimes that no longer exist. */
 export function resetLiveRuntimeTracking(): void {
-  liveRuntimeIdsByProfile.clear()
+  liveRuntimeOwnersByProfile.clear()
 }
 
 interface BackgroundSyncParams {

@@ -7,11 +7,13 @@ Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
 
 import contextlib
 import copy
+import errno
 from contextvars import ContextVar
 from dataclasses import dataclass
 import json
 import logging
 import shutil
+import stat as stat_module
 import tempfile
 import threading
 import time
@@ -38,6 +40,7 @@ from typing import Optional, Dict, List, Any, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
 
+from hermes_time import get_timezone as _get_hermes_timezone
 from hermes_time import now as _hermes_now
 from utils import atomic_replace, atomic_write_text
 
@@ -3536,6 +3539,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
 # accumulated one file per run forever and could fill the disk (#52383). Keep the
 # most recent N files per job; a non-positive value disables pruning (opt-out).
 _CRON_OUTPUT_DEFAULT_KEEP = 50
+_CRON_OUTPUT_ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$")
 
 
 def _cron_output_keep() -> int:
@@ -3576,6 +3580,229 @@ def _prune_job_output(job_output_dir: Path, keep: int) -> int:
         except OSError as exc:
             logger.debug("Failed to prune cron output %s: %s", stale.name, exc)
     return deleted
+
+
+@contextlib.contextmanager
+def _open_job_output_directory(job_id: str):
+    """Open one job output directory without following child symlinks.
+
+    Platforms with ``dir_fd`` support pin every traversed directory by file
+    descriptor.  The path-only fallback (notably Windows) cannot provide that
+    guarantee: it rejects symlinks and verifies every directory's identity both
+    before and after the caller's operation, but a parent swapped and restored
+    entirely within that window remains inherently undetectable without a
+    descriptor-relative directory API.
+    """
+    job_dir = _job_output_dir(job_id)
+    output_root = job_dir.parent
+    store_anchor = _current_cron_store().cron_dir.parent
+
+    try:
+        relative_parts = output_root.relative_to(store_anchor).parts
+    except ValueError:
+        # Tests and embedders may deliberately repoint OUTPUT_DIR. Treat that
+        # configured root as the trusted anchor, while still refusing a
+        # symlink at the root itself or at the per-job child.
+        store_anchor = output_root
+        relative_parts = ()
+
+    supports_dir_fd = os.open in os.supports_dir_fd
+    if not supports_dir_fd:
+        anchor_stat = os.lstat(store_anchor)
+        if not stat_module.S_ISDIR(anchor_stat.st_mode):
+            raise FileNotFoundError(store_anchor)
+        directory_identities = [
+            (store_anchor, anchor_stat.st_dev, anchor_stat.st_ino)
+        ]
+        trusted_root = store_anchor.resolve(strict=True)
+        current = store_anchor
+        resolved_current = trusted_root
+        for part in (*relative_parts, job_dir.name):
+            current = current / part
+            current_stat = os.lstat(current)
+            if not stat_module.S_ISDIR(current_stat.st_mode):
+                raise FileNotFoundError(current)
+            resolved_current = current.resolve(strict=True)
+            expected = trusted_root.joinpath(*current.relative_to(store_anchor).parts)
+            if resolved_current != expected or not resolved_current.is_relative_to(trusted_root):
+                raise FileNotFoundError(current)
+            directory_identities.append(
+                (current, current_stat.st_dev, current_stat.st_ino)
+            )
+
+        try:
+            yield None, job_dir
+        except BaseException:
+            raise
+        else:
+            # Detect persistent parent replacement during the path-based
+            # operation. This intentionally runs only on success so a storage
+            # error from the operation is never hidden by cleanup validation.
+            for directory, expected_dev, expected_ino in directory_identities:
+                try:
+                    current_stat = os.lstat(directory)
+                except FileNotFoundError as exc:
+                    raise FileNotFoundError(directory) from exc
+                if (
+                    not stat_module.S_ISDIR(current_stat.st_mode)
+                    or current_stat.st_dev != expected_dev
+                    or current_stat.st_ino != expected_ino
+                ):
+                    raise FileNotFoundError(directory)
+        return
+
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        current_fd = os.open(store_anchor, directory_flags)
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise FileNotFoundError(store_anchor) from exc
+        raise
+    try:
+        for part in (*relative_parts, job_dir.name):
+            try:
+                next_fd = os.open(part, directory_flags, dir_fd=current_fd)
+            except OSError as exc:
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise FileNotFoundError(job_dir) from exc
+                raise
+            previous_fd = current_fd
+            current_fd = next_fd
+            os.close(previous_fd)
+        if not stat_module.S_ISDIR(os.fstat(current_fd).st_mode):
+            raise FileNotFoundError(job_dir)
+        yield current_fd, job_dir
+    finally:
+        os.close(current_fd)
+
+
+def _cron_output_created_at(output_id: str) -> float:
+    """Derive a stable epoch time from a generated cron output identifier.
+
+    Output IDs encode the wall clock used by :func:`save_job_output` without an
+    offset. Interpret that clock through the same configured IANA timezone (or
+    server-local fallback) as ``_hermes_now`` rather than exposing mutable file
+    metadata as creation time.
+    """
+    output_time = datetime.strptime(output_id, "%Y-%m-%d_%H-%M-%S")
+    configured_timezone = _get_hermes_timezone()
+    if configured_timezone is not None:
+        output_time = output_time.replace(tzinfo=configured_timezone)
+    else:
+        output_time = output_time.astimezone()
+    return output_time.timestamp()
+
+
+def list_job_outputs(job_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+    """Return one job's durable markdown outputs, newest first.
+
+    Output files are the authoritative result of every cron execution (including
+    script-only and session-store-degraded runs). Desktop run history must not
+    depend on an optional chat transcript existing in ``state.db``.
+    """
+    try:
+        limit_n = max(1, min(int(limit), 100))
+    except (TypeError, ValueError):
+        limit_n = 20
+
+    try:
+        with _open_job_output_directory(job_id) as (job_fd, job_dir):
+            with os.scandir(job_fd if job_fd is not None else job_dir) as entries:
+                output_entries = sorted(
+                    (
+                        entry
+                        for entry in entries
+                        if entry.name.endswith(".md")
+                        and entry.is_file(follow_symlinks=False)
+                        and _CRON_OUTPUT_ID_RE.fullmatch(Path(entry.name).stem)
+                    ),
+                    key=lambda entry: entry.name,
+                    reverse=True,
+                )
+
+                outputs: List[Dict[str, Any]] = []
+                for entry in output_entries:
+                    try:
+                        entry_stat = entry.stat(follow_symlinks=False)
+                        output_id = Path(entry.name).stem
+                        created_at = _cron_output_created_at(output_id)
+                    except (FileNotFoundError, ValueError):
+                        continue
+                    outputs.append(
+                        {
+                            "id": output_id,
+                            "filename": entry.name,
+                            "byte_size": entry_stat.st_size,
+                            "created_at": created_at,
+                        }
+                    )
+                    if len(outputs) >= limit_n:
+                        break
+    except FileNotFoundError:
+        return []
+    return outputs
+
+
+def get_job_output(job_id: str, output_id: str) -> Dict[str, Any]:
+    """Read one generated cron markdown document without permitting path escape."""
+    output_id = str(output_id or "").strip()
+    if not _CRON_OUTPUT_ID_RE.fullmatch(output_id):
+        raise ValueError("Invalid cron output id")
+    try:
+        created_at = _cron_output_created_at(output_id)
+    except ValueError as exc:
+        raise ValueError("Invalid cron output id") from exc
+
+    filename = f"{output_id}.md"
+    with _open_job_output_directory(job_id) as (job_fd, job_dir):
+        path = job_dir / filename
+        if job_fd is None:
+            before = os.lstat(path)
+            if not stat_module.S_ISREG(before.st_mode):
+                raise FileNotFoundError(path)
+            open_args = (path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            open_kwargs = {}
+        else:
+            before = os.stat(filename, dir_fd=job_fd, follow_symlinks=False)
+            if not stat_module.S_ISREG(before.st_mode):
+                raise FileNotFoundError(path)
+            open_args = (filename, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            open_kwargs = {"dir_fd": job_fd}
+
+        try:
+            fd = os.open(*open_args, **open_kwargs)
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                raise FileNotFoundError(path) from exc
+            raise
+
+        try:
+            opened = os.fstat(fd)
+            if (
+                not stat_module.S_ISREG(opened.st_mode)
+                or opened.st_dev != before.st_dev
+                or opened.st_ino != before.st_ino
+            ):
+                raise FileNotFoundError(path)
+
+            with os.fdopen(fd, "r", encoding="utf-8") as output_file:
+                fd = -1  # ownership transferred to output_file
+                content = output_file.read()
+        finally:
+            if fd >= 0:
+                os.close(fd)
+
+    return {
+        "id": output_id,
+        "filename": path.name,
+        "byte_size": opened.st_size,
+        "created_at": created_at,
+        "content": content,
+    }
 
 
 def save_job_output(job_id: str, output: str):

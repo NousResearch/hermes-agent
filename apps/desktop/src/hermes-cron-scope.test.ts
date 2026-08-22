@@ -4,6 +4,8 @@ import {
   createCronJob,
   deleteCronJob,
   getCronJob,
+  getCronJobOutput,
+  getCronJobOutputs,
   getCronJobRuns,
   getCronJobs,
   pauseCronJob,
@@ -46,6 +48,8 @@ describe('cron helpers are profile-scoped', () => {
 
     void getCronJobs()
     void getCronJob('job-1')
+    void getCronJobOutputs('job-1')
+    void getCronJobOutput('job-1', '2026-08-11_09-00-00')
     void getCronJobRuns('job-1')
     void createCronJob({ name: 'nightly', prompt: 'run', schedule: '0 3 * * *' } as never)
     void updateCronJob('job-1', { enabled: false } as never)
@@ -103,5 +107,49 @@ describe('cron helpers are profile-scoped', () => {
     // Omitting the arg keeps the legacy unfiltered path.
     void getCronJobs()
     expect(api.mock.calls.at(-1)?.[0].path).toBe('/api/cron/jobs')
+  })
+
+  it('keeps the gateway profile separate from a run output owner profile', () => {
+    setApiRequestProfile('remote_gateway')
+
+    void getCronJobRuns('job-1', 5, 'worker_alpha')
+    expect(api.mock.calls.at(-1)?.[0]).toMatchObject({
+      path: '/api/cron/jobs/job-1/runs?limit=5&profile=worker_alpha',
+      profile: 'remote_gateway'
+    })
+
+    void getCronJobOutputs('job-1', 5, 'worker_alpha')
+    expect(api.mock.calls.at(-1)?.[0]).toMatchObject({
+      path: '/api/cron/jobs/job-1/outputs?limit=5&profile=worker_alpha',
+      profile: 'remote_gateway'
+    })
+
+    void getCronJobOutput('job-1', '2026-08-11_09-00-00', 'worker_alpha')
+    expect(api.mock.calls.at(-1)?.[0]).toMatchObject({
+      path: '/api/cron/jobs/job-1/outputs/2026-08-11_09-00-00?profile=worker_alpha',
+      profile: 'remote_gateway'
+    })
+  })
+
+  it('passes an explicit owner profile to every job mutation endpoint', () => {
+    const payload = { name: 'nightly', prompt: 'run', schedule: '0 3 * * *' } as never
+
+    void createCronJob(payload, 'worker_alpha')
+    expect(api.mock.calls.at(-1)?.[0].path).toBe('/api/cron/jobs?profile=worker_alpha')
+
+    void updateCronJob('shared-job', { enabled: false } as never, 'worker_alpha')
+    expect(api.mock.calls.at(-1)?.[0].path).toBe('/api/cron/jobs/shared-job?profile=worker_alpha')
+
+    void pauseCronJob('shared-job', 'worker_alpha')
+    expect(api.mock.calls.at(-1)?.[0].path).toBe('/api/cron/jobs/shared-job/pause?profile=worker_alpha')
+
+    void resumeCronJob('shared-job', 'worker_alpha')
+    expect(api.mock.calls.at(-1)?.[0].path).toBe('/api/cron/jobs/shared-job/resume?profile=worker_alpha')
+
+    void triggerCronJob('shared-job', 'worker_alpha')
+    expect(api.mock.calls.at(-1)?.[0].path).toBe('/api/cron/jobs/shared-job/trigger?profile=worker_alpha')
+
+    void deleteCronJob('shared-job', 'worker_alpha')
+    expect(api.mock.calls.at(-1)?.[0].path).toBe('/api/cron/jobs/shared-job?profile=worker_alpha')
   })
 })

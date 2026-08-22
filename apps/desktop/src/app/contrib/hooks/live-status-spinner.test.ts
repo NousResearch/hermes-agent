@@ -48,12 +48,16 @@ describe('rehydrateLiveSessionStatuses — seeding a turn the renderer never saw
     expect($workingSessionIds.get()).toContain('stored-cold')
   })
 
-  it('shows the spinner when a runtime id is recycled onto a new stored session', () => {
+  it('shows the spinner after an explicit backend reset recycles a runtime id', () => {
     // A respawned backend can mint the same runtime id for a different stored
-    // session. The row for the NEW stored id must light up, not the stale one.
+    // session. Its gateway-wipe path explicitly drops renderer state and poll
+    // bookkeeping; the poll itself must not silently transfer ownership.
     rehydrateLiveSessionStatuses({
       sessions: [{ id: 'runtime-1', session_key: 'stored-old', status: 'working' }]
     })
+
+    clearAllSessionStates()
+    resetLiveRuntimeTracking()
 
     rehydrateLiveSessionStatuses({
       sessions: [{ id: 'runtime-1', session_key: 'stored-new', status: 'working' }]

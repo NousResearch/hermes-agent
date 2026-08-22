@@ -7,10 +7,11 @@ import {
   $sessionStates,
   $workingSessionIds,
   clearAllSessionStates,
+  getRecentlySettledSessionIds,
   publishSessionState
 } from '@/store/session-states'
 
-import { rehydrateLiveSessionStatuses } from './use-background-sync'
+import { rehydrateLiveSessionStatuses, resetLiveRuntimeTracking } from './use-background-sync'
 
 /**
  * `session.active_list` is the authoritative snapshot of what is RUNNING in the
@@ -25,12 +26,14 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     vi.useFakeTimers()
     $selectedStoredSessionId.set(null)
     $unreadFinishedSessionIds.set([])
+    resetLiveRuntimeTracking()
   })
 
   afterEach(() => {
     vi.clearAllTimers()
     vi.useRealTimers()
     clearAllSessionStates()
+    resetLiveRuntimeTracking()
     $unreadFinishedSessionIds.set([])
     $activeSessionId.set(null)
   })
@@ -46,6 +49,66 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     rehydrateLiveSessionStatuses({ sessions: [] })
 
     expect($workingSessionIds.get()).toEqual([])
+  })
+
+  it('keeps a conflicting current owner untouched while reaping a true disappearance', () => {
+    const openTool = (toolCallId: string) =>
+      ({
+        type: 'tool-call',
+        toolCallId,
+        toolName: 'patch',
+        args: {},
+        argsText: '{}'
+      }) as never
+
+    const originalOwner = {
+      ...createClientSessionState('stored-a'),
+      awaitingResponse: true,
+      busy: true,
+      messages: [
+        { id: 'shared-message', role: 'assistant' as const, parts: [openTool('call-shared')], pending: false }
+      ],
+      profile: 'default'
+    }
+
+    const vanishedOwner = {
+      ...createClientSessionState('stored-gone'),
+      awaitingResponse: true,
+      busy: true,
+      messages: [{ id: 'gone-message', role: 'assistant' as const, parts: [openTool('call-gone')], pending: false }],
+      profile: 'default'
+    }
+
+    publishSessionState('runtime-shared', originalOwner)
+    publishSessionState('runtime-gone', vanishedOwner)
+    $activeSessionId.set('runtime-shared')
+
+    rehydrateLiveSessionStatuses({
+      sessions: [
+        { id: 'runtime-shared', session_key: 'stored-a', status: 'working' },
+        { id: 'runtime-gone', session_key: 'stored-gone', status: 'working' }
+      ]
+    })
+
+    // The runtime is still occupied in this profile, but the durable owner no
+    // longer matches. That conflict is not proof that stored-a disappeared.
+    rehydrateLiveSessionStatuses({
+      sessions: [{ id: 'runtime-shared', session_key: 'stored-b', status: 'working' }]
+    })
+
+    const sharedState = $sessionStates.get()['runtime-shared']
+
+    expect(sharedState).toBe(originalOwner)
+    expect(sharedState.busy).toBe(true)
+    expect(sharedState.awaitingResponse).toBe(true)
+    expect((sharedState.messages[0].parts[0] as { result?: unknown }).result).toBeUndefined()
+    expect(getRecentlySettledSessionIds()).not.toContain('stored-a')
+    expect($unreadFinishedSessionIds.get()).not.toContain('stored-a')
+
+    // Control: an actually absent sibling is still settled and sealed.
+    expect($workingSessionIds.get()).not.toContain('stored-gone')
+    expect(getRecentlySettledSessionIds()).toContain('stored-gone')
+    expect($unreadFinishedSessionIds.get()).toContain('stored-gone')
   })
 
   it('fires the unread "your turn" marker for a vanished background session', () => {
@@ -98,7 +161,8 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
       ...createClientSessionState('stored-tools'),
       busy: true,
       awaitingResponse: true,
-      messages: [{ id: 'a1', role: 'assistant', parts: [openTool], pending: false } as never]
+      messages: [{ id: 'a1', role: 'assistant', parts: [openTool], pending: false } as never],
+      profile: 'default'
     })
 
     // Keep the runtime referenced so the settled state stays in the store
@@ -121,7 +185,8 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     publishSessionState('runtime-await', {
       ...createClientSessionState('stored-await'),
       awaitingResponse: true,
-      busy: false
+      busy: false,
+      profile: 'default'
     })
 
     $activeSessionId.set('runtime-await')

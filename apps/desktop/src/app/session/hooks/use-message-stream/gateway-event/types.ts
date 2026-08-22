@@ -27,7 +27,8 @@ export interface GatewayEventDeps {
   hydrateFromStoredSession: (
     attempts?: number,
     storedSessionId?: string | null,
-    runtimeSessionId?: string | null
+    runtimeSessionId?: string | null,
+    storedSessionProfile?: string | null
   ) => Promise<void>
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>

@@ -12,7 +12,7 @@ interface RouteResumeOptions {
   freshDraftReady: boolean
   gatewayState: string | undefined
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
+  resumeSession: (sessionId: string, focus: boolean, ownerProfile?: string) => Promise<unknown>
   // Stored-session id whose most recent resume failed terminally (set by
   // useSessionActions, mirrored from $resumeFailedSessionId). While this equals
   // routedSessionId the window would otherwise latch on the loader forever, so
@@ -26,9 +26,11 @@ interface RouteResumeOptions {
   resumeExhaustedSessionId: string | null
   sessionResumeRequest: SessionResumeRequest | null
   routedSessionId: string | null
+  routedSessionProfile: string | null
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: string | null
   selectedStoredSessionIdRef: MutableRefObject<string | null>
+  selectedStoredSessionProfileRef: MutableRefObject<string | null>
   startFreshSessionDraft: (focus: boolean) => unknown
 }
 
@@ -80,9 +82,11 @@ export function useRouteResume({
   resumeExhaustedSessionId,
   sessionResumeRequest,
   routedSessionId,
+  routedSessionProfile,
   runtimeIdByStoredSessionIdRef,
   selectedStoredSessionId,
   selectedStoredSessionIdRef,
+  selectedStoredSessionProfileRef,
   startFreshSessionDraft
 }: RouteResumeOptions) {
   const lastPathnameRef = useRef<string | null>(null)
@@ -94,8 +98,8 @@ export function useRouteResume({
   // workspace (which would clobber the persisted active tab; ⌘R always landed
   // on main). Every later resume is a real navigation and homes as usual.
   const bootResumeRef = useRef(true)
-  // Per-session retry bookkeeping for the bounded auto-retry effect below. Keyed
-  // by the session id we're retrying so switching chats resets the counter.
+  // Per-session retry bookkeeping for the bounded auto-retry effect below.
+  // Profile is part of the key because stored ids are only profile-local.
   const retrySessionIdRef = useRef<string | null>(null)
   const retryAttemptRef = useRef(0)
   // Tracks the previous exhausted-latch value so we can detect its armed->cleared
@@ -105,6 +109,8 @@ export function useRouteResume({
   // never touches this latch, so it can't spuriously trigger the reset).
   const prevResumeExhaustedRef = useRef<string | null>(null)
   const handledResumeRequestRef = useRef(0)
+  const routeOwnerProfile = routedSessionProfile?.trim() || null
+  const routeSessionIdentity = routedSessionId ? `${routeOwnerProfile ?? ''}\0${routedSessionId}` : null
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -126,10 +132,15 @@ export function useRouteResume({
     if (routedSessionId) {
       const cachedRuntime = runtimeIdByStoredSessionIdRef.current.get(routedSessionId)
 
+      const selectedOwnerMatchesRoute =
+        routeOwnerProfile === null || routeOwnerProfile === selectedStoredSessionProfileRef.current
+
       const alreadyActive =
         routedSessionId === selectedStoredSessionIdRef.current &&
-        Boolean(cachedRuntime) &&
-        cachedRuntime === activeSessionIdRef.current
+        selectedOwnerMatchesRoute &&
+        (routeOwnerProfile !== null
+          ? activeSessionIdRef.current !== null
+          : Boolean(cachedRuntime) && cachedRuntime === activeSessionIdRef.current)
 
       const explicitlyRequested =
         sessionResumeRequest?.sessionId === routedSessionId &&
@@ -149,7 +160,10 @@ export function useRouteResume({
       // pathname flips to / (same null+/:sid signature). freshDraftReady is the
       // discriminator: it's true while heading into a blank new chat, false when
       // genuinely stranded on a routed session.
-      const stuckOnRoutedSession = routedSessionId !== selectedStoredSessionIdRef.current && !freshDraftReady
+      const stuckOnRoutedSession =
+        (routedSessionId !== selectedStoredSessionIdRef.current ||
+          (routeOwnerProfile !== null && routeOwnerProfile !== selectedStoredSessionProfileRef.current)) &&
+        !freshDraftReady
 
       // Resume when the route meaningfully changed, the gateway just opened, or
       // we're stranded on a routed session that never loaded. The first two
@@ -177,7 +191,12 @@ export function useRouteResume({
         }
 
         bootResumeRef.current = false
-        void resumeSession(routedSessionId, true)
+
+        if (routeOwnerProfile) {
+          void resumeSession(routedSessionId, true, routeOwnerProfile)
+        } else {
+          void resumeSession(routedSessionId, true)
+        }
       }
 
       return
@@ -202,11 +221,13 @@ export function useRouteResume({
     gatewayState,
     locationPathname,
     resumeSession,
+    routeOwnerProfile,
     sessionResumeRequest,
     routedSessionId,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef,
+    selectedStoredSessionProfileRef,
     startFreshSessionDraft
   ])
 
@@ -236,7 +257,7 @@ export function useRouteResume({
     prevResumeExhaustedRef.current = resumeExhaustedSessionId
 
     if (wasExhausted && wasExhausted === routedSessionId && resumeExhaustedSessionId !== wasExhausted) {
-      retrySessionIdRef.current = routedSessionId
+      retrySessionIdRef.current = routeSessionIdentity
       retryAttemptRef.current = 0
     }
 
@@ -254,7 +275,7 @@ export function useRouteResume({
       // the current route: that's the error state we want to keep showing).
       // resumeSession also clears it on a fresh attempt; this covers a plain
       // route-change away from the stranded window.
-      if (retrySessionIdRef.current !== routedSessionId) {
+      if (retrySessionIdRef.current !== routeSessionIdentity) {
         retrySessionIdRef.current = null
         retryAttemptRef.current = 0
         setResumeExhaustedSessionId(current => (current && current !== routedSessionId ? null : current))
@@ -264,8 +285,8 @@ export function useRouteResume({
     }
 
     // New stranded session id → reset the attempt counter.
-    if (retrySessionIdRef.current !== routedSessionId) {
-      retrySessionIdRef.current = routedSessionId
+    if (retrySessionIdRef.current !== routeSessionIdentity) {
+      retrySessionIdRef.current = routeSessionIdentity
       retryAttemptRef.current = 0
     }
 
@@ -288,6 +309,7 @@ export function useRouteResume({
       if (
         creatingSessionRef.current ||
         selectedStoredSessionIdRef.current !== sessionId ||
+        (routeOwnerProfile !== null && selectedStoredSessionProfileRef.current !== routeOwnerProfile) ||
         activeSessionIdRef.current !== null
       ) {
         return
@@ -301,7 +323,12 @@ export function useRouteResume({
       // having fired. A flapping backend could then hit MAX in a couple of
       // re-renders with far fewer than MAX real attempts. (Point 3)
       retryAttemptRef.current += 1
-      void resumeSession(sessionId, true)
+
+      if (routeOwnerProfile) {
+        void resumeSession(sessionId, true, routeOwnerProfile)
+      } else {
+        void resumeSession(sessionId, true)
+      }
     }, resumeRetryDelayMs(attempt))
 
     return () => clearTimeout(timer)
@@ -313,7 +340,10 @@ export function useRouteResume({
     resumeSession,
     resumeFailedSessionId,
     resumeExhaustedSessionId,
+    routeOwnerProfile,
+    routeSessionIdentity,
     routedSessionId,
-    selectedStoredSessionIdRef
+    selectedStoredSessionIdRef,
+    selectedStoredSessionProfileRef
   ])
 }

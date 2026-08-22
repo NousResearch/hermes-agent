@@ -6,16 +6,20 @@ import { $changeEventsAvailable, notifySessionsChanged, resetLiveSync } from '@/
 import { $activeSessionId, $selectedStoredSessionId, setBusy, setMessagingSessions, setSessions } from '@/store/session'
 import {
   $attentionSessionIds,
+  $sessionStates,
   $stalledSessionIds,
   $workingSessionIds,
   clearAllSessionStates,
-  SESSION_WATCHDOG_TIMEOUT_MS
+  publishSessionState,
+  SESSION_WATCHDOG_TIMEOUT_MS,
+  setSessionStalled
 } from '@/store/session-states'
 
 import {
   type ActiveTranscriptRefreshDeps,
   reconcileActiveTranscript,
   rehydrateLiveSessionStatuses,
+  resetLiveRuntimeTracking,
   resolveActiveTranscriptSession,
   useBackgroundSync,
   windowIsActivelyViewed
@@ -41,21 +45,43 @@ function transcript(answer: string) {
   }
 }
 
-function makeRefresh(resolveSession: ActiveTranscriptRefreshDeps['resolveSession'] = () => ({ profile: 'default' })) {
+function makeRefresh(
+  resolveSession: ActiveTranscriptRefreshDeps['resolveSession'] = () => ({ profile: 'default' }),
+  selectedProfile = 'default'
+) {
   const activeSessionIdRef = { current: ACTIVE_RUNTIME_ID as string | null }
   const selectedStoredSessionIdRef = { current: ACTIVE_STORED_ID as string | null }
+  const selectedStoredSessionProfileRef = { current: selectedProfile as string | null }
   const busyRef = { current: false }
   const requestSequenceRef = { current: 0 }
   const signatureRef = { current: new Map<string, string>() }
   const state = createClientSessionState(ACTIVE_STORED_ID)
+  state.profile = selectedProfile
   const states = new Map([[ACTIVE_RUNTIME_ID, state]])
 
-  const updateSessionState = vi.fn((sessionId: string, updater: (value: typeof state) => typeof state) => {
-    const next = updater(states.get(sessionId) ?? createClientSessionState(ACTIVE_STORED_ID))
-    states.set(sessionId, next)
+  const sessionStateHasOwner = vi.fn((sessionId: string, owner: { profile: string; storedSessionId: string }) => {
+    const current = states.get(sessionId)
 
-    return next
+    return current?.profile === owner.profile && current.storedSessionId === owner.storedSessionId
   })
+
+  const updateOwnedSessionState = vi.fn(
+    (
+      sessionId: string,
+      owner: { profile: string; storedSessionId: string },
+      updater: (value: typeof state) => typeof state
+    ) => {
+      const current = states.get(sessionId)
+
+      if (!current || !sessionStateHasOwner(sessionId, owner)) {
+        return false
+      }
+
+      states.set(sessionId, updater(current))
+
+      return sessionStateHasOwner(sessionId, owner)
+    }
+  )
 
   const refresh = () =>
     reconcileActiveTranscript({
@@ -64,11 +90,22 @@ function makeRefresh(resolveSession: ActiveTranscriptRefreshDeps['resolveSession
       requestSequenceRef,
       resolveSession,
       selectedStoredSessionIdRef,
+      selectedStoredSessionProfileRef,
+      sessionStateHasOwner,
       signatureRef,
-      updateSessionState
+      updateOwnedSessionState
     })
 
-  return { activeSessionIdRef, busyRef, refresh, selectedStoredSessionIdRef, state, states, updateSessionState }
+  return {
+    activeSessionIdRef,
+    busyRef,
+    refresh,
+    selectedStoredSessionIdRef,
+    selectedStoredSessionProfileRef,
+    state,
+    states,
+    updateSessionState: updateOwnedSessionState
+  }
 }
 
 function useSyncHarness({
@@ -133,6 +170,7 @@ afterEach(() => {
   vi.clearAllMocks()
   vi.restoreAllMocks()
   clearAllSessionStates()
+  resetLiveRuntimeTracking()
 })
 
 describe('active transcript refresh', () => {
@@ -145,7 +183,7 @@ describe('active transcript refresh', () => {
     $activeSessionId.set(ACTIVE_RUNTIME_ID)
     $selectedStoredSessionId.set(ACTIVE_STORED_ID)
     setSessions([{ id: ACTIVE_STORED_ID, profile: 'desktop-profile', source: 'desktop' } as never])
-    const fixture = makeRefresh(resolveActiveTranscriptSession)
+    const fixture = makeRefresh(resolveActiveTranscriptSession, 'desktop-profile')
     vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('external answer') as never)
 
     renderSync(fixture.refresh)
@@ -240,7 +278,7 @@ describe('active transcript refresh', () => {
 describe('reconcileActiveTranscript', () => {
   it('resolves and hydrates a messaging session from the messaging sessions store', async () => {
     setMessagingSessions([{ id: ACTIVE_STORED_ID, profile: 'messaging-profile', source: 'telegram' } as never])
-    const fixture = makeRefresh(resolveActiveTranscriptSession)
+    const fixture = makeRefresh(resolveActiveTranscriptSession, 'messaging-profile')
     vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('telegram answer') as never)
 
     await fixture.refresh()
@@ -249,6 +287,20 @@ describe('reconcileActiveTranscript', () => {
     expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.at(-1)?.parts[0]).toMatchObject({
       text: 'telegram answer'
     })
+  })
+
+  it('resolves duplicate ids through the selected profile owner', async () => {
+    setSessions([
+      { id: ACTIVE_STORED_ID, profile: 'default', source: 'desktop' } as never,
+      { id: ACTIVE_STORED_ID, profile: 'meta', source: 'desktop' } as never
+    ])
+    const fixture = makeRefresh(resolveActiveTranscriptSession, 'meta')
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('meta answer') as never)
+
+    await fixture.refresh()
+
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(ACTIVE_STORED_ID, 'meta')
+    expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.at(-1)?.parts[0]).toMatchObject({ text: 'meta answer' })
   })
 
   it('publishes changed authoritative messages once without duplicates', async () => {
@@ -312,6 +364,51 @@ describe('reconcileActiveTranscript', () => {
 
     expect(fixture.updateSessionState).not.toHaveBeenCalled()
   })
+
+  it('discards a same-id response when only the selected profile changes in flight', async () => {
+    const fixture = makeRefresh()
+    let resolve: ((value: unknown) => void) | undefined
+    vi.mocked(getLatestSessionMessages).mockReturnValueOnce(
+      new Promise(currentResolve => {
+        resolve = currentResolve
+      }) as never
+    )
+
+    const request = fixture.refresh()
+    fixture.selectedStoredSessionProfileRef.current = 'meta'
+    resolve?.(transcript('stale default answer'))
+    await request
+
+    expect(fixture.updateSessionState).not.toHaveBeenCalled()
+  })
+
+  it('drops a delayed ABA response when the cache runtime is reclaimed by another profile', async () => {
+    const fixture = makeRefresh()
+    let resolve: ((value: unknown) => void) | undefined
+    vi.mocked(getLatestSessionMessages).mockReturnValueOnce(
+      new Promise(currentResolve => {
+        resolve = currentResolve
+      }) as never
+    )
+
+    const request = fixture.refresh()
+    const reclaimedState = createClientSessionState(ACTIVE_STORED_ID)
+    reclaimedState.profile = 'meta'
+    reclaimedState.messages = [
+      { id: 'meta-existing', parts: [{ text: 'meta existing answer', type: 'text' }], role: 'assistant' }
+    ]
+    fixture.states.set(ACTIVE_RUNTIME_ID, reclaimedState)
+
+    // The mutable selection refs end at their captured values (ABA), while the
+    // cache slot with the same ids now belongs to a different profile.
+    resolve?.(transcript('stale default answer'))
+    await request
+
+    expect(fixture.states.get(ACTIVE_RUNTIME_ID)).toBe(reclaimedState)
+    expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.at(-1)?.parts[0]).toMatchObject({
+      text: 'meta existing answer'
+    })
+  })
 })
 
 describe('windowIsActivelyViewed', () => {
@@ -349,6 +446,7 @@ describe('rehydrateLiveSessionStatuses', () => {
     expect($workingSessionIds.get()).toEqual(['overnight-exam-learning', 'temporary-file-cleanup'])
     expect($stalledSessionIds.get()).toEqual(['overnight-exam-learning'])
     expect($attentionSessionIds.get()).toEqual([])
+    expect($sessionStates.get()['runtime-overnight']?.profile).toBe('default')
   })
 
   it('restores a waiting turn as working and needing attention', () => {
@@ -373,5 +471,139 @@ describe('rehydrateLiveSessionStatuses', () => {
     expect($workingSessionIds.get()).toEqual([])
     expect($attentionSessionIds.get()).toEqual([])
     expect($stalledSessionIds.get()).toEqual([])
+  })
+
+  it('does not rewrite a same-id state owned by another profile', () => {
+    const foreign = {
+      ...createClientSessionState('shared-stored'),
+      awaitingResponse: true,
+      busy: true,
+      messages: [
+        { id: 'meta-message', parts: [{ text: 'meta transcript', type: 'text' as const }], role: 'assistant' as const }
+      ],
+      profile: 'meta'
+    }
+
+    const sibling = {
+      ...createClientSessionState('shared-stored'),
+      busy: true,
+      profile: 'default'
+    }
+
+    publishSessionState('shared-runtime', foreign)
+    publishSessionState('sibling-runtime', sibling)
+    setSessionStalled('shared-stored', true)
+
+    rehydrateLiveSessionStatuses(
+      {
+        sessions: [
+          {
+            id: 'shared-runtime',
+            last_active: 1_800_000_000,
+            session_key: 'shared-stored',
+            status: 'waiting'
+          }
+        ]
+      },
+      1_800_000_000_000,
+      'default'
+    )
+
+    expect($sessionStates.get()['shared-runtime']).toBe(foreign)
+    expect($sessionStates.get()['sibling-runtime']).toBe(sibling)
+    expect($stalledSessionIds.get()).toContain('shared-stored')
+  })
+
+  it('does not rewrite either side of runtime or stored-id sibling collisions', () => {
+    const runtimeOwner = {
+      ...createClientSessionState('stored-owner'),
+      busy: true,
+      profile: 'default'
+    }
+
+    const storedIdSibling = {
+      ...createClientSessionState('incoming-stored'),
+      busy: true,
+      profile: 'default'
+    }
+
+    publishSessionState('incoming-runtime', runtimeOwner)
+    publishSessionState('sibling-runtime', storedIdSibling)
+
+    rehydrateLiveSessionStatuses(
+      {
+        sessions: [{ id: 'incoming-runtime', session_key: 'incoming-stored', status: 'waiting' }]
+      },
+      1_800_000_000_000,
+      'default'
+    )
+
+    expect($sessionStates.get()['incoming-runtime']).toBe(runtimeOwner)
+    expect($sessionStates.get()['sibling-runtime']).toBe(storedIdSibling)
+  })
+
+  it('does not ABA-reap a same runtime and stored id reclaimed by another profile', () => {
+    rehydrateLiveSessionStatuses(
+      {
+        sessions: [{ id: 'shared-runtime', session_key: 'shared-stored', status: 'working' }]
+      },
+      1_800_000_000_000,
+      'default'
+    )
+
+    const foreign = {
+      ...createClientSessionState('shared-stored'),
+      awaitingResponse: true,
+      busy: true,
+      messages: [
+        { id: 'meta-message', parts: [{ text: 'meta transcript', type: 'text' as const }], role: 'assistant' as const }
+      ],
+      profile: 'meta'
+    }
+
+    const sibling = {
+      ...createClientSessionState('shared-stored'),
+      busy: true,
+      profile: 'default'
+    }
+
+    publishSessionState('shared-runtime', foreign)
+    publishSessionState('sibling-runtime', sibling)
+
+    rehydrateLiveSessionStatuses({ sessions: [] }, 1_800_000_001_000, 'default')
+
+    expect($sessionStates.get()['shared-runtime']).toBe(foreign)
+    expect($sessionStates.get()['sibling-runtime']).toBe(sibling)
+  })
+
+  it('does not ABA-reap a runtime reclaimed by a sibling stored session', () => {
+    rehydrateLiveSessionStatuses(
+      {
+        sessions: [{ id: 'shared-runtime', session_key: 'original-stored', status: 'working' }]
+      },
+      1_800_000_000_000,
+      'default'
+    )
+
+    const replacement = {
+      ...createClientSessionState('replacement-stored'),
+      awaitingResponse: true,
+      busy: true,
+      profile: 'default'
+    }
+
+    const sibling = {
+      ...createClientSessionState('original-stored'),
+      busy: true,
+      profile: 'default'
+    }
+
+    publishSessionState('shared-runtime', replacement)
+    publishSessionState('sibling-runtime', sibling)
+
+    rehydrateLiveSessionStatuses({ sessions: [] }, 1_800_000_001_000, 'default')
+
+    expect($sessionStates.get()['shared-runtime']).toBe(replacement)
+    expect($sessionStates.get()['sibling-runtime']).toBe(sibling)
   })
 })

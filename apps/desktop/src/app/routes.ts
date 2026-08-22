@@ -164,6 +164,26 @@ export function routeSessionId(pathname: string): string | null {
   return id && !id.includes('/') ? decodeURIComponent(id) : null
 }
 
+/** Owning profile carried by a profile-qualified session route. Session ids are
+ * profile-local, so this query value is part of the route's durable identity. */
+export function routeSessionProfile(to: string): string | null {
+  if (!routeSessionId(to)) {
+    return null
+  }
+
+  const queryStart = to.indexOf('?')
+
+  if (queryStart === -1) {
+    return null
+  }
+
+  const hashStart = to.indexOf('#', queryStart)
+  const query = to.slice(queryStart + 1, hashStart === -1 ? undefined : hashStart)
+  const profile = new URLSearchParams(query).get('profile')?.trim()
+
+  return profile || null
+}
+
 /**
  * The primary composer's durable scope key candidate: the route is the source
  * of truth for which chat is on screen, so prefer its (stable) stored session
@@ -181,8 +201,11 @@ export function primaryRouteSelectedSessionId(pathname: string, storeSelectedSes
   return routeSessionId(pathname) ?? storeSelectedSessionId
 }
 
-export function sessionRoute(sessionId: string): string {
-  return `${SESSION_ROUTE_PREFIX}${encodeURIComponent(sessionId)}`
+export function sessionRoute(sessionId: string, ownerProfile?: null | string): string {
+  const route = `${SESSION_ROUTE_PREFIX}${encodeURIComponent(sessionId)}`
+  const profile = ownerProfile?.trim()
+
+  return profile ? `${route}?profile=${encodeURIComponent(profile)}` : route
 }
 
 export function appViewForPath(pathname: string): AppView {

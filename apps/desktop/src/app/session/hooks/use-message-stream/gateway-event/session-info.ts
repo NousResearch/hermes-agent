@@ -320,7 +320,12 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         // reads its history when the user opens it, and hydrating every one
         // of them here would fan a REST call out per idle session.
         if (isActiveEvent) {
-          void hydrateFromStoredSession(3, nextState.storedSessionId, sessionId)
+          void hydrateFromStoredSession(
+            3,
+            nextState.storedSessionId,
+            sessionId,
+            nextState.profile ?? activeGatewayProfile
+          )
         }
       }
     }

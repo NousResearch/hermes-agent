@@ -46,6 +46,29 @@ describe('resolveStoredSession profile ownership', () => {
     expect(mockGetSession).not.toHaveBeenCalled()
   })
 
+  it('uses explicit run provenance to select the right same-id cached session', async () => {
+    $sessions.set([
+      session({ id: 'cron_shared_20260811', profile: 'default', title: 'wrong' }),
+      session({ id: 'cron_shared_20260811', profile: 'meta', title: 'right' })
+    ])
+
+    const resolved = await resolveStoredSession('cron_shared_20260811', 'meta')
+
+    expect(resolved?.title).toBe('right')
+    expect(mockGetSession).not.toHaveBeenCalled()
+  })
+
+  it('probes only the explicit owner when a same-id cached row belongs elsewhere', async () => {
+    $sessions.set([session({ id: 'cron_shared_20260811', profile: 'default', title: 'wrong' })])
+    mockGetSession.mockResolvedValueOnce(session({ id: 'cron_shared_20260811', title: 'right' }))
+
+    const resolved = await resolveStoredSession('cron_shared_20260811', 'meta')
+
+    expect(resolved).toMatchObject({ profile: 'meta', title: 'right' })
+    expect(mockGetSession).toHaveBeenCalledOnce()
+    expect(mockGetSession).toHaveBeenCalledWith('cron_shared_20260811', 'meta')
+  })
+
   it.each([
     ['cron', $cronSessions],
     ['messaging', $messagingSessions]

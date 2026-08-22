@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { NEW_CHAT_ROUTE, primaryRouteSelectedSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
+import {
+  NEW_CHAT_ROUTE,
+  primaryRouteSelectedSessionId,
+  routeSessionId,
+  routeSessionProfile,
+  sessionRoute,
+  SETTINGS_ROUTE
+} from './routes'
 
 const SESS_A = 'sess-a'
 const SESS_B = 'sess-b'
@@ -26,5 +33,20 @@ describe('primaryRouteSelectedSessionId', () => {
 
   it('returns null on a non-chat route with no store selection', () => {
     expect(primaryRouteSelectedSessionId(SETTINGS_ROUTE, null)).toBeNull()
+  })
+})
+
+describe('profile-qualified session routes', () => {
+  it('round-trips the profile owner independently from the stored id', () => {
+    const route = sessionRoute('same/id?', 'research ops')
+
+    expect(route).toBe('/same%2Fid%3F?profile=research%20ops')
+    expect(routeSessionId(route)).toBe('same/id?')
+    expect(routeSessionProfile(route)).toBe('research ops')
+  })
+
+  it('keeps legacy profile-less routes profile-less', () => {
+    expect(sessionRoute(SESS_A)).toBe('/sess-a')
+    expect(routeSessionProfile(sessionRoute(SESS_A))).toBeNull()
   })
 })

@@ -3,6 +3,19 @@ import type { ClientSessionState } from '../types'
 export const DEFAULT_WARM_SESSION_TRANSCRIPT_COUNT = 24
 export const DEFAULT_WARM_SESSION_TRANSCRIPT_BYTES = 32 * 1024 * 1024
 
+export interface SessionStateOwner {
+  profile: string
+  storedSessionId: string
+}
+
+/** Fail closed: unknown profile provenance never aliases the default owner. */
+export function sessionStateMatchesOwner(
+  state: ClientSessionState | undefined,
+  owner: SessionStateOwner
+): state is ClientSessionState {
+  return state?.profile === owner.profile && state.storedSessionId === owner.storedSessionId
+}
+
 interface SessionStateCacheLimits {
   maxBytes?: number
   maxCount?: number

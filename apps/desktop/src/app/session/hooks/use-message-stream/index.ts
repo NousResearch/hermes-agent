@@ -41,7 +41,8 @@ interface MessageStreamOptions {
   hydrateFromStoredSession: (
     attempts?: number,
     storedSessionId?: string | null,
-    runtimeSessionId?: string | null
+    runtimeSessionId?: string | null,
+    storedSessionProfile?: string | null
   ) => Promise<void>
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
@@ -769,7 +770,12 @@ export function useMessageStream({
       }
 
       if (shouldHydrate) {
-        void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId)
+        void hydrateFromStoredSession(
+          3,
+          completedState.storedSessionId,
+          sessionId,
+          completedState.profile ?? activeGatewayProfile
+        )
       }
 
       dispatchNativeNotification({
@@ -779,7 +785,7 @@ export function useMessageStream({
         title: translateNow('notifications.native.turnDoneTitle')
       })
     },
-    [hydrateFromStoredSession, scheduleSessionsRefresh, updateSessionState]
+    [activeGatewayProfile, hydrateFromStoredSession, scheduleSessionsRefresh, updateSessionState]
   )
 
   const failAssistantMessage = useCallback(

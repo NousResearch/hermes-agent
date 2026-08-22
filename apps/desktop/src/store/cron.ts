@@ -4,8 +4,13 @@ import type { CronJob } from '@/types/hermes'
 
 // Cron *jobs* (not run sessions) power the sidebar "Cron jobs" section. Listing
 // the job — schedule, state, live next-run countdown — makes the job the
-// first-class entity; its runs (sessions) resolve under it in the cron detail.
+// first-class entity; its durable outputs resolve under it in the cron detail.
 export const $cronJobs = atom<CronJob[]>([])
+
+/** Stable owner-qualified identity for aggregated cross-profile job lists. */
+export function cronJobIdentity(job: Pick<CronJob, 'id' | 'profile'>): string {
+  return JSON.stringify([job.profile?.trim() || 'default', job.id])
+}
 
 export interface CronJobsRequest {
   generation: number
@@ -82,11 +87,34 @@ export const updateCronJobs = (fn: (jobs: CronJob[]) => CronJob[]) => {
   $cronJobs.set(fn($cronJobs.get()))
 }
 
+/** Sidebar mutation projections kept pure so duplicate-id behavior stays
+ * deterministic under the aggregated all-profile list. */
+export function replaceCronJobForOwner(jobs: CronJob[], target: CronJob, replacement: CronJob): CronJob[] {
+  const targetIdentity = cronJobIdentity(target)
+
+  return jobs.map(job => (cronJobIdentity(job) === targetIdentity ? replacement : job))
+}
+
+export function removeCronJobForOwner(jobs: CronJob[], target: CronJob): CronJob[] {
+  const targetIdentity = cronJobIdentity(target)
+
+  return jobs.filter(job => cronJobIdentity(job) !== targetIdentity)
+}
+
 // One-shot focus target: clicking "Manage" on a job sets this, then opens the
 // cron overlay, which reads it once to select + scroll to that job. Cleared
 // after consumption so re-opening cron normally doesn't re-focus a stale job.
-export const $cronFocusJobId = atom<null | string>(null)
-export const setCronFocusJobId = (id: null | string) => $cronFocusJobId.set(id)
+export interface CronFocusTarget {
+  jobId: string
+  outputId?: string
+  profile?: string
+}
+
+export const $cronFocus = atom<CronFocusTarget | null>(null)
+export const setCronFocusJobId = (id: null | string, profile?: string) =>
+  $cronFocus.set(id ? { jobId: id, profile } : null)
+export const setCronFocusOutput = (jobId: string, outputId: string, profile?: string) =>
+  $cronFocus.set({ jobId, outputId, profile })
 
 // Shell-owned one-shot intent for stores without router context. Do not set a
 // focus id here: the cron overlay's first fetch may not have loaded that row.

@@ -15,6 +15,7 @@ import {
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { requestGatewayForProfile } from '@/store/gateway'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
@@ -47,6 +48,7 @@ import {
   setTurnStartedAt
 } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
+import { clearTranscriptTails, saveTranscriptTail } from '@/store/transcript-tail-cache'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
 import { deferred } from '../../../test/deferred'
@@ -65,6 +67,11 @@ vi.mock('@/hermes', async importOriginal => ({
   listAllProfileSessions: vi.fn(),
   setApiRequestProfile: vi.fn(),
   setSessionArchived: vi.fn()
+}))
+
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  requestGatewayForProfile: vi.fn()
 }))
 
 vi.mock('@/store/profile', async importOriginal => ({
@@ -606,13 +613,17 @@ function ResumeHarness({
   requestGateway,
   runtimeIdByStoredSessionIdRef,
   selectedStoredSessionId = null,
+  selectedStoredSessionProfileRef,
   sessionStateByRuntimeIdRef
 }: {
   onStateUpdate?: (sessionId: string, state: ClientSessionState) => void
-  onReady: (resume: (storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) => void
+  onReady: (
+    resume: (storedSessionId: string, replaceRoute?: boolean, ownerProfile?: string) => Promise<unknown>
+  ) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
   selectedStoredSessionId?: string | null
+  selectedStoredSessionProfileRef?: MutableRefObject<string | null>
   sessionStateByRuntimeIdRef?: MutableRefObject<Map<string, ClientSessionState>>
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
@@ -633,6 +644,7 @@ function ResumeHarness({
     runtimeIdByStoredSessionIdRef: runtimeMapRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef: ref<string | null>(selectedStoredSessionId),
+    selectedStoredSessionProfileRef,
     sessionStateByRuntimeIdRef: stateMapRef,
     syncSessionStateToView: vi.fn(),
     updateSessionState: (sessionId, updater, storedSessionId) => {
@@ -1118,6 +1130,7 @@ describe('resumeSession failure recovery', () => {
             needsInput: false,
             pendingBranchGroup: null,
             personality: '',
+            profile: null,
             provider: '',
             reasoningEffort: '',
             sawAssistantPayload: false,
@@ -1691,6 +1704,8 @@ describe('resumeSession warm-cache mapping integrity', () => {
     setResumeFailedSessionId(null)
     setMessages([])
     setSessions([])
+    clearTranscriptTails()
+    vi.mocked(requestGatewayForProfile).mockReset()
     vi.restoreAllMocks()
   })
 
@@ -1742,6 +1757,226 @@ describe('resumeSession warm-cache mapping integrity', () => {
     // The corrupt mapping was purged so it can't mis-resolve again.
     expect(runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
     expect(sessionStateByRuntimeIdRef.current.has('rt-recycled')).toBe(false)
+  })
+
+  it('clears a foreign same-id selection and paints only the owner-qualified durable tail', async () => {
+    const sharedId = 'cron-shared-session'
+    const selectedProfileRef: MutableRefObject<string | null> = { current: 'default' }
+
+    const foreignMessage = {
+      id: 'default-live',
+      parts: [{ text: 'default transcript', type: 'text' }],
+      role: 'assistant'
+    } as never
+
+    const targetCachedMessage = {
+      id: 'meta-cached',
+      parts: [{ text: 'meta transcript', type: 'text' }],
+      role: 'assistant'
+    } as never
+
+    const prefetch = deferred<{ messages: never[]; session_id: string }>()
+    const resumed = deferred<SessionResumeResponse>()
+
+    setMessages([foreignMessage])
+    setSessions([
+      storedSession({ id: sharedId, message_count: 1, profile: 'default', title: 'Default duplicate' }),
+      storedSession({ id: sharedId, message_count: 1, profile: 'meta', title: 'Cron owner' })
+    ])
+    saveTranscriptTail(sharedId, [foreignMessage], 'default')
+    saveTranscriptTail(sharedId, [targetCachedMessage], 'meta')
+    vi.mocked(getLatestSessionMessages).mockReturnValue(prefetch.promise)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return resumed.promise as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(requestGatewayForProfile).mockImplementation(async (_profile, method) => requestGateway(method))
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean, ownerProfile?: string) => Promise<unknown>) | null =
+      null
+
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        requestGateway={requestGateway}
+        selectedStoredSessionId={sharedId}
+        selectedStoredSessionProfileRef={selectedProfileRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const pendingResume = resume!(sharedId, true, 'meta')
+
+    await waitFor(() => expect($messages.get().map(message => message.id)).toEqual(['meta-cached']))
+    expect(selectedProfileRef.current).toBe('meta')
+    expect($messages.get()).not.toContain(foreignMessage)
+
+    prefetch.resolve({ messages: [], session_id: sharedId })
+    resumed.resolve({
+      info: {},
+      messages: [],
+      resumed: sharedId,
+      session_id: 'rt-meta',
+      session_key: sharedId
+    } as never)
+    await pendingResume
+  })
+
+  it('does not activate a same-id runtime cache owned by another profile', async () => {
+    const sharedId = 'cron-shared-session'
+    const foreignRuntimeId = 'rt-default'
+    const targetRuntimeId = 'rt-meta'
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([[sharedId, foreignRuntimeId]])
+    }
+
+    const foreignState = Object.assign(clientState(sharedId), { profile: 'default' })
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([[foreignRuntimeId, foreignState]])
+    }
+
+    $activeGatewayProfile.set('default')
+    vi.mocked(ensureGatewayProfile).mockImplementationOnce(async profile => {
+      $activeGatewayProfile.set(profile || 'default')
+    })
+    setSessions([
+      storedSession({ id: sharedId, profile: 'default', title: 'Default duplicate' }),
+      storedSession({ id: sharedId, profile: 'meta', title: 'Cron owner' })
+    ])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: sharedId } as never)
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.activate') {
+        return {
+          session_id: params?.session_id,
+          session_key: sharedId,
+          resumed: sharedId,
+          messages: [],
+          info: {}
+        } as never
+      }
+
+      if (method === 'session.resume') {
+        return {
+          session_id: targetRuntimeId,
+          session_key: sharedId,
+          resumed: sharedId,
+          messages: [],
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(requestGatewayForProfile).mockImplementation(async (profile, method, params) =>
+      requestGateway(method, { ...(params ?? {}), profile })
+    )
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean, ownerProfile?: string) => Promise<unknown>) | null =
+      null
+
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!(sharedId, true, 'meta')
+
+    expect(ensureGatewayProfile).toHaveBeenCalledWith('meta')
+    expect(requestGateway).not.toHaveBeenCalledWith(
+      'session.activate',
+      expect.objectContaining({ session_id: foreignRuntimeId })
+    )
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.resume',
+      expect.objectContaining({ profile: 'meta', session_id: sharedId })
+    )
+    expect(sessionStateByRuntimeIdRef.current.has(foreignRuntimeId)).toBe(true)
+    expect(sessionStateByRuntimeIdRef.current.get(targetRuntimeId)?.profile).toBe('meta')
+
+    requestGateway.mockClear()
+    await resume!(sharedId, true, 'meta')
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.activate',
+      expect.objectContaining({ session_id: targetRuntimeId })
+    )
+    expect(requestGateway.mock.calls.map(([method]) => method)).not.toContain('session.resume')
+  })
+
+  it('activates only the profile-qualified warm runtime when same-id caches coexist', async () => {
+    const sharedId = 'cron-shared-session'
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([[sharedId, 'rt-default']])
+    }
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([
+        ['rt-default', Object.assign(clientState(sharedId), { profile: 'default' })],
+        ['rt-meta', Object.assign(clientState(sharedId), { profile: 'meta' })]
+      ])
+    }
+
+    setSessions([
+      storedSession({ id: sharedId, profile: 'default', title: 'Default duplicate' }),
+      storedSession({ id: sharedId, profile: 'meta', title: 'Cron owner' })
+    ])
+    vi.mocked(ensureGatewayProfile).mockImplementationOnce(async profile => {
+      $activeGatewayProfile.set(profile || 'default')
+    })
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: sharedId } as never)
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.activate') {
+        return {
+          session_id: params?.session_id,
+          session_key: sharedId,
+          resumed: sharedId,
+          messages: [],
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(requestGatewayForProfile).mockImplementation(async (profile, method, params) =>
+      requestGateway(method, { ...(params ?? {}), profile })
+    )
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean, ownerProfile?: string) => Promise<unknown>) | null =
+      null
+
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!(sharedId, true, 'meta')
+
+    expect(requestGateway).toHaveBeenCalledWith('session.activate', expect.objectContaining({ session_id: 'rt-meta' }))
+    expect(requestGateway).not.toHaveBeenCalledWith(
+      'session.activate',
+      expect.objectContaining({ session_id: 'rt-default' })
+    )
+    expect(requestGateway.mock.calls.map(([method]) => method)).not.toContain('session.resume')
   })
 
   it('paints the bounded latest transcript after the deferred resume acknowledgement', async () => {

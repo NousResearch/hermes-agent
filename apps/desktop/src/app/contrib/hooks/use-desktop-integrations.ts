@@ -29,7 +29,14 @@ import { isHudWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
-import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from '../../routes'
+import {
+  appViewForPath,
+  isOverlayView,
+  NEW_CHAT_ROUTE,
+  routeSessionId,
+  routeSessionProfile,
+  sessionRoute
+} from '../../routes'
 
 type RememberedSession = Pick<SessionInfo, '_lineage_root_id' | 'id' | 'profile'>
 
@@ -43,6 +50,7 @@ interface DesktopIntegrationsParams {
   refreshSessions: () => Promise<unknown> | unknown
   resumeExhaustedSessionId: null | string
   routedSessionId: null | string
+  routedSessionProfile?: null | string
   runtimeIdByStoredSessionId: { readonly current: Map<string, string> }
   sessions: readonly RememberedSession[]
 }
@@ -62,6 +70,7 @@ export function useDesktopIntegrations({
   refreshSessions,
   resumeExhaustedSessionId,
   routedSessionId,
+  routedSessionProfile = null,
   runtimeIdByStoredSessionId,
   sessions
 }: DesktopIntegrationsParams): void {
@@ -107,6 +116,7 @@ export function useDesktopIntegrations({
       if (locationPathname === NEW_CHAT_ROUTE) {
         const route = getRememberedRoute(activeProfile)
         const routeSession = route ? routeSessionId(route) : null
+        const routeOwner = route ? (routeSessionProfile(route) ?? activeProfile) : activeProfile
         const last = getRememberedSessionId(activeProfile)
 
         const restorableNonSessionRoute =
@@ -126,7 +136,7 @@ export function useDesktopIntegrations({
           route &&
           route !== NEW_CHAT_ROUTE &&
           !isOverlayView(appViewForPath(route)) &&
-          (!routeSession || sessionBelongsToProfile(sessions, routeSession, activeProfile))
+          (!routeSession || sessionBelongsToProfile(sessions, routeSession, routeOwner))
         ) {
           navigate(route, { replace: true })
 
@@ -157,27 +167,31 @@ export function useDesktopIntegrations({
     // non-overlay route (a page like /skills, or a session route) per profile.
     // Session-shaped routes require an explicit matching owner; unresolved and
     // wrong-profile rows must not replace known-safe navigation.
-    if (routedSessionId && sessionBelongsToProfile(sessions, routedSessionId, activeProfile)) {
-      setRememberedSessionId(routedSessionId, activeProfile)
-      setRememberedRoute(locationPathname, activeProfile)
+    const routeOwner = routedSessionProfile ?? activeProfile
+
+    if (routedSessionId && sessionBelongsToProfile(sessions, routedSessionId, routeOwner)) {
+      setRememberedSessionId(routedSessionId, routeOwner)
+      setRememberedRoute(locationPathname, routeOwner)
     } else if (!routedSessionId && !isOverlayView(appViewForPath(locationPathname))) {
       setRememberedRoute(locationPathname, activeProfile)
     }
-  }, [activeProfile, locationPathname, navigate, profileReady, routedSessionId, sessions])
+  }, [activeProfile, locationPathname, navigate, profileReady, routedSessionId, routedSessionProfile, sessions])
 
   useEffect(() => {
     if (!profileReady || !resumeExhaustedSessionId) {
       return
     }
 
-    if (getRememberedSessionId(activeProfile) === resumeExhaustedSessionId) {
-      setRememberedSessionId(null, activeProfile)
+    const routeOwner = routedSessionProfile ?? activeProfile
+
+    if (getRememberedSessionId(routeOwner) === resumeExhaustedSessionId) {
+      setRememberedSessionId(null, routeOwner)
     }
 
-    if (routeSessionId(getRememberedRoute(activeProfile) ?? '') === resumeExhaustedSessionId) {
-      setRememberedRoute(null, activeProfile)
+    if (routeSessionId(getRememberedRoute(routeOwner) ?? '') === resumeExhaustedSessionId) {
+      setRememberedRoute(null, routeOwner)
     }
-  }, [activeProfile, profileReady, resumeExhaustedSessionId])
+  }, [activeProfile, profileReady, resumeExhaustedSessionId, routedSessionProfile])
 
   // Native-notification click -> jump to the session WHERE IT ALREADY IS (open
   // tile / main), else beside what's loaded rather than over it — the click

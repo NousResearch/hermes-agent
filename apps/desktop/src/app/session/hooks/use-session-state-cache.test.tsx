@@ -79,6 +79,67 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
     expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
   })
+
+  it('fails closed when an ABA runtime and stored id are now owned by another profile', () => {
+    let cache!: Cache
+    render(
+      <Harness
+        activeSessionId="runtime-shared"
+        onReady={value => (cache = value)}
+        selectedStoredSessionId="stored-shared"
+      />
+    )
+
+    act(() => {
+      cache.updateSessionState(
+        'runtime-shared',
+        state => ({
+          ...state,
+          profile: 'meta',
+          messages: [assistantText('meta-existing', 'meta existing answer')]
+        }),
+        'stored-shared'
+      )
+    })
+
+    const reclaimed = cache.sessionStateByRuntimeIdRef.current.get('runtime-shared')
+    let updaterCalled = false
+
+    act(() => {
+      expect(
+        cache.updateOwnedSessionState(
+          'runtime-shared',
+          { profile: 'default', storedSessionId: 'stored-shared' },
+          state => {
+            updaterCalled = true
+
+            return { ...state, messages: [assistantText('stale-default', 'stale default answer')] }
+          }
+        )
+      ).toBe(false)
+    })
+
+    expect(updaterCalled).toBe(false)
+    expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-shared')).toBe(reclaimed)
+    expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-shared')?.messages).toEqual([
+      assistantText('meta-existing', 'meta existing answer')
+    ])
+  })
+
+  it('does not create or rotate cache ownership for a rejected publication', () => {
+    let cache!: Cache
+    render(<Harness activeSessionId={null} onReady={value => (cache = value)} selectedStoredSessionId={null} />)
+
+    expect(
+      cache.updateOwnedSessionState(
+        'runtime-missing',
+        { profile: 'default', storedSessionId: 'stored-default' },
+        state => ({ ...state })
+      )
+    ).toBe(false)
+    expect(cache.sessionStateByRuntimeIdRef.current.has('runtime-missing')).toBe(false)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-default')).toBe(false)
+  })
 })
 
 function Harness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessProps) {

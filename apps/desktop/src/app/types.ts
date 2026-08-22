@@ -173,6 +173,9 @@ export interface SidebarNavItem {
 
 export interface ClientSessionState {
   storedSessionId: string | null
+  /** Profile namespace that owns this runtime. Stored ids are only unique
+   *  inside a profile, so a warm runtime is not safe to activate without it. */
+  profile: string | null
   messages: ChatMessage[]
   branch: string
   cwd: string

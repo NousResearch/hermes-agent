@@ -1031,8 +1031,10 @@ class TestBuildAnthropicKwargs:
 
     def test_non_claude_anthropic_models_use_manual_path(self):
         """Non-Claude Anthropic-Messages models (minimax, qwen3, glm) must not
-        be misclassified as adaptive by the default-to-modern rule. Kimi is
-        the deliberate exception — see test_kimi_family_uses_adaptive_path."""
+        be misclassified as adaptive by the default-to-modern rule. Kimi and
+        the GLM-5 family are the deliberate exceptions — see
+        test_kimi_family_uses_adaptive_path and
+        test_glm_5_family_uses_adaptive_path."""
         from agent.anthropic_adapter import (
             _supports_adaptive_thinking,
             _supports_xhigh_effort,
@@ -1042,6 +1044,59 @@ class TestBuildAnthropicKwargs:
             assert _supports_adaptive_thinking(m) is False, m
             assert _supports_xhigh_effort(m) is False, m
             assert _forbids_sampling_params(m) is False, m
+
+    def test_glm_5_family_uses_adaptive_path(self):
+        """Z.AI's GLM-5 family on the Anthropic-compatible endpoint
+        (api.z.ai/api/anthropic) honors the adaptive contract
+        (``thinking.type="adaptive"`` + ``output_config.effort``) with a
+        clean dose-response across low/medium/high, while the manual
+        ``budget_tokens`` field is accepted but ignored — so GLM-5 must take
+        the adaptive path like Kimi, or reasoning-effort control is silently
+        lost. Verified live against glm-5.3 (2026-08-20): effort low ≈1K
+        thinking chars, medium ≈3K, high ≈8.4K; budget_tokens=1024 still
+        produced 8K+ thinking chars."""
+        from agent.anthropic_adapter import (
+            _model_name_is_glm_5_family,
+            _supports_adaptive_thinking,
+            _supports_xhigh_effort,
+        )
+        for m in ("glm-5.3", "glm-5.2", "glm-5", "glm-5-turbo", "z-ai/glm-5.3", "GLM-5.3"):
+            assert _model_name_is_glm_5_family(m) is True, m
+            assert _supports_adaptive_thinking(m) is True, m
+        # glm-5.2 documents high/max only, but the endpoint accepts xhigh
+        # (mapped per ADAPTIVE_EFFORT_MAP at build time) — keep it allowed.
+        assert _supports_xhigh_effort("glm-5.3") is True
+        # Older GLM generations stay on the manual budget path.
+        for m in ("glm-4.6", "glm-4-9b", "glm50", "glm-3-turbo"):
+            assert _model_name_is_glm_5_family(m) is False, m
+            assert _supports_adaptive_thinking(m) is False, m
+
+    def test_glm_5_builds_adaptive_effort_kwargs(self):
+        """build_anthropic_kwargs must emit the adaptive contract for GLM-5
+        (never the manual budget_tokens path, which Z.AI ignores)."""
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        kw = build_anthropic_kwargs(
+            model="glm-5.3",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=1024,
+            reasoning_config={"enabled": True, "effort": "high"},
+            base_url="https://api.z.ai/api/anthropic",
+        )
+        assert kw["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert kw["output_config"] == {"effort": "high"}
+        assert "budget_tokens" not in kw["thinking"]
+        # A weaker ask maps to a weaker wire level — no silent cost floor.
+        kw_low = build_anthropic_kwargs(
+            model="glm-5.3",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=1024,
+            reasoning_config={"enabled": True, "effort": "low"},
+            base_url="https://api.z.ai/api/anthropic",
+        )
+        assert kw_low["output_config"] == {"effort": "low"}
 
 
     def test_bare_k3_coding_plan_slug_is_kimi_family(self):

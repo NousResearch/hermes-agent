@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import platform
+import re
 import secrets
 import stat
 import subprocess
@@ -283,8 +284,15 @@ def _supports_adaptive_thinking(model: str) -> bool:
     Kimi / Moonshot models are the exception: their Anthropic-compatible
     endpoints implement the adaptive contract (``thinking.type="adaptive"``
     + ``output_config.effort``, including ``xhigh`` and ``display``).
+
+    Z.AI's GLM-5 family is the same shape of exception: api.z.ai's
+    Anthropic-compatible endpoint accepts the adaptive contract, while the
+    manual ``budget_tokens`` field is accepted but ignored — see
+    :func:`_model_name_is_glm_5_family`.
     """
     if _model_name_is_kimi_family(model):
+        return True
+    if _model_name_is_glm_5_family(model):
         return True
     if not _is_claude_model(model):
         return False
@@ -550,6 +558,30 @@ def _model_name_is_kimi_family(model: str | None) -> bool:
     if m in _KIMI_FAMILY_EXACT_SLUGS:
         return True
     return m.startswith(_KIMI_FAMILY_MODEL_PREFIXES)
+
+
+def _model_name_is_glm_5_family(model: str | None) -> bool:
+    """True for GLM-5.x models (``glm-5.3``, ``glm-5.2``, ``glm-5-turbo``).
+
+    Z.AI's Anthropic-compatible endpoint (api.z.ai/api/anthropic) implements
+    the adaptive-thinking contract for the GLM-5 family —
+    ``thinking.type="adaptive"`` + ``output_config.effort`` — the same shape
+    as Kimi/Moonshot. Verified live: a clean dose-response across
+    low/medium/high effort, while the manual ``budget_tokens`` field is
+    accepted but ignored (a 1024-token budget produced 8K+ thinking chars),
+    so the manual path silently loses effort control for GLM-5.
+    """
+    if not isinstance(model, str):
+        return False
+    m = model.strip().lower()
+    if not m:
+        return False
+    # Strip vendor prefix (e.g. ``z-ai/glm-5.3`` → ``glm-5.3``)
+    if "/" in m:
+        m = m.rsplit("/", 1)[-1]
+    # glm-5, glm-5.3, glm-5-2, glm-5p2 (relay spelling), glm-5-turbo —
+    # but NOT glm-4.6 / glm-4-9b / glm50.
+    return bool(re.match(r"^glm-5(?:[.\-p]|$)", m))
 
 
 def _is_kimi_family_endpoint(base_url: str | None, model: str | None = None) -> bool:

@@ -9847,19 +9847,32 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # was for the previous session only, not for every session spawned
         # afterwards.
         self._explicit_model_override = False
-        self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", "")
-        )
         # /new is a full conversation boundary: session-scoped runtime
         # overrides (/model --session, /fast, one-turn restores) do not carry
         # forward.  Re-derive model/provider and service tier from config.yaml
         # so a session-only switch never leaks into the next session (#48055,
         # #23131).
+        #
+        # Read fresh from disk via load_cli_config() instead of the module-level
+        # CLI_CONFIG snapshot — the latter is loaded once at import time and
+        # never refreshed, so edits to config.yaml made after the CLI started
+        # (e.g. `hermes config set model.default ...`) would be invisible to
+        # /new and silently reset the model to the stale import-time value
+        # (#71188).
+        _fresh_config = load_cli_config() or {}
+        _agent_cfg = _fresh_config.get("agent")
+        if not isinstance(_agent_cfg, dict):
+            _agent_cfg = {}
+        self.reasoning_config = _parse_reasoning_config(
+            _agent_cfg.get("reasoning_effort", "")
+        )
         self._pending_one_turn_model_restore = None
         self.service_tier = _parse_service_tier_config(
-            CLI_CONFIG["agent"].get("service_tier", "")
+            _agent_cfg.get("service_tier", "")
         )
-        _model_config = CLI_CONFIG.get("model", {})
+        _model_config = _fresh_config.get("model", {})
+        if not isinstance(_model_config, dict):
+            _model_config = {}
         _raw_default2 = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
         _config_model, _ = _split_model_config_default(_raw_default2)
         if _config_model and _config_model != getattr(self, "model", None):

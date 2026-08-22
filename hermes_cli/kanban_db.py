@@ -710,6 +710,35 @@ def board_exists(board: Optional[str] = None) -> bool:
     return (d / "board.json").exists() or (d / "kanban.db").exists()
 
 
+def _assert_board_exists(board: Optional[str]) -> None:
+    """Raise :class:`KanbanBoardMissing` if ``board`` names a nonexistent board.
+
+    The fail-closed half of the zombie-board fix (see ``KanbanBoardMissing``).
+    Called by :func:`connect` before path resolution, so the check and the
+    ``mkdir`` that would create the board are not separated by a window —
+    the dashboard's own ``_resolve_board`` 404 check was correct but racy for
+    exactly that reason.
+
+    Three cases pass through deliberately:
+
+    * ``HERMES_KANBAN_DB`` set — the caller pinned a path; no slug is resolved.
+    * ``board is None`` — :func:`get_current_board` already filters to boards
+      that exist and falls back to ``default``, so its result is safe by
+      construction.
+    * ``default`` — :func:`board_exists` treats it as always present; its DB
+      lives at the legacy top-level path and is created on first use.
+
+    A malformed slug still raises ``ValueError`` from the normalizer, as before.
+    """
+    if os.environ.get("HERMES_KANBAN_DB", "").strip():
+        return
+    slug = _normalize_board_slug(board)
+    if slug is None or slug == DEFAULT_BOARD:
+        return
+    if not board_exists(slug):
+        raise KanbanBoardMissing(slug)
+
+
 def kanban_db_path(board: Optional[str] = None) -> Path:
     """Return the path to the ``kanban.db`` for ``board``.
 
@@ -1874,6 +1903,35 @@ def _validate_sqlite_header(path: Path) -> None:
     )
 
 
+class KanbanBoardMissing(RuntimeError):
+    """Raised when a caller names a board that does not exist on disk.
+
+    Fail-closed guard against *silent board creation*. ``connect()`` used to
+    ``mkdir`` and schema-init whatever slug it was handed, which meant merely
+    NAMING a board brought it into existence. That is the zombie-board bug: a
+    board archived with ``hermes kanban boards rm`` reappears the instant any
+    component still holding the old slug touches it — a stale dashboard tab
+    polling an API route, a subscription record outliving its board, a test
+    passing a deliberately bogus slug. ``remove_board`` acknowledges the race
+    in a comment but could not prevent it from the delete side, because the
+    recreation happens in an unrelated process.
+
+    Naming a board is now a read, not a write. Creation requires saying so:
+    ``create_board()`` (which writes ``board.json`` first) or an explicit
+    ``connect(..., create=True)``.
+    """
+
+    def __init__(self, slug: str):
+        self.slug = slug
+        super().__init__(
+            f"kanban board {slug!r} does not exist. Refusing to create it "
+            f"implicitly — pass create=True, or run "
+            f"`hermes kanban boards create {slug}` if you meant to make it. "
+            f"If this slug came from a stale client (an old dashboard tab, a "
+            f"saved subscription), that client is the thing to fix."
+        )
+
+
 class KanbanDbCorruptError(RuntimeError):
     """Raised when an existing kanban DB file fails integrity checks.
 
@@ -2328,6 +2386,7 @@ def connect(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
+    create: bool = False,
 ) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB.
 
@@ -2346,10 +2405,22 @@ def connect(
     * Neither → :func:`kanban_db_path` resolves via
       ``HERMES_KANBAN_DB`` env → ``HERMES_KANBAN_BOARD`` env →
       ``<root>/kanban/current`` → ``default``.
+
+    ``create`` (default ``False``) governs whether a *named* board may be
+    brought into existence by this call. With ``create=False`` an unknown
+    slug raises :class:`KanbanBoardMissing` instead of being silently
+    created — see that class for why. Only deliberate creation paths
+    (:func:`create_board` via :func:`init_db`) pass ``create=True``.
+
+    The guard applies solely to board-slug resolution. An explicit
+    ``db_path`` is already an explicit choice and is honoured as before, as
+    is the ``HERMES_KANBAN_DB`` override.
     """
     if db_path is not None:
         path = db_path
     else:
+        if not create:
+            _assert_board_exists(board)
         path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -2468,6 +2539,7 @@ def connect_closing(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
+    create: bool = False,
 ):
     """Open a kanban DB connection and guarantee it is closed on exit.
 
@@ -2488,7 +2560,7 @@ def connect_closing(
     intentionally manage the connection lifetime (tests, long-lived
     callers) continue to work.
     """
-    conn = connect(db_path=db_path, board=board)
+    conn = connect(db_path=db_path, board=board, create=create)
     try:
         yield conn
     finally:
@@ -2523,7 +2595,10 @@ def init_db(
     # schema + migration pass unconditionally.
     with _INIT_LOCK:
         _INITIALIZED_PATHS.discard(resolved)
-    with contextlib.closing(connect(path)):
+    # create=True is belt-and-braces: passing an explicit path already skips
+    # the board-existence guard, but init_db IS the deliberate creation entry
+    # point, so state that rather than relying on the path branch.
+    with contextlib.closing(connect(path, create=True)):
         pass
     return path
 

@@ -579,6 +579,40 @@ def test_load_pool_seeds_env_api_key(tmp_path, monkeypatch):
 
 
 
+def test_load_pool_seeds_kimi_coding_cn_sk_kimi_key_routes_to_kimi_code(tmp_path, monkeypatch):
+    """sk-kimi- Kimi Code keys must seed kimi-coding-cn pool entries with the
+    api.kimi.com/coding endpoint, not the legacy moonshot.cn default."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("KIMI_CN_API_KEY", "sk-kimi-seeded-token-1234567890")
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("kimi-coding-cn")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.source == "env:KIMI_CN_API_KEY"
+    assert entry.base_url == "https://api.kimi.com/coding"
+
+
+def test_load_pool_seeds_kimi_coding_cn_legacy_key_keeps_moonshot_cn(tmp_path, monkeypatch):
+    """Non-Kimi-Code keys on kimi-coding-cn keep the moonshot.cn default endpoint."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("KIMI_CN_API_KEY", "sk-legacy-moonshot-token-1234567890")
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("kimi-coding-cn")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.source == "env:KIMI_CN_API_KEY"
+    assert entry.base_url == "https://api.moonshot.cn/v1"
+
+
+
 def test_load_pool_does_not_persist_env_seeded_secret_value(tmp_path, monkeypatch):
     """Runtime env keys may be used in memory but must not land in auth.json."""
     sentinel = "S3NTINEL_DO_NOT_PERSIST_OPENROUTER"

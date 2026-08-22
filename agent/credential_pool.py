@@ -3003,7 +3003,7 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
             continue
         active_sources.add(source)
         base_url = env_url or pconfig.inference_base_url
-        if provider == "kimi-coding":
+        if provider in {"kimi-coding", "kimi-coding-cn"}:
             base_url = _resolve_kimi_base_url(token, pconfig.inference_base_url, env_url)
         elif provider == "zai":
             base_url = _resolve_zai_base_url(token, pconfig.inference_base_url, env_url)

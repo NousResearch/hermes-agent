@@ -30885,6 +30885,49 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception as e:
         logger.debug("MCP tool discovery failed: %s", e)
 
+    # Multiplex gateways serve secondary profiles' turns under
+    # _profile_runtime_scope, but the discovery above runs unscoped, so it
+    # only ever connects the default profile's mcp_servers — a secondary
+    # profile's MCP tools never exist in gateway turns even though its
+    # config.yaml declares them and the CLI (HERMES_HOME=<profile>) connects
+    # them fine. Repeat discovery under each served profile's runtime scope
+    # so their servers connect at startup. Per-turn isolation is unaffected:
+    # _get_platform_tools() resolves enabled MCP server names from the
+    # active profile's config, so each profile still only sees its own
+    # servers even though the server registry is process-global.
+    # NOTE: gate on runner.config, not the ``config`` argument — under
+    # systemd this function runs with config=None and GatewayRunner loads
+    # the config itself.
+    try:
+        _pp_cfg = getattr(runner, "config", None) or config
+        if getattr(_pp_cfg, "multiplex_profiles", False):
+            from pathlib import Path as _ProfilePath
+            from tools.mcp_tool import discover_mcp_tools as _discover_mcp
+
+            def _discover_profile_mcp(profile_home):
+                with _profile_runtime_scope(_ProfilePath(profile_home)):
+                    _discover_mcp()
+
+            _pp_loop = asyncio.get_running_loop()
+            for _pname, _phome in _multiplex_profile_homes(_pp_cfg):
+                if _pname == "default":
+                    continue  # already discovered by the unscoped call above
+                try:
+                    await _pp_loop.run_in_executor(
+                        None, _discover_profile_mcp, _phome
+                    )
+                    logger.info(
+                        "Per-profile MCP discovery completed for '%s'", _pname
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Per-profile MCP discovery failed for '%s': %s",
+                        _pname,
+                        e,
+                    )
+    except Exception as e:
+        logger.warning("Per-profile MCP discovery skipped: %s", e)
+
     # Start the gateway
     try:
         success = await runner.start()

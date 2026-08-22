@@ -15,8 +15,50 @@ import {
   renderMediaTags,
   sealOpenToolParts,
   toChatMessages,
-  upsertToolPart
+  upsertToolPart,
+  withUniqueToolCallIdsWithinMessage
 } from './chat-messages'
+
+const toolCallPart = (toolCallId: string): ChatMessagePart =>
+  ({
+    type: 'tool-call' as const,
+    toolCallId,
+    toolName: 'read_file',
+    args: {} as never,
+    argsText: '{}'
+  }) as ChatMessagePart
+
+const assistantWith = (parts: ChatMessagePart[]): ChatMessage =>
+  ({ id: 'm1', role: 'assistant', parts, timestamp: 0 }) as unknown as ChatMessage
+
+describe('withUniqueToolCallIdsWithinMessage', () => {
+  it('renames a duplicate toolCallId within one message (#87857)', () => {
+    const message = assistantWith([toolCallPart('call_x'), toolCallPart('call_x')])
+
+    const result = withUniqueToolCallIdsWithinMessage(message)
+
+    const ids = result.parts
+      .filter((part): part is Extract<ChatMessagePart, { type: 'tool-call' }> => part.type === 'tool-call')
+      .map(part => part.toolCallId)
+
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(ids[0]).toBe('call_x')
+    expect(ids[1]).not.toBe('call_x')
+  })
+
+  it('returns the same reference when there is no duplicate', () => {
+    const message = assistantWith([toolCallPart('call_a'), toolCallPart('call_b')])
+
+    expect(withUniqueToolCallIdsWithinMessage(message)).toBe(message)
+  })
+
+  it('does not touch parts without a toolCallId', () => {
+    const textPart = { type: 'text' as const, text: 'hi' } as ChatMessagePart
+    const message = assistantWith([textPart, toolCallPart('call_a')])
+
+    expect(withUniqueToolCallIdsWithinMessage(message)).toBe(message)
+  })
+})
 
 describe('toChatMessages', () => {
   it('rebuilds the full command from a gateway tool row carrying args', () => {

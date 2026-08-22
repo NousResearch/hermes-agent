@@ -14,5 +14,5 @@ export {
 } from './parts'
 export type { UnspokenTurnSpeech } from './parts'
 export { branchGroupForUser, preserveLocalAssistantErrors } from './reconciliation'
-export { sealOpenToolParts, upsertToolPart } from './tool-parts'
+export { sealOpenToolParts, upsertToolPart, withUniqueToolCallIdsWithinMessage } from './tool-parts'
 export type { ChatMessage, ChatMessagePart, GatewayEventPayload, TimelinePartMetadata } from './types'

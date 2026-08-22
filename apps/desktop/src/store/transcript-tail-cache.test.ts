@@ -91,4 +91,37 @@ describe('transcript tail cache', () => {
     expect(loadTranscriptTail('sess-5')).not.toBeNull()
     expect(loadTranscriptTail('sess-54')).not.toBeNull()
   })
+
+  it('repairs a poisoned persisted tail carrying a duplicate toolCallId (#87857)', () => {
+    // A tail written by an older build can hold one message with two tool-call
+    // parts sharing an id. This path paints DIRECTLY into the view and the same
+    // bytes are re-read every launch — without repair-on-read, an affected
+    // install crash-loops forever even after upgrading.
+    const tool = (toolCallId: string) => ({
+      type: 'tool-call',
+      toolCallId,
+      toolName: 'terminal',
+      args: {},
+      argsText: ''
+    })
+
+    const poisoned = {
+      messages: [{ id: 'assistant-p', role: 'assistant', parts: [tool('call-b'), tool('call-b')] }],
+      savedAt: Date.now()
+    }
+
+    window.localStorage.setItem('hermes.transcript-tail.v1:sess-poisoned', JSON.stringify(poisoned))
+
+    const loaded = loadTranscriptTail('sess-poisoned')
+
+    expect(loaded).toHaveLength(1)
+
+    const ids = (loaded![0].parts as { type: string; toolCallId?: string }[])
+      .filter(part => part.type === 'tool-call')
+      .map(part => part.toolCallId)
+
+    expect(ids).toHaveLength(2)
+    expect(new Set(ids).size).toBe(2)
+    expect(ids[0]).toBe('call-b')
+  })
 })

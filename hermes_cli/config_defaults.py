@@ -2919,6 +2919,16 @@ DEFAULT_CONFIG = {
         # of leaving a wedged-but-alive zombie. Set to false to disable.
         "loop_watchdog": True,
 
+        # Loop-liveness watchdog tuning (defaults mirror
+        # gateway/shutdown_watchdog.py constants). probe_interval = seconds
+        # between liveness probes; probe_timeout = seconds a probe may go
+        # unprocessed before counting as a miss; max_strikes = consecutive
+        # misses before the watchdog hard-exits 75 for a service respawn
+        # (~90-120s of sustained loop block at the defaults).
+        "loop_watchdog_probe_interval_s": 30.0,
+        "loop_watchdog_probe_timeout_s": 10.0,
+        "loop_watchdog_max_strikes": 3,
+
         # Whether the gateway keeps writing the legacy sessions.json mirror of
         # its routing index. The primary copy lives in state.db (the
         # gateway_routing table). Default True for backward compatibility with

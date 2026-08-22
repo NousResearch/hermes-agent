@@ -1014,6 +1014,144 @@ class TestShutdownRace:
         assert client.aretain_batch.call_count == 2
         assert provider._retain_queue.empty()
 
+    def test_shutdown_flushes_turn_queued_after_session_end(self, provider_with_config):
+        """Provider shutdown catches manager turns drained after on_session_end."""
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        client = p._client
+        p.on_session_end([])
+        p.sync_turn("late-user", "late-asst")
+
+        p.shutdown()
+
+        client.aretain_batch.assert_called_once()
+        item = client.aretain_batch.call_args.kwargs["items"][0]
+        assert "late-user" in item["content"]
+        assert p._session_turns == []
+
+    def test_shutdown_flushes_exact_boundary_in_new_append_epoch(
+        self, provider_with_config, monkeypatch
+    ):
+        """A late exact-boundary turn is not hidden by the prior epoch watermark."""
+        p = provider_with_config(retain_every_n_turns=1, retain_async=False)
+        client = p._client
+        monkeypatch.setattr(
+            p,
+            "_resolve_retain_target",
+            lambda document_id: ("test-session", "append"),
+        )
+        p.sync_turn("first-user", "first-asst")
+        p._retain_queue.join()
+        p.on_session_end([])
+        p.sync_turn("late-user", "late-asst")
+
+        p.shutdown()
+
+        assert client.aretain_batch.call_count == 2
+        calls = client.aretain_batch.call_args_list
+        assert "first-user" in calls[0].kwargs["items"][0]["content"]
+        assert "late-user" in calls[1].kwargs["items"][0]["content"]
+        assert p._session_turns == []
+
+    def test_manager_shutdown_flushes_sync_turn_drained_after_session_end(
+        self, provider_with_config
+    ):
+        """The manager's FIFO drain cannot strand a post-finalize provider turn."""
+        from threading import Event
+
+        from agent.memory_manager import MemoryManager
+
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        client = p._client
+        original_sync_turn = p.sync_turn
+        entered = Event()
+        release = Event()
+
+        def _delayed_sync_turn(*args, **kwargs):
+            entered.set()
+            assert release.wait(timeout=5)
+            original_sync_turn(*args, **kwargs)
+
+        p.sync_turn = _delayed_sync_turn
+        manager = MemoryManager()
+        manager.add_provider(p)
+        manager.sync_all("late-user", "late-asst", session_id="test-session")
+        assert entered.wait(timeout=5)
+
+        manager.on_session_end([])
+        release.set()
+        manager.shutdown_all()
+
+        client.aretain_batch.assert_called_once()
+        item = client.aretain_batch.call_args.kwargs["items"][0]
+        assert "late-user" in item["content"]
+        assert p._session_turns == []
+
+    def test_concurrent_first_writer_start_creates_one_thread(self, provider, monkeypatch):
+        """Concurrent first enqueues cannot create competing queue consumers."""
+        import threading as _threading
+
+        original_thread = _threading.Thread
+        created = []
+        start_barrier = _threading.Barrier(3)
+        results = []
+
+        def _start_writer():
+            start_barrier.wait(timeout=5)
+            results.append(provider._ensure_writer())
+
+        workers = [original_thread(target=_start_writer) for _ in range(2)]
+
+        def _counting_thread(*args, **kwargs):
+            thread = original_thread(*args, **kwargs)
+            created.append(thread)
+            return thread
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.threading.Thread",
+            _counting_thread,
+        )
+        for worker in workers:
+            worker.start()
+        start_barrier.wait(timeout=5)
+        for worker in workers:
+            worker.join(timeout=5)
+
+        assert results == [True, True]
+        assert len(created) == 1
+        assert provider._writer_thread is created[0]
+        provider.shutdown()
+
+    def test_session_end_flushes_buffered_partial_retain_batch(self, provider_with_config):
+        """Session finalization must persist a partial retain_every_n buffer."""
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        client = p._client
+        p.sync_turn("last-user", "last-asst")
+        assert p._sync_thread is None
+        client.aretain_batch.assert_not_called()
+
+        p.on_session_end([{"role": "user", "content": "last-user"}])
+        p.shutdown()
+
+        client.aretain_batch.assert_called_once()
+        kw = client.aretain_batch.call_args.kwargs
+        assert kw["document_id"] == p._document_id
+        assert kw["retain_async"] is False
+        item = kw["items"][0]
+        content = json.loads(item["content"])
+        assert len(content) == 1
+        assert content[0][0]["content"] == "User: last-user"
+        assert content[0][1]["content"] == "Assistant: last-asst"
+        assert "session:test-session" in item["tags"]
+        assert item["metadata"]["session_id"] == "test-session"
+        assert item["metadata"]["message_count"] == "2"
+        assert item["metadata"]["turn_index"] == "1"
+
+    def test_shutdown_is_idempotent(self, provider):
+        provider.sync_turn("a", "b")
+        provider.shutdown()
+        # Second shutdown shouldn't blow up or re-close the client.
+        provider.shutdown()
+        assert provider._shutting_down.is_set()
 
 # ---------------------------------------------------------------------------
 # on_session_switch — flush + prefetch reset behavior
@@ -1188,6 +1326,299 @@ class TestUpdateModeAppendCapability:
         item = kw["items"][0]
         assert item["update_mode"] == "append"
 
+    def test_modern_api_append_retries_failed_boundary_on_next_retain(
+        self, provider_with_config, monkeypatch
+    ):
+        """A failed append retain must not advance confirmed progress."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        p._client.aretain_batch.side_effect = [RuntimeError("network error"), None]
+
+        for idx in range(1, 4):
+            p.sync_turn(f"turn{idx}-user", f"turn{idx}-asst")
+        p._retain_queue.join()
+
+        for idx in range(4, 7):
+            p.sync_turn(f"turn{idx}-user", f"turn{idx}-asst")
+        p._retain_queue.join()
+
+        assert p._client.aretain_batch.call_count == 2
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["update_mode"] == "append"
+        content = json.loads(item["content"])
+        assert len(content) == 6
+        assert content[0][0]["content"] == "User: turn1-user"
+        assert content[-1][0]["content"] == "User: turn6-user"
+
+    def test_modern_api_append_failure_during_immediate_drain_rolls_back_reservation(
+        self, provider_with_config, monkeypatch
+    ):
+        """Queued progress must be reserved before an eager writer runs the job."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        p = provider_with_config(retain_every_n_turns=1, retain_async=False)
+        p._client.aretain_batch.side_effect = RuntimeError("network error")
+        p._ensure_writer = lambda: True
+
+        class _ImmediateQueue:
+            def put(self, job):
+                try:
+                    job()
+                except RuntimeError:
+                    pass
+
+            def join(self):
+                pass
+
+        p._retain_queue = _ImmediateQueue()
+        p.sync_turn("turn1-user", "turn1-asst")
+
+        assert p._append_enqueued_count("test-session") == 0
+        assert p._append_retained_count("test-session") == 0
+
+    def test_modern_api_session_end_retries_failed_exact_boundary_append(
+        self, provider_with_config, monkeypatch
+    ):
+        """Finalization retries an exact-boundary append that failed earlier."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        p._client.aretain_batch.side_effect = [RuntimeError("network error"), None]
+
+        for idx in range(1, 4):
+            p.sync_turn(f"turn{idx}-user", f"turn{idx}-asst")
+        p._retain_queue.join()
+        assert p._client.aretain_batch.call_count == 1
+
+        p.on_session_end([])
+        p._retain_queue.join()
+
+        assert p._client.aretain_batch.call_count == 2
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        content = json.loads(item["content"])
+        assert len(content) == 3
+        assert content[0][0]["content"] == "User: turn1-user"
+        assert content[-1][0]["content"] == "User: turn3-user"
+
+    def test_modern_api_session_end_retries_in_flight_boundary_failure(
+        self, provider_with_config, monkeypatch
+    ):
+        """Finalization queues a retry behind an append that is still in flight."""
+        import threading
+
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        started = threading.Event()
+        release = threading.Event()
+        attempts = 0
+
+        async def _retain(**kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                started.set()
+                release.wait(timeout=5.0)
+                raise RuntimeError("network error")
+
+        p._client.aretain_batch = AsyncMock(side_effect=_retain)
+        for idx in range(1, 4):
+            p.sync_turn(f"turn{idx}-user", f"turn{idx}-asst")
+        assert started.wait(timeout=5.0)
+
+        p.on_session_end([])
+        release.set()
+        p._retain_queue.join()
+
+        assert p._client.aretain_batch.call_count == 2
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        content = json.loads(item["content"])
+        assert len(content) == 3
+        assert content[0][0]["content"] == "User: turn1-user"
+        assert content[-1][0]["content"] == "User: turn3-user"
+
+    def test_modern_api_session_end_skips_confirmed_exact_boundary(
+        self, provider_with_config, monkeypatch
+    ):
+        """A successful exact-boundary append is not duplicated at finalization."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        for idx in range(1, 4):
+            p.sync_turn(f"turn{idx}-user", f"turn{idx}-asst")
+        p._retain_queue.join()
+        p._client.aretain_batch.reset_mock()
+
+        p.on_session_end([])
+        p._retain_queue.join()
+
+        p._client.aretain_batch.assert_not_called()
+
+    def test_modern_api_session_end_flushes_only_append_remainder(
+        self, provider_with_config, monkeypatch
+    ):
+        """Final partial flush appends only turns not confirmed earlier."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+
+        for idx in range(1, 4):
+            p.sync_turn(f"turn{idx}-user", f"turn{idx}-asst")
+        p._retain_queue.join()
+        p._client.aretain_batch.reset_mock()
+
+        p.sync_turn("turn4-user", "turn4-asst")
+        p.on_session_end([])
+        p._retain_queue.join()
+
+        kw = p._client.aretain_batch.call_args.kwargs
+        assert kw["document_id"] == "test-session"
+        item = kw["items"][0]
+        assert item["update_mode"] == "append"
+        content = json.loads(item["content"])
+        assert len(content) == 1
+        assert content[0][0]["content"] == "User: turn4-user"
+        assert content[0][1]["content"] == "Assistant: turn4-asst"
+        assert "turn1-user" not in item["content"]
+
+    def test_modern_api_session_switch_flushes_only_append_remainder(
+        self, provider_with_config, monkeypatch
+    ):
+        """Session-switch append flush does not duplicate earlier boundaries."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+
+        for idx in range(1, 4):
+            p.sync_turn(f"turn{idx}-user", f"turn{idx}-asst")
+        p._retain_queue.join()
+        p._client.aretain_batch.reset_mock()
+
+        p.sync_turn("turn4-user", "turn4-asst")
+        p.on_session_switch("new-sid", parent_session_id="test-session", reset=True)
+        p._retain_queue.join()
+
+        kw = p._client.aretain_batch.call_args.kwargs
+        assert kw["document_id"] == "test-session"
+        item = kw["items"][0]
+        assert item["update_mode"] == "append"
+        content = json.loads(item["content"])
+        assert len(content) == 1
+        assert content[0][0]["content"] == "User: turn4-user"
+        assert "turn1-user" not in item["content"]
+
+    def test_modern_api_same_id_switch_starts_new_append_epoch(
+        self, provider_with_config, monkeypatch
+    ):
+        """A same-ID buffer reset must not reuse the prior append watermark."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        p = provider_with_config(retain_every_n_turns=1, retain_async=False)
+
+        p.sync_turn("before-rewind", "before-asst")
+        p._retain_queue.join()
+        p.on_session_switch("test-session")
+        p.sync_turn("after-rewind", "after-asst")
+        p._retain_queue.join()
+
+        assert p._client.aretain_batch.call_count == 2
+        kw = p._client.aretain_batch.call_args.kwargs
+        assert kw["document_id"] == "test-session"
+        content = json.loads(kw["items"][0]["content"])
+        assert len(content) == 1
+        assert content[0][0]["content"] == "User: after-rewind"
+
+    def test_modern_api_revisited_session_starts_new_append_epoch(
+        self, provider_with_config, monkeypatch
+    ):
+        """Returning A -> B -> A must retain A's new local-buffer epoch."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+
+        p.sync_turn("first-a", "first-a-asst")
+        p.on_session_switch("session-b", parent_session_id="test-session")
+        p.sync_turn("only-b", "only-b-asst")
+        p.on_session_switch("test-session", parent_session_id="session-b")
+        p.sync_turn("second-a", "second-a-asst")
+        p.on_session_end([])
+        p._retain_queue.join()
+
+        assert p._client.aretain_batch.call_count == 3
+        calls = p._client.aretain_batch.call_args_list
+        assert [call.kwargs["document_id"] for call in calls] == [
+            "test-session",
+            "session-b",
+            "test-session",
+        ]
+        content = json.loads(calls[-1].kwargs["items"][0]["content"])
+        assert len(content) == 1
+        assert content[0][0]["content"] == "User: second-a"
+
+    def test_capability_cached_per_url(self, provider, monkeypatch):
+        """The /version probe must run at most once per (process, api_url)."""
+        self._clear_capability_cache()
+        calls = {"n": 0}
+
+        def _spy(*a, **kw):
+            calls["n"] += 1
+            return "0.5.6"
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version", _spy
+        )
+        provider.sync_turn("a", "b")
+        provider._retain_queue.join()
+        provider.sync_turn("c", "d")
+        provider._retain_queue.join()
+        assert calls["n"] == 1
+
+    def test_legacy_warning_emitted_once(self, provider, monkeypatch, caplog):
+        """One-time WARN nudges users to upgrade Hindsight."""
+        import logging
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.4.22",
+        )
+        with caplog.at_level(logging.WARNING, logger="plugins.memory.hindsight"):
+            provider.sync_turn("a", "b")
+            provider._retain_queue.join()
+            provider.sync_turn("c", "d")
+            provider._retain_queue.join()
+        warns = [r for r in caplog.records
+                 if r.levelno == logging.WARNING
+                 and "older than 0.5.0" in r.getMessage()]
+        # Cache hit on the second call → no second warn.
+        assert len(warns) == 1
 
     def test_session_switch_flush_picks_capability_against_old_session(
         self, provider_with_config, monkeypatch

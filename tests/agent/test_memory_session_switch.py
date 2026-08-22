@@ -166,6 +166,13 @@ def _make_hindsight_provider():
     provider._session_turns = ["turn-1", "turn-2"]
     provider._turn_counter = 2
     provider._turn_index = 2
+    provider._auto_retain = True
+    provider._retain_every_n_turns = 3
+    provider._session_state_lock = threading.RLock()
+    provider._append_progress_lock = threading.Lock()
+    provider._append_epoch = 0
+    provider._append_enqueued_turn_counts = {}
+    provider._append_retained_turn_counts = {}
     # Attrs read by _build_metadata / _build_retain_kwargs when the
     # buffer-flush path on session switch fires. Empty strings keep the
     # metadata minimal but well-formed.
@@ -198,7 +205,7 @@ def _make_hindsight_provider():
     provider._retain_queue = _queue.Queue()
     provider._shutting_down = threading.Event()
     provider._atexit_registered = True
-    provider._ensure_writer = lambda: None
+    provider._ensure_writer = lambda: True
     provider._register_atexit = lambda: None
     # Mode + API state used by _resolve_retain_target; stub the resolver
     # so tests don't actually probe the API. Real probe behavior is

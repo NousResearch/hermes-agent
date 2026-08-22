@@ -47,7 +47,7 @@ jobs:
 
       - name: Materialize and verify exact product tree
         env:
-          CURRENT_MAIN: 7d6db4efb885856078e4d19f804035226df81e0d
+          CURRENT_MAIN: fc7523ca31eeb6eff9114afe384c2cf6380359df
           BRANCH: fix/memory-prefetch-cancel
           CARRIER: .github/workflows/one-shot-fix-88796.yml
           FORK_REPOSITORY: andrexibiza/hermes-agent

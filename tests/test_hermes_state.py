@@ -820,7 +820,10 @@ class TestFTS5Search:
         db.append_message("s1", role="user", content="after")
 
         statements = []
-        read_conn = db._get_read_conn() or db._conn
+        # Prime the pooled read path, then trace the connection that _read_ctx()
+        # will actually borrow for the searches below.
+        with db._read_ctx() as read_conn:
+            pass
         traced_connections = [db._conn]
         if read_conn is not db._conn:
             traced_connections.append(read_conn)

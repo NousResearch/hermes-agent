@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import queue
+import secrets
 import subprocess
 import sys
 import threading
@@ -53,6 +54,8 @@ from tui_gateway.transport import (
 )
 
 logger = logging.getLogger(__name__)
+
+_PICKER_CATALOGUE_PROOF_TTL_SECONDS = 300.0
 
 _hermes_home = get_hermes_home()
 load_hermes_dotenv(
@@ -4927,22 +4930,76 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
         )
 
 
+def _gateway_catalogue_proof_is_current(
+    proof: str, provider: str, model: str
+) -> bool:
+    now = time.monotonic()
+    expected_pair = (provider.casefold(), model)
+    with _sessions_lock:
+        for session in _sessions.values():
+            recorded_proof = session.get("model_options_catalogue_proof")
+            if not (
+                isinstance(recorded_proof, str)
+                and secrets.compare_digest(recorded_proof, proof)
+            ):
+                continue
+            served = session.get("model_options_catalogue")
+            served_at = session.get("model_options_catalogue_at")
+            if not isinstance(served_at, (int, float)) or isinstance(served_at, bool):
+                return False
+            age = now - served_at
+            return (
+                0.0 <= age <= _PICKER_CATALOGUE_PROOF_TTL_SECONDS
+                and isinstance(served, frozenset)
+                and expected_pair in served
+            )
+    return False
+
+
+def _picker_catalogue_proof(session: dict, parsed_flags: Any) -> str | None:
+    """Return fresh model.options evidence containing the requested pair."""
+    try:
+        model = str(parsed_flags.model_input or "").strip()
+        provider = str(parsed_flags.explicit_provider or "").strip().casefold()
+    except Exception:
+        return None
+    if not model or not provider:
+        return None
+    with _sessions_lock:
+        served = session.get("model_options_catalogue")
+        served_at = session.get("model_options_catalogue_at")
+        proof = session.get("model_options_catalogue_proof")
+        if not isinstance(served_at, (int, float)) or isinstance(served_at, bool):
+            return None
+        age = time.monotonic() - served_at
+        if not (
+            0.0 <= age <= _PICKER_CATALOGUE_PROOF_TTL_SECONDS
+            and isinstance(served, frozenset)
+            and (provider, model) in served
+            and isinstance(proof, str)
+        ):
+            return None
+        return proof
+
+
 def _apply_model_switch(
     sid: str,
     session: dict,
     raw_input: str,
     *,
+    catalogue_proof: str | None = None,
     confirm_expensive_model: bool = False,
     pin_session_override: bool = True,
     parsed_flags: Any | None = None,
     persist_override: bool | None = None,
+    prepare_only: bool = False,
 ) -> dict:
     from hermes_cli.model_switch import (
+        MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL,
+        MODEL_SWITCH_ERROR_TEXT,
         parse_model_switch_args,
         resolve_persist_behavior,
         switch_model,
-        MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL,
-        MODEL_SWITCH_ERROR_TEXT,
     )
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -5017,7 +5074,7 @@ def _apply_model_switch(
     except Exception:
         pass
 
-    result = switch_model(
+    switch_kwargs = dict(
         raw_input=model_input,
         current_provider=current_provider,
         current_model=current_model,
@@ -5028,6 +5085,9 @@ def _apply_model_switch(
         user_providers=user_provs,
         custom_providers=custom_provs,
     )
+    if catalogue_proof is not None:
+        switch_kwargs["catalogue_proof"] = catalogue_proof
+    result = switch_model(**switch_kwargs)
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
 
@@ -5071,10 +5131,20 @@ def _apply_model_switch(
                 confirm_msg = f"{confirm_msg}\n\n{result.warning_message}"
             return {
                 "value": result.new_model,
+                "provider": result.target_provider,
                 "warning": confirm_msg,
                 "confirm_required": True,
                 "confirm_message": confirm_msg,
             }
+
+    if prepare_only:
+        return {
+            "value": result.new_model,
+            "provider": result.target_provider,
+            "warning": result.warning_message or "",
+            "confirm_required": False,
+            "scope": "once" if one_turn else ("global" if persist_global else "session"),
+        }
 
     if agent:
         try:
@@ -5135,6 +5205,7 @@ def _apply_model_switch(
         _persist_model_switch(result)
     return {
         "value": result.new_model,
+        "provider": result.target_provider,
         "warning": result.warning_message or "",
         "confirm_required": False,
         "scope": "once" if one_turn else ("global" if persist_global else "session"),
@@ -5269,6 +5340,7 @@ def _apply_pending_model_switch(sid: str, session: dict) -> None:
             sid,
             session,
             pending["raw"],
+            catalogue_proof=pending.get("catalogue_proof"),
             confirm_expensive_model=bool(pending.get("confirm_expensive_model")),
         )
         # A queued pick is a deliberate user action; honour the expensive-model
@@ -12042,12 +12114,39 @@ def _(rid, params: dict) -> dict:
                 # the new model without waiting for the swap or interrupting.
                 if session.get("running"):
                     parsed = parse_model_switch_args(value)
-                    try:
-                        pending_model = parsed.model_input
-                    except Exception:
-                        pending_model = str(value)
+                    catalogue_proof = _picker_catalogue_proof(session, parsed)
+                    # Resolve and run selection guards without mutating the live
+                    # agent. This closes the old gap where a guarded model was
+                    # painted as queued, then silently dropped at turn start
+                    # because Desktop had never been shown confirm_required.
+                    prepared = _apply_model_switch(
+                        params.get("session_id", ""),
+                        session,
+                        value,
+                        catalogue_proof=catalogue_proof,
+                        confirm_expensive_model=bool(
+                            params.get("confirm_expensive_model", False)
+                        ),
+                        parsed_flags=parsed,
+                        prepare_only=True,
+                    )
+                    if prepared.get("confirm_required"):
+                        return _ok(
+                            rid,
+                            {
+                                "key": key,
+                                "value": prepared["value"],
+                                "provider": prepared.get("provider", ""),
+                                "warning": prepared.get("warning", ""),
+                                "confirm_required": True,
+                                "confirm_message": prepared.get("confirm_message", ""),
+                                "scope": prepared.get("scope", "session"),
+                                "deferred": False,
+                            },
+                        )
                     session["pending_model_switch"] = {
                         "raw": value,
+                        "catalogue_proof": catalogue_proof,
                         "confirm_expensive_model": bool(
                             params.get("confirm_expensive_model", False)
                         ),
@@ -12055,24 +12154,24 @@ def _(rid, params: dict) -> dict:
                         # _session_info reports these while the switch is pending
                         # so the end-of-turn settle keeps showing the user's pick
                         # instead of blipping back to the still-live old model.
-                        "display_model": pending_model,
-                        "display_provider": (
-                            getattr(parsed, "explicit_provider", "") or ""
-                        ).strip(),
+                        "display_model": prepared["value"],
+                        "display_provider": prepared.get("provider", ""),
                     }
                     return _ok(
                         rid,
                         {
                             "key": key,
-                            "value": pending_model,
-                            "warning": "",
+                            "value": prepared["value"],
+                            "provider": prepared.get("provider", ""),
+                            "warning": prepared.get("warning", ""),
                             "confirm_required": False,
                             "confirm_message": "",
-                            "scope": "session",
+                            "scope": prepared.get("scope", "session"),
                             "deferred": True,
                         },
                     )
                 parsed_flags = parse_model_switch_args(value)
+                catalogue_proof = _picker_catalogue_proof(session, parsed_flags)
                 explicit_provider = parsed_flags.explicit_provider
                 if session.get("agent") is None and not explicit_provider.strip():
                     session_id = params.get("session_id", "")
@@ -12086,6 +12185,7 @@ def _(rid, params: dict) -> dict:
                     params.get("session_id", ""),
                     session,
                     value,
+                    catalogue_proof=catalogue_proof,
                     confirm_expensive_model=bool(
                         params.get("confirm_expensive_model", False)
                     ),

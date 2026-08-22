@@ -4,6 +4,9 @@ Handler bodies are byte-identical to their pre-split server.py form; they
 are rebound onto server.py's globals at install time — see method_ctx.py.
 """
 
+import secrets
+import time
+
 from .method_ctx import HandlerRegistry
 
 _registry = HandlerRegistry()
@@ -484,6 +487,33 @@ def _(rid, params: dict) -> dict:
             include_unconfigured=bool(params.get("include_unconfigured")),
             refresh=bool(params.get("refresh")),
         )
+        if session is not None:
+            # This is a server-owned proof, not a client assertion. A later
+            # config.set may skip the redundant live /models probe only for an
+            # exact provider/model pair this session's picker was just given.
+            # Include custom-provider aliases because the row uses its config
+            # slug while the live runtime reports canonical custom:<key> form.
+            served_pairs: set[tuple[str, str]] = set()
+            for provider in payload.get("providers") or []:
+                if not isinstance(provider, dict):
+                    continue
+                identities = {
+                    str(provider.get("slug") or "").strip().casefold(),
+                    *(
+                        str(alias).strip().casefold()
+                        for alias in (provider.get("aliases") or [])
+                    ),
+                }
+                identities.discard("")
+                for model_id in provider.get("models") or []:
+                    model = str(model_id or "").strip()
+                    if model:
+                        served_pairs.update((identity, model) for identity in identities)
+            served = frozenset(served_pairs)
+            with _sessions_lock:
+                session["model_options_catalogue"] = served
+                session["model_options_catalogue_at"] = time.monotonic()
+                session["model_options_catalogue_proof"] = secrets.token_urlsafe(32)
         return _ok(rid, payload)
     except Exception as e:
         return _err(rid, 5033, str(e))

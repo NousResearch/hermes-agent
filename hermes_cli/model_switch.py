@@ -57,6 +57,21 @@ _UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencod
 
 logger = logging.getLogger(__name__)
 
+_PICKER_CATALOGUE_PROOF_TTL_SECONDS = 300.0
+
+
+def _picker_catalogue_proof_is_current(
+    proof: str | None, provider: str, model: str
+) -> bool:
+    """Accept only evidence still present in the gateway session ledger."""
+    if not isinstance(proof, str):
+        return False
+    try:
+        from tui_gateway.server import _gateway_catalogue_proof_is_current
+    except ImportError:
+        return False
+    return _gateway_catalogue_proof_is_current(proof, provider, model)
+
 
 def _declared_model_ids(value: Any) -> list[str]:
     """Return configured model IDs from supported config shapes.
@@ -1446,6 +1461,7 @@ def switch_model(
     explicit_provider: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
+    catalogue_proof: str | None = None,
 ) -> ModelSwitchResult:
     """Core model-switching pipeline shared between CLI and gateway.
 
@@ -1480,6 +1496,10 @@ def switch_model(
         explicit_provider: From --provider flag (empty = no explicit provider).
         user_providers: The ``providers:`` dict from config.yaml (for user endpoints).
         custom_providers: The ``custom_providers:`` list from config.yaml.
+        catalogue_proof: Opaque token for a live gateway session's recent
+            picker catalogue. The resolved provider/model pair must remain in
+            that server-owned ledger. The proof skips only the redundant live
+            ``/models`` probe; all other resolution and safety checks remain.
 
     Returns:
         ModelSwitchResult with all information the caller needs.
@@ -2043,37 +2063,50 @@ def switch_model(
     new_model = normalize_model_for_provider(new_model, target_provider)
 
     # --- Validate ---
-    try:
-        validation = validate_requested_model(
-            new_model,
-            target_provider,
-            api_key=api_key,
-            base_url=base_url,
-            api_mode=api_mode or None,
-            headers=(
-                (
-                    {}
-                    if suppress_ollama_headers
-                    else (validation_headers or _get_ollama_request_headers())
-                )
-                if target_provider.strip().lower() == "ollama"
-                else (
-                    validation_headers
-                    or (
-                        _extra_headers_from_config(user_providers.get(target_provider))
-                        if user_providers and target_provider in user_providers
-                        else None
-                    )
-                )
-            ),
-        )
-    except Exception as e:
+    # A Desktop picker selection came from model.options moments earlier. The
+    # gateway records the exact provider/model pairs it served, so probing the
+    # same provider's live /models endpoint again adds a full network round-trip
+    # without adding evidence. Only that server-owned proof may take this fast
+    # path; typed CLI and slash-command input retain the live validation below.
+    if _picker_catalogue_proof_is_current(catalogue_proof, target_provider, new_model):
         validation = {
-            "accepted": False,
-            "persist": False,
-            "recognized": False,
-            "message": f"Could not validate `{new_model}`: {e}",
+            "accepted": True,
+            "persist": True,
+            "recognized": True,
+            "message": None,
         }
+    else:
+        try:
+            validation = validate_requested_model(
+                new_model,
+                target_provider,
+                api_key=api_key,
+                base_url=base_url,
+                api_mode=api_mode or None,
+                headers=(
+                    (
+                        {}
+                        if suppress_ollama_headers
+                        else (validation_headers or _get_ollama_request_headers())
+                    )
+                    if target_provider.strip().lower() == "ollama"
+                    else (
+                        validation_headers
+                        or (
+                            _extra_headers_from_config(user_providers.get(target_provider))
+                            if user_providers and target_provider in user_providers
+                            else None
+                        )
+                    )
+                ),
+            )
+        except Exception as e:
+            validation = {
+                "accepted": False,
+                "persist": False,
+                "recognized": False,
+                "message": f"Could not validate `{new_model}`: {e}",
+            }
 
     # Override rejection if model is in the user's saved provider config.
     # API /v1/models may not list cloud/aliased models even though the server supports them.

@@ -19,7 +19,7 @@ import {
   setCurrentModelSource,
   setCurrentProvider
 } from '@/store/session'
-import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
+import { sessionTileDelegate } from '@/store/session-states'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 interface ModelControlsOptions {
@@ -27,10 +27,20 @@ interface ModelControlsOptions {
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
+interface ModelSwitchGatewayResponse {
+  confirm_message?: string
+  confirm_required?: boolean
+  deferred?: boolean
+  provider?: string
+  value?: string
+  warning?: string
+}
+
 export function useModelControls({ queryClient, requestGateway }: ModelControlsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
   const profileRefreshEpochRef = useRef(0)
+  const selectionEpochByTargetRef = useRef(new Map<string, number>())
 
   // All callbacks here read reactive session state from the store (.get())
   // rather than capturing it as a prop. The actions bag in wiring.tsx mutates
@@ -180,41 +190,57 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
       const primaryRuntimeId = $activeSessionId.get()
       const liveSessionId = 'sessionId' in selection ? (selection.sessionId ?? null) : primaryRuntimeId
       const touchesPrimary = !liveSessionId || liveSessionId === primaryRuntimeId
-
-      const prevModel = touchesPrimary ? $currentModel.get() : ($sessionStates.get()[liveSessionId!]?.model ?? '')
-
-      const prevProvider = touchesPrimary
-        ? $currentProvider.get()
-        : ($sessionStates.get()[liveSessionId!]?.provider ?? '')
-
-      const prevSource = getCurrentModelSource()
       const liveGatewayProfile = $activeGatewayProfile.get()
+      const selectionTarget = `${liveGatewayProfile}\u0000${liveSessionId ?? '<new-session>'}`
+      const selectionEpoch = (selectionEpochByTargetRef.current.get(selectionTarget) ?? 0) + 1
+      selectionEpochByTargetRef.current.set(selectionTarget, selectionEpoch)
 
-      if (touchesPrimary) {
-        setCurrentModel(selection.model)
-        setCurrentProvider(selection.provider)
-        markComposerSelectionManual()
-      } else if (liveSessionId) {
-        // Optimistic tile paint — session.info will confirm; rollback on error.
-        sessionTileDelegate()?.updateSession(liveSessionId, state => ({
-          ...state,
-          model: selection.model,
-          provider: selection.provider
-        }))
+      const clearSelectionEpoch = () => {
+        if (selectionEpochByTargetRef.current.get(selectionTarget) === selectionEpoch) {
+          selectionEpochByTargetRef.current.delete(selectionTarget)
+        }
       }
 
-      updateModelOptionsCache(
-        liveSessionId,
-        selection.provider,
-        selection.model,
-        touchesPrimary && !liveSessionId,
-        liveGatewayProfile
-      )
+      const selectionIsCurrent = () =>
+        selectionEpochByTargetRef.current.get(selectionTarget) === selectionEpoch &&
+        $activeGatewayProfile.get() === liveGatewayProfile &&
+        (!touchesPrimary || $activeSessionId.get() === primaryRuntimeId)
+
+      const commitSelection = (applied: ModelSelection = selection) => {
+        if (!selectionIsCurrent()) {
+          return false
+        }
+
+        if (touchesPrimary) {
+          setCurrentModel(applied.model)
+          setCurrentProvider(applied.provider)
+          markComposerSelectionManual()
+        } else if (liveSessionId) {
+          sessionTileDelegate()?.updateSession(liveSessionId, state => ({
+            ...state,
+            model: applied.model,
+            provider: applied.provider
+          }))
+        }
+
+        updateModelOptionsCache(
+          liveSessionId,
+          applied.provider,
+          applied.model,
+          touchesPrimary && !liveSessionId,
+          liveGatewayProfile
+        )
+
+        return true
+      }
 
       // No live session yet: the pick is pure UI state. session.create reads
       // $currentModel/$currentProvider and applies it as that session's override.
       if (!liveSessionId) {
-        return true
+        const committed = commitSelection()
+        clearSelectionEpoch()
+
+        return committed
       }
 
       try {
@@ -235,19 +261,33 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         const persistsAsDefault = touchesPrimary && !isSessionOnlyPreset
         const scope = persistsAsDefault ? '--global' : '--session'
 
-        const result = await requestGateway<{ deferred?: boolean }>('config.set', {
+        const params: Record<string, unknown> = {
           session_id: liveSessionId,
           key: 'model',
           value: `${selection.model} --provider ${selection.provider} ${scope}`
-        })
+        }
 
-        // A pick made DURING a turn is queued by the gateway and applied at the
-        // next turn start (`deferred`). Re-fetching now would answer with the
-        // model still running and repaint the old name over the user's choice —
-        // the switch publishes session.info when it lands, and that is what
-        // re-syncs every surface.
-        if (!result?.deferred) {
-          void queryClient.invalidateQueries({ queryKey: modelOptionsQueryKey(liveGatewayProfile, liveSessionId) })
+        const result = await requestGateway<ModelSwitchGatewayResponse>('config.set', params)
+
+        if (result?.confirm_required) {
+          // A guard response is not an acknowledgement. The renderer must not
+          // paint the requested model unless a caller explicitly confirms and
+          // resubmits it, because the backend has not activated it yet.
+          throw new Error(result.confirm_message || result.warning || copy.modelSwitchFailed)
+        }
+
+        // Commit only after the gateway either switched the live runtime or
+        // accepted a guarded, turn-boundary-safe deferred switch. Before this
+        // acknowledgement the visible model remains the one that can actually
+        // serve a prompt, so the UI cannot get ahead of execution.
+        const acknowledgedSelection: ModelSelection = {
+          ...selection,
+          model: result?.value || selection.model,
+          provider: result?.provider || selection.provider
+        }
+
+        if (!commitSelection(acknowledgedSelection)) {
+          return false
         }
 
         return true
@@ -258,34 +298,22 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         // what the NEXT turn runs anyway. Current gateways never take this
         // path — they answer `deferred`.
         if (isBusySessionModelSwitch(err)) {
-          return true
+          return commitSelection()
         }
 
-        if (touchesPrimary) {
-          setCurrentModel(prevModel)
-          setCurrentProvider(prevProvider)
-          setCurrentModelSource(prevSource)
-        } else if (liveSessionId) {
-          sessionTileDelegate()?.updateSession(liveSessionId, state => ({
-            ...state,
-            model: prevModel,
-            provider: prevProvider
-          }))
+        if (selectionIsCurrent()) {
+          notifyError(err, copy.modelSwitchFailed)
         }
-
-        updateModelOptionsCache(
-          liveSessionId,
-          prevProvider,
-          prevModel,
-          touchesPrimary && !liveSessionId,
-          liveGatewayProfile
-        )
-        notifyError(err, copy.modelSwitchFailed)
 
         return false
+      } finally {
+        // The entry coordinates only concurrent selections for this target.
+        // Drop a settled latest selection so closed/reused tiles do not retain
+        // state; a newer overlapping selection owns a different epoch.
+        clearSelectionEpoch()
       }
     },
-    [copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
+    [copy.modelSwitchFailed, requestGateway, updateModelOptionsCache]
   )
 
   return { applySavedMainModel, refreshCurrentModel, selectModel }

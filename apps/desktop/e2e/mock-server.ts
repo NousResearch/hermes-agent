@@ -26,6 +26,8 @@ export const MOCK_REPLY = 'Hello from the mock inference server! The full boot c
 export interface MockServerOptions {
   /** Pause the matching stream after its first token for session-switch E2E coverage. */
   holdFirstStreamForPrompt?: string
+  /** Model ids returned by /v1/models and written into the E2E provider config. */
+  modelIds?: string[]
 /** Pause the first completion whose request JSON contains this text. */
 holdFirstCompletionContaining?: string
 /** Absolute sandbox path written by the verify-on-stop scripted tool call. */
@@ -44,6 +46,7 @@ export interface MockServer {
   port: number
   url: string
   receivedPrompts: string[]
+  receivedModels: string[]
   waitForHeldStream: () => Promise<void>
   waitForHeldCompletion: () => Promise<void>
   releaseHeldStream: () => void
@@ -397,6 +400,8 @@ function includesBlockingClarifyTrigger(value: unknown): boolean {
 export function startMockServer(options: MockServerOptions = {}): Promise<MockServer> {
   return new Promise((resolve, reject) => {
     const receivedPrompts: string[] = []
+    const receivedModels: string[] = []
+    const modelIds = options.modelIds?.length ? options.modelIds : ['mock-model']
     let resolveHeldStreamStarted: (() => void) | null = null
     let releaseHeldStream: (() => void) | null = null
     let heldCompletionCount = 0
@@ -419,20 +424,18 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
         return
       }
 
-      // GET /v1/models — return a single fake model.
+      // GET /v1/models — return the configured fake catalogue.
       if (req.method === 'GET' && req.url === '/v1/models') {
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(
           JSON.stringify({
             object: 'list',
-            data: [
-              {
-                id: 'mock-model',
-                object: 'model',
-                created: 0,
-                owned_by: 'mock',
-              },
-            ],
+            data: modelIds.map(model => ({
+              id: model,
+              object: 'model',
+              created: 0,
+              owned_by: 'mock',
+            })),
           }),
         )
         return
@@ -465,6 +468,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
 
           const stream = parsed.stream === true
           const model = parsed.model || 'mock-model'
+          receivedModels.push(model)
           const holdThisCompletion = Boolean(
             options.holdFirstCompletionContaining &&
             heldCompletionCount === 0 &&
@@ -666,6 +670,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
         port,
         url,
         receivedPrompts,
+        receivedModels,
         waitForHeldStream: () => heldStreamStarted,
         waitForHeldCompletion: () => heldStreamStarted,
         releaseHeldStream: () => releaseHeldStream?.(),
@@ -679,6 +684,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
                 resolveClose()
               }
             })
+            server.closeAllConnections()
           }),
       })
     })

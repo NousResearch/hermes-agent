@@ -1,5 +1,5 @@
 import { QueryClient } from '@tanstack/react-query'
-import { cleanup, render, renderHook } from '@testing-library/react'
+import { cleanup, render, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelInfo } from '@/hermes'
@@ -22,6 +22,7 @@ import { useModelControls } from './use-model-controls'
 
 const setGlobalModel = vi.fn()
 const notifyError = vi.fn()
+const sessionTileDelegateMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/hermes', () => ({
   getGlobalModelInfo: vi.fn(),
@@ -34,7 +35,7 @@ vi.mock('@/store/session-states', async importOriginal => {
 
   return {
     ...actual,
-    sessionTileDelegate: () => null
+    sessionTileDelegate: sessionTileDelegateMock
   }
 })
 
@@ -73,6 +74,8 @@ function Harness({
 
 describe('useModelControls', () => {
   beforeEach(() => {
+    notifyError.mockReset()
+    sessionTileDelegateMock.mockReset().mockReturnValue(null)
     $activeGatewayProfile.set('default')
     $activeSessionId.set(null)
     setCurrentModel('')
@@ -269,6 +272,115 @@ describe('useModelControls', () => {
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })
 
+  it('keeps the executed model visible until the gateway acknowledges the switch', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('fable-5')
+    setCurrentProvider('nous')
+    const acknowledgement = deferred<{ key: string; value: string }>()
+    const requestGateway = vi.fn(() => acknowledgement.promise as never)
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    const pending = controls.selectModel({ model: 'grok-4.5', provider: 'xai' })
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(1))
+
+    // The old runtime can still receive a prompt while config.set is pending,
+    // so the renderer must continue to tell the truth about what will execute.
+    expect($currentModel.get()).toBe('fable-5')
+    expect($currentProvider.get()).toBe('nous')
+
+    acknowledgement.resolve({ key: 'model', value: 'grok-4.5' })
+    await expect(pending).resolves.toBe(true)
+
+    expect($currentModel.get()).toBe('grok-4.5')
+    expect($currentProvider.get()).toBe('xai')
+  })
+
+  it('does not let an older acknowledgement overwrite the latest model intent', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('fable-5')
+    setCurrentProvider('nous')
+    const olderAcknowledgement = deferred<{ key: string; value: string }>()
+    const latestAcknowledgement = deferred<{ key: string; value: string }>()
+
+    const requestGateway = vi
+      .fn()
+      .mockReturnValueOnce(olderAcknowledgement.promise)
+      .mockReturnValueOnce(latestAcknowledgement.promise)
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    const older = controls.selectModel({ model: 'grok-4.5', provider: 'xai' })
+    const latest = controls.selectModel({ model: 'claude-sonnet-4.6', provider: 'anthropic' })
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(2))
+
+    latestAcknowledgement.resolve({ key: 'model', value: 'claude-sonnet-4.6' })
+    await expect(latest).resolves.toBe(true)
+    expect($currentModel.get()).toBe('claude-sonnet-4.6')
+    expect($currentProvider.get()).toBe('anthropic')
+
+    olderAcknowledgement.resolve({ key: 'model', value: 'grok-4.5' })
+    await expect(older).resolves.toBe(false)
+    expect($currentModel.get()).toBe('claude-sonnet-4.6')
+    expect($currentProvider.get()).toBe('anthropic')
+  })
+
+  it('acknowledges independent model selections for different session tiles', async () => {
+    $activeSessionId.set('primary-session')
+    const firstAcknowledgement = deferred<{ key: string; value: string }>()
+    const secondAcknowledgement = deferred<{ key: string; value: string }>()
+
+    const requestGateway = vi
+      .fn()
+      .mockReturnValueOnce(firstAcknowledgement.promise)
+      .mockReturnValueOnce(secondAcknowledgement.promise)
+
+    const updateSession = vi.fn()
+    sessionTileDelegateMock.mockReturnValue({ updateSession } as never)
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    const first = controls.selectModel({ model: 'grok-4.5', provider: 'xai', sessionId: 'tile-a' })
+    const second = controls.selectModel({ model: 'claude-sonnet-4.6', provider: 'anthropic', sessionId: 'tile-b' })
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(2))
+
+    secondAcknowledgement.resolve({ key: 'model', value: 'claude-sonnet-4.6' })
+    firstAcknowledgement.resolve({ key: 'model', value: 'grok-4.5' })
+
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true])
+    expect(updateSession).toHaveBeenCalledTimes(2)
+    expect(updateSession.mock.calls.map(call => call[0])).toEqual(['tile-b', 'tile-a'])
+  })
+
+  it('keeps the executed model when the gateway requires confirmation', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('fable-5')
+    setCurrentProvider('nous')
+
+    const requestGateway = vi.fn(
+      async () =>
+        ({
+          confirm_message: 'Confirm the guarded route.',
+          confirm_required: true,
+          value: 'gpt-5.5-pro'
+        }) as never
+    )
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'gpt-5.5-pro', provider: 'openrouter' })).resolves.toBe(false)
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+    expect($currentModel.get()).toBe('fable-5')
+    expect($currentProvider.get()).toBe('nous')
+    expect(notifyError).toHaveBeenCalledWith(expect.any(Error), 'Model switch failed')
+  })
+
   it('keeps a mid-turn pick painted and skips the refetch that would repaint the old model', async () => {
     // The gateway queues a switch made during a turn and applies it at the next
     // turn start. Invalidating now would answer with the still-running model
@@ -288,9 +400,19 @@ describe('useModelControls', () => {
     expect(notifyError).not.toHaveBeenCalled()
   })
 
-  it('still refetches after a switch that applied immediately', async () => {
+  it('uses the acknowledged runtime identity without another catalogue refetch', async () => {
     $activeSessionId.set('session-1')
-    const requestGateway = vi.fn(async () => ({ key: 'model', scope: 'session', value: 'grok-4.5' }) as never)
+
+    const requestGateway = vi.fn(
+      async () =>
+        ({
+          key: 'model',
+          provider: 'custom:local-xai',
+          scope: 'session',
+          value: 'grok-4.5-normalized'
+        }) as never
+    )
+
     const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries')
     let controls!: Controls
 
@@ -298,7 +420,9 @@ describe('useModelControls', () => {
 
     await controls.selectModel({ model: 'grok-4.5', provider: 'xai' })
 
-    expect(invalidate).toHaveBeenCalled()
+    expect($currentModel.get()).toBe('grok-4.5-normalized')
+    expect($currentProvider.get()).toBe('custom:local-xai')
+    expect(invalidate).not.toHaveBeenCalled()
   })
 
   it('keeps the pick when an OLDER gateway refuses a mid-turn switch', async () => {
@@ -324,7 +448,7 @@ describe('useModelControls', () => {
     expect(notifyError).not.toHaveBeenCalled()
   })
 
-  it('still rolls back and reports a real switch failure', async () => {
+  it('keeps the executed model and reports a real switch failure', async () => {
     $activeSessionId.set('session-1')
     setCurrentModel('fable-5')
     setCurrentProvider('nous')
@@ -585,5 +709,25 @@ describe('useModelControls', () => {
       provider: 'anthropic'
     })
     expect(queryClient.getQueryData(modelOptionsQueryKey('default', 'tile-runtime'))).toBeUndefined()
+  })
+
+  it('keeps a pending tile acknowledgement valid across a forced profile refresh', async () => {
+    $activeSessionId.set('primary-session')
+    const acknowledgement = deferred<{ key: string; value: string }>()
+    const requestGateway = vi.fn(() => acknowledgement.promise as never)
+    const updateSession = vi.fn()
+    sessionTileDelegateMock.mockReturnValue({ updateSession } as never)
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    const pending = controls.selectModel({ model: 'grok-4.5', provider: 'xai', sessionId: 'tile-a' })
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(1))
+
+    await controls.refreshCurrentModel(true)
+    acknowledgement.resolve({ key: 'model', value: 'grok-4.5' })
+
+    await expect(pending).resolves.toBe(true)
+    expect(updateSession).toHaveBeenCalledWith('tile-a', expect.any(Function))
   })
 })

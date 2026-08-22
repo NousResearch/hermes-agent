@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="500" viewBox="0 0 920 500">
+<rect width="100%" height="100%" fill="#FCFCFD"/>
+<text x="150" y="45" font-family="Segoe UI, sans-serif" font-size="24" font-weight="650" fill="#172033">Desktop model-switch acknowledgement latency</text>
+<text x="150" y="75" font-family="Segoe UI, sans-serif" font-size="14" fill="#5B6475">Mean and bootstrap 95% CI; 5 folds × 12 paired samples; controlled loopback /v1/models delay</text>
+<line x1="150.00" y1="113" x2="150.00" y2="415" stroke="#E3E7EE" stroke-width="1"/>
+<text x="150.00" y="440" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#687184">0</text>
+<line x1="290.00" y1="113" x2="290.00" y2="415" stroke="#E3E7EE" stroke-width="1"/>
+<text x="290.00" y="440" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#687184">32</text>
+<line x1="430.00" y1="113" x2="430.00" y2="415" stroke="#E3E7EE" stroke-width="1"/>
+<text x="430.00" y="440" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#687184">65</text>
+<line x1="570.00" y1="113" x2="570.00" y2="415" stroke="#E3E7EE" stroke-width="1"/>
+<text x="570.00" y="440" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#687184">97</text>
+<line x1="710.00" y1="113" x2="710.00" y2="415" stroke="#E3E7EE" stroke-width="1"/>
+<text x="710.00" y="440" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#687184">130</text>
+<line x1="850.00" y1="113" x2="850.00" y2="415" stroke="#E3E7EE" stroke-width="1"/>
+<text x="850.00" y="440" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#687184">162</text>
+<text x="128" y="214.00" text-anchor="end" font-family="Segoe UI, sans-serif" font-size="16" font-weight="600" fill="#172033">Before</text>
+<line x1="731.26" y1="209.00" x2="798.15" y2="209.00" stroke="#D97706" stroke-width="4"/>
+<line x1="731.26" y1="198.00" x2="731.26" y2="220.00" stroke="#D97706" stroke-width="2"/>
+<line x1="798.15" y1="198.00" x2="798.15" y2="220.00" stroke="#D97706" stroke-width="2"/>
+<circle cx="762.59" cy="209.00" r="9" fill="#FCFCFD" stroke="#D97706" stroke-width="4"/>
+<text x="762.59" y="182.00" text-anchor="middle" font-family="Consolas, monospace" font-size="13" fill="#172033">142.03 ms [134.76, 150.27]</text>
+<text x="128" y="331.60" text-anchor="end" font-family="Segoe UI, sans-serif" font-size="16" font-weight="600" fill="#172033">After</text>
+<line x1="168.04" y1="326.60" x2="179.71" y2="326.60" stroke="#2563EB" stroke-width="4"/>
+<line x1="168.04" y1="315.60" x2="168.04" y2="337.60" stroke="#2563EB" stroke-width="2"/>
+<line x1="179.71" y1="315.60" x2="179.71" y2="337.60" stroke="#2563EB" stroke-width="2"/>
+<circle cx="173.12" cy="326.60" r="9" fill="#FCFCFD" stroke="#2563EB" stroke-width="4"/>
+<text x="197.71" y="331.60" text-anchor="start" font-family="Consolas, monospace" font-size="13" fill="#172033">5.36 ms [4.18, 6.89]</text>
+<text x="500.00" y="468" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="14" fill="#384255">Acknowledgement latency (milliseconds)</text>
+<text x="150" y="492" font-family="Segoe UI, sans-serif" font-size="11" fill="#7A8394">Error bars: non-parametric bootstrap 95% confidence intervals of the mean.</text>
+</svg>

@@ -1,0 +1,93 @@
+{
+  "design": {
+    "folds": 5,
+    "samples_per_fold": 12,
+    "paired_samples": 60,
+    "seed": 20260820,
+    "workload": "real switch_model pipeline with a delayed loopback /v1/models endpoint",
+    "error_bar": "non-parametric bootstrap 95% confidence interval of the mean",
+    "test": "two-sided exact paired sign test"
+  },
+  "before": {
+    "n": 60,
+    "mean_ms": 142.02832333333333,
+    "sd_ms": 30.97470584520109,
+    "median_ms": 138.70819999999998,
+    "p95_ms": 191.89197000000001,
+    "min_ms": 93.9693,
+    "max_ms": 293.8732,
+    "mean_95_ci_ms": [
+      134.76385808333336,
+      150.27200179166667
+    ]
+  },
+  "after": {
+    "n": 60,
+    "mean_ms": 5.361253333333334,
+    "sd_ms": 5.435042215558584,
+    "median_ms": 3.6424000000000003,
+    "p95_ms": 15.503509999999991,
+    "min_ms": 2.7681,
+    "max_ms": 34.917,
+    "mean_95_ci_ms": [
+      4.18248,
+      6.887776999999998
+    ]
+  },
+  "paired_delta": {
+    "n": 60,
+    "mean_ms": 136.66707,
+    "sd_ms": 31.96555249586973,
+    "median_ms": 133.1137,
+    "p95_ms": 188.77381,
+    "min_ms": 88.4171,
+    "max_ms": 289.1947,
+    "mean_95_ci_ms": [
+      129.07747733333332,
+      145.14293320833335
+    ]
+  },
+  "relative_mean_reduction_percent": 96.2252224010624,
+  "speedup_ratio": 26.491626957875518,
+  "sign_test": {
+    "positive_differences": 60,
+    "negative_differences": 0,
+    "two_sided_p_value": 1.734723475976807e-18
+  },
+  "catalogue_requests": {
+    "before": 60,
+    "after": 0
+  },
+  "folds": [
+    {
+      "fold": 1,
+      "before_mean_ms": 142.57626666666667,
+      "after_mean_ms": 8.064483333333333,
+      "mean_reduction_ms": 134.51178333333334
+    },
+    {
+      "fold": 2,
+      "before_mean_ms": 160.907975,
+      "after_mean_ms": 4.79135,
+      "mean_reduction_ms": 156.116625
+    },
+    {
+      "fold": 3,
+      "before_mean_ms": 135.60680833333333,
+      "after_mean_ms": 5.059008333333334,
+      "mean_reduction_ms": 130.5478
+    },
+    {
+      "fold": 4,
+      "before_mean_ms": 130.76954166666667,
+      "after_mean_ms": 3.2610916666666667,
+      "mean_reduction_ms": 127.50845
+    },
+    {
+      "fold": 5,
+      "before_mean_ms": 140.281025,
+      "after_mean_ms": 5.630333333333333,
+      "mean_reduction_ms": 134.65069166666666
+    }
+  ]
+}

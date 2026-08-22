@@ -493,27 +493,34 @@ export function buildAgentRoster(
   return roster
 }
 
-/** Deterministic route priority for same-backend rows: local is definitionally
- * this box; ssh beats HTTP remotes; cloud last. */
-const CANONICAL_KIND_PRIORITY: Record<ConnectionKind, number> = { cloud: 3, local: 0, remote: 2, ssh: 1 }
+/** Deterministic route priority for same-backend Bot Mode rows: local is
+ * definitionally this box; HTTP connections avoid SSH's isolated-bot path;
+ * cloud follows remote; SSH is the connect-on-demand fallback. */
+const CANONICAL_KIND_PRIORITY: Record<ConnectionKind, number> = { cloud: 2, local: 0, remote: 1, ssh: 3 }
 
 /**
  * Which connection represents a collapsed same-backend roster row: the ACTIVE
- * (primary) connection when it is one of the candidates — the row should route
- * where the window already routes — else the highest kind priority, else the
- * earliest-registered (enumeration order follows registry order).
+ * (primary) connection when it is one of the preferred candidates. Local wins
+ * outright; otherwise HTTP connections win over SSH so Bot Mode never routes
+ * a same-install row through SSH just because the window primary is SSH. Ties
+ * use the primary connection, then earliest registration order.
  */
 function pickCanonicalConnection<T extends { connection: RegistryConnection; order: number }>(
   candidates: T[],
   primaryConnectionId?: string
 ): T {
-  const active = primaryConnectionId ? candidates.find(c => c.connection.id === primaryConnectionId) : undefined
+  const local = candidates.filter(candidate => candidate.connection.kind === 'local')
+  const http = candidates.filter(
+    candidate => candidate.connection.kind === 'remote' || candidate.connection.kind === 'cloud'
+  )
+  const preferred = local.length > 0 ? local : http.length > 0 ? http : candidates
+  const active = primaryConnectionId ? preferred.find(c => c.connection.id === primaryConnectionId) : undefined
 
   if (active) {
     return active
   }
 
-  return [...candidates].sort(
+  return [...preferred].sort(
     (a, b) =>
       CANONICAL_KIND_PRIORITY[a.connection.kind] - CANONICAL_KIND_PRIORITY[b.connection.kind] || a.order - b.order
   )[0]

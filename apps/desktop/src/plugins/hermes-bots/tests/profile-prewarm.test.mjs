@@ -146,6 +146,20 @@ test('behavior: a remote Connections row stays in this chat instead of hopping S
   assert.deepEqual(opened, [])
 })
 
+test('behavior: pointer entry does not warm an SSH Connections row', () => {
+  const { row, warmed } = renderBotRow({
+    connectionId: 'shell',
+    connectionKind: 'ssh',
+    connectionLabel: 'Shell',
+    name: 'research',
+    remoteSource: true,
+    sourceScoped: true
+  })
+
+  row.props.onPointerEnter()
+  assert.deepEqual(warmed, [])
+})
+
 test('behavior: remote default does not open this-device chat when the source did not activate', async () => {
   const bot = {
     connectionId: 'mac-mini',

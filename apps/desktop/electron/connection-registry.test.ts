@@ -388,7 +388,7 @@ test('roster: collapse prefers the active (primary) connection', () => {
   assert.equal(roster[0].connectionId, 'spark-ts')
 })
 
-test('roster: collapse pick order is local > ssh > remote > cloud, then registration order', () => {
+test('roster: collapse pick order is local > remote > cloud > ssh, then registration order', () => {
   const local = { id: 'local', kind: 'local' as const, label: 'This device' }
   const remote = { id: 'loop', kind: 'remote' as const, label: 'Loopback', url: 'http://127.0.0.1:8642' }
   const cloud = { id: 'cl', kind: 'cloud' as const, label: 'Cloud twin', url: 'http://cl:1' }
@@ -405,14 +405,14 @@ test('roster: collapse pick order is local > ssh > remote > cloud, then registra
   assert.equal(roster.length, 1)
   assert.equal(roster[0].connectionId, 'local')
 
-  // Without the local candidate, ssh wins over remote/cloud.
+  // Without the local candidate, HTTP wins over SSH.
   const noLocal = buildAgentRoster([
     { connection: cloud, profiles: ['default'], installId: 'aaa' },
     { connection: remote, profiles: ['default'], installId: 'aaa' },
     { connection: ssh, profiles: ['default'], installId: 'aaa' }
   ])
 
-  assert.equal(noLocal[0].connectionId, 'tun')
+  assert.equal(noLocal[0].connectionId, 'loop')
 
   // Same kind → earliest-registered (enumeration order) wins.
   const twin = { id: 'loop2', kind: 'remote' as const, label: 'Loopback 2', url: 'http://[::1]:8642' }
@@ -423,6 +423,31 @@ test('roster: collapse pick order is local > ssh > remote > cloud, then registra
   ])
 
   assert.equal(sameKind[0].connectionId, 'loop')
+})
+
+test('roster: same-install remote wins over an SSH primary', () => {
+  const remote = { id: 'gateway', kind: 'remote' as const, label: 'Gateway', url: 'http://box:8642' }
+  const ssh = { id: 'shell', kind: 'ssh' as const, label: 'Shell', host: 'box' }
+
+  const roster = buildAgentRoster(
+    [
+      { connection: ssh, profiles: ['default'], installId: 'aaa' },
+      { connection: remote, profiles: ['default'], installId: 'aaa' }
+    ],
+    { primaryConnectionId: 'shell' }
+  )
+
+  assert.equal(roster.length, 1)
+  assert.equal(roster[0].connectionId, 'gateway')
+})
+
+test('roster: SSH-only same-install group still routes through SSH', () => {
+  const ssh = { id: 'shell', kind: 'ssh' as const, label: 'Shell', host: 'box' }
+
+  const roster = buildAgentRoster([{ connection: ssh, profiles: ['default'], installId: 'aaa' }])
+
+  assert.equal(roster.length, 1)
+  assert.equal(roster[0].connectionId, 'shell')
 })
 
 test('roster: missing install_id bypasses the collapse (older backends keep current behavior)', () => {

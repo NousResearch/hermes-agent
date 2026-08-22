@@ -242,6 +242,157 @@ MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT = 100
 _COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
+_MEDIA_TOOL_RESULT_NAMES = {"media_generate", "media_artifact_get"}
+_MEDIA_TOOL_RESULT_MAX_BYTES = 16_384
+_MEDIA_TOOL_RESULT_STRING_MAX = 2_048
+
+
+def _parse_tool_result_json(value: Any) -> Any:
+    """Best-effort JSON decode for tool results returned as strings."""
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text or text[0] not in "[{":
+        return value
+    try:
+        return json.loads(text)
+    except Exception:
+        return value
+
+
+def _has_media_artifact_payload(value: Any, *, _depth: int = 0) -> bool:
+    """Return True when a result appears to contain renderable media metadata."""
+    if _depth > 6:
+        return False
+    value = _parse_tool_result_json(value)
+    if isinstance(value, str):
+        return any(
+            marker in value
+            for marker in (
+                "/workloads/artifact/",
+                "\"media_artifacts\"",
+                "\"inline_markdown\"",
+                "\"download_url\"",
+            )
+        )
+    if isinstance(value, list):
+        return any(_has_media_artifact_payload(item, _depth=_depth + 1) for item in value[:25])
+    if not isinstance(value, dict):
+        return False
+    if isinstance(value.get("media_artifacts"), list):
+        return True
+    if value.get("media_artifact_contract"):
+        return True
+    if value.get("inline_markdown") and (value.get("download_url") or value.get("url")):
+        return True
+    job = value.get("job")
+    if isinstance(job, dict) and isinstance(job.get("artifacts"), list):
+        return True
+    return any(_has_media_artifact_payload(child, _depth=_depth + 1) for child in value.values())
+
+
+def _bounded_media_tool_result(function_name: str, function_result: Any) -> Optional[dict[str, Any]]:
+    """Return a compact, OWUI-safe media result for streaming tool-complete SSE.
+
+    Hermes tool results can be arbitrarily large and may contain terminal output,
+    prompts, or other details that do not belong on the progress channel.  The
+    early media renderer only needs the artifact manifest, URLs, and minimal job
+    state, so expose that bounded allowlist only for media tools or results that
+    clearly contain media artifact metadata.
+    """
+    parsed = _parse_tool_result_json(function_result)
+    is_media_tool = function_name in _MEDIA_TOOL_RESULT_NAMES
+    if not is_media_tool and not _has_media_artifact_payload(parsed):
+        return None
+
+    allowed_keys = {
+        "success",
+        "result",
+        "error",
+        "status",
+        "submission",
+        "last_status",
+        "prompt_id",
+        "job",
+        "media_artifacts",
+        "media_artifact_contract",
+        "owui_media",
+        "artifact_count",
+        "state",
+        "display",
+        "primary_field",
+        "fallback_field",
+        "message",
+        "status_url",
+    }
+    artifact_keys = {
+        "artifact_id",
+        "kind",
+        "mime_type",
+        "filename",
+        "url",
+        "preview_url",
+        "download_url",
+        "inline_markdown",
+        "created_at",
+        "state",
+        "width",
+        "height",
+        "source",
+    }
+    job_keys = {
+        "prompt_id",
+        "status",
+        "workload",
+        "artifacts",
+        "owui_media",
+        "status_url",
+        "updated_at",
+        "submitted_at",
+    }
+
+    def clean(value: Any, *, context: str = "root", depth: int = 0) -> Any:
+        value = _parse_tool_result_json(value)
+        if depth > 8:
+            return None
+        if isinstance(value, dict):
+            keys = artifact_keys if context == "artifact" else job_keys if context == "job" else allowed_keys
+            out: dict[str, Any] = {}
+            for key, child in value.items():
+                if key not in keys:
+                    continue
+                child_context = "artifact" if key in {"media_artifacts", "artifacts"} else "job" if key == "job" else key
+                cleaned = clean(child, context=child_context, depth=depth + 1)
+                if cleaned is not None:
+                    out[key] = cleaned
+            return out or None
+        if isinstance(value, list):
+            child_context = "artifact" if context in {"media_artifacts", "artifacts"} else context
+            items = [clean(item, context=child_context, depth=depth + 1) for item in value[:20]]
+            return [item for item in items if item is not None]
+        if isinstance(value, str):
+            return value if len(value) <= _MEDIA_TOOL_RESULT_STRING_MAX else value[:_MEDIA_TOOL_RESULT_STRING_MAX] + "…"
+        if isinstance(value, (bool, int, float)) or value is None:
+            return value
+        return str(value)[:_MEDIA_TOOL_RESULT_STRING_MAX]
+
+    bounded = clean(parsed)
+    if not isinstance(bounded, dict):
+        return None
+    encoded = json.dumps(bounded, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) <= _MEDIA_TOOL_RESULT_MAX_BYTES:
+        return bounded
+    compact = {
+        "success": bounded.get("success"),
+        "media_artifacts": (
+            bounded.get("media_artifacts")
+            or (bounded.get("status") or {}).get("media_artifacts")
+            or (((bounded.get("status") or {}).get("job") or {}).get("artifacts"))
+        ),
+        "media_artifact_contract": bounded.get("media_artifact_contract") or (bounded.get("status") or {}).get("media_artifact_contract"),
+        "truncated": True,
+    }
+    return {key: value for key, value in compact.items() if value is not None}
 
 
 class ThreadSafeAsyncQueue(asyncio.Queue):
@@ -5168,11 +5319,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 if not tool_call_id or tool_call_id not in _started_tool_call_ids:
                     return
                 _started_tool_call_ids.discard(tool_call_id)
-                _stream_q.put_threadsafe(("__tool_progress__", {
+                payload = {
                     "tool": function_name,
                     "toolCallId": tool_call_id,
                     "status": "completed",
-                }))
+                }
+                bounded_result = _bounded_media_tool_result(function_name, function_result)
+                if bounded_result is not None:
+                    payload["result"] = bounded_result
+                _stream_q.put_threadsafe(("__tool_progress__", payload))
 
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.

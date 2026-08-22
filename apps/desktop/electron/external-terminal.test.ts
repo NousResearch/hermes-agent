@@ -4,6 +4,7 @@ import { test } from 'vitest'
 
 import {
   buildTerminalScript,
+  containsTerminalControlCharacters,
   posixQuote,
   resolveTerminalLaunch,
   terminalScriptEnv,
@@ -21,6 +22,13 @@ test('tuiResumeArgs resumes the session in the TUI', () => {
 
 test('tuiResumeArgs pins the profile ahead of the mode flag', () => {
   assert.deepEqual(tuiResumeArgs('sess', 'work'), ['--profile', 'work', '--tui', '--resume', 'sess'])
+})
+
+test('terminal launch arguments reject control characters before they reach a script', () => {
+  assert.equal(containsTerminalControlCharacters('safe-session'), false)
+  assert.equal(containsTerminalControlCharacters('session\r\nstart calc.exe'), true)
+  assert.throws(() => tuiResumeArgs('session\r\nstart calc.exe'), /control characters/)
+  assert.throws(() => tuiResumeArgs('session', 'work\nset HERMES_HOME=C:\\other'), /control characters/)
 })
 
 test('posixQuote survives embedded single quotes', () => {
@@ -81,6 +89,50 @@ test('buildTerminalScript emits a cmd script on Windows', () => {
     '"C:\\hermes\\venv\\Scripts\\hermes.exe" "--tui" "--resume" "sess"',
     ''
   ])
+})
+
+test('buildTerminalScript rejects control characters in every Windows script field', () => {
+  const base = {
+    args: ['--tui', '--resume', 'session'],
+    command: 'C:\\hermes\\venv\\Scripts\\hermes.exe',
+    cwd: 'C:\\Users\\b',
+    env: { PYTHONUTF8: '1' },
+    platform: 'win32' as const
+  }
+
+  const unsafeScripts = [
+    () => buildTerminalScript({ ...base, command: 'C:\\hermes\r\nstart calc.exe' }),
+    () => buildTerminalScript({ ...base, args: ['--resume', 'session\r\nstart calc.exe'] }),
+    () => buildTerminalScript({ ...base, cwd: 'C:\\Users\\b\r\nstart calc.exe' }),
+    () => buildTerminalScript({ ...base, env: { 'PYTHONUTF8\r\nstart': '1' } }),
+    () => buildTerminalScript({ ...base, env: { PYTHONUTF8: '1\r\nstart calc.exe' } })
+  ]
+
+  for (const buildUnsafeScript of unsafeScripts) {
+    assert.throws(buildUnsafeScript, /control characters/)
+  }
+})
+
+test('buildTerminalScript rejects control characters in every POSIX script field', () => {
+  const base = {
+    args: ['--tui', '--resume', 'session'],
+    command: '/home/b/.hermes/venv/bin/hermes',
+    cwd: '/home/b',
+    env: { PYTHONUTF8: '1' },
+    platform: 'darwin' as const
+  }
+
+  const unsafeScripts = [
+    () => buildTerminalScript({ ...base, command: '/home/b/hermes\nopen Calculator' }),
+    () => buildTerminalScript({ ...base, args: ['--resume', 'session\nopen Calculator'] }),
+    () => buildTerminalScript({ ...base, cwd: '/home/b\nopen Calculator' }),
+    () => buildTerminalScript({ ...base, env: { 'PYTHONUTF8\nopen': '1' } }),
+    () => buildTerminalScript({ ...base, env: { PYTHONUTF8: '1\nopen Calculator' } })
+  ]
+
+  for (const buildUnsafeScript of unsafeScripts) {
+    assert.throws(buildUnsafeScript, /control characters/)
+  }
 })
 
 test('terminalScriptExtension matches what the platform binds to a terminal', () => {

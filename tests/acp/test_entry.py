@@ -43,6 +43,88 @@ def test_main_skips_configured_mcp_discovery_when_requested(monkeypatch):
     assert discovery_calls == []
 
 
+def test_main_eagerly_imports_memory_provider_before_other_threads(monkeypatch):
+    """Regression test for #58083's real root cause on Windows.
+
+    `session/new` deadlocked indefinitely because the configured memory
+    provider's first import (e.g. mnemosyne -> numpy) ran inside
+    `asyncio.to_thread()`'s worker thread at the same time another thread was
+    starting up (MCP discovery, ACP's stdin-reader thread). Confirmed via
+    `py-spy dump`: the worker thread got stuck forever at the exact same
+    `import numpy` frame; pre-importing the provider on the main thread
+    before any other thread exists made the hang disappear (a subsequent
+    `import` from a worker thread is then just a cheap `sys.modules` cache
+    hit, no fresh native-extension load, so there's nothing left to race).
+
+    This test only pins the *ordering* contract that fixes the race: the
+    warm-up import must run before the MCP discovery thread is started and
+    before `HermesACPAgent()`/`acp.run_agent()` do anything that could spawn
+    the next thread. It intentionally does not attempt to reproduce the
+    underlying OS-level threading deadlock itself (not reliably
+    reproducible in a fast, deterministic unit test).
+    """
+    call_order = []
+
+    async def fake_run_agent(agent, **kwargs):
+        pass
+
+    def fake_load_config():
+        return {"memory": {"provider": "mnemosyne"}}
+
+    def fake_load_memory_provider(name):
+        call_order.append(("load_memory_provider", name))
+        return None
+
+    def fake_start_background_mcp_discovery(*, logger, thread_name):
+        call_order.append(("start_background_mcp_discovery",))
+
+    monkeypatch.setattr(entry, "_setup_logging", lambda: None)
+    monkeypatch.setattr(entry, "_load_env", lambda: None)
+    monkeypatch.setenv("HERMES_ACP_SKIP_CONFIGURED_MCP", "")
+    monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+    monkeypatch.setattr(
+        "plugins.memory.load_memory_provider", fake_load_memory_provider
+    )
+    monkeypatch.setattr(
+        "hermes_cli.mcp_startup.start_background_mcp_discovery",
+        fake_start_background_mcp_discovery,
+    )
+    monkeypatch.setattr(acp, "run_agent", fake_run_agent)
+
+    entry.main([])
+
+    assert call_order == [
+        ("load_memory_provider", "mnemosyne"),
+        ("start_background_mcp_discovery",),
+    ], (
+        "The memory provider warm-up import must run BEFORE MCP discovery "
+        "starts its background thread — reordering this reopens the "
+        "Windows import-lock/loader-lock deadlock from #58083."
+    )
+
+
+def test_main_skips_memory_provider_warmup_when_no_provider_configured(monkeypatch):
+    """No warm-up import (and no crash) when memory.provider is unset."""
+    warmup_calls = []
+
+    async def fake_run_agent(agent, **kwargs):
+        pass
+
+    monkeypatch.setattr(entry, "_setup_logging", lambda: None)
+    monkeypatch.setattr(entry, "_load_env", lambda: None)
+    monkeypatch.setenv("HERMES_ACP_SKIP_CONFIGURED_MCP", "1")
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr(
+        "plugins.memory.load_memory_provider",
+        lambda name: warmup_calls.append(name),
+    )
+    monkeypatch.setattr(acp, "run_agent", fake_run_agent)
+
+    entry.main([])
+
+    assert warmup_calls == []
+
+
 
 
 

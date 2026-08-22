@@ -116,6 +116,40 @@ async def test_audio_attachment_context_note_format():
     assert "ask the user what they'd like" not in result.lower()
 
 
+@pytest.mark.asyncio
+async def test_mixed_audio_and_document_route_by_attachment_mime(tmp_path):
+    """An AUDIO message must not label its document attachment as audio."""
+    runner = _make_runner(stt_enabled=True)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm")
+    audio_path = tmp_path / "cache_12345_my_song.mp3"
+    document_path = tmp_path / "cache_67890_notes.pdf"
+    event = MessageEvent(
+        text="Compare these files",
+        message_type=MessageType.AUDIO,
+        source=source,
+        media_urls=[str(audio_path), str(document_path)],
+        media_types=["audio/mpeg", "application/pdf"],
+    )
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        side_effect=AssertionError("audio files must not enter STT"),
+    ):
+        with patch(
+            "tools.credential_files.to_agent_visible_cache_path",
+            side_effect=lambda path: path,
+        ):
+            result = await runner._prepare_inbound_message_text(
+                event=event,
+                source=source,
+                history=[],
+            )
+
+    assert result.lower().count("audio file attachment") == 1
+    assert "my_song.mp3" in result
+    assert "document: 'notes.pdf'" in result
+
+
 # ---------------------------------------------------------------------------
 # 3. STT disabled still results in no transcription for audio file attachments
 # ---------------------------------------------------------------------------

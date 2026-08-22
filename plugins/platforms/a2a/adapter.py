@@ -30,6 +30,8 @@ Bind safety: with no token configured, the server binds 127.0.0.1 only.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import os
@@ -48,10 +50,12 @@ from typing import Any, Dict, Optional
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    CachedMedia,
     MessageEvent,
     MessageType,
     ProcessingOutcome,
     SendResult,
+    cache_media_bytes,
 )
 from gateway.config import Platform
 
@@ -63,7 +67,95 @@ _DEFAULT_PORT = 9900
 _ORPHAN_TIMEOUT = 300  # seconds before a pending task is considered orphaned
 _WATCHDOG_INTERVAL = 60  # seconds between orphaned task watchdog runs
 _MAX_BODY = 1_048_576  # 1MB max request body — prevents DoS via memory exhaustion
+_MAX_INLINE_RAW_PARTS = 16
 _SSE_KEEPALIVE = 5  # seconds between SSE keepalive comments
+
+
+class _InlineMediaLimitError(ValueError):
+    pass
+
+
+def _inline_raw_parts(params: dict) -> list[dict]:
+    """Return bounded inline raw FileParts from an inbound message."""
+    message = params.get("message", params)
+    parts = message.get("parts", []) if isinstance(message, dict) else []
+    inline_parts: list[dict] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        raw = part.get("raw")
+        if not isinstance(raw, str) or not raw:
+            continue
+        if len(inline_parts) >= _MAX_INLINE_RAW_PARTS:
+            raise _InlineMediaLimitError(
+                f"inline raw FileParts accepts at most {_MAX_INLINE_RAW_PARTS} attachments"
+            )
+        inline_parts.append(part)
+    return inline_parts
+
+
+def _decode_protojson_bytes(raw: str) -> bytes:
+    """Strictly decode ProtoJSON bytes with either base64 alphabet."""
+    if raw.endswith("="):
+        if len(raw) % 4:
+            raise binascii.Error("invalid base64 padding")
+        padded = raw
+    else:
+        if "=" in raw or len(raw) % 4 == 1:
+            raise binascii.Error("invalid base64 padding")
+        padded = raw + "=" * (-len(raw) % 4)
+    return base64.b64decode(padded, altchars=b"-_", validate=True)
+
+
+def _cache_inline_raw_media(parts: list[dict]) -> list[CachedMedia]:
+    """Decode and cache inline raw FileParts without fetching URLs."""
+    cached_media: list[CachedMedia] = []
+
+    for part in parts:
+        raw = part.get("raw")
+        if not isinstance(raw, str):
+            continue
+
+        filename = str(part.get("filename") or part.get("name") or "")
+        media_type = str(part.get("mediaType") or part.get("mimeType") or "")
+        try:
+            data = _decode_protojson_bytes(raw)
+        except (binascii.Error, ValueError):
+            logger.warning("A2A: skipping malformed inline FilePart %r", filename)
+            continue
+        if not data:
+            logger.warning("A2A: skipping empty inline FilePart %r", filename)
+            continue
+
+        try:
+            cached = cache_media_bytes(
+                data,
+                filename=filename,
+                mime_type=media_type,
+            )
+        except Exception as exc:
+            logger.warning("A2A: failed to cache inline FilePart %r: %s", filename, exc)
+            continue
+        if cached is None:
+            logger.warning("A2A: inline FilePart %r failed media validation", filename)
+            continue
+        cached_media.append(cached)
+
+    return cached_media
+
+
+def _message_type_for_media(cached_media: list[CachedMedia]) -> MessageType:
+    """Match the shared gateway precedence for mixed attachments."""
+    kinds = {item.kind for item in cached_media}
+    if "audio" in kinds:
+        return MessageType.AUDIO
+    if "document" in kinds:
+        return MessageType.DOCUMENT
+    if "image" in kinds:
+        return MessageType.PHOTO
+    if "video" in kinds:
+        return MessageType.VIDEO
+    return MessageType.TEXT
 
 
 def _reply_timeout() -> float:
@@ -701,6 +793,7 @@ class A2AAdapter(BasePlatformAdapter):
         the future the caller must wait on. Runs on an HTTP worker thread.
         """
         agent = agent or self._agents[""]
+        inline_raw_parts = _inline_raw_parts(params)
         text = protocol.extract_text(params)
         context_id = protocol.extract_context_id(params) or protocol.new_context_id()
         task_id = protocol.new_task_id()
@@ -759,11 +852,12 @@ class A2AAdapter(BasePlatformAdapter):
                 created_at=rec["created_iso"],
             ), None
 
+        cached_media = _cache_inline_raw_media(inline_raw_parts)
         fut = self._add_pending(task_id, context_id)
 
         event = MessageEvent(
             text=framed,
-            message_type=MessageType.TEXT,
+            message_type=_message_type_for_media(cached_media),
             source=self.build_source(
                 chat_id=context_id,
                 chat_name=f"a2a:{peer}",
@@ -772,6 +866,8 @@ class A2AAdapter(BasePlatformAdapter):
                 user_name=peer,
             ),
             message_id=task_id,
+            media_urls=[item.path for item in cached_media],
+            media_types=[item.media_type for item in cached_media],
         )
 
         try:
@@ -949,7 +1045,10 @@ class A2AAdapter(BasePlatformAdapter):
                 return (protocol.STATE_FAILED, "[agent did not reply in time]")
 
     def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
-        terminal, pending = self._prepare_task(params, peer, agent=agent)
+        try:
+            terminal, pending = self._prepare_task(params, peer, agent=agent)
+        except _InlineMediaLimitError as exc:
+            return protocol.jsonrpc_error(req_id, protocol.ERR_INVALID_PARAMS, str(exc))
         if terminal is not None:
             result = protocol.send_message_response(terminal) if v1_response else terminal
             return protocol.jsonrpc_result(req_id, result)
@@ -998,6 +1097,12 @@ class A2AAdapter(BasePlatformAdapter):
     def _rpc_message_stream(self, handler, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None) -> None:
         """Handle message/stream as an SSE response of JSON-RPC-wrapped
         StreamResponse events (A2A v1.0 §9.4)."""
+        try:
+            _inline_raw_parts(params)
+        except _InlineMediaLimitError as exc:
+            handler._json(200, protocol.jsonrpc_error(
+                req_id, protocol.ERR_INVALID_PARAMS, str(exc)))
+            return
         protocol.metrics.streams_started += 1
         self._sse_headers(handler)
 

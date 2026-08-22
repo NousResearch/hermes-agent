@@ -10,6 +10,7 @@ with a mocked agent handler.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -20,11 +21,22 @@ import urllib.error
 import urllib.request
 from concurrent.futures import Future
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from gateway.platforms.base import MessageType
 from plugins.platforms.a2a import protocol, security, tools
+
+
+_PNG_1X1_STANDARD_UNPADDED = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII"
+)
+_PNG_1X1_URLSAFE_UNPADDED = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk-A8AAQUBAScY42YAAAAASUVORK5CYII"
+)
+_PNG_1X1 = base64.b64decode(_PNG_1X1_STANDARD_UNPADDED + "=")
 
 
 def _free_port() -> int:
@@ -948,6 +960,38 @@ def _send_body(text, ctx="", extra_params=None):
     return {"jsonrpc": "2.0", "id": "1", "method": "message/send", "params": params}
 
 
+def _round_trip_parts(monkeypatch, parts, context_id):
+    """Send A2A parts through the live HTTP adapter and return its event."""
+    monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+    monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+    received = {}
+
+    def reply_fn(event):
+        received["event"] = event
+        return "got it"
+
+    adapter, base = _make_live_adapter(monkeypatch, reply_fn=reply_fn)
+
+    async def run():
+        assert await adapter.connect() is True
+        try:
+            message = protocol.message_with_parts(
+                protocol.ROLE_USER,
+                parts,
+                context_id=context_id,
+            )
+            response = await asyncio.to_thread(_post_json, base + "/", {
+                "jsonrpc": "2.0", "id": "1", "method": "message/send",
+                "params": {"message": message},
+            })
+            assert response["result"]["status"]["state"] == protocol.STATE_COMPLETED
+            return received["event"]
+        finally:
+            await adapter.disconnect()
+
+    return asyncio.run(run())
+
+
 @pytest.mark.integration
 class TestInboundRoundTrip:
     def test_live_server_card_and_message_send(self, monkeypatch):
@@ -992,47 +1036,243 @@ class TestInboundRoundTrip:
 
         asyncio.run(run())
 
+
+class TestInlineRawMediaRoundTrip:
     def test_mixed_parts_delivered_to_agent(self, monkeypatch):
-        """A message with text + file + data Parts delivers all content to the
-        agent — file URLs and data JSON are rendered into the text stream."""
+        """URL FileParts stay text-only and are never fetched."""
+        requests_received = []
+
+        class CountingHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests_received.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def do_HEAD(self):
+                self.do_GET()
+
+            def log_message(self, format, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), CountingHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            file_url = f"http://127.0.0.1:{server.server_port}/report.pdf"
+            event = _round_trip_parts(
+                monkeypatch,
+                [
+                    protocol.text_part("Please process these:"),
+                    protocol.file_part(
+                        url=file_url,
+                        filename="report.pdf",
+                        media_type="application/pdf",
+                    ),
+                    protocol.data_part({"title": "Q3", "pages": 42}, "application/json"),
+                ],
+                "ctx-mixed",
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        assert "Please process these:" in event.text
+        assert file_url in event.text
+        assert "report.pdf" in event.text
+        assert "Q3" in event.text
+        assert "42" in event.text
+        assert event.media_urls == []
+        assert event.media_types == []
+        assert requests_received == []
+
+    def test_inline_raw_image_delivered_as_media_attachment(self, monkeypatch):
+        """A2A raw image Parts reach the normal gateway media pipeline."""
+        image_bytes = _PNG_1X1
+        event = _round_trip_parts(
+            monkeypatch,
+            [
+                protocol.text_part("Describe this image"),
+                protocol.file_part(
+                    raw=base64.b64encode(image_bytes).decode("ascii"),
+                    filename="sample.png",
+                    media_type="image/png",
+                ),
+            ],
+            "ctx-inline-image",
+        )
+
+        assert "Describe this image" in event.text
+        assert event.message_type is MessageType.PHOTO
+        assert event.media_types == ["image/png"]
+        assert len(event.media_urls) == 1
+        assert Path(event.media_urls[0]).read_bytes() == image_bytes
+
+    @pytest.mark.parametrize(
+        "raw",
+        [_PNG_1X1_STANDARD_UNPADDED, _PNG_1X1_URLSAFE_UNPADDED],
+        ids=["standard-unpadded", "urlsafe-unpadded"],
+    )
+    def test_protojson_raw_base64_variants_are_accepted(self, monkeypatch, raw):
+        """ProtoJSON bytes accept standard/URL-safe base64 without padding."""
+        event = _round_trip_parts(
+            monkeypatch,
+            [
+                protocol.text_part("Describe this image"),
+                protocol.file_part(
+                    raw=raw,
+                    filename="sample.png",
+                    media_type="image/png",
+                ),
+            ],
+            f"ctx-{raw[:8]}",
+        )
+
+        assert event.message_type is MessageType.PHOTO
+        assert event.media_types == ["image/png"]
+        assert len(event.media_urls) == 1
+        assert Path(event.media_urls[0]).read_bytes() == _PNG_1X1
+
+    def test_multiple_inline_raw_files_preserve_attachment_order(self, monkeypatch):
+        """Every inline raw FilePart reaches the event in wire order."""
+        image_bytes = _PNG_1X1
+        document_bytes = b"inline A2A document"
+        event = _round_trip_parts(
+            monkeypatch,
+            [
+                protocol.text_part("Compare these files"),
+                protocol.file_part(
+                    raw=base64.b64encode(image_bytes).decode("ascii"),
+                    filename="sample.png",
+                    media_type="image/png",
+                ),
+                protocol.file_part(
+                    raw=base64.b64encode(document_bytes).decode("ascii"),
+                    filename="notes.txt",
+                    media_type="text/plain",
+                ),
+            ],
+            "ctx-multiple-inline-files",
+        )
+
+        assert event.message_type is MessageType.DOCUMENT
+        assert event.media_types == ["image/png", "text/plain"]
+        assert [Path(path).read_bytes() for path in event.media_urls] == [
+            image_bytes,
+            document_bytes,
+        ]
+
+    def test_audio_takes_precedence_in_mixed_inline_files(self, monkeypatch):
+        """Mixed audio remains agent-visible while documents keep their own path."""
+        audio_bytes = b"ID3\x04\x00\x00\x00\x00\x00\x00inline A2A audio"
+        document_bytes = b"inline A2A document"
+        event = _round_trip_parts(
+            monkeypatch,
+            [
+                protocol.text_part("Compare these files"),
+                protocol.file_part(
+                    raw=base64.b64encode(audio_bytes).decode("ascii"),
+                    filename="sample.mp3",
+                    media_type="audio/mpeg",
+                ),
+                protocol.file_part(
+                    raw=base64.b64encode(document_bytes).decode("ascii"),
+                    filename="notes.txt",
+                    media_type="text/plain",
+                ),
+            ],
+            "ctx-mixed-audio-document",
+        )
+
+        assert event.message_type is MessageType.AUDIO
+        assert event.media_types == ["audio/mpeg", "text/plain"]
+        assert [Path(path).read_bytes() for path in event.media_urls] == [
+            audio_bytes,
+            document_bytes,
+        ]
+
+    def test_malformed_inline_base64_is_skipped(self, monkeypatch):
+        """Malformed base64 never becomes a cached attachment or fails the task."""
+        event = _round_trip_parts(
+            monkeypatch,
+            [
+                protocol.text_part("Handle the caption"),
+                protocol.file_part(
+                    raw="not-valid-base64!",
+                    filename="broken.png",
+                    media_type="image/png",
+                ),
+            ],
+            "ctx-malformed-inline-image",
+        )
+
+        assert event.message_type is MessageType.TEXT
+        assert event.media_urls == []
+        assert event.media_types == []
+
+    def test_invalid_inline_image_bytes_are_not_cached(self, monkeypatch):
+        """A claimed image must pass the shared magic-byte validation."""
+        event = _round_trip_parts(
+            monkeypatch,
+            [
+                protocol.text_part("Handle the caption"),
+                protocol.file_part(
+                    raw=base64.b64encode(b"not an image").decode("ascii"),
+                    filename="fake.png",
+                    media_type="image/png",
+                ),
+            ],
+            "ctx-invalid-inline-image",
+        )
+
+        assert event.message_type is MessageType.TEXT
+        assert event.media_urls == []
+        assert event.media_types == []
+
+    @pytest.mark.parametrize("method", ["message/send", "message/stream"])
+    def test_too_many_inline_raw_parts_return_invalid_params(self, monkeypatch, method):
+        """One request cannot amplify into unbounded cache files or warnings."""
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
-
-        received = {}
-
-        def reply_fn(event):
-            received["text"] = event.text
-            return "got it"
-
-        adapter, base = _make_live_adapter(monkeypatch, reply_fn=reply_fn)
+        adapter, base = _make_live_adapter(monkeypatch)
+        parts = [
+            protocol.file_part(
+                raw="YQ==",
+                filename=f"part-{index}.txt",
+                media_type="text/plain",
+            )
+            for index in range(17)
+        ]
 
         async def run():
             assert await adapter.connect() is True
-            msg = protocol.message_with_parts(
-                protocol.ROLE_USER,
-                [
-                    protocol.text_part("Please process these:"),
-                    protocol.file_part(url="https://example.com/report.pdf",
-                                       filename="report.pdf", media_type="application/pdf"),
-                    protocol.data_part({"title": "Q3", "pages": 42}, "application/json"),
-                ],
-                context_id="ctx-mixed",
-            )
-            resp = await asyncio.to_thread(_post_json, base + "/", {
-                "jsonrpc": "2.0", "id": "1", "method": "message/send",
-                "params": {"message": msg},
-            })
-            assert resp["result"]["status"]["state"] == "TASK_STATE_COMPLETED"
-            # The agent received all three parts rendered into text
-            assert "Please process these:" in received["text"]
-            assert "https://example.com/report.pdf" in received["text"]
-            assert "report.pdf" in received["text"]
-            assert "Q3" in received["text"]
-            assert "42" in received["text"]
-            await adapter.disconnect()
+            try:
+                message = protocol.message_with_parts(
+                    protocol.ROLE_USER,
+                    parts,
+                    context_id="ctx-too-many-inline-parts",
+                )
+                response = await asyncio.to_thread(
+                    _post_json,
+                    base + "/",
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "1",
+                        "method": method,
+                        "params": {"message": message},
+                    },
+                )
+                assert response["error"]["code"] == protocol.ERR_INVALID_PARAMS
+                assert "at most 16" in response["error"]["message"]
+            finally:
+                await adapter.disconnect()
 
         asyncio.run(run())
 
+
+@pytest.mark.integration
+class TestInboundProtocolRoundTrip:
     def test_push_config_crud_over_http(self, monkeypatch):
         """Full push notification config CRUD over real HTTP."""
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
@@ -1364,16 +1604,37 @@ class TestMultiAgentRouting:
             "agents": {"dev": {"profile": "dev", "tenant": "dev"}}
         }))
         agent = adapter._agents["dev"]
+        document_bytes = b"routed A2A document"
+        monkeypatch.setattr(
+            "plugins.platforms.a2a.adapter.cache_media_bytes",
+            lambda *_args, **_kwargs: pytest.fail("routed media must not use the parent cache"),
+        )
 
         def fake_forward(agent_arg, peer, context_id, framed_text):
             assert agent_arg["slug"] == "dev"
             assert peer == "peer-x"
             assert "hello" in framed_text
+            assert "[file: notes.txt]" in framed_text
+            assert "saved at:" not in framed_text
             return "dev reply", protocol.STATE_COMPLETED
 
         adapter._forward_to_profile = fake_forward  # type: ignore
         terminal, pending = adapter._prepare_task(
-            {"tenant": "dev", "message": protocol.text_message(protocol.ROLE_USER, "hello", context_id="ctx-dev")},
+            {
+                "tenant": "dev",
+                "message": protocol.message_with_parts(
+                    protocol.ROLE_USER,
+                    [
+                        protocol.text_part("hello"),
+                        protocol.file_part(
+                            raw=base64.b64encode(document_bytes).decode("ascii"),
+                            filename="notes.txt",
+                            media_type="text/plain",
+                        ),
+                    ],
+                    context_id="ctx-dev",
+                ),
+            },
             "peer-x",
             agent=agent,
         )

@@ -416,7 +416,25 @@ async def _api_post(
             raw = await response.text()
             if not response.ok:
                 raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status}: {raw[:200]}")
-            return json.loads(raw)
+            data = json.loads(raw)
+            # iLink returns HTTP 200 even for API-level failures (ret < 0).
+            # Without this, endpoints whose response is discarded (sendTyping,
+            # the final media sendmessage) fail silently. Log a warning; do not
+            # raise, because callers legitimately inspect ret < 0 responses
+            # (rate limit, session expiry) and handle them with backoff/retry.
+            ret = data.get("ret")
+            errcode = data.get("errcode")
+            if (isinstance(ret, (int, float)) and ret < 0) or (
+                isinstance(errcode, (int, float)) and errcode < 0
+            ):
+                logger.warning(
+                    "iLink POST %s returned ret=%s errcode=%s errmsg=%s",
+                    endpoint,
+                    ret,
+                    errcode,
+                    data.get("errmsg") or data.get("msg") or "",
+                )
+            return data
     return await asyncio.wait_for(_do(), timeout=timeout_ms / 1000)
 
 

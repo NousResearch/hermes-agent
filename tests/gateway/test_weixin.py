@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import logging
 import os
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -628,6 +629,49 @@ class TestWeixinApiTimeout:
         # gone and `timeout` is no longer forwarded to session.post().
         [(_url, kwargs)] = session.post_calls
         assert "timeout" not in kwargs
+
+    def test_api_post_logs_warning_for_negative_ret(self, caplog):
+        """iLink returns HTTP 200 even for API-level failures (ret < 0).
+
+        Regression test for #64704 / #70776 / #70792: a getUploadUrl rejection
+        like ``{'ret': -2}`` must be surfaced in the logs instead of being
+        silently swallowed (some endpoints, e.g. the final media sendmessage,
+        discard the response entirely). The response dict must still be
+        returned so callers can inspect ret < 0 for rate-limit / session-expiry
+        handling.
+        """
+        session = _StubSession(_StubResponse(body='{"ret": -2, "errcode": -2, "errmsg": "rate limited"}'))
+        with caplog.at_level(logging.WARNING, logger="gateway.platforms.weixin"):
+            result = asyncio.run(
+                weixin._api_post(
+                    session,
+                    base_url="https://weixin.example.com",
+                    endpoint=weixin.EP_GET_UPLOAD_URL,
+                    payload={"filekey": "k"},
+                    token="tok",
+                    timeout_ms=5000,
+                )
+            )
+        assert result == {"ret": -2, "errcode": -2, "errmsg": "rate limited"}
+        assert any(
+            "ilink/bot/getuploadurl" in rec.message and "ret=-2" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_api_post_no_warning_for_success_ret(self, caplog):
+        session = _StubSession(_StubResponse(body='{"ret": 0}'))
+        with caplog.at_level(logging.WARNING, logger="gateway.platforms.weixin"):
+            asyncio.run(
+                weixin._api_post(
+                    session,
+                    base_url="https://weixin.example.com",
+                    endpoint="ep",
+                    payload={"k": "v"},
+                    token="tok",
+                    timeout_ms=5000,
+                )
+            )
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
     def test_get_updates_returns_empty_sentinel_on_timeout(self):

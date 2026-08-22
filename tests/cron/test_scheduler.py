@@ -506,6 +506,9 @@ class TestDeliverResultWrapping:
         text_sent = adapter.send.call_args[0][1]
         assert "MEDIA:" not in text_sent
         assert "Here is TTS" in text_sent
+        # Cron output is terminal.  Telegram's adapter consumes notify=True to
+        # avoid re-arming the ~5s typing timer after the final send (#48678).
+        assert adapter.send.call_args.kwargs["metadata"]["notify"] is True
 
         # Audio file should be sent as a voice attachment
         adapter.send_voice.assert_called_once()

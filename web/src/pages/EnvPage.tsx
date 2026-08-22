@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
+  AlertCircle,
   Eye,
   EyeOff,
   ExternalLink,
@@ -14,9 +15,18 @@ import {
   Zap,
   ChevronDown,
   ChevronRight,
+  RefreshCw,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { EnvVarInfo } from "@/lib/api";
+import {
+  INITIAL_LOAD_START,
+  initialLoadFailed,
+  initialLoadRetrying,
+  initialLoadSucceeded,
+  initialLoadView,
+  type InitialLoadState,
+} from "@/lib/initial-load";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
@@ -608,6 +618,8 @@ function CustomKeysCard({
 
 export default function EnvPage() {
   const [vars, setVars] = useState<Record<string, EnvVarInfo> | null>(null);
+  const [initialLoad, setInitialLoad] =
+    useState<InitialLoadState>(INITIAL_LOAD_START);
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [revealed, setRevealed] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
@@ -616,12 +628,29 @@ export default function EnvPage() {
   const { t } = useI18n();
   const { setAfterTitle } = usePageHeader();
 
-  useEffect(() => {
+  // getEnvVars is the only read gating this page's render, so its rejection
+  // must surface instead of leaving the spinner up forever. Extracted so the
+  // Retry button can re-run it.
+  const loadVars = useCallback(() => {
     api
       .getEnvVars()
-      .then(setVars)
-      .catch(() => {});
+      .then((resp) => {
+        setVars(resp);
+        setInitialLoad(initialLoadSucceeded);
+      })
+      .catch((err: unknown) => setInitialLoad(initialLoadFailed(err)));
   }, []);
+
+  // Retry clears the previous error and puts the spinner back, so a second
+  // failure reports its own message rather than the stale one sticking.
+  const retryInitialLoad = useCallback(() => {
+    setInitialLoad(initialLoadRetrying());
+    loadVars();
+  }, [loadVars]);
+
+  useEffect(() => {
+    loadVars();
+  }, [loadVars]);
 
   // Scroll-to sub-nav in the page header
   const sections = useMemo(() => {
@@ -883,7 +912,28 @@ export default function EnvPage() {
     };
   }, [vars, showAdvanced, t]);
 
-  if (!vars) {
+  const initialView = initialLoadView(initialLoad, Boolean(vars));
+  if (initialView === "error") {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-24 text-sm">
+        <div className="flex items-start gap-2 text-destructive">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span className="wrap-break-word">{initialLoad.error}</span>
+        </div>
+        <Button
+          size="sm"
+          outlined
+          onClick={retryInitialLoad}
+          prefix={<RefreshCw />}
+        >
+          {t.common.retry}
+        </Button>
+      </div>
+    );
+  }
+  // The null re-check is implied by `initialView === "spinner"`; it is spelled
+  // out so TypeScript keeps narrowing `vars` to non-null below.
+  if (initialView === "spinner" || !vars) {
     return (
       <div className="flex items-center justify-center py-24">
         <Spinner className="text-2xl text-primary" />

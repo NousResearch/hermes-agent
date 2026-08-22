@@ -1,5 +1,13 @@
-import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useMemo,
+} from "react";
+import {
+  AlertCircle,
   Code,
   Download,
   FormInput,
@@ -38,6 +46,14 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { getNestedValue, setNestedValue } from "@/lib/nested";
+import {
+  INITIAL_LOAD_START,
+  initialLoadFailed,
+  initialLoadRetrying,
+  initialLoadSucceeded,
+  initialLoadView,
+  type InitialLoadState,
+} from "@/lib/initial-load";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { AutoField } from "@/components/AutoField";
@@ -108,6 +124,8 @@ export default function ConfigPage() {
     Record<string, unknown>
   > | null>(null);
   const [categoryOrder, setCategoryOrder] = useState<string[]>([]);
+  const [initialLoad, setInitialLoad] =
+    useState<InitialLoadState>(INITIAL_LOAD_START);
   const [defaults, setDefaults] = useState<Record<string, unknown> | null>(
     null,
   );
@@ -161,14 +179,14 @@ export default function ConfigPage() {
     return cat.charAt(0).toUpperCase() + cat.slice(1);
   }
 
-  useEffect(() => {
-    api
-      .getConfig()
-      .then(setConfig)
-      .catch(() => {});
-    api
-      .getSchema()
-      .then((resp) => {
+  // getConfig and getSchema are the two reads the render gate below depends
+  // on, so they are the only ones allowed to raise the initial-load error
+  // state. Extracted into a callback so the Retry button can re-run exactly
+  // this set without re-firing the enrichment reads.
+  const loadRequired = useCallback(() => {
+    Promise.all([
+      api.getConfig().then(setConfig),
+      api.getSchema().then((resp) => {
         // memory.provider has a dedicated management UI on the Plugins page
         // (provider cards + guided setup/switch flow). Hide it from the
         // generic config form so the two surfaces don't fight; the schema
@@ -180,8 +198,26 @@ export default function ConfigPage() {
         delete fields["memory.provider"];
         setSchema(fields);
         setCategoryOrder(resp.category_order ?? []);
-      })
-      .catch(() => {});
+      }),
+    ])
+      .then(() => setInitialLoad(initialLoadSucceeded))
+      .catch((err: unknown) => setInitialLoad(initialLoadFailed(err)));
+  }, []);
+
+  // Retry clears the previous error and puts the spinner back, so a second
+  // failure reports its own message rather than the stale one sticking.
+  const retryInitialLoad = useCallback(() => {
+    setInitialLoad(initialLoadRetrying());
+    loadRequired();
+  }, [loadRequired]);
+
+  useEffect(() => {
+    loadRequired();
+    // The three reads below are enrichments, not render gates, so they keep
+    // failing silently: `defaults` only powers reset-to-default (guarded by
+    // `if (!defaults || !config) return`), and `configPath` is a header
+    // string. A slow or failing /api/status must not black out a page that
+    // otherwise renders fine.
     api
       .getDefaults()
       .then(setDefaults)
@@ -200,7 +236,7 @@ export default function ConfigPage() {
       .getStatus()
       .then((resp) => setConfigPath((prev) => prev ?? resp.config_path))
       .catch(() => {});
-  }, []);
+  }, [loadRequired]);
 
   // Set active category when categories load
   useEffect(() => {
@@ -366,8 +402,29 @@ export default function ConfigPage() {
     reader.readAsText(file);
   };
 
-  /* ---- Loading ---- */
-  if (!config || !schema) {
+  /* ---- Loading / initial-load failure ---- */
+  const initialView = initialLoadView(initialLoad, Boolean(config && schema));
+  if (initialView === "error") {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-24 text-sm">
+        <div className="flex items-start gap-2 text-destructive">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span className="wrap-break-word">{initialLoad.error}</span>
+        </div>
+        <Button
+          size="sm"
+          outlined
+          onClick={retryInitialLoad}
+          prefix={<RefreshCw />}
+        >
+          {t.common.retry}
+        </Button>
+      </div>
+    );
+  }
+  // The null re-check is implied by `initialView === "spinner"`; it is spelled
+  // out so TypeScript keeps narrowing config/schema to non-null below.
+  if (initialView === "spinner" || !config || !schema) {
     return (
       <div className="flex items-center justify-center py-24">
         <Spinner className="text-2xl text-primary" />

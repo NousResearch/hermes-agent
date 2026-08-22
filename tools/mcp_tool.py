@@ -4699,8 +4699,11 @@ def _handle_auth_error_and_retry(
       2. If yes, set the server's ``_reconnect_event`` so the server task
          tears down the current MCP session and rebuilds it with fresh
          credentials. Wait briefly for ``_ready`` to re-fire.
-      3. Retry the operation once. Return the retry result if it produced
-         a non-error JSON payload. Otherwise return the ``needs_reauth``
+      3. Retry the operation once. Return the retry result unchanged if
+         the retry completed — a completed round trip proves the auth
+         recovery worked, so a functional error in the payload (unknown
+         tool, invalid arguments, ...) belongs to the model, not to the
+         breaker. Only if the retry *raised* return the ``needs_reauth``
          error dict so the model stops hallucinating manual refresh.
       4. Return None if ``exc`` is not an auth error, signalling the
          caller to use the generic error path.
@@ -4758,19 +4761,21 @@ def _handle_auth_error_and_retry(
 
         try:
             result = retry_call()
-            try:
-                parsed = json.loads(result)
-                if "error" not in parsed:
-                    _reset_server_error(server_name)
-                    return result
-            except (json.JSONDecodeError, TypeError):
-                _reset_server_error(server_name)
-                return result
         except Exception as retry_exc:
             logger.warning(
                 "MCP %s/%s retry after auth recovery failed: %s",
                 server_name, op_description, retry_exc,
             )
+        else:
+            # The retry completed a full round trip, so the credentials and
+            # the transport are both demonstrably working — whether or not
+            # the payload carries a functional error (unknown tool, invalid
+            # arguments, business-logic rejection, ...). Reset the transport
+            # breaker and hand the payload back untouched: replacing it with
+            # a needs_reauth response would hide the real error and tell the
+            # model to re-authenticate for no reason.
+            _reset_server_error(server_name)
+            return result
 
     # No recovery available, or retry also failed: surface a structured
     # needs_reauth error. Bumps the circuit breaker so the model stops
@@ -4912,10 +4917,12 @@ def _handle_session_expired_and_retry(
         op_description: Human-readable name of the operation (logs).
 
     Returns:
-        A JSON string if reconnect + retry was attempted and produced
-        a response, or ``None`` to fall through to the caller's
-        generic error path (not a session-expired error, no server
-        record, reconnect didn't ready in time, or retry also failed).
+        The retry's response unchanged if reconnect + retry produced one
+        — including when that response carries a functional error, since
+        a completed round trip is transport success. ``None`` to fall
+        through to the caller's generic error path (not a session-expired
+        error, no server record, reconnect didn't ready in time, or the
+        retry itself raised).
     """
     if not _is_session_expired_error(exc):
         return None
@@ -4952,20 +4959,19 @@ def _handle_session_expired_and_retry(
 
     try:
         result = retry_call()
-        try:
-            parsed = json.loads(result)
-            if "error" not in parsed:
-                _reset_server_error(server_name)
-                return result
-        except (json.JSONDecodeError, TypeError):
-            _reset_server_error(server_name)
-            return result
     except Exception as retry_exc:
         logger.warning(
             "MCP %s/%s retry after session reconnect failed: %s",
             server_name, op_description, retry_exc,
         )
-    return None
+        return None
+    # The retry round-tripped, so the rebuilt transport works — whether or
+    # not the payload carries a functional error. Reset the breaker and
+    # return the payload untouched instead of falling through to the
+    # caller's generic error path, which would bump the breaker and mask
+    # the real error behind "MCP call failed".
+    _reset_server_error(server_name)
+    return result
 
 
 # Exact raw server names whose ``supports_parallel_tool_calls`` config is True.
@@ -5965,15 +5971,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         try:
             result = _call_once()
-            # Check if the MCP tool itself returned an error
-            try:
-                parsed = json.loads(result)
-                if "error" in parsed:
-                    _bump_server_error(server_name)
-                else:
-                    _reset_server_error(server_name)  # success — reset
-            except (json.JSONDecodeError, TypeError):
-                _reset_server_error(server_name)  # non-JSON = success
+            # The round trip completed without a transport exception, so the
+            # server is reachable — that holds whether the tool itself
+            # succeeded or returned a functional error (unknown tool, bad
+            # argument, business-logic failure, ...). A functional error is
+            # not a transport outage: it stays visible to the model in
+            # ``result``, but it must not bump the transport circuit breaker,
+            # or a chatty tool returning ordinary errors would eventually
+            # trip a breaker meant for connectivity failures.
+            _reset_server_error(server_name)
             return result
         except InterruptedError:
             return _interrupted_call_result()

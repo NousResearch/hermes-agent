@@ -1,0 +1,443 @@
+# Hermes mezu estatikoen katalogoa -- Euskara
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  dangerous_header: "⚠️  KOMANDO ARRISKUTSUA: {description}"
+  choose_long:     "      [o]behin  |  [s]saioa  |  [a]beti  |  [d]ukatu"
+  choose_short:    "      [o]behin  |  [s]saioa  |  [d]ukatu"
+  prompt_long:     "      Aukera [o/s/a/D]: "
+  prompt_short:    "      Aukera [o/s/D]: "
+  choose_smart_deny: "      [o]behin  |  [d]ukatu"
+  prompt_smart_deny: "      Aukera [o/D]: "
+  smart_deny_once_inputs: "o,once"
+  smart_deny_deny_inputs: "d,deny"
+  timeout:         "      ⏱ Denbora-muga — komandoa ukatuta"
+  allowed_once:    "      ✓ Behin onartuta"
+  allowed_session: "      ✓ Saio honetarako onartuta"
+  allowed_always:  "      ✓ Baimen-zerrenda iraunkorrean gehituta"
+  denied:          "      ✗ Ukatuta"
+  cancelled:       "      ✗ Bertan behera utzita"
+  blocklist_message: "Komando hau baldintzarik gabeko blokeo-zerrendan dago eta ezin da onartu."
+
+gateway:
+  approval_expired: "⚠️ Onarpena iraungi da (agentea ez dago jada zain). Eskatu agenteari berriro saiatzeko."
+  draining:         "⏳ {count} agente aktibo itxaroten berrabiarazi aurretik..."
+  goal_cleared:     "✓ Helburua ezabatuta."
+  no_active_goal:   "Ez dago helburu aktiborik."
+  config_read_failed: "⚠️ Ezin izan da config.yaml irakurri: {error}"
+  config_save_failed: "⚠️ Ezin izan da konfigurazioa gorde: {error}"
+
+  model:
+    error_prefix:           "Errorea: {error}"
+    switched:               "Modeloa `{model}`-ra aldatuta"
+    provider_label:         "Hornitzailea: {provider}"
+    context_label:          "Testuingurua: {tokens} token"
+    max_output_label:       "Gehienezko irteera: {tokens} token"
+    cost_label:             "Kostua: {cost}"
+    capabilities_label:     "Gaitasunak: {capabilities}"
+    prompt_caching_enabled: "Prompt cache-a: gaituta"
+    warning_prefix:         "Abisua: {warning}"
+    saved_global:           "config.yaml-n gordeta (`--global`)"
+    session_only_hint:      "_(saio honetarako soilik — gehitu `--global` gordetzeko)_"
+    current_label:          "Unekoa: `{model}` {provider}-en"
+    current_tag:            " (unekoak)"
+    more_models_suffix:     " (+{count} gehiago)"
+    usage_switch_model:     "`/model <izena>` — modeloa aldatu"
+    usage_switch_provider:  "`/model <izena> --provider <slug>` — hornitzailea aldatu"
+    usage_persist:          "`/model <izena> --global` — modu iraunkorrean gorde"
+
+  agents:
+    header:                "🤖 **Agente eta lan aktiboak**"
+    active_agents:         "**Agente aktiboak:** {count}"
+    this_chat:             " · txat hau"
+    more:                  "... eta {count} gehiago"
+    running_processes:     "**Atzeko planoan exekutatzen ari diren prozesuak:** {count}"
+    async_jobs:            "**Gateway-aren lan asinkronoak:** {count}"
+    background_delegations: "**Atzeko planoko delegazioak:** {count}"
+    none:                  "Ez dago agente aktiborik edo exekutatzen ari den lanik."
+    state_starting:        "abiarazten"
+    state_running:         "exekutatzen"
+
+  approve:
+    no_pending:            "Ez dago onartzeko komandorik zain."
+    once_singular:         "✅ Komandoa onartuta. Agentea berriro lanean ari da..."
+    once_plural:           "✅ Komandoak onartuta ({count} komando). Agentea berriro lanean ari da..."
+    session_singular:      "✅ Komandoa onartuta (patroia saio honetarako onartuta). Agentea berriro lanean ari da..."
+    session_plural:        "✅ Komandoak onartuta (patroia saio honetarako onartuta) ({count} komando). Agentea berriro lanean ari da..."
+    always_singular:       "✅ Komandoa onartuta (patroia betirako onartuta). Agentea berriro lanean ari da..."
+    always_plural:         "✅ Komandoak onartuta (patroia betirako onartuta) ({count} komando). Agentea berriro lanean ari da..."
+
+  background:
+    usage:                 "Erabilera: /background <prompt>\nAdibidea: /background Laburbildu gaurko HN istorio nagusiak\n\nPrompt-a saio bereizi batean exekutatzen du. Txateatzen jarrai dezakezu — emaitza hemen agertuko da amaitzean."
+    started:               "🔄 Atzeko lan hasia: \"{preview}\"\nLanaren IDa: {task_id}\nTxateatzen jarrai dezakezu — emaitzak amaitzean agertuko dira."
+
+  branch:
+    db_unavailable:        "Saio-datu-basea ez dago erabilgarri."
+    no_conversation:       "Ez dago adarkatzeko elkarrizketarik — bidali mezu bat lehenengo."
+    create_failed:         "Ezin izan da adarra sortu: {error}"
+    switch_failed:         "Adarra sortuta baina ezin izan da bertara aldatu."
+    branched_one:          "⑂ **{title}**-ra adarkatuta ({count} mezu kopiatuta)\nJatorrizkoa: `{parent}`\nAdarra: `{new}`\nErabili `/resume` jatorrizkora itzultzeko."
+    branched_many:         "⑂ **{title}**-ra adarkatuta ({count} mezu kopiatuta)\nJatorrizkoa: `{parent}`\nAdarra: `{new}`\nErabili `/resume` jatorrizkora itzultzeko."
+
+  commands:
+    usage:                 "Erabilera: `/commands [orria]`"
+    skill_header:          "⚡ **Skill Komandoak:**"
+    default_desc:          "Skill komandoa"
+    none:                  "Ez dago komando erabilgarririk."
+    header:                "📚 **Komandoak** ({total} guztira, {page}/{total_pages} orria)"
+    nav_prev:              "`/commands {page}` ← aurrekoa"
+    nav_next:              "hurrengoa → `/commands {page}`"
+    out_of_range:          "_(Eskatutako {requested} orria barrutitik kanpo zegoen, {page} orria erakusten.)_"
+
+  compress:
+    not_enough:            "Ez dago elkarrizketa nahikorik konprimitzeko (gutxienez 4 mezu behar dira)."
+    no_provider:           "Ez dago hornitzailerik konfiguratuta — ezin da konprimitu."
+    nothing_to_do:         "Ez dago konprimitzeko ezer oraindik (transkripzioa oraindik babestutako testuinguru osoa da)."
+    aggressive_unsupported: "--aggressive ez da onartzen; erabili '/compress here [N]' azken trukeak gordetzeko, edo /undo txandak kentzeko."
+    focus_line:            "Fokua: \"{topic}\""
+    summary_failed:        "⚠️ Laburpenaren sorrerak huts egin du ({error}). {count} mezu historiko kendu dira eta leku-marka batekin ordeztu; lehenagoko testuingurua ezin da berreskuratu. Kontuan hartu zure auxiliary.compression modeloaren konfigurazioa egiaztatzea."
+    aborted:               "⚠️ Konpresioa bertan behera utzita ({error}). Ez da mezurik kendu — elkarrizketa aldatu gabe dago. Exekutatu /compress berriro saiatzeko, /reset saio garbi baterako, edo egiaztatu zure auxiliary.compression modeloaren konfigurazioa."
+    aux_failed:            "ℹ️ Konfiguratutako `{model}` konpresio-modeloak huts egin du ({error}). Zure modelo nagusiarekin berreskuratuta — testuingurua osorik dago — baina agian `auxiliary.compression.model` egiaztatu nahi duzu config.yaml-n."
+    failed:                "Konpresioak huts egin du: {error}"
+
+  debug:
+    upload_failed:         "✗ Ezin izan da arazketa-txostena igo: {error}"
+    header:                "**Arazketa-txostena igota:**"
+    auto_delete:           "⏱ Itsatsitakoak 6 ordutan ezabatzen dira automatikoki."
+    full_logs_hint:        "Log osoak igotzeko, erabili `hermes debug share` CLI-tik."
+    share_hint:            "Partekatu esteka hauek Hermes taldearekin laguntza jasotzeko."
+
+  deny:
+    stale:                 "❌ Komandoa ukatuta (onarpena zaharkituta zegoen)."
+    no_pending:            "Ez dago ukatzeko komando zainik."
+    denied_singular:       "❌ Komandoa ukatuta."
+    denied_plural:         "❌ Komandoak ukatuta ({count} komando)."
+    denied_reason_singular: "❌ Komandoa ukatuta. Arrazoia agenteari helarazita: \"{reason}\""
+    denied_reason_plural:  "❌ Komandoak ukatuta ({count} komando). Arrazoia agenteari helarazita: \"{reason}\""
+
+  fast:
+    not_supported:         "⚡ /fast OpenAI-ren Priority Processing onartzen duten modeloetarako soilik dago erabilgarri."
+    status:                "⚡ Priority Processing\n\nUneko modua: `{mode}`\n\n_Erabilera:_ `/fast <normal|fast|status>`"
+    unknown_arg:           "⚠️ Argumentu ezezaguna: `{arg}`\n\n**Aukera baliogarriak:** normal, fast, status"
+    saved:                 "⚡ ✓ Priority Processing: **{label}** (config-en gordeta)\n_(hurrengo mezuan hartuko du indarra)_"
+    session_only:          "⚡ ✓ Priority Processing: **{label}** (saio honetarako soilik)"
+    label_fast:            "FAST"
+    label_normal:          "NORMAL"
+    status_fast:           "fast"
+    status_normal:         "normal"
+    picker_title:          "⚡ **Priority Processing**\n\nUneko modua: `{mode}`\n\nAukeratu aukera bat:"
+    choice_fast:           "fast — Priority Processing piztuta"
+    choice_normal:         "normal — prozesamendu estandarra"
+
+  footer:
+    status:                "📎 Exekuzio-oinaren egoera: **{state}**\nEremuak: `{fields}`\nPlataforma: `{platform}`"
+    usage:                 "Erabilera: `/footer [on|off|status]`"
+    saved:                 "📎 Exekuzio-oinaren egoera: **{state}**{example}\n_(globalki gordeta — hurrengo mezuan hartuko du indarra)_"
+    example_line:          "\nAdibidea: `{preview}`"
+    state_on:              "PIZTUTA"
+    state_off:             "ITZALITA"
+
+  goal:
+    unavailable:           "Helburuak ez daude erabilgarri saio honetan."
+    no_goal_set:           "Ez dago helbururik ezarrita."
+    paused:                "⏸ Helburua pausatuta: {goal}"
+    no_resume:             "Ez dago berrekiteko helbururik."
+    resumed:               "▶ Helburua berrekin da: {goal}\nOrain jarraitzen dut — hurrengo pausoa berehala egingo dut."
+    invalid:               "Helburu baliogabea: {error}"
+    set:                   "⊙ Helburua ezarrita ({budget}-txandako aurrekontua): {goal}\nHelburua amaitu, pausatu/ezabatu edo aurrekontua agortu arte lanean jarraituko dut.\nKontrolak: /goal status · /goal pause · /goal resume · /goal clear"
+
+  help:
+    header:                "📖 **Hermes Komandoak**\n"
+    skill_header:          "\n⚡ **Skill Komandoak** ({count} aktibo):"
+    more_use_commands:     "\n... eta {count} gehiago. Erabili `/commands` zerrenda osoa orrikatuta ikusteko."
+
+  insights:
+    invalid_days:          "--days balio baliogabea: {value}"
+    error:                 "Errorea jakintzak sortzean: {error}"
+
+  kanban:
+    error_prefix:          "⚠ kanban errorea: {error}"
+    subscribed_suffix:     "(harpidetuta — {task_id} amaitzen edo blokeatzen denean jakinaraziko zaizu)"
+    truncated_suffix:      "… (moztuta; erabili `hermes kanban …` zure terminalean irteera osoa ikusteko)"
+    no_output:             "(irteerarik gabe)"
+    wake:
+      completed:           "amaituta"
+      gave_up:             "amore eman du (saiakerak agortuta)"
+      crashed:             "kraskatu da (lana utzi du); bidaltzaileak berriro saiatuko du"
+      timed_out:           "denbora-muga; bidaltzaileak berriro saiatuko du"
+      blocked:             "blokeatuta; arreta behar du"
+      status_default:      "egoera aldatu da"
+      status_joiner:       ", "
+      message:             "[kanban] {task_id} lana {status}.\nIzenburua: {title}\nArduraduna: @{assignee}\nMahaia: {board}\n\nEgiaztatu emaitza edo erabaki hurrengo pausoa."
+      handoff:             "Emaitza: {summary}"
+      guidance:            "Lanaren egoeraren jakinarazpen automatikoa da hau, ez eskaera lana berriro zatitzeko. Ikuskatu uneko mahaia jarraipen-lanak sortu aurretik; ez berriro sortu jada existitzen diren lanak edo grafikoak."
+
+  personality:
+    none_configured:       "Ez dago pertsonalitaterik konfiguratuta `{path}/config.yaml`-n"
+    header:                "🎭 **Pertsonalitate erabilgarriak**\n"
+    none_option:           "• `none` — (pertsonalitate-geruzarik gabe)"
+    item:                  "• `{name}` — {preview}"
+    usage:                 "\nErabilera: `/personality <izena>`"
+    save_failed:           "⚠️ Ezin izan da pertsonalitate-aldaketa gorde: {error}"
+    cleared:               "🎭 Pertsonalitatea ezabatuta — oinarrizko agente-jokaera erabiliko da.\n_(hurrengo mezuan hartuko du indarra)_"
+    set_to:                "🎭 Pertsonalitatea **{name}**-ra ezarrita\n_(hurrengo mezuan hartuko du indarra)_"
+    unknown:               "Pertsonalitate ezezaguna: `{name}`\n\nErabilgarri: {available}"
+
+  profile:
+    header:                "👤 **Profila:** `{profile}`"
+    home:                  "📂 **Etxea:** `{home}`"
+
+  reasoning:
+    level_default:             "ertaina (lehenetsia)"
+    level_disabled:            "bat ere ez (desgaituta)"
+    scope_session:             "saioaren gainidazketa"
+    scope_global:              "konfigurazio globala"
+    status:                    "🧠 **Arrazoiketaren ezarpenak**\n\n**Ahalegina:** `{level}`\n**Eremua:** {scope}\n**Erakustea:** {display}\n\n_Erabilera:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
+    display_on:                "piztuta ✓"
+    display_off:               "itzalita"
+    display_set_on:            "🧠 ✓ Arrazoiketaren erakusketa: **PIZTUTA**\nModeloaren pentsamendua erakutsi egingo da erantzun bakoitzaren aurretik **{platform}** plataforman."
+    display_set_off:           "🧠 ✓ Arrazoiketaren erakusketa: **ITZALITA** **{platform}** plataformarako"
+    reset_global_unsupported:  "⚠️ `/reasoning reset --global` ez da onartzen. Erabili `/reasoning <maila> --global` lehenetsi globala aldatzeko."
+    reset_done:                "🧠 ✓ Saioaren arrazoiketa-gainidazketa ezabatuta; konfigurazio globalera itzultzen."
+    unknown_arg:               "⚠️ Argumentu ezezaguna: `{arg}`\n\n**Maila baliogarriak:** none, minimal, low, medium, high, xhigh, max, ultra\n**Erakusketa:** show, hide\n**Iraunkortasuna:** gehitu `--global` saio honetatik harago gordetzeko"
+    picker_title:              "🧠 **Arrazoiketaren ezarpenak**\n\n**Ahalegina:** `{level}`\n**Eremua:** {scope}\n**Erakusketa:** {display}\n\nAukeratu aukera bat:"
+    choice_none:               "none — arrazoiketa desgaitu"
+    choice_reset:              "reset — saioaren gainidazketa garbitu"
+    choice_show:               "show — arrazoiketa erakutsi erantzunetan"
+    choice_hide:               "hide — arrazoiketa ezkutatu erantzunetan"
+    set_global:                "🧠 ✓ Arrazoiketa-ahalegina `{effort}`-ra ezarrita (config-en gordeta)\n_(hurrengo mezuan hartuko du indarra)_"
+    set_global_save_failed:    "🧠 ✓ Arrazoiketa-ahalegina `{effort}`-ra ezarrita (saio honetarako soilik — config gordetzeak huts egin du)\n_(hurrengo mezuan hartuko du indarra)_"
+    set_session:               "🧠 ✓ Arrazoiketa-ahalegina `{effort}`-ra ezarrita (saio honetarako soilik — gehitu `--global` iraunkorra izateko)\n_(hurrengo mezuan hartuko du indarra)_"
+
+  reload_mcp:
+    cancelled:             "🟡 /reload-mcp bertan behera utzita. MCP tresnak aldatu gabe."
+    always_followup:       "ℹ️ Hemendik aurrera `/reload-mcp` deiek baieztapenik gabe exekutatuko dira. Berriro gaitu `approvals.mcp_reload_confirm: true` config.yaml-n."
+    confirm_prompt:        "⚠️ **Berretsi /reload-mcp**\n\nMCP zerbitzariak berriro kargatzeak saio honen tresna-multzoa berreraikitzen du eta **hornitzailearen prompt cache-a baliogabetzen du** — hurrengo mezuak sarrera-token osoak bidaliko ditu berriro. Testuinguru luzeko edo arrazoiketa handiko modeloetan garestia izan daiteke.\n\nAukeratu:\n• **Behin onartu** — orain kargatu berriro\n• **Beti onartu** — orain kargatu eta galdera hau betiko isildu\n• **Utzi** — MCP tresnak aldatu gabe utzi\n\n_Testu-ordezkapena: erantzun `/approve`, `/always` edo `/cancel`._"
+    header:                "🔄 **MCP Zerbitzariak Berriro Kargatuta**\n"
+    reconnected:           "♻️ Berriro konektatuta: {names}"
+    added:                 "➕ Gehituta: {names}"
+    removed:               "➖ Kenduta: {names}"
+    none_connected:        "Ez dago MCP zerbitzaririk konektatuta."
+    tools_available:       "\n🔧 {tools} tresna erabilgarri {servers} zerbitzaritan"
+    failed:                "❌ MCP berriro kargatzeak huts egin du: {error}"
+
+  reload_skills:
+    header:                "🔄 **Skills Berriro Kargatuta**\n"
+    no_new:                "Ez da skill berririk detektatu."
+    total:                 "\n📚 {count} skill erabilgarri"
+    added_header:          "➕ **Gehitutako Skills:**"
+    removed_header:        "➖ **Kendutako Skills:**"
+    item_with_desc:        "    - {name}: {desc}"
+    item_no_desc:          "    - {name}"
+    failed:                "❌ Skills berriro kargatzeak huts egin du: {error}"
+
+  reset:
+    header_default:        "✨ Saioa berrezarrita! Garbitik hasten gara."
+    header_new:            "✨ Saio berria hasita!"
+    header_titled:         "✨ Saio berria hasita: {title}"
+    title_rejected:        "\n⚠️ Izenburua baztertuta: {error}"
+    title_error_untitled:  "\n⚠️ {error} — saioa izenbururik gabe hasi da."
+    title_empty_untitled:  "\n⚠️ Izenburua hutsik dago garbiketaren ondoren — saioa izenbururik gabe hasi da."
+    tip:                   "\n✦ Aholkua: {tip}"
+
+  restart:
+    in_progress:           "⏳ Gateway-aren berrabiaraztea jada martxan..."
+    restarting:            "♻ Gateway-a berrabiarazten. 60 segundotan jakinarazpenik jasotzen ez baduzu, berrabiarazi kontsolan `hermes gateway restart` erabiliz."
+
+  resume:
+    db_unavailable:        "Saio-datu-basea ez dago erabilgarri."
+    parse_error:           "⚠️ Ezin izan dira `/resume` argumentuak aztertu: {error}.\nErabili komatxoak hutsuneak dituzten izenburuetan, adibidez: `/resume \"Proiektuaren Plana\"`."
+    matrix_no_named_sessions: "Ez da izendun saiorik aurkitu Matrix gelarako.\nErabili `/title Nire Saioa` uneko gelako saioa izendatzeko, `/resume --all` Matrix saio guztiak zerrendatzeko, edo `/resume --cross-room <saioaren izena>` gela-mugak zehazki zeharkatzeko."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blokeatuta: izendun saio honek ez du jatorrizko gelarik erregistratuta, beraz Hermes-ek ez du uneko gelan jarraituko lehenetsita. Erabili `/resume --cross-room {name}` nahita gela-mugak zeharkatu nahi badituzu."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blokeatuta: saio hori beste Matrix gela batekoa da ({room}). Erabili `/resume --cross-room {name}` hemen jarraitu nahi baduzu."
+    matrix_cross_room_success: "⚠️ Gela arteko jarraipena: **{title}** jarraituta Matrix **{room}** gelan.\nGela honetako etorkizuneko mezuak transkripzio hori erabiliko dute `/reset` edo beste `/resume` bat arte.{msg_part}"
+    blocked_not_owner:     "⚠️ /resume blokeatuta: '**{name}**' beste erabiltzaile edo txat batekoa da. Txat honetako saioak soilik jarraitu ditzakezu."
+    no_named_sessions:     "Ez da izendun saiorik aurkitu.\nErabili `/title Nire Saioa` uneko saioa izendatzeko, eta gero `/resume Nire Saioa` berriro itzultzeko."
+    list_header:           "📋 **Izendun Saioak**\n"
+    list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
+    list_preview_suffix:   " — _{preview}_"
+    list_footer:           "\nErabilera: `/resume <saioaren izena>`"
+    list_footer_numbered:  "\nErabilera: `/resume <saioaren izena>` edo `/resume <zenbakia>` (adibidez `/resume 1` azkenarentzat)"
+    list_failed:           "Ezin izan dira saioak zerrendatu: {error}"
+    out_of_range:          "{index} jarraipen-indizea tartetik kanpo dago.\nErabili `/resume` argumenturik gabe eskuragarri dauden saioak ikusteko."
+    not_found:             "Ez da '**{name}**' saiorik aurkitu.\nErabili `/resume` argumenturik gabe eskuragarri dauden saioak ikusteko."
+    already_on:            "📌 Jada **{name}** saioan zaude."
+    switch_failed:         "Ezin izan da saioa aldatu."
+    resumed_one:           "↻ **{title}** saioa jarraituta ({count} mezu). Elkarrizketa berreskuratuta."
+    resumed_many:          "↻ **{title}** saioa jarraituta ({count} mezu). Elkarrizketa berreskuratuta."
+    resumed_no_count:      "↻ **{title}** saioa jarraituta. Elkarrizketa berreskuratuta."
+
+  retry:
+    no_previous:           "Ez dago berriro saiatzeko aurreko mezurik."
+
+  rollback:
+    not_enabled:           "Checkpoint-ak ez daude gaituta.\nGaitu config.yaml-n:\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found:            "Ez da checkpoint-ik aurkitu {cwd} helbidean"
+    invalid_number:        "Checkpoint-zenbaki baliogabea. Erabili 1-{max}."
+    restored:              "✅ {hash} checkpoint-era berrezarrita: {reason}\nAurre-rollback argazki bat automatikoki gorde da."
+    kept_user_edits:       "↷ Zure eskuzko edizioak gordeta: {files}\nErabili /rollback <N> --all hauek ere berreskuratzeko."
+    restore_failed:        "❌ {error}"
+
+  diff:
+    not_enabled:           "Checkpoint-ak ez daude gaituta, beraz ez dago saioaren oinarrizko erreferenziarik.\nGaitu config.yaml-n:\n```\ncheckpoints:\n  enabled: true\n```\nArrunta /diff-ek funtzionatzen jarraitzen du — git erabiltzen du zuzenean."
+    no_changes:            "Ez dago aldaketarik."
+    failed:                "{error}"
+
+  set_home:
+    save_failed:           "Ezin izan da etxeko kanala gorde: {error}"
+    success:               "✅ Etxeko kanala **{name}**-ra ezarrita (IDa: {chat_id}).\nCron lanak eta plataforma arteko mezuak hemen entregatuko dira."
+
+  context:
+    header:                "🧠 **Testuinguruaren Leihoa**"
+    model:                 "Modeloa: `{model}`"
+    window:                "Leihoa: {total} token"
+    in_use:                "Erabileran: {used} / {total} ({pct}%)"
+    bar:                   "{bar}"
+    headroom:              "Mugarako tartea: {headroom} token"
+    threshold:             "Konpresio automatikoa hemen: {threshold} ({threshold_pct}%) — {to_go} falta da"
+    over_threshold:        "⚠️ **Konpresio automatikoaren atalasearen gainetik ({threshold}, {threshold_pct}%)**"
+    compressions:          "Saio honetako konpresioak: {count}"
+    last_savings:          "Azken konpresioak askatu du: testuinguruaren %{savings}"
+    totals_header:         "Saioaren guztirakoak (metatuta {calls} API deitan)"
+    totals_line:           "Sarrera {input} · Irteera {output} · Arrazoiketa {reasoning}"
+    total_billed:          "Fakturatutako guztira: {total}"
+    throughput_note:       "_Abiadura, ez testuinguruaren tamaina — deialdi bakoitzak goiko leihoa berriro bidaltzen du._"
+    estimated:             "Estimatutako testuingurua: ~{count} token {messages} mezutan"
+    detail_after_first:    "_(Konpresioaren eta abiaduraren estatistika osoak lehen agente-erantzunaren ondoren daude erabilgarri)_"
+    no_data:               "Oraindik ez dago testuinguru-daturik. Bidali mezu bat saioa hasteko."
+
+  status:
+    header:                "📊 **Hermes Gateway-aren Egoera**"
+    matrix_scope_header:   "**Matrix eremua:**"
+    matrix_scope_room:     "  gela: {room}"
+    matrix_scope_room_id:  "  gela_id: {room_id}"
+    matrix_scope_thread:   "  haria_id: {thread_id}"
+    matrix_scope_mode:     "  saio_eremua: {scope}"
+    matrix_scope_key:      "  saio_gakoa: {session_key}"
+    session_id:            "**Saioaren IDa:** `{session_id}`"
+    title:                 "**Izenburua:** {title}"
+    created:               "**Sortuta:** {timestamp}"
+    last_activity:         "**Azken jarduera:** {timestamp}"
+    model:                 "**Modeloa:** `{model}`"
+    model_provider:        "**Modeloa:** `{model}` ({provider})"
+    context:               "**Testuingurua:** {used} / {total} ({pct}%)"
+    context_used:          "**Testuingurua:** ~{used} token"
+    tokens:                "**Bizitza osoko token fakturatuak:** {tokens} _(ez da zure uneko testuinguruaren tamaina; erabili `/context`)_"
+    agent_running:         "**Agentea exekutatzen:** {state}"
+    state_yes:             "Bai ⚡"
+    state_no:              "Ez"
+    queued:                "**Jarraipen ilaran:** {count}"
+    platforms:             "**Konektatutako plataformak:** {platforms}"
+
+  stop:
+    stopped_pending:       "⚡ Geldituta. Agentea ez zen oraindik hasi — saio honekin jarrai dezakezu."
+    stopped:               "⚡ Geldituta. Saio honekin jarrai dezakezu."
+    no_active:             "Ez dago gelditzeko lan aktiborik."
+
+  title:
+    db_unavailable:        "Saio-datu-basea ez dago erabilgarri."
+    warn_prefix:           "⚠️ {error}"
+    empty_after_clean:     "⚠️ Izenburua hutsik dago garbiketaren ondoren. Erabili karaktere inprimagarriak."
+    set_to:                "✏️ Saioaren izenburua ezarrita: **{title}**"
+    not_found:             "Ez da saioa aurkitu datu-basean."
+    current_with_title:    "📌 Saioa: `{session_id}`\nIzenburua: **{title}**"
+    current_no_title:      "📌 Saioa: `{session_id}`\nEz dago izenbururik ezarrita. Erabilera: `/title Nire Saioaren Izena`"
+
+  topic:
+    not_telegram_dm:         "/topic komandoa Telegram txat pribatuetan soilik dago erabilgarri."
+    no_session_db:           "Saio-datu-basea ez dago erabilgarri."
+    unauthorized:            "Ez duzu baimenik /topic erabiltzeko bot honetan."
+    restore_needs_topic:     "Saio bat berreskuratzeko, lehenengo sortu edo ireki Telegram gai bat, eta gero bidali /topic <saio-id> gai horren barruan. Gai berri bat sortzeko, ireki All Messages eta bidali edozein mezu han."
+    topics_disabled:         "Telegram gaiak ez daude gaituta bot honetan oraindik.\n\nNola gaitu:\n1. Ireki @BotFather.\n2. Aukeratu zure bot-a.\n3. Ireki Bot Settings → Threads Settings.\n4. Aktibatu Threaded Mode eta ziurtatu erabiltzaileek haria berriak sortu ditzaketela.\n\nGero bidali /topic berriro."
+    topics_user_disallowed:  "Telegram gaiak gaituta daude, baina erabiltzaileek ez dute gairik sortzeko baimenik.\n\nIreki @BotFather → aukeratu zure bot-a → Bot Settings → Threads Settings, eta desaktibatu 'Disallow users to create new threads'.\n\nGero bidali /topic berriro."
+    enable_failed:           "Ezin izan da Telegram gai-modua gaitu: {error}"
+    bound_status:            "Gai hau honekin lotuta dago:\nSaioa: {label}\nIDa: {session_id}\n\nErabili /new gai hau saio berri batekin ordezteko.\nLan paraleloa egiteko, ireki All Messages eta bidali mezu bat han beste gai bat sortzeko."
+    thread_ready:            "Telegram saio anitzeko gaiak gaituta daude.\n\nGai hau Hermes saio independente gisa erabiliko da. Erabili /new gai honen uneko saioa ordezteko. Lan paraleloa egiteko, ireki All Messages eta bidali mezu bat han beste gai bat sortzeko."
+    untitled_session:        "Izenbururik gabeko saioa"
+
+  undo:
+    nothing:               "Ez dago desegiteko ezer."
+    removed:               "↩️ {turns} txanda ({count} mezu) deseginda.\nBabeskopia: \"{preview}\"\nKopiatu/editatu goiko testua eta bidali hemendik berriro galdetzeko."
+    invalid_count:         "Zenbaketa baliogabea \"{arg}\" — erabili /undo edo /undo N."
+
+  update:
+    platform_not_messaging:  "✗ /update mezu-plataformetatik soilik dago erabilgarri. Exekutatu `hermes update` terminaletik."
+    not_git_repo:            "✗ Ez da git biltegia — ezin da eguneratu."
+    hermes_cmd_not_found:    "✗ Ezin izan da `hermes` komandoa aurkitu. Hermes exekutatzen ari da, baina eguneratze-komandoak ezin izan du exekutagarria aurkitu PATH-ean edo uneko Python interpretearen bidez. Saiatu `hermes update` eskuz exekutatzen zure terminalean."
+    start_failed:            "✗ Ezin izan da eguneraketa hasi: {error}"
+    starting:                "⚕ Hermes eguneraketa hasten… aurrerapena hemen egingo dut."
+
+  usage:
+    rate_limits:              "⏱️ **Tasa-mugak:** {state}"
+    header_session:           "📊 **Saioaren Token Erabilera**"
+    label_model:              "Modeloa: `{model}`"
+    label_input_tokens:       "Sarrera-tokenak: {count}"
+    label_cache_read:         "Cache-irakurketako tokenak: {count}"
+    label_cache_write:        "Cache-idazketako tokenak: {count}"
+    label_output_tokens:      "Irteera-tokenak: {count}"
+    label_total:              "Guztira: {count}"
+    label_api_calls:          "API deiak: {count}"
+    label_cost:               "Kostua: {prefix}${amount}"
+    label_cost_included:      "Kostua: barne"
+    label_context:            "Testuingurua: {used} / {total} ({pct}%)"
+    label_compressions:       "Konpresioak: {count}"
+    breakdown_header:         "🧩 **Testuinguruaren banaketa** _(estimatuta)_"
+    breakdown_line:           "• {label}: ~{count} ({pct}%)"
+    breakdown_cat_system_prompt:        "System prompt-a"
+    breakdown_cat_tool_definitions:     "Tresna-definizioak"
+    breakdown_cat_rules:                "Arauak"
+    breakdown_cat_skills:               "Skills"
+    breakdown_cat_mcp:                  "MCP"
+    breakdown_cat_subagent_definitions: "Azpiagenteen definizioak"
+    breakdown_cat_memory:               "Memoria"
+    breakdown_cat_conversation:         "Elkarrizketa"
+    header_session_info:      "📊 **Saioaren Informazioa**"
+    label_messages:           "Mezuak: {count}"
+    label_estimated_context:  "Estimatutako testuingurua: ~{count} token"
+    detailed_after_first:     "_(Erabilera xehatua lehen agente-erantzunaren ondoren dago erabilgarri)_"
+    no_data:                  "Ez dago erabilera-daturik saio honetarako."
+    unknown_subcommand:       "/usage azpikomando ezezaguna: `{args}`. Saiatu `/usage` edo `/usage reset [--force]`."
+    reset_wrong_provider:     "Banatutako erabileraren berrezarpenak openai-codex hornitzailean soilik daude erabilgarri. Aldatu lehenengo `/model`-rekin."
+
+  credits:
+    not_logged_in:            "Ez zaude Nous Portal-en saioa hasita. Hasi saioa zure kreditu-saldoa ikusteko eta berritzeko."
+
+  verbose:
+    not_enabled:           "`/verbose` komandoa ez dago gaituta mezu-plataformetarako.\n\nGaitu `config.yaml`-n:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    mode_off:              "⚙️ Tresnen aurrerapena: **ITZALITA** — ez da tresna-jarduerarik erakusten."
+    mode_new:              "⚙️ Tresnen aurrerapena: **BERRIA** — tresnak aldatzean erakusten da (aurrebistaren luzera: `display.tool_preview_length`, lehenetsia 40)."
+    mode_all:              "⚙️ Tresnen aurrerapena: **GUZTIAK** — tresna-deialdi guztiak erakusten dira (aurrebistaren luzera: `display.tool_preview_length`, lehenetsia 40)."
+    mode_verbose:          "⚙️ Tresnen aurrerapena: **VERBOSE** — tresna-deialdi guztiak argumentu osoekin."
+    mode_log:              "⚙️ Tresnen aurrerapena: **LOG** — isila txatean; tresna-deiak ~/.hermes/logs/tool_calls.log-en idazten dira."
+    saved_suffix:          "_(**{platform}** plataformarako gordeta — hurrengo mezuan hartuko du indarra)_"
+    save_failed:           "_(ezin izan da config-en gorde: {error})_"
+
+  voice:
+    enabled_voice_only:    "Ahots-modua gaituta.\nAhots-mezuak bidaltzen dituzunean ahotsarekin erantzungo dut.\nErabili /voice tts mezu guztientzako ahots-erantzunak lortzeko."
+    disabled_text:         "Ahots-modua desgaituta. Testu hutseko erantzunak."
+    tts_enabled:           "Auto-TTS gaituta.\nErantzun guztiek ahots-mezu bat izango dute."
+    status_mode:           "Ahots-modua: {label}"
+    status_channel:        "Ahots-kanala: #{channel}"
+    status_participants:   "Partaideak: {count}"
+    status_member:         "  - {name}{status}"
+    speaking:              " (hizketan)"
+    enabled_short:         "Ahots-modua gaituta."
+    disabled_short:        "Ahots-modua desgaituta."
+    label_off:             "Itzalita (testua soilik)"
+    label_voice_only:      "Piztuta (ahots-erantzuna ahots-mezuetarako)"
+    label_all:             "TTS (ahots-erantzuna mezu guztietarako)"
+    help:                  "{toggle}\n\n**Nola funtzionatzen du /voice-k**\n• `/voice on` — ahots-erantzuna ahots-mezu bat bidaltzen duzunean\n• `/voice tts` — ahots-erantzuna *mezu* guztietarako\n• `/voice off` — testu hutseko erantzunetara itzuli\n• `/voice status` — uneko modua erakutsi\n• `/voice` (argumenturik gabe) — on/off arteko aldaketa azkarra{channels}"
+    help_channels:         "\n\n**Zuzeneko ahots-kanalak (Discord)**\n• Sartu ahots-kanal batean lehenengo, eta gero `/voice channel` — sartu, entzun eta nire erantzunak esango ditut\n• `/voice leave` — ahots-kanaletik deskonektatu"
+
+  yolo:
+    disabled:                   "⚠️ YOLO modua **ITZALITA** saio honetarako — komando arriskutsuek onarpena beharko dute."
+    enabled:                    "⚡ YOLO modua **PIZTUTA** saio honetarako — komando guztiak automatikoki onartuta. Kontuz erabili."
+
+  shared:
+    session_db_unavailable:      "Saio-datu-basea ez dago erabilgarri."
+    session_db_unavailable_prefix: "Saio-datu-basea ez dago erabilgarri"
+    session_not_found:           "Ez da saioa aurkitu datu-basean."
+    warn_passthrough:            "⚠️ {error}"
+
+

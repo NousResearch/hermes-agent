@@ -41,7 +41,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 SUPPORTED_LANGUAGES: tuple[str, ...] = (
-    "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
+    "en", "eu", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
     "af", "ko", "it", "ga", "pt", "ru", "hu", "ar",
 )
 DEFAULT_LANGUAGE = "en"
@@ -71,6 +71,8 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "italian": "it", "italiano": "it", "it-it": "it", "it-ch": "it",
     # Irish (Gaeilge) — ga is the BCP-47 code
     "irish": "ga", "gaeilge": "ga", "ga-ie": "ga",
+    # Basque — euskara; "eu-ES" is the common BCP-47 tag
+    "basque": "eu", "euskara": "eu", "euskera": "eu", "eu-es": "eu", "eu-eu": "eu",
     # Portuguese — bare "portuguese" routes to European Portuguese; pt-br
     # is in the same family but rendered identically here (no separate br catalog).
     "portuguese": "pt", "português": "pt", "portugues": "pt",

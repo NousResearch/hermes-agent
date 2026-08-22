@@ -237,6 +237,17 @@ export const reclaimTask = (id: string) => nudged(call(withBoard(`/tasks/${id}/r
 export const uploadAttachment = (id: string, upload: { filename: string; contentType?: string; bytes: ArrayBuffer }) =>
   call(withBoard(`/tasks/${id}/attachments`), { method: 'POST', upload })
 
+/** An attachment's bytes as a `data:` URL, served by the backend that owns
+ *  the file. The blob lives beside the board on the BACKEND host, so its
+ *  `stored_path` is unreadable from the desktop whenever that host is remote
+ *  (SSH gateway, Hermes Cloud) — this is how the drawer previews it anyway.
+ *  The JSON twin of the binary download route, because the plugin REST door
+ *  decodes JSON only. */
+export const attachmentDataUrl = (attachmentId: number | string) =>
+  call<{ contentType?: string; dataUrl: string; filename: string }>(
+    withBoard(`/attachments/${encodeURIComponent(String(attachmentId))}/data-url`)
+  )
+
 export const createBoard = (slug: string, name: string, projectId?: string) =>
   call<{ board: { slug: string } }>('/boards', {
     method: 'POST',

@@ -220,6 +220,46 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
   }
 }
 
+/** A preview target whose CONTENT travels with it, for a file that lives on
+ *  another host. `localPreviewTarget` classifies a path assuming the renderer
+ *  can eventually read it; that assumption breaks for a backend-owned file
+ *  (remote gateway / Hermes Cloud), where the path is real but only over
+ *  there. Here the caller has already fetched the bytes as a `data:` URL over
+ *  a transport that reaches the owning host, so the target carries them
+ *  inline — the rail renders `dataUrl` directly and never touches the path.
+ *
+ *  `transient` keeps the bytes out of persisted state (they would bloat
+ *  localStorage) and stops a restored tab from pointing at an unreadable path.
+ *  Only image/PDF render from bytes today, so anything else is refused rather
+ *  than opened as a pane the viewer can't fill. */
+export function localPreviewTargetForDataUrl(
+  rawTarget: string,
+  dataUrl: string,
+  contentType?: string
+): PreviewTarget | null {
+  if (!dataUrl.startsWith('data:')) {
+    return null
+  }
+
+  const base = localPreviewTarget(rawTarget)
+
+  if (!base) {
+    return null
+  }
+
+  // Trust the server's content type over the extension when they disagree —
+  // it sniffed the actual bytes. Extension classification is the fallback.
+  const mime = (contentType || '').toLowerCase()
+
+  const previewKind = mime.startsWith('image/') ? 'image' : mime === 'application/pdf' ? 'pdf' : base.previewKind
+
+  if (previewKind !== 'image' && previewKind !== 'pdf') {
+    return null
+  }
+
+  return { ...base, dataUrl, mimeType: contentType || base.mimeType, previewKind, transient: true }
+}
+
 async function enrichPreviewTarget(target: PreviewTarget | null): Promise<PreviewTarget | null> {
   if (
     !isDesktopFsRemoteMode() ||
@@ -259,13 +299,26 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
 
 export async function normalizeOrLocalPreviewTarget(
   rawTarget: string,
-  cwd?: string | null
+  cwd?: string | null,
+  options?: { strict?: boolean }
 ): Promise<PreviewTarget | null> {
   try {
-    const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(rawTarget, cwd || undefined)
+    const normalize = window.hermesDesktop?.normalizePreviewTarget
 
-    if (normalized) {
-      return enrichPreviewTarget(normalized)
+    if (normalize) {
+      const normalized = await normalize(rawTarget, cwd || undefined)
+
+      if (normalized) {
+        return enrichPreviewTarget(normalized)
+      }
+
+      // The IPC probed the target and refused it — a missing/unreadable path
+      // (e.g. a backend-host path that does not exist on this machine). In
+      // strict mode that verdict is final: extension-based classification
+      // would fabricate a target for a file we know is not readable here.
+      if (options?.strict) {
+        return null
+      }
     }
   } catch {
     // Running Electron may still have the old HTML-only preview IPC. Fall

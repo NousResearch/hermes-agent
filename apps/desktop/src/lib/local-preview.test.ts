@@ -10,6 +10,7 @@ vi.mock('@/lib/desktop-fs', () => ({
 
 import {
   localPreviewTarget,
+  localPreviewTargetForDataUrl,
   normalizeOrLocalPreviewTarget,
   openPreviewTargetInBrowser,
   remoteHtmlPreviewDocument,
@@ -24,6 +25,40 @@ const remoteTarget = {
   source: '/srv/report.html',
   url: 'file:///srv/report.html'
 }
+
+describe('strict normalization', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('returns null when the IPC refuses the target', async () => {
+    window.hermesDesktop = {
+      normalizePreviewTarget: vi.fn(async () => null)
+    } as never
+
+    await expect(
+      normalizeOrLocalPreviewTarget('/backend/only/evidence.png', undefined, { strict: true })
+    ).resolves.toBeNull()
+  })
+
+  it('still classifies locally without strict when the IPC refuses', async () => {
+    window.hermesDesktop = {
+      normalizePreviewTarget: vi.fn(async () => null)
+    } as never
+
+    await expect(normalizeOrLocalPreviewTarget('/backend/only/evidence.png')).resolves.toMatchObject({
+      kind: 'file'
+    })
+  })
+
+  it('falls back to local classification when the IPC is missing, even in strict mode', async () => {
+    window.hermesDesktop = {} as never
+
+    await expect(
+      normalizeOrLocalPreviewTarget('/srv/evidence.png', undefined, { strict: true })
+    ).resolves.toMatchObject({ kind: 'file' })
+  })
+})
 
 describe('remote HTML previews', () => {
   beforeEach(() => {
@@ -195,5 +230,49 @@ describe('PDF previews', () => {
       previewKind: 'pdf'
     })
     expect(readDesktopFileDataUrl).not.toHaveBeenCalled()
+  })
+})
+
+describe('data-URL targets for backend-owned files', () => {
+  it('carries the bytes inline so the rail never reads the remote path', () => {
+    const target = localPreviewTargetForDataUrl(
+      '/srv/kanban/attachments/t-1/shot.png',
+      'data:image/png;base64,AAA',
+      'image/png'
+    )
+
+    expect(target).toMatchObject({
+      dataUrl: 'data:image/png;base64,AAA',
+      kind: 'file',
+      label: 'shot.png',
+      mimeType: 'image/png',
+      previewKind: 'image',
+      // Keeps the bytes out of persisted state and stops a restored tab from
+      // pointing at a path this machine cannot read.
+      transient: true
+    })
+  })
+
+  it('trusts the served content type over a misleading extension', () => {
+    // The backend sniffed the actual bytes; the filename lies.
+    expect(localPreviewTargetForDataUrl('/srv/blob.txt', 'data:image/png;base64,AAA', 'image/png')).toMatchObject({
+      previewKind: 'image'
+    })
+  })
+
+  it('classifies PDFs from the served content type', () => {
+    expect(
+      localPreviewTargetForDataUrl('/srv/spec.pdf', 'data:application/pdf;base64,AAA', 'application/pdf')
+    ).toMatchObject({ previewKind: 'pdf' })
+  })
+
+  it('refuses kinds the rail cannot render from bytes', () => {
+    // Text/HTML read through their own paths; opening them from bytes here
+    // would produce a pane the viewer cannot fill.
+    expect(localPreviewTargetForDataUrl('/srv/notes.txt', 'data:text/plain;base64,AAA', 'text/plain')).toBeNull()
+  })
+
+  it('refuses anything that is not a data URL', () => {
+    expect(localPreviewTargetForDataUrl('/srv/shot.png', 'https://evil.example/x.png', 'image/png')).toBeNull()
   })
 })

@@ -7,6 +7,7 @@ REST surface without spinning up the whole dashboard.
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import os
@@ -1230,3 +1231,95 @@ def test_specify_happy_path(client, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+
+# ---------------------------------------------------------------------------
+# GET /attachments/<id>/data-url — the remote-backend preview path
+# ---------------------------------------------------------------------------
+
+
+def _upload_attachment(client, task_id, filename, payload, content_type="image/png"):
+    """Upload one attachment through the real endpoint and return its dict."""
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/attachments",
+        files={"file": (filename, payload, content_type)},
+    )
+    assert r.status_code == 200, r.text
+    return r.json()["attachment"]
+
+
+def test_attachment_data_url_serves_bytes_as_json(client):
+    """The data-URL twin returns the blob inline so a REMOTE desktop can
+    preview it — `stored_path` names a file on the backend host, which the
+    machine drawing the UI cannot open."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="with attachment", assignee="x")
+
+    payload = b"\x89PNG\r\n\x1a\n-pretend-image-bytes"
+    att = _upload_attachment(client, t, "shot.png", payload)
+
+    r = client.get(f"/api/plugins/kanban/attachments/{att['id']}/data-url")
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    assert body["filename"] == "shot.png"
+    assert body["contentType"] == "image/png"
+    assert body["dataUrl"].startswith("data:image/png;base64,")
+
+    # Round-trips to the exact bytes on disk.
+    encoded = body["dataUrl"].split(",", 1)[1]
+    assert base64.b64decode(encoded) == payload
+
+
+def test_attachment_data_url_missing_attachment_404s(client):
+    r = client.get("/api/plugins/kanban/attachments/999999/data-url")
+    assert r.status_code == 404
+
+
+def test_attachment_data_url_rejects_path_outside_root(client, tmp_path):
+    """Defense in depth: a tampered DB row pointing outside the board's
+    attachments root is refused, not read."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="tampered", assignee="x")
+
+    att = _upload_attachment(client, t, "ok.png", b"real-bytes")
+
+    outside = tmp_path / "secret.txt"
+    outside.write_text("do not exfiltrate me")
+
+    with kb.connect() as conn:
+        conn.execute(
+            "UPDATE task_attachments SET stored_path=? WHERE id=?",
+            (str(outside.resolve()), att["id"]),
+        )
+        conn.commit()
+
+    r = client.get(f"/api/plugins/kanban/attachments/{att['id']}/data-url")
+    assert r.status_code == 404
+    assert "do not exfiltrate me" not in r.text
+
+
+def test_attachment_data_url_missing_file_on_disk_404s(client):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="deleted blob", assignee="x")
+
+    att = _upload_attachment(client, t, "gone.png", b"bytes")
+    Path(att["stored_path"]).unlink()
+
+    r = client.get(f"/api/plugins/kanban/attachments/{att['id']}/data-url")
+    assert r.status_code == 404
+
+
+def test_attachment_data_url_enforces_size_cap(client, monkeypatch):
+    """Base64 inflates ~4/3 and the payload is buffered in memory, so an
+    oversize attachment is refused rather than read."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="too big", assignee="x")
+
+    att = _upload_attachment(client, t, "big.bin", b"x" * 4096, content_type="application/octet-stream")
+
+    import sys as _sys
+    plugin_mod = _sys.modules["hermes_dashboard_plugin_kanban_test"]
+    monkeypatch.setattr(plugin_mod, "_ATTACHMENT_DATA_URL_MAX_BYTES", 1024)
+
+    r = client.get(f"/api/plugins/kanban/attachments/{att['id']}/data-url")
+    assert r.status_code == 413

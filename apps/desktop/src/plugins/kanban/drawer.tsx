@@ -45,6 +45,7 @@ import {
   taskKey,
   uploadAttachment
 } from './api'
+import { AttachmentList } from './attachment-list'
 import { ModelOverrideField, overridePatch } from './model-override'
 import {
   type Diagnostic,
@@ -453,14 +454,7 @@ function AttachmentsSection({
       label={k.attachments(attachments.length)}
     >
       {attachments.length > 0 ? (
-        <ul className="flex flex-col gap-1">
-          {attachments.map(attachment => (
-            <li className="flex items-center gap-1.5 text-[0.75rem] text-(--ui-text-tertiary)" key={attachment.id}>
-              <Codicon name="file" size="0.75rem" />
-              {attachment.filename}
-            </li>
-          ))}
-        </ul>
+        <AttachmentList attachments={attachments} />
       ) : (
         <p className="text-[0.75rem] text-(--ui-text-quaternary)">{k.noAttachments}</p>
       )}

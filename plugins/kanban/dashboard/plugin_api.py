@@ -36,6 +36,7 @@ the port.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import sqlite3
@@ -54,6 +55,11 @@ from hermes_cli import kanban_diagnostics as kd
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Ceiling for the in-app data-URL preview. Mirrors the core filesystem
+# endpoint's `_FS_DATA_URL_MAX_BYTES` (hermes_cli/web_server.py) so an
+# attachment previews under the same budget as any other file in the app.
+_ATTACHMENT_DATA_URL_MAX_BYTES = 16 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -804,6 +810,54 @@ def download_attachment(attachment_id: int, board: Optional[str] = Query(None)):
             filename=att.filename,
             media_type=att.content_type or "application/octet-stream",
         )
+    finally:
+        conn.close()
+
+
+@router.get("/attachments/{attachment_id}/data-url")
+def attachment_data_url(attachment_id: int, board: Optional[str] = Query(None)):
+    """Serve an attachment as a base64 ``data:`` URL for in-app preview.
+
+    The JSON twin of :func:`download_attachment`. The desktop's plugin REST
+    door decodes JSON only, so a binary ``FileResponse`` cannot ride back
+    through it; a data URL can. This is what lets the drawer preview an
+    attachment when the backend is a remote gateway or Hermes Cloud, where
+    ``stored_path`` names a file on the BACKEND host that does not exist on
+    the machine drawing the UI.
+
+    Same root-containment guard as the download route (defense in depth
+    against a tampered DB row), plus a size cap — the payload is buffered in
+    memory and base64 inflates it ~4/3, so an unbounded read here would be a
+    memory-pressure lever on the backend.
+    """
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        att = kanban_db.get_attachment(conn, attachment_id)
+        if att is None:
+            raise HTTPException(status_code=404, detail="attachment not found")
+        root = kanban_db.attachments_root(board=board).resolve()
+        try:
+            stored = Path(att.stored_path).resolve()
+            stored.relative_to(root)
+        except (ValueError, OSError):
+            raise HTTPException(status_code=404, detail="attachment file unavailable")
+        if not stored.is_file():
+            raise HTTPException(status_code=404, detail="attachment file missing on disk")
+        if stored.stat().st_size > _ATTACHMENT_DATA_URL_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="attachment too large to preview")
+        try:
+            encoded = base64.b64encode(stored.read_bytes()).decode("ascii")
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="attachment is not readable")
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail=str(exc) or "attachment read failed")
+        media_type = att.content_type or "application/octet-stream"
+        return {
+            "filename": att.filename,
+            "contentType": media_type,
+            "dataUrl": f"data:{media_type};base64,{encoded}",
+        }
     finally:
         conn.close()
 

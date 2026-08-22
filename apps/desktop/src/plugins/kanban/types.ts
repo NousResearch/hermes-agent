@@ -89,6 +89,7 @@ export interface KanbanAttachment {
   id: number | string
   filename: string
   size?: null | number
+  stored_path?: null | string
 }
 
 /** Fields present only on the detail endpoint (beyond the card's KanbanTask).

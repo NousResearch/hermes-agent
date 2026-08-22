@@ -34,6 +34,7 @@ import {
 import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import { deleteProfile, getLogs, getStatus, type HermesGateway } from '@/hermes'
+import { localPreviewTargetForDataUrl, normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -44,6 +45,7 @@ import {
   retireLocalProfileGateways
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { openPreview } from '@/store/preview'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
@@ -814,6 +816,63 @@ export const host = {
 
   /** Restart the backend gateway (progress surfaces in the core statusbar). */
   restartGateway: async () => runGatewayRestart(),
+
+  /** Open a machine-readable file in the shared preview rail. Plugins hand
+   *  over a path; the host owns local/remote resolution and presentation.
+   *
+   *  `path` names a file on whichever host produced it. When that is a REMOTE
+   *  backend (SSH-spawned gateway, Hermes Cloud) the path does not exist on
+   *  the machine drawing this UI, local resolution correctly refuses it, and
+   *  the preview would simply be unavailable. `fetchBytes` is the seam for
+   *  that case: an optional loader the host calls ONLY after local resolution
+   *  fails, resolving the file's bytes as a `data:` URL fetched over the
+   *  plugin's own backend transport. The rail renders those bytes directly
+   *  (`dataUrl` targets never re-read the path), so the preview works
+   *  identically against a local or remote backend.
+   *
+   *  Feature-detect the fallback on older desktops by checking
+   *  `host.previewFile.length > 2`. */
+  previewFile: async (
+    path: string,
+    label?: string,
+    fetchBytes?: () => Promise<null | { contentType?: string; dataUrl: string }>
+  ): Promise<boolean> => {
+    const target = await normalizeOrLocalPreviewTarget(path, $currentCwd.get() || undefined, { strict: true })
+
+    if (target) {
+      openPreview(label ? { ...target, label } : target, 'manual')
+
+      return true
+    }
+
+    // Unresolvable HERE. Before reporting failure, let the caller supply the
+    // bytes from the host that actually owns the file.
+    if (!fetchBytes) {
+      return false
+    }
+
+    let fetched: null | { contentType?: string; dataUrl: string } = null
+
+    try {
+      fetched = await fetchBytes()
+    } catch {
+      return false
+    }
+
+    if (!fetched?.dataUrl) {
+      return false
+    }
+
+    const remoteTarget = localPreviewTargetForDataUrl(path, fetched.dataUrl, fetched.contentType)
+
+    if (!remoteTarget) {
+      return false
+    }
+
+    openPreview(label ? { ...remoteTarget, label } : remoteTarget, 'manual')
+
+    return true
+  },
 
   /** One-shot system status snapshot (platforms, versions, …). */
   status: async () => getStatus(),

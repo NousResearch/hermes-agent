@@ -5,10 +5,12 @@ A plugin-based gateway adapter that connects to a Buzz community relay
 (Block's open-source human+agent collaboration platform, built on the
 Nostr protocol) and relays messages to/from the Hermes agent.
 
-The adapter does not speak Nostr itself — it shells out to the ``buzz``
-CLI binary ("JSON in, JSON out") via ``asyncio.create_subprocess_exec``.
-Inbound delivery uses a poll loop (the CLI is request/response); see the
-"Known limitations" note in the platform docs.
+Outbound traffic shells out to the ``buzz`` CLI binary ("JSON in, JSON out")
+via ``asyncio.create_subprocess_exec``.  Inbound delivery defaults to a
+NIP-42-authenticated Nostr WebSocket subscription (near-instant push) with
+automatic fallback to CLI polling when the WebSocket cannot authenticate.
+Control transport via ``transport`` / ``BUZZ_TRANSPORT`` (``auto``, ``websocket``,
+``poll``).
 
 Configuration in config.yaml::
 
@@ -349,8 +351,9 @@ def _parse_json_list(stdout: str) -> List[dict]:
 # ---------------------------------------------------------------------------
 
 class BuzzAdapter(BasePlatformAdapter):
-    """Poll-based Buzz adapter implementing the BasePlatformAdapter interface.
+    """Buzz gateway adapter implementing the BasePlatformAdapter interface.
 
+    Inbound: WebSocket push (default) or CLI poll fallback.  Outbound: buzz CLI.
     Instantiated by the adapter_factory passed to register_platform().
     """
 
@@ -533,9 +536,9 @@ class BuzzAdapter(BasePlatformAdapter):
             return False
 
         # Seed high-water marks from the newest events so a (re)start never
-        # replays channel history into the agent.
-        for channel_id in watch:
-            await self._seed_channel(channel_id, chat_type="group")
+        # replays channel history into the agent.  Channels seed in parallel so
+        # connect latency scales with the slowest channel, not the sum.
+        await asyncio.gather(*(self._seed_channel(cid, chat_type="group") for cid in watch))
         await self._discover_dms(seed=True)
 
         # Inbound transport: prefer the NIP-42-authenticated WebSocket
@@ -909,8 +912,13 @@ class BuzzAdapter(BasePlatformAdapter):
                 try:
                     if self._poll_count % _DM_DISCOVERY_EVERY == 0:
                         await self._discover_dms(seed=False)
-                    for channel_id in list(self._channel_state):
-                        await self._poll_channel(channel_id)
+                    results = await asyncio.gather(
+                        *(self._poll_channel(channel_id) for channel_id in list(self._channel_state)),
+                        return_exceptions=True,
+                    )
+                    for result in results:
+                        if isinstance(result, Exception):
+                            logger.warning("Buzz: poll of channel failed", exc_info=result)
                 except asyncio.CancelledError:
                     raise
                 except Exception:

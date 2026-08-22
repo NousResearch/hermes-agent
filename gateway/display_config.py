@@ -178,6 +178,10 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "webhook":         _TIER_MINIMAL,
     "homeassistant":   _TIER_MINIMAL,
     "api_server":      {**_TIER_HIGH, "tool_preview_length": 0},
+
+    # Buzz — shared Nostr channels: final-answer-first, no tool-progress spam.
+    # Matches the recommended defaults in user-guide/messaging/buzz.md.
+    "buzz":            _TIER_LOW,
 }
 
 # Canonical set of per-platform overrideable keys (for validation).

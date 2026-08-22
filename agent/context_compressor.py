@@ -4488,7 +4488,45 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             telemetry["fallback_used"] = True
             telemetry["failure_class"] = telemetry.get("failure_class") or "aux_model_fallback"
         self.summary_model = ""  # empty = use main model
+        # The aux failure that triggered this fallback must not survive into the
+        # main-model retry: a terminal access/quota class error recorded here
+        # would make compress() abort even when the main model summarises fine.
+        # A genuine main-model access/quota failure re-sets it in the retry.
+        self._last_summary_auth_failure = False
         self._clear_compression_failure_cooldown()  # no cooldown — retry immediately
+
+    def _apply_summary_route(self, call_kwargs: dict) -> None:
+        """Pin the auxiliary-summary wire route onto ``call_kwargs``.
+
+        Both compression entry points (``_generate_summary`` and
+        ``_micro_summarize_one``) call ``call_llm(task="compression", ...)``.
+        When a distinct ``summary_model`` is configured, naming it is enough.
+
+        After :meth:`_fallback_to_main_for_compression` clears
+        ``summary_model``, however, omitting the route is NOT equivalent to
+        "use the main model": ``call_llm`` resolves an unspecified route from
+        ``auxiliary.compression`` in the config, which is the very model that
+        just failed. The fallback then re-calls it, fails identically, and —
+        because ``_summary_model_fallen_back`` is already set — no second
+        fallback is allowed, so the summary aborts and compression is skipped.
+
+        Naming the main runtime explicitly makes the fallback actually reach
+        the main model.
+        """
+        if self.summary_model:
+            call_kwargs["model"] = self.summary_model
+            return
+        if not getattr(self, "_summary_model_fallen_back", False):
+            return
+        for key, value in (
+            ("provider", self.provider),
+            ("model", self.model),
+            ("base_url", self.base_url),
+            ("api_key", self.api_key),
+            ("api_mode", getattr(self, "api_mode", "")),
+        ):
+            if value:
+                call_kwargs[key] = value
 
     def _generate_summary(
         self,
@@ -4819,8 +4857,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # fall back to the model's native output ceiling.
                 # timeout resolved from auxiliary.compression.timeout config by call_llm
             }
-            if self.summary_model:
-                call_kwargs["model"] = self.summary_model
+            self._apply_summary_route(call_kwargs)
             _aux_provider = ""
             _aux_model = self.summary_model or ""
             _aux_context = None
@@ -6498,8 +6535,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             "max_tokens": min(1500, self.max_summary_tokens or 1500),
             "temperature": 0.1,
         }
-        if self.summary_model:
-            call_kwargs["model"] = self.summary_model
+        self._apply_summary_route(call_kwargs)
         if self.model:
             call_kwargs.setdefault("main_runtime", {
                 "model": self.model,

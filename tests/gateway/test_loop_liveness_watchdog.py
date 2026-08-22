@@ -220,6 +220,58 @@ def test_gateway_config_loop_watchdog_tuning_round_trip():
     assert clamped.loop_watchdog_max_strikes == 3
 
 
+def test_gateway_config_loop_watchdog_nonfinite_values_degrade():
+    """NaN/Inf tuning values fall back to defaults instead of reaching the
+    watchdog's Event.wait loop (or aborting config load via int(inf))."""
+    from gateway.config import GatewayConfig
+
+    cfg = GatewayConfig.from_dict(
+        {
+            "loop_watchdog_probe_interval_s": float("inf"),
+            "loop_watchdog_probe_timeout_s": float("nan"),
+            "loop_watchdog_max_strikes": float("inf"),  # int() would raise
+        }
+    )
+    assert cfg.loop_watchdog_probe_interval_s == 30.0
+    assert cfg.loop_watchdog_probe_timeout_s == 10.0
+    assert cfg.loop_watchdog_max_strikes == 3
+
+    # Oversized-but-finite values also clamp to defaults.
+    big = GatewayConfig.from_dict(
+        {
+            "loop_watchdog_probe_interval_s": 86400,
+            "loop_watchdog_probe_timeout_s": 7200,
+            "loop_watchdog_max_strikes": 10**9,
+        }
+    )
+    assert big.loop_watchdog_probe_interval_s == 30.0
+    assert big.loop_watchdog_probe_timeout_s == 10.0
+    assert big.loop_watchdog_max_strikes == 3
+
+
+def test_load_gateway_config_bridges_loop_watchdog_keys(tmp_path, monkeypatch):
+    """The real startup loader must honor gateway.loop_watchdog* from
+    config.yaml — from_dict's nested fallback never sees the yaml gateway
+    section because load_gateway_config builds gw_data flat."""
+    from gateway.config import load_gateway_config
+
+    (tmp_path / "config.yaml").write_text(
+        "gateway:\n"
+        "  loop_watchdog: false\n"
+        "  loop_watchdog_probe_interval_s: 45\n"
+        "  loop_watchdog_probe_timeout_s: 15\n"
+        "  loop_watchdog_max_strikes: 12\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("gateway.config.get_hermes_home", lambda: tmp_path)
+
+    cfg = load_gateway_config()
+    assert cfg.loop_watchdog is False
+    assert cfg.loop_watchdog_probe_interval_s == 45.0
+    assert cfg.loop_watchdog_probe_timeout_s == 15.0
+    assert cfg.loop_watchdog_max_strikes == 12
+
+
 def test_gateway_runner_liveness_guards_start_and_stop():
     from gateway.run import GatewayRunner
 

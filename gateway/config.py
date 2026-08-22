@@ -9,6 +9,7 @@ Handles loading and validating configuration for:
 """
 
 import logging
+import math
 import os
 import json
 from pathlib import Path
@@ -157,7 +158,9 @@ def _coerce_int(value: Any, default: int) -> int:
         return default
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: int(float("inf")) — a non-finite YAML value must
+        # degrade to the default, not abort gateway config loading.
         return default
 
 
@@ -1251,11 +1254,19 @@ class GatewayConfig:
             else nested_gateway.get("loop_watchdog_max_strikes"),
             DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
         )
-        if loop_watchdog_probe_interval_s < 1.0:
+        if (
+            not math.isfinite(loop_watchdog_probe_interval_s)
+            or loop_watchdog_probe_interval_s < 1.0
+            or loop_watchdog_probe_interval_s > 3600.0
+        ):
             loop_watchdog_probe_interval_s = DEFAULT_LOOP_WATCHDOG_INTERVAL_S
-        if loop_watchdog_probe_timeout_s < 1.0:
+        if (
+            not math.isfinite(loop_watchdog_probe_timeout_s)
+            or loop_watchdog_probe_timeout_s < 1.0
+            or loop_watchdog_probe_timeout_s > 600.0
+        ):
             loop_watchdog_probe_timeout_s = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
-        if loop_watchdog_max_strikes < 1:
+        if loop_watchdog_max_strikes < 1 or loop_watchdog_max_strikes > 1000:
             loop_watchdog_max_strikes = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
         if multiplex_profiles is None and isinstance(nested_gateway, dict):
             # Also honor gateway.multiplex_profiles written by
@@ -1522,6 +1533,23 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["write_sessions_json"] = yaml_cfg["write_sessions_json"]
             elif isinstance(gateway_section, dict) and "write_sessions_json" in gateway_section:
                 gw_data["write_sessions_json"] = gateway_section["write_sessions_json"]
+
+            # Loop-liveness watchdog toggle + tuning knobs: top-level wins;
+            # nested gateway.* fallback. GatewayConfig.from_dict has its own
+            # nested fallback, but this loader builds gw_data FLAT and never
+            # forwards the yaml `gateway:` section — without this bridge the
+            # documented keys (including the pre-existing loop_watchdog bool)
+            # were silently ignored on the real gateway startup path.
+            for _wd_key in (
+                "loop_watchdog",
+                "loop_watchdog_probe_interval_s",
+                "loop_watchdog_probe_timeout_s",
+                "loop_watchdog_max_strikes",
+            ):
+                if _wd_key in yaml_cfg:
+                    gw_data[_wd_key] = yaml_cfg[_wd_key]
+                elif isinstance(gateway_section, dict) and _wd_key in gateway_section:
+                    gw_data[_wd_key] = gateway_section[_wd_key]
 
             if "filter_silence_narration" in yaml_cfg:
                 gw_data["filter_silence_narration"] = yaml_cfg[

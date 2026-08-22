@@ -137,6 +137,16 @@ TOOLSETS = {
         "includes": []
     },
 
+    "opencode": {
+        "description": (
+            "Delegate coding tasks to an opencode serve backend (remote coding "
+            "agent loop). Requires OPENCODE_SERVER_URL (+ OPENCODE_SERVER_PASSWORD "
+            "for basic auth) in the profile/gateway environment."
+        ),
+        "tools": ["opencode_run", "opencode_status"],
+        "includes": []
+    },
+
     "video": {
         "description": "Video analysis and understanding tools (opt-in, not in default toolset)",
         "tools": ["video_analyze"],

@@ -427,8 +427,10 @@ function SidebarSessionRowImpl({
             // Modifier-click gestures on a row (see `resolveSessionRowClick`):
             //   ⇧          → pin / unpin
             //   ⌘/⌃        → open in a new tab (stack into main)
-            //   ⌘/⌃ + ⇧    → pop into its own window (needs standalone windows)
-            //   ⌥ + ⇧      → archive
+            //   exact ⌃ + ⇧ → archive
+            //   ⌘ + ⇧       → pop into its own window (needs standalone windows)
+            //   ⌃ + ⇧ plus Alt/Meta → preserve the standalone-window route
+            //   ⌥ + ⇧       → archive
             // A plain click resumes. Archive also lives in the row's ⋯ and
             // right-click menus and as a rebindable hotkey (`session.archive`).
             // `openSession`'s 'window' intent already falls back to 'tab' when

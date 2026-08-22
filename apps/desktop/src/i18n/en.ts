@@ -1109,8 +1109,7 @@ export const en: Translations = {
     sessions: {
       loading: 'Loading archived sessions…',
       archivedTitle: 'Archived sessions',
-      archivedIntro:
-        'Archived chats are hidden from the sidebar but keep all their messages. Ctrl/⌘-click a chat in the sidebar to archive it.',
+      archivedIntro: 'Archived chats are hidden from the sidebar but keep all their messages.',
       emptyArchivedTitle: 'Nothing archived',
       emptyArchivedDesc: 'Archive a chat to hide it here.',
       unarchive: 'Unarchive',

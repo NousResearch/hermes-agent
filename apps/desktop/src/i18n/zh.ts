@@ -1303,7 +1303,7 @@ export const zh: Translations = {
     sessions: {
       loading: '正在加载已归档会话…',
       archivedTitle: '已归档会话',
-      archivedIntro: '已归档对话会从侧边栏隐藏，但会保留全部消息。在侧边栏 Ctrl/⌘ 点击对话即可归档。',
+      archivedIntro: '已归档对话会从侧边栏隐藏，但会保留全部消息。',
       emptyArchivedTitle: '暂无归档',
       emptyArchivedDesc: '归档一个对话后会显示在这里。',
       unarchive: '取消归档',

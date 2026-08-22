@@ -1,9 +1,12 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type * as React from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { openSession } from '@/app/open-session'
 import type { SessionInfo } from '@/hermes'
+import { TRANSLATIONS } from '@/i18n/catalog'
+import { LOCALE_OPTIONS } from '@/i18n/languages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
 import type * as Time from '@/lib/time'
@@ -16,6 +19,7 @@ import type * as WindowsStore from '@/store/windows'
 import { SidebarSessionRow } from './session-row'
 
 afterEach(cleanup)
+beforeEach(() => vi.clearAllMocks())
 
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
@@ -46,6 +50,7 @@ vi.mock('@/i18n', () => ({
 
 vi.mock('@/app/chat/profile-tag', () => ({ ProfileTag: () => null }))
 vi.mock('@/app/chat/session-drag', () => ({ startSessionDrag: vi.fn() }))
+vi.mock('@/app/open-session', () => ({ openSession: vi.fn() }))
 // PlatformAvatar is intentionally NOT mocked (do not reintroduce this — see
 // #67500, Gille's third pass): it's a forwardRef component that spreads its
 // props onto the rendered span, and mocking it with a stand-in that spreads
@@ -149,6 +154,69 @@ const handoffAvatar = (container: HTMLElement) =>
   container.querySelector<HTMLElement>('span[aria-hidden="true"].inline-grid')
 
 const noop = vi.fn()
+
+// These paths are intentionally open-ended `Record<string, ...>` maps in the
+// Translations contract. Their members may differ by locale, so recursive
+// parity stops at the map boundary while still requiring the boundary itself.
+const OPEN_LOCALE_MAP_PATHS = new Set([
+  'composer.commandDescs',
+  'composer.hotkeyDescs',
+  'composer.snippets',
+  'cron.days',
+  'cron.deliveryLabels',
+  'cron.scheduleHints',
+  'cron.scheduleLabels',
+  'cron.states',
+  'install.stageStates',
+  'keybinds.actions',
+  'keybinds.categories',
+  'messaging.fieldCopy',
+  'messaging.platformIntro',
+  'messaging.states',
+  'onboarding.apiKeyOptions',
+  'onboarding.flowSubtitles',
+  'settings.fieldDescriptions',
+  'settings.fieldLabels',
+  'settings.model.tasks',
+  'settings.plugins.agent.sources',
+  'settings.sections',
+  'sidebar.nav',
+  'skills.hub.trust',
+  'updates.stages',
+  'webhooks.deliverOptions'
+])
+
+function localeLeafShape(root: unknown): Record<string, string> {
+  const shape: Record<string, string> = {}
+
+  const visit = (value: unknown, path: string) => {
+    if (OPEN_LOCALE_MAP_PATHS.has(path)) {
+      shape[path] = value !== null && typeof value === 'object' && !Array.isArray(value) ? 'open-map' : typeof value
+
+      return
+    }
+
+    if (typeof value === 'function') {
+      shape[path] = `function:${value.length}`
+
+      return
+    }
+
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      for (const [key, child] of Object.entries(value)) {
+        visit(child, path ? `${path}.${key}` : key)
+      }
+
+      return
+    }
+
+    shape[path] = Array.isArray(value) ? 'array' : typeof value
+  }
+
+  visit(root, '')
+
+  return shape
+}
 
 const renderRow = (session: SessionInfo) =>
   render(
@@ -338,6 +406,120 @@ describe('SidebarSessionRow', () => {
     expect(age.getAttribute('tabindex')).toBe('0')
     expect(age.getAttribute('title')).toBeNull()
     expect(tipTrigger(age)).toBeTruthy()
+  })
+
+  const gestureCases = [
+    {
+      action: 'resume',
+      dispatch: (row: HTMLElement) => fireEvent.click(row),
+      name: 'ordinary click'
+    },
+    {
+      action: 'pin',
+      dispatch: (row: HTMLElement) => fireEvent.click(row, { shiftKey: true }),
+      name: 'Shift-click'
+    },
+    {
+      action: 'tab',
+      dispatch: (row: HTMLElement) => fireEvent.click(row, { ctrlKey: true }),
+      name: 'Ctrl-click'
+    },
+    {
+      action: 'tab',
+      dispatch: (row: HTMLElement) => fireEvent.click(row, { metaKey: true }),
+      name: 'Cmd-click'
+    },
+    {
+      action: 'tab',
+      dispatch: (row: HTMLElement) => {
+        fireEvent.mouseDown(row, { button: 1 })
+        fireEvent.pointerDown(row, { button: 1 })
+        fireEvent.pointerUp(row, { button: 1 })
+      },
+      name: 'middle-button pointerdown/pointerup'
+    },
+    {
+      action: 'archive',
+      dispatch: (row: HTMLElement) => fireEvent.click(row, { ctrlKey: true, shiftKey: true }),
+      name: 'exact Ctrl+Shift-click'
+    },
+    {
+      action: 'archive',
+      dispatch: (row: HTMLElement) => fireEvent.click(row, { altKey: true, shiftKey: true }),
+      name: 'exact Alt+Shift-click from current main'
+    },
+    {
+      action: 'window',
+      dispatch: (row: HTMLElement) => fireEvent.click(row, { metaKey: true, shiftKey: true }),
+      name: 'Cmd+Shift-click'
+    },
+    {
+      action: 'window',
+      dispatch: (row: HTMLElement) => fireEvent.click(row, { altKey: true, ctrlKey: true, shiftKey: true }),
+      name: 'Ctrl+Shift+Alt-click superset'
+    },
+    {
+      action: 'window',
+      dispatch: (row: HTMLElement) => fireEvent.click(row, { ctrlKey: true, metaKey: true, shiftKey: true }),
+      name: 'Ctrl+Shift+Cmd-click superset'
+    }
+  ] as const
+
+  it.each(gestureCases)('routes $name exclusively to $action', (gestureCase: (typeof gestureCases)[number]) => {
+    const { action, dispatch } = gestureCase
+    const onArchive = vi.fn()
+    const onDelete = vi.fn()
+    const onPin = vi.fn()
+    const onResume = vi.fn()
+
+    render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        onArchive={onArchive}
+        onDelete={onDelete}
+        onPin={onPin}
+        onResume={onResume}
+        onToggleUnread={noop}
+        session={makeSession({ title: 'Gesture target' })}
+        unread={false}
+      />
+    )
+
+    dispatch(screen.getByRole('button', { name: 'Gesture target' }))
+
+    expect(onArchive).toHaveBeenCalledTimes(action === 'archive' ? 1 : 0)
+    expect(onDelete).not.toHaveBeenCalled()
+    expect(onPin).toHaveBeenCalledTimes(action === 'pin' ? 1 : 0)
+    expect(onResume).toHaveBeenCalledTimes(action === 'resume' ? 1 : 0)
+
+    if (action === 'tab' || action === 'window') {
+      expect(openSession).toHaveBeenCalledOnce()
+      expect(openSession).toHaveBeenCalledWith('s1', expect.any(Function), action)
+    } else {
+      expect(openSession).not.toHaveBeenCalled()
+    }
+  })
+
+  it('keeps archived-session settings copy gesture-neutral in every registered catalog', () => {
+    const localeIds = LOCALE_OPTIONS.map(locale => locale.id)
+
+    expect(new Set(localeIds).size).toBe(localeIds.length)
+    expect(Object.keys(TRANSLATIONS).sort()).toEqual([...localeIds].sort())
+
+    for (const id of localeIds) {
+      expect(TRANSLATIONS[id].settings.sessions.archivedIntro).not.toMatch(
+        /\b(?:ctrl|cmd|shift|click)\b|⌘|点击|點擊|クリック/iu
+      )
+    }
+  })
+
+  it('preserves recursive locale leaf paths, kinds, and function arity', () => {
+    const referenceShape = localeLeafShape(TRANSLATIONS.en)
+
+    for (const { id } of LOCALE_OPTIONS) {
+      expect(localeLeafShape(TRANSLATIONS[id])).toEqual(referenceShape)
+    }
   })
 
   it('does not render a handoff avatar for a locally-started session', () => {

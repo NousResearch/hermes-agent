@@ -3607,6 +3607,26 @@ def apply_terminal_config_to_env(
             ):
                 value = os.path.expanduser(value)
         if (should_override and cfg_key in explicit_keys) or env_var not in target:
+            # Don't let an empty collection in config override a non-empty env var.
+            # Empty list/dict is almost never intentional — it's usually a serialized
+            # default from `hermes setup` that should not clobber env-driven mounts.
+            if (
+                should_override
+                and cfg_key in explicit_keys
+                and isinstance(value, (list, dict))
+                and not value
+                and env_var in target
+                and target[env_var]
+            ):
+                logger.warning(
+                    "terminal.%s is an empty %s in config.yaml but %s is set in env — "
+                    "keeping the env value to avoid silently dropping mounts. "
+                    "Set a non-empty value in config.yaml to override.",
+                    cfg_key,
+                    type(value).__name__,
+                    env_var,
+                )
+                continue
             target[env_var] = _terminal_env_value(value)
     return target
 

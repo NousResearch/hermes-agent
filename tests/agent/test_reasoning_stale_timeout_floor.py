@@ -204,3 +204,95 @@ def test_stream_stale_timeout_floor_for_nemotron_3_ultra():
         est_tokens=10_000,
     )
     assert timeout == 600.0
+
+
+# ── real-function tests: explicit config must beat the floor ──────────────
+#
+# The mirror above cannot catch a config/floor precedence bug: it stubs config
+# handling out entirely (`if stale_base != 180.0: pass`) and then applies the
+# floor unconditionally.  These call the production resolver instead.
+#
+# The bug these pin: both stream-side sites applied the floor as
+# `max(timeout, floor)` *after* reading provider config, so a user setting
+# `stale_timeout_seconds: 60` on a floored model silently got 600s — while the
+# non-stream resolver early-returns on config and never consults the floor.
+# Same feature, two paths, opposite semantics.
+
+
+class _FakeAgent:
+    """Minimal stand-in — the resolver only reads .provider and .model."""
+
+    def __init__(self, provider: str, model: str) -> None:
+        self.provider = provider
+        self.model = model
+
+
+@pytest.fixture
+def _no_stale_env(monkeypatch):
+    """The resolver falls back to this env var; keep it out of the way."""
+    monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+
+
+def _derive(monkeypatch, cfg_stale, model, est_tokens=10_000):
+    from agent import chat_completion_helpers as cch
+
+    monkeypatch.setattr(
+        cch, "get_provider_stale_timeout", lambda provider, m: cfg_stale
+    )
+    return cch._derive_stream_stale_timeout(
+        _FakeAgent("nvidia", model),
+        {"model": model, "messages": [{"role": "user", "content": "x" * est_tokens}]},
+    )
+
+
+def test_floor_applies_when_user_has_not_configured_a_stale_timeout(
+    monkeypatch, _no_stale_env
+):
+    """No explicit config -> the 600s auto-mitigation still applies.
+
+    This is the behavior the floor exists for; the fix must not weaken it.
+    """
+    assert _derive(monkeypatch, None, "deepseek-ai/deepseek-v4-flash-0731") == 600.0
+
+
+def test_explicit_config_below_floor_wins(monkeypatch, _no_stale_env):
+    """`stale_timeout_seconds: 60` must stay 60, not be raised to 600.
+
+    Regression: this returned 600.0.  A user who deliberately wants fast
+    failover on a slow reasoning model could not get it — the knob silently
+    did nothing, and the docstring claimed the opposite.
+    """
+    assert _derive(monkeypatch, 60.0, "deepseek-ai/deepseek-v4-flash-0731") == 60.0
+
+
+def test_explicit_config_above_floor_is_also_honored(monkeypatch, _no_stale_env):
+    """Config wins in both directions — it is not a second floor."""
+    assert _derive(monkeypatch, 900.0, "deepseek-ai/deepseek-v4-flash-0731") == 900.0
+
+
+def test_non_reasoning_model_is_unaffected(monkeypatch, _no_stale_env):
+    """No floor matches -> config passes through untouched."""
+    assert _derive(monkeypatch, 60.0, "z-ai/glm-5.2") == 60.0
+
+
+def test_stream_and_non_stream_resolvers_agree_on_precedence(
+    monkeypatch, _no_stale_env
+):
+    """The two paths must not disagree about what explicit config means.
+
+    This is the invariant whose violation was the bug: the non-stream resolver
+    early-returns on provider config, so the stream resolver must not raise
+    that same value to the floor.
+    """
+    import run_agent
+
+    model = "deepseek-ai/deepseek-v4-flash-0731"
+    monkeypatch.setattr(
+        run_agent, "get_provider_stale_timeout", lambda provider, m: 60.0
+    )
+    agent = run_agent.AIAgent.__new__(run_agent.AIAgent)
+    agent.provider, agent.model = "nvidia", model
+    non_stream_base, _ = agent._resolved_api_call_stale_timeout_base()
+
+    assert non_stream_base == 60.0
+    assert _derive(monkeypatch, 60.0, model) == non_stream_base

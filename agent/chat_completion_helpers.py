@@ -853,7 +853,12 @@ def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
     _reasoning_floor = get_reasoning_stale_timeout_floor(_model_id)
     if _reasoning_floor is None and api_kwargs.get("modelId"):
         _reasoning_floor = _bedrock_reasoning_stale_floor(api_kwargs["modelId"])
-    if _reasoning_floor is not None:
+    # The floor is an auto-mitigation for users who have NOT tuned this model.
+    # An explicit ``stale_timeout_seconds`` is a deliberate choice and wins
+    # outright — matching the non-stream resolver
+    # (``run_agent.AIAgent._resolved_api_call_stale_timeout_base``), which
+    # early-returns on provider config before ever consulting the floor.
+    if _reasoning_floor is not None and _cfg_stale is None:
         _timeout = max(_timeout, _reasoning_floor)
     return _timeout
 
@@ -5079,11 +5084,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # xAI Grok reasoning, etc.) routinely exceed the default 180s chat-
         # model threshold during their thinking phase.  The cloud gateway
         # upstream kills the socket first, surfacing as BrokenPipeError.
-        # Raises the floor only — never overrides explicit user config
-        # (handled by get_provider_stale_timeout above).
+        # Raises the floor only — never overrides explicit user config.  The
+        # ``_cfg_stale is None`` guard is what enforces that: the floor is an
+        # auto-mitigation for untuned models, so a deliberate
+        # ``stale_timeout_seconds`` wins outright.  Mirrors the non-stream
+        # resolver (``run_agent.AIAgent._resolved_api_call_stale_timeout_base``),
+        # which early-returns on provider config before consulting the floor.
         from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
         _reasoning_floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model"))
-        if _reasoning_floor is not None:
+        if _reasoning_floor is not None and _cfg_stale is None:
             _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
 
     t = threading.Thread(target=_context_thread_target(_call), daemon=True)

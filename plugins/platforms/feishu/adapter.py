@@ -1556,6 +1556,15 @@ class FeishuAdapter(BasePlatformAdapter):
         # Update prompt button state (prompt_id → {session_key, message_id, chat_id})
         self._update_prompt_state: Dict[int, Dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
+        # Clarify button state (clarify_id → {session_key, chat_id, choices})
+        # for the clarify tool's multiple-choice prompts rendered as
+        # interactive cards (mirrors Telegram's _clarify_state).
+        self._clarify_state: Dict[str, Dict[str, Any]] = {}
+        # Choice picker state (picker_id → {chat_id, session_key, choices,
+        # on_choice_selected}) for /reasoning, /fast and other finite-choice
+        # slash commands (generic send_choice_picker capability).
+        self._choice_picker_state: Dict[int, Dict[str, Any]] = {}
+        self._choice_picker_counter = itertools.count(1)
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
@@ -2195,6 +2204,165 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] send_update_prompt failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a clarify prompt as an interactive card with choice buttons.
+
+        Multi-choice mode (``choices`` non-empty): one button per option plus
+        a final "✏️ Other (type answer)" button.  Numeric buttons resolve
+        immediately via ``resolve_gateway_clarify``; the "Other" button flips
+        the clarify entry into text-capture mode so the next message in the
+        session becomes the response (same contract as Telegram/Discord).
+
+        Open-ended mode (``choices`` empty): plain question text — the
+        gateway's text-intercept captures the next message.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            if not choices:
+                # Open-ended — plain text is enough; base-class contract says
+                # gateway text-intercept resolves it.
+                return await self.send(chat_id, f"❓ {question}", metadata=metadata)
+
+            clean_choices = [str(c).strip() for c in choices if str(c).strip()]
+
+            def _btn(label: str, token: str, btn_type: str = "default") -> dict:
+                # Feishu plain_text button labels render poorly past ~30
+                # chars on mobile; the card body carries the full text.
+                if len(label) > 30:
+                    label = label[:29] + "…"
+                return {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": label},
+                    "type": btn_type,
+                    "value": {
+                        "hermes_clarify_action": token,
+                        "clarify_id": clarify_id,
+                    },
+                }
+
+            option_lines = "\n".join(
+                f"{i + 1}. {c}" for i, c in enumerate(clean_choices)
+            )
+            actions = [
+                _btn(f"{i + 1}", str(i), "primary" if i == 0 else "default")
+                for i in range(len(clean_choices))
+            ]
+            actions.append(_btn("✏️ Other (type answer)", "other"))
+
+            card = {
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "title": {"content": "❓ Hermes needs your input", "tag": "plain_text"},
+                    "template": "blue",
+                },
+                "elements": [
+                    {"tag": "markdown", "content": f"{question}\n\n{option_lines}"},
+                    {"tag": "action", "actions": actions},
+                ],
+            }
+
+            payload = json.dumps(card, ensure_ascii=False)
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=None,
+                metadata=metadata,
+            )
+            result = self._finalize_send_result(response, "send_clarify failed")
+            if result.success:
+                self._clarify_state[clarify_id] = {
+                    "session_key": session_key,
+                    "chat_id": chat_id,
+                    "choices": clean_choices,
+                }
+            return result
+        except Exception as exc:
+            logger.warning("[Feishu] send_clarify failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+    async def send_choice_picker(
+        self,
+        chat_id: str,
+        title: str,
+        choices: list,
+        session_key: str,
+        on_choice_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a flat interactive-card choice picker (one tap → one value).
+
+        Generic single-level picker used by `/reasoning`, `/fast`, and any
+        future finite-choice slash command. Each choice dict:
+        ``{"value": str, "label": str, "is_current": bool}`` — the same
+        contract as the Telegram/Discord/Matrix implementations.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            picker_id = next(self._choice_picker_counter)
+
+            def _btn(idx: int, choice: dict) -> dict:
+                label = str(choice.get("label") or choice.get("value") or "")
+                if choice.get("is_current"):
+                    label = f"✓ {label}"
+                if len(label) > 30:
+                    label = label[:29] + "…"
+                return {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": label},
+                    "type": "primary" if choice.get("is_current") else "default",
+                    "value": {
+                        "hermes_choice_picker_action": str(idx),
+                        "picker_id": picker_id,
+                    },
+                }
+
+            actions = [_btn(i, c) for i, c in enumerate(choices)]
+            if not actions:
+                return SendResult(success=False, error="No choices")
+
+            card = {
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "title": {"content": title, "tag": "plain_text"},
+                    "template": "blue",
+                },
+                "elements": [{"tag": "action", "actions": actions}],
+            }
+
+            payload = json.dumps(card, ensure_ascii=False)
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=None,
+                metadata=metadata,
+            )
+            result = self._finalize_send_result(response, "send_choice_picker failed")
+            if result.success:
+                self._choice_picker_state[picker_id] = {
+                    "chat_id": chat_id,
+                    "session_key": session_key,
+                    "choices": choices,
+                    "on_choice_selected": on_choice_selected,
+                }
+            return result
+        except Exception as exc:
+            logger.warning("[Feishu] send_choice_picker failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
     @staticmethod
     def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
         """Build raw card JSON for a resolved approval action."""
@@ -2734,11 +2902,31 @@ class FeishuAdapter(BasePlatformAdapter):
             action_value.get("hermes_update_prompt_action")
             if isinstance(action_value, dict) else None
         )
+        clarify_action = (
+            action_value.get("hermes_clarify_action")
+            if isinstance(action_value, dict) else None
+        )
+        choice_picker_action = (
+            action_value.get("hermes_choice_picker_action")
+            if isinstance(action_value, dict) else None
+        )
 
         if hermes_action:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
         if update_prompt_action:
             return self._handle_update_prompt_card_action(
+                event=event,
+                action_value=action_value,
+                loop=loop,
+            )
+        if clarify_action is not None:
+            return self._handle_clarify_card_action(
+                event=event,
+                action_value=action_value,
+                loop=loop,
+            )
+        if choice_picker_action is not None:
+            return self._handle_choice_picker_card_action(
                 event=event,
                 action_value=action_value,
                 loop=loop,
@@ -2890,6 +3078,238 @@ class FeishuAdapter(BasePlatformAdapter):
             card.data = self._build_resolved_update_prompt_card(answer=answer, user_name=user_name)
             response.card = card
         return response
+
+    @staticmethod
+    def _build_resolved_clarify_card(*, question: str, answer: str, user_name: str) -> Dict[str, Any]:
+        """Build raw card JSON for a resolved clarify choice."""
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "✅ Answered", "tag": "plain_text"},
+                "template": "green",
+            },
+            "elements": [
+                {"tag": "markdown", "content": f"❓ {question}\n\n**{user_name}:** {answer}"},
+            ],
+        }
+
+    @staticmethod
+    def _build_awaiting_text_clarify_card(*, question: str, user_name: str) -> Dict[str, Any]:
+        """Build raw card JSON shown after the user taps \"Other\"."""
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "✏️ Awaiting typed answer", "tag": "plain_text"},
+                "template": "blue",
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": f"❓ {question}\n\n*Awaiting typed response from {user_name}…*",
+                },
+            ],
+        }
+
+    def _handle_clarify_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
+        """Resolve a clarify button tap and return the settled card inline.
+
+        Mirrors the approval-card flow: validates the operator and chat,
+        resolves synchronously through ``tools.clarify_gateway`` (a cheap
+        in-process Event set — safe from the SDK callback thread), and
+        returns the updated card so every client syncs immediately.
+        """
+        clarify_id = str(action_value.get("clarify_id") or "")
+        token = str(action_value.get("hermes_clarify_action") or "")
+        state = self._clarify_state.get(clarify_id)
+        if not clarify_id or not state:
+            logger.debug("[Feishu] Clarify %s already resolved or unknown", clarify_id or "<missing>")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
+        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+            logger.warning("[Feishu] Unauthorized clarify click by %s", open_id or "<unknown>")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        if callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id:
+            logger.warning(
+                "[Feishu] Clarify callback chat mismatch for %s (expected=%s, got=%s)",
+                clarify_id, expected_chat_id, callback_chat_id,
+            )
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        user_name = self._get_cached_sender_name(open_id) or open_id
+        # Reconstruct the question for the settled card from the pending
+        # clarify entry when available (state stores only choices).
+        question = ""
+        try:
+            from tools import clarify_gateway as _cg
+            with _cg._lock:
+                _entry = _cg._entries.get(clarify_id)
+            if _entry is not None:
+                question = str(getattr(_entry, "question", "") or "")
+        except Exception:
+            question = ""
+
+        if token == "other":
+            # Flip into text-capture mode; the gateway text-intercept picks
+            # up the next message in this session. Keep _clarify_state so a
+            # late tap on a numeric button still validates.
+            flipped = False
+            try:
+                from tools.clarify_gateway import mark_awaiting_text
+                flipped = mark_awaiting_text(clarify_id)
+            except Exception as exc:
+                logger.warning("[Feishu] mark_awaiting_text failed: %s", exc)
+            if not flipped:
+                self._clarify_state.pop(clarify_id, None)
+                logger.debug("[Feishu] Clarify %s expired before 'Other' tap", clarify_id)
+                return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+            if P2CardActionTriggerResponse is None:
+                return None
+            response = P2CardActionTriggerResponse()
+            if CallBackCard is not None:
+                card = CallBackCard()
+                card.type = "raw"
+                card.data = self._build_awaiting_text_clarify_card(
+                    question=question, user_name=user_name,
+                )
+                response.card = card
+            return response
+
+        # Numeric choice → resolve immediately with the chosen text.
+        choices = list(state.get("choices") or [])
+        try:
+            idx = int(token)
+        except (TypeError, ValueError):
+            idx = -1
+        if not (0 <= idx < len(choices)):
+            logger.debug("[Feishu] Clarify %s has invalid choice token=%r", clarify_id, token)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        resolved_text = str(choices[idx])
+
+        self._clarify_state.pop(clarify_id, None)
+        resolved = False
+        try:
+            from tools.clarify_gateway import resolve_gateway_clarify
+            resolved = resolve_gateway_clarify(clarify_id, resolved_text)
+        except Exception as exc:
+            logger.error("[Feishu] resolve_gateway_clarify failed: %s", exc)
+        if not resolved:
+            # Entry evicted (clarify_timeout) or gateway restarted between
+            # ask and tap — don't render a misleading ✓ card.
+            logger.warning("[Feishu] Clarify %s tap arrived after expiry", clarify_id)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        logger.info(
+            "Feishu clarify button resolved (id=%s, choice=%r, user=%s)",
+            clarify_id, resolved_text, user_name,
+        )
+        if P2CardActionTriggerResponse is None:
+            return None
+        response = P2CardActionTriggerResponse()
+        if CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = self._build_resolved_clarify_card(
+                question=question, answer=resolved_text, user_name=user_name,
+            )
+            response.card = card
+        return response
+
+    def _handle_choice_picker_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
+        """Apply a choice-picker tap and schedule the async applier.
+
+        The applier callback (``on_choice_selected``) is an async gateway
+        function that may write config — it runs on the adapter loop; the
+        synchronous callback response settles the card immediately with the
+        chosen label ("Applying…" is avoided: the applier's message is sent
+        as a follow-up chat message on completion).
+        """
+        picker_id = action_value.get("picker_id")
+        state = self._choice_picker_state.get(picker_id) if picker_id is not None else None
+        if picker_id is None or not state:
+            logger.debug("[Feishu] Choice picker %s already resolved or unknown", picker_id)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
+        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+            logger.warning("[Feishu] Unauthorized choice-picker click by %s", open_id or "<unknown>")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        if callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id:
+            logger.warning(
+                "[Feishu] Choice picker callback chat mismatch for %s (expected=%s, got=%s)",
+                picker_id, expected_chat_id, callback_chat_id,
+            )
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        token = str(action_value.get("hermes_choice_picker_action") or "")
+        choices = list(state.get("choices") or [])
+        try:
+            idx = int(token)
+        except (TypeError, ValueError):
+            idx = -1
+        if not (0 <= idx < len(choices)):
+            logger.debug("[Feishu] Choice picker %s invalid token=%r", picker_id, token)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        choice = choices[idx]
+        value = str(choice.get("value") or "")
+        label = str(choice.get("label") or value)
+        user_name = self._get_cached_sender_name(open_id) or open_id
+
+        self._choice_picker_state.pop(picker_id, None)
+        if not self._submit_on_loop(
+            loop,
+            self._apply_choice_picker_selection(
+                state=state, value=value, chat_id=expected_chat_id or callback_chat_id,
+            ),
+        ):
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        if P2CardActionTriggerResponse is None:
+            return None
+        response = P2CardActionTriggerResponse()
+        if CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = {
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "title": {"content": f"✓ {label}", "tag": "plain_text"},
+                    "template": "green",
+                },
+                "elements": [
+                    {"tag": "markdown", "content": f"Selected by **{user_name}**"},
+                ],
+            }
+            response.card = card
+        return response
+
+    async def _apply_choice_picker_selection(
+        self, *, state: Dict[str, Any], value: str, chat_id: str,
+    ) -> None:
+        """Run the picker's async applier and send its result as a message."""
+        callback = state.get("on_choice_selected")
+        if not callback:
+            return
+        try:
+            result_text = await callback(chat_id, value)
+        except Exception as exc:
+            logger.error("[Feishu] Choice picker selection failed: %s", exc)
+            result_text = f"Error applying selection: {exc}"
+        if result_text and chat_id:
+            try:
+                await self.send(chat_id, str(result_text))
+            except Exception:
+                logger.debug("[Feishu] choice-picker result send failed", exc_info=True)
 
     async def _resolve_approval(
         self,

@@ -19,6 +19,8 @@ identically on Linux, macOS, and Windows (with minor quoting differences).
 from __future__ import annotations
 
 import os
+import shlex
+import subprocess
 import sys
 import wave
 from pathlib import Path
@@ -38,6 +40,7 @@ from tools.transcription_tools import (
     _iter_command_stt_providers,
     _render_command_stt_template,
     _resolve_command_stt_provider_config,
+    _run_ffmpeg_command_stt_normalize,
     _transcribe_command_stt,
     transcribe_audio,
 )
@@ -243,6 +246,139 @@ class TestTranscribeCommandSTT:
         }
         result = _transcribe_command_stt(str(audio), "fake-cli", cfg, {})
         assert result["transcript"] == DEFAULT_COMMAND_STT_LANGUAGE
+
+    def test_normalizes_input_to_temporary_pcm_wav(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "browser.webm")
+        observed_input = None
+
+        def fake_normalize(_ffmpeg, input_path, output_path):
+            assert input_path == str(audio.resolve())
+            Path(output_path).write_bytes(b"RIFF-normalized")
+
+        def fake_command(command, _timeout, *, env_passthrough):
+            nonlocal observed_input
+            assert env_passthrough == []
+            _executable, input_path, output_path = shlex.split(command)
+            observed_input = Path(input_path)
+            assert observed_input.suffix == ".wav"
+            assert observed_input.read_bytes() == b"RIFF-normalized"
+            Path(output_path).write_text("normalized transcript", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        cfg = {
+            "type": "command",
+            "command": "probe {input_path} {output_path}",
+            "normalize_audio": True,
+        }
+        with (
+            patch("tools.transcription_tools._find_ffmpeg_binary", return_value="ffmpeg"),
+            patch(
+                "tools.transcription_tools._run_ffmpeg_command_stt_normalize",
+                side_effect=fake_normalize,
+            ),
+            patch("tools.transcription_tools._run_command_stt", side_effect=fake_command),
+        ):
+            result = _transcribe_command_stt(str(audio), "fake-cli", cfg, {})
+
+        assert result["success"] is True
+        assert result["transcript"] == "normalized transcript"
+        assert observed_input is not None
+        assert not observed_input.exists()
+
+    def test_normalization_is_opt_in_and_false_string_stays_raw(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "browser.webm")
+
+        def fake_command(command, _timeout, *, env_passthrough):
+            _executable, input_path, output_path = shlex.split(command)
+            assert env_passthrough == []
+            assert Path(input_path) == audio.resolve()
+            Path(output_path).write_text("raw transcript", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        cfg = {
+            "command": "probe {input_path} {output_path}",
+            "normalize_audio": "false",
+        }
+        with (
+            patch(
+                "tools.transcription_tools._find_ffmpeg_binary",
+                side_effect=AssertionError("ffmpeg lookup must remain opt-in"),
+            ),
+            patch("tools.transcription_tools._run_command_stt", side_effect=fake_command),
+        ):
+            result = _transcribe_command_stt(str(audio), "fake-cli", cfg, {})
+
+        assert result["success"] is True
+        assert result["transcript"] == "raw transcript"
+
+    def test_missing_ffmpeg_fails_before_provider_command(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "browser.webm")
+        cfg = {
+            "command": "probe {input_path} {output_path}",
+            "normalize_audio": True,
+        }
+        with (
+            patch("tools.transcription_tools._find_ffmpeg_binary", return_value=None),
+            patch("tools.transcription_tools._run_command_stt") as command_run,
+        ):
+            result = _transcribe_command_stt(str(audio), "tencent", cfg, {})
+
+        assert result["success"] is False
+        assert "requires ffmpeg" in result["error"]
+        command_run.assert_not_called()
+
+    def test_failed_normalization_fails_before_provider_command(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "browser.webm")
+        cfg = {
+            "command": "probe {input_path} {output_path}",
+            "normalize_audio": True,
+        }
+        ffmpeg_error = subprocess.CalledProcessError(
+            1,
+            ["ffmpeg"],
+            stderr="invalid input container",
+        )
+        with (
+            patch("tools.transcription_tools._find_ffmpeg_binary", return_value="ffmpeg"),
+            patch(
+                "tools.transcription_tools._run_ffmpeg_command_stt_normalize",
+                side_effect=ffmpeg_error,
+            ),
+            patch("tools.transcription_tools._run_command_stt") as command_run,
+        ):
+            result = _transcribe_command_stt(str(audio), "tencent", cfg, {})
+
+        assert result["success"] is False
+        assert "input normalization failed: invalid input container" in result["error"]
+        command_run.assert_not_called()
+
+
+class TestRunFFmpegCommandSTTNormalize:
+    def test_uses_16khz_mono_pcm_wav_profile(self):
+        with patch("tools.transcription_tools.subprocess.run") as run:
+            _run_ffmpeg_command_stt_normalize(
+                "/usr/bin/ffmpeg",
+                "/tmp/input.webm",
+                "/tmp/output.wav",
+            )
+
+        command = run.call_args.args[0]
+        assert command == [
+            "/usr/bin/ffmpeg",
+            "-y",
+            "-i",
+            "/tmp/input.webm",
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "pcm_s16le",
+            "/tmp/output.wav",
+        ]
+        assert run.call_args.kwargs["check"] is True
+        assert run.call_args.kwargs["stdin"] is subprocess.DEVNULL
 
 
 # ---------------------------------------------------------------------------

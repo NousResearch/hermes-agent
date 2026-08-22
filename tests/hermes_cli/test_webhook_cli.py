@@ -94,11 +94,32 @@ class TestRemove:
 
 class TestPersistence:
 
-    def test_corrupted_file(self):
+    def test_corrupted_file_refused(self, capsys):
+        """Malformed JSON must exit with an error, not silently return {}.
+
+        Regression: ``_load_subscriptions`` previously returned {} on a
+        JSON parse error, so a subscribe/remove round-trip would persist an
+        empty mapping and destroy every other subscription. Both mutation
+        paths must refuse to write and leave the malformed file untouched.
+        """
         path = _subscriptions_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("broken{{{")
-        assert _load_subscriptions() == {}
+        original = '{"keep": {"secret": "x", "prompt": "p"}} broken{{{'
+        path.write_text(original)
+
+        # subscribe must exit non-zero, emit a parse diagnostic, and not write
+        with pytest.raises(SystemExit):
+            webhook_command(_make_args(webhook_action="subscribe", name="new"))
+        err = capsys.readouterr().err
+        assert "Cannot parse" in err
+        assert path.read_text(encoding="utf-8") == original
+
+        # remove (the sibling mutation path) must behave identically
+        with pytest.raises(SystemExit):
+            webhook_command(_make_args(webhook_action="remove", name="keep"))
+        err = capsys.readouterr().err
+        assert "Cannot parse" in err
+        assert path.read_text(encoding="utf-8") == original
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are platform-specific")
     def test_save_creates_secret_file_owner_only_under_permissive_umask(self):

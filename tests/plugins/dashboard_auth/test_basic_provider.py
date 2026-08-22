@@ -219,3 +219,150 @@ class TestRegister:
         p2 = ctx2.register_dashboard_auth_provider.call_args.args[0]
         s = p1.complete_password_login(username="admin", password="hunter2")
         assert p2.verify_session(access_token=s.access_token) is not None
+
+
+# ---------------------------------------------------------------------------
+# Config-side disclosure (#88657) — every silent resolution step must say
+# what it consulted: load failure, absent section, credential source.
+# ---------------------------------------------------------------------------
+
+
+class TestConfigSideDisclosure:
+    def test_load_config_failure_logs_warning_not_debug(
+        self, basic, monkeypatch, caplog
+    ):
+        import hermes_cli.config as config_mod
+
+        def _boom():
+            raise RuntimeError("bad hermes home")
+
+        monkeypatch.setattr(config_mod, "load_config", _boom)
+        monkeypatch.delenv("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", raising=False)
+        monkeypatch.delenv("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", raising=False)
+        with caplog.at_level("DEBUG", logger=basic.__name__):
+            section = basic._load_config_basic_auth_section()
+        assert section == {}
+        assert basic.LAST_CONFIG_STATUS == "load-failed"
+        warnings = [
+            r for r in caplog.records if r.levelname == "WARNING"
+        ]
+        assert warnings, "load_config() failure must log at WARNING, not DEBUG"
+        assert "env vars will be consulted" in warnings[0].getMessage()
+
+    def test_absent_section_records_config_path(
+        self, basic, monkeypatch, tmp_path
+    ):
+        import hermes_cli.config as config_mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(config_mod, "load_config", lambda: {})
+        section = basic._load_config_basic_auth_section()
+        assert section == {}
+        assert basic.LAST_CONFIG_STATUS == (
+            f"no-section:{tmp_path / 'config.yaml'}"
+        )
+
+    def test_all_empty_schema_template_counts_as_no_section(
+        self, basic, monkeypatch, tmp_path
+    ):
+        # load_config() pre-fills basic_auth with an all-empty template when
+        # the file/section is missing — that must not read as "config had a
+        # section" in the disclosure.
+        import hermes_cli.config as config_mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            config_mod,
+            "load_config",
+            lambda: {
+                "dashboard": {
+                    "basic_auth": {
+                        "username": "",
+                        "password": "",
+                        "password_hash": "",
+                        "secret": "",
+                        "session_ttl_seconds": 0,
+                    }
+                }
+            },
+        )
+        section = basic._load_config_basic_auth_section()
+        assert section == {}
+        assert basic.LAST_CONFIG_STATUS == (
+            f"no-section:{tmp_path / 'config.yaml'}"
+        )
+
+    def test_register_discloses_env_only_sources(
+        self, basic, monkeypatch, caplog, tmp_path
+    ):
+        import hermes_cli.config as config_mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(config_mod, "load_config", lambda: {})
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "admin")
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "hunter2")
+        with caplog.at_level("INFO", logger=basic.__name__):
+            basic.register(MagicMock())
+        msg = [
+            r.getMessage()
+            for r in caplog.records
+            if "registered password provider" in r.getMessage()
+        ][0]
+        assert "username from env" in msg
+        assert "password from env" in msg
+        assert f"{tmp_path / 'config.yaml'} has no dashboard.basic_auth section" in msg
+
+    def test_register_discloses_config_sources(self, basic, monkeypatch, caplog):
+        import hermes_cli.config as config_mod
+
+        monkeypatch.setattr(
+            config_mod,
+            "load_config",
+            lambda: {
+                "dashboard": {
+                    "basic_auth": {
+                        "username": "admin",
+                        "password_hash": basic.hash_password("cfg-pw"),
+                    }
+                }
+            },
+        )
+        monkeypatch.setenv("HERMES_HOME", "/home/u/.hermes")
+        with caplog.at_level("INFO", logger=basic.__name__):
+            basic.register(MagicMock())
+        msg = [
+            r.getMessage()
+            for r in caplog.records
+            if "registered password provider" in r.getMessage()
+        ][0]
+        assert "username from config" in msg
+        assert "password from config (password_hash)" in msg
+        assert "config consulted at /home/u/.hermes/config.yaml" in msg
+        # Never the credential values themselves.
+        assert "cfg-pw" not in msg
+
+    def test_register_discloses_config_plaintext_source(
+        self, basic, monkeypatch, caplog, tmp_path
+    ):
+        import hermes_cli.config as config_mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        plain = secrets.token_hex(8)  # generated, never a source literal
+        monkeypatch.setattr(
+            config_mod,
+            "load_config",
+            lambda: {
+                "dashboard": {
+                    "basic_auth": {"username": "admin", "password": plain}
+                }
+            },
+        )
+        with caplog.at_level("INFO", logger=basic.__name__):
+            basic.register(MagicMock())
+        msg = [
+            r.getMessage()
+            for r in caplog.records
+            if "registered password provider" in r.getMessage()
+        ][0]
+        assert "password from config (password)" in msg
+        assert plain not in msg

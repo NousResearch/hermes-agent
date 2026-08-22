@@ -1397,6 +1397,23 @@ class DiscordAdapter(BasePlatformAdapter):
                     adapter_self._ensure_missed_message_backfill_task()
 
             @self._client.event
+            async def on_resumed():
+                # A RESUMED gateway session (as opposed to a full
+                # reconnect) can re-establish voice UDP state (secret
+                # key, ssrc, socket reader) underneath a running
+                # VoiceReceiver. The receiver captured those once at
+                # start(), so it goes silently deaf: SPEAKING events
+                # still arrive via the connection-state hook, but no
+                # audio reaches STT. Rewire after a short settle delay.
+                logger.info(
+                    "[%s] Gateway RESUMED; scheduling voice receiver rewire",
+                    adapter_self.name,
+                )
+                asyncio.create_task(
+                    adapter_self._rewire_voice_receivers_after_resume()
+                )
+
+            @self._client.event
             async def on_message(message: DiscordMessage):
                 await adapter_self._dispatch_discord_message(message)
 
@@ -4600,6 +4617,42 @@ class DiscordAdapter(BasePlatformAdapter):
                     logger.warning("Voice mixer failed to start: %s", e)
 
             return True
+
+    async def _rewire_voice_receivers_after_resume(
+        self, settle_seconds: float = 5.0
+    ) -> None:
+        """Restart voice receivers after a gateway RESUME.
+
+        ``VoiceReceiver.start()`` captures the secret key, ssrc and the
+        UDP socket listener once; a resumed session can replace all
+        three without tearing down the ``VoiceClient``. ``stop()`` +
+        ``start()`` re-captures everything from the live connection.
+        Audio buffered across the resume is deliberately dropped —
+        packets decrypted with a stale key are garbage.
+        """
+        await asyncio.sleep(settle_seconds)
+        for guild_id, vc in list(self._voice_clients.items()):
+            receiver = self._voice_receivers.get(guild_id)
+            if receiver is None:
+                continue
+            try:
+                if not vc.is_connected():
+                    logger.warning(
+                        "Voice resume rewire: guild %d voice client not "
+                        "connected; skipping",
+                        guild_id,
+                    )
+                    continue
+                receiver.stop()
+                receiver.start()
+                logger.info(
+                    "Voice resume rewire: receiver restarted for guild %d",
+                    guild_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Voice resume rewire failed for guild %d", guild_id
+                )
 
     async def leave_voice_channel(self, guild_id: int) -> None:
         """Disconnect from the voice channel in a guild."""

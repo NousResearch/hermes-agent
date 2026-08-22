@@ -2,6 +2,8 @@
 
 import os
 import struct
+import subprocess
+import threading
 import time
 import wave
 from pathlib import Path
@@ -612,12 +614,34 @@ class TestMacOSAudioOutputPolicy:
 
         class _FakeProc:
             returncode = 0
+            args = []
+            pid = 1000
+            terminated = False
+            killed = False
+
+            def poll(self):
+                return 0
 
             def wait(self, timeout=None):
                 return 0
 
             def kill(self):
-                pass
+                self.killed = True
+
+            def terminate(self):
+                self.terminated = True
+
+            def communicate(self, input=None, timeout=None):
+                # check_output() inside the cross-process arbitration runs
+                # `ps` through Popen; the stub must answer like a finished
+                # player so _interrupt_other_process_playback() no-ops.
+                return b"", b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
 
         def _fake_popen(cmd, **kwargs):
             popen_cmds.append(cmd)
@@ -1496,14 +1520,24 @@ class TestWSL2PowerShellFallback:
             captured_players.append(cmd)
             m = MagicMock()
             m.returncode = 0
+            m.pid = 1000
             m.wait.return_value = 0
+            m.poll.return_value = 0
+            m.communicate.return_value = (b"", b"")
+            m.args = cmd
             return m
+
+        _real_open = open  # capture BEFORE patching builtins.open below
 
         def _fake_open(path, *args, **kwargs):
             if str(path) == "/proc/version":
                 import io
+
                 return io.StringIO("Linux version 5.15.0-generic #72-Ubuntu")
-            return open(path, *args, **kwargs)
+            # Must delegate to the REAL open (not the patched builtins.open,
+            # which would recurse) — playback arbitration opens the shared
+            # pidfile during every play call.
+            return _real_open(path, *args, **kwargs)
 
         with patch("builtins.open", side_effect=_fake_open), \
              patch("tools.voice_mode._import_audio", side_effect=ImportError), \
@@ -1600,3 +1634,422 @@ class TestWSLAudioEnvironmentGate:
         assert any(
             "PulseAudio" in n and "WSL" in n for n in result["notices"]
         )
+
+
+class TestPlaybackArbitration:
+    """Global playback arbitration (multi-session/multi-window concurrency).
+
+    A NEW playback request must interrupt the previous one before starting so
+    concurrent sessions can never layer two afplay streams on top of each
+    other (叠音). A superseded call must NOT fall through to the next player
+    in the list — that would re-spawn the very stream we were interrupted on.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_pidfile(self, tmp_path, monkeypatch):
+        import tools.voice_mode as vm
+
+        # Keep the cross-process pidfile OUT of the real HERMES_HOME — these
+        # tests drive fake PIDs (1000+) that must never touch the live file.
+        monkeypatch.setattr(
+            vm, "_playback_pid_path", lambda: str(tmp_path / "audio-playback.pid")
+        )
+
+    class _FakeProc:
+        """Popen stand-in that stays 'playing' until terminate() is called,
+        then auto-completes after a short delay like a real short file."""
+
+        _pid_counter = 1000
+
+        def __init__(self):
+            self.pid = self.__class__._pid_counter
+            self.__class__._pid_counter += 1
+            self.terminated = False
+            self.killed = False
+            self.returncode = None
+            # subprocess.run() builds CompletedProcess(process.args, ...);
+            # a real Popen always has it, the stub needs it too or
+            # check_output inside _interrupt_other_process_playback raises
+            # AttributeError and breaks the arbitration path under test.
+            self.args = []
+
+        def poll(self):
+            return -15 if self.terminated or self.killed else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+        def communicate(self, input=None, timeout=None):
+            # check_output() inside the cross-process arbitration runs a real
+            # `ps` through Popen; a stub must answer like a finished player.
+            return b"", b""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def wait(self, timeout=None):
+            # Block while 'playing'; a real afplay would exit on its own, so
+            # auto-complete after 0.5s unless we were interrupted first.
+            deadline = time.monotonic() + 0.5
+            while self.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            if self.terminated or self.killed:
+                return -15
+            self.returncode = 0
+            return 0
+
+    @pytest.mark.macos_only
+    def test_new_playback_terminates_previous_atomically(self, monkeypatch, sample_wav):
+        """Concurrent plays: the second request kills the first before
+        starting, and the interrupted call returns False without falling
+        through to another player."""
+        import tools.voice_mode as vm
+
+        monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (MagicMock(), None))
+        spawns = []
+        procs = []
+
+        def _fake_popen(cmd, **kwargs):
+            p = self._FakeProc()
+            procs.append(p)
+            spawns.append(cmd)
+            return p
+
+        monkeypatch.setattr("subprocess.Popen", _fake_popen)
+
+        results = {}
+
+        def _play_a():
+            results["a"] = vm.play_audio_file(sample_wav)
+
+        def _play_b():
+            time.sleep(0.1)  # A is mid-play (its FakeProc.wait is blocked)
+            results["b"] = vm.play_audio_file(sample_wav)
+
+        ta = threading.Thread(target=_play_a)
+        tb = threading.Thread(target=_play_b)
+        ta.start()
+        tb.start()
+        ta.join()
+        tb.join()
+
+        assert len(spawns) == 3, spawns  # A-afplay, B-_interrupt(ps), B-afplay
+        afplay_spawns = [s for s in spawns if s[0] == "afplay"]
+        assert len(afplay_spawns) == 2, "no fall-through re-spawn of the same audio"
+        assert procs[0].terminated, "first playback must be interrupted"
+        assert procs[-1].terminated is False
+        assert results["a"] is False, "superseded call must report not played"
+        assert results["b"] is True
+
+    @pytest.mark.macos_only
+    def test_superseded_playback_does_not_fall_through(self, monkeypatch, sample_wav):
+        """When stop_playback() supersedes a playing call, the interrupted
+        call must return False and NOT try the next player in the list."""
+        import tools.voice_mode as vm
+
+        monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (MagicMock(), None))
+        spawns = []
+
+        class _InterruptedProc(self._FakeProc):
+            def wait(self, timeout=None):
+                # Simulate /api/audio/stop landing mid-play: the global slot
+                # is cleared while we are still 'playing'.
+                vm.stop_playback()
+                return -15
+
+        def _fake_popen(cmd, **kwargs):
+            spawns.append(cmd)
+            return _InterruptedProc()
+
+        monkeypatch.setattr("subprocess.Popen", _fake_popen)
+
+        result = vm.play_audio_file(sample_wav)
+
+        assert result is False
+        # Only afplay attempted. Without the was_current guard the loop would
+        # have fallen through to ffplay and re-spawned the same audio.
+        assert len(spawns) == 1
+        assert spawns[0][0] == "afplay"
+
+    @pytest.mark.macos_only
+    def test_sequential_playback_clears_slot(self, monkeypatch, sample_wav):
+        """After a normal completed playback the slot is cleared, so the next
+        play does not terminate a finished process."""
+        import tools.voice_mode as vm
+
+        monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (MagicMock(), None))
+        spawns = []
+
+        def _fake_popen(cmd, **kwargs):
+            spawns.append(cmd)
+            return self._FakeProc()
+
+        monkeypatch.setattr("subprocess.Popen", _fake_popen)
+
+        assert vm.play_audio_file(sample_wav) is True
+        assert vm.play_audio_file(sample_wav) is True
+        assert len(spawns) == 2
+        with vm._playback_lock:
+            assert vm._active_playback is None
+
+
+class TestCrossProcessArbitration:
+    """PID-file arbitration between independent Hermes processes (desktop
+    serve vs gateway vs CLI). A live system player recorded by another
+    process must be terminated before a new playback starts; a stale or
+    non-player PID must never be killed (PID-reuse guard)."""
+
+    @pytest.fixture
+    def pidfile(self, tmp_path, monkeypatch):
+        import tools.voice_mode as vm
+
+        path = tmp_path / "audio-playback.pid"
+        monkeypatch.setattr(vm, "_playback_pid_path", lambda: str(path))
+        return path
+
+    def test_record_then_clear(self, pidfile):
+        import tools.voice_mode as vm
+
+        vm._record_playback_pid(1234)
+        assert pidfile.read_text() == "1234"
+        vm._clear_playback_pid(9999)  # not the owner -> untouched
+        assert pidfile.read_text() == "1234"
+        vm._clear_playback_pid(1234)
+        assert not pidfile.exists()
+
+    def test_interrupt_kills_live_player(self, pidfile, monkeypatch):
+        import tools.voice_mode as vm
+
+        # A real child process standing in for another process's afplay.
+        victim = subprocess.Popen(["sleep", "30"])
+        pidfile.write_text(str(victim.pid))
+        monkeypatch.setattr(
+            "subprocess.check_output",
+            lambda *a, **k: b"afplay\n",
+        )
+
+        vm._interrupt_other_process_playback()
+
+        # SIGTERM delivery to the victim is asynchronous — give the OS a beat.
+        time.sleep(0.2)
+        assert victim.poll() is not None, "live player from another process must be killed"
+
+    def test_interrupt_ignores_non_player_pid(self, pidfile, monkeypatch):
+        import tools.voice_mode as vm
+
+        victim = subprocess.Popen(["sleep", "30"])
+        pidfile.write_text(str(victim.pid))
+        # ps says the PID belongs to a non-player process (PID reuse guard).
+        monkeypatch.setattr(
+            "subprocess.check_output",
+            lambda *a, **k: b"sleep\n",
+        )
+
+        vm._interrupt_other_process_playback()
+
+        assert victim.poll() is None, "non-player PID must never be killed"
+        victim.terminate()
+        victim.wait()
+
+    def test_interrupt_ignores_stale_pidfile(self, pidfile, monkeypatch):
+        import tools.voice_mode as vm
+
+        pidfile.write_text("999999999")  # almost certainly not a live process
+        monkeypatch.setattr(
+            "subprocess.check_output",
+            lambda *a, **k: (_ for _ in ()).throw(subprocess.CalledProcessError(1, "ps")),
+        )
+
+        # Must not raise; stale pidfiles are normal (crashed process).
+        vm._interrupt_other_process_playback()
+
+
+class TestQueuedPlayback:
+    """Per-key serial playback queue (#23065).
+
+    play_audio_file_queued(file_path, key) plays requests sharing a key in
+    arrival order with no overlap; different keys barge-in each other via the
+    global arbitration; a barged-in key's queue is drained so it can't
+    immediately re-fight the newer playback.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, monkeypatch):
+        import tools.voice_mode as vm
+
+        monkeypatch.setattr(vm, "_PLAYBACK_QUEUES", {})
+        monkeypatch.setattr(vm, "_import_audio", lambda: (MagicMock(), None))
+
+    def _install_fake_popen(self, monkeypatch, dur=0.2):
+        import tools.voice_mode as vm
+
+        state = {"active": 0, "max": 0, "spawns": 0}
+
+        class FP:
+            pid = 3000
+
+            def __init__(self):
+                self.terminated = False
+                self.returncode = None
+                self.args = []
+
+            def poll(self):
+                return -15 if self.terminated else None
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                self.terminated = True
+
+            def communicate(self, input=None, timeout=None):
+                return b"", b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def wait(self, timeout=None):
+                state["active"] += 1
+                state["max"] = max(state["max"], state["active"])
+                deadline = time.monotonic() + dur
+                while self.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                state["active"] -= 1
+                if self.terminated:
+                    return -15
+                self.returncode = 0
+                return 0
+
+        def _fp(cmd, **kw):
+            state["spawns"] += 1
+            return FP()
+
+        monkeypatch.setattr("subprocess.Popen", _fp)
+        return state
+
+    @pytest.mark.macos_only
+    def test_same_key_serializes(self, monkeypatch, sample_wav):
+        import tools.voice_mode as vm
+
+        state = self._install_fake_popen(monkeypatch, dur=0.2)
+        results = {}
+
+        def sub(tag):
+            results[tag] = vm.play_audio_file_queued(sample_wav, key="chat-1")
+
+        t0 = time.monotonic()
+        t1 = threading.Thread(target=lambda: sub("a"))
+        t2 = threading.Thread(target=lambda: sub("b"))
+        t1.start()
+        time.sleep(0.05)
+        t2.start()  # arrives while "a" is still playing -> must queue
+        t1.join()
+        t2.join()
+        elapsed = time.monotonic() - t0
+
+        assert results["a"] is True
+        assert results["b"] is True
+        assert state["max"] == 1, "same-key plays must never overlap"
+        assert elapsed >= 0.35, f"serialized ~2x dur expected, got {elapsed:.2f}s"
+
+    @pytest.mark.macos_only
+    def test_no_key_is_plain_barge_in(self, monkeypatch, sample_wav):
+        import tools.voice_mode as vm
+
+        self._install_fake_popen(monkeypatch)
+        assert vm.play_audio_file_queued(sample_wav) is True
+        assert vm.play_audio_file_queued(sample_wav, key=None) is True
+
+    @pytest.mark.macos_only
+    def test_cross_key_barge_in_drains_queued(self, monkeypatch, sample_wav):
+        import tools.voice_mode as vm
+
+        self._install_fake_popen(monkeypatch, dur=0.4)
+        results = {}
+
+        def pa():
+            results["A"] = vm.play_audio_file_queued(sample_wav, key="k1")
+
+        def pb():
+            results["B"] = vm.play_audio_file_queued(sample_wav, key="k1")
+
+        def pc():
+            results["C"] = vm.play_audio_file_queued(sample_wav, key="k2")
+
+        ta = threading.Thread(target=pa)
+        tb = threading.Thread(target=pb)
+        tc = threading.Thread(target=pc)
+        ta.start()
+        time.sleep(0.05)
+        tb.start()  # queues behind A (same key)
+        time.sleep(0.05)
+        tc.start()  # different key -> barges in, interrupting A
+        ta.join()
+        tb.join()
+        tc.join()
+
+        assert results["A"] is False, "A barged-in by C"
+        assert results["C"] is True, "C (latest) plays through"
+        assert results["B"] is False, "B drained after A was interrupted"
+
+    @pytest.mark.macos_only
+    def test_player_exception_does_not_strand_waiter(self, monkeypatch, sample_wav):
+        """Regression: if play_audio_file raises, submit_and_wait must return
+        False instead of blocking on done.wait() forever.
+
+        The bug: _PlaybackQueue._run() called play_audio_file outside any
+        try/except, so a player failure (e.g. TimeoutExpired from
+        proc.wait(timeout=300)) skipped done.set() and the submitting thread
+        hung indefinitely. This test would hang on the old code — the join
+        timeout is the guard.
+        """
+        import tools.voice_mode as vm
+
+        def boom(_path):
+            raise subprocess.TimeoutExpired(cmd=["afplay", sample_wav], timeout=300)
+
+        monkeypatch.setattr(vm, "play_audio_file", boom)
+
+        result: list = []
+        t = threading.Thread(
+            target=lambda: result.append(
+                vm.play_audio_file_queued(sample_wav, key="k-exc")
+            )
+        )
+        t.start()
+        t.join(timeout=5)
+        assert not t.is_alive(), "submit_and_wait blocked forever on player exception"
+        assert result == [False], f"expected False on player failure, got {result}"
+
+    @pytest.mark.macos_only
+    def test_queue_recovers_after_player_exception(self, monkeypatch, sample_wav):
+        """Regression: after a player exception, the queue worker keeps
+        serving later submissions (the except path must `continue`, not let
+        the worker die and leave the queue idle-dead)."""
+        import tools.voice_mode as vm
+
+        calls = {"n": 0}
+
+        def flaky(_path):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise subprocess.TimeoutExpired(cmd=["afplay", sample_wav], timeout=300)
+            return True
+
+        monkeypatch.setattr(vm, "play_audio_file", flaky)
+
+        first = vm.play_audio_file_queued(sample_wav, key="k-recover")
+        second = vm.play_audio_file_queued(sample_wav, key="k-recover")
+
+        assert first is False, "first (exception) submission reports False"
+        assert second is True, "queue keeps working after player exception"
+        assert calls["n"] == 2

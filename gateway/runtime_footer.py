@@ -1,44 +1,66 @@
 """Gateway runtime-metadata footer.
 
-Renders a compact footer showing runtime state (model, context %, cwd) and
-appends it to the FINAL message of an agent turn when enabled.  Off by default
-to keep replies minimal.
+Renders a compact footer showing runtime state (model, reasoning effort,
+context %, cwd) and appends it to the FINAL message of an agent turn when
+enabled.  Off by default to keep replies minimal.
 
 Config (``~/.hermes/config.yaml``)::
 
     display:
       runtime_footer:
         enabled: true                       # off by default
-        fields: [model, context_pct, cwd]   # order shown; drop any to hide
+        fields: [model, context_pct, cwd]
+        separator: " · "
 
 Available fields:
-    model        — bare model id, vendor prefix dropped (``gpt-5.4``)
-    context_pct  — last-call context occupancy as a percent (``5%``)
-    latency      — wall-clock duration of the turn (``22s``, ``1m05s``)
-    cwd          — home-relative working dir (``~``)
+    model             — bare model id, vendor prefix dropped (``gpt-5.4``)
+    reasoning_effort  — session-configured reasoning level (``high``)
+    fast              — Priority / Fast indicator (``⚡️``) when it was applied
+    context_pct       — last-call context occupancy as a percent (``5%``)
+    latency           — wall-clock duration of the turn (``22s``, ``1m05s``)
+    cwd               — home-relative working dir (``~/projects/hermes``)
+    dir               — compact current-directory name (``hermes``)
 
-``latency`` is opt-in: it is NOT in the default field set, so a footer whose
-``fields`` are unset renders exactly as before.
+``reasoning_effort``, ``fast``, ``latency``, and ``dir`` are opt-in: they are
+NOT in the default field set, so a footer whose ``fields`` are unset renders
+exactly as before.
 
-Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
-Users can toggle the global setting with ``/footer on|off`` from both the CLI
-and any gateway platform.
-
-The footer is appended to the final response text in ``gateway/run.py`` right
-before returning the response to the adapter send path — so it only lands on
-the final message a user sees, not on tool-progress updates or streaming
-partials.  When streaming is on and the final text has already been delivered
-piecemeal, the footer is sent as a separate trailing message via
-``send_trailing_footer()``.
+Credits warning: a second line ``💸 consuming credits`` is added only when
+the *effective* provider is a usage-metered API-key route. Subscription /
+OAuth / Copilot providers (the catalog Accounts tab) stay quiet even when
+they share a metered hostname such as ``api.x.ai``.
 """
 
 from __future__ import annotations
 
 import os
 from typing import Any, Iterable, Optional
+from urllib.parse import urlparse
+
+from utils import base_url_host_matches
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
-_SEP = " · "
+_DEFAULT_SEPARATOR = " · "
+_CREDIT_WARNING = "💸 consuming credits"
+
+# Host fallback for unknown / custom OpenAI-compatible endpoints only.
+# Never used to override a catalog Accounts (OAuth/subscription) slug.
+_METERED_PROVIDER_HOSTS = (
+    "openrouter.ai",
+    "api.openai.com",
+    "api.anthropic.com",
+    "api.x.ai",
+    "api.deepseek.com",
+    "api.groq.com",
+    "api.mistral.ai",
+    "api.together.ai",
+    "api.together.xyz",
+    "fireworks.ai",
+    "perplexity.ai",
+    "generativelanguage.googleapis.com",
+    "api.cohere.com",
+    "api.deepinfra.com",
+)
 
 
 def _home_relative_cwd(cwd: str) -> str:
@@ -55,11 +77,130 @@ def _home_relative_cwd(cwd: str) -> str:
         return cwd
 
 
+def _cwd_short(cwd: str) -> str:
+    """Return only the current directory name for compact footers."""
+    rel = _home_relative_cwd(cwd)
+    if rel in {"", "~", os.sep}:
+        return rel
+    return os.path.basename(rel.rstrip(os.sep)) or rel
+
+
 def _model_short(model: Optional[str]) -> str:
     """Drop ``vendor/`` prefix for readability (``openai/gpt-5.4`` → ``gpt-5.4``)."""
     if not model:
         return ""
     return model.rsplit("/", 1)[-1]
+
+
+def _normalize_provider(provider: Optional[str]) -> str:
+    return str(provider or "").strip().lower().replace("_", "-")
+
+
+def _is_loopback_url(base_url: Optional[str]) -> bool:
+    url = str(base_url or "").strip()
+    if not url:
+        return False
+    host = (urlparse(url).hostname or "").lower()
+    return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+
+def _catalog_tab(provider: Optional[str]) -> Optional[str]:
+    """Return the provider catalog tab (``accounts``|``keys``) or None."""
+    slug = _normalize_provider(provider)
+    if not slug:
+        return None
+    try:
+        from hermes_cli.provider_catalog import provider_catalog_by_slug
+
+        desc = provider_catalog_by_slug().get(slug)
+    except Exception:
+        return None
+    return getattr(desc, "tab", None) if desc else None
+
+
+def provider_consumes_credits(
+    provider: Optional[str],
+    base_url: Optional[str] = None,
+) -> bool:
+    """Return whether the effective backend is a usage-metered API-key route.
+
+    Classification follows Hermes' provider catalog so new OAuth plugins
+    (``auth_type`` → Accounts tab) and new API-key plugins inherit the
+    correct footer behaviour without a footer edit. Catalog Accounts always
+    win over host matching — xAI OAuth and xAI API keys share ``api.x.ai``.
+    """
+    tab = _catalog_tab(provider)
+    if tab == "accounts":
+        return False
+    if _is_loopback_url(base_url):
+        return False
+    if tab == "keys":
+        return True
+    url = str(base_url or "")
+    return any(base_url_host_matches(url, host) for host in _METERED_PROVIDER_HOSTS)
+
+
+def reasoning_effort_label(reasoning_config: dict[str, Any] | None) -> str:
+    """Return the session-configured effort label used by the footer."""
+    if reasoning_config is None:
+        return "medium"
+    if not reasoning_config.get("enabled", True):
+        return "none"
+    return str(reasoning_config.get("effort") or "medium").strip().lower()
+
+
+def _reasoning_short(effort: Optional[str]) -> str:
+    """Return a compact, human-readable reasoning effort label."""
+    normalized = str(effort or "").strip().lower()
+    aliases = {
+        "minimal": "min",
+        "medium": "med",
+        "none": "off",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def outgoing_fast_applied(
+    *,
+    model: Optional[str],
+    provider: Optional[str],
+    requested: bool,
+) -> bool:
+    """Return whether Fast/Priority would survive onto the outgoing request.
+
+    Uses the same model gate as ``/fast`` (``resolve_fast_mode_overrides``)
+    and the same xAI strip as the Codex Responses transport: only the Grok
+    4.6 family keeps ``service_tier=priority``. New Fast-eligible models
+    inherit this automatically when that helper is updated.
+    """
+    if not requested:
+        return False
+    try:
+        from hermes_cli.models import resolve_fast_mode_overrides
+    except Exception:
+        return False
+    try:
+        overrides = resolve_fast_mode_overrides(model)
+    except Exception:
+        overrides = None
+    if not overrides:
+        return False
+
+    kwargs = dict(overrides)
+    slug = _normalize_provider(provider)
+    if slug in {"xai", "xai-oauth"}:
+        try:
+            from agent.model_metadata import is_grok_46_family
+
+            keep_priority = is_grok_46_family(str(model or "")) and (
+                kwargs.get("service_tier") == "priority"
+            )
+        except Exception:
+            keep_priority = False
+        if not keep_priority:
+            kwargs.pop("service_tier", None)
+
+    return kwargs.get("service_tier") == "priority" or kwargs.get("speed") == "fast"
 
 
 def resolve_footer_config(
@@ -73,7 +214,11 @@ def resolve_footer_config(
         2. ``display.runtime_footer``
         3. ``display.platforms.<platform_key>.runtime_footer``
     """
-    resolved = {"enabled": False, "fields": list(_DEFAULT_FIELDS)}
+    resolved = {
+        "enabled": False,
+        "fields": list(_DEFAULT_FIELDS),
+        "separator": _DEFAULT_SEPARATOR,
+    }
     cfg = (user_config or {}).get("display") or {}
 
     global_cfg = cfg.get("runtime_footer")
@@ -82,6 +227,8 @@ def resolve_footer_config(
             resolved["enabled"] = bool(global_cfg.get("enabled"))
         if isinstance(global_cfg.get("fields"), list) and global_cfg["fields"]:
             resolved["fields"] = [str(f) for f in global_cfg["fields"]]
+        if isinstance(global_cfg.get("separator"), str):
+            resolved["separator"] = global_cfg["separator"]
 
     if platform_key:
         platforms = cfg.get("platforms") or {}
@@ -93,6 +240,8 @@ def resolve_footer_config(
                     resolved["enabled"] = bool(plat_footer.get("enabled"))
                 if isinstance(plat_footer.get("fields"), list) and plat_footer["fields"]:
                     resolved["fields"] = [str(f) for f in plat_footer["fields"]]
+                if isinstance(plat_footer.get("separator"), str):
+                    resolved["separator"] = plat_footer["separator"]
 
     return resolved
 
@@ -113,39 +262,59 @@ def format_runtime_footer(
     model: Optional[str],
     context_tokens: int,
     context_length: Optional[int],
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
     cwd: Optional[str] = None,
     turn_seconds: Optional[float] = None,
+    reasoning_effort: Optional[str] = None,
+    fast_mode: bool = False,
     fields: Iterable[str] = _DEFAULT_FIELDS,
+    separator: str = _DEFAULT_SEPARATOR,
 ) -> str:
-    """Render the footer line, or return "" if no fields have data.
+    """Render the footer line, or return \"\" if no fields have data.
 
     Fields are skipped silently when their underlying data is missing — a
     partially-populated footer is better than a line with ``?%`` or empty slots.
     """
     parts: list[str] = []
-    for field in fields:
+    field_names = tuple(str(field) for field in fields)
+    fast_requested = any(field in {"fast", "service_tier"} for field in field_names)
+    model_requested = "model" in field_names
+
+    for field in field_names:
         if field == "model":
             m = _model_short(model)
             if m:
+                if fast_mode and fast_requested:
+                    m = f"{m} ⚡️"
                 parts.append(m)
+        elif field in {"reasoning", "reasoning_effort"}:
+            effort = _reasoning_short(reasoning_effort)
+            if effort:
+                parts.append(f"🧠 {effort}")
+        elif field in {"fast", "service_tier"}:
+            if fast_mode and not model_requested:
+                parts.append("⚡️")
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
                 parts.append(f"{pct}%")
         elif field == "latency":
-            # Wall-clock turn duration. Skipped when the caller supplied no
-            # timing (call sites that don't measure) or the value is negative.
             if turn_seconds is not None and turn_seconds >= 0:
                 parts.append(_format_latency(turn_seconds))
         elif field == "cwd":
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
                 parts.append(rel)
-        # Unknown field names are silently ignored.
+        elif field == "dir":
+            short = _cwd_short(cwd or os.environ.get("TERMINAL_CWD", ""))
+            if short:
+                parts.append(short)
 
-    if not parts:
-        return ""
-    return _SEP.join(parts)
+    footer = separator.join(parts)
+    if provider_consumes_credits(provider, base_url):
+        return f"{footer}\n{_CREDIT_WARNING}" if footer else _CREDIT_WARNING
+    return footer
 
 
 def build_footer_line(
@@ -155,8 +324,12 @@ def build_footer_line(
     model: Optional[str],
     context_tokens: int,
     context_length: Optional[int],
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
     cwd: Optional[str] = None,
     turn_seconds: Optional[float] = None,
+    reasoning_effort: Optional[str] = None,
+    fast_mode: bool = False,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -175,7 +348,12 @@ def build_footer_line(
         model=model,
         context_tokens=context_tokens,
         context_length=context_length,
+        provider=provider,
+        base_url=base_url,
         cwd=cwd,
         turn_seconds=turn_seconds,
+        reasoning_effort=reasoning_effort,
+        fast_mode=fast_mode,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
+        separator=cfg.get("separator", _DEFAULT_SEPARATOR),
     )

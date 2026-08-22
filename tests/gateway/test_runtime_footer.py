@@ -10,8 +10,12 @@ import pytest
 from gateway.runtime_footer import (
     _home_relative_cwd,
     _model_short,
+    _reasoning_short,
     build_footer_line,
     format_runtime_footer,
+    outgoing_fast_applied,
+    provider_consumes_credits,
+    reasoning_effort_label,
     resolve_footer_config,
 )
 
@@ -317,3 +321,181 @@ def test_default_build_footer_line_ignores_turn_seconds(monkeypatch):
     with_timing = build_footer_line(**common, turn_seconds=125.0)
     assert baseline == "gpt-5.4 · 5% · /var/data"
     assert with_timing == baseline
+
+
+# ---------------------------------------------------------------------------
+# Credits: catalog Accounts wins over metered hosts
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "provider,base_url,expected",
+    [
+        ("openrouter", None, True),
+        ("openai", "https://openrouter.ai/api/v1", True),
+        ("xai", "https://api.x.ai/v1", True),
+        ("xai-oauth", "https://api.x.ai/v1", False),
+        ("xai-oauth", None, False),
+        ("openai-codex", "https://api.openai.com/v1", False),
+        ("nous", None, False),
+        ("qwen-oauth", "https://portal.qwen.ai/v1", False),
+        ("minimax-oauth", None, False),
+        ("ollama", "http://127.0.0.1:11434/v1", False),
+        (None, None, False),
+    ],
+)
+def test_provider_consumes_credits_follows_catalog(provider, base_url, expected):
+    assert provider_consumes_credits(provider, base_url) is expected
+
+
+def test_format_footer_does_not_warn_for_xai_oauth_on_api_host():
+    out = format_runtime_footer(
+        model="grok-4.6",
+        provider="xai-oauth",
+        base_url="https://api.x.ai/v1",
+        context_tokens=10,
+        context_length=100,
+        fields=("model", "context_pct"),
+    )
+    assert out == "grok-4.6 · 10%"
+    assert "consuming credits" not in out
+
+
+def test_format_footer_warns_for_xai_api_key_on_same_host():
+    out = format_runtime_footer(
+        model="grok-4.6",
+        provider="xai",
+        base_url="https://api.x.ai/v1",
+        context_tokens=10,
+        context_length=100,
+        fields=("model", "context_pct"),
+    )
+    assert out == "grok-4.6 · 10%\n💸 consuming credits"
+
+
+def test_format_footer_warns_for_openrouter():
+    out = format_runtime_footer(
+        model="gpt-5.6-sol",
+        provider="openrouter",
+        context_tokens=37,
+        context_length=100,
+        reasoning_effort="medium",
+        fields=("model", "reasoning_effort", "context_pct"),
+        separator=" • ",
+    )
+    assert out == "gpt-5.6-sol • 🧠 med • 37%\n💸 consuming credits"
+
+
+# ---------------------------------------------------------------------------
+# Reasoning + Fast fields
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "field,effort,expected",
+    [
+        ("reasoning_effort", "high", "gpt-5.4 · 🧠 high"),
+        ("reasoning", "xhigh", "gpt-5.4 · 🧠 xhigh"),
+        ("reasoning_effort", "medium", "gpt-5.4 · 🧠 med"),
+        ("reasoning_effort", "minimal", "gpt-5.4 · 🧠 min"),
+        ("reasoning_effort", "none", "gpt-5.4 · 🧠 off"),
+        ("reasoning_effort", None, "gpt-5.4"),
+    ],
+)
+def test_format_footer_reasoning_effort(field, effort, expected):
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=0,
+        context_length=100,
+        cwd="",
+        reasoning_effort=effort,
+        fields=("model", field),
+    )
+    assert out == expected
+
+
+@pytest.mark.parametrize(
+    "config,expected",
+    [
+        (None, "medium"),
+        ({"enabled": False, "effort": "high"}, "none"),
+        ({"enabled": True, "effort": "XHIGH"}, "xhigh"),
+        ({"enabled": True}, "medium"),
+    ],
+)
+def test_reasoning_effort_label(config, expected):
+    assert reasoning_effort_label(config) == expected
+
+
+def test_reasoning_short():
+    assert _reasoning_short("minimal") == "min"
+    assert _reasoning_short("medium") == "med"
+    assert _reasoning_short("high") == "high"
+
+
+def test_format_footer_fast_decorates_model_when_applied():
+    out = format_runtime_footer(
+        model="openai-codex/gpt-5.6-sol",
+        context_tokens=37,
+        context_length=100,
+        cwd="/opt/data/repos/ai-life",
+        reasoning_effort="medium",
+        fast_mode=True,
+        fields=("model", "reasoning_effort", "fast", "context_pct", "dir"),
+        separator=" • ",
+    )
+    assert out == "gpt-5.6-sol ⚡️ • 🧠 med • 37% • ai-life"
+
+
+def test_format_footer_fast_hidden_when_not_applied():
+    out = format_runtime_footer(
+        model="gpt-5.6-sol",
+        context_tokens=37,
+        context_length=100,
+        reasoning_effort="low",
+        fast_mode=False,
+        fields=("model", "reasoning_effort", "fast", "context_pct"),
+        separator=" • ",
+    )
+    assert out == "gpt-5.6-sol • 🧠 low • 37%"
+
+
+def test_outgoing_fast_sol_when_requested():
+    assert outgoing_fast_applied(
+        model="gpt-5.6-sol", provider="openai-codex", requested=True
+    ) is True
+
+
+def test_outgoing_fast_not_applied_when_not_requested():
+    assert outgoing_fast_applied(
+        model="gpt-5.6-sol", provider="openai-codex", requested=False
+    ) is False
+
+
+def test_outgoing_fast_grok46_keeps_priority():
+    assert outgoing_fast_applied(
+        model="grok-4.6", provider="xai-oauth", requested=True
+    ) is True
+
+
+def test_outgoing_fast_older_grok_stripped():
+    assert outgoing_fast_applied(
+        model="grok-4.5", provider="xai-oauth", requested=True
+    ) is False
+
+
+def test_format_footer_grok_oauth_stale_fast_uses_effective_bit():
+    out = format_runtime_footer(
+        model="grok-4.5",
+        provider="xai-oauth",
+        base_url="https://api.x.ai/v1",
+        context_tokens=40,
+        context_length=100,
+        reasoning_effort="high",
+        fast_mode=outgoing_fast_applied(
+            model="grok-4.5", provider="xai-oauth", requested=True
+        ),
+        fields=("model", "reasoning_effort", "fast", "context_pct"),
+        separator=" • ",
+    )
+    assert out == "grok-4.5 • 🧠 high • 40%"

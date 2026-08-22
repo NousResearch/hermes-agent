@@ -1930,32 +1930,44 @@ Focus view is **display-only**. It never edits conversation history, the system 
 
 ### Runtime-metadata footer (gateway only)
 
-When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The current footer can show the model, context-window percentage, and current working directory. Off by default; opt in per-gateway if your team wants every reply to include this provenance.
+When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The footer reports the *effective* turn: the model that answered, whether Fast/Priority actually went out on the wire, and a `💸 consuming credits` line only for usage-metered API-key routes. Subscription/OAuth providers (the same Accounts tab as `hermes model`) stay quiet even when they share a metered hostname such as `api.x.ai`. Off by default.
 
 ```yaml
 display:
   runtime_footer:
     enabled: true
-    fields: ["model", "context_pct", "cwd"]   # order shown; drop any to hide
+    fields: ["model", "reasoning_effort", "fast", "context_pct", "dir"]
+    separator: " • "
 ```
 
 Supported fields:
 
 | Field | Renders | Example |
 | --- | --- | --- |
-| `model` | Bare model id, vendor prefix dropped | `gpt-5.4` |
+| `model` | Bare model id, vendor prefix dropped. Decorated with `⚡️` when Fast was applied | `gpt-5.6-sol ⚡️` |
+| `reasoning_effort` | Session-effective reasoning level | `🧠 high` |
+| `fast` | Standalone `⚡️` when the model field is hidden | `⚡️` |
 | `context_pct` | Last-call context occupancy as a percent | `5%` |
 | `latency` | Wall-clock duration of the turn | `22s`, `1m05s` |
-| `cwd` | Home-relative working directory | `~` |
+| `cwd` | Home-relative working directory | `~/projects/hermes` |
+| `dir` | Current directory name only | `hermes` |
 
-The default field set is `["model", "context_pct", "cwd"]`. `latency` is opt-in — add it to `fields` to use it. Fields whose data is unavailable are skipped silently rather than rendering an empty slot.
+The default field set is `["model", "context_pct", "cwd"]`. `reasoning_effort`, `fast`, `latency`, and `dir` are opt-in. Fields whose data is unavailable are skipped silently rather than rendering an empty slot.
+
+`💸 consuming credits` is not a field: it is added automatically when the effective provider is a catalog API-key route (OpenRouter, `xai`, `openai`, …). OAuth slugs such as `xai-oauth` and `openai-codex` never trigger it. Fast/Priority is shown only when `/fast` is on *and* the same helper that builds request overrides would still send `service_tier`/`speed` after provider-specific stripping (for example older Grok models drop it; Grok 4.6 keeps it).
 
 The `/footer` slash command toggles this at runtime in any session.
 
 Example footer appended to a Telegram/Discord/Slack reply:
 
 ```
-— claude-opus-4.7 · 12 tool calls · 2m 14s · $0.042
+gpt-5.6-sol ⚡️ • 🧠 high • 12% • ai-life
+```
+
+OAuth Grok 4.5 with a leftover Fast toggle:
+
+```
+grok-4.5 • 🧠 high • 12% • ai-life
 ```
 
 Only the **final** message of a turn gets the footer; interim updates stay clean.

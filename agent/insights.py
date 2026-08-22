@@ -20,7 +20,7 @@ import json
 import sqlite3
 import time
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -54,6 +54,7 @@ def _estimate_cost(
     cache_write_tokens: int = 0,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    billing_time: Optional[datetime] = None,
 ) -> tuple[float, str]:
     """Estimate the USD cost for a session row or a model/token tuple."""
     if isinstance(session_or_model, dict):
@@ -67,6 +68,13 @@ def _estimate_cost(
         )
         provider = session.get("billing_provider")
         base_url = session.get("billing_base_url")
+        # Historical re-estimation must price by when the session actually
+        # ran, not when the report is generated — DeepSeek's rates depend
+        # on the request time (#85388 review).
+        if billing_time is None and session.get("started_at") is not None:
+            billing_time = datetime.fromtimestamp(
+                session["started_at"], tz=timezone.utc
+            )
     else:
         model = session_or_model or ""
         usage = CanonicalUsage(
@@ -80,6 +88,7 @@ def _estimate_cost(
         usage,
         provider=provider,
         base_url=base_url,
+        billing_time=billing_time,
     )
     return float(result.amount_usd or 0.0), result.status
 
@@ -581,7 +590,7 @@ class InsightsEngine:
         " u.api_call_count, u.input_tokens, u.output_tokens,"
         " u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,"
         " u.estimated_cost_usd, u.actual_cost_usd, u.cost_status,"
-        " u.cost_source, u.billing_mode"
+        " u.cost_source, u.billing_mode, s.started_at"
         " FROM session_model_usage u"
         " JOIN sessions s ON s.id = u.session_id"
         " WHERE s.started_at >= ? AND s.source = ?"
@@ -591,7 +600,7 @@ class InsightsEngine:
         " u.api_call_count, u.input_tokens, u.output_tokens,"
         " u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,"
         " u.estimated_cost_usd, u.actual_cost_usd, u.cost_status,"
-        " u.cost_source, u.billing_mode"
+        " u.cost_source, u.billing_mode, s.started_at"
         " FROM session_model_usage u"
         " JOIN sessions s ON s.id = u.session_id"
         " WHERE s.started_at >= ?"
@@ -639,7 +648,8 @@ class InsightsEngine:
 
         def _accumulate(model, provider, base_url, session_id, inp, out,
                         cache_read, cache_write, reasoning, *,
-                        stored_cost=None, actual_cost=None, cost_status=None):
+                        stored_cost=None, actual_cost=None, cost_status=None,
+                        started_at=None):
             model = model or "unknown"
             # Normalize: strip provider prefix for display
             display_model = model.split("/")[-1] if "/" in model else model
@@ -656,6 +666,10 @@ class InsightsEngine:
                     model, inp, out,
                     cache_read_tokens=cache_read, cache_write_tokens=cache_write,
                     provider=provider or None, base_url=base_url,
+                    billing_time=(
+                        datetime.fromtimestamp(started_at, tz=timezone.utc)
+                        if started_at is not None else None
+                    ),
                 )
             else:
                 estimate = float(stored_cost or 0.0)
@@ -690,6 +704,7 @@ class InsightsEngine:
                 r["session_id"], r["input_tokens"] or 0, r["output_tokens"] or 0,
                 r["cache_read_tokens"] or 0, r["cache_write_tokens"] or 0,
                 r["reasoning_tokens"] or 0,
+                started_at=r.get("started_at"),
                 stored_cost=(
                     r["estimated_cost_usd"]
                     if r.get("cost_status") or r.get("cost_source")
@@ -733,6 +748,7 @@ class InsightsEngine:
                 s.get("model"), s.get("billing_provider"),
                 s.get("billing_base_url"), s["id"],
                 inp, out, cache_read, cache_write, 0,
+                started_at=s.get("started_at"),
                 stored_cost=residual_cost,
                 actual_cost=residual_actual,
                 cost_status=s.get("cost_status"),

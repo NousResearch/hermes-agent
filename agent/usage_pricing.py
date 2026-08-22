@@ -142,6 +142,44 @@ class CostResult:
 
 _UTC_NOW = lambda: datetime.now(timezone.utc)
 
+# ── DeepSeek peak/off-peak billing ──────────────────────────────────────
+# Official rate card: https://api-docs.deepseek.com/quick_start/pricing
+# DeepSeek switches from the flat 2026-07 card to peak/off-peak billing at
+# this instant. Until then the legacy flat card below is what DeepSeek bills.
+_DEEPSEEK_PEAK_BILLING_EFFECTIVE_UTC = datetime(2026, 8, 16, 16, 0, tzinfo=timezone.utc)
+
+# Peak windows are 01:00–04:00 and 06:00–10:00 UTC (all other hours are
+# off-peak). Read as half-open intervals: hours 1, 2, 3 and 6, 7, 8, 9.
+_DEEPSEEK_PEAK_HOURS = frozenset({1, 2, 3, 6, 7, 8, 9})
+
+# Pre-switchover flat card (deepseek-pricing-2026-07). The 2026-08-16 rate
+# card stores OFF-PEAK rates in the snapshot and bills 2x during peak hours;
+# this legacy card keeps estimates accurate during the transition window.
+# Remove it (and the effective-date branch in estimate_usage_cost) after the
+# switchover lands.
+_DEEPSEEK_LEGACY_FLASH_ENTRY = PricingEntry(
+    input_cost_per_million=Decimal("0.14"),
+    output_cost_per_million=Decimal("0.28"),
+    cache_read_cost_per_million=Decimal("0.0028"),
+    source="official_docs_snapshot",
+    source_url="https://api-docs.deepseek.com/quick_start/pricing",
+    pricing_version="deepseek-pricing-2026-07",
+)
+_DEEPSEEK_LEGACY_PRO_ENTRY = PricingEntry(
+    input_cost_per_million=Decimal("0.435"),
+    output_cost_per_million=Decimal("0.87"),
+    cache_read_cost_per_million=Decimal("0.003625"),
+    source="official_docs_snapshot",
+    source_url="https://api-docs.deepseek.com/quick_start/pricing",
+    pricing_version="deepseek-pricing-2026-07",
+)
+_DEEPSEEK_LEGACY_FLAT_RATES: Dict[str, PricingEntry] = {
+    "deepseek-chat": _DEEPSEEK_LEGACY_FLASH_ENTRY,
+    "deepseek-reasoner": _DEEPSEEK_LEGACY_FLASH_ENTRY,
+    "deepseek-v4-flash": _DEEPSEEK_LEGACY_FLASH_ENTRY,
+    "deepseek-v4-pro": _DEEPSEEK_LEGACY_PRO_ENTRY,
+}
+
 
 # Official docs snapshot entries. Models whose published pricing and cache
 # semantics are stable enough to encode exactly.
@@ -506,52 +544,54 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         pricing_version="anthropic-pricing-2026-05",
     ),
     # DeepSeek
-    # Snapshot of https://api-docs.deepseek.com/quick_start/pricing (2026-07).
-    # deepseek-chat / deepseek-reasoner are deprecated 2026-07-24 and now alias
+    # Snapshot of https://api-docs.deepseek.com/quick_start/pricing.
+    # The 2026-08-16 card lists OFF-PEAK rates here; peak hours
+    # (01:00-04:00 / 06:00-10:00 UTC) bill at 2x — see estimate_usage_cost.
+    # deepseek-chat / deepseek-reasoner are deprecated 2026-07-24 and alias
     # deepseek-v4-flash's non-thinking / thinking modes — same rates.
     (
         "deepseek",
         "deepseek-chat",
     ): PricingEntry(
-        input_cost_per_million=Decimal("0.14"),
-        output_cost_per_million=Decimal("0.28"),
-        cache_read_cost_per_million=Decimal("0.0028"),
+        input_cost_per_million=Decimal("0.22"),
+        output_cost_per_million=Decimal("0.66"),
+        cache_read_cost_per_million=Decimal("0.007"),
         source="official_docs_snapshot",
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
-        pricing_version="deepseek-pricing-2026-07",
+        pricing_version="deepseek-pricing-2026-08-16",
     ),
     (
         "deepseek",
         "deepseek-reasoner",
     ): PricingEntry(
-        input_cost_per_million=Decimal("0.14"),
-        output_cost_per_million=Decimal("0.28"),
-        cache_read_cost_per_million=Decimal("0.0028"),
+        input_cost_per_million=Decimal("0.22"),
+        output_cost_per_million=Decimal("0.66"),
+        cache_read_cost_per_million=Decimal("0.007"),
         source="official_docs_snapshot",
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
-        pricing_version="deepseek-pricing-2026-07",
+        pricing_version="deepseek-pricing-2026-08-16",
     ),
     (
         "deepseek",
         "deepseek-v4-pro",
     ): PricingEntry(
-        input_cost_per_million=Decimal("0.435"),
-        output_cost_per_million=Decimal("0.87"),
-        cache_read_cost_per_million=Decimal("0.003625"),
+        input_cost_per_million=Decimal("0.66"),
+        output_cost_per_million=Decimal("1.98"),
+        cache_read_cost_per_million=Decimal("0.022"),
         source="official_docs_snapshot",
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
-        pricing_version="deepseek-pricing-2026-07",
+        pricing_version="deepseek-pricing-2026-08-16",
     ),
     (
         "deepseek",
         "deepseek-v4-flash",
     ): PricingEntry(
-        input_cost_per_million=Decimal("0.14"),
-        output_cost_per_million=Decimal("0.28"),
-        cache_read_cost_per_million=Decimal("0.0028"),
+        input_cost_per_million=Decimal("0.22"),
+        output_cost_per_million=Decimal("0.66"),
+        cache_read_cost_per_million=Decimal("0.007"),
         source="official_docs_snapshot",
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
-        pricing_version="deepseek-pricing-2026-07",
+        pricing_version="deepseek-pricing-2026-08-16",
     ),
     # Google Gemini
     (
@@ -1430,7 +1470,17 @@ def estimate_usage_cost(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    billing_time: Optional[datetime] = None,
 ) -> CostResult:
+    """Estimate the USD cost of a usage record for a model+route.
+
+    ``billing_time`` prices a historical moment instead of the call time —
+    used by insights re-estimation of past sessions so DeepSeek's
+    peak/off-peak rate is selected by when the tokens were consumed. It
+    must be timezone-aware (naive datetimes raise ValueError) and is
+    normalized to UTC before hour selection. Default (None) prices at
+    call time via ``_UTC_NOW()``, which is correct for live callers.
+    """
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":
         return CostResult(
@@ -1445,6 +1495,32 @@ def estimate_usage_cost(
     entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
     if not entry:
         return CostResult(amount_usd=None, status="unknown", source="none", label="n/a")
+
+    # DeepSeek switched to peak/off-peak billing at 2026-08-16T16:00Z.
+    # Before the switchover the legacy flat card applies; after it, the
+    # snapshot's off-peak rates bill at 2x during peak hours
+    # (01:00-04:00 and 06:00-10:00 UTC). The rate is selected at call time
+    # (post-request), matching DeepSeek's per-request timestamp billing;
+    # pass billing_time to price a historical moment instead (insights
+    # re-estimation of past sessions).
+    deepseek_peak_hour = False
+    if route.provider == "deepseek":
+        if billing_time is not None:
+            if billing_time.tzinfo is None:
+                raise ValueError("billing_time must be timezone-aware (UTC)")
+            now = billing_time.astimezone(timezone.utc)
+        else:
+            now = _UTC_NOW()
+        if now < _DEEPSEEK_PEAK_BILLING_EFFECTIVE_UTC:
+            # Pre-switchover: use the legacy flat card. Every model in the
+            # snapshot is mapped there; a future deepseek model must be
+            # added to _DEEPSEEK_LEGACY_FLAT_RATES before the switchover or
+            # it falls back to the new-card rates below.
+            legacy = _DEEPSEEK_LEGACY_FLAT_RATES.get(route.model.lower())
+            if legacy is not None:
+                entry = legacy
+        elif now.hour in _DEEPSEEK_PEAK_HOURS:
+            deepseek_peak_hour = True
 
     notes: list[str] = []
     amount = _ZERO
@@ -1483,6 +1559,12 @@ def estimate_usage_cost(
     if entry.request_cost is not None and usage.request_count:
         amount += Decimal(usage.request_count) * entry.request_cost
 
+    # DeepSeek's peak rate is exactly 2x the off-peak card on every billing
+    # item (cache-hit input, cache-miss input, output). DeepSeek has no
+    # per-request fee today; if one appears, this scaling must be revisited.
+    if deepseek_peak_hour:
+        amount *= Decimal("2")
+
     status: CostStatus = "estimated"
     label = format_cost_label(amount)
     if entry.source == "none" and amount == _ZERO:
@@ -1492,6 +1574,10 @@ def estimate_usage_cost(
 
     if route.provider == "openrouter":
         notes.append("OpenRouter cost is estimated from the models API until reconciled.")
+    if deepseek_peak_hour:
+        notes.append(
+            "DeepSeek peak-hour rate applied (2x off-peak; peak 01:00-04:00 / 06:00-10:00 UTC)."
+        )
 
     return CostResult(
         amount_usd=amount,

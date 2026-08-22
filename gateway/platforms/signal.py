@@ -1633,9 +1633,12 @@ class SignalAdapter(BasePlatformAdapter):
     def _reactions_enabled(self, event: "MessageEvent" = None) -> bool:
         """Check if message reactions are enabled for this event.
 
-        Two gates:
+        Three gates:
         1. SIGNAL_REACTIONS env var — set to false/0/no to disable globally.
-        2. DM allowlist — if SIGNAL_ALLOWED_USERS is set, only react to
+        2. Permitted groups — a group message has already passed the
+           SIGNAL_GROUP_ALLOWED_USERS intake gate before this fires, so it is
+           trusted and reacts regardless of the DM allowlist.
+        3. DM allowlist — if SIGNAL_ALLOWED_USERS is set, only react to
            messages from senders in that list.  This prevents unauthorized
            contacts from seeing the 👀 reaction (which fires before run.py's
            auth gate and would otherwise reveal that a bot is listening).
@@ -1643,7 +1646,18 @@ class SignalAdapter(BasePlatformAdapter):
         if os.getenv("SIGNAL_REACTIONS", "true").lower() in {"false", "0", "no"}:
             return False
         if event is not None:
-            sender = getattr(getattr(event, "source", None), "user_id", None)
+            source = getattr(event, "source", None)
+            # Group-trust bypass: SignalAdapter already gated group intake on
+            # SIGNAL_GROUP_ALLOWED_USERS before this event was built, so a group
+            # message here is already trusted — react even when its human sender
+            # is absent from the DM allowlist.  Without this, blanking
+            # SIGNAL_ALLOWED_USERS to deny DMs also silences the 👀/✅ reactions
+            # inside permitted groups.  chat_id_alt carries the bare group id.
+            if getattr(source, "chat_type", None) == "group":
+                gid = getattr(source, "chat_id_alt", None)
+                if "*" in self.group_allow_from or (gid and gid in self.group_allow_from):
+                    return True
+            sender = getattr(source, "user_id", None)
             if sender and "*" not in self.dm_allow_from and sender not in self.dm_allow_from:
                 return False
         return True

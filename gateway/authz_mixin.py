@@ -462,7 +462,14 @@ class GatewayAuthorizationMixin:
             chat_allowlist_env = {
                 Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
                 Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+                Platform.SIGNAL: "SIGNAL_GROUP_ALLOWED_USERS",
             }.get(source.platform, "")
+            # Signal's chat_id is "group:<id>"; the bare id lives in chat_id_alt,
+            # which is the form SIGNAL_GROUP_ALLOWED_USERS holds.  Match either so
+            # the gate works regardless of which id form the operator listed.
+            chat_ids_to_check = {source.chat_id}
+            if getattr(source, "chat_id_alt", None):
+                chat_ids_to_check.add(source.chat_id_alt)
             if chat_allowlist_env:
                 raw_chat_allowlist = _platform_gate_env(chat_allowlist_env)
                 if raw_chat_allowlist:
@@ -471,7 +478,7 @@ class GatewayAuthorizationMixin:
                         for cid in raw_chat_allowlist.split(",")
                         if cid.strip()
                     }
-                    if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
+                    if "*" in allowed_group_ids or (allowed_group_ids & chat_ids_to_check):
                         return True
 
             # Fallback: also check adapter-level config (config.yaml)
@@ -487,7 +494,7 @@ class GatewayAuthorizationMixin:
                     adapter_group_allowed = extra.get("group_allowed_chats")
                     if adapter_group_allowed:
                         allowed = _coerce_allow_set(adapter_group_allowed)
-                        if "*" in allowed or source.chat_id in allowed:
+                        if "*" in allowed or (allowed & chat_ids_to_check):
                             return True
             except Exception:
                 pass

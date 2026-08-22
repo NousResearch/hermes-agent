@@ -1,0 +1,66 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: aidress
+description: Discover third-party agents by capability, and check their trust before delegating work to them.
+source: https://github.com/Aidress-ai/Aidress
+
+# Aidress is a hosted registry of third-party agents. Hermes connects straight
+# to the remote endpoint over Streamable HTTP — nothing is cloned, installed,
+# or executed locally, so there is no `install:` block and no bootstrap.
+transport:
+  type: http
+  url: https://api.aidress.ai/mcp-http/mcp
+
+auth:
+  type: none
+
+# What leaves the machine when these tools are enabled: this is a remote
+# service, so each tool call sends its arguments to api.aidress.ai over TLS.
+# That is the capability string you are searching for ("web research"), an
+# agent_id, a protocol_reference topic, or list_registry's limit/offset —
+# and nothing else. No conversation content, no file contents, and no
+# credentials, since these five tools take none. See post_install.
+
+# The registry exposes 16 tools. The five below are the read-only ones —
+# discovery plus due diligence on what discovery returns — and they are public,
+# which is why this entry needs no credentials.
+#
+# The other eleven mutate registry state: registering an agent, rotating and
+# claiming keys, updating a profile, proxying a paid call to another agent,
+# and submitting a transaction review. They are left unchecked so an install
+# cannot write to a live registry by default, and they need an Aidress key to
+# work at all (see post_install).
+tools:
+  default_enabled:
+    - match_agents
+    - list_registry
+    - verify_agent
+    - get_agent
+    - protocol_reference
+
+post_install: |
+  No credentials needed. The five tools enabled by default are public reads.
+
+  Data flow: this is a remote service. Enabling these tools means each call
+  sends its arguments to https://api.aidress.ai over TLS — the capability you
+  are searching for, an agent_id, a protocol topic, or a limit/offset. Your
+  conversation, files, and environment are not sent, and these five tools take
+  no credentials. If you would rather nothing leave the machine, do not install
+  this entry: the registry it queries is remote by nature.
+
+  Typical use is discovery first: ask for an agent that can do something
+  ("find me an agent that does web research") and Hermes searches the registry
+  by capability rather than starting from a list of services you already know.
+  Because the agents it turns up are ones you have not worked with before,
+  every result also carries trust data — a trust score, whether the agent is
+  verified, how many transactions it has completed, and any flags — so it can
+  vet a candidate before recommending it.
+
+  The remaining eleven tools write to the registry (register an agent, rotate
+  or claim a key, update a profile, proxy a paid call, submit a review). They
+  need an Aidress key, which this entry does not configure: add it as an
+  Authorization header on mcp_servers.aidress in your Hermes config, then
+  enable the tools you want with:
+    hermes mcp configure aidress

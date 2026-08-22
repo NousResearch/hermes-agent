@@ -46,7 +46,10 @@ def _http_error(status: int, body: bytes | dict[str, object] = b"{}", headers=No
 
 
 def _sequence(monkeypatch, *outcomes, resolver=None):
-    """Stub urlopen with ordered outcomes and record each Request."""
+    """Stub the credential-safe opener with ordered outcomes and record each
+    Request. _request() routes through open_credentialed_url (not raw
+    urlopen) so its cross-host redirects strip the bearer token — patch that
+    seam, not urllib.request.urlopen directly, or these fakes are bypassed."""
     seen: list[dict[str, object]] = []
     monkeypatch.setattr(nb, "_token_cache", None, raising=False)
     monkeypatch.setattr(
@@ -55,7 +58,7 @@ def _sequence(monkeypatch, *outcomes, resolver=None):
         resolver or (lambda **kw: ("tok", "https://portal.example")),
     )
 
-    def _fake_urlopen(req, timeout=None):
+    def _fake_open_credentialed_url(req, *, timeout=None, opener_factory=None):
         seen.append(
             {
                 "method": req.get_method(),
@@ -69,7 +72,7 @@ def _sequence(monkeypatch, *outcomes, resolver=None):
             raise outcome
         return outcome
 
-    monkeypatch.setattr(nb.urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr(nb, "open_credentialed_url", _fake_open_credentialed_url)
     return seen
 
 

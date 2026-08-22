@@ -18,7 +18,7 @@ drives it and stops promptly.
 """
 import threading
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 def _wait_until(predicate, timeout=10.0, interval=0.005):
@@ -84,7 +84,9 @@ def test_desktop_ticker_calls_tick_then_stops():
         calls.append(kwargs)
         return 0
 
-    with patch("cron.scheduler.tick", side_effect=fake_tick):
+    with patch("cron.scheduler.tick", side_effect=fake_tick), patch(
+        "hermes_cli.web_server._gateway_process_running", return_value=False
+    ):
         t = threading.Thread(
             target=_start_desktop_cron_ticker,
             args=(stop,),
@@ -98,6 +100,90 @@ def test_desktop_ticker_calls_tick_then_stops():
 
     assert not t.is_alive(), "desktop ticker did not exit after stop_event was set"
     assert len(calls) >= 1, "desktop ticker never called tick()"
+    assert calls[0].get("sync") is False
+
+
+def test_desktop_ticker_defers_dispatch_while_gateway_runs():
+    """While a gateway process owns the profile, the desktop ticker must NOT
+    dispatch due jobs — its adapter-less delivery falls back to standalone
+    sends, and for Matrix that boots a second OlmMachine on the shared crypto
+    store (E2EE split brain, #46310). can_dispatch=False leaves due jobs
+    untouched so the gateway's own ticker fires them; the provider's loop
+    then skips cron.scheduler.tick entirely."""
+    from hermes_cli.web_server import _start_desktop_cron_ticker
+
+    calls = []
+    stop = threading.Event()
+
+    def fake_tick(*args, **kwargs):
+        calls.append(kwargs)
+        return 0
+
+    gate = MagicMock(return_value=True)
+    with patch("cron.scheduler.tick", side_effect=fake_tick), patch(
+        "hermes_cli.web_server._gateway_process_running", gate
+    ):
+        t = threading.Thread(
+            target=_start_desktop_cron_ticker,
+            args=(stop,),
+            kwargs={"interval": 0},
+            daemon=True,
+        )
+        t.start()
+        # The gate is consulted every loop iteration...
+        assert _wait_until(lambda: gate.call_count >= 3), (
+            "desktop ticker never consulted the gateway gate"
+        )
+        stop.set()
+        t.join(timeout=5)
+
+    assert not t.is_alive(), "desktop ticker did not exit after stop_event was set"
+    # ...but no tick ever dispatched while the gate was closed.
+    assert calls == [], (
+        "desktop ticker dispatched cron work while a gateway was running "
+        f"({len(calls)} tick(s)) — E2EE split-brain hazard"
+    )
+
+
+def test_desktop_ticker_gate_opens_when_gateway_dies():
+    """The gate is a failover, not a defer-only: once the gateway process
+    goes away, can_dispatch flips True and the desktop backend fires due
+    jobs itself (a job scheduled in the app must not starve because the
+    gateway crashed)."""
+    from hermes_cli.web_server import _start_desktop_cron_ticker
+
+    calls = []
+    stop = threading.Event()
+    gateway_up = {"value": True}
+
+    def fake_tick(*args, **kwargs):
+        calls.append(kwargs)
+        return 0
+
+    with patch("cron.scheduler.tick", side_effect=fake_tick), patch(
+        "hermes_cli.web_server._gateway_process_running",
+        side_effect=lambda: gateway_up["value"],
+    ):
+        t = threading.Thread(
+            target=_start_desktop_cron_ticker,
+            args=(stop,),
+            kwargs={"interval": 0},
+            daemon=True,
+        )
+        t.start()
+        # While the gateway is up the loop runs but never dispatches; give it
+        # a moment to prove the negative, then kill the "gateway".
+        time.sleep(0.3)
+        assert calls == [], "tick dispatched while gateway was up"
+        gateway_up["value"] = False  # gateway dies
+        assert _wait_until(lambda: len(calls) >= 1), (
+            "desktop ticker did not take over after the gateway died"
+        )
+        stop.set()
+        t.join(timeout=5)
+
+    assert not t.is_alive(), "desktop ticker did not exit after stop_event was set"
+    assert calls, "desktop ticker never dispatched after failover"
     assert calls[0].get("sync") is False
 
 

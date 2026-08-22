@@ -25,7 +25,7 @@ def _reset_signal_scheduler():
     yield
     _reset_scheduler()
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
 from tools.send_message_tool import (
     _parse_target_ref,
     _resolve_slack_user_target,
@@ -580,6 +580,117 @@ class TestSendToPlatformChunking:
         finally:
             doc_path.unlink(missing_ok=True)
 
+def _build_fake_mautrix():
+    """Minimal fake ``mautrix`` module tree to drive ``MatrixAdapter.connect()``
+    up to (and not past) the crypto-lease acquisition point.
+
+    Returns ``(modules, olm_mock, database_cls)``:
+      - ``modules``: dict for ``patch.dict("sys.modules", ...)``
+      - ``olm_mock``: records ``OlmMachine(...)`` construction
+      - ``database_cls``: records ``Database.create(...)`` calls
+    """
+    import types
+
+    mautrix = types.ModuleType("mautrix")
+
+    api = types.ModuleType("mautrix.api")
+
+    class _HTTPAPI:
+        def __init__(self, base_url="", token="", **kwargs):
+            self.base_url = base_url
+            self.token = token
+            self.session = MagicMock()
+            self.session.close = AsyncMock()
+
+    api.HTTPAPI = _HTTPAPI
+
+    client = types.ModuleType("mautrix.client")
+    client.Client = MagicMock(name="mautrix.client.Client")
+
+    state_store = types.ModuleType("mautrix.client.state_store")
+    state_store.MemoryStateStore = MagicMock(name="MemoryStateStore")
+    state_store.MemorySyncStore = MagicMock(name="MemorySyncStore")
+
+    crypto = types.ModuleType("mautrix.crypto")
+    olm_mock = MagicMock(name="OlmMachine")
+    crypto.OlmMachine = olm_mock
+
+    crypto_store = types.ModuleType("mautrix.crypto.store")
+    asyncpg = types.ModuleType("mautrix.crypto.store.asyncpg")
+    pg_store_cls = MagicMock(name="PgCryptoStore")
+    pg_store_cls.upgrade_table = MagicMock()
+    asyncpg.PgCryptoStore = pg_store_cls
+
+    util = types.ModuleType("mautrix.util")
+    async_db = types.ModuleType("mautrix.util.async_db")
+    database_cls = MagicMock(name="Database")
+    async_db.Database = database_cls
+
+    modules = {
+        "mautrix": mautrix,
+        "mautrix.api": api,
+        "mautrix.client": client,
+        "mautrix.client.state_store": state_store,
+        "mautrix.crypto": crypto,
+        "mautrix.crypto.store": crypto_store,
+        "mautrix.crypto.store.asyncpg": asyncpg,
+        "mautrix.util": util,
+        "mautrix.util.async_db": async_db,
+    }
+    return modules, olm_mock, database_cls
+
+
+def _make_encrypted_adapter():
+    """Build a real MatrixAdapter configured for access-token + encryption."""
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    config = PlatformConfig(
+        enabled=True,
+        token="syt_test_access_token",
+        extra={
+            "homeserver": "https://matrix.example.org",
+            "user_id": "@bot:example.org",
+            "encryption": True,
+        },
+    )
+    return MatrixAdapter(config)
+
+
+class _WhoamiResponse:
+    def __init__(self, user_id, device_id):
+        self.user_id = user_id
+        self.device_id = device_id
+
+
+def _patch_connect_lease(modules, *, whoami=None, acquire_result=None,
+                         acquire_side_effect=None):
+    """Wire a fake mautrix Client + build a mock for the crypto lease.
+
+    Returns ``(mock_client, acquire_mock)``. The caller applies the patch with
+    ``patch.object(matrix_mod, "acquire_crypto_lease", acquire_mock)`` and may
+    assert on ``acquire_mock`` after. ``acquire_result`` is the tuple
+    ``acquire_crypto_lease`` returns; ``acquire_side_effect`` is an exception it
+    raises. Exactly one should be set.
+    """
+    mock_client = MagicMock()
+    mock_client.mxid = "@bot:example.org"
+    mock_client.device_id = None
+    mock_client.state_store = MagicMock()
+    mock_client.sync_store = MagicMock()
+    mock_client.crypto = None
+    if whoami is None:
+        whoami = _WhoamiResponse("@bot:example.org", "DEV123")
+    mock_client.whoami = AsyncMock(return_value=whoami)
+    modules["mautrix.client"].Client = MagicMock(return_value=mock_client)
+
+    acquire_mock = MagicMock()
+    if acquire_side_effect is not None:
+        acquire_mock.side_effect = acquire_side_effect
+    else:
+        acquire_mock.return_value = acquire_result
+    return mock_client, acquire_mock
+
+
 class TestMatrixMediaLiveAdapterReuse:
     """Verify _send_matrix_via_adapter reuses the live gateway adapter
     when available, avoiding per-message E2EE re-init storms (#46310)."""
@@ -630,8 +741,9 @@ class TestMatrixMediaLiveAdapterReuse:
         ]
 
     def test_live_adapter_not_available_falls_back_to_ephemeral(self, tmp_path):
-        """When _gateway_runner_ref returns None, the ephemeral adapter
-        path (connect + disconnect) is used as before."""
+        """When _gateway_runner_ref returns None AND no gateway process is
+        running, the ephemeral adapter path (connect + disconnect) is used
+        as before."""
         doc_path = tmp_path / "doc.pdf"
         doc_path.write_bytes(b"%PDF-1.4")
 
@@ -677,6 +789,116 @@ class TestMatrixMediaLiveAdapterReuse:
             ("send_document", "!room:example.com", str(doc_path)),
             ("disconnect",),
         ]
+
+    def test_ephemeral_refused_when_crypto_lease_held(self):
+        """The crypto lease is held by another live process (e.g. a gateway that
+        started between the old probe and the connect): the real
+        ``MatrixAdapter.connect()`` must fail closed BEFORE opening the crypto
+        DB or constructing a second OlmMachine — the E2EE split brain behind
+        corrupted state and permanently undecryptable messages (UTD, #46310)."""
+        from plugins.platforms.matrix import adapter as matrix_mod
+
+        adapter = _make_encrypted_adapter()
+        modules, olm_mock, database_cls = _build_fake_mautrix()
+        _mock_client, acquire_mock = _patch_connect_lease(
+            modules, acquire_result=(False, {"pid": 99999})
+        )
+
+        with patch.object(
+            matrix_mod, "acquire_crypto_lease", acquire_mock
+        ), patch.object(
+            matrix_mod, "_check_e2ee_deps", return_value=True
+        ), patch.dict("sys.modules", modules), patch.object(
+            matrix_mod, "_create_matrix_session", return_value=MagicMock()
+        ):
+            result = asyncio.run(adapter.connect())
+
+        assert result is False
+        assert adapter._crypto_db is None
+        # The crypto DB was never opened and no second OlmMachine was built.
+        database_cls.create.assert_not_called()
+        olm_mock.assert_not_called()
+        # The lease was keyed on the resolved store + account + device identity
+        # (not the import-frozen module path alone).
+        expected_identity = f"{matrix_mod._CRYPTO_DB_PATH}:@bot:example.org:DEV123"
+        acquire_mock.assert_called_once_with(
+            str(matrix_mod._CRYPTO_DB_PATH), expected_identity
+        )
+
+    def test_ephemeral_guard_fails_closed_when_lease_unavailable(self):
+        """If the lease primitive itself is unavailable (raises), connect()
+        must fail CLOSED — return False — rather than proceed to open the
+        crypto DB. The old liveness probe's ``except Exception: return False``
+        was fail-open; the lease path must be fail-closed."""
+        from plugins.platforms.matrix import adapter as matrix_mod
+
+        adapter = _make_encrypted_adapter()
+        modules, olm_mock, database_cls = _build_fake_mautrix()
+        _mock_client, acquire_mock = _patch_connect_lease(
+            modules, acquire_side_effect=RuntimeError("lock dir unwritable")
+        )
+
+        with patch.object(
+            matrix_mod, "acquire_crypto_lease", acquire_mock
+        ), patch.object(
+            matrix_mod, "_check_e2ee_deps", return_value=True
+        ), patch.dict("sys.modules", modules), patch.object(
+            matrix_mod, "_create_matrix_session", return_value=MagicMock()
+        ):
+            result = asyncio.run(adapter.connect())
+
+        assert result is False
+        assert adapter._crypto_db is None
+        database_cls.create.assert_not_called()
+        olm_mock.assert_not_called()
+
+    def test_connect_releases_lease_when_crypto_setup_fails(self):
+        """If a later crypto-setup step raises after the lease was acquired,
+        the failure handler releases the lease before returning False (no
+        stranded lease blocking the gateway)."""
+        from plugins.platforms.matrix import adapter as matrix_mod
+
+        adapter = _make_encrypted_adapter()
+        modules, _olm_mock, database_cls = _build_fake_mautrix()
+
+        # The lease is acquired, but crypto_db.start() blows up afterwards.
+        failing_db = MagicMock()
+        failing_db.start = AsyncMock(side_effect=RuntimeError("db start failed"))
+        database_cls.create = MagicMock(return_value=failing_db)
+
+        _mock_client, acquire_mock = _patch_connect_lease(
+            modules, acquire_result=(True, {"pid": os.getpid()})
+        )
+
+        with patch.object(
+            matrix_mod, "acquire_crypto_lease", acquire_mock
+        ), patch.object(
+            matrix_mod, "_check_e2ee_deps", return_value=True
+        ), patch.dict("sys.modules", modules), patch.object(
+            matrix_mod, "_create_matrix_session", return_value=MagicMock()
+        ), patch.object(matrix_mod, "release_crypto_lease") as release_mock:
+            result = asyncio.run(adapter.connect())
+
+        assert result is False
+        release_mock.assert_called_once()
+        assert adapter._crypto_lease_identity is None
+
+    def test_connect_releases_lease_on_disconnect(self):
+        """disconnect() releases a held crypto lease so a subsequent standalone
+        send is not refused."""
+        from plugins.platforms.matrix import adapter as matrix_mod
+
+        adapter = _make_encrypted_adapter()
+        adapter._crypto_lease_identity = "test-lease-identity"
+
+        with patch.object(matrix_mod, "release_crypto_lease") as release_mock:
+            asyncio.run(adapter.disconnect())
+
+        release_mock.assert_called_once_with(
+            str(matrix_mod._CRYPTO_DB_PATH), "test-lease-identity"
+        )
+        assert adapter._crypto_lease_identity is None
+
 
 # ---------------------------------------------------------------------------
 # HTML auto-detection in Telegram send

@@ -16382,21 +16382,29 @@ def _resolve_chat_argv(
         from hermes_cli.config import (
             TERMINAL_CONFIG_ENV_MAP,
             apply_terminal_config_to_env,
+            read_raw_config,
         )
 
         if profile_dir is not None:
             # The dashboard process already bridged its own terminal config
-            # into os.environ at startup. build_subprocess_env() snapshots that
-            # process env, so remove every bridged value before applying the
-            # selected profile or omitted keys leak from the launch profile.
-            for env_var in TERMINAL_CONFIG_ENV_MAP.values():
+            # into os.environ at startup. Remove only keys explicitly owned by
+            # that launch profile before applying the selected profile. Values
+            # exported by the operator for keys omitted from the launch profile
+            # remain valid fallbacks, matching apply_terminal_config_to_env().
+            raw_launch_terminal = read_raw_config().get("terminal")
+            if not isinstance(raw_launch_terminal, dict):
+                raw_launch_terminal = {}
+            for config_key in raw_launch_terminal:
+                env_var = TERMINAL_CONFIG_ENV_MAP.get(config_key)
+                if env_var is None:
+                    continue
                 env.pop(env_var, None)
             with _config_profile_scope(requested):
                 apply_terminal_config_to_env(env=env)
         else:
             apply_terminal_config_to_env(env=env)
     except Exception:
-        _log.debug("Failed to apply terminal config bridge for dashboard chat", exc_info=True)
+        _log.warning("Failed to apply terminal config bridge for dashboard chat", exc_info=True)
     _apply_tui_python_env(env)
     env.setdefault("NODE_ENV", "production")
     # Browser-embedded chat should prefer stable wheel-based scrollback over

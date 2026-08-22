@@ -655,6 +655,12 @@ class TestProfileScopedChatPty:
     ):
         import hermes_cli.web_server as web_server
 
+        (isolated_profiles["default"] / "config.yaml").write_text(
+            "terminal:\n"
+            "  backend: docker\n"
+            "  docker_image: launch-profile-image\n",
+            encoding="utf-8",
+        )
         (isolated_profiles["worker_beta"] / "config.yaml").write_text(
             "terminal:\n"
             "  backend: ssh\n"
@@ -664,7 +670,7 @@ class TestProfileScopedChatPty:
         )
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setenv("TERMINAL_DOCKER_IMAGE", "launch-profile-image")
-        monkeypatch.setenv("TERMINAL_SSH_USER", "launch-profile-user")
+        monkeypatch.setenv("TERMINAL_SSH_USER", "operator-user")
         monkeypatch.setattr(
             "hermes_cli.main._make_tui_argv",
             lambda root, tui_dev=False: (["cat"], None),
@@ -679,7 +685,56 @@ class TestProfileScopedChatPty:
         assert env["TERMINAL_SSH_HOST"] == "worker.example.test"
         assert env["TERMINAL_CWD"] == "~"
         assert env["TERMINAL_DOCKER_IMAGE"] != "launch-profile-image"
-        assert "TERMINAL_SSH_USER" not in env
+        assert env["TERMINAL_SSH_USER"] == "operator-user"
+
+    def test_chat_argv_default_profile_preserves_exported_terminal_values(
+        self, isolated_profiles, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+
+        (isolated_profiles["default"] / "config.yaml").write_text(
+            "terminal:\n  backend: docker\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_SSH_USER", "operator-user")
+        monkeypatch.setattr(
+            "hermes_cli.main._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+
+        _argv, _cwd, env = web_server._resolve_chat_argv()
+
+        assert env is not None
+        assert env["TERMINAL_ENV"] == "docker"
+        assert env["TERMINAL_SSH_USER"] == "operator-user"
+
+    def test_chat_argv_warns_when_profile_terminal_bridge_fails(
+        self, isolated_profiles, monkeypatch, caplog
+    ):
+        import logging
+
+        import hermes_cli.config as config_mod
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            "hermes_cli.main._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            config_mod,
+            "apply_terminal_config_to_env",
+            lambda **kwargs: (_ for _ in ()).throw(RuntimeError("bridge failed")),
+        )
+
+        with caplog.at_level(logging.WARNING, logger=web_server._log.name):
+            _argv, _cwd, env = web_server._resolve_chat_argv(profile="worker_beta")
+
+        assert env is not None
+        assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
+        assert "Failed to apply terminal config bridge for dashboard chat" in caplog.text
 
 
 class TestProfileScopedAudio:

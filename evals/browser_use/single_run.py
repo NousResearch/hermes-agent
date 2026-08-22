@@ -8,14 +8,20 @@ Arms:
     pr    - Browser Use CLI mode (single ``browser_exec`` tool), pinned tree $BUBENCH_PR_TREE
     prns  - same as pr but with the schema description stripped to the header only
             (isolates the value of the helpers digest in the tool description)
+    stagehand - Stagehand V4 Playwright facade behind the same single
+                ``browser_exec`` contract, pinned tree $BUBENCH_PR_TREE
 
 Environment:
     BUBENCH_ROOT       workspace dir (default: dir containing this script)
     BUBENCH_BASE_TREE  checkout used for the ``base`` arm (e.g. a merge-base worktree)
-    BUBENCH_PR_TREE    checkout used for the ``pr``/``prns`` arms
+    BUBENCH_BROWSER_USE_TREE exact current-main checkout used for ``pr``/``prns``
+    BUBENCH_PR_TREE    checkout containing the ``stagehand`` implementation
+    BUBENCH_STAGEHAND_ROOT built Stagehand V4 checkout used by ``stagehand``
     BUBENCH_TASKS      tasks json (default: $BUBENCH_ROOT/tasks/hard.json)
     BENCH_CDP_URL      CDP endpoint both arms drive (default http://127.0.0.1:9333)
-    OPENROUTER_API_KEY provider credential for the runs
+    BUBENCH_MODEL_PROVIDER inference route: ai-gateway (default) or openrouter
+    AI_GATEWAY_API_KEY Vercel AI Gateway credential for the default route
+    OPENROUTER_API_KEY provider credential when using the openrouter route
 
 The run gets a throwaway HERMES_HOME so no local config leaks in, and the
 web-fetch credential env vars are stripped so every arm must actually drive
@@ -24,35 +30,75 @@ the browser (no web_extract shortcuts).
 Prints one line: ``RESULT_JSON:{...}`` consumed by orchestrate.py.
 """
 
+import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import urlsplit
 
 ARM, TASK_KEY, MODEL, REP = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 
 ROOT = os.environ.get("BUBENCH_ROOT", os.path.dirname(os.path.abspath(__file__)))
-BASE_TREE = os.environ["BUBENCH_BASE_TREE"]
 PR_TREE = os.environ["BUBENCH_PR_TREE"]
-WT = {"base": BASE_TREE, "pr": PR_TREE, "prns": PR_TREE}[ARM]
+BASE_TREE = os.environ.get("BUBENCH_BASE_TREE", PR_TREE)
+BROWSER_USE_TREE = os.environ.get("BUBENCH_BROWSER_USE_TREE", PR_TREE)
+WT = {
+    "base": BASE_TREE,
+    "pr": BROWSER_USE_TREE,
+    "prns": BROWSER_USE_TREE,
+    "stagehand": PR_TREE,
+}[ARM]
 
 TASKS_PATH = os.environ.get("BUBENCH_TASKS", os.path.join(ROOT, "tasks", "hard.json"))
 TASKS = json.load(open(TASKS_PATH, encoding="utf-8"))
 task = TASKS[TASK_KEY]
 
+MODEL_PROVIDER = os.environ.get("BUBENCH_MODEL_PROVIDER", "ai-gateway").strip()
+MODEL_ROUTES = {
+    "ai-gateway": (
+        "https://ai-gateway.vercel.sh/v1",
+        "AI_GATEWAY_API_KEY",
+    ),
+    "openrouter": (
+        "https://openrouter.ai/api/v1",
+        "OPENROUTER_API_KEY",
+    ),
+}
+if MODEL_PROVIDER not in MODEL_ROUTES:
+    raise RuntimeError(
+        "BUBENCH_MODEL_PROVIDER must be one of: "
+        + ", ".join(sorted(MODEL_ROUTES))
+    )
+MODEL_BASE_URL, MODEL_API_KEY_ENV = MODEL_ROUTES[MODEL_PROVIDER]
+MODEL_API_KEY = os.environ.get(MODEL_API_KEY_ENV, "").strip()
+if not MODEL_API_KEY:
+    raise RuntimeError(f"{MODEL_API_KEY_ENV} is required for {MODEL_PROVIDER}")
+
 home = tempfile.mkdtemp(prefix=f"buhome-{ARM}-")
 hh = os.path.join(home, ".hermes")
 os.makedirs(os.path.join(hh, "logs"), exist_ok=True)
 cdp = os.environ.get("BENCH_CDP_URL", "http://127.0.0.1:9333")
-browser_cfg = (
-    {"cloud_provider": "local", "cdp_url": cdp}
-    if ARM == "base"
-    else {"backend": "browser-use"}
-)
+if ARM == "base":
+    browser_cfg = {"cloud_provider": "local", "cdp_url": cdp}
+elif ARM == "stagehand":
+    stagehand_root = os.environ.get("BUBENCH_STAGEHAND_ROOT", "").strip()
+    if not stagehand_root:
+        raise RuntimeError(
+            "BUBENCH_STAGEHAND_ROOT must point at a built Stagehand V4 checkout"
+        )
+    browser_cfg = {
+        "backend": "stagehand",
+        "cloud_provider": "browserbase",
+        "stagehand_root": stagehand_root,
+    }
+else:
+    browser_cfg = {"backend": "browser-use"}
 cfg = {
-    "model": {"provider": "openrouter", "default": MODEL},
+    "model": {"provider": MODEL_PROVIDER, "default": MODEL},
     "browser": browser_cfg,
     "display": {"quiet": True},
 }
@@ -90,9 +136,9 @@ if ARM == "prns":
 from run_agent import AIAgent  # noqa: E402
 
 agent = AIAgent(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.environ["OPENROUTER_API_KEY"],
-    provider="openrouter",
+    base_url=MODEL_BASE_URL,
+    api_key=MODEL_API_KEY,
+    provider=MODEL_PROVIDER,
     model=MODEL,
     max_iterations=30,
     quiet_mode=True,
@@ -172,5 +218,17 @@ out = {
     "browser_schema_chars": schema_desc_len,
     "error": error,
     "final_snippet": (final or "")[-400:],
+    "task_file_sha256": hashlib.sha256(
+        open(TASKS_PATH, "rb").read()
+    ).hexdigest(),
+    "runtime_tree": WT,
+    "runtime_commit": subprocess.run(
+        ["git", "-C", WT, "rev-parse", "HEAD"],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip(),
+    "model_provider": MODEL_PROVIDER,
+    "model_base_url_host": urlsplit(MODEL_BASE_URL).netloc,
 }
 print("RESULT_JSON:" + json.dumps(out, ensure_ascii=False))

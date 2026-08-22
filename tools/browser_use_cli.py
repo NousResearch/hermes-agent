@@ -19,6 +19,7 @@ from utils import is_truthy_value
 logger = logging.getLogger(__name__)
 
 _BACKEND_KEY = "browser-use"
+_STAGEHAND_BACKEND_KEY = "stagehand"
 BACKEND_DISABLED = "off"
 
 # Cloud daemon names become the BU_NAME env var
@@ -199,6 +200,16 @@ def is_browser_use_cli_mode() -> bool:
     # Default (backend unset): Browser Use mode when the CLI can run at all;
     # otherwise keep the built-in tools so browsing never silently breaks.
     return _find_cli() is not None
+
+
+def is_stagehand_facade_mode() -> bool:
+    """True when Stagehand replaces Browser Use behind ``browser_exec``."""
+    return get_browser_backend() == _STAGEHAND_BACKEND_KEY
+
+
+def is_browser_exec_mode() -> bool:
+    """True when either single-tool browser backend is selected."""
+    return is_stagehand_facade_mode() or is_browser_use_cli_mode()
 
 
 _NOTICE_STAMP_NAME = ".browser_use_default_notice"
@@ -552,15 +563,34 @@ def browser_exec(
     timeout_s: int = _DEFAULT_TIMEOUT_S,
     task_id: Optional[str] = None,
 ):
-    """Run Python code through the browser-use CLI, and return its output"""
+    """Run code through the configured single-tool browser backend."""
     from tools.registry import tool_error, tool_result
 
     if not code or not code.strip():
+        if is_stagehand_facade_mode():
+            return tool_error(
+                "No code provided. Pass a JavaScript async-workflow body using "
+                "the prebound page, context, and browser variables."
+            )
         return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
 
     blocked = _blocked_url_in_code(code)
     if blocked:
         return tool_error(blocked)
+
+    if is_stagehand_facade_mode():
+        if session:
+            return tool_error(
+                "Stagehand browser_exec owns one persistent browser per Hermes task; "
+                "the session argument is not supported."
+            )
+        from tools.stagehand_facade import stagehand_browser_exec
+
+        return stagehand_browser_exec(
+            code=code,
+            timeout_s=timeout_s,
+            task_id=task_id,
+        )
 
     cmd = _find_cli()
     if not cmd:
@@ -778,6 +808,10 @@ def _cli_skill_text() -> str:
 
 
 def _dynamic_schema_overrides() -> dict:
+    if is_stagehand_facade_mode():
+        from tools.stagehand_facade import stagehand_schema_overrides
+
+        return stagehand_schema_overrides(BROWSER_EXEC_SCHEMA)
     return {"description": _description_header() + _HELPERS_DIGEST}
 
 
@@ -827,7 +861,7 @@ registry.register(
         timeout_s=args.get("timeout_s", _DEFAULT_TIMEOUT_S),
         task_id=kw.get("task_id"),
     ),
-    check_fn=is_browser_use_cli_mode,
+    check_fn=is_browser_exec_mode,
     dynamic_schema_overrides=_dynamic_schema_overrides,
     emoji="🌐",
 )

@@ -1,4 +1,4 @@
-"""Cloud-backend battery: pr arm attached to a provisioned cloud browser per cell.
+"""Cloud-backend battery for Browser Use and Stagehand single-tool arms.
 
 Backends:
     nous-cloud   - Nous Portal-provisioned Browser Use cloud browser
@@ -11,8 +11,9 @@ Usage:
         python3 orchestrate_cloud.py --backend nous-cloud [--reps 2]
         python3 orchestrate_cloud.py --backend browserbase [--reps 1]
 
-Per cell: provision a session, export its CDP endpoint via BENCH_CDP_URL /
-BU_CDP_WS, run single_run.py (pr arm), close the session. Resume-safe.
+Per Browser Use cell: provision a session, export its CDP endpoint via
+BENCH_CDP_URL / BU_CDP_WS, run single_run.py, close the session. Stagehand
+cells launch and close their own fresh Browserbase session. Resume-safe.
 """
 
 import argparse
@@ -35,14 +36,22 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--backend", required=True, choices=["nous-cloud", "browserbase"])
 parser.add_argument("--tasks", default=os.path.join(ROOT, "tasks", "hard.json"))
 parser.add_argument("--models", default="anthropic/claude-opus-4.8,moonshotai/kimi-k3")
+parser.add_argument("--arms", default="pr", help="Comma-separated: pr,stagehand")
 parser.add_argument("--reps", type=int, default=2)
 parser.add_argument("--results", default=None)
 parser.add_argument("--run-timeout", type=int, default=1200)
+parser.add_argument("--dry-run", action="store_true")
 args = parser.parse_args()
 
 RESULTS = args.results or os.path.join(ROOT, "results", f"results_{args.backend}.jsonl")
 os.makedirs(os.path.dirname(RESULTS), exist_ok=True)
 MODELS = args.models.split(",")
+ARMS = args.arms.split(",")
+unknown_arms = set(ARMS) - {"pr", "stagehand"}
+if unknown_arms:
+    parser.error(f"unknown arm(s): {','.join(sorted(unknown_arms))}")
+if "stagehand" in ARMS and args.backend != "browserbase":
+    parser.error("the stagehand arm requires --backend browserbase")
 TASKS = list(json.load(open(args.tasks, encoding="utf-8")).keys())
 REPS = list(range(1, args.reps + 1))
 
@@ -51,7 +60,7 @@ if os.path.exists(RESULTS):
     for line in open(RESULTS, encoding="utf-8"):
         try:
             r = json.loads(line)
-            done.add((r["task"], r["model"], r["rep"]))
+            done.add((r["arm"], r["task"], r["model"], r["rep"]))
         except Exception:
             pass
 
@@ -112,35 +121,55 @@ class Browserbase:
 
 provider = NousCloud() if args.backend == "nous-cloud" else Browserbase()
 
-cells = [(t, m, rep) for m, t, rep in itertools.product(MODELS, TASKS, REPS)]
+cells = [
+    (arm, task, model, rep)
+    for model, task, rep, arm in itertools.product(MODELS, TASKS, REPS, ARMS)
+]
+if args.dry_run:
+    print(json.dumps({
+        "backend": args.backend,
+        "tasks": TASKS,
+        "models": MODELS,
+        "arms": ARMS,
+        "reps": args.reps,
+        "scheduled_cells": len(cells),
+    }, indent=2))
+    raise SystemExit(0)
 total = len(cells)
 n = 0
-for task, model, rep in cells:
+for arm, task, model, rep in cells:
     n += 1
-    if (task, model, rep) in done:
+    arm_label = f"{arm}-{args.backend}"
+    if (arm_label, task, model, rep) in done:
         continue
-    print(f"[{n}/{total}] {args.backend} pr {task} {model} rep{rep}", flush=True)
+    print(
+        f"[{n}/{total}] {args.backend} {arm} {task} {model} rep{rep}",
+        flush=True,
+    )
     sess = None
     t0 = time.time()
-    try:
-        sess, extra_env = provider.create(f"bubench-{task}-{rep}")
-    except Exception as e:  # noqa: BLE001
-        rec = {
-            "arm": f"pr-{args.backend}",
-            "task": task,
-            "model": model,
-            "rep": rep,
-            "ok": False,
-            "error": f"session-create: {e}",
-        }
-        with open(RESULTS, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec) + "\n")
-        continue
+    extra_env = {}
+    if arm == "pr":
+        try:
+            sess, extra_env = provider.create(f"bubench-{task}-{rep}")
+        except Exception as e:  # noqa: BLE001
+            rec = {
+                "arm": arm_label,
+                "task": task,
+                "model": model,
+                "rep": rep,
+                "ok": False,
+                "error": f"session-create: {e}",
+            }
+            with open(RESULTS, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec) + "\n")
+            continue
     env = {**ENV_BASE, **extra_env, "BUBENCH_TASKS": args.tasks}
-    subprocess.run(["pkill", "-f", "browser_harness"], capture_output=True)
+    if arm == "pr":
+        subprocess.run(["pkill", "-f", "browser_harness"], capture_output=True)
     try:
         proc = subprocess.run(
-            [PY, os.path.join(ROOT, "single_run.py"), "pr", task, model, str(rep)],
+            [PY, os.path.join(ROOT, "single_run.py"), arm, task, model, str(rep)],
             capture_output=True,
             text=True,
             timeout=args.run_timeout,
@@ -168,11 +197,12 @@ for task, model, rep in cells:
             "error": f"timeout-{args.run_timeout}s",
         }
     finally:
-        try:
-            provider.close(sess)
-        except Exception as e:  # noqa: BLE001
-            print(f"  close warning: {e}", flush=True)
-    rec["arm"] = f"pr-{args.backend}"
+        if sess is not None:
+            try:
+                provider.close(sess)
+            except Exception as e:  # noqa: BLE001
+                print(f"  close warning: {e}", flush=True)
+    rec["arm"] = arm_label
     rec["cell_wall_s"] = round(time.time() - t0, 1)
     with open(RESULTS, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")

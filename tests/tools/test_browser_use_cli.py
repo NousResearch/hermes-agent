@@ -128,7 +128,7 @@ class TestToolSurfaceSwap:
     def test_legacy_browser_tools_hidden_in_cli_mode(self, monkeypatch):
         import tools.browser_tool as browser_tool
 
-        monkeypatch.setattr(browser_tool, "_is_browser_use_cli_mode", lambda: True)
+        monkeypatch.setattr(browser_tool, "_is_browser_exec_mode", lambda: True)
         assert browser_tool.check_browser_requirements() is False
         assert browser_tool.check_browser_vision_requirements() is False
 
@@ -137,7 +137,7 @@ class TestToolSurfaceSwap:
 
         entry = registry.get_entry("browser_exec")
         assert entry is not None
-        assert entry.check_fn is bu_cli.is_browser_use_cli_mode
+        assert entry.check_fn is bu_cli.is_browser_exec_mode
         assert entry.toolset == "browser-use"
 
     def test_browser_exec_in_browser_toolsets(self):

@@ -103,6 +103,79 @@ Caveats: toscrape-family sites (no anti-bot, no heavy SPA); n<=3 per cell;
 success-rate deltas at this n are noise — audit sub-100% cells run-by-run
 before calling a regression.
 
+## Stagehand single-tool benchmark spike
+
+The `feat/stagehand-single-tool-facade` branch adds a `stagehand` arm that
+keeps the exact `browser_exec` tool name and swaps Browser Use's Python CLI
+for a JavaScript Playwright-shaped facade executed by Stagehand V4
+`experimentalBatch`. It is benchmark wiring, not a production installer:
+the arm points at a separately built Stagehand checkout.
+
+Prepare Stagehand V4:
+
+```bash
+git clone https://github.com/browserbase/stagehand.git /path/to/stagehand
+git -C /path/to/stagehand checkout c6d9baacd5fb668a71a4300436a45ae319660d5c
+pnpm --dir /path/to/stagehand install --frozen-lockfile
+pnpm --dir /path/to/stagehand --filter @browserbasehq/stagehand build
+pnpm --dir /path/to/stagehand --filter @browserbasehq/stagehand-integrations build
+
+# Match the Browser Use CLI used by the reference run. browser-use 0.13.7
+# installs browser-harness 0.1.8, whose executable is named browser-use.
+uv tool install --force browser-use==0.13.7
+```
+
+Run Browser Use 3.0 and Stagehand on the official six-task hard battery using
+fresh Browserbase browsers. This example is one model × six tasks × two arms
+× three repetitions = 36 trajectories, with no automatic trajectory retry:
+
+```bash
+export BUBENCH_BROWSER_USE_TREE=/path/to/hermes-agent-current-main
+export BUBENCH_PR_TREE=/path/to/hermes-agent-stagehand-branch
+export BUBENCH_STAGEHAND_ROOT=/path/to/stagehand
+export BROWSERBASE_API_KEY=...
+export BROWSERBASE_PROJECT_ID=...
+export BUBENCH_MODEL_PROVIDER=ai-gateway
+export AI_GATEWAY_API_KEY=...
+
+# Optional non-billable plan check; must print scheduled_cells: 36.
+python3 evals/browser_use/orchestrate_cloud.py \
+  --backend browserbase \
+  --tasks evals/browser_use/tasks/hard.json \
+  --arms pr,stagehand \
+  --models anthropic/claude-opus-4.8 \
+  --reps 3 \
+  --dry-run
+
+python3 evals/browser_use/orchestrate_cloud.py \
+  --backend browserbase \
+  --tasks evals/browser_use/tasks/hard.json \
+  --arms pr,stagehand \
+  --models anthropic/claude-opus-4.8 \
+  --reps 3 \
+  --results evals/browser_use/results/stagehand-vs-browser-use.jsonl
+
+python3 evals/browser_use/report.py \
+  evals/browser_use/results/stagehand-vs-browser-use.jsonl
+```
+
+The Browser Use arm imports Hermes from `BUBENCH_BROWSER_USE_TREE` and attaches
+its CLI to the session provisioned by the orchestrator. The Stagehand arm
+imports Hermes from `BUBENCH_PR_TREE` and launches and closes its own
+Browserbase session inside the cell subprocess. Both therefore get a fresh
+Browserbase browser for every trajectory while preserving their native
+execution paths; the baseline is not silently affected by the Stagehand diff.
+
+The commit above is the Stagehand checkout used for the facade smoke test. Pin
+both Hermes trees as well (`git rev-parse HEAD`) when publishing results. Live
+model serving and Browserbase sessions are nondeterministic, so exact token and
+latency values will vary; the task file, arm code, model, repetitions, and
+dependency versions remain fixed.
+
+Set `BUBENCH_MODEL_PROVIDER=openrouter` and `OPENROUTER_API_KEY` instead to run
+the same arm/task matrix through OpenRouter. Do not mix providers within a
+comparison.
+
 ## Provenance
 
 The original per-run `results*.jsonl` files lived in `/tmp/bu-bench/` (tmpfs)

@@ -577,14 +577,12 @@ def _compute_tool_definitions(
                     }
                     break
 
-    # browser_exec (Browser Use mode) runs arbitrary Python on the host via
-    # the browser-use CLI subprocess.  A session whose toolset selection
-    # excludes the terminal surface (e.g. a messaging platform configured
-    # without terminal access) must not regain host code execution through
-    # the browser toolset — that would silently widen the operator's chosen
-    # security posture.  Session-level gate, NOT a check_fn: check_fn results
-    # are TTL-cached process-wide while one gateway process serves many
-    # sessions with different toolset configs.
+    # browser_exec runs model-authored code through the selected browser
+    # backend. A session whose toolset selection excludes the terminal surface
+    # must not regain a code-execution surface through the browser toolset.
+    # Session-level gate, NOT a check_fn: check_fn results are TTL-cached
+    # process-wide while one gateway process serves many sessions with
+    # different toolset configs.
     if "browser_exec" in available_tool_names and "terminal" not in available_tool_names:
         filtered_tools = [
             td for td in filtered_tools

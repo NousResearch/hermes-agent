@@ -8550,9 +8550,17 @@ class TelegramAdapter(BasePlatformAdapter):
                     # Already escaped
                     if s > 0 and _seg[s - 1] == '\\':
                         return ch
-                    # ( that opens a MarkdownV2 link [text](url)
+                    # ( that opens a MarkdownV2 link [text](url) — only when
+                    # the link is actually closed on the same line. A link
+                    # truncated by chunk splitting has no closing ')' and its
+                    # bare '(' makes Telegram reject the whole chunk
+                    # ("character '(' is reserved"), forcing the plain-text
+                    # fallback and losing all bold formatting.
                     if ch == '(' and s > 0 and _seg[s - 1] == ']':
-                        return ch
+                        _rest = _seg[s + 1:]
+                        _close = _rest.find(')')
+                        if _close != -1 and '\n' not in _rest[:_close]:
+                            return ch
                     # ) that closes a link URL
                     if ch == ')':
                         before = _seg[:s]

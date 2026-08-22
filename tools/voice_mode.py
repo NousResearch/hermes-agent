@@ -1756,6 +1756,7 @@ def _play_audio_file_impl(file_path: str) -> bool:
                 pass  # WSL path resolution failed; fall through to ffplay/aplay
 
     players.append(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", file_path])
+    players.append(["mpv", "--no-video", "--really-quiet", file_path])
     if system == "Linux":
         players.append(["aplay", "-q", file_path])
 

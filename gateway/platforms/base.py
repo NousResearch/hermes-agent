@@ -4368,6 +4368,10 @@ class BasePlatformAdapter(ABC):
         """
         pass
 
+    def get_typing_refresh_interval(self) -> float:
+        """Return the shared inbound typing refresh cadence for this platform."""
+        return 2.0
+
     async def stop_typing(self, chat_id: str) -> None:
         """Stop a persistent typing indicator (if the platform uses one).
 
@@ -6320,6 +6324,8 @@ class BasePlatformAdapter(ABC):
                 _keep_typing_sig = None
             if _keep_typing_sig is None or "stop_event" in _keep_typing_sig.parameters:
                 _keep_typing_kwargs["stop_event"] = interrupt_event
+            if _keep_typing_sig is None or "interval" in _keep_typing_sig.parameters:
+                _keep_typing_kwargs["interval"] = self.get_typing_refresh_interval()
             typing_task = asyncio.create_task(
                 self._keep_typing(
                     event.source.chat_id,

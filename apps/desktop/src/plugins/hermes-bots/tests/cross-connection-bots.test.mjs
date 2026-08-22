@@ -51,7 +51,7 @@ function runtime() {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__x = { botConnectionRoute, requestForBot, groupMemberKey, parseGroupChatMentions, resolveGroupResponders, formatGroupChatLine, buildGroupChatTurnPrompt };\n'
+      '\nglobalThis.__x = { botConnectionRoute, requestForBot, groupMemberKey, groupEntryMember, botRosterMeta, parseGroupChatMentions, resolveGroupResponders, formatGroupChatLine, buildGroupChatTurnPrompt };\n'
     )
   vm.runInNewContext(code, context, { filename: 'plugin.js' })
   return context
@@ -73,6 +73,18 @@ test('botConnectionRoute: remote rows get a route descriptor, local rows do not'
     profile: 'dixie',
     targetProfile: 'dixie'
   })
+
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(botConnectionRoute({ name: 'writer', connectionId: 'local', remoteSource: true }))
+    ),
+    {
+      connectionId: 'local',
+      mode: 'local',
+      profile: 'writer',
+      targetProfile: 'writer'
+    }
+  )
 })
 
 test('requestForBot: remote members go through requestProfile, local through host.request', async () => {
@@ -144,6 +156,24 @@ test('room lines and turn prompts badge cross-connection speakers with their dev
     deltaLines: ['You (user): hi']
   })
   assert.match(prompt, /@dixie \[on Mac Mini\]/)
+})
+
+test('stale remote group speakers never borrow same-name local metadata', () => {
+  const ctx = runtime()
+  const { groupEntryMember, botRosterMeta } = ctx.__x
+  const speaker = groupEntryMember(
+    { from: { kind: 'member', name: 'default', source: 'Mac Mini' } },
+    []
+  )
+
+  assert.deepEqual(JSON.parse(JSON.stringify(speaker)), {
+    name: 'default',
+    connectionId: 'Mac Mini',
+    connectionLabel: 'Mac Mini',
+    remoteSource: true,
+    sourceScoped: true
+  })
+  assert.equal(botRosterMeta(speaker, { default: { title: 'Local Hermes' } }), null)
 })
 
 test('source contract: New Agent has a Create on picker that routes creation to the target backend', () => {

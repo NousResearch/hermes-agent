@@ -880,6 +880,9 @@ export interface DesktopRosterAgent {
   connectionLabel: string
   profile: string
   handle: string
+  display_name?: string
+  ui_meta?: Record<string, unknown>
+  has_avatar?: boolean
 }
 
 export interface DesktopAgentRoster {

@@ -315,9 +315,9 @@ export function shouldDeferLocalEnumeration(
 
 export interface ConnectionAgents {
   connection: RegistryConnection
-  /** Profile names enumerated from the connection, or null when unreachable /
-   * connect-on-demand (ssh not yet dialed). */
-  profiles: null | string[]
+  /** Profile roster rows (legacy string names accepted), or null when
+   * unreachable / connect-on-demand (ssh not yet dialed). */
+  profiles: null | RosterProfileInput[]
   /** Present when profiles is null: why enumeration was skipped. */
   error?: string
   /** Stable backend identity from the connection's /api/status (`install_id`).
@@ -328,7 +328,16 @@ export interface ConnectionAgents {
   installId?: string
 }
 
-export interface RosterAgent {
+export interface RosterProfile {
+  name: string
+  display_name?: string
+  ui_meta?: Record<string, unknown>
+  has_avatar?: boolean
+}
+
+export type RosterProfileInput = RosterProfile | string
+
+export interface RosterAgent extends Omit<RosterProfile, 'name'> {
   connectionId: string
   connectionKind: ConnectionKind
   connectionLabel: string
@@ -336,6 +345,59 @@ export interface RosterAgent {
   /** Bare profile name, or `<profile>-<label-slug>` when the profile name
    * exists on more than one registered source (the @name-device rule). */
   handle: string
+}
+
+const MAX_ROSTER_UI_META_CHARS = 65_536
+
+/** Keep only bounded presentation fields from an authenticated backend row. */
+export function normalizeRosterProfiles(value: unknown): RosterProfile[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const byName = new Map<string, RosterProfile>()
+
+  for (const item of value) {
+    const source = item && typeof item === 'object' ? (item as Record<string, unknown>) : null
+    const rawName = source ? source.name : item
+    const name = typeof rawName === 'string' ? rawName.trim() : ''
+
+    if (!name) {
+      continue
+    }
+
+    const row: RosterProfile = { name }
+    const displayName = typeof source?.display_name === 'string' ? source.display_name.trim().slice(0, 128) : ''
+
+    if (displayName) {
+      row.display_name = displayName
+    }
+
+    if (source?.has_avatar === true) {
+      row.has_avatar = true
+    }
+
+    if (source?.ui_meta && typeof source.ui_meta === 'object' && !Array.isArray(source.ui_meta)) {
+      try {
+        const encoded = JSON.stringify(source.ui_meta)
+
+        if (encoded.length <= MAX_ROSTER_UI_META_CHARS) {
+          row.ui_meta = JSON.parse(encoded) as Record<string, unknown>
+        }
+      } catch {
+        // A malformed remote row must not fail the whole connection roster.
+      }
+    }
+
+    const previous = byName.get(name)
+    byName.set(name, {
+      ...previous,
+      ...row,
+      ...(previous?.has_avatar || row.has_avatar ? { has_avatar: true } : {})
+    })
+  }
+
+  return [...byName.values()]
 }
 
 /**
@@ -351,7 +413,7 @@ export interface RosterAgent {
  */
 export function rememberSshEnumeration(
   enumeration: Pick<ConnectionAgents, 'error' | 'profiles'>,
-  cached: null | string[] | undefined,
+  cached: ConnectionAgents['profiles'] | undefined,
   kind: ConnectionKind
 ): Pick<ConnectionAgents, 'error' | 'profiles'> {
   if (enumeration.profiles && enumeration.profiles.length > 0) {
@@ -432,18 +494,25 @@ export function buildAgentRoster(
   // counting names for @name-device disambiguation.
   const identities = new Map<
     string,
-    { connection: RegistryConnection; installId?: string; order: number; profile: string }
+    { connection: RegistryConnection; installId?: string; order: number; profile: RosterProfile }
   >()
 
   let order = 0
 
   for (const { connection, installId, profiles } of enumerations) {
-    for (const profile of profiles || []) {
-      const name = String(profile || '').trim() || 'default'
+    for (const profile of normalizeRosterProfiles(profiles)) {
+      const name = profile.name || 'default'
       const key = `${connection.id}\0${name}`
 
       if (!identities.has(key)) {
-        identities.set(key, { connection, installId, order, profile: name })
+        identities.set(key, { connection, installId, order, profile })
+      } else {
+        const existing = identities.get(key)!
+        existing.profile = {
+          ...existing.profile,
+          ...profile,
+          ...(existing.profile.has_avatar || profile.has_avatar ? { has_avatar: true } : {})
+        }
       }
     }
 
@@ -454,10 +523,10 @@ export function buildAgentRoster(
   // are the SAME physical install registered under two addresses, so their
   // (install, profile) rows are one bot, not two. Connections without an id
   // (older backends, undialed ssh) keep a per-connection key — no collapse.
-  const backends = new Map<string, { connection: RegistryConnection; order: number; profile: string }[]>()
+  const backends = new Map<string, { connection: RegistryConnection; order: number; profile: RosterProfile }[]>()
 
   for (const { connection, installId, order: rank, profile } of identities.values()) {
-    const key = installId ? `id:${installId}\0${profile}` : `conn:${connection.id}\0${profile}`
+    const key = installId ? `id:${installId}\0${profile.name}` : `conn:${connection.id}\0${profile.name}`
     const group = backends.get(key)
 
     if (group) {
@@ -475,18 +544,20 @@ export function buildAgentRoster(
   const counts = new Map<string, number>()
 
   for (const { profile } of rows) {
-    counts.set(profile, (counts.get(profile) || 0) + 1)
+    counts.set(profile.name, (counts.get(profile.name) || 0) + 1)
   }
 
   const roster: RosterAgent[] = []
 
   for (const { connection, profile } of rows) {
+    const { name, ...metadata } = profile
     roster.push({
       connectionId: connection.id,
       connectionKind: connection.kind,
       connectionLabel: connection.label,
-      profile,
-      handle: agentHandle(profile, connection.label, (counts.get(profile) || 0) > 1)
+      profile: name,
+      handle: agentHandle(name, connection.label, (counts.get(name) || 0) > 1),
+      ...metadata
     })
   }
 

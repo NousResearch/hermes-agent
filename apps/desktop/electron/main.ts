@@ -105,10 +105,12 @@ import {
   migrateV1ToRegistry,
   normalizeConnectionInput,
   normalizeRegistry,
+  normalizeRosterProfiles,
   rememberSshEnumeration,
   removeConnection,
   resolvedConnectionId,
   resolveRegistryLocalRoute,
+  type RosterProfileInput,
   setConnectionLaunchMode,
   setLastUsedConnection,
   setPrimaryConnection,
@@ -12804,7 +12806,7 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
 // would spawn tunnels the user never asked for); once dialed, their pooled
 // descriptor serves the enumeration like any remote. Last-known SSH profile
 // lists are reused so switching the window back to local does not empty Bot Mode.
-const sshRosterCache = new Map<string, string[]>()
+const sshRosterCache = new Map<string, RosterProfileInput[]>()
 const sshInventoryAttemptedAt = new Map<string, number>()
 const SSH_INVENTORY_RETRY_MS = 60_000
 
@@ -12929,7 +12931,12 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
 
   return Promise.all(
     registry.connections.map(async connection => {
-      let raw: { connection: typeof connection; error?: string; installId?: string; profiles: null | string[] }
+      let raw: {
+        connection: typeof connection
+        error?: string
+        installId?: string
+        profiles: null | RosterProfileInput[]
+      }
 
       try {
         // SSH roster listing must never spawn a dashboard. A stale
@@ -12970,14 +12977,12 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
           // requests for the backend-identity probe.
           const installId = await probeConnectionInstallId(connection.id, descriptor)
 
-          const profiles = Array.isArray(body?.profiles)
-            ? body.profiles.map(p => String(p?.name || '').trim()).filter(Boolean)
-            : []
+          const profiles = normalizeRosterProfiles(body?.profiles)
 
           // The root HERMES_HOME is an agent too; enumerations that omit it
           // (older backends list only named profiles) still get a default row.
-          if (!profiles.includes('default')) {
-            profiles.unshift('default')
+          if (!profiles.some(profile => profile.name === 'default')) {
+            profiles.unshift({ name: 'default' })
           }
 
           raw = { connection, profiles, ...(installId ? { installId } : {}) }

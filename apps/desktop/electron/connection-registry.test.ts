@@ -24,6 +24,7 @@ import {
   migrateV1ToRegistry,
   normalizeConnectionInput,
   normalizeRegistry,
+  normalizeRosterProfiles,
   parseRemoteProfileListing,
   REGISTRY_VERSION,
   rememberSshEnumeration,
@@ -251,6 +252,57 @@ test('roster: unique profiles keep bare handles; duplicates get @name-device', (
   assert.equal(byKey.get('local/default'), 'default')
   assert.equal(byKey.get('homelab/coder'), 'coder')
   assert.equal(roster.length, 4)
+})
+
+test('roster: rich metadata remains scoped to each same-name source', () => {
+  const local = { id: 'local', kind: 'local' as const, label: 'This device' }
+  const homelab = { id: 'homelab', kind: 'remote' as const, label: 'Homelab', url: 'http://h:1' }
+  const localMeta = { 'hermes-bots': { title: 'Local Hermes', color: '#123456' } }
+  const remoteMeta = { 'hermes-bots': { title: 'Remote Hermes', color: '#abcdef' } }
+
+  const roster = buildAgentRoster([
+    {
+      connection: local,
+      profiles: [{ name: 'default', display_name: 'Local', ui_meta: localMeta, has_avatar: true }]
+    },
+    {
+      connection: homelab,
+      profiles: [{ name: 'default', display_name: 'Remote', ui_meta: remoteMeta, has_avatar: true }]
+    }
+  ])
+  const localRow = roster.find(agent => agent.connectionId === 'local')
+  const remoteRow = roster.find(agent => agent.connectionId === 'homelab')
+
+  assert.equal(localRow?.display_name, 'Local')
+  assert.deepEqual(localRow?.ui_meta, localMeta)
+  assert.equal(localRow?.has_avatar, true)
+  assert.equal(remoteRow?.display_name, 'Remote')
+  assert.deepEqual(remoteRow?.ui_meta, remoteMeta)
+  assert.equal(remoteRow?.has_avatar, true)
+})
+
+test('normalizeRosterProfiles accepts legacy names and whitelists rich fields', () => {
+  const rows = normalizeRosterProfiles([
+    'legacy',
+    {
+      name: ' remote ',
+      display_name: ' Remote Bot ',
+      ui_meta: { 'hermes-bots': { title: 'Remote Bot' } },
+      has_avatar: true,
+      path: '/private/backend/path'
+    },
+    { display_name: 'missing name' }
+  ])
+
+  assert.deepEqual(rows, [
+    { name: 'legacy' },
+    {
+      name: 'remote',
+      display_name: 'Remote Bot',
+      ui_meta: { 'hermes-bots': { title: 'Remote Bot' } },
+      has_avatar: true
+    }
+  ])
 })
 
 test('rememberSshEnumeration: live list wins, cache then seed default', () => {

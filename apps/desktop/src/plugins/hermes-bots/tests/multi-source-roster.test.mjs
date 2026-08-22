@@ -251,6 +251,42 @@ test('default rows use source identity without borrowing another source title', 
   assert.equal(name(active, undefined), 'Hermes')
 })
 
+test('rich remote rows use their own title and never borrow same-name local metadata', () => {
+  const { __mergeMultiSourceRoster: merge, __botRosterMeta: metaFor, __displayName: name } = runtime()
+  const local = { profiles: [{ name: 'default', display_name: 'Local Hermes' }] }
+  const union = {
+    agents: [
+      {
+        connectionId: 'local',
+        connectionKind: 'local',
+        connectionLabel: 'This device',
+        profile: 'default',
+        handle: 'default-this-device'
+      },
+      {
+        connectionId: 'personal',
+        connectionKind: 'remote',
+        connectionLabel: 'Personal',
+        profile: 'default',
+        handle: 'default-personal',
+        display_name: 'Remote Hermes',
+        ui_meta: { 'hermes-bots': { title: 'Asus', color: '#abcdef' } },
+        has_avatar: true
+      }
+    ]
+  }
+
+  const remote = merge(local, union, 'local').profiles.find(row => row.remoteSource)
+  const metadata = { default: { title: 'Local title', color: '#123456' } }
+  const remoteMeta = metaFor(remote, metadata)
+
+  assert.equal(remote.display_name, 'Remote Hermes')
+  assert.equal(remote.has_avatar, true)
+  assert.equal(remoteMeta.title, 'Asus')
+  assert.equal(remoteMeta.color, '#abcdef')
+  assert.equal(name(remote, remoteMeta), 'Asus')
+})
+
 test('botHandle: precomputed multi-source handle wins; default stays hermes', () => {
   const { __botHandle: botHandle } = runtime()
 

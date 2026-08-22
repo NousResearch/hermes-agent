@@ -1139,6 +1139,10 @@ function handleSessionsGatewayTransition() {
  *  { [botName]: { shape, color, title } } */
 const $botMeta = atom({})
 
+/** Read-only metadata fetched from bots on other registered connections.
+ *  Keys are source-qualified so two `default` profiles never share art. */
+const $remoteBotMeta = atom({})
+
 /** Freshness fence for the server-meta overlay: the last moment each bot's
  *  local meta was written (stamped again once the server write settles).
  *  mergeServerMeta refuses to overlay a roster snapshot FETCHED BEFORE this
@@ -1379,6 +1383,10 @@ const avatarPushInflight = new Set()
  *  cross-machine roster art, so local-only images are a bug, not a state. */
 function pushLocalAvatars(roster) {
   for (const bot of roster) {
+    if (bot.remoteSource) {
+      continue
+    }
+
     if (bot.has_avatar || avatarPushInflight.has(bot.name)) {
       continue
     }
@@ -1471,19 +1479,27 @@ function pullServerAvatars(roster) {
   pushLocalAvatars(roster)
 
   for (const bot of roster) {
-    if (!bot.has_avatar || avatarFetchInflight.has(bot.name)) {
+    const cacheKey = bot.remoteSource ? botRosterKey(bot) : bot.name
+
+    if (!bot.has_avatar || avatarFetchInflight.has(cacheKey)) {
       continue
     }
 
-    if ($botMeta.get()[bot.name]?.image) {
+    if (botRosterMeta(bot, $botMeta.get())?.image) {
       continue
     }
 
-    avatarFetchInflight.add(bot.name)
-    host
-      .request('profiles.get_asset', { name: bot.name, asset: 'avatar' })
+    avatarFetchInflight.add(cacheKey)
+    Promise.resolve(requestForBot(bot, 'profiles.get_asset', { name: bot.name, asset: 'avatar' }))
       .then(res => {
         if (res?.found && res.data) {
+          if (bot.remoteSource) {
+            const current = $remoteBotMeta.get()
+            const mine = current[cacheKey] || {}
+            $remoteBotMeta.set({ ...current, [cacheKey]: { ...mine, image: res.data } })
+            return
+          }
+
           const current = $botMeta.get()
           const mine = current[bot.name] || {}
           // A 160px raster of the vector face is only for inter-agent
@@ -1501,7 +1517,7 @@ function pullServerAvatars(roster) {
         }
       })
       .catch(() => undefined)
-      .finally(() => avatarFetchInflight.delete(bot.name))
+      .finally(() => avatarFetchInflight.delete(cacheKey))
   }
 }
 
@@ -3759,7 +3775,14 @@ function mergeMultiSourceRoster(local, union, activeConnectionId, previous = [])
       connectionKind: agent.connectionKind,
       connectionLabel: agent.connectionLabel,
       remoteSource: true,
-      sourceScoped: true
+      sourceScoped: true,
+      ...(typeof agent.display_name === 'string' && agent.display_name.trim()
+        ? { display_name: agent.display_name.trim() }
+        : {}),
+      ...(agent.ui_meta && typeof agent.ui_meta === 'object' && !Array.isArray(agent.ui_meta)
+        ? { ui_meta: agent.ui_meta }
+        : {}),
+      ...(agent.has_avatar === true ? { has_avatar: true } : {})
     })
   }
 
@@ -3979,13 +4002,13 @@ function botRosterKey(bot) {
 function botConnectionRoute(bot) {
   const id = String(bot?.connectionId || '').trim()
 
-  if (!bot?.remoteSource || !id || id === 'local' || typeof host.requestProfile !== 'function') {
+  if (!bot?.remoteSource || !id || typeof host.requestProfile !== 'function') {
     return null
   }
 
   const profile = String(bot?.name || '').trim() || 'default'
 
-  return { connectionId: id, mode: 'remote', profile, targetProfile: profile }
+  return { connectionId: id, mode: id === 'local' ? 'local' : 'remote', profile, targetProfile: profile }
 }
 
 /** Gateway RPC on the bot's OWN source: requestProfile for remote rows,
@@ -4008,12 +4031,25 @@ function groupMemberKey(member) {
   return member?.remoteSource ? botRosterKey(member) : member?.name
 }
 
-// Bot metadata is scoped to the active gateway until the server exposes a
-// union of rich profile rows. Never paint that metadata onto a thin row from
-// another source: two `default` agents must not borrow each other's title,
-// pin, avatar, group, unread state, or canonical-chat pointer.
+// Metadata for another source comes only from that source's rich roster row
+// plus its source-qualified avatar cache. Never consult name-keyed local meta:
+// two `default` agents must not borrow each other's identity or chat pointer.
 function botRosterMeta(bot, metaByName) {
-  return bot?.remoteSource ? null : metaByName?.[bot?.name]
+  if (!bot?.remoteSource) {
+    return metaByName?.[bot?.name]
+  }
+
+  const server = bot?.ui_meta?.['hermes-bots']
+  const cached = $remoteBotMeta.get()[botRosterKey(bot)]
+
+  if ((!server || typeof server !== 'object') && !cached) {
+    return null
+  }
+
+  return {
+    ...(server && typeof server === 'object' ? server : {}),
+    ...(cached || {})
+  }
 }
 
 function showsHandle(name, meta, bot) {
@@ -4247,15 +4283,6 @@ async function prepareBotSource(bot) {
 }
 
 function displayName(bot, meta) {
-  // Only THIN rows from another source trade the friendly name for their
-  // connection label — the active gateway's own default must keep reading
-  // "Hermes". Annotated active rows carry sourceScoped too, and keying this
-  // off sourceScoped renamed the user's main agent to an IP-derived label
-  // (community report, Aug 17 2026).
-  if (bot?.remoteSource && (bot.name || '').trim().toLowerCase() === 'default' && bot.connectionLabel) {
-    return bot.connectionLabel
-  }
-
   if (meta?.title?.trim()) {
     return meta.title.trim()
   }
@@ -4265,6 +4292,13 @@ function displayName(bot, meta) {
   // Mode title. Rides the profiles.list row; presentation-only.
   if (typeof bot?.display_name === 'string' && bot.display_name.trim()) {
     return bot.display_name.trim()
+  }
+
+  // A genuinely thin remote default still needs a source-specific fallback.
+  // Rich rows above keep their own title/display_name; the active gateway's
+  // annotated default remains Hermes rather than an IP-derived label.
+  if (bot?.remoteSource && (bot.name || '').trim().toLowerCase() === 'default' && bot.connectionLabel) {
+    return bot.connectionLabel
   }
 
   // The primary profile is literally named "default" — as a bot identity
@@ -4634,6 +4668,36 @@ function formatGroupChatLine(entry, viewerName) {
   const source = entry.from.source ? ` [${entry.from.source}]` : ''
 
   return `${groupSpeakerLabel(entry.from.name)}${suffix}${source}: ${entry.text}${attached}`
+}
+
+function groupEntryMember(entry, members) {
+  if (entry?.from?.kind === 'user') {
+    return null
+  }
+
+  const name = String(entry?.from?.name || '')
+  const source = String(entry?.from?.source || '')
+  const current = (Array.isArray(members) ? members : []).find(
+    member =>
+      member.name === name &&
+      (source ? (member.connectionLabel || member.connectionId) === source : !member.remoteSource)
+  )
+
+  if (current) {
+    return current
+  }
+
+  return {
+    name,
+    ...(source
+      ? {
+          connectionId: source,
+          connectionLabel: source,
+          remoteSource: true,
+          sourceScoped: true
+        }
+      : {})
+  }
 }
 
 /** The full per-turn payload for one member: participation rules + the room
@@ -8962,7 +9026,7 @@ function ActiveNowStrip({ roster, activeProfile, gatewayState, metaByName, onOpe
         children: 'Active now'
       }),
       ...active.map(bot => {
-        const meta = metaByName?.[bot.name]
+        const meta = botRosterMeta(bot, metaByName)
         const { shape, color, image } = botAppearance(bot.name, meta)
         const photo = Boolean(image && !isBackfilledFacePng(image))
         const label = displayName(bot, meta)
@@ -10067,7 +10131,7 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
   const memberDescriptors = () =>
     members.map(b => ({
       ...b,
-      title: (b.remoteSource ? '' : allMeta[b.name]?.title) || b.title || ''
+      title: botRosterMeta(b, allMeta)?.title || b.title || ''
     }))
 
   // Activity disclosure: quiet, collapsed by default. The collapsed row shows
@@ -10225,19 +10289,12 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
   // One log entry, rendered exactly as before conversation folding existed.
   const renderEntry = (entry, index) => {
                   const isUser = entry.from.kind === 'user'
-                  const meta = isUser || entry.from.source ? null : allMeta[entry.from.name]
                   // Match this speaker back to its member descriptor so display
                   // names and disambiguating handles come from the roster (the
                   // primary "default" profile renders as Hermes, remote dupes
                   // carry their @name-device handle) instead of raw profile ids.
-                  const member = isUser
-                    ? null
-                    : members.find(b =>
-                        b.name === entry.from.name &&
-                        (entry.from.source
-                          ? (b.connectionLabel || b.connectionId) === entry.from.source
-                          : !b.remoteSource)
-                      ) || null
+                  const member = groupEntryMember(entry, members)
+                  const meta = isUser ? null : botRosterMeta(member || { name: entry.from.name }, allMeta)
                   const display = isUser ? 'You' : displayName(member || { name: entry.from.name }, meta)
                   const entryKey = `${entry.at}:${index}`
                   const revealed = !isUser && revealedSpeaker === entryKey
@@ -10779,7 +10836,7 @@ function GroupRow({ active, group, members, needsYou, onOpen, onDisband }) {
           ? jsx('div', {
               className: 'flex items-center -space-x-2.5',
               children: faces.map(member => {
-                const meta = member.remoteSource ? null : allMeta[member.name]
+                const meta = botRosterMeta(member, allMeta)
                 const { shape, color, image } = botAppearance(member.name, meta)
 
                 return jsx(
@@ -10964,7 +11021,7 @@ function BotsPane() {
   if (live) {
     $lastRoster.set(roster)
     mergeServerMeta(activeSourceRoster, data?.fetchedAt || 0)
-    pullServerAvatars(activeSourceRoster)
+    pullServerAvatars(roster)
     trackInboundActivity(activeSourceRoster)
     backfillMessagingProtocol(activeSourceRoster)
   }

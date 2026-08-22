@@ -20,6 +20,7 @@ function load() {
     return slot
   }
   const requests = []
+  const profileRequests = []
   const context = {
     atom,
     PALETTE_AREA: 'palette',
@@ -30,7 +31,19 @@ function load() {
         requests.push([method, params])
         return Promise.resolve({})
       },
-      state: { profile: { get: () => 'default', listen: () => undefined }, gateway: { listen: () => undefined } }
+      requestProfile: (route, method, params) => {
+        profileRequests.push([route, method, params])
+        return Promise.resolve(
+          method === 'profiles.get_asset'
+            ? { found: true, data: 'data:image/png;base64,REMOTE' }
+            : {}
+        )
+      },
+      state: {
+        profile: { get: () => 'default', listen: () => undefined },
+        connectionId: { get: () => 'local', listen: () => undefined },
+        gateway: { listen: () => undefined }
+      }
     }
   }
   const source = pluginSource
@@ -40,13 +53,15 @@ function load() {
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
-    .concat('\nglobalThis.__meta = { saveBotMeta, $botMeta };\n')
+    .concat(
+      '\nglobalThis.__meta = { saveBotMeta, $botMeta, $remoteBotMeta, pullServerAvatars, botRosterMeta };\n'
+    )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   context.plugin.register({
     storage: { get: () => null, set: () => undefined },
     register: () => undefined
   })
-  return { ...context.__meta, requests }
+  return { ...context.__meta, requests, profileRequests }
 }
 
 test('regression: set_asset fires only when the avatar image changes', async () => {
@@ -88,4 +103,35 @@ test('regression: duplicating a bot still pushes the copied avatar once', async 
     { name: 'source', asset: 'avatar', data: png },
     { name: 'source-2', asset: 'avatar', data: png } // fresh profile: image differs from its (empty) meta
   ])
+})
+
+test('remote avatars are fetched through their source and cached by source-qualified key', async () => {
+  const { pullServerAvatars, botRosterMeta, $botMeta, $remoteBotMeta, requests, profileRequests } = load()
+  const remote = {
+    name: 'default',
+    connectionId: 'homelab',
+    remoteSource: true,
+    has_avatar: true,
+    ui_meta: { 'hermes-bots': { title: 'Homelab Hermes' } }
+  }
+
+  pullServerAvatars([remote])
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(requests.filter(([method]) => method === 'profiles.get_asset').length, 0)
+  assert.equal(profileRequests.length, 1)
+  assert.deepEqual(JSON.parse(JSON.stringify(profileRequests[0])), [
+    {
+      connectionId: 'homelab',
+      mode: 'remote',
+      profile: 'default',
+      targetProfile: 'default'
+    },
+    'profiles.get_asset',
+    { name: 'default', asset: 'avatar' }
+  ])
+  assert.equal($botMeta.get().default, undefined)
+  assert.equal($remoteBotMeta.get()['homelab::default'].image, 'data:image/png;base64,REMOTE')
+  assert.equal(botRosterMeta(remote, $botMeta.get()).title, 'Homelab Hermes')
+  assert.equal(botRosterMeta(remote, $botMeta.get()).image, 'data:image/png;base64,REMOTE')
 })

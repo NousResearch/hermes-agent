@@ -604,9 +604,10 @@ def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[
     desc = str(parsed["description"])
     if len(desc) > MAX_DESCRIPTION_LENGTH:
         return f"Description exceeds {MAX_DESCRIPTION_LENGTH} characters."
-    if new_skill and len(desc.strip().strip("'\"")) > SKILL_PROMPT_DESC_LIMIT:
+    budgeted_desc = desc.strip().strip("'\"")
+    if new_skill and len(budgeted_desc) > SKILL_PROMPT_DESC_LIMIT:
         return (
-            f"Description is {len(desc.strip())} chars — new skills must fit the "
+            f"Description is {len(budgeted_desc)} chars — new skills must fit the "
             f"{SKILL_PROMPT_DESC_LIMIT}-char system-prompt budget (one sentence, "
             f"trigger first, ends with a period). The skill index truncates "
             f"longer descriptions to {SKILL_PROMPT_DESC_LIMIT - 3} chars + '...', "
@@ -631,6 +632,21 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
             f"(limit: {MAX_SKILL_CONTENT_CHARS:,}). "
             f"Consider splitting into a smaller SKILL.md with supporting files "
             f"in references/ or templates/."
+        )
+    return None
+
+
+def _validate_file_bytes(file_content: str) -> Optional[str]:
+    """Check a supporting file's encoded size against the per-file byte limit.
+
+    Returns an error message or None if within bounds.
+    """
+    content_bytes = len(file_content.encode("utf-8"))
+    if content_bytes > MAX_SKILL_FILE_BYTES:
+        return (
+            f"File content is {content_bytes:,} bytes "
+            f"(limit: {MAX_SKILL_FILE_BYTES:,} bytes / 1 MiB). "
+            f"Consider splitting into smaller files."
         )
     return None
 
@@ -1303,17 +1319,9 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not file_content and file_content != "":
         return {"success": False, "error": "file_content is required."}
 
-    # Check size limits
-    content_bytes = len(file_content.encode("utf-8"))
-    if content_bytes > MAX_SKILL_FILE_BYTES:
-        return {
-            "success": False,
-            "error": (
-                f"File content is {content_bytes:,} bytes "
-                f"(limit: {MAX_SKILL_FILE_BYTES:,} bytes / 1 MiB). "
-                f"Consider splitting into smaller files."
-            ),
-        }
+    err = _validate_file_bytes(file_content)
+    if err:
+        return {"success": False, "error": err}
     err = _validate_content_size(file_content, label=file_path)
     if err:
         return {"success": False, "error": err}
@@ -1429,6 +1437,92 @@ _skill_gate_bypass: "_ctxvars.ContextVar[bool]" = _ctxvars.ContextVar(
 )
 
 
+# Missing-parameter messages, shared by skill_manage() and the staging preflight
+# so a gated write and an ungated one reject an incomplete payload identically.
+_REQUIRED_PARAM_ERRORS = {
+    "create": {
+        "content": "content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).",
+    },
+    "edit": {
+        "content": "content is required for 'edit'. Provide the full updated SKILL.md text.",
+    },
+    "patch": {
+        "old_string": "old_string is required for 'patch'. Provide the text to find.",
+        "new_string": "new_string is required for 'patch'. Use empty string to delete matched text.",
+    },
+    "write_file": {
+        "file_path": "file_path is required for 'write_file'. Example: 'references/api-guide.md'",
+        "file_content": "file_content is required for 'write_file'.",
+    },
+    "remove_file": {
+        "file_path": "file_path is required for 'remove_file'.",
+    },
+}
+
+
+def _preflight_staged_skill_write(action: str, name: str, payload: Dict[str, Any]) -> Optional[str]:
+    """Validate what is checkable about a write payload before it becomes pending.
+
+    Staging defers the real write — and with it every validation inside the
+    action handlers — until approval replay, so without this an invalid payload
+    sits in the pending queue and fails only after the user has reviewed and
+    approved it. Call the same validators the handlers call, not copies, so the
+    staged and replayed paths can never disagree, and run them in the handlers'
+    order so both paths report the same error for the same payload.
+
+    Only payload-intrinsic checks belong here. Anything that depends on the
+    state of the skill on disk — name collisions, the skill existing, the org
+    mirror and background-review guards, the security scan, and a patch's
+    merged result — stays a replay-time check: the disk can change between
+    staging and approval, so replay is the only correct place to evaluate it.
+    """
+    required = _REQUIRED_PARAM_ERRORS.get(action, {})
+    content = payload.get("content")
+    file_path = payload.get("file_path")
+    file_content = payload.get("file_content")
+
+    if action in ("create", "edit"):
+        if not content:
+            return required["content"]
+        if action == "create":
+            err = _validate_name(name) or _validate_category(payload.get("category"))
+            if err:
+                return err
+        return (
+            _validate_frontmatter(content, new_skill=(action == "create"))
+            or _validate_content_size(content)
+        )
+
+    if action == "patch":
+        if not payload.get("old_string"):
+            return required["old_string"]
+        if payload.get("new_string") is None:
+            return required["new_string"]
+        # Only the addressing is checkable: the merged result does not exist
+        # until replay, so _patch_skill stays the sole checkpoint for it.
+        return _validate_file_path(file_path) if file_path else None
+
+    if action == "write_file":
+        if not file_path:
+            return required["file_path"]
+        if file_content is None:
+            return required["file_content"]
+        return (
+            _validate_file_path(file_path)
+            or _validate_file_bytes(file_content)
+            or _validate_content_size(file_content, label=file_path)
+        )
+
+    if action == "remove_file":
+        if not file_path:
+            return required["file_path"]
+        return _validate_file_path(file_path)
+
+    # 'delete' carries no payload beyond the skill name, whose existence is a
+    # disk check.
+    return None
+
+
 def _apply_skill_write_gate(action, name, **payload_kwargs):
     """Evaluate the skill write gate. Returns a JSON tool-result string when the
     write should NOT proceed (blocked or staged), or None to perform the real
@@ -1449,6 +1543,10 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
         return None
     if decision.blocked:
         return tool_error(decision.message, success=False)
+
+    err = _preflight_staged_skill_write(action, name, payload_kwargs)
+    if err:
+        return tool_error(err, success=False)
 
     # stage — record the full skill_manage kwargs so approval can replay it.
     payload = {"action": action, "name": name}
@@ -1593,19 +1691,19 @@ def skill_manage(
 
     if action == "create":
         if not content:
-            return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
+            return tool_error(_REQUIRED_PARAM_ERRORS["create"]["content"], success=False)
         result = _create_skill(name, content, category)
 
     elif action == "edit":
         if not content:
-            return tool_error("content is required for 'edit'. Provide the full updated SKILL.md text.", success=False)
+            return tool_error(_REQUIRED_PARAM_ERRORS["edit"]["content"], success=False)
         result = _edit_skill(name, content)
 
     elif action == "patch":
         if not old_string:
-            return tool_error("old_string is required for 'patch'. Provide the text to find.", success=False)
+            return tool_error(_REQUIRED_PARAM_ERRORS["patch"]["old_string"], success=False)
         if new_string is None:
-            return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
+            return tool_error(_REQUIRED_PARAM_ERRORS["patch"]["new_string"], success=False)
         result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
     elif action == "delete":
@@ -1613,14 +1711,14 @@ def skill_manage(
 
     elif action == "write_file":
         if not file_path:
-            return tool_error("file_path is required for 'write_file'. Example: 'references/api-guide.md'", success=False)
+            return tool_error(_REQUIRED_PARAM_ERRORS["write_file"]["file_path"], success=False)
         if file_content is None:
-            return tool_error("file_content is required for 'write_file'.", success=False)
+            return tool_error(_REQUIRED_PARAM_ERRORS["write_file"]["file_content"], success=False)
         result = _write_file(name, file_path, file_content)
 
     elif action == "remove_file":
         if not file_path:
-            return tool_error("file_path is required for 'remove_file'.", success=False)
+            return tool_error(_REQUIRED_PARAM_ERRORS["remove_file"]["file_path"], success=False)
         result = _remove_file(name, file_path)
 
     else:

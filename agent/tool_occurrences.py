@@ -3,13 +3,26 @@
 Provider tool-call IDs are correlation aliases, not globally unique execution
 identity. This helper preserves occurrence multiplicity when a provider reuses
 an ID in a later call, without changing or repairing the transcript itself.
+
+Responses composite references are conventionally stored as
+``call_id|response_item_id`` (for example, ``call_abc|fc_123``), with the
+stable provider call ID first. Matching intentionally preserves the existing
+behavior here: composite result references use their leading segment, while a
+bare ``call_id`` or ``id`` remains a usable alias. Therefore a swapped
+``fc_123|call_abc`` reference can still resolve when ``fc_123`` is itself a
+known alias; this helper does not rewrite or canonicalize that producer shape.
 """
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from typing import Any, Iterable
 
 from agent.message_sanitization import coalesce_tool_call_id
+
+
+logger = logging.getLogger(__name__)
+_DEBUG_REF_MAX_CHARS = 96
 
 
 def _normalize_ref(value: Any) -> str:
@@ -97,6 +110,17 @@ def tool_result_metadata_by_index(
             if candidate not in consumed
         }
         if len(candidates) != 1:
+            if logger.isEnabledFor(logging.DEBUG):
+                bounded_refs = tuple(
+                    sorted(ref[:_DEBUG_REF_MAX_CHARS] for ref in result_refs)
+                )
+                logger.debug(
+                    "Tool-result metadata unresolved at message index %d: "
+                    "refs=%r candidates=%d",
+                    message_index,
+                    bounded_refs,
+                    len(candidates),
+                )
             continue
 
         matched = candidates.pop()
@@ -104,4 +128,3 @@ def tool_result_metadata_by_index(
         resolved[message_index] = metadata[matched]
 
     return resolved
-

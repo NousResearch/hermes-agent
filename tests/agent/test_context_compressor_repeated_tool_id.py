@@ -65,4 +65,3 @@ def test_static_fallback_summary_uses_same_occurrence_metadata():
         compressor._build_static_fallback_summary(_reused_id_messages())
 
     assert seen == ["read_file", "terminal"]
-

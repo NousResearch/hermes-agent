@@ -1026,6 +1026,36 @@ def test_run_codex_stream_returns_terminal_response_when_post_terminal_drain_fai
     )
 
 
+def test_consume_codex_stream_normalizes_raw_dict_output_items():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(
+            [
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "message",
+                        "status": "completed",
+                        "content": [
+                            {"type": "output_text", "text": "dict item survived"}
+                        ],
+                    },
+                },
+                {
+                    "type": "response.completed",
+                    "response": {"status": "completed"},
+                },
+            ]
+        ),
+        model="gpt-5-codex",
+    )
+
+    item = response.output[0]
+    assert getattr(item, "type", None) == "message"
+    assert getattr(item.content[0], "text", None) == "dict item survived"
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))
@@ -2108,7 +2138,7 @@ def test_dump_api_request_debug_uses_responses_url(monkeypatch, tmp_path):
 
     dump_file = agent._dump_api_request_debug(_codex_request_kwargs(), reason="preflight")
 
-    payload = json.loads(dump_file.read_text())
+    payload = json.loads(dump_file.read_text(encoding="utf-8"))
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/responses"
 
 
@@ -2132,7 +2162,7 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
         reason="preflight",
     )
 
-    payload = json.loads(dump_file.read_text())
+    payload = json.loads(dump_file.read_text(encoding="utf-8"))
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"
 
 

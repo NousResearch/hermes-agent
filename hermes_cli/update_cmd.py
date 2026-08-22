@@ -4674,6 +4674,71 @@ def _stop_process_trees(pids: list[int]) -> None:
             logger.debug("Could not stop process tree %s: %s", pid, exc)
 
 
+def _looks_like_desktop_control_plane(cmdline: str) -> bool:
+    """True for this-install ``hermes serve`` / ``hermes dashboard`` argv.
+
+    That is the Desktop control plane, not the messaging gateway. Serve and
+    dashboard do not host platform adapters (#92091); do not feed this into
+    ``looks_like_gateway_command_line``.
+    """
+    low = (cmdline or "").lower()
+    return "hermes_cli.main" in low and (" serve" in low or " dashboard" in low)
+
+
+def _desktop_owns_gateway_lifecycle() -> bool:
+    """True when Desktop currently supervises this install's control plane.
+
+    The updater must not steal gateway start in that case: Desktop owns
+    start/stop via ``/api/gateway/*``. This is *not* proof messaging is
+    already served — a live serve process is the control plane, and the
+    gateway is a detached sibling (#76129 / #92091).
+
+    Prefer the spawn ledger (owned identity). Fall back to the install-scoped
+    venv-holder scan already used by the lock guard; an orphaned control-plane
+    process (supervisor gone) does not count.
+    """
+    try:
+        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
+
+        for entry in ledger_entries():
+            if entry.get("purpose") not in ("serve", "dashboard"):
+                continue
+            if spawner_is_dead(entry) is False:
+                return True
+    except Exception as exc:
+        logger.debug("Desktop-lifecycle ledger probe failed: %s", exc)
+
+    try:
+        import psutil
+    except Exception:
+        psutil = None
+
+    try:
+        holders = _m()._detect_venv_python_processes()
+    except Exception as exc:
+        logger.debug("Desktop-lifecycle holder scan failed: %s", exc)
+        return False
+
+    for pid, _name, cmdline in holders:
+        if not _looks_like_desktop_control_plane(cmdline):
+            continue
+        if psutil is None:
+            # Cannot prove orphanhood; a live this-install control plane is
+            # enough to refuse stealing gateway start.
+            return True
+        try:
+            proc = psutil.Process(int(pid))
+            parent = proc.parent()
+            if parent is None or not parent.is_running():
+                continue
+            if parent.create_time() > proc.create_time():
+                continue
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def _pause_windows_gateways_for_update() -> dict | None:
     """Stop running Windows gateways before mutating the checkout or venv.
 
@@ -4712,6 +4777,24 @@ def _pause_windows_gateways_for_update() -> dict | None:
         # gateways that were running when the update began. Cold-start one after
         # the update so an installed gateway is actually up post-update. Users
         # who run gateway-less (no autostart entry) get nothing forced on them.
+        #
+        # Exception: Desktop currently owns this install's gateway lifecycle
+        # (live supervised serve/dashboard). A vestigial Startup/Scheduled
+        # Task is not the owner — spawning ``gateway run`` beside Desktop
+        # races ports/state (#76129). Serve is the control plane, not proof
+        # messaging is served; the skip is ownership, not liveness (#92091).
+        try:
+            if _desktop_owns_gateway_lifecycle():
+                logger.debug(
+                    "Skipping Windows gateway cold-start plan: "
+                    "Desktop owns gateway lifecycle"
+                )
+                return None
+        except Exception as exc:
+            logger.debug(
+                "Could not check Desktop gateway-lifecycle ownership before update: %s",
+                exc,
+            )
         try:
             from hermes_cli import gateway_windows
 
@@ -4863,6 +4946,18 @@ def _cold_start_windows_gateway_after_update() -> None:
     except Exception as exc:
         logger.debug("Could not re-check gateway liveness before cold-start: %s", exc)
         return
+
+    try:
+        if _desktop_owns_gateway_lifecycle():
+            logger.debug(
+                "Skipping Windows gateway cold-start: Desktop owns gateway lifecycle"
+            )
+            return
+    except Exception as exc:
+        logger.debug(
+            "Could not re-check Desktop gateway-lifecycle ownership before cold-start: %s",
+            exc,
+        )
 
     try:
         pid = gateway_windows._spawn_detached()

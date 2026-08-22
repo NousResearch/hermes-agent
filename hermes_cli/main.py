@@ -4893,6 +4893,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_dependency_sync_would_rewrite",
         "_detect_self_loaded_native_modules",
         "_detect_venv_python_processes",
+        "_desktop_owns_gateway_lifecycle",
         "_defer_update_for_self_lock",
         "_discard_lockfile_churn",
         "_discard_stashed_changes",

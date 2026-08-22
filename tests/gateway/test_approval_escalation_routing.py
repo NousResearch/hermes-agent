@@ -12,6 +12,7 @@ from gateway.run import (
     _approval_escalate_to_target,
     _resolve_approval_prompt_route,
     _send_approval_escalated_origin_notice_sync,
+    _send_exec_approval_prompt_sync,
 )
 from gateway.session import SessionSource
 
@@ -34,7 +35,16 @@ class _OriginAdapter:
 
 class _ButtonApprovalAdapter(_OriginAdapter):
     async def send_exec_approval(
-        self, chat_id, command, session_key, description="", metadata=None
+        self,
+        chat_id,
+        command,
+        session_key,
+        description="",
+        metadata=None,
+        *,
+        allow_permanent=True,
+        allow_session=True,
+        smart_denied=False,
     ):
         self.sent.append(
             {
@@ -43,6 +53,9 @@ class _ButtonApprovalAdapter(_OriginAdapter):
                 "session_key": session_key,
                 "description": description,
                 "metadata": metadata,
+                "allow_permanent": allow_permanent,
+                "allow_session": allow_session,
+                "smart_denied": smart_denied,
             }
         )
         return SimpleNamespace(success=True)
@@ -126,6 +139,59 @@ def test_approval_prompt_route_uses_configured_interactive_target():
     assert route.chat_id == "operator-chat"
     assert route.metadata is None
     assert route.escalated is True
+
+
+def test_escalated_approval_preserves_smart_deny_capabilities(monkeypatch):
+    origin = _OriginAdapter()
+    operator = _ButtonApprovalAdapter()
+    route = _resolve_approval_prompt_route(
+        {"approvals": {"escalate_to": "telegram:operator-chat"}},
+        {Platform.BLUEBUBBLES: origin, Platform.TELEGRAM: operator},
+        source=_source(platform=Platform.BLUEBUBBLES, chat_id="origin-chat"),
+        origin_adapter=origin,
+        origin_chat_id="origin-chat",
+        origin_metadata={"thread_id": "origin-thread"},
+    )
+
+    def fake_schedule(coro, loop, **kwargs):
+        import asyncio
+
+        result = asyncio.run(coro)
+
+        class _Future:
+            def result(self, timeout=None):
+                return result
+
+        return _Future()
+
+    monkeypatch.setattr("gateway.run.safe_schedule_threadsafe", fake_schedule)
+
+    outcome = _send_exec_approval_prompt_sync(
+        route,
+        {
+            "allow_permanent": False,
+            "allow_session": False,
+            "smart_denied": True,
+        },
+        command="rm -rf /tmp/example",
+        description="dangerous deletion",
+        session_key="bluebubbles:origin-chat",
+        loop=object(),
+    )
+
+    assert outcome == "sent"
+    assert operator.sent == [
+        {
+            "chat_id": "operator-chat",
+            "command": "rm -rf /tmp/example",
+            "session_key": "bluebubbles:origin-chat",
+            "description": "dangerous deletion",
+            "metadata": None,
+            "allow_permanent": False,
+            "allow_session": False,
+            "smart_denied": True,
+        }
+    ]
 
 
 def test_approval_prompt_route_keeps_metadata_for_same_chat_without_thread():

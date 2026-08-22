@@ -839,6 +839,36 @@ def _send_approval_escalated_origin_notice_sync(
         logger.debug("Failed to send approval escalation origin notice: %s", exc)
 
 
+def _send_exec_approval_prompt_sync(
+    route: _ApprovalPromptRoute,
+    approval_data: Dict[str, Any],
+    *,
+    command: str,
+    description: str,
+    session_key: str,
+    loop: Any,
+) -> str:
+    """Send an interactive approval while preserving its capability contract."""
+    approval_fut = safe_schedule_threadsafe(
+        route.adapter.send_exec_approval(
+            chat_id=route.chat_id,
+            command=command,
+            session_key=session_key,
+            description=description,
+            metadata=route.metadata,
+            allow_permanent=approval_data.get("allow_permanent", True),
+            allow_session=approval_data.get("allow_session", True),
+            smart_denied=approval_data.get("smart_denied", False),
+        ),
+        loop,
+        logger=logger,
+        log_message="send_exec_approval scheduling error",
+    )
+    if approval_fut is None:
+        raise RuntimeError("send_exec_approval: loop unavailable")
+    return _approval_send_outcome(approval_fut, timeout=15)
+
+
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     if _GATEWAY_AUTH_ERROR_RE.search(text):
@@ -6271,24 +6301,14 @@ class TurnRunner:
             # false positives from MagicMock auto-attribute creation in tests.
             if getattr(type(approval_route.adapter), "send_exec_approval", None) is not None:
                 try:
-                    _approval_fut = safe_schedule_threadsafe(
-                        approval_route.adapter.send_exec_approval(
-                            chat_id=approval_route.chat_id,
-                            command=cmd,
-                            session_key=_approval_session_key,
-                            description=desc,
-                            metadata=approval_route.metadata,
-                            allow_permanent=approval_data.get("allow_permanent", True),
-                            allow_session=approval_data.get("allow_session", True),
-                            smart_denied=approval_data.get("smart_denied", False),
-                        ),
-                        ctx._loop_for_step,
-                        logger=logger,
-                        log_message="send_exec_approval scheduling error",
+                    _outcome = _send_exec_approval_prompt_sync(
+                        approval_route,
+                        approval_data,
+                        command=cmd,
+                        description=desc,
+                        session_key=_approval_session_key,
+                        loop=ctx._loop_for_step,
                     )
-                    if _approval_fut is None:
-                        raise RuntimeError("send_exec_approval: loop unavailable")
-                    _outcome = _approval_send_outcome(_approval_fut, timeout=15)
                     if _outcome == "sent":
                         return
                     if _outcome == "ambiguous":

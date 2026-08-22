@@ -160,6 +160,32 @@ def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
         conn.close()
 
 
+def test_complete_rejects_missing_durable_artifact(worker_env, tmp_path):
+    """kanban_complete must reject a nonexistent durable artifact.
+
+    Regression for #53699 at the worker-facing boundary: the worker gets
+    the structured in-flight error and the task stays open, so the worker
+    can fix the path and retry the same handoff.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_complete({
+        "summary": "done",
+        "artifacts": [str(tmp_path / "missing.md")],
+    }))
+    assert out.get("error")
+    assert "still in-flight" in out["error"]
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status != "done"
+    finally:
+        conn.close()
+
+
 def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
     """Goal-mode tasks must pass the auxiliary judge before completion.
     Regression for #38367: workers bypassing the judge via early kanban_complete."""

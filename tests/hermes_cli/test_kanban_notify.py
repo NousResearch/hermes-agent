@@ -798,9 +798,15 @@ async def test_gateway_autosubscribe_roundtrips_user_id_alt_for_session_key(
 
 @pytest.mark.asyncio
 async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_path, monkeypatch):
-    """Missing artifact paths are silently skipped — they may have been
-    referenced by name only. The notifier must not crash and must still
-    deliver any artifacts that do exist."""
+    """Missing artifact paths are silently skipped at delivery time.
+
+    Complete-time validation now rejects worker-declared durable paths that
+    never existed, so this test injects a ghost path into the stored completed
+    event after a successful complete — modeling the race where a file vanishes
+    between complete and notify. The notifier must not crash and must still
+    deliver any artifacts that do exist.
+    """
+    import json
     import hermes_cli.kanban_db as kb
     from gateway.run import GatewayRunner
     from gateway.config import Platform
@@ -823,12 +829,37 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     import os
     os.environ["HERMES_KANBAN_TASK"] = tid
     try:
-        kt._handle_complete({
-            "summary": "one real, one ghost",
-            "artifacts": [str(real_pdf), "/tmp/definitely-does-not-exist.pdf"],
+        result = kt._handle_complete({
+            "summary": "one real artifact",
+            "artifacts": [str(real_pdf)],
         })
     finally:
         os.environ.pop("HERMES_KANBAN_TASK", None)
+    assert "error" not in json.loads(result)
+
+    # Simulate a path that disappears (or was only named for reference) after
+    # completion by patching the stored completed event payload.
+    conn = kb.connect()
+    try:
+        row = conn.execute(
+            "SELECT id, payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'completed' "
+            "ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert row is not None
+        payload = json.loads(row["payload"] or "{}")
+        payload["artifacts"] = [
+            str(real_pdf),
+            "/tmp/definitely-does-not-exist.pdf",
+        ]
+        conn.execute(
+            "UPDATE task_events SET payload = ? WHERE id = ?",
+            (json.dumps(payload), row["id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
     runner = object.__new__(GatewayRunner)
     runner._owns_kanban_dispatcher_lock = lambda: True

@@ -612,6 +612,88 @@ def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
     ]
 
 
+# ---------------------------------------------------------------------------
+# Durable artifact validation on completion (#53699)
+# ---------------------------------------------------------------------------
+
+
+
+def test_complete_task_rejects_missing_durable_artifact(kanban_home, tmp_path):
+    """Completion referencing a nonexistent durable artifact is rejected.
+
+    Regression for #53699: a declared artifact outside the scratch
+    workspace was handed off by path alone, so a path that never existed
+    was accepted and the task silently completed.
+    """
+    workspace = tmp_path / "persistent"
+    workspace.mkdir()
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn, title="review doc", workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        with pytest.raises(kb.ArtifactPreservationError):
+            kb.complete_task(
+                conn,
+                t,
+                result="done",
+                metadata={"artifacts": [str(workspace / "missing.md")]},
+            )
+        task = kb.get_task(conn, t)
+    assert task is not None
+    assert task.status == "ready", "task must stay open when the artifact is rejected"
+
+
+def test_complete_task_rejects_empty_and_directory_durable_artifacts(kanban_home, tmp_path):
+    """Durable artifacts must be non-empty regular files, not dirs or 0-byte paths."""
+    workspace = tmp_path / "persistent"
+    workspace.mkdir()
+    empty_file = workspace / "empty.txt"
+    empty_file.write_bytes(b"")
+    subdir = workspace / "subdir"
+    subdir.mkdir()
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn, title="collect outputs", workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        with pytest.raises(kb.ArtifactPreservationError, match="empty"):
+            kb.complete_task(
+                conn, t, result="done",
+                metadata={"artifacts": [str(empty_file)]},
+            )
+        with pytest.raises(kb.ArtifactPreservationError, match="regular file"):
+            kb.complete_task(
+                conn, t, result="done",
+                metadata={"artifacts": [str(subdir)]},
+            )
+
+
+def test_complete_task_accepts_existing_durable_artifact(kanban_home, tmp_path):
+    """An existing readable durable artifact is carried through completion."""
+    workspace = tmp_path / "persistent"
+    workspace.mkdir()
+    deliverable = workspace / "report.md"
+    deliverable.write_text("finished\n", encoding="utf-8")
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn, title="write report", workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        assert kb.complete_task(
+            conn, t, result="done",
+            metadata={"artifacts": [str(deliverable)]},
+        )
+        completed = [e for e in kb.list_events(conn, t) if e.kind == "completed"][-1]
+        assert completed is not None
+        payload = completed.payload
+        assert payload is not None
+        assert payload["artifacts"] == [str(deliverable)]
+        task = kb.get_task(conn, t)
+    assert task is not None
+    assert task.status == "done"
+
+
 
 
 # ---------------------------------------------------------------------------

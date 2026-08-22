@@ -1621,10 +1621,80 @@ def _special_file_kind(path) -> str | None:
     return "a special (non-regular) file"
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default") -> str:
+def _read_spill_capability(
+    uri: str,
+    *,
+    offset: int,
+    limit: int,
+    session_id: str,
+) -> str:
+    """Resolve a host-owned capability before any backend/path routing."""
+    from tools.tool_result_storage import resolve_spill_capability
+
+    try:
+        text = resolve_spill_capability(uri, session_id=session_id)
+        lines = text.splitlines()
+        total_lines = len(lines)
+        end_line = offset + limit - 1
+        page_text = "\n".join(lines[offset - 1:end_line])
+        numbered = (
+            "\n".join(
+                f"{line_number}|{line}"
+                for line_number, line in enumerate(
+                    page_text.splitlines(), start=offset,
+                )
+            )
+            if page_text
+            else ""
+        )
+        result = {
+            "content": numbered,
+            "total_lines": total_lines,
+            "file_size": len(text.encode("utf-8")),
+            "truncated": total_lines > end_line,
+        }
+        if result["truncated"]:
+            result["hint"] = (
+                f"Use offset={end_line + 1} to continue reading "
+                f"(showing {offset}-{min(end_line, total_lines)} of {total_lines} lines)"
+            )
+        max_chars = _get_max_read_chars()
+        if len(result["content"]) > max_chars:
+            trimmed, lines_kept, _ = _truncate_to_char_budget(
+                result["content"], max_chars,
+            )
+            next_offset = offset + lines_kept
+            result["content"] = trimmed
+            result["truncated"] = True
+            result["truncated_by"] = "bytes"
+            result["next_offset"] = next_offset
+            result["hint"] = (
+                f"Output truncated at the {max_chars:,}-char read budget. "
+                f"Use offset={next_offset} to continue."
+            )
+        return json.dumps(result, ensure_ascii=False)
+    except Exception:
+        return tool_error("Cannot read result-spill capability.")
+
+
+def read_file_tool(
+    path: str,
+    offset: int = 1,
+    limit: int = 2000,
+    task_id: str = "default",
+    session_id: str = "",
+) -> str:
     """Read a file with pagination and line numbers."""
     try:
         offset, limit = normalize_read_pagination(offset, limit)
+
+        if isinstance(path, str) and path.startswith("hermes-spill://v1/"):
+            return _read_spill_capability(
+                path,
+                offset=offset,
+                limit=limit,
+                session_id=session_id,
+            )
 
         # ── Device path guard ─────────────────────────────────────────
         # Block paths that would hang the process (infinite output,
@@ -2754,7 +2824,13 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(
+        path=args.get("path", ""),
+        offset=args.get("offset", 1),
+        limit=args.get("limit", 500),
+        task_id=tid,
+        session_id=kw.get("session_id") or "",
+    )
 
 
 def _handle_write_file(args, **kw):

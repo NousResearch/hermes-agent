@@ -29,6 +29,7 @@ from contextvars import ContextVar
 import logging
 import threading
 import time
+import uuid
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import (
@@ -1582,6 +1583,22 @@ def handle_function_call(
                         break
         except Exception as _hook_err:
             logger.debug("transform_tool_result hook error: %s", _hook_err)
+
+        # Central model-facing persistence seam. Agent-loop callers apply a
+        # context-scaled budget again in agent.tool_executor; direct transports
+        # such as Codex MCP otherwise bypass that executor entirely.
+        if isinstance(result, str):
+            try:
+                from tools.tool_result_storage import maybe_persist_tool_result
+
+                result = maybe_persist_tool_result(
+                    content=result,
+                    tool_name=function_name,
+                    tool_use_id=tool_call_id or uuid.uuid4().hex,
+                    session_id=session_id or "",
+                )
+            except Exception as _spill_err:
+                logger.debug("tool-result persistence fail-open: %s", _spill_err)
 
         return result
 

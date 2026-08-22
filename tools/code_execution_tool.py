@@ -658,6 +658,7 @@ def _rpc_server_loop(
     allowed_tools: frozenset,
     stop_event: threading.Event,
     rpc_token: str,
+    session_id: str = "",
 ):
     """
     Accept one client connection and dispatch tool-call requests until
@@ -746,7 +747,10 @@ def _rpc_server_loop(
                 try:
                     with thread_scoped_silence():
                         result = handle_function_call(
-                            tool_name, tool_args, task_id=task_id
+                            tool_name,
+                            tool_args,
+                            task_id=task_id,
+                            session_id=session_id,
                         )
                 except Exception as exc:
                     logger.error("Tool call failed in sandbox: %s", exc, exc_info=True)
@@ -928,6 +932,7 @@ def _rpc_poll_loop(
     allowed_tools: frozenset,
     stop_event: threading.Event,
     rpc_token: str,
+    session_id: str = "",
 ):
     """Poll the remote filesystem for tool call requests and dispatch them.
 
@@ -1021,7 +1026,10 @@ def _rpc_poll_loop(
                     try:
                         with thread_scoped_silence():
                             tool_result = handle_function_call(
-                                tool_name, tool_args, task_id=task_id
+                                tool_name,
+                                tool_args,
+                                task_id=task_id,
+                                session_id=session_id,
                             )
                     except Exception as exc:
                         logger.error("Tool call failed in remote sandbox: %s",
@@ -1064,6 +1072,7 @@ def _execute_remote(
     code: str,
     task_id: Optional[str],
     enabled_tools: Optional[List[str]],
+    session_id: str = "",
 ) -> str:
     """Run a script on the remote terminal backend via file-based RPC.
 
@@ -1136,7 +1145,7 @@ def _execute_remote(
             args=(
                 env, f"{sandbox_dir}/rpc", effective_task_id,
                 tool_call_log, tool_call_counter, max_tool_calls,
-                sandbox_tools, stop_event, rpc_token,
+                sandbox_tools, stop_event, rpc_token, session_id,
             ),
             daemon=True,
         )
@@ -1256,6 +1265,7 @@ def execute_code(
     code: str,
     task_id: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
+    session_id: str = "",
 ) -> str:
     """
     Run a Python script in a sandboxed child process with RPC access
@@ -1269,6 +1279,7 @@ def execute_code(
         task_id:       Session task ID for tool isolation (terminal env, etc.).
         enabled_tools: Tool names enabled in the current session. The sandbox
                        gets the intersection with SANDBOX_ALLOWED_TOOLS.
+        session_id:    Parent session scope forwarded to nested tool calls.
 
     Returns:
         JSON string with execution results.
@@ -1321,7 +1332,7 @@ def execute_code(
         clear_current_thread_interrupt()
 
     if env_type != "local":
-        return _execute_remote(code, task_id, enabled_tools)
+        return _execute_remote(code, task_id, enabled_tools, session_id)
 
     # --- Local execution path (UDS) --- below this line is unchanged ---
 
@@ -1415,7 +1426,8 @@ def execute_code(
             target=propagate_context_to_thread(_rpc_server_loop),
             args=(
                 server_sock, task_id, tool_call_log,
-                tool_call_counter, max_tool_calls, sandbox_tools, stop_event, rpc_token,
+                tool_call_counter, max_tool_calls, sandbox_tools, stop_event,
+                rpc_token, session_id,
             ),
             daemon=True,
         )
@@ -2200,6 +2212,7 @@ def _execute_code_handler(args: dict, **kwargs) -> str:
         code=code or "",
         task_id=kwargs.get("task_id"),
         enabled_tools=kwargs.get("enabled_tools"),
+        session_id=kwargs.get("session_id") or "",
     )
 
 

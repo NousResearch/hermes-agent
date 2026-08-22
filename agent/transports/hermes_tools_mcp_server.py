@@ -49,6 +49,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -151,6 +152,26 @@ EXPOSED_TOOLS: tuple[str, ...] = (
 )
 
 
+def _make_spill_reader(dispatcher, session_id: str):
+    """Build the capability-only read_file exception for Codex MCP."""
+    # Keep ordinary paths on Codex's own filesystem/approval path. Only the
+    # opaque scheme requires a callback into the Hermes host process.
+    def _read_spill_capability(*, path: str) -> str:
+        if not isinstance(path, str) or not path.startswith("hermes-spill://v1/"):
+            return json.dumps(
+                {"error": "read_file accepts only hermes-spill capabilities"}
+            )
+        try:
+            return dispatcher(
+                "read_file", {"path": path}, session_id=session_id,
+            )
+        except Exception:
+            logger.exception("capability-only read_file raised")
+            return json.dumps({"error": "result-spill capability read failed"})
+
+    return _read_spill_capability
+
+
 def _build_server() -> Any:
     """Create the MCP server with Hermes tools attached. Lazy imports
     so the module can be imported without the mcp package installed
@@ -179,6 +200,10 @@ def _build_server() -> Any:
             "subagent delegation, vision, image generation, persistent "
             "memory, skills, and cross-session search."
         ),
+    )
+    mcp_session_id = (
+        os.environ.get("HERMES_SESSION_ID", "").strip()
+        or f"mcp-{uuid.uuid4().hex}"
     )
 
     # Pull authoritative Hermes tool schemas for the ones we expose, so
@@ -216,7 +241,11 @@ def _build_server() -> Any:
                     # Filter out None values before dispatch so unset optionals
                     # aren't forwarded to the handler.
                     args = {k: v for k, v in kwargs.items() if v is not None}
-                    return handle_function_call(tool_name, args or {})
+                    return handle_function_call(
+                        tool_name,
+                        args or {},
+                        session_id=mcp_session_id,
+                    )
                 except Exception as exc:
                     logger.exception("tool %s raised", tool_name)
                     return json.dumps({"error": str(exc), "tool": tool_name})
@@ -242,10 +271,28 @@ def _build_server() -> Any:
 
         exposed_count += 1
 
+    spill_reader = _make_spill_reader(handle_function_call, mcp_session_id)
+    spill_description = (
+        "Read a hermes-spill:// capability from the current Hermes session. "
+        "Ordinary filesystem paths are rejected."
+    )
+    try:
+        mcp.add_tool(
+            spill_reader,
+            name="read_file",
+            description=spill_description,
+        )
+    except TypeError:
+        mcp.tool(
+            name="read_file",
+            description=spill_description,
+        )(spill_reader)
+    exposed_count += 1
+
     logger.info(
         "hermes-tools MCP server registered %d/%d tools",
         exposed_count,
-        len(EXPOSED_TOOLS),
+        len(EXPOSED_TOOLS) + 1,
     )
     return mcp
 

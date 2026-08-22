@@ -50,7 +50,9 @@ from tools.code_execution_tool import (
 from tools.registry import registry
 
 
-def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
+def _mock_handle_function_call(
+    function_name, function_args, task_id=None, user_task=None, **_kwargs,
+):
     """Mock dispatcher that returns canned responses for each tool."""
     if function_name == "terminal":
         cmd = function_args.get("command", "")
@@ -286,7 +288,9 @@ else:
     print(f"OK {N}/{N}")
 '''
 
-        def slow_mock(function_name, function_args, task_id=None, user_task=None):
+        def slow_mock(
+            function_name, function_args, task_id=None, user_task=None, **_kwargs,
+        ):
             import time as _t
             if function_name == "terminal":
                 _t.sleep(0.05)  # ensure requests overlap on the socket
@@ -861,6 +865,52 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         src = generate_hermes_tools_module(["terminal"], transport="uds")
         self.assertIn("HERMES_RPC_TOKEN", src)
         self.assertIn('"token"', src)
+
+    def test_rpc_server_forwards_parent_session_id(self):
+        from tools.code_execution_tool import _rpc_server_loop
+
+        srv, cli = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+
+        class _OneShotListener:
+            def settimeout(self, _timeout):
+                pass
+
+            def accept(self):
+                return srv, ("peer", 0)
+
+        seen = []
+        stop_event = threading.Event()
+
+        def dispatch(name, args, **kwargs):
+            seen.append((name, args, kwargs))
+            return json.dumps({"ok": True})
+
+        with patch("model_tools.handle_function_call", side_effect=dispatch):
+            thread = threading.Thread(
+                target=_rpc_server_loop,
+                args=(
+                    _OneShotListener(), "task", [], [0], 1,
+                    frozenset({"terminal"}), stop_event, "token",
+                ),
+                kwargs={"session_id": "parent-session"},
+                daemon=True,
+            )
+            thread.start()
+            cli.sendall((json.dumps({
+                "token": "token",
+                "tool": "terminal",
+                "args": {"command": "true"},
+            }) + "\n").encode())
+            cli.settimeout(5)
+            self.assertEqual(json.loads(cli.recv(65536).decode()), {"ok": True})
+            cli.close()
+            thread.join(timeout=5)
+
+        self.assertEqual(seen, [(
+            "terminal",
+            {"command": "true"},
+            {"task_id": "task", "session_id": "parent-session"},
+        )])
 
 
 if __name__ == "__main__":

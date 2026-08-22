@@ -11,19 +11,19 @@ Defense against context-window overflow operates at three levels:
    (registry.get_max_result_size), the full output is persisted and the
    in-context content is replaced with a preview + file path reference.
 
-   The canonical home is ALWAYS host-side:
-   ``$HERMES_HOME/cache/spillover/{tool_use_id}.txt`` — alongside the other
-   Hermes-owned caches (images, audio, documents, ...) instead of littering
-   the OS temp dir. This needs no sandbox environment, so it also works for
-   sessions that never ran a terminal command (MCP-only, cron, gateway) —
-   previously those hit the inline-truncate fallback because
-   ``get_active_env()`` returned None until the first terminal call created
-   an environment.
+   The canonical home is ALWAYS host-side under
+   ``$HERMES_HOME/cache/spillover`` — alongside the other Hermes-owned caches
+   (images, audio, documents, ...) instead of littering the OS temp dir. Real
+   sessions receive an opaque ``hermes-spill://`` capability bound to their
+   session scope; legacy/direct callers without session context retain the
+   path-based behavior. This needs no sandbox environment, so it also works
+   for sessions that never ran a terminal command (MCP-only, cron, gateway).
 
    What the model sees depends on the backend:
 
-   - **Local backend (or no active env):** the host path itself.
-   - **Remote backends (docker/ssh/modal/daytona):** ``cache/spillover`` is
+   - **Session-scoped calls:** an opaque URI resolved host-side by read_file.
+   - **Legacy local calls (or no active env):** the host path itself.
+   - **Legacy remote calls (docker/ssh/modal/daytona):** ``cache/spillover`` is
      in the auto-mounted/synced cache-dir list (tools/credential_files.py),
      so the reference is the translated in-sandbox path (probed for
      readability first). When the sandbox can't see it (e.g. a persistent
@@ -43,14 +43,19 @@ Defense against context-window overflow operates at three levels:
 """
 
 import hashlib
+import hmac
 import logging
 import os
 import re
+import secrets
 import shlex
+import stat
 import threading
 import time
 import uuid
 
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
@@ -67,9 +72,47 @@ HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_RESULT_FILENAME_STEM = 120
+_CAPABILITY_URI_RE = re.compile(
+    r"^hermes-spill://v1/"
+    r"(?P<scope>[0-9a-f]{64})/"
+    r"(?P<digest>[0-9a-f]{64})/"
+    r"(?P<capability>[0-9a-f]{32})$"
+)
+_CAPABILITY_FILENAME = "spill_{scope}_{digest}_{locator}.bin"
+_SAFE_CAPABILITY_ERROR = "invalid or inaccessible result-spill capability"
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 _spillover_prune_lock = threading.Lock()
 _spillover_pruned_once = False
+
+
+class SpillCapabilityError(Exception):
+    """Fail-closed capability read whose message never reveals a host path."""
+
+
+def _scope_hash(session_id: str) -> str:
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+
+
+def _capability_uri(scope: str, digest: str, capability: str) -> str:
+    return f"hermes-spill://v1/{scope}/{digest}/{capability}"
+
+
+def _capability_filename(scope: str, digest: str, capability: str) -> str:
+    locator = hashlib.sha256(capability.encode("ascii")).hexdigest()
+    return _CAPABILITY_FILENAME.format(
+        scope=scope,
+        digest=digest,
+        locator=locator,
+    )
+
+
+def _capability_aad(scope: str, digest: str) -> bytes:
+    return f"hermes-spill-v1:{scope}:{digest}".encode("ascii")
+
+
+def _capability_key(capability: str) -> bytes:
+    return hashlib.sha256(capability.encode("ascii")).digest()
 
 
 def get_spillover_dir():
@@ -157,6 +200,129 @@ def _write_to_spillover(content: str, filename: str):
         return None
     _prune_spillover_once()
     return str(path)
+
+
+def _write_capability_spillover(content: str, session_id: str) -> str | None:
+    """Persist authenticated ciphertext and return an opaque same-session URI."""
+    scope = str(session_id or "").strip()
+    if not scope:
+        return None
+    data = content.encode("utf-8")
+    digest = hashlib.sha256(data).hexdigest()
+    spill_dir = get_spillover_dir()
+    try:
+        spill_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if os.name != "nt":
+            os.chmod(spill_dir, 0o700)
+        scope_hash = _scope_hash(scope)
+        for _attempt in range(3):
+            capability = secrets.token_hex(16)
+            path = spill_dir / _capability_filename(
+                scope_hash, digest, capability,
+            )
+            try:
+                fd = os.open(
+                    path,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW,
+                    0o600,
+                )
+            except FileExistsError:
+                continue
+            nonce = secrets.token_bytes(12)
+            encrypted = nonce + AESGCM(_capability_key(capability)).encrypt(
+                nonce,
+                data,
+                _capability_aad(scope_hash, digest),
+            )
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(encrypted)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except Exception:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+                raise
+            _prune_spillover_once()
+            return _capability_uri(scope_hash, digest, capability)
+    except OSError as exc:
+        logger.warning("Capability spillover write failed: %s", exc)
+    return None
+
+
+def resolve_spill_capability(uri: str, session_id: str = "") -> str:
+    """Resolve an opaque spill URI only for the session that minted it."""
+    scope = str(session_id or "").strip()
+    parsed = _CAPABILITY_URI_RE.fullmatch(str(uri or "").strip())
+    if not scope or parsed is None:
+        raise SpillCapabilityError(_SAFE_CAPABILITY_ERROR)
+    expected_scope = _scope_hash(scope)
+    if not hmac.compare_digest(expected_scope, parsed.group("scope")):
+        raise SpillCapabilityError(_SAFE_CAPABILITY_ERROR)
+    path = get_spillover_dir() / _capability_filename(
+        expected_scope,
+        parsed.group("digest"),
+        parsed.group("capability"),
+    )
+    fd = -1
+    try:
+        link_metadata = os.lstat(path)
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if (
+            stat.S_ISLNK(link_metadata.st_mode)
+            or getattr(link_metadata, "st_file_attributes", 0) & reparse_flag
+        ):
+            raise SpillCapabilityError(_SAFE_CAPABILITY_ERROR)
+        fd = os.open(
+            path,
+            os.O_RDONLY | _O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0),
+        )
+        metadata = os.fstat(fd)
+        if (
+            getattr(link_metadata, "st_dev", None),
+            getattr(link_metadata, "st_ino", None),
+        ) != (
+            getattr(metadata, "st_dev", None),
+            getattr(metadata, "st_ino", None),
+        ):
+            raise SpillCapabilityError(_SAFE_CAPABILITY_ERROR)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SpillCapabilityError(_SAFE_CAPABILITY_ERROR)
+        if os.name != "nt" and stat.S_IMODE(metadata.st_mode) != 0o600:
+            raise SpillCapabilityError(_SAFE_CAPABILITY_ERROR)
+        if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
+            raise SpillCapabilityError(_SAFE_CAPABILITY_ERROR)
+        chunks = []
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        encrypted = b"".join(chunks)
+        if len(encrypted) < 13:
+            raise SpillCapabilityError(_SAFE_CAPABILITY_ERROR)
+        nonce, ciphertext = encrypted[:12], encrypted[12:]
+        data = AESGCM(_capability_key(parsed.group("capability"))).decrypt(
+            nonce,
+            ciphertext,
+            _capability_aad(expected_scope, parsed.group("digest")),
+        )
+        digest = hashlib.sha256(data).hexdigest()
+        if not hmac.compare_digest(digest, parsed.group("digest")):
+            raise SpillCapabilityError(_SAFE_CAPABILITY_ERROR)
+        return data.decode("utf-8")
+    except SpillCapabilityError:
+        raise
+    except (OSError, UnicodeDecodeError, InvalidTag):
+        raise SpillCapabilityError(_SAFE_CAPABILITY_ERROR) from None
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def _sandbox_visible_spillover_path(host_path: str, env) -> str | None:
@@ -318,6 +484,7 @@ def maybe_persist_tool_result(
     env=None,
     config: BudgetConfig = DEFAULT_BUDGET,
     threshold: int | float | None = None,
+    session_id: str = "",
 ) -> str:
     """Layer 2: persist oversized result into the sandbox, return preview + path.
 
@@ -332,6 +499,7 @@ def maybe_persist_tool_result(
         env: The active BaseEnvironment instance, or None.
         config: BudgetConfig controlling thresholds and preview size.
         threshold: Explicit override; takes precedence over config resolution.
+        session_id: Session scope used to mint an opaque recovery capability.
 
     Returns:
         Original content if small, or <persisted-output> replacement.
@@ -347,9 +515,34 @@ def maybe_persist_tool_result(
     filename = _safe_result_filename(tool_use_id)
     preview, has_more = generate_preview(content, max_chars=config.preview_size)
 
-    # Always persist host-side first: $HERMES_HOME/cache/spillover is the
-    # single canonical home for spilled results (with the other Hermes-owned
-    # caches, pruned by gateway housekeeping) regardless of backend.
+    # Real sessions get host-resolved capabilities instead of predictable
+    # filesystem paths. This also prevents reused tool-call IDs in different
+    # sessions from overwriting each other's payloads.
+    capability_uri = _write_capability_spillover(content, session_id)
+    if capability_uri is not None:
+        logger.info(
+            "Persisted large tool result behind session capability: %s (%s, %d chars)",
+            tool_name, tool_use_id, len(content),
+        )
+        return _build_persisted_message(
+            preview, has_more, len(content), capability_uri,
+        )
+    if str(session_id or "").strip():
+        # Never downgrade a scoped session to a predictable host/sandbox path.
+        # If secure capability creation fails, preserve bounded context and fail
+        # closed on recovery rather than leaking a path or crossing sessions.
+        logger.warning(
+            "Secure result-spill capability unavailable for %s; returning bounded preview",
+            tool_use_id,
+        )
+        return (
+            f"{preview}\n\n"
+            f"[Truncated: tool response was {len(content):,} chars. "
+            "Secure result storage was unavailable; no recovery path was emitted.]"
+        )
+
+    # Calls without session context retain the legacy path-based behavior:
+    # write the single canonical host copy under the spillover cache.
     host_path = _write_to_spillover(content, filename)
 
     if _is_host_side_env(env):
@@ -400,6 +593,7 @@ def enforce_turn_budget(
     tool_messages: list[dict],
     env=None,
     config: BudgetConfig = DEFAULT_BUDGET,
+    session_id: str = "",
 ) -> list[dict]:
     """Layer 3: enforce aggregate budget across all tool results in a turn.
 
@@ -437,6 +631,7 @@ def enforce_turn_budget(
             env=env,
             config=config,
             threshold=0,
+            session_id=session_id,
         )
         if replacement != content:
             total_size -= size

@@ -9,9 +9,13 @@ build helper assembles a server when the SDK is present.
 from __future__ import annotations
 
 import inspect
+import json
+import sys
+import types
 from typing import get_args
 
 from agent.transports.hermes_tools_mcp_server import (
+    _make_spill_reader,
     _signature_from_schema,
 )
 
@@ -108,8 +112,98 @@ class TestModuleSurface:
         )
 
 
+class TestSpillReader:
+    def test_mcp_callback_spills_and_recovers_oversized_result(self, monkeypatch, tmp_path):
+        class FakeMCPServer:
+            def __init__(self, *_args, **_kwargs):
+                self.handlers = {}
 
+            def add_tool(self, handler, *, name, description):
+                self.handlers[name] = handler
 
+        fake_server_module = types.ModuleType("mcp.server")
+        setattr(fake_server_module, "MCPServer", FakeMCPServer)
+        monkeypatch.setitem(sys.modules, "mcp.server", fake_server_module)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setenv("HERMES_SESSION_ID", "mcp-producer-session")
+        monkeypatch.setattr(
+            "model_tools.get_tool_definitions",
+            lambda **_kwargs: [{
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "search",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }],
+        )
+        payload = "mcp-result\n" + ("z" * 120_000)
+        monkeypatch.setattr("model_tools.registry.dispatch", lambda *_a, **_k: payload)
+
+        from agent.transports.hermes_tools_mcp_server import _build_server
+        from tools.tool_result_storage import resolve_spill_capability
+
+        server = _build_server()
+        notice = server.handlers["web_search"]()
+        uri = next(part for part in notice.split() if part.startswith("hermes-spill://"))
+        assert resolve_spill_capability(uri, "mcp-producer-session") == payload
+
+    def test_forwards_capability_with_captured_session(self):
+        calls = []
+
+        def dispatch(name, args, **kwargs):
+            calls.append((name, args, kwargs))
+            return json.dumps({"ok": True})
+
+        uri = f"hermes-spill://v1/{'a' * 64}/{'b' * 64}/{'c' * 32}"
+        reader = _make_spill_reader(dispatch, "session-123")
+
+        assert json.loads(reader(path=uri)) == {"ok": True}
+        assert calls == [
+            ("read_file", {"path": uri}, {"session_id": "session-123"})
+        ]
+
+    def test_rejects_ordinary_paths_without_dispatch(self):
+        def dispatch(*_args, **_kwargs):
+            raise AssertionError("ordinary path was dispatched")
+
+        result = json.loads(
+            _make_spill_reader(dispatch, "session-123")(path="/etc/passwd")
+        )
+        assert "error" in result
+
+    def test_build_server_registers_capability_reader_with_mcp2(self, monkeypatch):
+        class FakeMCPServer:
+            def __init__(self, *_args, **_kwargs):
+                self.handlers = {}
+
+            def add_tool(self, handler, *, name, description):
+                self.handlers[name] = handler
+
+        fake_server_module = types.ModuleType("mcp.server")
+        setattr(fake_server_module, "MCPServer", FakeMCPServer)
+        monkeypatch.setitem(sys.modules, "mcp.server", fake_server_module)
+        monkeypatch.setenv("HERMES_SESSION_ID", "mcp-session")
+        monkeypatch.setattr(
+            "model_tools.get_tool_definitions",
+            lambda **_kwargs: [],
+        )
+        calls = []
+
+        def dispatch(name, args, **kwargs):
+            calls.append((name, args, kwargs))
+            return json.dumps({"ok": True})
+
+        monkeypatch.setattr("model_tools.handle_function_call", dispatch)
+        from agent.transports.hermes_tools_mcp_server import _build_server
+
+        server = _build_server()
+        assert set(server.handlers) == {"read_file"}
+        uri = f"hermes-spill://v1/{'a' * 64}/{'b' * 64}/{'c' * 32}"
+        assert json.loads(server.handlers["read_file"](path=uri)) == {"ok": True}
+        assert calls == [
+            ("read_file", {"path": uri}, {"session_id": "mcp-session"})
+        ]
 
 
 class TestMain:

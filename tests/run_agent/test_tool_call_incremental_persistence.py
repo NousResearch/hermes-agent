@@ -332,6 +332,7 @@ def test_persistence_cause_resets_between_turns():
 # ---------------------------------------------------------------------------
 def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_dispatch():
     agent = _make_agent()
+    agent.session_id = "spill-scope-session"
     tool_calls = [
         _mock_tool_call(name="web_search", call_id="c1"),
         _mock_tool_call(name="web_search", call_id="c2"),
@@ -341,6 +342,7 @@ def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_disp
 
     # Ordered event log interleaving real dispatches and DB flushes.
     events: list = []
+    persist_calls: list[dict] = []
 
     def _fake_dispatch(function_name, function_args, effective_task_id, **kwargs):
         # The result for call N must have been flushed before call N+1 fires.
@@ -352,13 +354,17 @@ def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_disp
         tail = flush_messages[-1]
         events.append(("flush", tail.get("role"), tail.get("tool_call_id")))
 
+    def _capture_persist(**kwargs):
+        persist_calls.append(kwargs)
+        return kwargs["content"]
+
     agent._flush_messages_to_session_db = MagicMock(side_effect=_record_flush)
 
     with (
         patch("run_agent.handle_function_call", side_effect=_fake_dispatch) as disp,
         patch(
             "agent.tool_executor.maybe_persist_tool_result",
-            side_effect=lambda **kwargs: kwargs["content"],
+            side_effect=_capture_persist,
         ),
     ):
         agent._execute_tool_calls_sequential(assistant_message, messages, "task-1")
@@ -369,6 +375,10 @@ def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_disp
     # Both tool results landed, in order.
     assert [m["role"] for m in messages] == ["tool", "tool"]
     assert [m["tool_call_id"] for m in messages] == ["c1", "c2"]
+    assert [call["session_id"] for call in persist_calls] == [
+        "spill-scope-session",
+        "spill-scope-session",
+    ]
 
     # Ordering contract: each tool result is flushed AFTER its own dispatch
     # and BEFORE the next dispatch. Expected interleaving:

@@ -1007,6 +1007,62 @@ class TestEdgeCases:
         ):
             assert _check_gateway_running(default_home) is True
 
+    def test_profile_list_reports_profiles_served_by_live_shared_gateway(
+        self, profile_env
+    ):
+        """Named profiles inherit liveness only from a validated multiplexer."""
+        import gateway.status as gw_status
+
+        default_home = profile_env / ".hermes"
+        create_profile("collector", no_alias=True)
+        create_profile("writer", no_alias=True)
+        live_pid = os.getpid()
+        (default_home / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "pid": live_pid,
+                    "kind": "hermes-gateway",
+                    "argv": ["hermes", "gateway", "run"],
+                    "start_time": gw_status._get_process_start_time(live_pid),
+                    "gateway_state": "running",
+                    "served_profiles": ["default", "collector"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("gateway.status.get_running_pid", return_value=None), patch(
+            "gateway.status._read_process_cmdline",
+            return_value="hermes gateway run --replace",
+        ):
+            by_name = {profile.name: profile for profile in list_profiles()}
+
+        assert by_name["default"].gateway_running is True
+        assert by_name["collector"].gateway_running is True
+        assert by_name["writer"].gateway_running is False
+
+    def test_profile_list_rejects_stale_shared_gateway_coverage(self, profile_env):
+        """A dead global runtime record must not make named profiles look live."""
+        default_home = profile_env / ".hermes"
+        create_profile("collector", no_alias=True)
+        (default_home / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "pid": 999_999_999,
+                    "kind": "hermes-gateway",
+                    "argv": ["hermes", "gateway", "run"],
+                    "gateway_state": "running",
+                    "served_profiles": ["default", "collector"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("gateway.status.get_running_pid", return_value=None):
+            by_name = {profile.name: profile for profile in list_profiles()}
+
+        assert by_name["collector"].gateway_running is False
+
 
 
 

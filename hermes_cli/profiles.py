@@ -759,6 +759,41 @@ def _check_gateway_running(profile_dir: Path) -> bool:
         return False
 
 
+def _shared_gateway_profile_names(default_home: Path) -> set[str]:
+    """Return profiles served by the live default-profile multiplexer.
+
+    A multiplex gateway owns runtime files only in ``default_home``.  Its
+    ``served_profiles`` record is the authoritative distinction between a
+    shared gateway and an independent default-profile gateway, so validate the
+    record's process identity before applying its coverage to named profiles.
+    """
+    try:
+        from gateway.status import (
+            get_runtime_status_running_pid,
+            read_runtime_status,
+        )
+
+        runtime = read_runtime_status(default_home / "gateway_state.json")
+        if (
+            get_runtime_status_running_pid(runtime, expected_home=default_home)
+            is None
+        ):
+            return set()
+        served = (runtime or {}).get("served_profiles")
+        if not isinstance(served, list):
+            return set()
+        names: set[str] = set()
+        for name in served:
+            if not isinstance(name, str):
+                continue
+            normalized = normalize_profile_name(name)
+            if normalized == "default" or _PROFILE_ID_RE.match(normalized):
+                names.add(normalized)
+        return names
+    except Exception:
+        return set()
+
+
 # In-process cache for skill counts. Walking ``skills_dir.rglob("SKILL.md")``
 # recurses the entire skill tree (each skill carries references/scripts/assets
 # sub-trees); the default profile alone has ~270 skills, and ``list_profiles``
@@ -954,6 +989,7 @@ def list_profiles() -> List[ProfileInfo]:
 
     # Default profile
     default_home = _get_default_hermes_home()
+    shared_gateway_profiles = _shared_gateway_profile_names(default_home)
     if default_home.is_dir():
         model, provider = _read_config_model(default_home)
         dist_name, dist_version, dist_source = _read_distribution_meta(default_home)
@@ -1003,7 +1039,10 @@ def list_profiles() -> List[ProfileInfo]:
                 name=name,
                 path=entry,
                 is_default=False,
-                gateway_running=_check_gateway_running(entry),
+                gateway_running=(
+                    _check_gateway_running(entry)
+                    or normalize_profile_name(name) in shared_gateway_profiles
+                ),
                 model=model,
                 provider=provider,
                 has_env=(entry / ".env").exists(),

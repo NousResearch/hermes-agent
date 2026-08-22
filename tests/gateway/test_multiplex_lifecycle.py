@@ -20,6 +20,46 @@ class TestServedProfilesStatus:
         finally:
             importlib.reload(status)
 
+    @pytest.mark.asyncio
+    async def test_non_multiplex_gateway_clears_previous_served_profiles(
+        self, monkeypatch
+    ):
+        """A replacement independent gateway must not inherit shared coverage."""
+        import gateway.run as gateway_run
+        import gateway.status as status
+
+        runner = object.__new__(gateway_run.GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=False)
+        writes = []
+        monkeypatch.setattr(
+            status,
+            "write_runtime_status",
+            lambda **kwargs: writes.append(kwargs),
+        )
+
+        connected = await runner._start_secondary_profile_adapters()
+
+        assert connected == 0
+        assert writes == [{"served_profiles": []}]
+
+    @pytest.mark.asyncio
+    async def test_non_multiplex_gateway_tolerates_status_write_failure(
+        self, monkeypatch
+    ):
+        """Diagnostic cleanup failures must not abort gateway startup."""
+        import gateway.run as gateway_run
+        import gateway.status as status
+
+        runner = object.__new__(gateway_run.GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=False)
+
+        def fail_write(**_kwargs):
+            raise OSError("runtime state unavailable")
+
+        monkeypatch.setattr(status, "write_runtime_status", fail_write)
+
+        assert await runner._start_secondary_profile_adapters() == 0
+
 
 def test_cron_profile_homes_follow_allowlist(tmp_path, monkeypatch):
     """The helper wired into in-process cron returns only selected profiles."""

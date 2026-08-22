@@ -15356,6 +15356,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         only point that sees every profile's resolved credentials together.
         """
         if not getattr(self.config, "multiplex_profiles", False):
+            # ``write_runtime_status`` preserves fields omitted by later writes.
+            # Clear coverage left by a predecessor multiplexer before this
+            # independent gateway refreshes the runtime record with its own PID.
+            try:
+                from gateway.status import write_runtime_status
+
+                write_runtime_status(served_profiles=[])
+            except Exception:
+                logger.debug("could not clear served_profiles", exc_info=True)
             return 0
 
         try:

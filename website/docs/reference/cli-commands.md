@@ -1395,6 +1395,8 @@ Manage MCP (Model Context Protocol) server configurations and run Hermes as an M
 | `test <name>` | Test connection to an MCP server. |
 | `configure <name>` (alias: `config`) | Toggle tool selection for a server. |
 | `login <name>` | Force re-authentication for an OAuth-based MCP server. |
+| `fixtures record <name> --output FILE [--call TOOL=JSON]... [--timeout SEC]` | Record `initialize`/`list_tools`/`call_tool` against a REAL stdio MCP server into a deterministic, redacted fixture file. |
+| `fixtures replay <fixture>` | Self-check: replay a fixture through a real client/server round-trip and report per-call pass/fail. |
 
 See [MCP Config Reference](./mcp-config-reference.md), [Use MCP with Hermes](../guides/use-mcp-with-hermes.md), and [MCP Server Mode](../user-guide/features/mcp.md#running-hermes-as-an-mcp-server).
 

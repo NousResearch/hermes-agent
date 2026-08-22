@@ -512,9 +512,24 @@ def delegate_task(
     overall_start = time.monotonic()
     # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
     # content or prompt caching. Best-effort: on failure live_paths is empty and delegation proceeds.
+    #
+    # The transcripts' profile home is resolved from stable parent-owned
+    # state (the parent's per-profile SessionDB path), NOT ambient
+    # get_hermes_dir(): this thread may have crossed a raw threading.Thread
+    # boundary that dropped the session's _HERMES_HOME_OVERRIDE ContextVar,
+    # and process-wide HERMES_HOME is unstable under concurrent
+    # multi-profile workers — either way transcripts could land in the
+    # wrong profile (#91996). state.db sits directly under the home, so
+    # its parent IS the home; None falls back to today's ambient resolve.
+    _live_home = None
+    _parent_db = getattr(getattr(parent_agent, "_session_db", None), "db_path", None)
+    if _parent_db is not None:
+        _live_home = _parent_db.parent
+
     from tools.delegation_live_log import create_live_transcripts
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
-        task_list, context, model=creds.get("model"), provider=creds.get("provider")
+        task_list, context, model=creds.get("model"), provider=creds.get("provider"),
+        home=_live_home,
     )
     _announce_batch(parent_agent, len(task_list), live_deleg_id)
     origin = _capture_origin()

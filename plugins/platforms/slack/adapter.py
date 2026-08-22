@@ -407,6 +407,54 @@ def _slack_mention_detection_text(event: dict) -> str:
     return (flat.strip() + "\n" + " ".join(extra)).strip()
 
 
+def _leading_bang_command_name(text: str) -> str:
+    """Return the first leading ``!cmd`` token, or ``""`` if none.
+
+    Mirrors the Slack thread ``!cmd`` convention: only the first token is
+    considered, after optional composer whitespace and a leading bot mention.
+    Mid-message ``!ignore`` / ``!stop`` is not a command.
+    """
+    if not text:
+        return ""
+    probe = text.lstrip()
+    if not probe.startswith("!"):
+        return ""
+    rest = probe[1:]
+    if not rest:
+        return ""
+    first_token = rest.split(maxsplit=1)[0]
+    cmd_name = first_token.split("@", 1)[0].lower()
+    if not cmd_name or "/" in cmd_name:
+        return ""
+    return cmd_name
+
+
+def _strip_leading_slack_bot_mention(text: str, bot_user_ids: list[str] | None) -> str:
+    """Strip a leading ``<@BOT>`` mention so ``@Hermes !cmd`` can be probed."""
+    if not text or not bot_user_ids:
+        return text
+    probe = text.lstrip()
+    for uid in bot_user_ids:
+        if not uid:
+            continue
+        mention = f"<@{uid}>"
+        if probe.startswith(mention):
+            return probe[len(mention) :].lstrip()
+    return text
+
+
+def _is_slack_ignore_command(text: str, bot_user_ids: list[str] | None = None) -> bool:
+    """True when this Slack event is a per-message ``!ignore`` escape hatch.
+
+    Slack-only admission control — not a registered gateway command. Registering
+    ``ignore`` would publish a native ``/ignore`` slash (which cannot carry the
+    original channel message) and would dispatch too late to skip reactions,
+    session create/resume, and queue/steer.
+    """
+    probe = _strip_leading_slack_bot_mention(text, bot_user_ids)
+    return _leading_bang_command_name(probe) == "ignore"
+
+
 def _rewrite_known_bang_command(text: str) -> str:
     """Rewrite a known leading ``!cmd`` to the gateway ``/cmd`` form."""
     if not text.startswith("!"):
@@ -415,9 +463,8 @@ def _rewrite_known_bang_command(text: str) -> str:
     try:
         from hermes_cli.commands import is_gateway_known_command
 
-        first_token = text[1:].split(maxsplit=1)[0]
-        cmd_name = first_token.split("@", 1)[0].lower()
-        if cmd_name and "/" not in cmd_name and is_gateway_known_command(cmd_name):
+        cmd_name = _leading_bang_command_name(text)
+        if cmd_name and is_gateway_known_command(cmd_name):
             return "/" + text[1:]
     except Exception:  # pragma: no cover - defensive
         pass
@@ -5868,6 +5915,20 @@ class SlackAdapter(BasePlatformAdapter):
             return
 
         original_text = event.get("text", "")
+
+        # Per-message Slack escape hatch: drop this event only. Checked
+        # before bang rewrite, mention/thread routing, session lookup,
+        # reactions, and handle_message so nothing stateful happens.
+        # Not registered in COMMAND_REGISTRY — see _is_slack_ignore_command.
+        ignore_bot_ids = [self._bot_user_id, *self._team_bot_user_ids.values()]
+        if _is_slack_ignore_command(original_text, ignore_bot_ids):
+            logger.debug(
+                "[Slack] Dropping event due to !ignore escape hatch: "
+                "channel=%s ts=%s",
+                channel_id,
+                event.get("ts", ""),
+            )
+            return
 
         # Slack blocks native slash commands inside threads ("/queue is not
         # supported in threads. Sorry!").  As a workaround, recognise a

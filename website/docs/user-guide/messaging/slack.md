@@ -323,6 +323,30 @@ casual messages like `!nice work` pass through to the agent unchanged.
 The bang form also works behind a mention (`@Hermes !stop`) and with
 leading whitespace — both dispatch as commands in threads.
 
+### Ignoring a single message (`!ignore`)
+
+Prefix a thread message with `!ignore` when the message is intended
+only for the human participants. Hermes silently drops that individual
+event without changing the thread's ongoing engagement state.
+
+```text
+!ignore Alex, I think the issue is actually in the auth middleware.
+```
+
+The Slack message stays visible to everyone. Hermes does not process
+it, react to it, queue it, steer an active run, or reply. The next
+ordinary message in the same thread still follows normal engagement.
+
+This is different from workspace/thread routing config:
+
+- `thread_require_mention` — requires an @mention on **every** thread reply
+- `strict_mention` — requires a fresh @mention on **every** channel message
+- `!ignore` — a one-message escape hatch; later messages are unchanged
+
+`!ignore` is Slack-only and is **not** a registered `/ignore` slash
+command. Slack never delivers native slash-command text as the original
+channel message, so a slash form could not serve this purpose.
+
 Approval prompts (dangerous command / `execute_code` approval) normally
 render as interactive buttons. When buttons can't be delivered and
 Hermes falls back to a text prompt, the prompt instructs you to reply

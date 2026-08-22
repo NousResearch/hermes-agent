@@ -1483,6 +1483,191 @@ class TestBangPrefixCommands:
 
 
 # ---------------------------------------------------------------------------
+# TestSlackIgnoreEscapeHatch
+# ---------------------------------------------------------------------------
+
+
+class TestSlackIgnoreEscapeHatch:
+    """``!ignore`` is a Slack-only per-event drop, not a gateway command."""
+
+    def _make_event(self, text, thread_ts=None, channel_type="im", channel="D123"):
+        evt = {
+            "text": text,
+            "user": "U_USER",
+            "channel": channel,
+            "channel_type": channel_type,
+            "ts": "1234567890.000001",
+        }
+        if thread_ts:
+            evt["thread_ts"] = thread_ts
+        return evt
+
+    def _spy_downstream(self, adapter):
+        adapter._register_mentioned_thread = MagicMock(
+            wraps=adapter._register_mentioned_thread
+        )
+        adapter._has_active_session_for_thread = MagicMock(return_value=True)
+        adapter._fetch_thread_context = AsyncMock(
+            return_value="[Slack thread context] should never be fetched"
+        )
+        adapter._add_reaction = AsyncMock()
+        return adapter
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "!ignore",
+            "!ignore this is for Alex",
+            "!IGNORE hello",
+            "!Ignore hello",
+            "  !ignore leading space",
+            "<@U_BOT> !ignore mentioned form",
+        ],
+    )
+    def test_ignore_token_matches(self, text):
+        assert _slack_mod._is_slack_ignore_command(text, ["U_BOT"]) is True
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "!ignored hello",
+            "!ignorethis",
+            "hello !ignore",
+            "/ignore hello",
+            "!stop",
+            "!queue later",
+            "",
+        ],
+    )
+    def test_ignore_token_does_not_match(self, text):
+        assert _slack_mod._is_slack_ignore_command(text, ["U_BOT"]) is False
+
+    @pytest.mark.asyncio
+    async def test_ignore_in_engaged_thread_does_not_dispatch(self, adapter):
+        """Primary case: human-only reply in an already-followed thread."""
+        self._spy_downstream(adapter)
+        adapter._mentioned_threads.add("1111111111.000001")
+
+        await adapter._handle_slack_message(
+            self._make_event(
+                "!ignore this is for Alex",
+                thread_ts="1111111111.000001",
+                channel_type="channel",
+                channel="C123",
+            )
+        )
+
+        adapter.handle_message.assert_not_called()
+        adapter._has_active_session_for_thread.assert_not_called()
+        adapter._fetch_thread_context.assert_not_awaited()
+        adapter._register_mentioned_thread.assert_not_called()
+        adapter._add_reaction.assert_not_awaited()
+        assert adapter._reacting_message_ids == set()
+        assert "1111111111.000001" in adapter._mentioned_threads
+
+    @pytest.mark.asyncio
+    async def test_ignore_while_session_active_does_not_dispatch(self, adapter):
+        """Must not become queued / steer / interrupt input for a running turn."""
+        self._spy_downstream(adapter)
+        adapter._mentioned_threads.add("1111111111.000001")
+
+        await adapter._handle_slack_message(
+            self._make_event(
+                "!IGNORE hello",
+                thread_ts="1111111111.000001",
+                channel_type="channel",
+                channel="C123",
+            )
+        )
+
+        adapter.handle_message.assert_not_called()
+        adapter._has_active_session_for_thread.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ignore_does_not_create_or_register_a_session(self, adapter):
+        """Cold start: !ignore must not wake a new session or remember the thread."""
+        self._spy_downstream(adapter)
+        adapter._has_active_session_for_thread = MagicMock(return_value=False)
+
+        await adapter._handle_slack_message(
+            self._make_event(
+                "<@U_BOT> !ignore do not start work",
+                thread_ts="1111111111.000001",
+                channel_type="channel",
+                channel="C123",
+            )
+        )
+
+        adapter.handle_message.assert_not_called()
+        adapter._register_mentioned_thread.assert_not_called()
+        adapter._fetch_thread_context.assert_not_awaited()
+        adapter._has_active_session_for_thread.assert_not_called()
+        assert adapter._mentioned_threads == set()
+
+    @pytest.mark.asyncio
+    async def test_ignored_does_not_trigger_ignore(self, adapter):
+        adapter._mentioned_threads.add("1111111111.000001")
+
+        await adapter._handle_slack_message(
+            self._make_event(
+                "!ignored hello",
+                thread_ts="1111111111.000001",
+                channel_type="channel",
+                channel="C123",
+            )
+        )
+
+        adapter.handle_message.assert_awaited_once()
+        msg_event = adapter.handle_message.await_args.args[0]
+        assert msg_event.text == "!ignored hello"
+        assert msg_event.message_type == MessageType.TEXT
+
+    def test_ignore_is_not_a_native_slack_slash(self):
+        from hermes_cli.commands import slack_native_slashes
+
+        names = {name for name, _, _ in slack_native_slashes()}
+        assert "ignore" not in names
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "text,command",
+        [
+            ("!stop", "stop"),
+            ("!queue later", "queue"),
+            ("!steer go left", "steer"),
+        ],
+    )
+    async def test_existing_bang_commands_still_dispatch(self, adapter, text, command):
+        await adapter._handle_slack_message(
+            self._make_event(text, thread_ts="1111111111.000001")
+        )
+
+        adapter.handle_message.assert_awaited_once()
+        msg_event = adapter.handle_message.await_args.args[0]
+        assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.get_command() == command
+        assert msg_event.text.startswith(f"/{command}")
+
+    @pytest.mark.asyncio
+    async def test_normal_thread_followup_still_dispatches(self, adapter):
+        adapter._mentioned_threads.add("1111111111.000001")
+
+        await adapter._handle_slack_message(
+            self._make_event(
+                "can you check the env var too?",
+                thread_ts="1111111111.000001",
+                channel_type="channel",
+                channel="C123",
+            )
+        )
+
+        adapter.handle_message.assert_awaited_once()
+        msg_event = adapter.handle_message.await_args.args[0]
+        assert msg_event.text == "can you check the env var too?"
+        assert msg_event.message_type == MessageType.TEXT
+
+
+# ---------------------------------------------------------------------------
 # TestIncomingDocumentHandling
 # ---------------------------------------------------------------------------
 

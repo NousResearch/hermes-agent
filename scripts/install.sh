@@ -210,6 +210,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# --hermes-home (and an inherited HERMES_HOME) must reach Python children
+# such as skills_sync.py. A local assignment is invisible to subprocesses
+# (#89231). Export once after parse so every later stage inherits it.
+export HERMES_HOME
+
 # ============================================================================
 # Helper functions
 # ============================================================================
@@ -1768,6 +1773,17 @@ setup_path() {
     # the rm, `cat >` follows the symlink and overwrites the venv pip entry
     # point with this shim — making `exec "$HERMES_BIN"` self-recurse. (#21454)
     rm -f "$command_link_dir/hermes"
+    # User-scoped shims (~/.local/bin) bake a non-default data dir so
+    # `hermes` after --hermes-home uses that path. System FHS shims
+    # (/usr/local/bin/hermes) are world-runnable (#21457) — never bake
+    # into them. Inherited root HERMES_HOME or even an explicit
+    # --hermes-home would otherwise pin every later uid to that directory.
+    # Operators set HERMES_HOME on the unit / login env instead.
+    # printf %q so a quote in the path cannot break the generated script.
+    launcher_hermes_home_line=""
+    if [ "${ROOT_FHS_LAYOUT:-false}" != true ] && [ "$HERMES_HOME" != "$HOME/.hermes" ]; then
+        launcher_hermes_home_line=$(printf ': "${HERMES_HOME:=%q}"\nexport HERMES_HOME' "$HERMES_HOME")
+    fi
     if [ "$USE_VENV" = true ]; then
         # uv-generated console scripts resolve themselves through `realpath`,
         # which stock macOS does not provide. Run the checked-in entrypoint
@@ -1777,6 +1793,7 @@ setup_path() {
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
+$launcher_hermes_home_line
 exec "$HERMES_BIN" "$HERMES_ENTRYPOINT" "\$@"
 EOF
     else
@@ -1784,6 +1801,7 @@ EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
+$launcher_hermes_home_line
 exec "$HERMES_BIN" "\$@"
 EOF
     fi
@@ -1800,6 +1818,7 @@ EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
+$launcher_hermes_home_line
 exec "$HERMES_BIN" "$INSTALL_DIR/run_agent.py" "\$@"
 EOF
     else
@@ -1807,6 +1826,7 @@ EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
+$launcher_hermes_home_line
 exec "$HERMES_BIN" run_agent.py "\$@"
 EOF
     fi
@@ -1825,6 +1845,7 @@ EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
+$launcher_hermes_home_line
 exec "$HERMES_BIN" "$HERMES_ENTRYPOINT" acp "\$@"
 EOF
     else
@@ -1832,6 +1853,7 @@ EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
+$launcher_hermes_home_line
 exec "$HERMES_BIN" acp "\$@"
 EOF
     fi
@@ -1962,13 +1984,13 @@ copy_config_templates() {
     if [ ! -f "$HERMES_HOME/.env" ]; then
         if [ -f "$INSTALL_DIR/.env.example" ]; then
             cp "$INSTALL_DIR/.env.example" "$HERMES_HOME/.env"
-            log_success "Created ~/.hermes/.env from template"
+            log_success "Created $HERMES_HOME/.env from template"
         else
             touch "$HERMES_HOME/.env"
-            log_success "Created ~/.hermes/.env"
+            log_success "Created $HERMES_HOME/.env"
         fi
     else
-        log_info "~/.hermes/.env already exists, keeping it"
+        log_info "$HERMES_HOME/.env already exists, keeping it"
     fi
     # Restrict .env permissions — this file holds API keys and tokens.
     # 0600 ensures only the file owner can read/write, matching standard
@@ -1980,10 +2002,10 @@ copy_config_templates() {
     if [ ! -f "$HERMES_HOME/config.yaml" ]; then
         if [ -f "$INSTALL_DIR/cli-config.yaml.example" ]; then
             cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
-            log_success "Created ~/.hermes/config.yaml from template"
+            log_success "Created $HERMES_HOME/config.yaml from template"
         fi
     else
-        log_info "~/.hermes/config.yaml already exists, keeping it"
+        log_info "$HERMES_HOME/config.yaml already exists, keeping it"
     fi
 
     # Create SOUL.md if it doesn't exist (global persona file).
@@ -1995,10 +2017,10 @@ copy_config_templates() {
         cat > "$HERMES_HOME/SOUL.md" << 'SOUL_EOF'
 You are Hermes Agent, an intelligent AI assistant created by Nous Research. You are helpful, knowledgeable, and direct. You assist users with a wide range of tasks including answering questions, writing and editing code, analyzing information, creative work, and executing actions via your tools. You communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose unless otherwise directed below. Be targeted and efficient in your exploration and investigations.
 SOUL_EOF
-        log_success "Created ~/.hermes/SOUL.md (edit to customize personality)"
+        log_success "Created $HERMES_HOME/SOUL.md (edit to customize personality)"
     fi
 
-    log_success "Configuration directory ready: ~/.hermes/"
+    log_success "Configuration directory ready: $HERMES_HOME/"
 
     # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
     if [ "$NO_SKILLS" = true ]; then
@@ -2012,14 +2034,14 @@ SOUL_EOF
         log_info "Skipping bundled skills (--no-skills). Wrote $HERMES_HOME/.no-bundled-skills"
         log_info "  Future 'hermes update' runs will not inject bundled skills. Delete the marker to opt back in."
     else
-        log_info "Syncing bundled skills to ~/.hermes/skills/ ..."
-        if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
-            log_success "Skills synced to ~/.hermes/skills/"
+        log_info "Syncing bundled skills to $HERMES_HOME/skills/ ..."
+        if HERMES_HOME="$HERMES_HOME" "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
+            log_success "Skills synced to $HERMES_HOME/skills/"
         else
             # Fallback: simple directory copy if Python sync fails
             if [ -d "$INSTALL_DIR/skills" ] && [ ! "$(ls -A "$HERMES_HOME/skills/" 2>/dev/null | grep -v '.bundled_manifest')" ]; then
                 cp -r "$INSTALL_DIR/skills/"* "$HERMES_HOME/skills/" 2>/dev/null || true
-                log_success "Skills copied to ~/.hermes/skills/"
+                log_success "Skills copied to $HERMES_HOME/skills/"
             fi
         fi
     fi
@@ -2702,7 +2724,7 @@ maybe_start_gateway() {
             fi
             nohup $HERMES_CMD gateway > "$HERMES_HOME/logs/gateway.log" 2>&1 &
             GATEWAY_PID=$!
-            log_success "Gateway started (PID $GATEWAY_PID). Logs: ~/.hermes/logs/gateway.log"
+            log_success "Gateway started (PID $GATEWAY_PID). Logs: $HERMES_HOME/logs/gateway.log"
             log_info "To stop: kill $GATEWAY_PID"
             log_info "To restart later: hermes gateway"
             if [ "$DISTRO" = "termux" ]; then

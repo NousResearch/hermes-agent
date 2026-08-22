@@ -2395,6 +2395,8 @@ class TestCompressionChainProjection:
         assert tip_row["preview"].startswith("latest message")
         assert tip_row["ended_at"] is None  # tip is still live
         assert tip_row["end_reason"] is None
+        # Same-source chain: projected source stays the tip's (here equal to root).
+        assert tip_row["source"] == "cli"
 
     def test_list_projects_multiple_independent_chains_in_one_call(self, db):
         """Two unrelated compression chains in the same page must each
@@ -2478,8 +2480,199 @@ class TestCompressionChainProjection:
         assert set(batch_calls[0]) == {"tip1", "tip2"}
         assert single_calls == []
 
+    def test_list_surfaces_tip_source_for_cross_source_chain(self, db):
+        """Cross-source compression must project the tip's source (#75625).
 
+        WebUI loads list_sessions_rich without a source filter and tabs client-
+        side on the row's ``source``. If projection keeps the root source, a
+        telegram-rooted chain continued in webui vanishes from the webui tab
+        (root source still telegram; tip excluded as a compression child).
+        """
+        import time as _time
 
+        t0 = _time.time() - 3600
+        db.create_session("xroot", "telegram")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (t0, "xroot")
+        )
+        db.append_message("xroot", "user", "gateway start")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t0 + 100, "compression", "xroot"),
+        )
+        db.create_session("xtip", "webui", parent_session_id="xroot")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?",
+            (t0 + 101, "xtip"),
+        )
+        db.append_message("xtip", "user", "continued in webui")
+        db.create_session(
+            "xdelegate",
+            "telegram",
+            parent_session_id="xroot",
+            model_config={"_delegate_from": "xroot"},
+        )
+        db._conn.commit()
+
+        # Unfiltered list: projected tip carries source=webui.
+        all_sessions = db.list_sessions_rich(limit=20)
+        by_id = {s["id"]: s for s in all_sessions}
+        assert "xtip" in by_id
+        assert "xroot" not in by_id
+        projected = by_id["xtip"]
+        assert projected["source"] == "webui"
+        assert projected["_lineage_root_id"] == "xroot"
+        assert projected["preview"].startswith("continued in webui")
+        assert projected["ended_at"] is None
+
+        # source= filter is applied to the *projected tip*, not the root
+        # (#75625 sweeper): webui tab sees the chain; telegram tab does not
+        # (tip is webui).
+        webui_only = db.list_sessions_rich(source="webui", limit=20)
+        assert "xtip" in {s["id"] for s in webui_only}
+        webui_row = next(s for s in webui_only if s["id"] == "xtip")
+        assert webui_row["source"] == "webui"
+
+        telegram_only = db.list_sessions_rich(source="telegram", limit=20)
+        assert "xtip" not in {s["id"] for s in telegram_only}
+
+        # Totals paired with list_sessions_rich must use tip source too.
+        assert db.session_count(source="webui", exclude_children=True) >= 1
+        assert db.session_count(source="telegram", exclude_children=True) == 0
+        by_src = db.session_count_by_source(exclude_children=True)
+        assert by_src == {"webui": 1}
+
+    def test_source_filter_uses_live_tip_activity_ordering(self, db):
+        """Source filtering and projection must select the same live tip.
+
+        A continuation heartbeat can be newer than its latest message while a
+        sibling has the newer message timestamp. The SQL source predicate must
+        use the same freshest-activity ordering as ``get_compression_tip``;
+        otherwise the filter can admit the wrong source and then project a
+        different tip in Python.
+        """
+        import time as _time
+
+        t0 = _time.time() - 3600
+        db.create_session("activity-root", "telegram")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, ended_at=?, end_reason=? WHERE id=?",
+            (t0, t0 + 10, "compression", "activity-root"),
+        )
+
+        db.create_session(
+            "message-tip", "telegram", parent_session_id="activity-root"
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, last_activity_at=? WHERE id=?",
+            (t0 + 20, t0 + 50, "message-tip"),
+        )
+        db.append_message("message-tip", "user", "older activity heartbeat")
+        db._conn.execute(
+            "UPDATE messages SET timestamp=? WHERE session_id=?",
+            (t0 + 300, "message-tip"),
+        )
+
+        db.create_session(
+            "heartbeat-tip", "webui", parent_session_id="activity-root"
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, last_activity_at=? WHERE id=?",
+            (t0 + 30, t0 + 400, "heartbeat-tip"),
+        )
+        db.append_message("heartbeat-tip", "user", "newer heartbeat")
+        db._conn.execute(
+            "UPDATE messages SET timestamp=? WHERE session_id=?",
+            (t0 + 100, "heartbeat-tip"),
+        )
+        db._conn.commit()
+
+        assert db.get_compression_tip("activity-root") == "heartbeat-tip"
+        webui_rows = db.list_sessions_rich(source="webui", limit=20)
+        assert [row["id"] for row in webui_rows] == ["heartbeat-tip"]
+        assert db.list_sessions_rich(source="telegram", limit=20) == []
+
+    def test_sql_tip_source_projection_matches_python_walk(self, db):
+        """The SQL source projection must stay equivalent to the Python walker.
+
+        Keep this as a small table-driven lineage matrix instead of duplicating
+        the implementation in a second test helper. It covers empty sources,
+        multi-hop compression, ignored branch/delegate children, and a fully
+        tied sibling choice where the stable id tie-breaker is observable.
+        """
+        db.create_session("matrix-plain", "")
+
+        db.create_session("matrix-chain-root", "telegram")
+        db.end_session("matrix-chain-root", "compression")
+        db.create_session(
+            "matrix-chain-mid",
+            "telegram",
+            parent_session_id="matrix-chain-root",
+        )
+        db.end_session("matrix-chain-mid", "compression")
+        db.create_session(
+            "matrix-chain-tip",
+            "webui",
+            parent_session_id="matrix-chain-mid",
+        )
+
+        db.create_session("matrix-filter-root", "telegram")
+        db.end_session("matrix-filter-root", "compression")
+        db.create_session(
+            "matrix-filter-delegate",
+            "webui",
+            parent_session_id="matrix-filter-root",
+            model_config={"_delegate_from": "matrix-filter-root"},
+        )
+        db.create_session(
+            "matrix-filter-branch",
+            "slack",
+            parent_session_id="matrix-filter-root",
+            model_config={"_branched_from": "matrix-filter-root"},
+        )
+        db.create_session(
+            "matrix-filter-tip",
+            "webui",
+            parent_session_id="matrix-filter-root",
+        )
+
+        db.create_session("matrix-tie-root", "telegram")
+        db.end_session("matrix-tie-root", "compression")
+        for child_id, child_source in (
+            ("matrix-tie-a", "alpha"),
+            ("matrix-tie-b", "beta"),
+        ):
+            db.create_session(
+                child_id,
+                child_source,
+                parent_session_id="matrix-tie-root",
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at = 1700000000, "
+                "last_activity_at = 1700000100 WHERE id = ?",
+                (child_id,),
+            )
+        db._conn.commit()
+
+        roots = (
+            "matrix-plain",
+            "matrix-chain-root",
+            "matrix-filter-root",
+            "matrix-tie-root",
+        )
+        projection_sql = (
+            "SELECT "
+            f"{hermes_state._projected_tip_source_sql('s')} "
+            "AS projected_source FROM sessions s WHERE s.id = ?"
+        )
+        for root_id in roots:
+            tip_id = db.get_compression_tip(root_id)
+            tip = db.get_session(tip_id)
+            expected = (tip["source"] or "cli") if tip else "cli"
+            actual = db._conn.execute(projection_sql, (root_id,)).fetchone()
+            assert actual["projected_source"] == expected
+
+        assert db.get_compression_tip("matrix-tie-root") == "matrix-tie-b"
 
     def test_list_handles_broken_chain_gracefully(self, db):
         """A compression root with no child (e.g. DB corruption or a partial

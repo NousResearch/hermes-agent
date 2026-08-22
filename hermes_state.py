@@ -267,6 +267,74 @@ _MODEL_CONFIG_ROW_MISSING = object()
 _BARE_BILLING_PROVIDERS = frozenset({"auto", "custom"})
 
 
+def _projected_tip_source_sql(session_alias: str = "s") -> str:
+    """SQL expression for a listable session's projected live-tip source.
+
+    Keep the child eligibility and ordering in lockstep with
+    :meth:`SessionDB.get_compression_tip`. The recursive walk is bounded and
+    cycle-safe so malformed lineage cannot make a listing/count query loop.
+    """
+    return f"""
+        COALESCE(NULLIF((
+            WITH RECURSIVE
+            ranked_children(parent_id, child_id) AS (
+                SELECT parent_id, child_id
+                FROM (
+                    SELECT
+                        parent.id AS parent_id,
+                        child.id AS child_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY parent.id
+                            ORDER BY
+                                CASE
+                                    WHEN child.end_reason = 'compression' THEN 0
+                                    WHEN child.ended_at IS NULL THEN 1
+                                    ELSE 2
+                                END,
+                                {_sql_session_last_active("child")} DESC,
+                                child.started_at DESC,
+                                child.id DESC
+                        ) AS child_rank
+                    FROM sessions parent
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE parent.end_reason = 'compression'
+                      AND json_extract(
+                          COALESCE(child.model_config, '{{}}'),
+                          '$._branched_from'
+                      ) IS NULL
+                      AND json_extract(
+                          COALESCE(child.model_config, '{{}}'),
+                          '$._delegate_from'
+                      ) IS NULL
+                      AND COALESCE(child.source, '') != 'tool'
+                )
+                WHERE child_rank = 1
+            ),
+            tip(id, depth, visited) AS (
+                SELECT {session_alias}.id, 0, ',' || {session_alias}.id || ','
+                UNION ALL
+                SELECT
+                    child.child_id,
+                    tip.depth + 1,
+                    tip.visited || child.child_id || ','
+                FROM tip
+                JOIN ranked_children child ON child.parent_id = tip.id
+                WHERE tip.depth < 100
+                  AND INSTR(tip.visited, ',' || child.child_id || ',') = 0
+            )
+            SELECT leaf.source
+            FROM tip
+            JOIN sessions leaf ON leaf.id = tip.id
+            ORDER BY
+                tip.depth DESC,
+                {_sql_session_last_active("leaf")} DESC,
+                leaf.started_at DESC,
+                leaf.id DESC
+            LIMIT 1
+        ), ''), 'cli')
+    """
+
+
 def _cwd_prefix_clause(cwd_prefix: str) -> Tuple[str, List[str]]:
     prefix = cwd_prefix.rstrip("/\\") or cwd_prefix
     # ``_`` and ``%`` are LIKE wildcards but ordinary characters in a path
@@ -9294,10 +9362,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         With ``project_compression_tips=True`` (default), sessions that are
         roots of compression chains are projected forward to their latest
         continuation — one logical conversation = one list entry, showing the
-        live continuation's id/message_count/title/last_active. This prevents
-        compressed continuations from being invisible to users while keeping
-        delegate subagents and branches hidden. Pass ``False`` to return the
-        raw root rows (useful for admin/debug UIs).
+        live continuation's id/message_count/title/last_active/source. This
+        prevents compressed continuations from being invisible to users while
+        keeping delegate subagents and branches hidden. Pass ``False`` to
+        return the raw root rows (useful for admin/debug UIs).
 
         Pass ``order_by_last_active=True`` to sort by most-recent activity
         instead of original conversation start time. For compression chains,
@@ -9356,16 +9424,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
 
         include_sources = [source] if source else list(sources or [])
+        source_sql = (
+            _projected_tip_source_sql("s")
+            if project_compression_tips and not include_children
+            else "s.source"
+        )
         if include_sources:
             placeholders = ",".join("?" for _ in include_sources)
-            where_clauses.append(f"s.source IN ({placeholders})")
+            where_clauses.append(f"{source_sql} IN ({placeholders})")
             params.extend(include_sources)
         if session_key:
             where_clauses.append("s.session_key = ?")
             params.append(session_key)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
-            where_clauses.append(f"s.source NOT IN ({placeholders})")
+            where_clauses.append(f"{source_sql} NOT IN ({placeholders})")
             params.extend(exclude_sources)
         if cwd_prefix:
             clause, clause_params = _cwd_prefix_clause(cwd_prefix)
@@ -9615,12 +9688,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     projected.append(s)
                     continue
                 # Preserve the root's started_at for stable sort order, but
-                # surface the tip's identity and activity data.
+                # surface the tip's identity, activity data, and source.
+                # Source must come from the tip: cross-source compression
+                # (e.g. telegram root → webui tip) otherwise keeps the root
+                # source and disappears from the tip's tab filter (#75625).
                 merged = dict(s)
                 for key in (
                     "id", "ended_at", "end_reason", "message_count",
                     "tool_call_count", "title", "last_active", "preview",
                     "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
+                    "source",
                 ):
                     if key in tip_row:
                         merged[key] = tip_row[key]
@@ -9634,7 +9711,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # the tip's last_active is correct either way.
         for s in sessions:
             s["unread"] = self.session_unread(s)
-
         return sessions
 
     def session_lifecycle_statuses(
@@ -11733,6 +11809,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         (e.g. ``["cron"]`` so the recents "load more" total matches a
         cron-excluded ``list_sessions_rich`` page and doesn't keep "load more"
         stuck on for buried scheduler sessions).
+
+        With ``exclude_children=True`` and a source filter, membership matches
+        ``list_sessions_rich`` after compression-tip projection (tip source),
+        not the raw root source (#75625).
         """
         where_clauses = []
         params = []
@@ -11744,13 +11824,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             where_clauses.append(_LISTABLE_CHILD_SQL)
             where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
         include_sources = [source] if source else list(sources or [])
+        source_sql = _projected_tip_source_sql("s") if exclude_children else "s.source"
         if include_sources:
             placeholders = ",".join("?" for _ in include_sources)
-            where_clauses.append(f"s.source IN ({placeholders})")
+            where_clauses.append(f"{source_sql} IN ({placeholders})")
             params.extend(include_sources)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
-            where_clauses.append(f"s.source NOT IN ({placeholders})")
+            where_clauses.append(f"{source_sql} NOT IN ({placeholders})")
             params.extend(exclude_sources)
         if cwd_prefix:
             clause, clause_params = _cwd_prefix_clause(cwd_prefix)
@@ -11804,29 +11885,42 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         ``exclude_children=True`` mirrors ``list_sessions_rich`` visibility
         (roots + branch/reset sessions, excluding sub-agent runs, delegates,
         and compression continuations) so the source counts match what the
-        Sessions page actually lists.
+        Sessions page actually lists. Counts use the **projected tip** source
+        when compression tips are projected (#75625).
         """
         where_clauses = []
         params: list = []
 
         if exclude_children:
+            # Keep aggregate counts identical to list_sessions_rich: roots and
+            # branch sessions are visible, while sub-agent and compression
+            # continuation rows are hidden.
             where_clauses.append(_LISTABLE_CHILD_SQL)
             where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
+
         if archived_only:
             where_clauses.append("s.archived = 1")
         elif not include_archived:
             where_clauses.append("s.archived = 0")
 
         where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        source_sql = (
+            _projected_tip_source_sql("s")
+            if exclude_children
+            else "COALESCE(NULLIF(s.source, ''), 'cli')"
+        )
 
         with self._lock:
             if self._conn is None:
                 raise RuntimeError("SessionDB connection is closed")
             rows = self._conn.execute(
-                "SELECT COALESCE(NULLIF(s.source, ''), 'cli') AS source, COUNT(*) AS count "
-                f"FROM sessions s{where_sql} "
-                "GROUP BY COALESCE(NULLIF(s.source, ''), 'cli') "
-                "ORDER BY count DESC",
+                "SELECT projected_source AS source, COUNT(*) AS count "
+                "FROM ("
+                f"SELECT {source_sql} AS projected_source "
+                f"FROM sessions s{where_sql}"
+                ") "
+                "GROUP BY projected_source "
+                "ORDER BY count DESC, projected_source ASC",
                 params,
             ).fetchall()
         return {str(row["source"]): int(row["count"] or 0) for row in rows}

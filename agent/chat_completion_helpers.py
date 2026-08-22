@@ -2997,8 +2997,15 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             summary_extra_body["tags"] = _portal_tags()
 
         if agent.api_mode == "codex_responses":
-            codex_kwargs = agent._build_api_kwargs(api_messages)
-            codex_kwargs.pop("tools", None)
+            # Summary must be text-only. Passing agent.tools (default of
+            # _build_api_kwargs) sets tools + tool_choice=auto; then popping
+            # only tools leaves tool_choice set → xAI/OpenAI Responses 400:
+            # "tool_choice was set … but no tools were specified" (rd-head
+            # 2026-08-11 session 20260811_111523_39a9eb). Build with empty
+            # tools so tool_choice is never emitted; still strip defensively.
+            codex_kwargs = agent._build_api_kwargs(api_messages, tools_for_api=[])
+            for _k in ("tools", "tool_choice", "parallel_tool_calls"):
+                codex_kwargs.pop(_k, None)
             summary_response = agent._run_codex_stream(codex_kwargs)
             _ct_sum = agent._get_transport()
             _cnr_sum = _ct_sum.normalize_response(summary_response)
@@ -3112,8 +3119,9 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         else:
             # Retry summary generation
             if agent.api_mode == "codex_responses":
-                codex_kwargs = agent._build_api_kwargs(api_messages)
-                codex_kwargs.pop("tools", None)
+                codex_kwargs = agent._build_api_kwargs(api_messages, tools_for_api=[])
+                for _k in ("tools", "tool_choice", "parallel_tool_calls"):
+                    codex_kwargs.pop(_k, None)
                 retry_response = agent._run_codex_stream(codex_kwargs)
                 _ct_retry = agent._get_transport()
                 _cnr_retry = _ct_retry.normalize_response(retry_response)

@@ -2824,6 +2824,56 @@ class TestHandleMaxIterations:
             for item in input_items
         )
 
+    def test_codex_summary_omits_tool_choice_without_tools(self, agent):
+        """Regression: xAI/codex max-iter summary must not send tool_choice alone.
+
+        Prior bug: ``_build_api_kwargs`` used agent.tools (non-empty) which
+        set ``tools`` + ``tool_choice=auto``, then only ``tools`` was popped →
+        xAI 400: "tool_choice was set … but no tools were specified."
+        """
+        agent.api_mode = "codex_responses"
+        agent.provider = "xai-oauth"
+        agent.base_url = "https://api.x.ai/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent._base_url_hostname = "api.x.ai"
+        agent.model = "grok-4.5"
+        agent._cached_system_prompt = "You are helpful."
+        agent.tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "search",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        captured = {}
+
+        def fake_run_codex_stream(kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                status="completed",
+                output=[
+                    SimpleNamespace(
+                        type="message",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text="Summary")],
+                    )
+                ],
+            )
+
+        with patch.object(agent, "_run_codex_stream", side_effect=fake_run_codex_stream):
+            result = agent._handle_max_iterations(
+                [{"role": "user", "content": "do stuff"}],
+                45,
+            )
+
+        assert result == "Summary"
+        assert "tools" not in captured, captured
+        assert "tool_choice" not in captured, captured
+        assert "parallel_tool_calls" not in captured, captured
+
     def test_api_sanitizer_matches_responses_call_id_when_id_differs(self, agent):
         messages = [
             {

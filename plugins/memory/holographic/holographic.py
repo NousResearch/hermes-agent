@@ -167,6 +167,19 @@ def encode_fact(content: str, entities: list[str], dim: int = 1024) -> "np.ndarr
     return bundle(*components)
 
 
+def encode_query(text: str, dim: int = 1024) -> "np.ndarray":
+    """Encode a search query in the same space as stored facts.
+
+    Facts are stored with their content bound to ROLE_CONTENT (see
+    encode_fact). A query must be bound the same way: an unbound
+    encode_text bundle is unrelated to every stored fact, so the
+    similarity would be pure noise.
+    """
+    _require_numpy()
+    role_content = encode_atom("__hrr_role_content__", dim)
+    return bind(encode_text(text, dim), role_content)
+
+
 def phases_to_bytes(phases: "np.ndarray", dim: int | None = None) -> bytes:
     """Serialize phase vectors as float32 blobs.
 

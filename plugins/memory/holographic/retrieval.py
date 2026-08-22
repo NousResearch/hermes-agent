@@ -75,9 +75,9 @@ class FactRetriever:
         # purpose: migrated stores can have FTS candidates whose hrr_vector
         # was never backfilled (MemoryStore._init_db adds the column
         # without backfilling), and those must not pay for an encode
-        # nothing will use. encode_text is deterministic (SHA-256 counter
-        # blocks), so the hoisted vector is bit-identical to what the
-        # per-candidate calls produced.
+        # nothing will use. The query encoder is deterministic (SHA-256
+        # counter blocks), so the hoisted vector is bit-identical to what
+        # the per-candidate calls produced.
         query_vec = None
         scored = []
 
@@ -93,7 +93,7 @@ class FactRetriever:
             if self.hrr_weight > 0 and fact.get("hrr_vector"):
                 fact_vec = hrr.bytes_to_phases(fact["hrr_vector"], dim=self.hrr_dim)
                 if query_vec is None:
-                    query_vec = hrr.encode_text(query, self.hrr_dim)
+                    query_vec = hrr.encode_query(query, self.hrr_dim)
                 hrr_sim = (hrr.similarity(query_vec, fact_vec) + 1.0) / 2.0  # shift to [0,1]
             else:
                 hrr_sim = 0.5  # neutral

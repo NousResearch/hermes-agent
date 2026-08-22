@@ -738,6 +738,25 @@ def _print_curator_recent_run_notice() -> None:
     except Exception:
         pass
 
+def _print_whats_new_notice() -> None:
+    """Print the what's-new brief for the freshly installed version.
+
+    Fires only when a brief exists for the current version and the user has
+    not yet acknowledged it. Silent on steady state. Never raises — a broken
+    brief must never break an update.
+
+    Deliberately decoupled from the update state machine: this is a
+    side-effect of a *successful* update, never a gate. (Prior art #13684
+    coupled display to update confirmation and was flagged for message-
+    delivery risk; we avoid that class entirely.)
+    """
+    try:
+        from hermes_cli.whats_new import _print_whats_new_notice as _impl
+
+        _impl()
+    except Exception as e:
+        logger.debug("whats-new notice failed: %s", e)
+
 def _format_time_ago(iso_ts: str) -> str:
     """Render an ISO timestamp as `Xh ago` / `Xd ago` / `Xm ago`. Best effort."""
     try:
@@ -1802,6 +1821,10 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
         _print_curator_recent_run_notice()
     except Exception as e:
         logger.debug("Curator recent-run notice failed: %s", e)
+    try:
+        _print_whats_new_notice()
+    except Exception as e:
+        logger.debug("whats-new notice failed: %s", e)
     # Don't stop a working dashboard when the Node refresh failed — see the
     # git-update path for rationale (#30271).
     _finish_dashboard_update_cleanup(node_failures)
@@ -7034,6 +7057,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _print_curator_recent_run_notice()
         except Exception as e:
             logger.debug("Curator recent-run notice failed: %s", e)
+
+        # What's-new brief for the freshly installed version. Silent when the
+        # user already acknowledged it or no brief exists. Never raises.
+        try:
+            _print_whats_new_notice()
+        except Exception as e:
+            logger.debug("whats-new notice failed: %s", e)
 
         # Repair RHEL-family root installs where /usr/local/bin isn't on PATH
         # for non-login interactive shells.  No-op on every other platform.

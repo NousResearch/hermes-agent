@@ -3158,6 +3158,18 @@ def cmd_chat(args):
             target=_skills_sync_bg, name="bundled-skills-sync", daemon=True
         ).start()
 
+    # What's-new brief on interactive launch: covers the "first run" case the
+    # post-update hook can't (a fresh install never runs `hermes update`).
+    # The notice is self-gating via seen-state — silent once acknowledged,
+    # and it never raises (a broken brief must never break startup).
+    try:
+        if sys.stdin.isatty() and not getattr(args, "resume", None):
+            from hermes_cli.whats_new import _print_whats_new_notice
+
+            _print_whats_new_notice()
+    except Exception:
+        pass
+
     # --yolo: bypass all dangerous command approvals.
     # Also set in main() before _prepare_agent_startup() — that is the
     # authoritative site because it runs before tool imports freeze

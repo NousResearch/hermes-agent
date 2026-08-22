@@ -868,9 +868,11 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
     (``us.``/``eu.``/``apac.``/...) and try two candidate slugs against the
     floor:
 
-    * the segment after the provider namespace (``claude-opus-4-6-v1:0``) —
-      matches Anthropic-style slugs whose floor key excludes the provider
-      (``claude-opus-4``); and
+    * the segment after the provider namespace — split on the **first** dot
+      so ``anthropic.claude-sonnet-4.6`` → ``claude-sonnet-4.6`` (not just
+      ``6`` as ``rsplit(".", 1)[1]`` would give); this is the key that matches
+      Anthropic-style floor entries like ``claude-opus-4`` or
+      ``claude-sonnet-4.6``; and
     * the region-stripped id with the provider dot rewritten to a dash
       (``deepseek-r1-v1:0``) — matches provider-qualified floor keys
       (``deepseek-r1``).
@@ -904,8 +906,16 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
             break
     base_candidates = [name]
     if "." in name:
-        base_candidates.append(name.rsplit(".", 1)[1])   # claude-opus-4-6-v1:0
-        base_candidates.append(name.replace(".", "-", 1))  # deepseek-r1-v1:0
+        base_candidates.append(name.split(".", 1)[1])   # claude-sonnet-4.6 (strip provider namespace)
+        # Only emit the dot→dash rewrite when the post-split slug still
+        # contains a provider-namespace dot (e.g. ``deepseek.r1`` → ``deepseek-r1``).
+        # Version-separator dots (digit.digit, e.g. ``claude-sonnet-4.6``) are
+        # intentional and must not trigger the rewrite — doing so would emit a
+        # stray candidate like ``anthropic-claude-sonnet-4.6`` that has no floor
+        # key today but could cause a false match if one is added later.
+        after_split = name.split(".", 1)[1]
+        if re.search(r"(?<!\d)\.(?!\d)", after_split):  # non-version dot remains
+            base_candidates.append(name.replace(".", "-", 1))  # deepseek-r1-v1:0
     candidates: list[str] = []
     for cand in base_candidates:
         # Try the slug as-is plus both alternate version-separator forms.
@@ -920,6 +930,9 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
         floor = get_reasoning_stale_timeout_floor(cand)
         if floor is not None:
             return floor
+    # Returns None (no floor) for unknown models — callers fall back to the
+    # base stale timeout.  To protect a new reasoning model add its slug to
+    # get_reasoning_stale_timeout_floor() in agent/reasoning_timeouts.py.
     return None
 
 

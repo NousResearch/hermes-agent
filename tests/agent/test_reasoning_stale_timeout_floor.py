@@ -95,6 +95,46 @@ def test_reasoning_stale_timeout_floor_positive_cases(model, expected):
     )
 
 
+# ── Bedrock inference-profile id normalisation ─────────────────────────────
+# Bedrock model ids use dotted, region-prefixed inference-profile notation
+# (``global.anthropic.claude-sonnet-4.6``, ``us.anthropic.claude-opus-4-6-v1:0``).
+# _bedrock_reasoning_stale_floor must strip the region prefix and then split
+# on the *first* dot to extract the slug that matches the floor table, e.g.
+#   global.anthropic.claude-sonnet-4.6 → strip global. → anthropic.claude-sonnet-4.6
+#                                       → split on first dot → claude-sonnet-4.6  ✓
+# The bug (rsplit on *last* dot) produced "6" instead of "claude-sonnet-4.6",
+# causing the floor to return None and leaving Bedrock Sonnet 4.6 streams
+# unprotected against the 180s stale-detector kill.
+
+
+@pytest.mark.parametrize("model_id,expected", [
+    # claude-sonnet-4.6 via global. prefix — the original regression.
+    # rsplit(".", 1)[1] gives "6"; split(".", 1)[1] gives "claude-sonnet-4.6".
+    ("global.anthropic.claude-sonnet-4.6", 180.0),
+    ("us.anthropic.claude-sonnet-4.6", 180.0),
+    # claude-sonnet-4.5 — same dotted-version pattern, different region prefix.
+    ("eu.anthropic.claude-sonnet-4.5", 180.0),
+    # Dashed Bedrock ids still work (version-separator normalisation).
+    ("us.anthropic.claude-sonnet-4-5-20250514-v1:0", 180.0),
+    ("us.anthropic.claude-opus-4-6-v1:0", 240.0),
+    # global. prefix with opus variant.
+    ("global.anthropic.claude-opus-4-7", 240.0),
+    # Non-reasoning model — must return None (not crash).
+    ("us.anthropic.claude-3-5-haiku-20241022-v1:0", None),
+])
+def test_bedrock_reasoning_stale_floor(model_id, expected):
+    """_bedrock_reasoning_stale_floor correctly maps dotted Bedrock ids.
+
+    Regression for the rsplit/split bug where ``global.anthropic.claude-sonnet-4.6``
+    was split on the *last* dot, producing candidate ``"6"`` instead of
+    ``"claude-sonnet-4.6"``, and the floor returned None.
+    """
+    from agent.chat_completion_helpers import _bedrock_reasoning_stale_floor
+    result = _bedrock_reasoning_stale_floor(model_id)
+    assert result == expected, (
+        f"_bedrock_reasoning_stale_floor({model_id!r}) returned {result!r}; "
+        f"expected {expected!r}.  Check that split('.',1) is used, not rsplit."
+    )
 
 
 

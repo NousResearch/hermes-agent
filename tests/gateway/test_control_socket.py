@@ -44,10 +44,24 @@ def _serve(home: Path, handlers=None):
 # Path resolution
 # ---------------------------------------------------------------------------
 
-def test_short_home_binds_in_home(home: Path):
-    bind, pointer = resolve_server_socket_path(home)
-    assert bind == home / "gateway.sock"
-    assert pointer is None
+def test_short_home_binds_in_home(tmp_path: Path):
+    # A home short enough for sun_path binds in-home with no pointer.
+    # tmp_path can exceed the limit on CI runners, so build one in the
+    # system temp root directly.
+    import tempfile
+
+    short_root = Path(tempfile.mkdtemp(prefix="hgw-", dir="/tmp"))
+    try:
+        short_home = short_root / ".hermes"
+        short_home.mkdir()
+        assert len(str(short_home / "gateway.sock").encode()) <= 100
+        bind, pointer = resolve_server_socket_path(short_home)
+        assert bind == short_home / "gateway.sock"
+        assert pointer is None
+    finally:
+        import shutil
+
+        shutil.rmtree(short_root, ignore_errors=True)
 
 
 def test_long_home_uses_pointer_fallback(tmp_path: Path):
@@ -163,7 +177,11 @@ def test_stop_removes_socket_and_pointer(home: Path):
 
 
 def test_stale_socket_file_is_replaced_on_bind(home: Path):
-    (home / "gateway.sock").touch()  # crashed predecessor's leftover
+    # Plant the stale file at wherever the server will actually bind
+    # (in-home OR the temp-dir fallback, depending on path length).
+    bind, _ = resolve_server_socket_path(home)
+    bind.parent.mkdir(parents=True, exist_ok=True)
+    bind.touch()  # crashed predecessor's leftover
 
     async def scenario():
         server = GatewayControlServer(

@@ -96,8 +96,21 @@ def _default_socket_path(home: Path) -> Path:
 
 
 def _fallback_socket_path(home: Path) -> Path:
-    """Short temp-dir path for homes whose direct socket path exceeds sun_path."""
-    return Path(tempfile.gettempdir()) / f"hermes-gw-{_home_hash(home)}.sock"
+    """Short temp-dir path for homes whose direct socket path exceeds sun_path.
+
+    Prefers ``tempfile.gettempdir()``; when even that yields a too-long path
+    (deep $TMPDIR), falls back to ``/tmp`` on POSIX. If nothing fits, the
+    tempdir candidate is returned anyway — bind will fail non-fatally and
+    consumers use the scan layer.
+    """
+    name = f"hermes-gw-{_home_hash(home)}.sock"
+    candidates = [Path(tempfile.gettempdir()) / name]
+    if not _IS_WINDOWS:
+        candidates.append(Path("/tmp") / name)
+    for candidate in candidates:
+        if len(str(candidate).encode("utf-8")) <= _MAX_UNIX_PATH:
+            return candidate
+    return candidates[0]
 
 
 def resolve_server_socket_path(home: Path) -> tuple[Path, Optional[Path]]:

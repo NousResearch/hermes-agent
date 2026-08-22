@@ -227,7 +227,101 @@ elif hasattr(signal, "SIGBREAK"):
     # Windows-only: Ctrl+Break in a console window delivers SIGBREAK.
     # Route it through the same handler so kills are diagnosable.
     _install_signal("SIGBREAK", _log_signal)
-_install_signal("SIGINT", signal.SIG_IGN)
+# SIGINT: two-stage handler so a wedged process is recoverable from the
+# keyboard.  Stage 1 (first Ctrl+C) logs the signal and gracefully
+# interrupts every running session (agent interrupt + per-session pending
+# prompt clear).  Stage 2 (second Ctrl+C) force-exits so the user isn't
+# stuck hunting for a ``kill -9``.  The grace-window failsafe only fires if
+# a session is genuinely still hung after the interrupt — once every
+# interrupted session has drained, the failsafe is disarmed so a healthy
+# recoverable session is never hard-killed.
+#
+# The old ``SIG_IGN`` made Ctrl+C a no-op unconditionally, which meant
+# the only recovery from a runaway agent thread was ``kill -9 <pid>``
+# from another terminal — the user's keyboard was useless even when the
+# Node.js TUI parent was healthy but the Python gateway was stuck in a
+# tight tool loop (#53362).
+_sigint_stage: int = 0
+_SIGINT_GRACE_S = 2.0
+
+
+def _sessions_still_running() -> bool:
+    """True when any TUI session is still marked running.
+
+    After a stage-1 interrupt each session's agent loop drains and flips
+    ``running`` back to False.  The grace-window failsafe consults this so it
+    only hard-exits while a session is genuinely unresolved.
+    """
+    try:
+        from tui_gateway.server import _sessions as _tui_sessions
+        return any(
+            _s.get("running")
+            for _s in list(_tui_sessions.values())
+        )
+    except Exception:
+        # If we can't inspect sessions, assume there may still be one hung
+        # so the failsafe remains armed (fail closed toward recoverability).
+        return True
+
+
+def _handle_sigint(signum: int, frame) -> None:
+    global _sigint_stage
+
+    if _sigint_stage > 0:
+        # Stage 2 (repeated Ctrl+C) — immediate hard exit.  No logging, no
+        # session finalize: the user wants out as fast as possible.
+        os._exit(0)
+
+    _sigint_stage = 1
+
+    # ── Stage 1: log, then gracefully interrupt ──────────────────────
+    try:
+        os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
+        with open(_CRASH_LOG, "a", encoding="utf-8") as f:
+            f.write(
+                f"\n=== SIGINT stage 1 · {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n"
+            )
+    except Exception:
+        pass
+    print("[gateway-signal] SIGINT stage 1: interrupting sessions...",
+          file=sys.stderr, flush=True)
+
+    # Best-effort interrupt of every running session so the agent's
+    # conversation loop breaks at the top of its next iteration (the
+    # ``_interrupt_requested`` check).  This lets the user recover the
+    # session instead of losing it to a full gateway restart.  Pending
+    # prompts are cleared PER SESSION (not globally) so one Ctrl+C cannot
+    # dismiss clarify/sudo/secret prompts on unrelated live sessions.
+    try:
+        from tui_gateway.server import _sessions as _tui_sessions
+        from tui_gateway.server import _clear_pending as _tui_clear_pending
+        for _sid, _s in list(_tui_sessions.items()):
+            try:
+                if _s.get("running") and hasattr(_s.get("agent"), "interrupt"):
+                    _s["agent"].interrupt()
+                _tui_clear_pending(_sid)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # ── Conditional failsafe: hard-exit only if a session is hung ─────
+    # The failsafe is armed only when at least one session is still running
+    # after the interrupt.  It re-checks at expiry so a session that drains
+    # before the grace window elapses (the normal first-stage recovery path)
+    # is never hard-killed.  A clean, fully-drained state disarms it entirely.
+    import threading as _sigint_threading
+
+    if _sessions_still_running():
+
+        def _failsafe() -> None:
+            if _sessions_still_running():
+                os._exit(0)
+
+        _sigint_threading.Timer(_SIGINT_GRACE_S, _failsafe).start()
+
+
+_install_signal("SIGINT", _handle_sigint)
 
 
 def _log_exit(reason: str) -> None:

@@ -148,11 +148,16 @@ def _(rid, params: dict) -> dict:
             try:
                 from tools.mcp_tool import refresh_agent_mcp_tools
 
-                # Explicit reload: re-resolve enabled toolsets so a server the
-                # user just enabled in config this session is picked up.
+                # Re-resolve toolsets from THIS session's source, not the
+                # process env. A server the user just enabled this session
+                # still gets picked up. URL/cloud backends never have
+                # HERMES_DESKTOP=1, so env-keyed resolution would drop
+                # desktop_ui after reload.
                 refresh_agent_mcp_tools(
                     agent,
-                    enabled_override=_load_enabled_toolsets(),
+                    enabled_override=_load_enabled_toolsets(
+                        _session_source(session)
+                    ),
                     quiet_mode=True,
                 )
             except Exception as _exc:

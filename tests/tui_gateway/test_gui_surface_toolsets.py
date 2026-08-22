@@ -117,3 +117,65 @@ class TestResolverPlumbing:
         no_desktop_env.setenv("HERMES_TUI_TOOLSETS", "web,memory")
 
         assert server._load_enabled_toolsets("desktop") == ["web", "memory"]
+
+
+class TestReloadMcpKeepsSessionSurface:
+    """/reload-mcp must not re-key GUI tools off HERMES_DESKTOP.
+
+    Session create already stores source=desktop and loads desktop_ui from
+    that. Reload used to call _load_enabled_toolsets() with no platform, which
+    falls back to the env resolver. URL/cloud backends never set the env var,
+    so reload stripped pane/browser/reaction tools for the rest of the session.
+    """
+
+    def test_session_source_desktop_loads_gui_tools_without_env(self, no_desktop_env):
+        import agent.coding_context as cc
+
+        no_desktop_env.setattr(cc, "coding_selection", lambda **_: ["coding"])
+        source = server._session_source({"source": "desktop"})
+        assert source == "desktop"
+        enabled = server._load_enabled_toolsets(source)
+        assert "desktop_ui" in enabled
+        assert "project" in enabled
+
+    def test_reload_mcp_passes_session_source_not_process_env(
+        self, no_desktop_env, monkeypatch
+    ):
+        import tools.mcp_tool as mcp_tool
+
+        captured = {}
+
+        def fake_refresh(agent, enabled_override=None, **kwargs):
+            captured["enabled"] = enabled_override
+
+        monkeypatch.setattr(mcp_tool, "shutdown_mcp_servers", lambda: None)
+        monkeypatch.setattr(mcp_tool, "discover_mcp_tools", lambda: None)
+        monkeypatch.setattr(mcp_tool, "refresh_agent_mcp_tools", fake_refresh)
+        monkeypatch.setattr(server, "_compute_mcp_rev", lambda: "rev-test")
+        monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+        monkeypatch.setattr(server, "_session_info", lambda *a, **k: {})
+
+        sid = "s-desktop"
+        session = {
+            "agent": type("Agent", (), {"enabled_toolsets": ["coding"]})(),
+            "source": "desktop",
+        }
+        saved_sessions = dict(server._sessions)
+        saved_gen = (server._mcp_reload_gen, server._mcp_reload_loaded_rev)
+        server._sessions[sid] = session
+        server._mcp_reload_gen = 0
+        server._mcp_reload_loaded_rev = ""
+        try:
+            envelope = server._methods["reload.mcp"](
+                1, {"session_id": sid, "confirm": True}
+            )
+        finally:
+            server._sessions.clear()
+            server._sessions.update(saved_sessions)
+            server._mcp_reload_gen, server._mcp_reload_loaded_rev = saved_gen
+
+        assert envelope.get("result", {}).get("status") == "reloaded"
+        enabled = captured.get("enabled")
+        assert enabled is not None, "reload must refresh the session agent"
+        assert "desktop_ui" in enabled
+        assert "desktop_ui" not in (server._load_enabled_toolsets() or [])

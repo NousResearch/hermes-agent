@@ -54,7 +54,8 @@ DEFAULT_POLL_INTERVAL_SECONDS = 5
 DEFAULT_EXTEND_DURATION = 6
 
 VALID_ASPECT_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
-VALID_RESOLUTIONS = {"480p", "720p"}
+STANDARD_RESOLUTIONS = ("480p", "720p")
+FULL_HD_RESOLUTIONS = (*STANDARD_RESOLUTIONS, "1080p")
 MAX_REFERENCE_IMAGES = 7
 
 
@@ -65,13 +66,15 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "strengths": "Text-to-video; legacy image-to-video fallback.",
         "price": "see https://docs.x.ai/developers/models/grok-imagine-video",
         "modalities": ["text", "image"],
+        "resolutions": list(STANDARD_RESOLUTIONS),
     },
     "grok-imagine-video-1.5": {
         "display": "Grok Imagine Video 1.5",
         "speed": "~60-240s",
-        "strengths": "Latest xAI image-to-video model.",
+        "strengths": "Latest xAI text-to-video and image-to-video model.",
         "price": "see https://docs.x.ai/developers/pricing",
-        "modalities": ["image"],
+        "modalities": ["text", "image"],
+        "resolutions": list(FULL_HD_RESOLUTIONS),
     },
 }
 
@@ -289,18 +292,33 @@ def _resolve_model_for_modality(
 ) -> str:
     """Select xAI's text/video model without treating config as a prompt override.
 
-    ``grok-imagine-video-1.5`` currently rejects text-only video
-    generation, but it is the desired image-to-video backend. Explicit tool
-    ``model=`` still wins for users who intentionally request another model.
+    Preview/date-stamped 1.5 aliases reject text-only video generation, but
+    the canonical 1.5 model supports both text-to-video and image-to-video.
+    Explicit tool ``model=`` still wins for intentional overrides.
     """
     requested = (model or "").strip()
     if explicit_model and requested:
         return requested
     if modality == "image":
         return DEFAULT_IMAGE_TO_VIDEO_MODEL
-    if requested == DEFAULT_IMAGE_TO_VIDEO_MODEL or requested in _IMAGE_TO_VIDEO_COMPAT_MODEL_IDS:
+    if requested in _IMAGE_TO_VIDEO_COMPAT_MODEL_IDS:
         return DEFAULT_TEXT_TO_VIDEO_MODEL
     return requested or DEFAULT_TEXT_TO_VIDEO_MODEL
+
+
+def _normalize_resolution(
+    resolution: Optional[str],
+    *,
+    model: str,
+    modality: str,
+) -> str:
+    requested = (resolution or DEFAULT_RESOLUTION).strip().lower()
+    allowed = (
+        FULL_HD_RESOLUTIONS
+        if model == DEFAULT_IMAGE_TO_VIDEO_MODEL and modality in {"text", "image"}
+        else STANDARD_RESOLUTIONS
+    )
+    return requested if requested in allowed else DEFAULT_RESOLUTION
 
 
 async def _submit(
@@ -398,8 +416,8 @@ class XAIVideoGenProvider(VideoGenProvider):
         except Exception:
             storage_notice = ""
         tag = (
-            "grok-imagine-video for text/reference; "
-            "grok-imagine-video-1.5 for image-to-video; "
+            "grok-imagine-video for legacy text/reference; "
+            "grok-imagine-video-1.5 for 1080p text/image; "
             "edit/extend: pass the stored public HTTPS MP4 (`video` / "
             "`public_url` from a prior Imagine result); uses xAI Grok OAuth "
             "or XAI_API_KEY"
@@ -418,7 +436,7 @@ class XAIVideoGenProvider(VideoGenProvider):
         return {
             "modalities": ["text", "image"],
             "aspect_ratios": sorted(VALID_ASPECT_RATIOS),
-            "resolutions": sorted(VALID_RESOLUTIONS),
+            "resolutions": list(FULL_HD_RESOLUTIONS),
             "max_duration": 15,
             "min_duration": 1,
             "supports_audio": False,
@@ -579,7 +597,6 @@ async def _generate_xai_video_async(
                 prompt=prompt,
             )
     normalized_aspect_ratio = (aspect_ratio or DEFAULT_ASPECT_RATIO).strip()
-    normalized_resolution = (resolution or DEFAULT_RESOLUTION).strip().lower()
     refs, refs_error = _normalize_reference_images(reference_image_urls)
     if refs_error:
         return error_response(
@@ -610,9 +627,6 @@ async def _generate_xai_video_async(
 
     if normalized_aspect_ratio not in VALID_ASPECT_RATIOS:
         normalized_aspect_ratio = DEFAULT_ASPECT_RATIO
-    if normalized_resolution not in VALID_RESOLUTIONS:
-        normalized_resolution = DEFAULT_RESOLUTION
-
     modality_used = "reference" if refs else ("image" if image_input else "text")
     resolved_model = _resolve_model_for_modality(
         model,
@@ -632,6 +646,12 @@ async def _generate_xai_video_async(
                 prompt=prompt,
             )
         resolved_model = DEFAULT_TEXT_TO_VIDEO_MODEL
+
+    normalized_resolution = _normalize_resolution(
+        resolution,
+        model=resolved_model,
+        modality=modality_used,
+    )
 
     clamped_duration = _clamp_duration(duration, has_reference_images=bool(refs))
     payload = {

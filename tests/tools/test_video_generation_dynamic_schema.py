@@ -114,6 +114,30 @@ class TestDynamicSchemaBuilder:
         assert "supports both text-to-video" in desc
         assert "duration range: 1-15s" in desc
 
+    def test_resolution_choices_follow_active_model(self, cfg_home, monkeypatch):
+        from plugins.video_gen.xai import XAIVideoGenProvider
+        from tools.video_generation_tool import _build_dynamic_video_schema
+
+        monkeypatch.setenv("XAI_API_KEY", "test-key")
+        video_gen_registry.register_provider(XAIVideoGenProvider())
+
+        _write_cfg(
+            cfg_home,
+            {"video_gen": {"provider": "xai", "model": "grok-imagine-video-1.5"}},
+        )
+        latest_desc = _build_dynamic_video_schema()["description"]
+
+        _write_cfg(
+            cfg_home,
+            {"video_gen": {"provider": "xai", "model": "grok-imagine-video"}},
+        )
+        legacy_desc = _build_dynamic_video_schema()["description"]
+
+        assert "resolution choices: 480p, 720p, 1080p" in latest_desc
+        assert "supports both text-to-video" in latest_desc
+        assert "image-to-video only" not in latest_desc
+        assert "resolution choices: 480p, 720p, 1080p" not in legacy_desc
+
     def test_i2v_only_model_does_not_claim_text_to_video(self, cfg_home):
         """A dual-modality backend with an i2v-only active model must not
         contradict the model caveat with a 'supports both' line."""

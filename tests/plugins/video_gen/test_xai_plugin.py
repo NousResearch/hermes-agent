@@ -23,6 +23,7 @@ def test_xai_provider_registers():
     assert video_gen_registry.get_provider("xai") is provider
     assert provider.display_name == "xAI"
     assert provider.default_model() == "grok-imagine-video"
+    assert "grok-imagine-video-1.5 for 1080p text/image" in provider.get_setup_schema()["tag"]
 
 
 def test_xai_resolved_credentials_threaded_through_request(monkeypatch):

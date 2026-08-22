@@ -133,6 +133,46 @@ class TestXAIPayload:
         payload = _last_post(captured)["json"]
         assert payload["model"] == "grok-imagine-video"
 
+    def test_1080p_is_forwarded_for_image_to_video_1_5(self, xai_provider):
+        provider, captured = xai_provider
+
+        provider.generate(
+            "animate this",
+            image_url="https://example.com/cat.png",
+            resolution="1080p",
+        )
+
+        payload = _last_post(captured)["json"]
+        assert payload["model"] == "grok-imagine-video-1.5"
+        assert payload["resolution"] == "1080p"
+
+    def test_1080p_is_forwarded_for_text_to_video_1_5(self, xai_provider):
+        provider, captured = xai_provider
+
+        provider.generate(
+            "a dog on a skateboard",
+            model="grok-imagine-video-1.5",
+            resolution="1080p",
+            _model_override_explicit=True,
+        )
+
+        payload = _last_post(captured)["json"]
+        assert payload["model"] == "grok-imagine-video-1.5"
+        assert payload["resolution"] == "1080p"
+
+    def test_configured_1_5_is_used_for_text_to_video(self, xai_provider):
+        provider, captured = xai_provider
+
+        provider.generate(
+            "a dog on a skateboard",
+            model="grok-imagine-video-1.5",
+            resolution="1080p",
+        )
+
+        payload = _last_post(captured)["json"]
+        assert payload["model"] == "grok-imagine-video-1.5"
+        assert payload["resolution"] == "1080p"
+
     def test_reference_images_payload(self, xai_provider):
         provider, captured = xai_provider
         provider.generate(
@@ -180,3 +220,21 @@ class TestXAIClamping:
         provider, captured = xai_provider
         provider.generate("x", aspect_ratio="21:9")
         assert _last_post(captured)["json"]["aspect_ratio"] == "16:9"
+
+    def test_1080p_soft_clamps_for_legacy_model(self, xai_provider):
+        provider, captured = xai_provider
+
+        provider.generate("x", resolution="1080p")
+
+        assert _last_post(captured)["json"]["resolution"] == "720p"
+
+    def test_1080p_soft_clamps_for_reference_to_video(self, xai_provider):
+        provider, captured = xai_provider
+
+        provider.generate(
+            "keep this character",
+            reference_image_urls=["https://example.com/a.png"],
+            resolution="1080p",
+        )
+
+        assert _last_post(captured)["json"]["resolution"] == "720p"

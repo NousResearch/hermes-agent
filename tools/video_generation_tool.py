@@ -553,8 +553,9 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
 
     if caps.get("aspect_ratios"):
         parts.append(f"- aspect_ratio choices: {', '.join(caps['aspect_ratios'])}")
-    if caps.get("resolutions"):
-        parts.append(f"- resolution choices: {', '.join(caps['resolutions'])}")
+    resolutions = model_meta.get("resolutions") or caps.get("resolutions")
+    if resolutions:
+        parts.append(f"- resolution choices: {', '.join(resolutions)}")
     min_duration = model_meta.get("min_duration", caps.get("min_duration"))
     max_duration = model_meta.get("max_duration", caps.get("max_duration"))
     if min_duration and max_duration:

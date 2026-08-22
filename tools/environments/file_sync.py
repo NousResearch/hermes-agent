@@ -423,7 +423,11 @@ class FileSyncManager:
                             )
                             continue
 
-                        if not self._host_path_is_contained(host_path, file_mapping):
+                        if not self._host_path_is_contained(
+                            host_path,
+                            file_mapping,
+                            upload_only_host_paths=upload_only_host_paths,
+                        ):
                             logger.warning(
                                 "sync_back: refusing host path outside mapped roots: %s",
                                 host_path,
@@ -486,7 +490,7 @@ class FileSyncManager:
                 suffix = remote_path[len(remote_dir):]
                 # Defence-in-depth: even if tar extract filtered ``..``,
                 # never concatenate a traversal suffix onto the host root.
-                suffix_parts = [p for p in suffix.replace("\\", "/").split("/") if p]
+                suffix_parts = [part for part in suffix.split("/") if part]
                 if ".." in suffix_parts:
                     logger.warning(
                         "sync_back: rejecting traversal suffix in remote path %s",
@@ -513,14 +517,19 @@ class FileSyncManager:
         self,
         host_path: str,
         file_mapping: list[tuple[str, str]],
+        *,
+        upload_only_host_paths: set[str] | None = None,
     ) -> bool:
         """Return True if *host_path* resolves under any mapped host directory."""
         try:
             resolved = Path(host_path).expanduser().resolve()
         except OSError:
             return False
+        upload_only_host_paths = upload_only_host_paths or set()
         roots: set[Path] = set()
         for host, _remote in file_mapping:
+            if self._is_upload_only_host_path(host, upload_only_host_paths):
+                continue
             try:
                 roots.add(Path(host).expanduser().resolve().parent)
             except OSError:

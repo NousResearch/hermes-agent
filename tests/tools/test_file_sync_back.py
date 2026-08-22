@@ -180,6 +180,29 @@ class TestSyncBackNewRemoteFile:
         assert expected_host_path.read_bytes() == new_remote_content
 
 
+class TestSyncBackContainment:
+    def test_sync_back_rejects_host_symlink_escape(self, tmp_path):
+        host_root = tmp_path / "host" / "skills"
+        host_file = host_root / "existing.py"
+        _write_file(host_file, b"existing")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        try:
+            (host_root / "linked").symlink_to(outside, target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlinks are unavailable on this host")
+
+        mapping = [(str(host_file), "/root/.hermes/skills/existing.py")]
+        download_fn = _make_download_fn({
+            "root/.hermes/skills/linked/escape.txt": b"blocked",
+        })
+        mgr = _make_manager(tmp_path, file_mapping=mapping, bulk_download_fn=download_fn)
+
+        mgr.sync_back(hermes_home=tmp_path / ".hermes")
+
+        assert not (outside / "escape.txt").exists()
+
+
 class TestSyncBackConflict:
     """Host AND remote both changed since push -- warning logged, remote wins."""
 

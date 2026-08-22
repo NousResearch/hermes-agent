@@ -61,3 +61,16 @@ def test_host_path_containment_rejects_escape(tmp_path):
         str(tmp_path / "host" / ".ssh" / "authorized_keys"),
         mapping,
     )
+
+
+def test_host_path_containment_ignores_upload_only_roots(tmp_path):
+    host_file = tmp_path / "host" / "credentials" / "token"
+    _write_file(host_file, b"secret")
+    mapping = [(str(host_file), "/root/.hermes/credentials/token")]
+    mgr = _make_manager(tmp_path, file_mapping=mapping)
+
+    assert not mgr._host_path_is_contained(
+        str(tmp_path / "host" / "credentials" / "new-token"),
+        mapping,
+        upload_only_host_paths={str(host_file.resolve())},
+    )

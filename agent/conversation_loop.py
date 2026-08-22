@@ -8228,7 +8228,8 @@ def run_conversation(
                 # Models sometimes narrate the next step ("Let me write the
                 # report") and stop with finish_reason=stop — a clean exit
                 # that the dispatcher records as protocol_violation. Nudge
-                # once or twice before allowing that exit.
+                # up to 4 times (bounded) before allowing that exit, so the
+                # worker has enough chances to emit the terminal tool call.
                 try:
                     from agent.kanban_stop import build_kanban_stop_nudge
 

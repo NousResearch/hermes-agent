@@ -19,7 +19,14 @@ from typing import Any, Iterable, Optional
 
 _TERMINAL_KANBAN_TOOLS = frozenset({"kanban_complete", "kanban_block"})
 
-_DEFAULT_MAX_ATTEMPTS = 2
+# How many synthetic nudges a kanban worker may receive before the loop lets
+# it exit. Raised from 2 to 4 (P0 protocol-violation fix, 2026-08): models
+# that narrate intent instead of calling the terminal board tool occasionally
+# need more than two nudges before they emit kanban_complete / kanban_block.
+# The bounded budget still guarantees the conversation always terminates — the
+# dispatcher's last-chance tool-restricted retry (kanban_db.py) catches any
+# worker that exhausts this budget and still exits without a terminal tool.
+_DEFAULT_MAX_ATTEMPTS = 4
 
 
 def kanban_stop_nudge_enabled() -> bool:
@@ -91,13 +98,17 @@ def build_kanban_stop_nudge(
         "terminal state for the board.\n\n"
         f"Task `{tid}` is still `running`. Ending now without a board tool "
         "causes a protocol violation (clean exit with no "
-        "`kanban_complete` / `kanban_block`).\n\n"
+        "`kanban_complete` / `kanban_block`) — the task is recorded as crashed "
+        "and respawns, burning more tokens to repeat work that may already be "
+        "done.\n\n"
         "Do this immediately in your next response — do not narrate intent:\n"
-        "1. Finish any remaining deliverable (write the required file(s) now).\n"
-        "2. Call `kanban_complete(summary=..., artifacts=[...])` if the work "
-        "is done, OR `kanban_block(reason=...)` if you are blocked.\n\n"
+        "1. If the work is done (or you are blocked and cannot finish), call "
+        "`kanban_complete(summary=..., artifacts=[...])` — or "
+        "`kanban_block(reason=...)` if genuinely blocked.\n"
+        "2. Call the tool now. End your turn with the tool call, not with prose.\n\n"
         "Never end a turn with only a promise of future action. Repeated "
-        "protocol violations will block this task and require manual intervention.]"
+        "protocol violations will block this task and require manual "
+        "intervention.]"
     )
 
 

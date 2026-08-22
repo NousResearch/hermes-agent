@@ -3564,6 +3564,17 @@ class ContextCompressor(ContextEngine):
     # Tool output pruning (cheap pre-pass, no LLM call)
     # ------------------------------------------------------------------
 
+    def _should_charge_generic_thinking(
+        self,
+        message_index: int,
+        newest_assistant_index: int,
+    ) -> bool:
+        """Return whether replay budgeting should include generic thinking."""
+        return (
+            getattr(self, "api_mode", None) == "codex_responses"
+            or message_index == newest_assistant_index
+        )
+
     def _prune_old_tool_results(
         self, messages: List[Dict[str, Any]], protect_tail_count: int,
         protect_tail_tokens: int | None = None,
@@ -3630,14 +3641,18 @@ class ContextCompressor(ContextEngine):
                 len(result),
                 _MAX_TAIL_MESSAGE_FLOOR,
             )
-            # Same newest-turn-only thinking charge as the tail-cut walk
-            # (#73624) — this boundary decides which tool results stay
-            # prunable, and overcharging stale thinking shrinks that window.
+            # Match the tail-cut walk: Codex Responses replays generic thinking
+            # fields from retained turns, while other transports replay only
+            # the newest assistant turn. Messages without those fields add no
+            # charge either way.
             _newest_asst_idx = _last_assistant_index(result)
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
                 msg_tokens = _estimate_msg_budget_tokens(
-                    msg, charge_stale_thinking=(i == _newest_asst_idx)
+                    msg,
+                    charge_stale_thinking=self._should_charge_generic_thinking(
+                        i, _newest_asst_idx
+                    ),
                 )
                 if accumulated + msg_tokens > protect_tail_tokens and (len(result) - i) >= min_protect:
                     boundary = i
@@ -6165,16 +6180,20 @@ This compaction should PRIORITISE preserving all information related to the focu
         accumulated = 0
         cut_idx = n  # start from beyond the end
 
-        # Newest assistant turn: the only message whose generic thinking
-        # fields any transport still replays (#73624) — every older turn's
-        # reasoning/reasoning_content is stripped or padded at send time,
-        # so charging it here spends tail budget on bytes that never ship.
+        # Non-Codex transports replay generic thinking fields for the newest
+        # assistant turn only (#73624). Codex Responses carries those fields
+        # across retained turns, so its tail walk must charge messages that
+        # contain them; otherwise preflight sees a large request while this
+        # walk protects the entire transcript as a tiny tail.
         _newest_asst_idx = _last_assistant_index(messages)
 
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
             msg_tokens = _estimate_msg_budget_tokens(
-                msg, charge_stale_thinking=(i == _newest_asst_idx)
+                msg,
+                charge_stale_thinking=self._should_charge_generic_thinking(
+                    i, _newest_asst_idx
+                ),
             )
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
@@ -6202,7 +6221,10 @@ This compaction should PRIORITISE preserving all information related to the focu
             for j in range(n - 1, head_end - 1, -1):
                 raw_msg = messages[j]
                 raw_tok = _estimate_msg_budget_tokens(
-                    raw_msg, charge_stale_thinking=(j == _newest_asst_idx)
+                    raw_msg,
+                    charge_stale_thinking=self._should_charge_generic_thinking(
+                        j, _newest_asst_idx
+                    ),
                 )
                 if raw_accumulated + raw_tok > raw_budget and (n - j) >= min_tail:
                     cut_idx = j

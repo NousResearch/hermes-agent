@@ -2,10 +2,10 @@
 
 Generic thinking fields (``reasoning`` / ``reasoning_content`` + the
 ``reasoning_details`` text charge) are replayed for at most the NEWEST
-assistant turn on every transport — Anthropic strips all-but-newest at
+assistant turn on non-Codex transports — Anthropic strips all-but-newest at
 convert time, Bedrock never replays thinking, strict chat-completions
-providers reject or one-space-pad the field. Charging them on every message
-spent 19-24% of the tail budget on bytes that never reach the wire.
+providers reject or one-space-pad the field. Codex Responses replays the
+retained fields, so its budget walks must charge them on stale turns too.
 
 Codex sidecar fields (``codex_reasoning_items`` / ``codex_message_items``)
 ARE wire-replayed on every retained turn and stay charged unconditionally
@@ -156,3 +156,90 @@ class TestTailCutBehavior:
         # index = more messages in the tail), and strictly more here because
         # the stale thinking dominates each message's old-cost.
         assert cut < old_cut
+
+    def test_codex_responses_charges_stale_thinking_in_tail(self):
+        """Codex Responses must find a middle window when stale reasoning is
+        what pushed the full request over the compaction threshold (#84371)."""
+        from agent.context_compressor import ContextCompressor
+
+        msgs = [{"role": "system", "content": "sys"}]
+        for i in range(30):
+            msgs.append({"role": "user", "content": f"question {i}"})
+            msgs.append(
+                {
+                    "role": "assistant",
+                    "content": f"answer {i}",
+                    "reasoning": BIG_THINKING,
+                    "reasoning_content": BIG_THINKING,
+                }
+            )
+
+        non_codex = ContextCompressor(
+            model="test-model",
+            api_mode="chat_completions",
+            quiet_mode=True,
+            config_context_length=200_000,
+        )
+        codex = ContextCompressor(
+            model="test-model",
+            api_mode="codex_responses",
+            quiet_mode=True,
+            config_context_length=200_000,
+        )
+
+        budget = 3_000
+        non_codex_cut = non_codex._find_tail_cut_by_tokens(msgs, 1, token_budget=budget)
+        codex_cut = codex._find_tail_cut_by_tokens(msgs, 1, token_budget=budget)
+
+        # Non-Codex keeps #73624's larger tail because stale thinking is not
+        # sent. Codex charges the replayed reasoning and leaves a real middle
+        # region for compaction instead of protecting the whole transcript.
+        assert codex_cut > non_codex_cut
+        assert 1 < codex_cut < len(msgs) - 3
+
+
+class TestPruneBudgetBehavior:
+    def test_codex_responses_prunes_past_stale_thinking_boundary(self):
+        """The prune walk must use the same replay accounting as tail-cut."""
+        from agent.context_compressor import ContextCompressor
+
+        tool_output = "old output " * 100
+        msgs = [
+            {"role": "tool", "content": tool_output, "tool_call_id": "old"},
+            {
+                "role": "assistant",
+                "content": "old answer",
+                "reasoning": BIG_THINKING,
+                "reasoning_content": BIG_THINKING,
+            },
+            {"role": "user", "content": "current request"},
+            {"role": "assistant", "content": "current answer"},
+        ]
+        non_codex = ContextCompressor(
+            model="test-model",
+            api_mode="chat_completions",
+            quiet_mode=True,
+            config_context_length=200_000,
+        )
+        codex = ContextCompressor(
+            model="test-model",
+            api_mode="codex_responses",
+            quiet_mode=True,
+            config_context_length=200_000,
+        )
+
+        non_codex_result, non_codex_pruned = non_codex._prune_old_tool_results(
+            msgs,
+            protect_tail_count=1,
+            protect_tail_tokens=2_200,
+        )
+        codex_result, codex_pruned = codex._prune_old_tool_results(
+            msgs,
+            protect_tail_count=1,
+            protect_tail_tokens=2_200,
+        )
+
+        assert non_codex_pruned == 0
+        assert non_codex_result[0]["content"] == tool_output
+        assert codex_pruned == 1
+        assert codex_result[0]["content"] != tool_output

@@ -83,6 +83,12 @@ def _make_runner(session_db=None):
     )
 
     runner.session_store = MagicMock()
+    # The ownership check (#81513) reads the routing index directly; an
+    # empty dict accurately models a fresh destination with no pre-bound
+    # gateway session (a bare MagicMock would make .get() truthy). No
+    # in-flight agent work either.
+    runner.session_store._entries = {}
+    runner.session_store._has_active_processes_safe = MagicMock(return_value=False)
     runner.session_store._generate_session_key.side_effect = lambda source: build_session_key(
         source,
         group_sessions_per_user=getattr(runner.config, "group_sessions_per_user", True),

@@ -5,6 +5,7 @@ from hermes_cli.moa_config import (
     DEFAULT_MOA_AGGREGATOR,
     DEFAULT_MOA_PRESET_NAME,
     DEFAULT_MOA_REFERENCE_MODELS,
+    _default_preset,
     build_moa_turn_prompt,
     decode_moa_turn,
     exact_moa_preset_name,
@@ -46,6 +47,41 @@ def test_normalize_moa_config_uses_default_named_preset():
     assert list(cfg["presets"]) == [DEFAULT_MOA_PRESET_NAME]
     assert cfg["reference_models"] == _enabled_refs(DEFAULT_MOA_REFERENCE_MODELS)
     assert cfg["aggregator"] == DEFAULT_MOA_AGGREGATOR
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, None),
+        (8192, 8192),
+        ("abc", 4096),
+        ("", 4096),
+        (0, 0),
+    ],
+)
+def test_moa_preset_max_tokens_normalization(value, expected):
+    cfg = normalize_moa_config({"max_tokens": value})
+
+    assert cfg["presets"][DEFAULT_MOA_PRESET_NAME]["max_tokens"] == expected
+
+
+def test_moa_preset_max_tokens_absent_defaults_to_none():
+    assert normalize_moa_config({})["max_tokens"] is None
+    assert _default_preset()["max_tokens"] is None
+
+
+def test_moa_preset_max_tokens_resolve_and_flatten_preserve_none():
+    cfg = normalize_moa_config(
+        {
+            "default_preset": "uncapped",
+            "presets": {"uncapped": {"max_tokens": None}},
+        }
+    )
+
+    assert resolve_moa_preset(cfg, "uncapped")["max_tokens"] is None
+    assert cfg["max_tokens"] is None
+    assert cfg["max_tokens"] != 4096
+
 
 
 
@@ -175,9 +211,6 @@ def test_validate_moa_payload_agrees_with_clean_slot():
 
 
 # --- privacy_filter normalization ---
-
-
-
 
 
 

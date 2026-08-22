@@ -90,7 +90,7 @@ moa:
       # the same behavior as a single-model Hermes agent.
       # reference_temperature: 0.6
       # aggregator_temperature: 0.4
-      max_tokens: 4096
+      max_tokens: null       # uncapped; reference_max_tokens controls advisors
       enabled: true
 ```
 

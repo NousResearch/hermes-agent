@@ -20954,11 +20954,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _stts_adapter is not None
                 and bool(getattr(_stts_adapter, "_streaming_tts_turn_completed", lambda *_a, **_k: False)(session_key, run_generation))
             )
+            _auto_voice_sent = False
             if (
                 not _streaming_tts_done
                 and self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent)
             ):
                 await self._send_voice_reply(event, response)
+                _auto_voice_sent = True
 
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
@@ -20971,12 +20973,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # content the user hasn't seen (streaming only sent earlier
             # partial output before the failure).  Without this guard,
             # users see the agent "stop responding without explanation."
+            #
+            # When auto-TTS already sent a voice reply, skip audio MEDIA
+            # files from the agent (e.g. self-generated TTS via execute_code)
+            # to avoid duplicate/conflicting voice messages (#auto-tts-dedup).
             if agent_result.get("already_sent") and not agent_result.get("failed"):
                 if response:
                     _media_adapter = self._adapter_for_source(source)
                     if _media_adapter:
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
+                            skip_audio=_auto_voice_sent,
                         )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
@@ -22391,6 +22398,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event: MessageEvent,
         adapter,
         thread_metadata: Optional[Dict[str, Any]] = None,
+        skip_audio: bool = False,
     ) -> None:
         """Extract explicit MEDIA: tags from a response and deliver them.
 
@@ -22407,6 +22415,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         such paths into uploads after the fact sent files the model never
         asked to deliver (#20834). Only ``MEDIA:`` directives — the explicit
         attachment contract — trigger post-stream uploads.
+
+        When ``skip_audio`` is True, audio files (.ogg, .mp3, .wav, .opus)
+        are silently dropped from delivery. This prevents duplicate voice
+        messages when the gateway's auto-TTS already sent a voice reply
+        and the agent also self-generated audio via execute_code (#auto-tts-dedup).
         """
         from pathlib import Path
         from urllib.parse import quote as _quote
@@ -22455,12 +22468,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # send_document below — preserving original bytes.
             image_paths: list = []
             non_image_media: list = []
+            _AUDIO_EXTS = {'.ogg', '.mp3', '.wav', '.opus', '.m4a', '.flac', '.aac'}
             for media_path, is_voice in media_files:
                 ext = Path(media_path).suffix.lower()
                 if (ext in _IMAGE_EXTS
                         and not is_voice
                         and not force_document_attachments):
                     image_paths.append(media_path)
+                elif skip_audio and (ext in _AUDIO_EXTS or is_voice):
+                    logger.info("Skipping agent-generated audio %s (auto-TTS already sent)", media_path)
+                    continue
                 else:
                     non_image_media.append((media_path, is_voice))
 

@@ -496,7 +496,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # discovery floor — live entries lead in the picker and stale curated
     # names never pollute the top.
     "opencode-zen": [
-        "x-preview-f-free",  # "Ox Alpha" stealth model — free, 1M ctx, ZDR
         "kimi-k3",
         "kimi-k2.5",
         "kimi-k2.6",
@@ -551,16 +550,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2.7-code",
         "deepseek-v4-pro",
         "deepseek-v4-flash",
-        "deepseek-v4-flash-free",
         "qwen3.6-plus",
         "qwen3.5-plus",
-        "big-pickle",
-        "mimo-v2.5-free",
-        "hy3-free",
-        "laguna-s-2.1-free",
-        "nemotron-3-ultra-free",
-        "nemotron-3.5-lightning-free",
-        "muse-spark-1.2-contributor-free",
     ],
     # OpenCode free tier — keyless (no OpenCode account needed). Synced
     # against live GET /zen/v1/models + anonymous probes (2026-08-21);
@@ -592,8 +583,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-5",
         "mimo-v2.5-pro",
         "mimo-v2.5",
-        "mimo-v2-pro",
-        "mimo-v2-omni",
         "minimax-m3",
         "minimax-m2.7",
         "minimax-m2.5",
@@ -605,7 +594,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen3.6-plus",
         "qwen3.5-plus",
         "hy3",
-        "hy3-preview",
         "muse-spark-1.2-contributor",
         # Go-subscription twin of the Zen keyless Ox Alpha (live go/v1
         # catalog 2026-08-21; NOT keyless — Go relay requires a Go key).

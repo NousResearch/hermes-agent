@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 
@@ -25,6 +27,41 @@ def opencode_zen_profile():
     profile = providers.get_provider_profile("opencode-zen")
     assert profile is not None, "opencode-zen provider profile must be registered"
     return profile
+
+
+class TestOpenCodeGoCatalogFiltering:
+    def test_live_catalog_hides_models_rejected_by_go(self, opencode_go_profile):
+        live = [
+            "glm-5.3",
+            "mimo-v2-pro",
+            "mimo-v2-omni",
+            "hy3-preview",
+            "ox-alpha-free",
+        ]
+
+        with patch("providers.base.ProviderProfile.fetch_models", return_value=live):
+            assert opencode_go_profile.fetch_models(
+                api_key="test-key",
+                base_url="https://opencode.ai/zen/go/v1",
+            ) == ["glm-5.3", "ox-alpha-free"]
+
+    def test_zen_catalog_leaves_free_models_to_keyless_provider(
+        self, opencode_zen_profile
+    ):
+        live = [
+            "gpt-5.6-sol",
+            "x-preview-f-free",
+            "hy3-free",
+            "big-pickle",
+            "deepseek-v4-flash-free",
+            "mimo-v2.5-free",
+        ]
+
+        with patch("providers.base.ProviderProfile.fetch_models", return_value=live):
+            assert opencode_zen_profile.fetch_models(
+                api_key="test-key",
+                base_url="https://opencode.ai/zen/v1",
+            ) == ["gpt-5.6-sol"]
 
 
 class TestOpenCodeZenOxReasoning:

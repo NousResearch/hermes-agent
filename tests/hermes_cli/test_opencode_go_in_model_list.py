@@ -15,11 +15,11 @@ _OPENCODE_GO_REQUIRED = {
     "kimi-k2.5",
     "glm-5.1",
     "glm-5",
-    "mimo-v2-pro",
-    "mimo-v2-omni",
     "minimax-m2.7",
     "minimax-m2.5",
 }
+
+_OPENCODE_GO_UNAVAILABLE = {"hy3-preview", "mimo-v2-pro", "mimo-v2-omni"}
 
 
 @patch.dict(os.environ, {"OPENCODE_GO_API_KEY": "test-key"}, clear=False)
@@ -40,6 +40,10 @@ def test_opencode_go_appears_when_api_key_set():
     assert not missing, (
         f"opencode-go picker should include the curated floor; missing: {sorted(missing)}. "
         f"Got: {opencode_go['models']}"
+    )
+    assert not (_OPENCODE_GO_UNAVAILABLE & present), (
+        "opencode-go picker must hide relay-advertised models that reject "
+        f"generation requests: {sorted(_OPENCODE_GO_UNAVAILABLE & present)}"
     )
     # opencode-go can appear as "built-in" (from PROVIDER_TO_MODELS_DEV when
     # models.dev is reachable) or "hermes" (from HERMES_OVERLAYS fallback when

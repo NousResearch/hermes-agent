@@ -5416,6 +5416,15 @@ class BasePlatformAdapter(ABC):
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
 
+    async def on_processing_activity(
+        self,
+        source: SessionSource,
+        message_id: str,
+        event_type: str,
+        tool_name: Optional[str] = None,
+    ) -> None:
+        """Hook called when the active reasoning/tool state changes."""
+
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Hook called when background processing completes.
 

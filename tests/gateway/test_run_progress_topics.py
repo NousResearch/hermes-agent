@@ -90,6 +90,17 @@ class MediaCaptureProgressAdapter(ProgressCaptureAdapter):
         )
 
 
+class ActivityCaptureAdapter(ProgressCaptureAdapter):
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.activities = []
+
+    async def on_processing_activity(
+        self, source, message_id, event_type, tool_name=None
+    ) -> None:
+        self.activities.append((message_id, event_type, tool_name))
+
+
 class SmallLimitProgressAdapter(ProgressCaptureAdapter):
     """Adapter with a tiny platform limit to exercise progress rollover."""
 
@@ -478,6 +489,60 @@ def _make_runner(adapter):
         stt_enabled=False,
     )
     return runner
+
+
+@pytest.mark.asyncio
+async def test_activity_hook_receives_tool_events_when_visible_progress_is_off(
+    monkeypatch, tmp_path
+):
+    """Silent lifecycle status still receives tool events without progress bubbles."""
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    (tmp_path / "config.yaml").write_text(
+        "display:\n"
+        "  platforms:\n"
+        "    telegram:\n"
+        "      tool_progress: false\n"
+        "      thinking_progress: false\n",
+        encoding="utf-8",
+    )
+
+    adapter = ActivityCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="private",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-activity-only",
+        session_key="agent:main:telegram:private:123",
+        event_message_id="incoming-42",
+    )
+    await asyncio.sleep(0.1)
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+    assert adapter.activities == [
+        ("incoming-42", "tool.started", "terminal"),
+        ("incoming-42", "tool.started", "browser_navigate"),
+    ]
 
 
 @pytest.mark.asyncio

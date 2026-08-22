@@ -38,6 +38,9 @@ class TurnContext:
     _run_still_current: Callable[[], bool] = None  # type: ignore[assignment]
     _live_status_adapter: Any = None
     _live_status_mode: str = "off"
+    _activity_adapter: Any = None
+    _activity_enabled: bool = False
+    _activity_loop: Any = None
     _thinking_enabled: bool = False
     progress_mode: str = "off"
     progress_grouping: str = "grouped"

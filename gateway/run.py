@@ -4333,6 +4333,24 @@ class TurnRunner:
                     ctx._live_status_adapter.set_status_text(ctx.source.chat_id, None)
             except Exception as _ls_err:
                 logger.debug("live status update failed: %s", _ls_err)
+
+        # Platform lifecycle reactions/status are independent of visible
+        # progress messages. Adapters can reflect state without creating a
+        # second chat surface or notification.
+        if ctx._activity_enabled and ctx._run_still_current():
+            safe_schedule_threadsafe(
+                ctx._activity_adapter._run_processing_hook(
+                    "on_processing_activity",
+                    ctx.source,
+                    ctx.event_message_id,
+                    event_type,
+                    tool_name,
+                ),
+                ctx._activity_loop,
+                logger=logger,
+                log_message="processing activity hook scheduling error",
+            )
+
         # "log" mode: append tool.started lines to the log queue and stay
         # silent in chat. Handled before the progress_queue guard because
         # log mode runs without a chat progress queue.
@@ -5816,6 +5834,7 @@ class TurnRunner:
                 ctx.needs_progress_queue
                 or ctx.log_mode_enabled
                 or ctx._live_status_adapter is not None
+                or ctx._activity_enabled
             )
             else None
         )
@@ -28322,6 +28341,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _cleanup_progress = False
             _cleanup_adapter = None
         _cleanup_msg_ids: List[str] = []
+        _activity_adapter = self._adapter_for_source(source)
+        # Activity hooks target the original inbound message. A turn without
+        # that platform reference has no safe status surface and remains a no-op.
+        _activity_enabled = bool(
+            _activity_adapter is not None
+            and event_message_id
+            and type(_activity_adapter).on_processing_activity
+            is not BasePlatformAdapter.on_processing_activity
+        )
+        _activity_loop = asyncio.get_running_loop()
         # First-touch onboarding latch: fires at most once per run, even if
         # several tools exceed the threshold.
         long_tool_hint_fired = [False]
@@ -28332,6 +28361,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _run_still_current=_run_still_current,
             _live_status_adapter=_live_status_adapter,
             _live_status_mode=_live_status_mode,
+            _activity_adapter=_activity_adapter,
+            _activity_enabled=_activity_enabled,
+            _activity_loop=_activity_loop,
             _thinking_enabled=_thinking_enabled,
             progress_mode=progress_mode,
             progress_grouping=progress_grouping,

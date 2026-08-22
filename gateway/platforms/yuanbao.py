@@ -4744,10 +4744,8 @@ class MessageSender:
             return content
 
         divider = "\n-------------\n\n"
-        footer_prefix = '\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder '
         divider_pos = content.find(divider)
-        footer_pos = content.rfind(footer_prefix)
-        if divider_pos < 0 or footer_pos < 0 or footer_pos <= divider_pos:
+        if divider_pos < 0:
             return content
 
         header = content[:divider_pos]
@@ -4755,7 +4753,15 @@ class MessageSender:
             return content
 
         body_start = divider_pos + len(divider)
-        body = content[body_start:footer_pos].strip()
+        body_end = len(content)
+        legacy_footer = re.search(
+            r'\n\nTo stop or manage this job, send me a new message '
+            r'\(e\.g\. "stop reminder [^\r\n]*"\)\.\Z',
+            content,
+        )
+        if legacy_footer and legacy_footer.start() > body_start:
+            body_end = legacy_footer.start()
+        body = content[body_start:body_end].strip()
         return body or content
 
     # -- Cleanup on disconnect ---------------------------------------------

@@ -146,7 +146,68 @@ class TestAcceptanceCriteria(unittest.TestCase):
 
 
 
-if __name__ == '__main__':
+class TestStripCronWrapper(unittest.TestCase):
+    def test_strips_legacy_wrapper_with_footer(self):
+        from gateway.platforms.yuanbao import MessageSender
+
+        wrapped = (
+            'Cronjob Response: daily-report\n'
+            '(job_id: test-job)\n'
+            '-------------\n\n'
+            'Here is today\'s summary.\n\n'
+            'To stop or manage this job, send me a new message (e.g. "stop reminder daily-report").'
+        )
+
+        self.assertEqual(MessageSender.strip_cron_wrapper(wrapped), "Here is today's summary.")
+
+    def test_strips_header_only_wrapper_without_footer(self):
+        from gateway.platforms.yuanbao import MessageSender
+
+        wrapped = (
+            'Cronjob Response: daily-report\n'
+            '(job_id: test-job)\n'
+            '-------------\n\n'
+            'Here is today\'s summary.'
+        )
+
+        self.assertEqual(MessageSender.strip_cron_wrapper(wrapped), "Here is today's summary.")
+
+    def test_preserves_footer_like_text_in_header_only_body(self):
+        from gateway.platforms.yuanbao import MessageSender
+
+        body = (
+            "Migration note.\n\n"
+            'To stop or manage this job, send me a new message (e.g. "stop reminder '
+            "is quoted here as documentation, not appended scheduler guidance."
+        )
+        wrapped = (
+            "Cronjob Response: daily-report\n"
+            "(job_id: test-job)\n"
+            "-------------\n\n"
+            f"{body}"
+        )
+
+        self.assertEqual(MessageSender.strip_cron_wrapper(wrapped), body)
+
+    def test_preserves_complete_footer_sentence_inside_header_only_body(self):
+        from gateway.platforms.yuanbao import MessageSender
+
+        body = (
+            "Quoted delivery example:\n\n"
+            'To stop or manage this job, send me a new message (e.g. "stop reminder daily-report").\n\n'
+            "The report continues after the quoted example."
+        )
+        wrapped = (
+            "Cronjob Response: daily-report\n"
+            "(job_id: test-job)\n"
+            "-------------\n\n"
+            f"{body}"
+        )
+
+        self.assertEqual(MessageSender.strip_cron_wrapper(wrapped), body)
+
+
+if __name__ == "__main__":
     unittest.main(verbosity=2)
 
 

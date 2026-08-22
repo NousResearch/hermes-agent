@@ -90,7 +90,7 @@ hermes cron list   # 将 next_run 时间与本地时间对比
 
 ### 检查 4：响应包装
 
-默认情况下，cron 响应会添加页眉和页脚（`config.yaml` 中的 `cron.wrap_response: true`）。某些平台或集成可能无法正常处理。如需禁用：
+默认情况下，cron 响应使用 `cron.wrap_response: true`，并包含带有 `(job_id: <job-id>)` 的来源头部。通用管理尾部通过 `cron.include_management_footer: false` 默认关闭；设置 `cron.include_management_footer: true` 可恢复该尾部。某些平台或集成可能无法正常处理任何包装。如需通过 `cron.wrap_response: false` 同时禁用头部和尾部：
 
 ```yaml
 cron:

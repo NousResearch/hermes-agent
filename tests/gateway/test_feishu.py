@@ -310,7 +310,13 @@ class TestAdapterModule(unittest.TestCase):
                 self._reconnect_nonce = 30
                 self._reconnect_interval = 120
                 self._ping_interval = 120
+                self._auto_reconnect = True
+                self._conn = None
+                self._conn_url = ""
+                self._conn_id = ""
+                self._service_id = ""
                 self.configure_calls = []
+                self._lock = asyncio.Lock()
 
             def _configure(self, conf):
                 self.configure_calls.append(conf)
@@ -318,10 +324,25 @@ class TestAdapterModule(unittest.TestCase):
                 self._reconnect_interval = conf.ReconnectInterval
                 self._ping_interval = conf.PingInterval
 
-            def start(self):
+            def _get_conn_url(self):
                 conf = SimpleNamespace(ReconnectNonce=99, ReconnectInterval=88, PingInterval=77)
                 self._configure(conf)
-                raise RuntimeError("stop test client")
+                return "wss://example.test/ws?device_id=device-1&service_id=service-2"
+
+            async def _handle_message(self, _msg):
+                return None
+
+            async def _disconnect(self):
+                self._conn = None
+
+            async def _reconnect(self):
+                return None
+
+            async def _ping_loop(self):
+                await asyncio.sleep(3600)
+
+            def _fmt_log(self, template, *args):
+                return template.format(*args)
 
         fake_client = _FakeWSClient()
         fake_adapter = SimpleNamespace(
@@ -333,7 +354,33 @@ class TestAdapterModule(unittest.TestCase):
         )
         fake_client_module = ModuleType("lark_oapi.ws.client")
         fake_client_module.loop = None
-        fake_client_module.websockets = SimpleNamespace(connect=AsyncMock())
+        fake_client_module.logger = SimpleNamespace(info=lambda *_a, **_k: None, error=lambda *_a, **_k: None)
+        fake_client_module._parse_ws_conn_exception = lambda exc: (_ for _ in ()).throw(exc)
+
+        class _FakeConn:
+            async def recv(self):
+                await asyncio.sleep(3600)
+                return b""
+
+        fake_client_module.websockets = SimpleNamespace(
+            connect=AsyncMock(return_value=_FakeConn()),
+            InvalidStatusCode=RuntimeError,
+        )
+
+        async def _fake_select():
+            return None
+
+        fake_client_module._select = _fake_select
+        fake_exception_module = ModuleType("lark_oapi.ws.exception")
+
+        class _FakeClientException(Exception):
+            pass
+
+        class _FakeConnectionClosedException(Exception):
+            pass
+
+        fake_exception_module.ClientException = _FakeClientException
+        fake_exception_module.ConnectionClosedException = _FakeConnectionClosedException
         fake_ws_module = ModuleType("lark_oapi.ws")
         fake_ws_module.client = fake_client_module
         fake_root_module = ModuleType("lark_oapi")
@@ -343,6 +390,7 @@ class TestAdapterModule(unittest.TestCase):
         sys.modules["lark_oapi"] = fake_root_module
         sys.modules["lark_oapi.ws"] = fake_ws_module
         sys.modules["lark_oapi.ws.client"] = fake_client_module
+        sys.modules["lark_oapi.ws.exception"] = fake_exception_module
         try:
             from plugins.platforms.feishu.adapter import _run_official_feishu_ws_client
 
@@ -355,6 +403,93 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(fake_client._reconnect_nonce, 2)
         self.assertEqual(fake_client._reconnect_interval, 3)
         self.assertEqual(fake_client._ping_interval, 4)
+        # The patched client must carry its thread's loop instance-side, and
+        # the worker must have run the loop through its full lifecycle (the
+        # finally block closes it on the way out).
+        self.assertIsNotNone(getattr(fake_client, "_hermes_loop", None))
+        self.assertTrue(fake_client._hermes_loop.is_closed())
+
+    def test_multiplex_loop_proxy_resolves_per_thread(self):
+        """Multiplex regression (#31367): two adapter worker threads each
+        register their own loop; SDK-style reads through the module-global
+        ``lark_oapi.ws.client.loop`` must resolve to the READING thread's
+        loop — even after the other thread registered later. With the plain
+        module-global assignment the second thread's loop would clobber the
+        first one's and cross-profile tasks would land on the wrong loop
+        ("Task got Future attached to a different loop")."""
+        import sys
+        import threading
+        from types import ModuleType
+
+        fake_client_module = ModuleType("lark_oapi.ws.client")
+        fake_client_module.loop = None
+        fake_ws_module = ModuleType("lark_oapi.ws")
+        fake_ws_module.client = fake_client_module
+        fake_root_module = ModuleType("lark_oapi")
+        fake_root_module.ws = fake_ws_module
+
+        original_modules = sys.modules.copy()
+        sys.modules["lark_oapi"] = fake_root_module
+        sys.modules["lark_oapi.ws"] = fake_ws_module
+        sys.modules["lark_oapi.ws.client"] = fake_client_module
+        try:
+            from plugins.platforms.feishu.adapter import (
+                _ThreadLocalLoopProxy,
+                _install_thread_local_ws_loop_proxy,
+            )
+
+            _install_thread_local_ws_loop_proxy()
+            self.assertIsInstance(fake_client_module.loop, _ThreadLocalLoopProxy)
+            # Idempotent: a second install keeps the same proxy instance.
+            proxy = fake_client_module.loop
+            _install_thread_local_ws_loop_proxy()
+            self.assertIs(fake_client_module.loop, proxy)
+
+            results = {}
+            barrier = threading.Barrier(2)
+
+            def _register(loop):
+                """What _run_official_feishu_ws_client does in each worker."""
+                asyncio.set_event_loop(loop)
+                fake_client_module.loop.set_thread_loop(loop)
+
+            def _sdk_read():
+                """What the lark SDK does: attribute access via module global."""
+                task = fake_client_module.loop.create_task(asyncio.sleep(0))
+                return task.get_loop()
+
+            def worker_a():
+                loop_a = asyncio.new_event_loop()
+                _register(loop_a)
+                barrier.wait()  # let worker B register its loop
+                barrier.wait()  # B finished registering
+                # Read AFTER B registered — must still reach A's own loop.
+                results["a_loop"] = loop_a
+                results["a_read_after_b"] = _sdk_read()
+                loop_a.run_until_complete(asyncio.sleep(0))
+                loop_a.close()
+
+            def worker_b():
+                barrier.wait()  # A registered first
+                loop_b = asyncio.new_event_loop()
+                _register(loop_b)
+                results["b_loop"] = loop_b
+                results["b_read"] = _sdk_read()
+                barrier.wait()  # release A
+                loop_b.run_until_complete(asyncio.sleep(0))
+                loop_b.close()
+
+            ta = threading.Thread(target=worker_a)
+            tb = threading.Thread(target=worker_b)
+            ta.start(); tb.start()
+            ta.join(timeout=10); tb.join(timeout=10)
+
+            self.assertIs(results["b_read"], results["b_loop"])
+            self.assertIs(results["a_read_after_b"], results["a_loop"])
+            self.assertIsNot(results["a_loop"], results["b_loop"])
+        finally:
+            sys.modules.clear()
+            sys.modules.update(original_modules)
 
 
 def _admits_group(adapter, message, sender_id, chat_id=""):

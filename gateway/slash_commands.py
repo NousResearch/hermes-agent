@@ -3536,12 +3536,26 @@ class GatewaySlashCommandsMixin:
         preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
         return t("gateway.background.started", preview=preview, task_id=task_id)
 
-    def _save_gateway_config_key(self, key_path: str, value) -> bool:
+    def _command_profile_home_for_source(self, source):
+        """Routed multiplex profile home for this slash command, if any.
+
+        Same capture as ``_handle_model_command``: the primary adapter
+        dispatches under the process/default scope, so callers must resolve
+        the source's profile before reading or writing config.yaml (#87939).
+        """
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return None
+        resolve = getattr(self, "_resolve_profile_home_for_source", None)
+        if resolve is None:
+            return None
+        return resolve(source)
+
+    def _save_gateway_config_key(self, key_path: str, value, profile_home=None) -> bool:
         """Save a dot-separated key to config.yaml (shared by /reasoning, /fast
         and their interactive pickers)."""
-        from gateway.run import _hermes_home
+        from gateway.run import _gateway_config_home
         from hermes_cli.config import read_user_config_raw
-        config_path = _hermes_home / "config.yaml"
+        config_path = (profile_home or _gateway_config_home()) / "config.yaml"
         try:
             # Write-back round-trip: raw read is correct (merged defaults must
             # not be persisted back to the user's file).
@@ -3554,6 +3568,15 @@ class GatewaySlashCommandsMixin:
                 current = current[k]
             current[keys[-1]] = value
             atomic_config_write(config_path, user_config)
+            # save_config() pops this; atomic_config_write does not.
+            # Same-size edits (none→high) can keep a stale read_raw_config
+            # hit for the next /reasoning status in this process (#87939).
+            try:
+                from hermes_cli.config import _RAW_CONFIG_CACHE
+
+                _RAW_CONFIG_CACHE.pop(str(config_path), None)
+            except Exception:
+                pass
             return True
         except Exception as e:
             logger.error("Failed to save config key %s: %s", key_path, e)
@@ -3565,6 +3588,7 @@ class GatewaySlashCommandsMixin:
         platform_key: str,
         value: str,
         persist_global: bool = False,
+        profile_home=None,
     ) -> str:
         """Apply a /reasoning argument (typed or picked) and return the reply.
 
@@ -3580,13 +3604,17 @@ class GatewaySlashCommandsMixin:
         if value in {"show", "on"}:
             self._show_reasoning = True
             self._save_gateway_config_key(
-                f"display.platforms.{platform_key}.show_reasoning", True
+                f"display.platforms.{platform_key}.show_reasoning",
+                True,
+                profile_home=profile_home,
             )
             return t("gateway.reasoning.display_set_on", platform=platform_key)
         if value in {"hide", "off"}:
             self._show_reasoning = False
             self._save_gateway_config_key(
-                f"display.platforms.{platform_key}.show_reasoning", False
+                f"display.platforms.{platform_key}.show_reasoning",
+                False,
+                profile_home=profile_home,
             )
             return t("gateway.reasoning.display_set_off", platform=platform_key)
 
@@ -3594,7 +3622,13 @@ class GatewaySlashCommandsMixin:
             if persist_global:
                 return t("gateway.reasoning.reset_global_unsupported")
             self._set_session_reasoning_override(session_key, None)
-            self._reasoning_config = self._load_reasoning_config()
+            if profile_home is not None:
+                from gateway.run import _profile_runtime_scope
+
+                with _profile_runtime_scope(profile_home):
+                    self._reasoning_config = self._load_reasoning_config()
+            else:
+                self._reasoning_config = self._load_reasoning_config()
             self._evict_cached_agent(session_key)
             return t("gateway.reasoning.reset_done")
 
@@ -3604,7 +3638,9 @@ class GatewaySlashCommandsMixin:
 
         self._reasoning_config = parsed
         if persist_global:
-            if self._save_gateway_config_key("agent.reasoning_effort", value):
+            if self._save_gateway_config_key(
+                "agent.reasoning_effort", value, profile_home=profile_home
+            ):
                 self._set_session_reasoning_override(session_key, None)
                 self._evict_cached_agent(session_key)
                 return t("gateway.reasoning.set_global", effort=value)
@@ -3693,7 +3729,7 @@ class GatewaySlashCommandsMixin:
             /reasoning show|on               Show model reasoning in responses
             /reasoning hide|off              Hide model reasoning from responses
         """
-        from gateway.run import _platform_config_key
+        from gateway.run import _platform_config_key, _profile_runtime_scope
 
         raw_args = event.get_command_args().strip()
         args, persist_global = self._parse_reasoning_command_args(raw_args)
@@ -3702,17 +3738,27 @@ class GatewaySlashCommandsMixin:
         # reads — same fix as /model (#30479).
         _reasoning_source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(_reasoning_source)
-        self._show_reasoning = self._load_show_reasoning()
+        _command_profile_home = self._command_profile_home_for_source(_reasoning_source)
         # Use the session's effective model (session /model override wins over
         # config default) so per-model reasoning_overrides display correctly.
         _session_model = str(
             ((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {}).get("model") or ""
         )
-        self._reasoning_config = self._resolve_session_reasoning_config(
-            source=event.source,
-            session_key=session_key,
-            model=_session_model,
-        )
+        if _command_profile_home is not None:
+            with _profile_runtime_scope(_command_profile_home):
+                self._show_reasoning = self._load_show_reasoning()
+                self._reasoning_config = self._resolve_session_reasoning_config(
+                    source=event.source,
+                    session_key=session_key,
+                    model=_session_model,
+                )
+        else:
+            self._show_reasoning = self._load_show_reasoning()
+            self._reasoning_config = self._resolve_session_reasoning_config(
+                source=event.source,
+                session_key=session_key,
+                model=_session_model,
+            )
 
         if not raw_args:
             # Show current state
@@ -3744,7 +3790,10 @@ class GatewaySlashCommandsMixin:
 
             async def _on_reasoning_choice(_chat_id: str, value: str) -> str:
                 return self._apply_reasoning_selection(
-                    session_key, _picker_platform_key, value
+                    session_key,
+                    _picker_platform_key,
+                    value,
+                    profile_home=_command_profile_home,
                 )
 
             picker_sent = await self._try_send_choice_picker(
@@ -3772,7 +3821,11 @@ class GatewaySlashCommandsMixin:
         # Typed argument path — same applier the picker uses.
         platform_key = _platform_config_key(event.source.platform)
         return self._apply_reasoning_selection(
-            session_key, platform_key, args, persist_global=persist_global
+            session_key,
+            platform_key,
+            args,
+            persist_global=persist_global,
+            profile_home=_command_profile_home,
         )
 
     async def _handle_memory_command(self, event: MessageEvent) -> str:
@@ -3883,7 +3936,11 @@ class GatewaySlashCommandsMixin:
         Session-scoped by default; ``--global`` persists agent.service_tier
         to config.yaml (parity with /model and /reasoning).
         """
-        from gateway.run import _load_gateway_config, _resolve_gateway_model
+        from gateway.run import (
+            _load_gateway_config,
+            _profile_runtime_scope,
+            _resolve_gateway_model,
+        )
         from hermes_cli.models import model_supports_fast_mode
 
         raw_args = event.get_command_args().strip().lower()
@@ -3891,11 +3948,22 @@ class GatewaySlashCommandsMixin:
         # normalizes unicode dashes.
         args, persist_global = self._parse_reasoning_command_args(raw_args)
         session_key = self._session_key_for_source(event.source)
-        self._service_tier = self._resolve_session_service_tier(
-            session_key=session_key
-        )
-
-        user_config = _load_gateway_config()
+        _command_profile_home = self._command_profile_home_for_source(event.source)
+        # Resolve tier + model under the same home as --global writes.
+        # Loading service_tier before the scope (then clearing the session
+        # override on persist) made a follow-up /fast report the default
+        # profile (#87939 dual-step).
+        if _command_profile_home is not None:
+            with _profile_runtime_scope(_command_profile_home):
+                self._service_tier = self._resolve_session_service_tier(
+                    session_key=session_key
+                )
+                user_config = _load_gateway_config()
+        else:
+            self._service_tier = self._resolve_session_service_tier(
+                session_key=session_key
+            )
+            user_config = _load_gateway_config()
         model = _resolve_gateway_model(user_config)
         if not model_supports_fast_mode(model):
             return t("gateway.fast.not_supported")
@@ -3914,7 +3982,11 @@ class GatewaySlashCommandsMixin:
                 return t("gateway.fast.unknown_arg", arg=value)
             self._service_tier = tier
             if persist:
-                if self._save_gateway_config_key("agent.service_tier", saved_value):
+                if self._save_gateway_config_key(
+                    "agent.service_tier",
+                    saved_value,
+                    profile_home=_command_profile_home,
+                ):
                     # Global write supersedes any session override.
                     self._set_session_service_tier_override(
                         session_key, None, clear=True

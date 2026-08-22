@@ -421,6 +421,8 @@ export interface Translations {
     distribution?: string;
     advancedOptions?: string;
     cloneAll?: string;
+    cloneConfigDetails?: string;
+    cloneAllDetails?: string;
     noSkillsOption?: string;
     descriptionOptional?: string;
     modelOptional?: string;

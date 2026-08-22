@@ -80,9 +80,9 @@ Creates a new profile.
 | Argument / Option | Description |
 |-------------------|-------------|
 | `<name>` | Name for the new profile. Must be a valid directory name (alphanumeric, hyphens, underscores). |
-| `--clone` | Copy `config.yaml`, `.env`, `SOUL.md`, and skills from the current profile. |
+| `--clone` | Copy `config.yaml`, `.env` credentials, `SOUL.md`, curated memory (`MEMORY.md` and `USER.md`), and skills from the current profile. Session history remains fresh. |
 | `--clone-all` | Copy everything (config, memories, skills, cron, plugins) from the current profile. Excludes per-profile history: sessions, `state.db`, backups, state-snapshots, checkpoints. |
-| `--clone-from <profile>` | Clone config/skills/SOUL from a specific profile instead of the current one. Implies `--clone` unless paired with `--clone-all`. |
+| `--clone-from <profile>` | Clone config, `.env` credentials, SOUL, curated memory, and skills from a specific profile instead of the current one. Implies `--clone` unless paired with `--clone-all`. |
 | `--no-alias` | Skip wrapper script creation. |
 | `--description "<text>"` | One- or two-sentence description of what this profile is good at. Used by the kanban orchestrator to route tasks based on role instead of profile name alone. Skip and add later via `hermes profile describe`. Persisted in `<profile_dir>/profile.yaml`. |
 | `--no-skills` | Create an **empty** profile with zero bundled skills enabled. Writes a `.no-bundled-skills` marker into the profile so future `hermes update` runs won't re-seed the bundled set, and refuses to combine with `--clone`, `--clone-from`, or `--clone-all` (which would copy skills in anyway). Useful for narrow orchestrator profiles or sandbox profiles that should not inherit the full skill catalog. To toggle this on an already-created profile (including the default `~/.hermes`), use `hermes skills opt-out` / `hermes skills opt-in`. |
@@ -95,13 +95,13 @@ Creating a profile does **not** make that profile directory the default project/
 # Blank profile — needs full setup
 hermes profile create mybot
 
-# Clone config only from current profile
+# Clone setup and curated memory from current profile
 hermes profile create work --clone
 
 # Clone everything from current profile
 hermes profile create backup --clone-all
 
-# Clone config from a specific profile
+# Clone setup and curated memory from a specific profile
 hermes profile create work2 --clone-from work
 
 # Clone everything from a specific profile

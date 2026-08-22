@@ -293,7 +293,7 @@ export const it: Translations = {
     nameRequired: "Il nome è obbligatorio",
     nameRule:
       "Solo lettere minuscole, cifre, _ e -; deve iniziare con una lettera o cifra; fino a 64 caratteri.",
-    invalidName: "Nome del profilo non valido",    cloneFrom: "Clona configurazione dal profilo",
+    invalidName: "Nome del profilo non valido",    cloneFrom: "Clona dal profilo",
     cloneFromNone: "Nessuno (vuoto)",
     allProfiles: "Profili",
     noProfiles: "Nessun profilo trovato.",

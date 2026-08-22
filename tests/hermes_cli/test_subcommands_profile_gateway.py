@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
+
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 
@@ -33,6 +35,23 @@ def _profile_parser():
     sub = p.add_subparsers(dest="command")
     build_profile_parser(sub, cmd_profile=_h_profile)
     return p
+
+
+def test_profile_clone_help_discloses_copy_and_exclusion_contract(capsys):
+    p = _profile_parser()
+
+    with pytest.raises(SystemExit) as exc_info:
+        p.parse_args(["profile", "create", "--help"])
+
+    assert exc_info.value.code == 0
+    output = " ".join(capsys.readouterr().out.split())
+    assert "curated memory" in output
+    assert ".env credentials" in output
+    assert "session history" in output
+    assert "state.db" in output
+    assert "backups" in output
+    assert "snapshots" in output
+    assert "checkpoints" in output
 
 
 def _gateway_parser():

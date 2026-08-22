@@ -722,6 +722,7 @@ def get_last_init_error() -> Optional[str]:
 # (_SKILL_REVIEW_PROMPT and _MEMORY_REVIEW_PROMPT in agent/background_review.py).
 # Matched case-sensitively against the leading content of a user/system message.
 _REVIEW_HARNESS_PREFIXES = (
+    "Review the conversation above for durable skill learning",
     "Review the conversation above and update the skill library",
     "Review the conversation above and consider saving to memory",
 )

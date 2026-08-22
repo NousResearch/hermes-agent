@@ -1,7 +1,7 @@
 """Behavior tests for the skill review / combined review prompts.
 
-The review prompts steer the background review agent toward actively updating
-the skill library after most sessions, with a strong bias toward:
+The review prompts steer the background review agent toward durable, selective
+learning, with a preference order for qualifying changes:
   1. Patching currently-loaded skills first,
   2. Patching existing umbrellas next,
   3. Adding references/ files under an existing umbrella,
@@ -21,16 +21,16 @@ from run_agent import AIAgent
 # _SKILL_REVIEW_PROMPT
 # ---------------------------------------------------------------------------
 
-def test_skill_review_prompt_biases_toward_active_updates():
-    """Prompt must frame updating as the default stance, not something rare."""
+def test_skill_review_prompt_treats_null_as_valid_outcome():
+    """Routine sessions must not be pressured into manufacturing skill writes."""
     prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "ACTIVE" in prompt or "active" in prompt.lower(), (
-        "must tell the reviewer to be active"
-    )
-    # "missed learning opportunity" or equivalent framing for not acting
-    assert "missed" in prompt.lower() or "opportunity" in prompt.lower(), (
-        "must frame inaction as a miss, not a neutral outcome"
-    )
+    lower = prompt.lower()
+    assert "most sessions produce at least one skill update" not in lower
+    assert "missed learning opportunity" not in lower
+    assert "null review" in lower and "valid outcome" in lower
+    assert "verified reusable method" in lower
+    assert "demonstrated skill defect" in lower
+    assert "when the durable gate above is met, use the preference order" in lower
 
 
 def test_skill_review_prompt_treats_user_corrections_as_skill_signal():
@@ -45,6 +45,9 @@ def test_skill_review_prompt_treats_user_corrections_as_skill_signal():
     assert "FIRST-CLASS" in prompt or "first-class" in prompt, (
         "must explicitly label user-preference corrections as first-class skill signals"
     )
+    assert "not an automatic write" in lower
+    assert "explicitly corrects" in lower
+    assert "pattern repeats" in lower
     # Must mention the correction-type phrases to tune the model's ear
     assert "stop doing" in lower or "don't" in lower or "hate" in lower or "frustrat" in lower, (
         "must give concrete phrasing examples so the model recognizes corrections"
@@ -149,5 +152,5 @@ def test_combined_review_prompt_rejects_unresolved_failures():
 
 
 # ---------------------------------------------------------------------------
-# _MEMORY_REVIEW_PROMPT — unchanged, still memory-focused
+# _MEMORY_REVIEW_PROMPT — user-stated or user-confirmed facts/preferences only
 # ---------------------------------------------------------------------------

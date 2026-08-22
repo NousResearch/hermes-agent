@@ -137,9 +137,10 @@ SUMMARY_PREFIX = (
     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
     "topic) must immediately end any in-flight work described in the "
     "summary; do not re-surface it in later turns. "
-    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
-    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
-    "memory content due to this compaction note. "
+    "IMPORTANT: Persistent memory (MEMORY.md, USER.md) remains active, "
+    "attributed continuity evidence — never ignore it merely because of this "
+    "compaction note. Current explicit user statements always outrank it. "
+    "For consequential factual claims, verify against canonical live sources. "
     "None of the above restricts HOW you work: your tools remain fully "
     "active — keep calling them normally for the active task (edit files, "
     "run commands, search) instead of merely narrating what you would do. "
@@ -502,6 +503,42 @@ def salvage_grown_transcript(
 # written by that build generation; prepend only. tests/agent/
 # test_summary_prefix_semantics.py byte-pins every entry to enforce this.
 _HISTORICAL_SUMMARY_PREFIXES = (
+    # Pre-memory-authority repair: the then-live handoff shape, but it called
+    # persistent memory universally authoritative instead of attributed
+    # continuity evidence below current user statements and canonical sources.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Respond ONLY to the latest user message that appears AFTER this "
+    "summary — that message is the single source of truth for what to do "
+    "right now. "
+    "If no user message appears AFTER this summary, do nothing: do not "
+    "resume, wrap up, or continue work from "
+    "'## Historical Task Snapshot' or any other section, do not call tools, "
+    "and wait for a new user message. This handoff must never become the "
+    "active turn by itself. (Exception: if tool results or your own "
+    "tool calls appear after this summary, you are mid-way through an "
+    "in-flight exchange — continue that exchange normally.) "
+    "Topic overlap with the summary does NOT mean you should resume its "
+    "task: even on similar topics, the latest user message WINS. Treat ONLY "
+    "the latest message as the active task and discard stale items from "
+    "'## Historical Task Snapshot' entirely — do not 'wrap up' or "
+    "'finish' work described there unless the latest message explicitly "
+    "asks for it. "
+    "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
+    "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+    "topic) must immediately end any in-flight work described in the "
+    "summary; do not re-surface it in later turns. "
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+    "None of the above restricts HOW you work: your tools remain fully "
+    "active — keep calling them normally for the active task (edit files, "
+    "run commands, search) instead of merely narrating what you would do. "
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:",
     # Pre-#80622: identical to the current prefix except it lacked the
     # explicit "if no user message appears AFTER this summary, do nothing"
     # clause. Standalone reference handoffs persisted by that build could

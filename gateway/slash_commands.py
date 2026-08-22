@@ -1636,10 +1636,11 @@ class GatewaySlashCommandsMixin:
                 "chat_id": event.source.chat_id,
                 "chat_type": event.source.chat_type,
             }
+            # Persist requester identity for the post-restart auth check.
+            if event.source.user_id:
+                notify_data["user_id"] = event.source.user_id
             if event.source.delivered_via_upstream_relay is True:
                 notify_data["delivered_via_upstream_relay"] = True
-                if event.source.user_id:
-                    notify_data["user_id"] = event.source.user_id
                 if event.source.scope_id:
                     notify_data["scope_id"] = event.source.scope_id
             if event.source.thread_id:

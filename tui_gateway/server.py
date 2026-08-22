@@ -5534,6 +5534,7 @@ def _get_usage(agent) -> dict:
         "completion": g("session_completion_tokens"),
         "total": g("session_total_tokens"),
         "calls": g("session_api_calls"),
+        "cache_read": g("session_cache_read_tokens"),
     }
     comp = getattr(agent, "context_compressor", None)
     if comp:

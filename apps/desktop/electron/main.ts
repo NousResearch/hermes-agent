@@ -40,8 +40,12 @@ import { backendCommandMatches, createBackendOwnership, createBackendShutdownCoo
 import {
   canImportHermesCli,
   execProbeSync,
+  findAcceptablePython,
   PROBE_TIMEOUT_MS,
+  pythonResolutionFailureMessage,
+  resolvePythonForRoot,
   shouldTrustHermesOverride,
+  SUPPORTED_PYTHON_VERSIONS,
   verifyHermesCli
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
@@ -2291,39 +2295,85 @@ function isHermesSourceRoot(root) {
 }
 
 function findPythonForRoot(root) {
-  const override = process.env.HERMES_DESKTOP_PYTHON
+  // Precedence itself lives in backend-probes.resolvePythonForRoot (pure,
+  // electron-free, unit-tested). The only rung that needs main.ts context is
+  // the system walk, injected below.
+  //
+  // Falling through to PATH means we're about to hand the spawn step an
+  // interpreter nobody pointed us at. That was the one rung of this ladder
+  // that skipped the guard the other rungs already apply (rung 4 gates on
+  // verifyHermesCli; rung 5 and isActiveRuntimeUsable gate on
+  // canImportHermesCli), and it is how an out-of-range `python3` -- 3.9.6 from
+  // macOS CommandLineTools/Xcode, or Debian 11 / Ubuntu 20.04's system python3
+  // -- got selected for a `requires-python = ">=3.11"` codebase and died on
+  // PEP 604 syntax during module import. Probe here too, and keep walking on
+  // failure, so a wrong candidate demotes instead of becoming a dead backend.
+  const python = resolvePythonForRoot({
+    root,
+    override: process.env.HERMES_DESKTOP_PYTHON,
+    isWindows: IS_WINDOWS,
+    fileExists,
+    canImport: canRunHermesFromRoot,
+    findSystemPython: accept => findSystemPython({ accept })
+  })
 
-  if (override && fileExists(override)) {
-    return override
+  if (!python) {
+    rememberLog(`[backend] ${pythonResolutionFailureMessage(root)}`)
   }
 
-  const relativePaths = IS_WINDOWS
-    ? [path.join('.venv', 'Scripts', 'python.exe'), path.join('venv', 'Scripts', 'python.exe')]
-    : [path.join('.venv', 'bin', 'python'), path.join('venv', 'bin', 'python')]
-
-  for (const relativePath of relativePaths) {
-    const candidate = path.join(root, relativePath)
-
-    if (fileExists(candidate)) {
-      return candidate
-    }
-  }
-
-  return findSystemPython()
+  return python
 }
 
-function findSystemPython() {
+// Memoized `can this interpreter import Hermes with <root> on PYTHONPATH?`.
+//
+// canImportHermesCli spawns a subprocess, and resolveHermesBackend runs more
+// than once per process (initial boot, post-bootstrap re-resolve, manual
+// restart). Cache per interpreter+root exactly like _serveSupportCache does
+// for `serve` support, so repeat resolutions are free. Safe to hold for the
+// process lifetime: bootstrap installs into VENV_ROOT, which rung 3 resolves
+// via getVenvPython() without consulting this walk, so a cached "no" for a
+// system interpreter cannot go stale underneath us.
+const _hermesImportableCache = new Map()
+
+function canRunHermesFromRoot(candidate, root) {
+  const key = `${candidate}::${root || ''}`
+
+  if (_hermesImportableCache.has(key)) {
+    return _hermesImportableCache.get(key)
+  }
+
+  const pythonPath = [root, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
+  const result = canImportHermesCli(candidate, pythonPath ? { env: { PYTHONPATH: pythonPath } } : {})
+
+  _hermesImportableCache.set(key, result)
+
+  return result
+}
+
+// `accept` decides whether a located interpreter is actually trusted. It is a
+// REQUIRED option, and `{ accept: null }` (first resolvable candidate wins) is
+// a legal answer -- but it has to be written down. main.ts can't be unit-tested
+// (it imports electron), so a silently-omittable gate here is one an edit can
+// drop with the whole suite still green; that is precisely how this rung ended
+// up as the only one in the ladder spawning an unvetted interpreter. Making the
+// option required moves that regression from "invisible" to "fails typecheck."
+function findSystemPython(options: { accept: ((candidate: string) => boolean) | null }) {
+  const accept = options.accept
+
   if (!IS_WINDOWS) {
-    // POSIX systems: PATH lookup is safe.
-    for (const command of ['python3', 'python']) {
-      const candidate = findOnPath(command)
-
-      if (candidate) {
-        return candidate
-      }
-    }
-
-    return null
+    // POSIX systems: PATH lookup is safe. Try explicitly-versioned names
+    // before the bare ones so the SUPPORTED_VERSIONS floor Windows enforces
+    // below applies here too -- `python3` is 3.9 on macOS CommandLineTools
+    // and on Debian 11 / Ubuntu 20.04, which cannot import hermes_cli at all.
+    // The version ordering is a preference; `accept` is the actual proof.
+    //
+    // `fileExists` + `platform` additionally enable the macOS
+    // Homebrew-before-PATH pass: a Finder/Dock launch inherits launchd's
+    // environment, where PATH is /usr/bin:/bin:/usr/sbin:/sbin and Homebrew is
+    // absent -- so a PATH-only search on a GUI launch cannot see an installed
+    // /opt/homebrew/bin/python3.12 and settles for /usr/bin/python3 (3.9.6).
+    // Same shape as the version ordering: a preference, still gated by accept.
+    return findAcceptablePython({ findOnPath, accept, fileExists, platform: process.platform })
   }
 
   // Windows: PATH-based detection has TWO landmines we have to dodge.
@@ -2365,8 +2415,15 @@ function findSystemPython() {
   //          py.exe's default is (which on a 3.14-only box would be
   //          3.14).
 
-  const SUPPORTED_VERSIONS = ['3.11', '3.12', '3.13']
-  const SUPPORTED_VERSIONS_NO_DOT = ['311', '312', '313']
+  // Shared with the POSIX walk above via backend-probes so the floor from
+  // `requires-python` lives in exactly one place.
+  const SUPPORTED_VERSIONS = SUPPORTED_PYTHON_VERSIONS
+  const SUPPORTED_VERSIONS_NO_DOT = SUPPORTED_VERSIONS.map(version => version.replace('.', ''))
+
+  // A registry / install-dir / py.exe hit proves the version, not that Hermes
+  // can actually run on it. When the caller supplied a validator, apply it
+  // here too and keep walking on failure -- same contract as the POSIX walk.
+  const acceptCandidate = candidate => !accept || accept(candidate)
 
   // Pass 1: registry. Use `reg query` since main process doesn't have
   // a reliable in-process registry API across all electron versions.
@@ -2389,7 +2446,7 @@ function findSystemPython() {
           const installPath = match[1].trim()
           const pythonExe = path.join(installPath, 'python.exe')
 
-          if (fileExists(pythonExe)) {
+          if (fileExists(pythonExe) && acceptCandidate(pythonExe)) {
             return pythonExe
           }
         }
@@ -2406,14 +2463,14 @@ function findSystemPython() {
   for (const versionDir of SUPPORTED_VERSIONS_NO_DOT) {
     const systemWide = path.join(programFiles, `Python${versionDir}`, 'python.exe')
 
-    if (fileExists(systemWide)) {
+    if (fileExists(systemWide) && acceptCandidate(systemWide)) {
       return systemWide
     }
 
     if (localAppData) {
       const perUser = path.join(localAppData, 'Programs', 'Python', `Python${versionDir}`, 'python.exe')
 
-      if (fileExists(perUser)) {
+      if (fileExists(perUser) && acceptCandidate(perUser)) {
         return perUser
       }
     }
@@ -2445,7 +2502,7 @@ function findSystemPython() {
 
         const candidate = out.trim()
 
-        if (candidate && fileExists(candidate)) {
+        if (candidate && fileExists(candidate) && acceptCandidate(candidate)) {
           return candidate
         }
       } catch {
@@ -4426,7 +4483,12 @@ function createPythonBackend(root, label, backendArgs, options: any = {}) {
 // ensureRuntime() to create / refresh it before launch.
 function createActiveBackend(backendArgs) {
   const venvPython = getVenvPython(VENV_ROOT)
-  const command = fileExists(venvPython) ? venvPython : findSystemPython()
+  // accept: null on purpose. This backend is returned with bootstrap=true, so
+  // when VENV_ROOT has no interpreter yet the installer is what makes the
+  // runtime usable -- ensureRuntime() then rewrites backend.command to the
+  // freshly-built venv python. Probing a pre-bootstrap candidate for a venv
+  // that doesn't exist yet would reject every candidate and buy nothing.
+  const command = fileExists(venvPython) ? venvPython : findSystemPython({ accept: null })
 
   return {
     kind: 'python',
@@ -4569,31 +4631,35 @@ function resolveHermesBackend(backendArgs) {
   // 5. Last-ditch: pip-installed hermes_cli module via system Python.
   //    Same rationale as #4 -- the user installed this; we use it but don't
   //    take ownership.
-  const python = findSystemPython()
+  //
+  //    Same smoke-test rationale as step 4: a system Python in the
+  //    SUPPORTED_VERSIONS range can be registered (PEP 514) without having
+  //    hermes_cli installed -- common on dev boxes that have a python.org
+  //    install from prior unrelated work. Returning that backend hands the
+  //    spawn step a guaranteed ModuleNotFoundError. There is no source root to
+  //    put on PYTHONPATH here (this rung is for a pip-installed hermes_cli),
+  //    so the probe runs against the interpreter's own site-packages.
+  //
+  //    The probe is passed as the walk's `accept` rather than applied to a
+  //    single winner: the first interpreter on PATH without hermes_cli used to
+  //    end this rung outright, even when the next candidate had it. On
+  //    failure, we fall through to step 6 so the bootstrap runner pulls a
+  //    uv-managed 3.11 into %LOCALAPPDATA%\hermes\hermes-agent\venv.
+  const python = findSystemPython({ accept: candidate => canRunHermesFromRoot(candidate, null) })
 
   if (python) {
-    // Same smoke-test rationale as step 4: a system Python in the
-    // SUPPORTED_VERSIONS range can be registered (PEP 514) without
-    // having hermes_cli installed -- common on dev boxes that have
-    // a python.org install from prior unrelated work. Returning that
-    // backend hands the spawn step a guaranteed ModuleNotFoundError.
-    // Verify the import works before trusting the candidate; on
-    // failure, fall through to step 6 so the bootstrap runner pulls
-    // a uv-managed 3.11 into %LOCALAPPDATA%\hermes\hermes-agent\venv.
-    if (canImportHermesCli(python)) {
-      return {
-        kind: 'python',
-        label: `installed hermes_cli module via ${python}`,
-        command: python,
-        args: ['-m', 'hermes_cli.main', ...backendArgs],
-        bootstrap: false,
-        env: {},
-        shell: false
-      }
+    return {
+      kind: 'python',
+      label: `installed hermes_cli module via ${python}`,
+      command: python,
+      args: ['-m', 'hermes_cli.main', ...backendArgs],
+      bootstrap: false,
+      env: {},
+      shell: false
     }
-
-    rememberLog(`Ignoring system Python ${python}: hermes_cli is not importable; falling through to bootstrap.`)
   }
+
+  rememberLog('No system Python with an importable hermes_cli was found; falling through to bootstrap.')
 
   // 6. Nothing usable yet -- signal the bootstrap runner that we need to
   //    clone+install. Phase 1D's bootstrap-runner consumes this sentinel
@@ -14790,7 +14856,11 @@ async function runDesktopUninstall(mode) {
   let pythonPath = null
 
   if (modeRemovesAgent(mode)) {
-    const sysPy = findSystemPython()
+    // accept: null on purpose. This interpreter only has to run shutil.rmtree
+    // over the venv; it does not need to import Hermes. Requiring an importable
+    // hermes_cli here would reject perfectly good interpreters and push the
+    // uninstall back onto the venv python we're trying to delete.
+    const sysPy = findSystemPython({ accept: null })
 
     if (sysPy) {
       py = sysPy

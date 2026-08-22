@@ -2938,21 +2938,50 @@ def _cmd_stats(args: argparse.Namespace) -> int:
 
 
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
+    thread_id = args.thread_id
+    inherited_from = None
     with kb.connect_closing() as conn:
         if kb.get_task(conn, args.task_id) is None:
             print(f"no such task: {args.task_id}", file=sys.stderr)
             return 1
+        if thread_id is None:
+            # Omitting --thread-id defaults to '' (the chat's root lane, not
+            # any topic/thread). If this task already has a subscription for
+            # the same platform+chat (e.g. the auto-subscribe made at task
+            # creation from that exact chat), reuse its thread_id instead of
+            # silently dropping back to the root lane.
+            for sub in kb.list_notify_subs(conn, args.task_id):
+                if (
+                    str(sub.get("platform", "")).lower() == args.platform.lower()
+                    and sub.get("chat_id") == args.chat_id
+                    and sub.get("thread_id")
+                ):
+                    thread_id = sub["thread_id"]
+                    inherited_from = sub
+                    break
         kb.add_notify_sub(
             conn, task_id=args.task_id,
             platform=args.platform, chat_id=args.chat_id,
             chat_type=args.chat_type,
-            thread_id=args.thread_id, user_id=args.user_id,
+            thread_id=thread_id, user_id=args.user_id,
             user_id_alt=getattr(args, "user_id_alt", None),
             notifier_profile=args.notifier_profile or _profile_author(),
             delivery_mode=getattr(args, "delivery_mode", None),
         )
+    if inherited_from is not None:
+        print(f"(no --thread-id given; inherited thread_id={thread_id} from this "
+              f"task's existing {args.platform}:{args.chat_id} subscription)",
+              file=sys.stderr)
+    elif (
+        thread_id is None
+        and args.platform.lower() == "telegram"
+        and args.chat_type in (None, "dm")
+    ):
+        print("warning: no --thread-id given and no existing subscription to "
+              "infer one from; the completion ping will be delivered to the "
+              "chat's DM root, not a specific topic", file=sys.stderr)
     print(f"Subscribed {args.platform}:{args.chat_id}"
-          + (f":{args.thread_id}" if args.thread_id else "")
+          + (f":{thread_id}" if thread_id else "")
           + f" to {args.task_id}")
     return 0
 

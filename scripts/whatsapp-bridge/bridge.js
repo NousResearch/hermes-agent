@@ -12,6 +12,7 @@
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
  *   POST /send-location  - Send location pin { chatId, latitude, longitude, name?, address? }
  *   POST /typing         - Send typing indicator { chatId }
+ *   GET  /groups         - List groups the connected account participates in
  *   GET  /chat/:id       - Get chat info
  *   GET  /health         - Health check
  *
@@ -33,6 +34,7 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { registerGroupRoutes } from './group_routes.js';
 import {
   buildPollPayload,
   createReconnectScheduler,
@@ -1076,6 +1078,11 @@ app.post('/read', async (req, res) => {
     console.warn('[bridge] failed to send read receipt:', err.message);
     return res.status(500).json({ error: 'Failed to send read receipt' });
   }
+});
+
+registerGroupRoutes(app, {
+  getSocket: () => sock,
+  isConnected: () => connectionState === 'connected',
 });
 
 // Chat info

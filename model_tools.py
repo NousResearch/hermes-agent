@@ -81,6 +81,62 @@ def _is_dispatcher_owned_worker() -> bool:
         return True
 
 
+_TERMINAL_KANBAN_WORKER_TOOLS = frozenset({"kanban_complete", "kanban_block"})
+
+
+def _configured_worker_kanban_tool_allowlist() -> Optional[set[str]]:
+    """Return the configured dispatcher-worker Kanban surface, if any.
+
+    Normal chat/orchestrator sessions keep the full configured tool surface.
+    Dispatcher workers may opt into a smaller Kanban schema for local models
+    that become unreliable when presented with the full lifecycle catalog.
+    Terminal completion/block tools are always retained so the worker protocol
+    cannot be configured into an impossible-to-finish state.
+    """
+    if (
+        not os.environ.get("HERMES_KANBAN_TASK")
+        or _is_delegated_child_context()
+        or not _is_dispatcher_owned_worker()
+    ):
+        return None
+
+    try:
+        from agent.skill_utils import parse_config_string_list
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        kanban_config = config.get("kanban") or {}
+        if not isinstance(kanban_config, dict) or "worker_tools" not in kanban_config:
+            return None
+        configured = parse_config_string_list(kanban_config.get("worker_tools"))
+    except Exception:
+        logger.warning("could not load kanban.worker_tools; preserving default surface", exc_info=True)
+        return None
+
+    allowed = {
+        str(name).strip()
+        for name in configured
+        if str(name).strip().startswith("kanban_")
+    }
+    allowed.update(_TERMINAL_KANBAN_WORKER_TOOLS)
+    return allowed
+
+
+def _apply_worker_kanban_tool_allowlist(
+    tools: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Filter only Kanban schemas for an explicitly constrained worker."""
+    allowed = _configured_worker_kanban_tool_allowlist()
+    if allowed is None:
+        return tools
+    return [
+        tool
+        for tool in tools
+        if not str(tool.get("function", {}).get("name", "")).startswith("kanban_")
+        or tool.get("function", {}).get("name") in allowed
+    ]
+
+
 # =============================================================================
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
 # =============================================================================
@@ -508,6 +564,7 @@ def _compute_tool_definitions(
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
+    filtered_tools = _apply_worker_kanban_tool_allowlist(filtered_tools)
 
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references

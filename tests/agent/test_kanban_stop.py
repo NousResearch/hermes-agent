@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
 import pytest
 
 from agent.kanban_stop import (
     build_kanban_stop_nudge,
+    dispatcher_worker_run_is_terminal,
     kanban_stop_nudge_enabled,
     session_called_kanban_terminal,
 )
@@ -13,7 +17,11 @@ from agent.kanban_stop import (
 
 @pytest.fixture
 def clear_kanban_env(monkeypatch):
-    for var in ("HERMES_KANBAN_TASK", "HERMES_KANBAN_STOP_NUDGE"):
+    for var in (
+        "HERMES_KANBAN_TASK",
+        "HERMES_KANBAN_RUN_ID",
+        "HERMES_KANBAN_STOP_NUDGE",
+    ):
         monkeypatch.delenv(var, raising=False)
     return monkeypatch
 
@@ -27,6 +35,61 @@ def test_env_can_disable(clear_kanban_env):
     clear_kanban_env.setenv("HERMES_KANBAN_STOP_NUDGE", "0")
     assert kanban_stop_nudge_enabled() is False
     assert build_kanban_stop_nudge(messages=[]) is None
+
+
+def test_delegated_child_does_not_receive_worker_stop_nudge(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_parent")
+    with patch(
+        "agent.delegation_context.is_dispatcher_owned_worker_context",
+        return_value=False,
+    ):
+        assert kanban_stop_nudge_enabled() is False
+        assert build_kanban_stop_nudge(messages=[]) is None
+
+
+def test_dispatcher_run_terminal_only_after_run_ends(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_owned")
+    clear_kanban_env.setenv("HERMES_KANBAN_RUN_ID", "42")
+    conn = SimpleNamespace(close=lambda: None)
+
+    with (
+        patch("hermes_cli.kanban_db.connect", return_value=conn),
+        patch(
+            "hermes_cli.kanban_db.get_run",
+            return_value=SimpleNamespace(task_id="t_owned", status="running"),
+        ),
+    ):
+        assert dispatcher_worker_run_is_terminal() is False
+
+    with (
+        patch("hermes_cli.kanban_db.connect", return_value=conn),
+        patch(
+            "hermes_cli.kanban_db.get_run",
+            return_value=SimpleNamespace(task_id="t_owned", status="done"),
+        ),
+    ):
+        assert dispatcher_worker_run_is_terminal() is True
+
+    with (
+        patch("hermes_cli.kanban_db.connect", return_value=conn),
+        patch(
+            "hermes_cli.kanban_db.get_run",
+            return_value=SimpleNamespace(task_id="t_owned", status="blocked"),
+        ),
+    ):
+        assert dispatcher_worker_run_is_terminal() is True
+
+
+def test_dispatcher_run_terminal_fails_open_on_missing_identity_or_read_error(clear_kanban_env):
+    assert dispatcher_worker_run_is_terminal() is False
+
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_owned")
+    clear_kanban_env.setenv("HERMES_KANBAN_RUN_ID", "not-an-int")
+    assert dispatcher_worker_run_is_terminal() is False
+
+    clear_kanban_env.setenv("HERMES_KANBAN_RUN_ID", "42")
+    with patch("hermes_cli.kanban_db.connect", side_effect=OSError("unavailable")):
+        assert dispatcher_worker_run_is_terminal() is False
 
 
 def test_nudge_when_no_terminal_tool(clear_kanban_env):

@@ -171,6 +171,49 @@ def test_run_conversation_flushes_assistant_tool_call_before_execution():
     assert result["final_response"] == "done"
 
 
+def test_run_conversation_stops_after_dispatcher_run_terminal(monkeypatch):
+    """A completed worker must not start another provider turn."""
+    agent = _make_agent()
+    setattr(agent, "max_iterations", 1)
+    setattr(
+        agent,
+        "valid_tool_names",
+        set(getattr(agent, "valid_tool_names", set())) | {"kanban_complete"},
+    )
+    tool_call = _mock_tool_call(name="kanban_complete", call_id="terminal-call")
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[tool_call]),
+        AssertionError("second provider turn after terminal Kanban run"),
+    ]
+
+    def _fake_execute(assistant_message, messages, effective_task_id, api_call_count=0):
+        messages.append(
+            make_tool_result_message(
+                "kanban_complete",
+                '{"ok": true, "task_id": "t_terminal", "run_id": 42}',
+                "terminal-call",
+            )
+        )
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_terminal")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "42")
+    with (
+        patch("agent.kanban_stop.dispatcher_worker_run_is_terminal", return_value=True),
+        patch("agent.turn_finalizer._record_kanban_budget_exhausted") as record_budget_exhausted,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+        patch.object(agent, "_execute_tool_calls", side_effect=_fake_execute),
+    ):
+        result = agent.run_conversation("complete the task")
+
+    assert agent.client.chat.completions.create.call_count == 1
+    record_budget_exhausted.assert_not_called()
+    assert result["failed"] is False
+    assert result["completed"] is True
+    assert result["turn_exit_reason"] == "kanban_terminal"
+
+
 def test_interim_assistant_is_durable_before_ui_projection_on_abnormal_exit(tmp_path):
     """A visible interim assistant row must survive an immediate process exit.
 

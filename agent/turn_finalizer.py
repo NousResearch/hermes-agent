@@ -142,6 +142,7 @@ def finalize_turn(
     """
     from agent.conversation_loop import logger
 
+    kanban_terminal = str(_turn_exit_reason) == "kanban_terminal"
     budget_exhausted = (
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0
@@ -207,7 +208,7 @@ def finalize_turn(
             _record_kanban_budget_exhausted(
                 _kanban_task, api_call_count, agent.max_iterations, logger,
             )
-    elif budget_exhausted:
+    elif budget_exhausted and not kanban_terminal:
         # Bounded fallback (#87096): budget was exhausted but none of the
         # normal fallback paths were eligible (interrupted / failed /
         # anomalous exit_reason). If running as a kanban worker we must
@@ -230,6 +231,7 @@ def finalize_turn(
         and (
             api_call_count < agent.max_iterations
             or normal_text_response
+            or kanban_terminal
         )
     )
 
@@ -493,7 +495,7 @@ def finalize_turn(
         agent.session_id or "none",
     )
 
-    if _last_msg_role == "tool" and not interrupted:
+    if _last_msg_role == "tool" and not interrupted and not kanban_terminal:
         # Agent was mid-work — this is the "just stops" case.
         logger.warning(
             "Turn ended with pending tool result (agent may appear stuck). "
@@ -544,7 +546,7 @@ def finalize_turn(
     #     an empty response, the "(empty)" terminal sentinel, or a
     #     suspiciously short partial fragment with no terminating
     #     punctuation (e.g. "The").  A real short answer keeps its text.
-    if not interrupted:
+    if not interrupted and not kanban_terminal:
         try:
             if agent._turn_completion_explainer_enabled():
                 _stripped = (final_response or "").strip()

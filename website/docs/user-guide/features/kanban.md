@@ -358,6 +358,33 @@ Three reasons:
 
 The auto-injected kanban guidance teaches the model which tool to call when and in what order.
 
+### Limit the worker schema for small local models
+
+Dispatcher workers receive the complete task-scoped Kanban lifecycle surface by
+default. Smaller local models can become less reliable when many similar tool schemas
+are present. A profile can opt into a narrower worker-only surface with
+`kanban.worker_tools`:
+
+```yaml
+kanban:
+  worker_tools:
+    - kanban_show
+    - kanban_comment
+    - kanban_heartbeat
+    - kanban_complete
+    - kanban_block
+```
+
+This setting applies only while the profile owns a dispatcher task. Normal chat and
+orchestrator sessions keep their configured toolsets. `kanban_complete` and
+`kanban_block` are always retained even when omitted, so the worker cannot be
+configured without a terminal lifecycle action. Unknown and non-Kanban names do not
+widen the worker surface.
+
+Start with the five tools above for small local models. Add review or attachment tools
+only when that profile's tasks require them. Omitting `kanban_request_review`, for
+example, means that worker must complete or block rather than route same-card review.
+
 ### Recommended handoff evidence
 
 `kanban_complete(summary=..., metadata={...})` is intentionally flexible:

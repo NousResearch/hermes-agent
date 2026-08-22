@@ -7364,6 +7364,23 @@ def run_conversation(
                                 pass
                     break
 
+                # A dispatcher worker's terminal board mutation is the end of
+                # this process's job. Do not ask the provider for another turn:
+                # local models often re-read or re-complete the now-terminal
+                # card and leave an orphan worker alive behind a Done task.
+                try:
+                    from agent.kanban_stop import dispatcher_worker_run_is_terminal
+
+                    _kanban_run_terminal = dispatcher_worker_run_is_terminal()
+                except Exception:
+                    logger.debug("kanban terminal run-state check failed", exc_info=True)
+                    _kanban_run_terminal = False
+                if _kanban_run_terminal:
+                    _turn_exit_reason = "kanban_terminal"
+                    final_response = ""
+                    agent._emit_status("✓ Kanban worker terminal state recorded")
+                    break
+
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the
                 # entire conversation.

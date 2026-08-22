@@ -791,6 +791,67 @@ class TestExportImport:
         assert any("valid_link" in n for n in names)
         assert any("valid_target.txt" in n for n in names)
 
+    def test_export_import_round_trip_preserves_safe_relative_symlink(
+        self, profile_env, tmp_path
+    ):
+        create_profile("coder", no_alias=True)
+        profile_dir = get_profile_dir("coder")
+        data_dir = profile_dir / "data"
+        data_dir.mkdir()
+        (data_dir / "target.txt").write_text("profile data")
+        try:
+            (data_dir / "link.txt").symlink_to("target.txt")
+        except OSError:
+            pytest.skip("symlink creation requires optional privileges")
+
+        archive_path = tmp_path / "export" / "coder.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        export_profile("coder", str(archive_path))
+
+        shutil.rmtree(profile_dir)
+        imported = import_profile(str(archive_path), name="coder")
+
+        link_path = imported / "data" / "link.txt"
+        assert link_path.is_symlink()
+        assert link_path.read_text() == "profile data"
+        assert os.readlink(link_path) == "target.txt"
+
+    @pytest.mark.parametrize(
+        "linkname",
+        ["/outside", "C:\\outside", "C:outside", "\\outside", "../../outside"],
+    )
+    def test_import_rejects_unsafe_symlink_target(
+        self, profile_env, tmp_path, linkname
+    ):
+        archive_path = tmp_path / "unsafe-link.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tf:
+            link = tarfile.TarInfo("coder/nested/link")
+            link.type = tarfile.SYMTYPE
+            link.linkname = linkname
+            tf.addfile(link)
+
+        with pytest.raises(ValueError, match="Unsafe archive link target"):
+            import_profile(str(archive_path), name="coder")
+
+        assert not get_profile_dir("coder").exists()
+
+    def test_import_rejects_hardlink_member(self, profile_env, tmp_path):
+        archive_path = tmp_path / "hardlink.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tf:
+            target = tarfile.TarInfo("coder/target.txt")
+            target.size = 4
+            tf.addfile(target, io.BytesIO(b"data"))
+
+            link = tarfile.TarInfo("coder/link.txt")
+            link.type = tarfile.LNKTYPE
+            link.linkname = "coder/target.txt"
+            tf.addfile(link)
+
+        with pytest.raises(ValueError, match="Unsupported archive member type"):
+            import_profile(str(archive_path), name="coder")
+
+        assert not get_profile_dir("coder").exists()
+
 
 
 
@@ -1123,5 +1184,4 @@ class TestResolveProfileEnvSpelling:
         # No HERMES_HOME: the platform default root applies (existing contract).
         monkeypatch.delenv("HERMES_HOME", raising=False)
         assert Path(resolve_profile_env("default")) == _get_default_hermes_home()
-
 

@@ -554,7 +554,12 @@ const ErrorRecoveryActions: FC = () => {
           {remoteConnection ? copy.errorOpenDesktopLogs : copy.errorOpenLogs}
         </button>
       )}
-      <CopyButton appearance="inline" className="aui-error-action" label={copy.errorCopyDiagnostics} text={diagnosticsText} />
+      <CopyButton
+        appearance="inline"
+        className="aui-error-action"
+        label={copy.errorCopyDiagnostics}
+        text={diagnosticsText}
+      />
     </div>
   )
 }

@@ -372,7 +372,7 @@ test('isServerSideHttpError detects 502/503/504', () => {
   // Non-HTTP errors (timeouts, network failures) don't match the pattern
   assert.equal(isServerSideHttpError(new Error('connect ECONNREFUSED')), null)
   assert.equal(isServerSideHttpError(null), null)
-  assert.equal(isServerSideHttpError('503: something'), null)  // not an Error
+  assert.equal(isServerSideHttpError('503: something'), null) // not an Error
 })
 
 test('isNousCloudAgentUrl detects cloud agent hosts', () => {
@@ -504,10 +504,7 @@ test('makeNousCloudBackendDownError produces the Cloud shape and preserves cause
 test('makeNousCloudBackendDownError returns null for a Cloud 401 (routes to reauth)', () => {
   const err = new Error('Unauthorized') as any
   err.statusCode = 401
-  assert.equal(
-    makeNousCloudBackendDownError('https://ares-3009.agents.nousresearch.com', err),
-    null
-  )
+  assert.equal(makeNousCloudBackendDownError('https://ares-3009.agents.nousresearch.com', err), null)
 })
 
 test('makeNousCloudBackendDownError returns null for a non-Cloud 503 (generic remote failure)', () => {

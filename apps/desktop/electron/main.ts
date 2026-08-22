@@ -10911,8 +10911,7 @@ async function startHermes() {
     // boundary when present, so the renderer overlay can key on it rather than
     // re-classifying the message string. main owns classification; the renderer
     // only consumes the structured result (#85335).
-    const isCloudBackendDown =
-      Boolean(error && typeof error === 'object' && (error as any).isCloudBackendDown === true)
+    const isCloudBackendDown = Boolean(error && typeof error === 'object' && (error as any).isCloudBackendDown === true)
 
     const statusCode = Number(
       error && typeof error === 'object' && Number.isInteger((error as any).statusCode)

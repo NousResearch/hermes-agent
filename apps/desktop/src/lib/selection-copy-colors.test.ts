@@ -7,7 +7,11 @@ import {
   textColorLuma
 } from './selection-copy-colors'
 
-function makeCopyEvent(): { event: ClipboardEvent; setData: ReturnType<typeof vi.fn>; preventDefault: ReturnType<typeof vi.fn> } {
+function makeCopyEvent(): {
+  event: ClipboardEvent
+  setData: ReturnType<typeof vi.fn>
+  preventDefault: ReturnType<typeof vi.fn>
+} {
   const event = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent
   const setData = vi.fn()
   const preventDefault = vi.fn()
@@ -160,7 +164,9 @@ describe('serializeSelectionStructure', () => {
   })
 
   it('anchors a generic sans family so rich-text receivers keep their own font', () => {
-    const host = armSelection('<p style="color: rgb(230, 237, 243); font-family: -apple-system, sans-serif">plain prose</p>')
+    const host = armSelection(
+      '<p style="color: rgb(230, 237, 243); font-family: -apple-system, sans-serif">plain prose</p>'
+    )
     const html = serializeSelectionStructure(window.getSelection()!, document)
 
     // Generic family on the wrapper: resolves to each platform's own face,

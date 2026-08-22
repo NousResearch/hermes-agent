@@ -43,8 +43,7 @@ const srgbChannelValue = (raw: string): number => {
   return v.endsWith('%') ? (Number.parseFloat(v) / 100) * 255 : Number.parseFloat(v) * 255
 }
 
-const alphaValue = (raw: string): number =>
-  raw.endsWith('%') ? Number.parseFloat(raw) / 100 : Number.parseFloat(raw)
+const alphaValue = (raw: string): number => (raw.endsWith('%') ? Number.parseFloat(raw) / 100 : Number.parseFloat(raw))
 
 function expandHex(hex: string): [number, number, number, number] | null {
   const h = hex.slice(1)
@@ -175,7 +174,10 @@ export function selectionInkLuma(sel: Selection, doc: Document): number | null {
   for (let i = 0; i < sel.rangeCount && lumas.length < MAX_PROBE_NODES; i++) {
     const range = sel.getRangeAt(i)
     const root = range.commonAncestorContainer
-    const walker = doc.createTreeWalker(root.nodeType === 1 ? root : root.parentElement ?? doc.body, NodeFilter.SHOW_TEXT)
+    const walker = doc.createTreeWalker(
+      root.nodeType === 1 ? root : (root.parentElement ?? doc.body),
+      NodeFilter.SHOW_TEXT
+    )
 
     let node = walker.nextNode()
 

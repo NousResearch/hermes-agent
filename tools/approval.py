@@ -2928,18 +2928,29 @@ def _command_matches_permanent_allowlist(command: str) -> bool:
 # Config persistence for permanent allowlist
 # =========================================================================
 
+# What ``command_allowlist`` held the last time this process synchronised with
+# the file. Everything in ``_permanent_approved`` beyond it is an approval THIS
+# process made, and is the only thing a save is entitled to add: the difference
+# is what separates "the operator granted this here" from "this was on disk when
+# we started, and may since have been revoked".
+_permanent_baseline: set = set()
+
+
 def load_permanent_allowlist() -> set:
     """Load permanently allowed command patterns from config.
 
     Also syncs them into the approval module so is_approved() works for
     patterns added via 'always' in a previous session.
     """
+    global _permanent_baseline
     try:
         from hermes_cli.config import load_config_readonly
         config = load_config_readonly()
         patterns = set(config.get("command_allowlist", []) or [])
         if patterns:
             load_permanent(patterns)
+        with _lock:
+            _permanent_baseline = set(patterns)
         return patterns
     except Exception as e:
         logger.warning("Failed to load permanent allowlist: %s", e)
@@ -2947,12 +2958,42 @@ def load_permanent_allowlist() -> set:
 
 
 def save_permanent_allowlist(patterns: set):
-    """Save permanently allowed command patterns to config."""
+    """Save permanently allowed command patterns to config.
+
+    ``command_allowlist`` is a file an operator edits by hand — removing an
+    entry there is the documented way to withdraw a standing approval. This
+    process read that file once, at import, and ``load_permanent`` only ever
+    unions into ``_permanent_approved``; nothing takes anything out. Writing
+    the in-memory set straight back therefore did two things at once: it
+    deleted entries the operator had added on disk since import, and it
+    resurrected the ones they had removed.
+
+    Reconcile instead. The file is re-read at write time and the result is
+    ``what is on disk now`` plus ``what this process approved since its own
+    baseline``. An entry the operator deleted stays deleted unless this
+    process approved it again; an entry they added survives.
+
+    This does not make a revocation take effect the instant the file changes —
+    nothing re-reads the file on the approval hot path, and adding a stat there
+    is a separate change. It makes the next write stop undoing it.
+    """
+    global _permanent_baseline
     try:
         from hermes_cli.config import load_config, save_config
         config = load_config()
-        config["command_allowlist"] = list(patterns)
-        save_config(config)
+        on_disk = set(config.get("command_allowlist", []) or [])
+        with _lock:
+            approved_here = set(patterns) - _permanent_baseline
+            merged = on_disk | approved_here
+            config["command_allowlist"] = sorted(merged)
+            save_config(config)
+            # The file and this process now agree; anything the operator does
+            # next is measured against what was actually written.
+            _permanent_baseline = set(merged)
+            # Drop anything the operator revoked on disk, so is_approved()
+            # stops honouring it for the rest of this process too.
+            _permanent_approved.clear()
+            _permanent_approved.update(merged)
     except Exception as e:
         logger.warning("Could not save allowlist: %s", e)
 

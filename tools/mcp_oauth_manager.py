@@ -65,6 +65,51 @@ def _same_endpoint(a: str, b: str) -> bool:
     )
 
 
+def _reclaim_stranded_auth_lock(
+    lock: Any,
+    prior_owner: Any,
+    *,
+    server_name: str = "",
+) -> bool:
+    """Release an OAuth lock stranded by cleanup from a different task.
+
+    AnyIO's asyncio lock is task-owned. Reclaim only when the lock is still
+    owned by the exact task recorded for the abandoned flow; a clean release
+    or handoff changes that owner and makes this a no-op.
+    """
+    if lock is None or prior_owner is None:
+        return False
+    try:
+        if not lock.locked():
+            return False
+        if getattr(lock, "_owner_task", None) is not prior_owner:
+            return False
+
+        # AnyIO exposes no public cross-task recovery operation. Its asyncio
+        # backend records the owning asyncio.Task in this private field. Keep
+        # this identity-checked and behavior-tested so an AnyIO change fails
+        # closed instead of releasing a lock owned by another live flow.
+        lock._owner_task = asyncio.current_task()  # noqa: SLF001
+        try:
+            lock.release()
+        except Exception:
+            lock._owner_task = prior_owner  # noqa: SLF001
+            raise
+    except Exception as exc:  # pragma: no cover - defensive, must not throw
+        logger.debug(
+            "MCP OAuth '%s': could not reclaim stranded auth lock: %s",
+            server_name,
+            exc,
+        )
+        return False
+
+    logger.warning(
+        "MCP OAuth '%s': reclaimed OAuth lock stranded by cross-task cleanup",
+        server_name,
+    )
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Per-server entry
 # ---------------------------------------------------------------------------
@@ -531,8 +576,14 @@ def _make_hermes_provider_class() -> Optional[type]:
             # contract. Regression from PR #11383 caught by
             # tests/tools/test_mcp_oauth_bidirectional.py.
             inner = super().async_auth_flow(request)
+            lock = getattr(self.context, "lock", None)
+            prior_lock_owner: Any = None
             try:
                 outgoing = await inner.__anext__()
+                # The SDK acquires context.lock before its first yielded
+                # request. Capture that exact owner so exceptional cross-task
+                # cleanup cannot steal a lock handed to a different flow.
+                prior_lock_owner = getattr(lock, "_owner_task", None)
                 while True:
                     incoming = yield outgoing
                     # Sniff the response for a dead-client-registration signal
@@ -544,6 +595,44 @@ def _make_hermes_provider_class() -> Optional[type]:
                 # 401 branch so a subsequent cold-load skips discovery.
                 self._persist_oauth_metadata_if_changed()
                 return
+            finally:
+                await self._close_inner_auth_flow(
+                    inner,
+                    lock,
+                    prior_lock_owner,
+                )
+
+        async def _close_inner_auth_flow(
+            self,
+            inner: Any,
+            lock: Any,
+            prior_lock_owner: Any,
+        ) -> None:
+            """Close the delegated SDK flow and recover only its stranded lock."""
+            try:
+                try:
+                    await inner.aclose()
+                except RuntimeError as exc:
+                    # The outer wrapper itself can be GC-finalized from a
+                    # different task. AnyIO then rejects the SDK lock release;
+                    # the identity-checked recovery below handles that case.
+                    logger.debug(
+                        "MCP OAuth '%s': auth-flow cleanup raised (non-fatal): %s",
+                        self._hermes_server_name,
+                        exc,
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.debug(
+                        "MCP OAuth '%s': auth-flow cleanup failed (non-fatal): %s",
+                        self._hermes_server_name,
+                        exc,
+                    )
+            finally:
+                _reclaim_stranded_auth_lock(
+                    lock,
+                    prior_lock_owner,
+                    server_name=self._hermes_server_name,
+                )
 
     return HermesMCPOAuthProvider
 

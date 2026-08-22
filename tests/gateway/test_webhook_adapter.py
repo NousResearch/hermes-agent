@@ -16,6 +16,7 @@ Covers:
 
 import asyncio
 import base64
+import errno
 import hashlib
 import hmac
 import json
@@ -1024,3 +1025,70 @@ def test_route_profile_validation_fails_closed():
         assert WebhookAdapter._route_allows_profile(
             {"profile": malformed}, "worker"
         ) is False
+
+
+# Regression coverage for the prod stale-lock/duplicate-runtime log flood
+# (OOF hermes-cloud:prod:gateway-stale-lock:2026-08-19).
+class TestBindFailureStampsRuntimeStatus:
+    """A webhook that cannot bind must say so on runtime status.
+
+    Observed on five prod instances: the default profile's webhook adapter
+    collided with a named profile that already held the port, so it retried at
+    the 300s reconnect cap forever. connect() logged and returned a bare False
+    without calling ``_set_fatal_error``, leaving the runtime entry as
+    ``{state: "disconnected", error_code: null}`` — indistinguishable from a
+    webhook the owner had simply turned off. ``gateway_running`` stayed true,
+    so fleet monitoring read those agents as healthy while they collided every
+    five minutes.
+    """
+
+    @pytest.mark.asyncio
+    async def test_port_conflict_is_stamped_and_not_retryable(self):
+        """Real bind conflict: the second adapter reports why it failed."""
+        holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        taken_port = holder.getsockname()[1]
+        try:
+            adapter = _make_adapter(
+                routes={"r1": {"secret": "real-secret-abc123", "prompt": "x"}},
+                host="127.0.0.1",
+                port=taken_port,
+            )
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                result = await adapter.connect()
+
+            assert result is False
+            assert adapter._runner is None
+            assert adapter._fatal_error_code == "webhook_port_in_use"
+            # NOT retryable, matching the api_server port guard (#52132): the
+            # holder keeps the port for its lifetime, so staying in the
+            # reconnect queue just loops at the backoff cap forever. This is
+            # what actually stops the log flood.
+            assert adapter._fatal_error_retryable is False
+            assert str(taken_port) in adapter._fatal_error_message
+            assert "already in use" in adapter._fatal_error_message
+            assert "/platform resume webhook" in adapter._fatal_error_message
+        finally:
+            holder.close()
+
+    @pytest.mark.asyncio
+    async def test_non_addrinuse_oserror_is_still_stamped(self):
+        """A non-conflict bind failure stamps too, but stays retryable."""
+        adapter = _make_adapter(
+            routes={"r1": {"secret": "real-secret-abc123", "prompt": "x"}},
+            host="127.0.0.1",
+        )
+        site = MagicMock()
+        site.start = AsyncMock(
+            side_effect=OSError(errno.EACCES, "permission denied")
+        )
+        with patch.object(adapter, "_reload_dynamic_routes"), patch(
+            "gateway.platforms.webhook.web.TCPSite", return_value=site
+        ):
+            result = await adapter.connect()
+
+        assert result is False
+        assert adapter._fatal_error_code == "webhook_bind_failed"
+        assert adapter._fatal_error_retryable is True
+        assert "permission denied" in adapter._fatal_error_message

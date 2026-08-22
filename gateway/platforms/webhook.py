@@ -33,6 +33,7 @@ Security:
 import asyncio
 import base64
 import binascii
+import errno
 import hashlib
 import hmac
 import json
@@ -323,14 +324,48 @@ class WebhookAdapter(BasePlatformAdapter):
         except OSError as exc:
             await self._runner.cleanup()
             self._runner = None
+            where = self._host or "all IPv4+IPv6 interfaces"
             logger.error(
                 "[webhook] Could not bind %s:%d: %s. "
                 "Set a different host or port in config.yaml under "
                 "platforms.webhook.extra.",
-                self._host or "all IPv4+IPv6 interfaces",
+                where,
                 self._port,
                 exc,
             )
+            # A bare ``return False`` left the runtime entry as
+            # ``{state: "disconnected", error_code: null}``, indistinguishable
+            # from a webhook the owner had simply turned off, so fleet
+            # monitoring read the agent as healthy while it collided forever.
+            if getattr(exc, "errno", None) == errno.EADDRINUSE:
+                # Same call, same reasoning, same remedy as the api_server
+                # guard above this in the tree (#52132: 1568+ retries over 5
+                # days across multi-profile setups all defaulting to one port).
+                # A port conflict is configuration, not a transient blip: the
+                # holder keeps it for its lifetime, so a retryable failure just
+                # loops at the backoff cap filling errors.log. Observed again
+                # on five prod instances where the default profile's webhook
+                # collided with a named profile's
+                # (hermes-cloud:prod:gateway-stale-lock:2026-08-19).
+                # Non-retryable drops it from the reconnect queue instead.
+                self._set_fatal_error(
+                    "webhook_port_in_use",
+                    f"Port {self._port} on {where} is already in use, most "
+                    f"likely by another gateway profile. Set "
+                    f"platforms.webhook.extra.port in config.yaml to a "
+                    f"different value, then `/platform resume webhook`.",
+                    retryable=False,
+                )
+            else:
+                # Anything else (a denied port, an interface not up yet) can
+                # genuinely clear on its own, so keep it in the reconnect queue
+                # while still naming the failure on runtime status.
+                self._set_fatal_error(
+                    "webhook_bind_failed",
+                    f"Could not bind the webhook listener to {where}:"
+                    f"{self._port}: {exc}",
+                    retryable=True,
+                )
             return False
         self._mark_connected()
 

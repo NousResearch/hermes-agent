@@ -18,6 +18,8 @@ from tools.environments.local import (
     hermes_subprocess_env,
     _ALWAYS_STRIP_KEYS,
     _HERMES_PROVIDER_ENV_FORCE_PREFIX,
+    _make_run_env,
+    _sanitize_subprocess_env,
 )
 
 
@@ -25,6 +27,7 @@ _TIER1_SAMPLE = {
     "GH_TOKEN": "ghp_secret",
     "TELEGRAM_BOT_TOKEN": "bot-token",
     "SLACK_APP_TOKEN": "xapp-secret",
+    "FEISHU_APP_SECRET": "feishu-secret",
     "MODAL_TOKEN_SECRET": "modal-secret",
     "HERMES_DASHBOARD_SESSION_TOKEN": "dash-secret",
 }
@@ -107,11 +110,38 @@ class TestTierInvariants:
     def test_tier1_covers_gateway_bot_token(self):
         assert "TELEGRAM_BOT_TOKEN" in _ALWAYS_STRIP_KEYS
 
+    def test_tier1_covers_feishu_callback_attestation_key(self):
+        assert "FEISHU_APP_SECRET" in _ALWAYS_STRIP_KEYS
+
     def test_tier1_covers_github_auth(self):
         assert {"GH_TOKEN", "GITHUB_TOKEN"} <= _ALWAYS_STRIP_KEYS
 
     def test_tier1_covers_infra_secrets(self):
         assert {"MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY"} <= _ALWAYS_STRIP_KEYS
+
+    def test_tier1_always_stripped_from_terminal_spawn_paths(self):
+        """Terminal, PTY, and execute-code paths share the Tier-1 boundary."""
+        sample = {key: f"secret-{key}" for key in _ALWAYS_STRIP_KEYS}
+        safe = {**_SAFE_SAMPLE, **sample}
+        with patch.dict(os.environ, safe, clear=True):
+            background = _sanitize_subprocess_env(safe, sample)
+            foreground = _make_run_env(sample)
+
+        for name, result in (
+            ("background", background),
+            ("foreground", foreground),
+        ):
+            leaked = set(_ALWAYS_STRIP_KEYS) & set(result)
+            assert not leaked, f"Tier-1 keys leaked through {name}: {sorted(leaked)}"
+
+    def test_force_prefix_cannot_reintroduce_tier1_secret(self):
+        forced_key = _HERMES_PROVIDER_ENV_FORCE_PREFIX + "FEISHU_APP_SECRET"
+        with patch.dict(os.environ, {**_SAFE_SAMPLE, forced_key: "secret"}, clear=True):
+            background = _sanitize_subprocess_env({}, {forced_key: "secret"})
+            foreground = _make_run_env({forced_key: "secret"})
+
+        assert "FEISHU_APP_SECRET" not in background
+        assert "FEISHU_APP_SECRET" not in foreground
 
 
 class TestBrowserPassthroughPattern:

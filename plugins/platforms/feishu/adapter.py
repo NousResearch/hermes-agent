@@ -55,6 +55,7 @@ import hmac
 import itertools
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -109,6 +110,7 @@ FEISHU_DOMAIN = None  # type: ignore[assignment]
 LARK_DOMAIN = None  # type: ignore[assignment]
 BaseRequest = None  # type: ignore[assignment]
 CallBackCard = None  # type: ignore[assignment]
+CallBackToast = None  # type: ignore[assignment]
 P2CardActionTriggerResponse = None  # type: ignore[assignment]
 EventDispatcherHandler = None  # type: ignore[assignment]
 FeishuWSClient = None  # type: ignore[assignment]
@@ -132,7 +134,11 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.status import acquire_scoped_lock, release_scoped_lock
-from hermes_constants import get_hermes_home
+from hermes_constants import (
+    get_hermes_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from utils import atomic_json_write, env_float, env_int
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
@@ -239,9 +245,17 @@ _FEISHU_WEBHOOK_RATE_WINDOW_SECONDS = 60            # sliding window for rate li
 _FEISHU_WEBHOOK_RATE_LIMIT_MAX = 120               # max requests per window per IP — matches openclaw
 _FEISHU_WEBHOOK_RATE_MAX_KEYS = 4096               # max tracked keys (prevents unbounded growth)
 _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS = 30          # max seconds to read request body
+_FEISHU_WEBHOOK_CARD_ACTION_TIMEOUT_SECONDS = 3.0  # bound sync plugin/builtin callbacks
+_FEISHU_WEBHOOK_CARD_ACTION_MAX_WORKERS = 4         # bound callbacks that outlive HTTP wait
+_FEISHU_WEBHOOK_CARD_ACTION_SLOTS = threading.BoundedSemaphore(
+    _FEISHU_WEBHOOK_CARD_ACTION_MAX_WORKERS
+)
 _FEISHU_WEBHOOK_ANOMALY_THRESHOLD = 25             # consecutive error responses before WARNING log
 _FEISHU_WEBHOOK_ANOMALY_TTL_SECONDS = 6 * 60 * 60  # anomaly tracker TTL (6 hours) — matches openclaw
 _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup window (15 min)
+_FEISHU_PLUGIN_ACTION_KEY = "hermes_plugin_action"
+_FEISHU_CARD_ACTION_ATTESTATION_VERSION = "hermes-feishu-card-action-v1"
+_FEISHU_PLUGIN_ACTION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 
 _APPROVAL_CHOICE_MAP: Dict[str, str] = {
     "approve_once": "once",
@@ -1409,7 +1423,7 @@ def _load_lark_oapi() -> bool:
             from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
             from lark_oapi.core.model import BaseRequest
             from lark_oapi.event.callback.model.p2_card_action_trigger import (
-                CallBackCard, P2CardActionTriggerResponse,
+                CallBackCard, CallBackToast, P2CardActionTriggerResponse,
             )
             from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
             from lark_oapi.ws import Client as FeishuWSClient
@@ -1439,6 +1453,7 @@ def _load_lark_oapi() -> bool:
             "LARK_DOMAIN": LARK_DOMAIN,
             "BaseRequest": BaseRequest,
             "CallBackCard": CallBackCard,
+            "CallBackToast": CallBackToast,
             "P2CardActionTriggerResponse": P2CardActionTriggerResponse,
             "EventDispatcherHandler": EventDispatcherHandler,
             "FeishuWSClient": FeishuWSClient,
@@ -1502,6 +1517,7 @@ class FeishuAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.FEISHU)
 
+        self._hermes_home = get_hermes_home().expanduser().resolve(strict=False)
         self._settings = self._load_settings(config.extra or {})
         self._apply_settings(self._settings)
         self._client: Optional[Any] = None
@@ -1524,12 +1540,13 @@ class FeishuAdapter(BasePlatformAdapter):
         self._event_handler: Optional[Any] = None
         self._seen_message_ids: Dict[str, float] = {}  # message_id → seen_at (time.time())
         self._seen_message_order: List[str] = []
-        self._dedup_state_path = get_hermes_home() / "feishu_seen_message_ids.json"
+        self._dedup_state_path = self._hermes_home / "feishu_seen_message_ids.json"
         self._dedup_lock = threading.Lock()
         self._sender_name_cache: Dict[str, tuple[str, float]] = {}  # sender_id → (name, expire_at)
         self._webhook_rate_counts: Dict[str, tuple[int, float]] = {}  # rate_key → (count, window_start)
         self._webhook_anomaly_counts: Dict[str, tuple[int, str, float]] = {}  # ip → (count, last_status, first_seen)
         self._card_action_tokens: Dict[str, float] = {}  # token → first_seen_time
+        self._card_action_token_lock = threading.Lock()
         # Inbound events that arrived before the adapter loop was ready
         # (e.g. during startup/restart or network-flap reconnect). A single
         # drainer thread replays them as soon as the loop becomes available.
@@ -2721,19 +2738,19 @@ class FeishuAdapter(BasePlatformAdapter):
 
         For other card actions: delegates to ``_handle_card_action_event``.
         """
+        event = getattr(data, "event", None)
+        action = getattr(event, "action", None)
+        action_value = self._card_action_value(getattr(action, "value", None)) or {}
+        if _FEISHU_PLUGIN_ACTION_KEY in action_value:
+            return self._handle_plugin_card_action(data=data, action_value=action_value)
+
         loop = self._loop
         if not self._loop_accepts_callbacks(loop):
             logger.warning("[Feishu] Dropping card action before adapter loop is ready")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
-        event = getattr(data, "event", None)
-        action = getattr(event, "action", None)
-        action_value = getattr(action, "value", {}) or {}
-        hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
-        update_prompt_action = (
-            action_value.get("hermes_update_prompt_action")
-            if isinstance(action_value, dict) else None
-        )
+        hermes_action = action_value.get("hermes_action")
+        update_prompt_action = action_value.get("hermes_update_prompt_action")
 
         if hermes_action:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
@@ -2748,6 +2765,362 @@ class FeishuAdapter(BasePlatformAdapter):
         if P2CardActionTriggerResponse is None:
             return None
         return P2CardActionTriggerResponse()
+
+    def _on_webhook_card_action_trigger(self, data: Any) -> tuple[Any, bool]:
+        """Return the callback response and whether downstream durably accepted it."""
+        event = getattr(data, "event", None)
+        action = getattr(event, "action", None)
+        action_value = self._card_action_value(getattr(action, "value", None)) or {}
+        if _FEISHU_PLUGIN_ACTION_KEY in action_value:
+            return self._handle_plugin_card_action_result(
+                data=data,
+                action_value=action_value,
+            )
+        logger.warning(
+            "[Feishu] Non-plugin card actions are not durably supported in webhook mode"
+        )
+        return (
+            self._plugin_card_action_response(
+                "error",
+                "Webhook 模式暂不支持此卡片操作",
+            ),
+            False,
+        )
+
+    @staticmethod
+    def _plugin_card_action_response(toast_type: str, content: str) -> Any:
+        """Build a bounded callback response without exposing event details."""
+        if P2CardActionTriggerResponse is None:
+            return None
+        response = P2CardActionTriggerResponse()
+        if CallBackToast is not None:
+            toast = CallBackToast()
+            toast.type = toast_type
+            toast.content = content[:120]
+            response.toast = toast
+        return response
+
+    @classmethod
+    def _normalize_card_action_json(cls, value: Any, *, depth: int = 0) -> Any:
+        """Recursively copy SDK callback data without invoking properties."""
+        if depth > 8:
+            raise ValueError("card action nesting is too deep")
+        if value is None or isinstance(value, (str, bool, int)):
+            return value
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                raise ValueError("card action number is not finite")
+            return value
+        if isinstance(value, SimpleNamespace):
+            value = vars(value)
+        elif not isinstance(value, (dict, list, tuple)):
+            try:
+                value = vars(value)
+            except TypeError as exc:
+                raise TypeError("unsupported card action value") from exc
+        if isinstance(value, dict):
+            if len(value) > 256:
+                raise ValueError("card action object is too large")
+            normalized: dict[str, Any] = {}
+            for key, item in value.items():
+                if not isinstance(key, str) or key.startswith("_"):
+                    raise ValueError("card action object key is invalid")
+                normalized[key] = cls._normalize_card_action_json(
+                    item,
+                    depth=depth + 1,
+                )
+            return normalized
+        if len(value) > 256:
+            raise ValueError("card action array is too large")
+        return [
+            cls._normalize_card_action_json(item, depth=depth + 1)
+            for item in value
+        ]
+
+    @classmethod
+    def _card_action_value(cls, value: Any) -> dict[str, Any] | None:
+        """Normalize supported SDK shapes into a JSON-safe action object."""
+        try:
+            normalized = cls._normalize_card_action_json(value)
+        except (TypeError, ValueError):
+            return None
+        return normalized if isinstance(normalized, dict) else None
+
+    @classmethod
+    def _webhook_card_action_payload(cls, response: Any) -> dict[str, Any]:
+        """Serialize the SDK callback response for webhook transport."""
+        if response is None:
+            return {}
+        try:
+            normalized = cls._normalize_card_action_json(response)
+        except (TypeError, ValueError):
+            logger.error("[Feishu] Card action response was not serializable")
+            return {"toast": {"type": "error", "content": "请求处理失败，请重试"}}
+        if not isinstance(normalized, dict):
+            return {}
+
+        def _without_null_fields(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {
+                    key: _without_null_fields(item)
+                    for key, item in value.items()
+                    if item is not None
+                }
+            if isinstance(value, list):
+                return [_without_null_fields(item) for item in value]
+            return value
+
+        return _without_null_fields(normalized)
+
+    async def _run_bounded_webhook_card_action(
+        self,
+        data: Any,
+    ) -> tuple[str, Any, bool]:
+        """Run one sync callback on a bounded daemon worker.
+
+        ``asyncio.to_thread`` only cancels the awaiter on timeout; its worker
+        keeps running and another click can start an unbounded duplicate.  A
+        plugin callback still cannot be force-killed safely in-process, so the
+        gateway bounds late workers globally and returns a retryable non-2xx
+        until downstream durable acceptance is known. PopaSkin's network
+        transport has its own killable child-process deadline and durable
+        idempotency inside this outer boundary.
+        """
+        slots = _FEISHU_WEBHOOK_CARD_ACTION_SLOTS
+        if not slots.acquire(blocking=False):
+            return "busy", None, False
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+
+        def _settle(ok: bool, value: Any) -> None:
+            if not future.done():
+                future.set_result((ok, value))
+
+        def _worker() -> None:
+            try:
+                outcome = (True, self._on_webhook_card_action_trigger(data))
+            except BaseException as exc:  # daemon boundary; return type only
+                outcome = (False, type(exc).__name__)
+            finally:
+                slots.release()
+            try:
+                loop.call_soon_threadsafe(_settle, *outcome)
+            except RuntimeError:
+                # The request loop may already have shut down after timeout.
+                pass
+
+        try:
+            thread = threading.Thread(
+                target=_worker,
+                name="feishu-webhook-card-action",
+                daemon=True,
+            )
+            thread.start()
+        except BaseException:
+            slots.release()
+            raise
+
+        try:
+            ok, value = await asyncio.wait_for(
+                asyncio.shield(future),
+                timeout=_FEISHU_WEBHOOK_CARD_ACTION_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            return "timeout", None, False
+        if not ok:
+            raise RuntimeError(f"card action worker failed ({value})")
+        response, acknowledged = value
+        return "completed", response, acknowledged
+
+    def _plugin_card_action_handler(self, action_id: str) -> tuple[Any, str] | None:
+        """Resolve one exact plugin handler; ambiguity fails closed."""
+        home_token = set_hermes_home_override(self._hermes_home)
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+
+            handlers = get_plugin_manager().get_feishu_card_action_handlers()
+        except Exception as exc:  # pragma: no cover - defensive import/runtime guard
+            logger.warning(
+                "[Feishu] Could not load plugin card action handlers (%s)",
+                type(exc).__name__,
+            )
+            return None
+        finally:
+            reset_hermes_home_override(home_token)
+        matches = [
+            (callback, plugin_id)
+            for registered_id, callback, plugin_id in handlers
+            if registered_id == action_id
+        ]
+        if len(matches) != 1:
+            return None
+        return matches[0]
+
+    def _build_plugin_card_action_attestation(
+        self,
+        data: Any,
+    ) -> tuple[dict[str, Any], bytes, str]:
+        """Return a canonical HMAC-attested representation of one callback."""
+        app_secret = str(self._app_secret or "")
+        if not app_secret:
+            raise ValueError("Feishu app secret unavailable")
+
+        header = getattr(data, "header", None)
+        event = getattr(data, "event", None)
+        operator = getattr(event, "operator", None)
+        context = getattr(event, "context", None)
+        action = getattr(event, "action", None)
+        action_value = self._card_action_value(getattr(action, "value", None))
+
+        event_id = str(getattr(header, "event_id", "") or "").strip()
+        create_time = str(getattr(header, "create_time", "") or "").strip()
+        event_type = str(getattr(header, "event_type", "") or "").strip()
+        app_id = str(getattr(header, "app_id", "") or "").strip()
+        tenant_key = str(getattr(header, "tenant_key", "") or "").strip()
+        operator_tenant_key = str(
+            getattr(operator, "tenant_key", "") or ""
+        ).strip()
+        open_id = str(getattr(operator, "open_id", "") or "").strip()
+        open_message_id = str(
+            getattr(context, "open_message_id", "") or ""
+        ).strip()
+        open_chat_id = str(getattr(context, "open_chat_id", "") or "").strip()
+        action_tag = str(getattr(action, "tag", "") or "").strip()
+        host = str(getattr(event, "host", "") or "").strip()
+
+        if not all(
+            (
+                event_id,
+                create_time,
+                event_type,
+                app_id,
+                tenant_key,
+                operator_tenant_key,
+                open_id,
+                open_message_id,
+                open_chat_id,
+                action_tag,
+                host,
+            )
+        ):
+            raise ValueError("incomplete Feishu card callback")
+        if event_type != "card.action.trigger" or host != "im_message":
+            raise ValueError("unexpected Feishu card callback type")
+        expected_app_id = str(self._app_id or "").strip()
+        if not expected_app_id or not hmac.compare_digest(app_id, expected_app_id):
+            raise ValueError("Feishu callback app mismatch")
+        if not hmac.compare_digest(operator_tenant_key, tenant_key):
+            raise ValueError("Feishu callback tenant mismatch")
+        if action_value is None:
+            raise ValueError("Feishu callback action value must be an object")
+
+        envelope: dict[str, Any] = {
+            "version": _FEISHU_CARD_ACTION_ATTESTATION_VERSION,
+            "header": {
+                "event_id": event_id,
+                "create_time": create_time,
+                "event_type": event_type,
+                "tenant_key": tenant_key,
+                "app_id": app_id,
+            },
+            "operator": {
+                "tenant_key": operator_tenant_key,
+                "user_id": str(getattr(operator, "user_id", "") or ""),
+                "open_id": open_id,
+                "union_id": str(getattr(operator, "union_id", "") or ""),
+            },
+            "context": {
+                "open_message_id": open_message_id,
+                "open_chat_id": open_chat_id,
+            },
+            "host": host,
+            "action": {
+                "tag": action_tag,
+                "value": action_value,
+            },
+        }
+        body = json.dumps(
+            envelope,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        signed = (_FEISHU_CARD_ACTION_ATTESTATION_VERSION + "\n").encode("ascii") + body
+        signature = "v1=" + hmac.new(
+            app_secret.encode("utf-8"),
+            signed,
+            hashlib.sha256,
+        ).hexdigest()
+        return envelope, body, signature
+
+    def _handle_plugin_card_action(
+        self,
+        *,
+        data: Any,
+        action_value: dict[str, Any],
+    ) -> Any:
+        response, _acknowledged = self._handle_plugin_card_action_result(
+            data=data,
+            action_value=action_value,
+        )
+        return response
+
+    def _handle_plugin_card_action_result(
+        self,
+        *,
+        data: Any,
+        action_value: dict[str, Any],
+    ) -> tuple[Any, bool]:
+        """Invoke one trusted plugin handler without entering the model path."""
+        raw_action_id = action_value.get(_FEISHU_PLUGIN_ACTION_KEY)
+        if not isinstance(raw_action_id, str):
+            logger.warning("[Feishu] Rejected malformed plugin card action id")
+            return self._plugin_card_action_response("error", "卡片操作无效"), False
+        action_id = raw_action_id.strip()
+        if not _FEISHU_PLUGIN_ACTION_ID_RE.fullmatch(action_id):
+            logger.warning("[Feishu] Rejected malformed plugin card action id")
+            return self._plugin_card_action_response("error", "卡片操作无效"), False
+
+        resolved = self._plugin_card_action_handler(action_id)
+        if resolved is None:
+            logger.warning("[Feishu] Plugin card action handler unavailable")
+            return self._plugin_card_action_response("error", "卡片处理器不可用"), False
+        callback, plugin_id = resolved
+
+        try:
+            envelope, body, signature = self._build_plugin_card_action_attestation(data)
+        except Exception as exc:
+            logger.warning(
+                "[Feishu] Rejected unattestable plugin card action (%s)",
+                type(exc).__name__,
+            )
+            return self._plugin_card_action_response("error", "卡片验证失败"), False
+
+        try:
+            result = callback(envelope=envelope, body=body, signature=signature)
+        except Exception as exc:
+            logger.error(
+                "[Feishu] Plugin %s card action handler failed (%s)",
+                plugin_id,
+                type(exc).__name__,
+            )
+            return self._plugin_card_action_response("error", "请求处理失败，请重试"), False
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            logger.warning(
+                "[Feishu] Plugin %s did not acknowledge card action",
+                plugin_id,
+            )
+            return self._plugin_card_action_response("error", "请求未确认，请重试"), False
+
+        toast_data = result.get("toast")
+        if not isinstance(toast_data, dict):
+            toast_data = {}
+        toast_type = str(toast_data.get("type") or "success").strip().lower()
+        if toast_type not in {"success", "info", "warning", "error"}:
+            toast_type = "success"
+        content = str(toast_data.get("content") or "请求已接收")
+        return self._plugin_card_action_response(toast_type, content), True
 
     @staticmethod
     def _loop_accepts_callbacks(loop: Any) -> bool:
@@ -3049,15 +3422,20 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _is_card_action_duplicate(self, token: str) -> bool:
         """Return True if this card action token was already processed within the dedup window."""
-        now = time.time()
-        # Prune expired tokens lazily each call.
-        expired = [t for t, ts in self._card_action_tokens.items() if now - ts > _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS]
-        for t in expired:
-            del self._card_action_tokens[t]
-        if token in self._card_action_tokens:
-            return True
-        self._card_action_tokens[token] = now
-        return False
+        with self._card_action_token_lock:
+            now = time.time()
+            # Prune expired tokens lazily each call.
+            expired = [
+                value
+                for value, seen_at in self._card_action_tokens.items()
+                if now - seen_at > _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS
+            ]
+            for value in expired:
+                del self._card_action_tokens[value]
+            if token in self._card_action_tokens:
+                return True
+            self._card_action_tokens[token] = now
+            return False
 
     async def _handle_card_action_event(self, data: Any) -> None:
         """Route Feishu interactive card button clicks as synthetic COMMAND events."""
@@ -3606,6 +3984,11 @@ class FeishuAdapter(BasePlatformAdapter):
             self._record_webhook_anomaly(remote_ip, "400")
             return web.json_response({"code": 400, "msg": "invalid json"}, status=400)
 
+        if not (self._verification_token or self._encrypt_key):
+            logger.error("[Feishu] Webhook rejected: authentication is not configured")
+            self._record_webhook_anomaly(remote_ip, "503-auth")
+            return web.Response(status=503, text="Webhook authentication unavailable")
+
         # Verification token check — second layer of defence beyond signature (matches openclaw).
         if self._verification_token:
             header = payload.get("header") or {}
@@ -3619,27 +4002,40 @@ class FeishuAdapter(BasePlatformAdapter):
                 self._record_webhook_anomaly(remote_ip, "401-token")
                 return web.Response(status=401, text="Invalid verification token")
 
-        # URL verification challenge — Feishu includes the verification token in
-        # challenge requests. Validate the token (above) before reflecting the
-        # challenge so an unauthenticated remote request cannot prove endpoint
-        # control by getting attacker-supplied challenge data echoed back.
-        if payload.get("type") == "url_verification":
-            return web.json_response({"challenge": payload.get("challenge", "")})
-
         # Timing-safe signature verification (only enforced when encrypt_key is set).
+        # Run it before reflecting URL-verification challenges so every configured
+        # authentication factor is enforced for every webhook request.
         if self._encrypt_key and not self._is_webhook_signature_valid(request.headers, body_bytes):
             logger.warning("[Feishu] Webhook rejected: invalid signature from %s", remote_ip)
             self._record_webhook_anomaly(remote_ip, "401-sig")
             return web.Response(status=401, text="Invalid signature")
+
+        # URL verification challenge — authenticate the request above before
+        # reflecting attacker-controlled challenge data.
+        if payload.get("type") == "url_verification":
+            return web.json_response({"challenge": payload.get("challenge", "")})
 
         if payload.get("encrypt"):
             logger.error("[Feishu] Encrypted webhook payloads are not supported by Hermes webhook mode")
             self._record_webhook_anomaly(remote_ip, "400-encrypted")
             return web.json_response({"code": 400, "msg": "encrypted webhook payloads are not supported"}, status=400)
 
+        event_type = str((payload.get("header") or {}).get("event_type") or "")
+        if event_type == "card.action.trigger" and not (
+            self._verification_token and self._encrypt_key
+        ):
+            logger.error(
+                "[Feishu] Card-action webhook rejected: strong authentication "
+                "requires verification token and encrypt key"
+            )
+            self._record_webhook_anomaly(remote_ip, "503-card-auth")
+            return web.Response(
+                status=503,
+                text="Card-action webhook authentication unavailable",
+            )
+
         self._clear_webhook_anomaly(remote_ip)
 
-        event_type = str((payload.get("header") or {}).get("event_type") or "")
         data = self._namespace_from_mapping(payload)
         if event_type == "im.message.receive_v1":
             self._on_message_event(data)
@@ -3652,7 +4048,45 @@ class FeishuAdapter(BasePlatformAdapter):
         elif event_type in {"im.message.reaction.created_v1", "im.message.reaction.deleted_v1"}:
             self._on_reaction_event(event_type, data)
         elif event_type == "card.action.trigger":
-            self._on_card_action_trigger(data)
+            try:
+                callback_state, callback_response, callback_acknowledged = (
+                    await self._run_bounded_webhook_card_action(data)
+                )
+                if callback_state == "busy":
+                    logger.error("[Feishu] Webhook card action worker capacity exhausted")
+                    return web.json_response(
+                        {
+                            "toast": {
+                                "type": "warning",
+                                "content": "处理器繁忙，状态未知，系统将自动重试，请勿重复点击",
+                            }
+                        },
+                        status=503,
+                    )
+                if callback_state == "timeout":
+                    logger.error("[Feishu] Webhook card action handler timed out")
+                    return web.json_response(
+                        {
+                            "toast": {
+                                "type": "warning",
+                                "content": "请求状态未知，系统将自动重试，请勿重复点击",
+                            }
+                        },
+                        status=503,
+                    )
+            except Exception as exc:
+                logger.error(
+                    "[Feishu] Webhook card action handler failed (%s)",
+                    type(exc).__name__,
+                )
+                return web.json_response(
+                    {"toast": {"type": "error", "content": "请求处理失败，请重试"}},
+                    status=503,
+                )
+            return web.json_response(
+                self._webhook_card_action_payload(callback_response),
+                status=200 if callback_acknowledged else 503,
+            )
         elif event_type == "drive.notice.comment_add_v1":
             self._on_drive_comment_event(data)
         elif event_type == "vc.bot.meeting_invited_v1":

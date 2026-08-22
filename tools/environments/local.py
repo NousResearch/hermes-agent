@@ -483,6 +483,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     for key, value in (base_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             continue
+        if key in _ALWAYS_STRIP_KEYS:
+            continue
         if _is_hermes_internal_secret(key):
             continue
         passthrough = _is_passthrough(key)
@@ -495,9 +497,13 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     for key, value in (extra_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
+            if real_key in _ALWAYS_STRIP_KEYS:
+                continue
             if _is_hermes_internal_secret(real_key):
                 continue
             sanitized[real_key] = value
+        elif key in _ALWAYS_STRIP_KEYS:
+            continue
         elif _is_hermes_internal_secret(key):
             continue
         else:
@@ -566,6 +572,7 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "SLACK_BOT_TOKEN",
     "SLACK_APP_TOKEN",
     "SLACK_SIGNING_SECRET",
+    "FEISHU_APP_SECRET",
     "GATEWAY_ALLOWED_USERS",
     "GATEWAY_ALLOW_ALL_USERS",
     # Gateway relay auth — the ID/secret/delivery-key triplet the gateway
@@ -1296,9 +1303,13 @@ def _make_run_env(env: dict) -> dict:
     for k, v in merged.items():
         if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = k[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
+            if real_key in _ALWAYS_STRIP_KEYS:
+                continue
             if _is_hermes_internal_secret(real_key):
                 continue
             run_env[real_key] = v
+        elif k in _ALWAYS_STRIP_KEYS:
+            continue
         elif _is_hermes_internal_secret(k):
             continue
         else:

@@ -852,7 +852,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
         self.assertTrue(submit.called)
 
-    @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(os.environ, {"FEISHU_VERIFICATION_TOKEN": "expected-token"}, clear=True)
     def test_webhook_request_uses_same_message_dispatch_path(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
@@ -861,7 +861,10 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter._on_message_event = Mock()
 
         body = json.dumps({
-            "header": {"event_type": "im.message.receive_v1"},
+            "header": {
+                "event_type": "im.message.receive_v1",
+                "token": "expected-token",
+            },
             "event": {"message": {"message_id": "om_test"}},
         }).encode("utf-8")
         request = SimpleNamespace(
@@ -892,6 +895,56 @@ class TestAdapterBehavior(unittest.TestCase):
             "type": "url_verification",
             "token": "wrong-token",
             "challenge": "attacker-controlled-challenge",
+        }).encode("utf-8")
+        request = SimpleNamespace(
+            remote="203.0.113.10",
+            content_length=None,
+            headers={},
+            content=_FakeRequestContent(body),
+        )
+
+        response = asyncio.run(adapter._handle_webhook_request(request))
+
+        self.assertEqual(response.status, 401)
+
+    @patch.dict(os.environ, {"FEISHU_ENCRYPT_KEY": "encrypt-key"}, clear=True)
+    def test_url_verification_requires_configured_signature(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        body = json.dumps({
+            "type": "url_verification",
+            "challenge": "unsigned-challenge",
+        }).encode("utf-8")
+        request = SimpleNamespace(
+            remote="203.0.113.10",
+            content_length=None,
+            headers={},
+            content=_FakeRequestContent(body),
+        )
+
+        response = asyncio.run(adapter._handle_webhook_request(request))
+
+        self.assertEqual(response.status, 401)
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_ENCRYPT_KEY": "encrypt-key",
+            "FEISHU_VERIFICATION_TOKEN": "expected-token",
+        },
+        clear=True,
+    )
+    def test_url_verification_requires_every_configured_auth_factor(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        body = json.dumps({
+            "type": "url_verification",
+            "token": "expected-token",
+            "challenge": "unsigned-challenge",
         }).encode("utf-8")
         request = SimpleNamespace(
             remote="203.0.113.10",
@@ -2465,5 +2518,4 @@ class TestChatLockEviction(unittest.TestCase):
 
         adapter = self._make_adapter()
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
-
 

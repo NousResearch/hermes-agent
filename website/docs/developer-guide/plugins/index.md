@@ -1281,6 +1281,53 @@ def register(ctx):
 
 This is the public way for plugins to participate in Slack interactivity. Older plugins may patch `SlackAdapter.connect`; prefer this API instead.
 
+### Handle trusted Feishu card actions
+
+Plugins that post Feishu interactive cards can reserve one exact action route
+without turning the click into an agent message. Put the route in
+`value.hermes_plugin_action`; the Feishu adapter binds the event, operator,
+message, chat, action value, app, and tenant into canonical JSON and signs the
+exact bytes with a domain-separated HMAC owned by the gateway.
+
+```python
+def register(ctx):
+    dashboard_base = ctx.get_config("dashboard_base", default="")
+
+    def _on_action(*, envelope, body, signature):
+        accepted = forward_to_service(
+            dashboard_base,
+            body=body,
+            signature=signature,
+        )
+        # Return true only after the downstream service durably accepts it.
+        return {"ok": accepted}
+
+    ctx.register_feishu_card_action_handler("acme.review", _on_action)
+```
+
+**Signature:** `ctx.register_feishu_card_action_handler(action_id, callback) -> PluginRegistration`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `action_id` | `str` | Exact route matching `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}` |
+| `callback` | synchronous callable | Receives keyword arguments `envelope` (dict), `body` (the canonical bytes), and `signature` (`v1=<sha256 hex>`) |
+
+**Runtime behavior:**
+
+- A card containing `hermes_plugin_action` never enters the synthetic message
+  or LLM path, including when its route is malformed or unregistered.
+- The gateway keeps the Feishu app secret; plugins receive only the canonical
+  body and its attestation.
+- The callback is synchronous and must complete within Feishu's callback
+  window. Use a bounded downstream timeout.
+- Exceptions and any result other than `{"ok": True}` fail closed. Retries are
+  forwarded again so durable downstream idempotency remains authoritative.
+- In webhook mode, only registered plugin actions have a durable acceptance
+  contract. Other card-action families fail closed; use WebSocket mode for
+  those actions until they provide their own durable webhook acknowledgement.
+- Use `ctx.get_config()` for non-secret endpoints. Do not put behavioral
+  settings in `.env`.
+
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.
 :::

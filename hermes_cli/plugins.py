@@ -1212,6 +1212,7 @@ class PluginRegistration:
 _PLUGIN_SETTING_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _PLUGIN_SETTING_RESERVED_ROOTS = frozenset({"model", "plugins", "security", "settings"})
 _PLUGIN_STATE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_FEISHU_PLUGIN_ACTION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _PLUGIN_STATE_QUOTA_BYTES = 10 * 1024 * 1024
 _PLUGIN_STATE_LOCKS: Dict[str, threading.RLock] = {}
 _PLUGIN_STATE_LOCKS_GUARD = threading.Lock()
@@ -2932,6 +2933,62 @@ class PluginContext:
         )
         return handle
 
+    def register_feishu_card_action_handler(
+        self,
+        action_id: str,
+        callback: Callable,
+    ) -> PluginRegistration:
+        """Register one synchronous exact-match Feishu card-action handler.
+
+        A card opts into this path by setting ``value.hermes_plugin_action``
+        to *action_id*. The Feishu adapter invokes the callback with a
+        canonical envelope, its exact JSON bytes, and a gateway-owned HMAC
+        attestation. Matched actions never enter the synthetic message / LLM
+        path.
+
+        The callback must finish within Feishu's callback window and return
+        ``{"ok": True}`` only after its downstream consumer durably accepts
+        the event. Exceptions and missing acknowledgements fail closed.
+        """
+        if not callable(callback):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a Feishu "
+                "card action handler with a non-callable callback."
+            )
+        if inspect.iscoroutinefunction(callback):
+            raise ValueError("Feishu card action callback must be synchronous")
+        if not isinstance(action_id, str):
+            raise ValueError("Feishu card action_id must be a non-empty string")
+        normalized = action_id.strip()
+        if not _FEISHU_PLUGIN_ACTION_ID_RE.fullmatch(normalized):
+            raise ValueError(
+                "Feishu card action_id must match "
+                "[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}"
+            )
+        if any(
+            existing[0] == normalized
+            for existing in self._manager._feishu_card_action_handlers
+        ):
+            raise ValueError(
+                f"Feishu card action_id {normalized!r} is already registered"
+            )
+
+        entry = (normalized, callback, self.plugin_id)
+        self._manager._feishu_card_action_handlers.append(entry)
+        handle = self._track(
+            "feishu_card_action_handler",
+            normalized,
+            lambda: self._manager._remove_identity(
+                self._manager._feishu_card_action_handlers, entry
+            ),
+        )
+        logger.debug(
+            "Plugin %s registered Feishu card action handler: %s",
+            self.plugin_id,
+            normalized,
+        )
+        return handle
+
     # -- hook registration --------------------------------------------------
 
     # -- auxiliary task registration ---------------------------------------
@@ -3442,6 +3499,10 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        # Exact-match Feishu interactive-card handlers. Each entry is
+        # (action_id, synchronous callback, plugin_id). The Feishu adapter
+        # invokes these before any synthetic MessageEvent can reach the model.
+        self._feishu_card_action_handlers: List[tuple] = []
         # Registration handles are kept both per plugin (ownership lookup) and
         # globally (reverse-order teardown for overrides spanning plugins).
         #
@@ -3730,6 +3791,7 @@ class PluginManager:
             self._system_prompt_sections.clear()
             self._approval_transports.clear()
             self._slack_action_handlers.clear()
+            self._feishu_card_action_handlers.clear()
             self._predeclared_modules.clear()
             self._predeclared_tools.clear()
             self._context_engine = None
@@ -5483,6 +5545,10 @@ class PluginManager:
         :meth:`PluginContext.register_slack_action_handler`.
         """
         return list(self._slack_action_handlers)
+
+    def get_feishu_card_action_handlers(self) -> List[tuple]:
+        """Return plugin-registered exact-match Feishu action handlers."""
+        return list(self._feishu_card_action_handlers)
 
     # -----------------------------------------------------------------------
     # Introspection

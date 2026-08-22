@@ -420,6 +420,7 @@ class TestPluginDiscovery:
         mgr._plugin_skills["p:skill"] = {}
         mgr._aux_tasks["task"] = {"plugin": "p"}
         mgr._slack_action_handlers.append(("aid", lambda **_: None, "p"))
+        mgr._feishu_card_action_handlers.append(("aid", lambda **_: None, "p"))
         mgr._discovered = True
 
         monkeypatch.setattr(PluginManager, "_discover_and_load_inner", lambda self_inner: None)
@@ -437,6 +438,7 @@ class TestPluginDiscovery:
         assert mgr._plugin_skills == {}
         assert mgr._aux_tasks == {}
         assert mgr._slack_action_handlers == []
+        assert mgr._feishu_card_action_handlers == []
 
 
 # ── TestPluginLoading ──────────────────────────────────────────────────────

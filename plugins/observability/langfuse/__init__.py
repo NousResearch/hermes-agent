@@ -23,9 +23,22 @@ Optional env vars:
       sanitized - content with secret-pattern redaction + truncation
       full      - raw content (truncated only); explicit opt-in
   HERMES_LANGFUSE_DEBUG       - set to "true" for verbose logging
+
+Behavioral setting (config.yaml, per project policy — behavioral flags do
+not use HERMES_* env vars):
+  plugins:
+    entries:
+      observability/langfuse:
+        track_aux: true   # also trace auxiliary LLM calls (context
+                          # compression, vision, web_extract, MoA, …) as
+                          # standalone "Hermes aux: <task>" traces, so
+                          # Langfuse totals reconcile against provider
+                          # billing. Default: false.
 """
 from __future__ import annotations
 
+import contextvars
+import itertools
 import json
 import logging
 import os
@@ -1784,6 +1797,180 @@ def on_subagent_stop(*, parent_session_id: Any = None, parent_turn_id: str = "",
     )
 
 
+# ── Optional auxiliary-LLM tracking ─────────────────────────────────────
+# When config.yaml has ``plugins.entries.observability/langfuse.track_aux:
+# true``, every auxiliary LLM call (context compression, vision, web_extract,
+# MoA, …) is traced to Langfuse as its own standalone trace named
+# "Hermes aux: <task>", with token usage (including DeepSeek cache hit/miss)
+# attached. This lets Langfuse totals be reconciled against the provider's
+# own billing (e.g. api.deepseek.com usage), since auxiliary calls would
+# otherwise be invisible. Default off — keeps the existing behavior of
+# tracing only the main agent call chain.
+#
+# Per project policy (AGENTS.md), behavioral settings live in config.yaml,
+# not in new HERMES_* env vars — so this flag is read from the plugin's
+# ``plugins.entries.<key>`` section instead of an environment variable.
+
+_TRACK_AUX: Optional[bool] = None  # lazily resolved from config.yaml
+_AUX_CALL_ID_CTX = contextvars.ContextVar("langfuse_aux_call_id", default=None)
+_AUX_CALLS: Dict[str, Dict[str, Any]] = {}
+_AUX_CALLS_LOCK = threading.Lock()
+_AUX_CALL_COUNTER = itertools.count()
+
+
+def _track_aux_enabled() -> bool:
+    """Resolve the aux-tracking flag from config.yaml (cached per process)."""
+    global _TRACK_AUX
+    if _TRACK_AUX is None:
+        try:
+            from hermes_cli.config import load_config_readonly, cfg_get
+            cfg = load_config_readonly()
+            _TRACK_AUX = bool(cfg_get(
+                cfg, "plugins", "entries", "observability/langfuse",
+                "track_aux", default=False,
+            ))
+        except Exception:
+            _TRACK_AUX = False
+    return _TRACK_AUX
+
+
+def _on_aux_llm_call(event: str, kwargs: Dict[str, Any]) -> None:
+    """Observer callback registered with ``agent.auxiliary_client``.
+
+    Receives ("start"|"end"|"error", kwargs) for every auxiliary LLM call.
+    """
+    if not _track_aux_enabled():
+        return
+    try:
+        if event == "start":
+            _aux_trace_start(kwargs)
+        elif event == "end":
+            _aux_trace_end(kwargs)
+        elif event == "error":
+            _aux_trace_error(kwargs)
+    except Exception as exc:  # pragma: no cover - fail-open
+        _debug("auxiliary LLM trace failed: %s", exc)
+
+
+def _aux_trace_start(kwargs: Dict[str, Any]) -> None:
+    client = _get_langfuse()
+    if client is None:
+        return
+    task = kwargs.get("task") or "aux"
+    call_id = f"aux::{task}::{next(_AUX_CALL_COUNTER)}"
+    trace_id = client.create_trace_id(seed=call_id)
+    root_ctx = client.start_as_current_observation(
+        trace_context={"trace_id": trace_id, "session_id": f"aux:{task}"},
+        name=f"Hermes aux: {task}",
+        as_type="chain",
+        metadata={
+            "source": "hermes",
+            "kind": "aux",
+            "task": task,
+            "provider": kwargs.get("provider") or "",
+            "model": kwargs.get("model") or "",
+            "api_mode": kwargs.get("api_mode") or "",
+        },
+        end_on_exit=False,
+    )
+    root_span = root_ctx.__enter__()
+    try:
+        root_span.set_trace_io(_truncate_text(_summarize_messages(kwargs.get("messages")), 2000))
+    except Exception:
+        pass
+    # Usage belongs on a GENERATION child observation (a chain cannot carry
+    # usage_details in Langfuse), mirroring how the main trace nests LLM calls.
+    gen = root_span.start_observation(
+        name="LLM call",
+        as_type="generation",
+        input=_truncate_text(_summarize_messages(kwargs.get("messages")), 2000),
+        model=kwargs.get("model") or "",
+        metadata={"task": task, "aux": True},
+    )
+    with _AUX_CALLS_LOCK:
+        _AUX_CALLS[call_id] = {
+            "root_ctx": root_ctx, "root_span": root_span, "gen": gen, "task": task,
+        }
+    _AUX_CALL_ID_CTX.set(call_id)
+
+
+def _aux_trace_end(kwargs: Dict[str, Any]) -> None:
+    call_id = _AUX_CALL_ID_CTX.get()
+    if not call_id:
+        return
+    entry = _AUX_CALLS.pop(call_id, None)
+    _AUX_CALL_ID_CTX.set("")
+    if entry is None:
+        return
+    gen = entry["gen"]
+    response = kwargs.get("response")
+    usage_details: Dict[str, int] = {}
+    cost_details: Dict[str, float] = {}
+    if response is not None and getattr(response, "usage", None) is not None:
+        try:
+            usage_details, cost_details = _usage_and_cost(
+                response,
+                provider=kwargs.get("provider") or "",
+                api_mode=kwargs.get("api_mode") or "",
+                model=kwargs.get("model") or "",
+                base_url="",
+            )
+        except Exception:
+            pass
+    try:
+        if usage_details:
+            gen.update(usage_details=usage_details, cost_details=cost_details)
+        resp_model = getattr(response, "model", None)
+        if resp_model:
+            gen.update(model=resp_model)
+        output = getattr(response, "choices", None)
+        if output:
+            try:
+                content = output[0].message.content
+                if isinstance(content, str):
+                    gen.update(output=_truncate_text(content, 2000))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    gen.end()
+    entry["root_span"].end()
+    entry["root_ctx"].__exit__(None, None, None)
+
+
+def _aux_trace_error(kwargs: Dict[str, Any]) -> None:
+    call_id = _AUX_CALL_ID_CTX.get()
+    if not call_id:
+        return
+    entry = _AUX_CALLS.pop(call_id, None)
+    _AUX_CALL_ID_CTX.set("")
+    if entry is None:
+        return
+    gen = entry["gen"]
+    try:
+        gen.update(metadata={"error": kwargs.get("error") or "aux call failed"})
+    except Exception:
+        pass
+    gen.end()
+    entry["root_span"].end()
+    entry["root_ctx"].__exit__(None, None, None)
+
+
+def _summarize_messages(messages: Any) -> str:
+    """Compact text preview of the request messages (never the full payload)."""
+    if not isinstance(messages, list):
+        return ""
+    parts = []
+    for m in messages[-5:]:
+        role = m.get("role", "?") if isinstance(m, dict) else "?"
+        content = m.get("content", "") if isinstance(m, dict) else str(m)
+        if isinstance(content, str):
+            parts.append(f"{role}: {content[:200]}")
+        else:
+            parts.append(f"{role}: <non-text>")
+    return "\n".join(parts) if parts else ""
+
+
 def register(ctx) -> None:
     # Register for both hook name variants so the plugin works across
     # Hermes versions.  pre_api_request / post_api_request fire per API
@@ -1799,3 +1986,22 @@ def register(ctx) -> None:
     ctx.register_hook("on_session_end", on_session_finalize)
     ctx.register_hook("subagent_start", on_subagent_start)
     ctx.register_hook("subagent_stop", on_subagent_stop)
+
+    # Optional auxiliary-LLM tracking (config.yaml
+    # plugins.entries.observability/langfuse.track_aux=true):
+    # subscribe to every auxiliary LLM call so their token usage is also
+    # accounted for, letting Langfuse totals reconcile against provider
+    # billing. The observer registry is empty by default in the core, so
+    # this is a no-op cost when the plugin is the only subscriber.
+    if _track_aux_enabled():
+        try:
+            from agent.auxiliary_client import register_aux_llm_observer
+            register_aux_llm_observer(_on_aux_llm_call)
+            logger.info(
+                "Langfuse plugin: auxiliary LLM tracking enabled "
+                "(plugins.entries.observability/langfuse.track_aux=true)"
+            )
+        except Exception as exc:  # pragma: no cover - fail-open
+            logger.warning(
+                "Langfuse plugin: could not register auxiliary LLM observer: %s", exc
+            )

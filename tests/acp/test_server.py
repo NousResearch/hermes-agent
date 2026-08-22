@@ -1,14 +1,18 @@
 """Tests for acp_adapter.server — HermesACPAgent ACP server."""
 
 import asyncio
+import json
 import os
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 
 import acp
+from acp.agent.connection import AgentSideConnection
 from acp.agent.router import build_agent_router
+from acp.connection import Connection
 from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
@@ -20,6 +24,7 @@ from acp.schema import (
     InitializeResponse,
     LoadSessionResponse,
     NewSessionResponse,
+    PromptRequest,
     PromptResponse,
     ResumeSessionResponse,
     SessionModelState,
@@ -55,6 +60,98 @@ def mock_manager():
 def agent(mock_manager):
     """HermesACPAgent backed by a mock session manager."""
     return HermesACPAgent(session_manager=mock_manager)
+
+
+class _UsageBlockingWriter:
+    """Capture raw ACP frames and stall only the usage notification drain."""
+
+    def __init__(self) -> None:
+        self.payloads: list[dict] = []
+        self.usage_started = asyncio.Event()
+        self.release_usage = asyncio.Event()
+        self._current_is_usage = False
+
+    def write(self, data: bytes | bytearray | memoryview) -> None:
+        payload = json.loads(bytes(data))
+        self.payloads.append(payload)
+        update = payload.get("params", {}).get("update", {})
+        self._current_is_usage = update.get("sessionUpdate") == "usage_update"
+
+    async def drain(self) -> None:
+        if self._current_is_usage:
+            self.usage_started.set()
+            await self.release_usage.wait()
+
+
+async def _assert_terminal_response_precedes_stalled_usage(
+    agent: HermesACPAgent,
+    state,
+    *,
+    prompt_text: str,
+    expected_response_text: str,
+) -> None:
+    """Cross ACP's router, request runner, real sender, and serialized frames."""
+    baseline_tasks = set(asyncio.all_tasks())
+    writer = _UsageBlockingWriter()
+    connection = Connection(
+        build_agent_router(agent),
+        cast(asyncio.StreamWriter, writer),
+        asyncio.StreamReader(),
+        listening=False,
+    )
+    client = object.__new__(AgentSideConnection)
+    client._conn = connection
+    agent._conn = client
+
+    params = PromptRequest(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text=prompt_text)],
+    ).model_dump(mode="json", by_alias=True, exclude_none=True)
+    request_task = asyncio.create_task(
+        connection._run_request({
+            "jsonrpc": "2.0",
+            "id": 42,
+            "method": "session/prompt",
+            "params": params,
+        })
+    )
+
+    try:
+        await asyncio.wait_for(writer.usage_started.wait(), timeout=1)
+
+        # The real MessageSender is blocked in writer.drain() for UsageUpdate.
+        # The request can only be done if its terminal response went through
+        # the same FIFO sender first.
+        assert request_task.done(), "terminal response is queued behind usage metadata"
+        assert request_task.result()["stopReason"] == "end_turn"
+
+        def _frame_kind(payload: dict) -> str | None:
+            if payload.get("id") == 42:
+                return "terminal"
+            update = payload.get("params", {}).get("update", {})
+            if update.get("sessionUpdate") == "agent_message_chunk":
+                assert update["content"]["text"] == expected_response_text
+                return "assistant"
+            if update.get("sessionUpdate") == "usage_update":
+                return "usage"
+            return None
+
+        assert [
+            kind for payload in writer.payloads if (kind := _frame_kind(payload))
+        ] == [
+            "assistant",
+            "terminal",
+            "usage",
+        ]
+    finally:
+        writer.release_usage.set()
+        if not request_task.done():
+            await request_task
+        await connection.close()
+        await asyncio.sleep(0)
+
+    pending = [task for task in asyncio.all_tasks() - baseline_tasks if not task.done()]
+    assert pending == []
 
 
 @pytest.mark.asyncio
@@ -278,6 +375,37 @@ class TestSessionOps:
         assert update.size == 100_000
         assert update.used == 25_000
 
+    @pytest.mark.asyncio
+    async def test_usage_metadata_waiter_is_bounded(self, agent, mock_manager):
+        """The timeout cancels Hermes's waiter, not ACP's shared sender."""
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.context_compressor = MagicMock(context_length=100_000)
+        state.agent._cached_system_prompt = "system"
+        state.agent.tools = []
+
+        send_started = asyncio.Event()
+        waiter_finished = asyncio.Event()
+
+        async def _stalled_update(*args, **kwargs):
+            send_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                waiter_finished.set()
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock(side_effect=_stalled_update)
+        agent._conn = mock_conn
+
+        with patch(
+            "acp_adapter.server._ACP_AUXILIARY_UPDATE_WAITER_TIMEOUT_SECONDS",
+            0.01,
+        ):
+            await asyncio.wait_for(agent._send_usage_update(state), timeout=0.5)
+
+        assert send_started.is_set()
+        assert waiter_finished.is_set()
+
 
 
 
@@ -445,6 +573,54 @@ class TestPrompt:
         )
 
         assert captured.get("child") == resp.session_id
+
+    @pytest.mark.asyncio
+    async def test_prompt_terminal_response_precedes_stalled_usage_metadata(
+        self, agent, mock_manager
+    ):
+        """Normal prompts queue content and end_turn before optional usage."""
+        state = mock_manager.create_session(cwd=".")
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+        state.agent.context_compressor = MagicMock(context_length=100_000)
+        state.agent._cached_system_prompt = "system"
+        state.agent.tools = []
+        state.agent.run_conversation = MagicMock(
+            return_value={
+                "final_response": "done",
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "done"},
+                ],
+            }
+        )
+
+        with patch("agent.title_generator.maybe_auto_title"):
+            await _assert_terminal_response_precedes_stalled_usage(
+                agent,
+                state,
+                prompt_text="hi",
+                expected_response_text="done",
+            )
+
+    @pytest.mark.asyncio
+    async def test_slash_command_terminal_response_precedes_stalled_usage_metadata(
+        self, agent, mock_manager
+    ):
+        """Slash commands preserve the same completion ordering guarantee."""
+        state = mock_manager.create_session(cwd=".")
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+        state.agent.context_compressor = MagicMock(context_length=100_000)
+        state.agent._cached_system_prompt = "system"
+        state.agent.tools = []
+
+        await _assert_terminal_response_precedes_stalled_usage(
+            agent,
+            state,
+            prompt_text="/version",
+            expected_response_text=f"Hermes Agent v{HERMES_VERSION}",
+        )
 
 
 

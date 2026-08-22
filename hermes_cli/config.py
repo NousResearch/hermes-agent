@@ -5147,6 +5147,7 @@ def _default_value_for_key(dotted_key: str):
 _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
     "providers",
     "credential_pool_strategies",
+    "credential_pool_sources",
     "mcp_servers",
     "hooks",
     "quick_commands",

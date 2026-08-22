@@ -2992,6 +2992,31 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
             "CLAUDE_CODE_OAUTH_TOKEN",
             "ANTHROPIC_API_KEY",
         ]
+    else:
+        # Seed from user-configured extra env/BWS slot names too
+        # (credential_pool_sources.<provider> = [ENV_ONE, ENV_TWO, ...]).
+        # This is how a provider pool can hold more keys than its fixed
+        # api_key_env_vars slots allow — e.g. three Google/Gemini keys
+        # stored in Bitwarden as GOOGLE_API_KEY_1/2/3 and listed here, so
+        # each one joins the rotation pool instead of only the canonical
+        # GOOGLE_API_KEY slot. Each configured slot resolves through the
+        # active secret scope (Bitwarden cache included), so a BWS secret
+        # name used here is picked up automatically.
+        _config = _load_config_safe()
+        extra_sources = []
+        if _config is not None:
+            pool_sources = _config.get("credential_pool_sources")
+            if isinstance(pool_sources, dict):
+                configured = pool_sources.get(provider)
+                if isinstance(configured, list):
+                    extra_sources = [
+                        str(item).strip()
+                        for item in configured
+                        if isinstance(item, str) and item.strip()
+                    ]
+        for env_var in extra_sources:
+            if env_var not in env_vars:
+                env_vars.append(env_var)
 
     for env_var in env_vars:
         # Prefer ~/.hermes/.env over os.environ

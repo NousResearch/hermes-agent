@@ -1284,6 +1284,58 @@ def test_least_used_strategy_selects_lowest_count(tmp_path, monkeypatch):
 
 
 
+def test_load_pool_seeds_configured_extra_env_slots(tmp_path, monkeypatch):
+    """credential_pool_sources.<provider> extra env/BWS slots each seed a pool entry."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("GOOGLE_API_KEY", "sk-gemini-1")
+    monkeypatch.setenv("GOOGLE_API_KEY_2", "sk-gemini-2")
+    monkeypatch.setenv("GOOGLE_API_KEY_3", "sk-gemini-3")
+    _write_auth_store(tmp_path, {"version": 1})
+
+    import yaml
+
+    (tmp_path / "hermes" / "config.yaml").write_text(yaml.dump({
+        "credential_pool_sources": {
+            "gemini": ["GOOGLE_API_KEY_2", "GOOGLE_API_KEY_3"],
+        },
+    }))
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("gemini")
+    sources = sorted(e.source for e in pool.entries())
+    # GEMINI_API_KEY (second default slot) is unset here, so only
+    # GOOGLE_API_KEY plus the two configured extras should seed.
+    assert sources == sorted([
+        "env:GOOGLE_API_KEY",
+        "env:GOOGLE_API_KEY_2",
+        "env:GOOGLE_API_KEY_3",
+    ])
+
+
+def test_load_pool_skips_unresolvable_configured_extra_slot(tmp_path, monkeypatch):
+    """A configured extra slot with no value (.env/os.environ/BWS) is skipped, not fatal."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("GOOGLE_API_KEY", "sk-gemini-1")
+    # GOOGLE_API_KEY_2 deliberately left unset
+    _write_auth_store(tmp_path, {"version": 1})
+
+    import yaml
+
+    (tmp_path / "hermes" / "config.yaml").write_text(yaml.dump({
+        "credential_pool_sources": {
+            "gemini": ["GOOGLE_API_KEY_2", "GOOGLE_API_KEY_3"],
+        },
+    }))
+    monkeypatch.setenv("GOOGLE_API_KEY_3", "sk-gemini-3")
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("gemini")
+    sources = sorted(e.source for e in pool.entries())
+    assert sources == ["env:GOOGLE_API_KEY", "env:GOOGLE_API_KEY_3"]
+
+
 def test_custom_endpoint_pool_seeds_from_config(tmp_path, monkeypatch):
     """Verify seeding from custom_providers api_key in config.yaml."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

@@ -44,7 +44,11 @@ from typing import Any, List, Optional, Protocol
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import (
+    get_hermes_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     _expand_env_vars,
@@ -546,7 +550,12 @@ from cron.jobs import (
     save_job_output,
     use_cron_store,
 )
-from cron.executions import create_execution, finish_execution, mark_execution_running
+from cron.executions import (
+    create_execution,
+    fail_open_executions_for_job,
+    finish_execution,
+    mark_execution_running,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -1154,6 +1163,33 @@ def mark_running_jobs_interrupted(
                     marked.append(job_id)
         except Exception as e:
             logger.warning("Failed to mark job %s interrupted: %s", job_id, e)
+        # jobs.json now carries the precise interruption cause; give the
+        # executions ledger the same truth instead of leaving the attempt
+        # open for the next scheduler's recovery sweep to mislabel
+        # ``unknown`` ("whether side effects ran is unknown") when this
+        # process — which *knows* it interrupted the run — exits moments
+        # later. Terminal-state immutability makes the racing final write
+        # from the job's own still-alive thread (finish_execution in the
+        # exception handler) a harmless no-op: whichever lands first wins
+        # and the other converges.
+        try:
+            _home_token = set_hermes_home_override(str(profile_home))
+            try:
+                ledger_closed = fail_open_executions_for_job(
+                    job_id, reason=reason
+                )
+            finally:
+                reset_hermes_home_override(_home_token)
+            if ledger_closed:
+                logger.info(
+                    "Ledger: closed %d open execution(s) for interrupted job '%s'",
+                    len(ledger_closed), job_id,
+                )
+        except Exception as e:
+            # Never let ledger bookkeeping block the shutdown path.
+            logger.warning(
+                "Failed to fail-open executions ledger for job %s: %s", job_id, e
+            )
     return marked
 
 

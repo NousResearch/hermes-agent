@@ -13542,6 +13542,22 @@ def main():
         "optimize",
         help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)",
     )
+    sessions_optimize = sessions_subparsers.choices["optimize"]  # type: ignore[attr-defined]
+    sessions_optimize.add_argument(
+        "--retention-days",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Delete sessions older than N days AND their messages before VACUUM. "
+             "Pinned/archived sessions are preserved. Default 0 = no deletion, "
+             "VACUUM only. Recommended: 30 for active use, 90 for archival.",
+    )
+    sessions_optimize.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Report the would-be cleanup counts without writing.",
+    )
 
     sessions_clean_markers = sessions_subparsers.add_parser(
         "clean-markers",

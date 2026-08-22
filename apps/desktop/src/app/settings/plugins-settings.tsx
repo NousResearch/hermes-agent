@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
+import { useContributions } from '@/contrib/react/use-contributions'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { getProfiles } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -43,6 +44,12 @@ const agentPluginRowKey = (row: AgentPluginRow) =>
 
 /** Deep-link anchor for a plugin row (`?tab=plugins&plugin=<id>`). */
 export const pluginElementId = (target: string) => `plugin-${target}`
+
+/** Contribution area for plugin-provided sections inside Settings ▸ Plugins.
+ *  Rendered as SettingsSection blocks after the installed lists. Plugins
+ *  feature-detect it via the SDK export; on older builds the export is
+ *  undefined and the plugin should fall back to its own route page. */
+export const SETTINGS_PLUGINS_AREA = 'settings.plugins'
 
 function reveal(file: string) {
   void window.hermesDesktop?.revealPath?.(file)?.catch(() => undefined)
@@ -372,6 +379,8 @@ export function PluginsSettings() {
     (a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || a.name.localeCompare(b.name)
   )
 
+  const contributed = useContributions(SETTINGS_PLUGINS_AREA)
+
   return (
     <SettingsContent>
       <SettingsSection icon={Monitor} meta={p.count(rows.length)} title={p.title}>
@@ -408,6 +417,18 @@ export function PluginsSettings() {
       </SettingsSection>
 
       <AgentPluginsSection />
+
+      {contributed.map(contribution => {
+        const meta = typeof (contribution.data as { meta?: unknown } | undefined)?.meta === 'string'
+          ? (contribution.data as { meta: string }).meta
+          : undefined
+
+        return (
+          <SettingsSection icon={Package} key={contribution.id} meta={meta} title={contribution.title ?? contribution.id}>
+            {contribution.render?.()}
+          </SettingsSection>
+        )
+      })}
     </SettingsContent>
   )
 }

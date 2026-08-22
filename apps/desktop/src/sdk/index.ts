@@ -892,6 +892,7 @@ export { type RouteContribution, ROUTES_AREA, SIDEBAR_NAV_AREA, type SidebarNavC
  *  decoupled (the "manage keys" deep link is a no-op outside the router); pass
  *  `toolset`, optional `onConfiguredChange`, and an optional `profile`. */
 export { ToolsetConfigPanel } from '@/app/settings/toolset-config-panel'
+export { SETTINGS_PLUGINS_AREA } from '@/app/settings/plugins-settings'
 /** THE model catalog menu — the same searchable, provider-grouped, family-
  *  collapsing picker the chat composer uses, including the per-row
  *  thinking/effort/fast submenu. Drive it with a `ModelMenuController`: the

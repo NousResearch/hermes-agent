@@ -19,6 +19,8 @@ vi.mock('@/hermes', async importOriginal => ({
 }))
 
 import { $pluginRecords } from '@/contrib/plugins-store'
+import { registry } from '@/contrib/registry'
+import type { Contribution } from '@/contrib/types'
 import { queryClient } from '@/lib/query-client'
 import {
   $agentPluginBusy,
@@ -30,7 +32,7 @@ import {
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 
-import { PluginsSettings } from './plugins-settings'
+import { PluginsSettings, SETTINGS_PLUGINS_AREA } from './plugins-settings'
 
 const legacyRow = {
   name: 'Legacy plugin',
@@ -229,5 +231,26 @@ describe('PluginsSettings', () => {
         profile: 'work'
       })
     )
+  })
+})
+
+describe('settings.plugins contribution area', () => {
+  it('renders plugin-contributed sections after the installed lists', async () => {
+    $gatewayState.set('open')
+
+    const dispose = registry.register({
+      id: 'marketplace-test',
+      area: SETTINGS_PLUGINS_AREA,
+      source: 'test',
+      title: 'Marketplace (test)',
+      render: () => <div data-testid="marketplace-test-body">Browse plugins here</div>
+    } satisfies Contribution)
+
+    renderSettings()
+
+    expect(await screen.findByText('Marketplace (test)')).toBeTruthy()
+    expect(screen.getByTestId('marketplace-test-body')).toBeTruthy()
+
+    dispose()
   })
 })

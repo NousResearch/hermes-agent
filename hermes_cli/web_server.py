@@ -1048,6 +1048,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Terminal execution backend",
         "options": ["local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity"],
     },
+    "desktop.files_double_click": {
+        "type": "select",
+        "description": "Files-panel double-click behavior (preview | open)",
+        "options": ["preview", "open"],
+    },
     "terminal.vercel_runtime": {
         "type": "select",
         "description": "Vercel Sandbox runtime",

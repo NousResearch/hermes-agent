@@ -337,6 +337,8 @@ export interface HermesConfig {
     repo_scan_enabled?: boolean
     repo_scan_roots?: string[]
     repo_scan_exclude_paths?: string[]
+    /** Files-panel double-click behavior: "preview" (default) or "open". */
+    files_double_click?: 'preview' | 'open'
   }
   terminal?: {
     cwd?: string

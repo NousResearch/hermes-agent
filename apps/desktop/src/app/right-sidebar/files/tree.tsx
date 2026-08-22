@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { pathToFileURL } from 'node:url'
 import { type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { useMemo } from 'react'
 import { type NodeApi, type NodeRendererProps, type RowRendererProps, Tree, type TreeApi } from 'react-arborist'
@@ -12,6 +13,7 @@ import { type RepoChangeKind, repoChangeKindForPath } from '@/store/coding-statu
 import { $renamingPath, beginInlineRename } from '@/store/file-actions'
 import { $revealInTreeRequest } from '@/store/layout'
 
+import { useHermesConfigRecord } from '../../hooks/use-config-record'
 import { FileEntryContextMenu, InlineRenameInput, isRenameShortcut } from '../file-actions'
 
 import { getFileTreeDndManager } from './dnd-manager'
@@ -21,6 +23,25 @@ const ROW_HEIGHT = 22
 const INDENT = 10
 /** Fixed base inset (`px-6.5`) layered on top of arborist's depth indent. */
 const TREE_ROW_INSET = '17px'
+
+/**
+ * Open a local file with the OS default application via `file://` (the
+ * Electron main process dispatches it to the system file association).
+ * Falls back to revealing the file in the OS file manager on failure.
+ */
+export async function openFileWithDefaultApp(path: string) {
+  try {
+    // pathToFileURL correctly percent-encodes every character (including
+    // `#`, `?`, `&`) and normalizes Windows backslashes + drive-letter
+    // prefixes into a valid file:// URL — unlike a hand-rolled
+    // `file://${encodeURI(path)}`, which leaves `#`/`?`/`&` unescaped and
+    // would misroute a filename like `report#1.md` as a URL fragment.
+    const url = pathToFileURL(path).href
+    await window.hermesDesktop?.openExternal(url)
+  } catch {
+    void window.hermesDesktop?.revealPath?.(path)
+  }
+}
 
 function withTreeInset(paddingLeft: number | string | undefined): string {
   if (typeof paddingLeft === 'number') {
@@ -58,6 +79,17 @@ export function ProjectTree({
   openState
 }: ProjectTreeProps) {
   markRightPanePerf('project-tree-render')
+
+  // `desktop.files_double_click` switches double-click from the built-in
+  // preview pane ("preview", default) to opening with the OS default app
+  // ("open"). Reads through the shared config record so Settings changes
+  // propagate without a reload.
+  const { data: config } = useHermesConfigRecord()
+  const desktopCfg = (config?.desktop ?? {}) as { files_double_click?: 'preview' | 'open' }
+  const doubleClickAction: 'preview' | 'open' =
+    desktopCfg.files_double_click === 'preview' || desktopCfg.files_double_click === 'open'
+      ? desktopCfg.files_double_click
+      : 'preview'
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const treeRef = useRef<TreeApi<TreeNode> | null>(null)
@@ -208,6 +240,7 @@ export function ProjectTree({
           {props => (
             <ProjectTreeRow
               {...props}
+              doubleClickAction={doubleClickAction}
               onAttachFile={onActivateFile}
               onAttachFolder={onActivateFolder}
               onPreviewFile={onPreviewFile}
@@ -263,12 +296,14 @@ const CHANGE_TINT: Record<RepoChangeKind, string> = {
 function ProjectTreeRow({
   dragHandle,
   node,
+  doubleClickAction = 'preview',
   onAttachFile,
   onAttachFolder,
   onPreviewFile,
   relativeTo,
   style
 }: NodeRendererProps<TreeNode> & {
+  doubleClickAction?: 'preview' | 'open'
   onAttachFile: (path: string) => void
   onAttachFolder: (path: string) => void
   onPreviewFile?: (path: string) => void
@@ -326,7 +361,11 @@ function ProjectTreeRow({
         event.stopPropagation()
 
         if (!isFolder && !isPlaceholder && $renamingPath.get() !== node.data.id) {
-          onPreviewFile?.(node.data.id)
+          if (doubleClickAction === 'open') {
+            void openFileWithDefaultApp(node.data.id)
+          } else {
+            onPreviewFile?.(node.data.id)
+          }
         }
       }}
       onDragStart={event => {

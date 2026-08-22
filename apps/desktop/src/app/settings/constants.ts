@@ -650,6 +650,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'desktop.repo_scan_enabled',
       'desktop.repo_scan_roots',
       'desktop.repo_scan_exclude_paths',
+      'desktop.files_double_click',
       'code_execution.mode',
       'terminal.persistent_shell',
       'terminal.env_passthrough',

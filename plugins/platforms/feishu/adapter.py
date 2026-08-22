@@ -2729,6 +2729,13 @@ class FeishuAdapter(BasePlatformAdapter):
         event = getattr(data, "event", None)
         action = getattr(event, "action", None)
         action_value = getattr(action, "value", {}) or {}
+        # The webhook transport rebuilds the payload through
+        # _namespace_from_mapping, which turns nested dicts into
+        # SimpleNamespace. Without normalizing, the isinstance(dict) checks
+        # below fail and approval clicks fall through to the generic
+        # synthetic-command path instead of resolving the approval.
+        if isinstance(action_value, SimpleNamespace):
+            action_value = vars(action_value)
         hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
         update_prompt_action = (
             action_value.get("hermes_update_prompt_action")
@@ -3652,7 +3659,15 @@ class FeishuAdapter(BasePlatformAdapter):
         elif event_type in {"im.message.reaction.created_v1", "im.message.reaction.deleted_v1"}:
             self._on_reaction_event(event_type, data)
         elif event_type == "card.action.trigger":
-            self._on_card_action_trigger(data)
+            # Feishu refreshes the card in every client only when the callback
+            # response body carries the updated card. The WS transport lets the
+            # SDK serialize the handler's return value; in webhook mode we are
+            # the transport, so the response must be forwarded explicitly or
+            # the buttons stay live and re-clickable.
+            card_response = self._on_card_action_trigger(data)
+            payload = self._serialize_card_action_response(card_response)
+            if payload is not None:
+                return web.json_response(payload)
         elif event_type == "drive.notice.comment_add_v1":
             self._on_drive_comment_event(data)
         elif event_type == "vc.bot.meeting_invited_v1":
@@ -3660,6 +3675,33 @@ class FeishuAdapter(BasePlatformAdapter):
         else:
             logger.debug("[Feishu] Ignoring webhook event type: %s", event_type or "unknown")
         return web.json_response({"code": 0, "msg": "ok"})
+
+    @staticmethod
+    def _serialize_card_action_response(response: Any) -> Optional[Dict[str, Any]]:
+        """Convert a P2CardActionTriggerResponse into a webhook response body.
+
+        Returns ``None`` when the handler produced nothing worth returning, so
+        the caller falls through to the generic ``{"code": 0, "msg": "ok"}``
+        acknowledgement.
+
+        The lark_oapi marshaller is used rather than reading ``card``/``toast``
+        by hand: it strips unset fields and keeps every response field the SDK
+        knows about, so a ``toast`` (or a field added in a later SDK release) is
+        not silently dropped on the webhook path.
+        """
+        if response is None:
+            return None
+        try:
+            marshalled = lark.JSON.marshal(response)
+            payload = json.loads(marshalled) if marshalled else None
+        except Exception:
+            logger.warning(
+                "[Feishu] Failed to serialize card action response", exc_info=True,
+            )
+            return None
+        if not isinstance(payload, dict) or not payload:
+            return None
+        return payload
 
     def _is_webhook_signature_valid(self, headers: Any, body_bytes: bytes) -> bool:
         """Verify Feishu webhook signature using timing-safe comparison.
@@ -4963,6 +5005,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not FEISHU_WEBHOOK_AVAILABLE:
             raise RuntimeError("aiohttp not installed; webhook mode unavailable")
         domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
+        self._loop = asyncio.get_running_loop()
         self._client = self._build_lark_client(domain)
         self._event_handler = self._build_event_handler()
         if self._event_handler is None:

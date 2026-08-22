@@ -447,3 +447,89 @@ class TestResolveUpdatePrompt:
         assert 1 not in adapter._update_prompt_state
 
 
+# ===========================================================================
+# _serialize_card_action_response — webhook transport must forward the card
+# ===========================================================================
+
+class _StubToast:
+    def __init__(self, type_=None, content=None):
+        self.type = type_
+        self.content = content
+
+
+class TestSerializeCardActionResponse:
+    """The webhook path must forward the handler's card, not swallow it.
+
+    In WS mode the SDK serializes the handler return value; in webhook mode the
+    adapter is the transport, so a dropped response leaves the buttons live and
+    re-clickable in every client.
+    """
+
+    @staticmethod
+    def _marshal(payload):
+        """Stand in for lark.JSON.marshal over the stub response objects."""
+        out = {}
+        toast = getattr(payload, "toast", None)
+        if toast is not None and getattr(toast, "type", None):
+            out["toast"] = {"type": toast.type, "content": toast.content}
+        card = getattr(payload, "card", None)
+        if card is not None and getattr(card, "type", None):
+            out["card"] = {"type": card.type, "data": card.data}
+        return json.dumps(out)
+
+    @pytest.fixture()
+    def _stub_marshal(self, monkeypatch):
+        monkeypatch.setattr(
+            feishu_module, "lark",
+            SimpleNamespace(JSON=SimpleNamespace(marshal=self._marshal)),
+            raising=False,
+        )
+
+    def test_returns_none_for_missing_response(self, _stub_marshal):
+        assert FeishuAdapter._serialize_card_action_response(None) is None
+
+    def test_returns_none_for_empty_response(self, _stub_marshal):
+        """An acknowledgement with no card must fall through to code/msg ok."""
+        assert FeishuAdapter._serialize_card_action_response(_FakeP2Response()) is None
+
+    def test_forwards_resolved_card(self, _stub_marshal):
+        response = _FakeP2Response()
+        card = _FakeCallBackCard()
+        card.type = "raw"
+        card.data = {"header": {"template": "green"}}
+        response.card = card
+
+        payload = FeishuAdapter._serialize_card_action_response(response)
+
+        assert payload == {
+            "card": {"type": "raw", "data": {"header": {"template": "green"}}},
+        }
+
+    def test_preserves_toast_alongside_card(self, _stub_marshal):
+        """Regression: a hand-rolled card-only walk silently dropped toast."""
+        response = _FakeP2Response()
+        card = _FakeCallBackCard()
+        card.type = "raw"
+        card.data = {"header": {"template": "red"}}
+        response.card = card
+        response.toast = _StubToast("error", "Denied")
+
+        payload = FeishuAdapter._serialize_card_action_response(response)
+
+        assert payload["toast"] == {"type": "error", "content": "Denied"}
+        assert payload["card"]["data"] == {"header": {"template": "red"}}
+
+    def test_marshal_failure_degrades_to_none(self, monkeypatch):
+        """A serializer error must not break the callback with a 500."""
+        def _boom(_payload):
+            raise RuntimeError("marshal exploded")
+
+        monkeypatch.setattr(
+            feishu_module, "lark",
+            SimpleNamespace(JSON=SimpleNamespace(marshal=_boom)),
+            raising=False,
+        )
+        response = _FakeP2Response()
+        response.card = _FakeCallBackCard()
+
+        assert FeishuAdapter._serialize_card_action_response(response) is None

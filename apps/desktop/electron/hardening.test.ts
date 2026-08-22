@@ -15,6 +15,7 @@ import {
   enableBasicPasswordStoreEncryption,
   encryptDesktopSecret,
   homeRelativeAttachmentCandidates,
+  isMissingFileError,
   readFileDataUrlForIpc,
   resolveDirectoryForIpc,
   resolvePersistedRemoteToken,
@@ -1048,4 +1049,30 @@ test('homeRelativeAttachmentCandidates second candidate falls back to basename o
     path.join('/Users/alice', 'foo.xlsx'),
     path.join('/Users/alice/.hermes', 'attachments', 'foo.xlsx')
   ])
+})
+
+test('isMissingFileError classifies ENOENT/ENOTDIR as expected preview-read outcomes', () => {
+  const missing = new Error('Text preview failed: file does not exist.')
+  ;(missing as NodeJS.ErrnoException).code = 'ENOENT'
+  assert.equal(isMissingFileError(missing), true)
+
+  const missingDir = new Error('Text preview failed: file does not exist.')
+  ;(missingDir as NodeJS.ErrnoException).code = 'ENOTDIR'
+  assert.equal(isMissingFileError(missingDir), true)
+
+  // Everything else — permission, size, invalid path — is a real error and
+  // must keep rejecting so the renderer sees it as a genuine failure.
+  for (const code of ['EACCES', 'EFBIG', 'EISDIR', 'invalid-path', 'sensitive-file', undefined]) {
+    const error = new Error('some read failure')
+    if (code !== undefined) {
+      ;(error as NodeJS.ErrnoException).code = code
+    }
+
+    assert.equal(isMissingFileError(error), false, `code ${String(code)} must not be treated as missing-file`)
+  }
+
+  assert.equal(isMissingFileError(null), false)
+  assert.equal(isMissingFileError('ENOENT'), false)
+  assert.equal(isMissingFileError({ code: 'ENOENT' }), true)
+  assert.equal(isMissingFileError({ code: 'EACCES' }), false)
 })

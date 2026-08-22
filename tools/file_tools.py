@@ -11,7 +11,10 @@ import sys
 import threading
 from pathlib import Path, PurePosixPath
 
-from agent.file_safety import get_read_block_error
+from agent.file_safety import (
+    get_messaging_write_block_error,
+    get_read_block_error,
+)
 from tools.binary_extensions import (
     has_binary_extension,
     has_opaque_document_extension,
@@ -2236,6 +2239,11 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     binary_doc_err = _check_binary_document_write(path, task_id)
     if binary_doc_err:
         return tool_error(binary_doc_err)
+    restricted_err = get_messaging_write_block_error(
+        _resolve_path_for_task(path, task_id), task_id
+    )
+    if restricted_err:
+        return tool_error(restricted_err)
     protected_err = _check_protected_instruction_write([path], task_id)
     if protected_err:
         return tool_error(protected_err)
@@ -2377,6 +2385,11 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
             return tool_error(sensitive_err)
+        restricted_err = get_messaging_write_block_error(
+            _resolve_path_for_task(_p, task_id), task_id
+        )
+        if restricted_err:
+            return tool_error(restricted_err)
         if not cross_profile:
             cross_warning = _check_cross_profile_path(_p, task_id)
             if cross_warning:

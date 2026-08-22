@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 from contextlib import closing
@@ -24,10 +25,56 @@ def _check(status: str, detail: str | None = None, **extra: Any) -> dict[str, An
     return result
 
 
+def _unrepaired_corruption_marker(path: Path) -> bool:
+    """True when the repair-attempt ledger matches the current file bytes.
+
+    ``hermes_state`` writes ``state.db.repair-attempts.json`` beside the
+    database when automatic schema surgery fails, keyed by a size+mtime_ns
+    fingerprint of the exact bytes attempted, and deletes it on success
+    (#86747). A ledger whose fingerprint still matches therefore means: this
+    database is corrupt, automatic repair already failed on these bytes, and
+    nothing has changed since — the strongest cheap corruption signal
+    available to a bounded probe, and it works across processes (the repair
+    may have been attempted by the CLI or a cron worker, not this gateway).
+
+    Import-light on purpose: reads the sidecar JSON directly instead of
+    importing ``hermes_state``. Any failed attempt on the current
+    fingerprint is enough to report degraded — waiting for the attempt
+    budget to exhaust would keep the probe green while repair retries churn.
+
+    The ``size:mtime_ns`` fingerprint can false-match on filesystems with
+    coarse mtime granularity if a repair rewrites the file to the same size
+    within one timestamp tick — the probe then stays degraded until the next
+    successful write bumps the mtime. Acceptable: the failure mode is a
+    briefly pessimistic health signal, never a false green.
+    """
+    ledger_path = path.with_name(path.name + ".repair-attempts.json")
+    try:
+        data = json.loads(ledger_path.read_text(encoding="utf-8"))
+        st = path.stat()
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    fingerprint = data.get("fingerprint")
+    try:
+        attempts = int(data.get("failed_attempts", 0))
+    except (TypeError, ValueError):
+        return False
+    return attempts >= 1 and fingerprint == f"{st.st_size}:{st.st_mtime_ns}"
+
+
 def _probe_state_db(home: Path) -> dict[str, Any]:
     path = home / "state.db"
     if not path.exists():
         return _check("ok", "not initialized")
+    if _unrepaired_corruption_marker(path):
+        # Report the corruption class without paths or messages (this feeds
+        # public component rollups). "degraded" — not an error state that
+        # would trip restart loops — but no longer a false green (OOF-106:
+        # a page-corrupt state.db kept /api/status "ok" for 10+ days while
+        # sessions silently failed to persist).
+        return _check("degraded", "unrepaired corruption")
     try:
         # A readiness probe must never compete with normal state writers. A
         # read-only schema query still catches unreadable/corrupt databases
@@ -40,6 +87,21 @@ def _probe_state_db(home: Path) -> dict[str, Any]:
         with closing(sqlite3.connect(uri, uri=True, timeout=1.0)) as conn:
             conn.execute("PRAGMA query_only = ON")
             conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+            # The schema read only touches page 1; page-level damage in the
+            # canonical table b-trees sails past it (the OOF-106 false-green
+            # gap). Walking one row of ``sessions`` descends its b-tree root
+            # — still O(1) pages, still read-only, but it catches root-page
+            # corruption of the table every session write depends on.
+            # ``SELECT *`` on purpose: a narrower projection (e.g. ``id``)
+            # can be satisfied from an index b-tree without ever touching
+            # the table's pages. The row is fetched and discarded — probes
+            # expose status only, never data. Guarded for pre-schema
+            # databases where the table doesn't exist yet.
+            has_sessions = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'"
+            ).fetchone()
+            if has_sessions:
+                conn.execute("SELECT * FROM sessions LIMIT 1").fetchone()
         return _check("ok")
     except Exception as exc:
         return _check("degraded", type(exc).__name__)

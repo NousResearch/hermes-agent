@@ -3552,12 +3552,12 @@ def repair_empty_non_final_messages(
     last_idx = len(messages) - 1
     for idx, msg in enumerate(messages):
         if (
-            idx != last_idx
-            and isinstance(msg, dict)
-            # tool results are validated by their own orphan/pairing pass; an
-            # empty tool result is a separate (and rarer) concern.
+            isinstance(msg, dict)
             and msg.get("role") in ("assistant", "user")
             and not _msg_has_payload(msg)
+            and (idx != last_idx or msg.get("role") == "assistant")
+            # tool results are validated by their own orphan/pairing pass; an
+            # empty tool result is a separate (and rarer) concern.
         ):
             # Shallow-copy so stored history / prompt caching stays byte-stable.
             fixed = dict(msg)

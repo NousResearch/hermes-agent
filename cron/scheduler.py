@@ -6628,6 +6628,31 @@ def run_one_job(
     fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
     execution_token = object()
     profile_home = _get_hermes_home().resolve()
+
+    # Run the job under the profile's secret scope. get_secret() fails
+    # closed outside a scope once profile isolation is in play (multiple
+    # gateway profiles / room→profile multiplexing), and cron fires from
+    # the ticker thread where no per-turn scope is installed — so
+    # resolve_runtime_provider() raised UnscopedSecretError before model
+    # selection, breaking every cron job. Mirrors the per-turn pattern in
+    # gateway/run.py (_profile_runtime_scope).
+    #
+    # The scope must ALSO stay installed through _deliver_result (both the
+    # live-adapter send and the standalone fallback resolve credentials via
+    # get_secret / load_gateway_config at delivery time), so it is reset in
+    # this wrapper's finally — AFTER the body's save/deliver/mark sequence,
+    # including the failure-path delivery in the body's outer except (#83182).
+    # Resetting it in a finally around run_job alone (as before) left
+    # delivery reading another profile's — or no — credentials.
+    from agent.secret_scope import (
+        build_profile_secret_scope,
+        reset_secret_scope,
+        set_secret_scope,
+    )
+
+    _scope_token = set_secret_scope(
+        build_profile_secret_scope(profile_home)
+    )
     with _running_lock:
         _running_fire_owners.setdefault(job["id"], {})[execution_token] = (
             fire_owner or None,
@@ -6651,6 +6676,7 @@ def run_one_job(
             ),
         )
     finally:
+        reset_secret_scope(_scope_token)
         with _running_lock:
             executions = _running_fire_owners.get(job["id"])
             if executions is not None:
@@ -6728,22 +6754,11 @@ def _run_one_job_body(
         # becomes running only immediately before the actual run.
         mark_execution_running(execution_id)
 
-        # Run the job under the profile's secret scope. get_secret() fails
-        # closed outside a scope once profile isolation is in play (multiple
-        # gateway profiles / room→profile multiplexing), and cron fires from
-        # the ticker thread where no per-turn scope is installed — so
-        # resolve_runtime_provider() raised UnscopedSecretError before model
-        # selection, breaking every cron job. Mirrors the per-turn pattern in
-        # gateway/run.py (_profile_runtime_scope).
-        from agent.secret_scope import (
-            build_profile_secret_scope,
-            reset_secret_scope,
-            set_secret_scope,
-        )
-
-        _scope_token = set_secret_scope(
-            build_profile_secret_scope(_get_hermes_home())
-        )
+        # NOTE: the profile secret scope is installed by the run_one_job
+        # wrapper and stays active through this body's ENTIRE sequence —
+        # run_job, save, delivery (live-adapter and standalone), and mark —
+        # so delivery resolves THIS profile's credentials (#83182). It is
+        # torn down in the wrapper's finally, after this body returns.
         # Defer the cron agent's async-resource teardown until AFTER delivery.
         # run_job normally closes the agent (and reaps stale async clients) in
         # its finally block; doing that before _deliver_result runs means the
@@ -6775,8 +6790,6 @@ def _run_one_job_body(
             for _deferred_agent in _deferred_agents:
                 _teardown_cron_agent(_deferred_agent, job["id"])
             raise
-        finally:
-            reset_secret_scope(_scope_token)
 
         if _fire_claim_ownership_lost():
             for _deferred_agent in _deferred_agents:

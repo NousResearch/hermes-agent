@@ -22,7 +22,7 @@ from __future__ import annotations
 import inspect
 import threading
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Optional
 
 # Cap for the exponential tick backoff applied while consecutive ticks fail
 # with fd exhaustion (EMFILE/ENFILE, #87644).  Base is the tick interval
@@ -488,6 +488,28 @@ def scheduler_for_profile_mode(
     return InProcessCronScheduler()
 
 
+def _profile_tick_adapters(
+    profile_name: Optional[str],
+    adapters: Any = None,
+    profile_adapters: Any = None,
+):
+    """Resolve the live-adapter map a multiplex tick should deliver through.
+
+    Under multiplexing (#83182), a profile's cron tick must deliver through
+    THAT profile's adapters — each secondary profile's bot sends with its own
+    credential — not the shared default-profile map. Falls back to the shared
+    map for the default profile, for profiles with no secondary adapters
+    (e.g. platform served only by the primary), or when the caller did not
+    supply ``profile_adapters`` (older gateway / tests).
+    """
+    if not profile_name or profile_name == "default":
+        return adapters
+    pmap = (profile_adapters or {}).get(profile_name)
+    if pmap:
+        return pmap
+    return adapters
+
+
 class InProcessCronScheduler(CronScheduler):
     """Default provider: the historical in-process 60s ticker.
 
@@ -511,6 +533,7 @@ class InProcessCronScheduler(CronScheduler):
         interval=60,
         can_dispatch=None,
         profile_homes=None,
+        profile_adapters=None,
     ):
         import logging
         from cron.scheduler import tick as cron_tick
@@ -538,6 +561,7 @@ class InProcessCronScheduler(CronScheduler):
                 loop=loop,
                 interval=interval,
                 can_dispatch=can_dispatch,
+                profile_adapters=profile_adapters,
             )
             return
 
@@ -609,6 +633,7 @@ class InProcessCronScheduler(CronScheduler):
         loop=None,
         interval=60,
         can_dispatch=None,
+        profile_adapters=None,
     ):
         """Tick every served profile's cron store when multiplex_profiles is on.
 
@@ -661,13 +686,18 @@ class InProcessCronScheduler(CronScheduler):
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                 else:
                     for entry in profile_homes:
+                        profile_name = (
+                            entry[0] if isinstance(entry, tuple) else None
+                        )
                         home = entry[1] if isinstance(entry, tuple) else entry
                         home_token = set_hermes_home_override(str(home))
                         try:
                             with use_cron_store(home):
                                 cron_tick(
                                     verbose=False,
-                                    adapters=adapters,
+                                    adapters=_profile_tick_adapters(
+                                        profile_name, adapters, profile_adapters
+                                    ),
                                     loop=loop,
                                     sync=False,
                                     can_dispatch=can_dispatch,

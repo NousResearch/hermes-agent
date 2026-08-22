@@ -33,6 +33,15 @@ export function profileLabel(profile: Pick<ProfileInfo, 'display_name' | 'name'>
   return (profile.display_name ?? '').trim() || profile.name
 }
 
+// Resolves a normalized profile key (as stored on a session) to its display
+// label — the same profileLabel() every other profile-facing surface shows
+// (the rail switcher, the settings list), not the raw key. Falls back to the
+// key itself when the profile isn't in the live list (e.g. one that still
+// has recent sessions after being removed).
+export function profileGroupLabel(key: string, profiles: ProfileInfo[]): string {
+  return profileLabel(profiles.find(profile => normalizeProfileKey(profile.name) === key) ?? { name: key })
+}
+
 // The profile the running local backend is actually scoped to (mirrors
 // /api/profiles/active `current`). "default" is the root ~/.hermes. This is the
 // display source of truth for the statusbar pill; the desktop's *stored*

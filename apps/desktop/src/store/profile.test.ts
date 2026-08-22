@@ -26,6 +26,7 @@ const {
   ensureGatewayProfile,
   invalidateProfileListFetches,
   prewarmProfileBackend,
+  profileGroupLabel,
   refreshProfiles
 } = await import('./profile')
 
@@ -237,5 +238,29 @@ describe('stale profile-list fetches across a backend switch (#85731)', () => {
     await oldFetch
 
     expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'coder'])
+  })
+})
+
+describe('profileGroupLabel', () => {
+  it('shows a renamed profile\'s display_name, not its raw key', () => {
+    // Regression: the sidebar's "group by profile" view built its group
+    // headers straight from normalizeProfileKey(session.profile) — the raw,
+    // lowercase canonical key — instead of the profile's display_name. Every
+    // other profile-facing surface (the rail switcher, the settings list)
+    // already shows profileLabel(); the profile-grouped sidebar view was the
+    // one place a rename didn't show up.
+    const renamed = { ...profile('coder'), display_name: 'Coding Buddy' }
+
+    expect(profileGroupLabel('coder', [renamed])).toBe('Coding Buddy')
+  })
+
+  it('falls back to the canonical name when no display_name is set', () => {
+    expect(profileGroupLabel('coder', [profile('coder')])).toBe('coder')
+  })
+
+  it('falls back to the key itself when the profile is missing from the live list', () => {
+    // e.g. a profile removed elsewhere while a session grouped under its key
+    // is still on screen.
+    expect(profileGroupLabel('gone', [profile('coder')])).toBe('gone')
   })
 })

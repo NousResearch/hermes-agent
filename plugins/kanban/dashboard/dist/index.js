@@ -3055,7 +3055,7 @@
 
   function AttentionControls(props) {
     const task = props.task;
-    const receipt = task.attention || { state: "active", revision: 0 };
+    const receipt = task.attention;
     const [custom, setCustom] = useState("");
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
@@ -3065,8 +3065,6 @@
       setError("");
       const body = {
         action: action,
-        actor: "human",
-        source: "webui",
         expected_revision: receipt.revision || 0,
         idempotency_key: Date.now() + "-" + Math.random().toString(36).slice(2),
       };
@@ -3098,6 +3096,7 @@
       return formatLocal(date) === value ? date : null;
     };
     const customWake = parseLocal(custom);
+    if (!receipt) return null;
     if (receipt.state === "settled") {
       return h("div", { onClick: stop, onKeyDown: stop },
         h("span", { role: "status", "aria-live": "polite", "aria-atomic": "true", className: "sr-only" }, announcement),

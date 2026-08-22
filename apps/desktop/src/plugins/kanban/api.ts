@@ -220,8 +220,6 @@ export const updateAttention = (
     method: 'POST',
     body: {
       action,
-      actor: 'human',
-      source: 'desktop',
       expected_revision: revision,
       idempotency_key: `${Date.now()}-${crypto.randomUUID()}`,
       ...(wakeAt == null ? {} : { wake_at: wakeAt })

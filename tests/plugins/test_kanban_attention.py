@@ -52,7 +52,7 @@ def create(client, status="ready"):
 
 
 def act(client, task_id, action, key, revision=0, wake_at=None):
-    body = {"action": action, "actor": "captain", "source": "test", "expected_revision": revision, "idempotency_key": key}
+    body = {"action": action, "expected_revision": revision, "idempotency_key": key}
     if wake_at is not None:
         body["wake_at"] = wake_at
     return client.post(f"/api/plugins/kanban/tasks/{task_id}/attention", json=body)
@@ -162,6 +162,62 @@ def test_expiry_recovers_after_restart_and_invalid_inputs_fail_closed(client, ka
     assert projected["state"] == "active" and projected["reason"] == "expired"
 
 
+def test_expiry_is_durably_woken_once_across_reads_and_restart(client, kanban_home):
+    task = create(client)
+    future = int(time.time()) + 3600
+    assert act(client, task["id"], "snooze", "future", wake_at=future).status_code == 200
+    conn = kb.connect()
+    conn.execute(
+        "UPDATE attention_receipts SET wake_at = ? WHERE subject_id = ?",
+        (int(time.time()) - 1, task["id"]),
+    )
+    conn.commit()
+    conn.close()
+
+    first = client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()["task"]["attention"]
+    second = client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()["task"]["attention"]
+    assert first["state"] == second["state"] == "active"
+
+    # A process restart must observe the materialized wake, not replay expiry.
+    kb.init_db()
+    conn = kb.connect()
+    receipt = conn.execute(
+        "SELECT state, wake_at, revision FROM attention_receipts WHERE subject_id = ?",
+        (task["id"],),
+    ).fetchone()
+    wakes = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'attention_wake'",
+        (task["id"],),
+    ).fetchall()
+    conn.close()
+    assert dict(receipt) == {"state": "active", "wake_at": None, "revision": 2}
+    assert len(wakes) == 1
+    assert json.loads(wakes[0]["payload"])["source"] == "deadline"
+
+
+def test_board_read_reconciles_every_visible_expired_receipt(client):
+    tasks = [create(client) for _ in range(2)]
+    future = int(time.time()) + 3600
+    for index, task in enumerate(tasks):
+        assert act(client, task["id"], "snooze", f"future-{index}", wake_at=future).status_code == 200
+    conn = kb.connect()
+    conn.execute("UPDATE attention_receipts SET wake_at = ?", (int(time.time()) - 1,))
+    conn.commit()
+    conn.close()
+
+    board = client.get("/api/plugins/kanban/board").json()
+    visible = [task for column in board["columns"] for task in column["tasks"]]
+    assert {task["id"] for task in visible} == {task["id"] for task in tasks}
+    assert all(task["attention"]["state"] == "active" for task in visible)
+
+    conn = kb.connect()
+    rows = conn.execute("SELECT state, revision FROM attention_receipts ORDER BY subject_id").fetchall()
+    wakes = conn.execute("SELECT COUNT(*) FROM task_events WHERE kind='attention_wake'").fetchone()[0]
+    conn.close()
+    assert [dict(row) for row in rows] == [{"state": "active", "revision": 2}] * 2
+    assert wakes == 2
+
+
 def test_receipt_audit_is_append_only(client, kanban_home):
     task = create(client, status="review")
     status_before = client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()["task"]["status"]
@@ -171,8 +227,28 @@ def test_receipt_audit_is_append_only(client, kanban_home):
     status = conn.execute("SELECT status FROM tasks WHERE id = ?", (task["id"],)).fetchone()["status"]
     conn.close()
     assert [row["kind"] for row in audit] == ["attention_settle"]
-    assert json.loads(audit[0]["payload"])["source"] == "test"
+    assert json.loads(audit[0]["payload"])["source"] == "dashboard"
     assert status == status_before
+
+
+def test_http_client_cannot_spoof_attention_audit_identity(client, kanban_home):
+    task = create(client)
+    response = client.post(
+        f"/api/plugins/kanban/tasks/{task['id']}/attention",
+        json={"action": "settle", "expected_revision": 0, "idempotency_key": "identity", "actor": "captain"},
+    )
+    assert response.status_code == 422
+    response = act(client, task["id"], "settle", "identity")
+    assert response.status_code == 200
+    conn = kb.connect()
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? AND kind='attention_settle'",
+        (task["id"],),
+    ).fetchone()
+    conn.close()
+    payload = json.loads(row["payload"])
+    assert payload["actor"] == "human"
+    assert payload["source"] == "dashboard"
 
 
 def test_replay_cache_is_bounded_and_cascades_on_delete(kanban_home):

@@ -3717,7 +3717,7 @@ def project_task_attention(
     stored_state = str(row["state"])
     state = stored_state
     wake_at = row["wake_at"]
-    reason = "receipt"
+    reason = "expired" if stored_state == "active" and row["source"] == "deadline" else "receipt"
     if stored_state not in ("active", "settled", "snoozed"):
         state, reason = "active", "invalid_receipt"
     elif latest > int(row["observed_event_id"]):
@@ -3736,6 +3736,55 @@ def project_task_attention(
         "source": row["source"],
         "reason": reason,
     }
+
+
+def reconcile_expired_task_attention(
+    conn: sqlite3.Connection,
+    task_ids: Iterable[str],
+    *,
+    now: Optional[int] = None,
+) -> int:
+    """Materialize deadline wakes for the visible task set exactly once.
+
+    The caller must hold a write transaction. The state predicate is the CAS:
+    after one reader changes a receipt to ``active``, later readers cannot emit
+    another canonical wake event, including after process restart.
+    """
+    now = int(time.time()) if now is None else int(now)
+    ids = list(dict.fromkeys(str(task_id) for task_id in task_ids))
+    if not ids:
+        return 0
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        "SELECT subject_id, revision FROM attention_receipts "
+        f"WHERE subject_kind='kanban_task' AND state='snoozed' AND wake_at <= ? "
+        f"AND subject_id IN ({placeholders})",
+        (now, *ids),
+    ).fetchall()
+    reconciled = 0
+    for row in rows:
+        task_id = str(row["subject_id"])
+        revision = int(row["revision"])
+        next_revision = revision + 1
+        changed = conn.execute(
+            "UPDATE attention_receipts SET state='active', wake_at=NULL, actor='system', "
+            "source='deadline', revision=?, updated_at=? WHERE subject_kind='kanban_task' "
+            "AND subject_id=? AND state='snoozed' AND revision=? AND wake_at <= ?",
+            (next_revision, now, task_id, revision, now),
+        ).rowcount
+        if not changed:
+            continue
+        conn.execute(
+            "INSERT INTO task_events(task_id,kind,payload,created_at) VALUES (?,?,?,?)",
+            (task_id, "attention_wake", json.dumps({
+                "revision": next_revision,
+                "actor": "system",
+                "source": "deadline",
+                "wake_at": None,
+            }), now),
+        )
+        reconciled += 1
+    return reconciled
 
 
 def update_task_attention(

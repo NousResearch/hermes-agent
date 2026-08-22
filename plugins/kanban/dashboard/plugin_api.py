@@ -423,6 +423,8 @@ def get_board(
             workflow_template_id=workflow_template_id,
             current_step_key=current_step_key,
         )
+        with kanban_db.write_txn(conn):
+            kanban_db.reconcile_expired_task_attention(conn, (task.id for task in tasks))
         # Pre-fetch link counts per task (cheap: one query).
         link_counts: dict[str, dict[str, int]] = {}
         for row in conn.execute(
@@ -558,6 +560,8 @@ def get_task(
         task = kanban_db.get_task(conn, task_id)
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        with kanban_db.write_txn(conn):
+            kanban_db.reconcile_expired_task_attention(conn, [task_id])
         # Drawer/detail view returns the FULL summary (no truncation) so
         # operators can read the complete worker handoff without making
         # a second round-trip. Cards on /board carry a 200-char preview.
@@ -841,10 +845,10 @@ def remove_attachment(attachment_id: int, board: Optional[str] = Query(None)):
 # ---------------------------------------------------------------------------
 
 class AttentionActionBody(BaseModel):
+    model_config = {"extra": "forbid"}
+
     action: str
     wake_at: Optional[int] = None
-    actor: str = Field(default="human", min_length=1, max_length=120)
-    source: str = Field(default="dashboard", min_length=1, max_length=80)
     expected_revision: Optional[int] = Field(default=None, ge=0)
     idempotency_key: str = Field(min_length=1, max_length=160)
 
@@ -862,7 +866,7 @@ def update_attention(
         with conn:
             attention, idempotent = kanban_db.update_task_attention(
                 conn, task_id, action=payload.action, wake_at=payload.wake_at,
-                actor=payload.actor, source=payload.source,
+                actor="human", source="dashboard",
                 expected_revision=payload.expected_revision,
                 idempotency_key=payload.idempotency_key,
             )

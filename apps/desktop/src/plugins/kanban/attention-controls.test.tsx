@@ -45,6 +45,12 @@ beforeEach(() => {
 })
 
 describe('attention control lifecycle accessibility', () => {
+  it('stays absent when an older backend omits the capability projection', () => {
+    render(view(baseTask))
+    expect(screen.queryByRole('button', { name: 'Settle' })).toBeNull()
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
   it('keeps one live region through settle, settled, failed wake, and successful wake', async () => {
     updateAttentionMock.mockResolvedValueOnce(response('settled', 1))
     const rendered = render(view({ ...baseTask, attention: receipt('active', 0) }))

@@ -246,11 +246,11 @@ export function AttentionControls({ task }: { task: KanbanTask }) {
   const qc = useQueryClient()
   const [custom, setCustom] = useState('')
   const [announcement, setAnnouncement] = useState('')
-  const receipt = task.attention ?? { state: 'active' as const, revision: 0 }
+  const receipt = task.attention
 
   const action = useMutation({
     mutationFn: ({ kind, wakeAt }: { kind: 'settle' | 'snooze' | 'wake'; wakeAt?: number }) =>
-      updateAttention(task.id, kind, receipt.revision, wakeAt),
+      updateAttention(task.id, kind, receipt?.revision ?? 0, wakeAt),
     onError: error => {
       const message = errText(error)
       setAnnouncement(message)
@@ -281,6 +281,10 @@ export function AttentionControls({ task }: { task: KanbanTask }) {
     wake.setDate(wake.getDate() + 1)
     wake.setHours(9, 0, 0, 0)
     action.mutate({ kind: 'snooze', wakeAt: Math.floor(wake.getTime() / 1000) })
+  }
+
+  if (!receipt) {
+    return null
   }
 
   if (receipt.state === 'settled') {

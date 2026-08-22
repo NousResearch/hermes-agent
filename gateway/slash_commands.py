@@ -1101,6 +1101,17 @@ class GatewaySlashCommandsMixin:
             from gateway.slash_access import policy_for_source
             policy = policy_for_source(self.config, source)
             uid = getattr(source, "user_id", None)
+            if not uid:
+                return False
+            # WhatsApp user_ids arrive as raw JIDs (e.g. "556884063903:47@s.whatsapp.net"
+            # or "202945895362793@lid") but admin config uses bare numeric IDs.
+            # Normalize before comparison so "556884063903" matches any JID variant.
+            if getattr(source, "platform", None) and getattr(source.platform, "value", "") == "whatsapp":
+                try:
+                    from gateway.whatsapp_identity import normalize_whatsapp_identifier
+                    uid = normalize_whatsapp_identifier(uid)
+                except Exception:
+                    pass
             return bool(policy.enabled and uid and policy.is_admin(uid))
         except Exception:
             return False

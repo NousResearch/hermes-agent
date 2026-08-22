@@ -612,6 +612,44 @@ def finalize_turn(
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
 
+    # Required final-output guards run after all legacy transforms. They are
+    # sequential and fail closed: an exception must never release the text
+    # they were supposed to validate.
+    if final_response and not interrupted:
+        try:
+            from hermes_cli.plugins import (
+                invoke_text_hook as _invoke_text_hook,
+                invoke_validation_hook as _invoke_validation_hook,
+            )
+
+            _final_hook_kwargs = {
+                "session_id": agent.session_id or "",
+                "model": agent.model,
+                "platform": getattr(agent, "platform", None) or "",
+            }
+            final_response, _finalized = _invoke_text_hook(
+                "finalize_llm_output",
+                response_text=final_response,
+                **_final_hook_kwargs,
+            )
+            _invoke_validation_hook(
+                "validate_llm_output",
+                response_text=final_response,
+                **_final_hook_kwargs,
+            )
+            _response_transformed = _response_transformed or _finalized
+        except Exception as exc:
+            logger.warning("finalize_llm_output hook failed closed: %s", exc)
+            if str(getattr(agent, "platform", "") or "").lower() == "telegram":
+                final_response = (
+                    "結果：無法安全顯示\n"
+                    "變更：最終輸出安全檢查失敗。\n"
+                    "下一步：請重新執行；若持續失敗，再檢查 Gateway 日誌。"
+                )
+            else:
+                final_response = "Unable to safely display the final response."
+            _response_transformed = True
+
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can use this to persist conversation data (e.g. sync

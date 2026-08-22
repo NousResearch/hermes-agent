@@ -838,6 +838,70 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
+def _finalize_gateway_output(
+    source: Any,
+    text: str,
+    *,
+    user_message: str = "",
+    gateway: Any = None,
+    force_brief: bool = False,
+) -> str:
+    """Apply strict plugin transforms at the actual gateway egress boundary."""
+    if not text:
+        return text
+    platform = getattr(source, "platform", None)
+    try:
+        from hermes_cli.plugins import invoke_text_hook, invoke_validation_hook
+
+        final_text, _ = invoke_text_hook(
+            "finalize_gateway_output",
+            response_text=str(text),
+            platform=platform,
+            source=source,
+            user_message=user_message,
+            gateway=gateway,
+            force_brief=force_brief,
+        )
+        invoke_validation_hook(
+            "validate_gateway_output",
+            response_text=final_text,
+            platform=platform,
+            source=source,
+            user_message=user_message,
+            gateway=gateway,
+            force_brief=force_brief,
+        )
+        return final_text
+    except Exception as exc:
+        logger.warning("Gateway final-output hook failed closed: %s", exc)
+        if _gateway_platform_value(platform) == "telegram":
+            return (
+                "結果：無法安全顯示\n"
+                "變更：最終 Gateway 輸出安全檢查失敗。\n"
+                "下一步：請重新執行；若持續失敗，再檢查 Gateway 日誌。"
+            )
+        return "Unable to safely display the gateway response."
+
+
+def _build_auto_reset_notice(platform: Any, reason_text: str, session_info: str = "") -> str:
+    """Build a reset notice without exposing runtime metadata to Telegram."""
+    if _gateway_platform_value(platform) == "telegram":
+        return (
+            "結果：工作階段已自動重設\n"
+            f"變更：舊對話紀錄已清除（{reason_text}）。\n"
+            "下一步：可使用 /resume 瀏覽或還原先前的工作階段。"
+        )
+    notice = (
+        f"◐ Session automatically reset ({reason_text}). "
+        "Conversation history cleared.\n"
+        "Use /resume to browse and restore a previous session.\n"
+        "Adjust reset timing in config.yaml under session_reset."
+    )
+    if session_info:
+        notice = f"{notice}\n\n{session_info}"
+    return notice
+
+
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
@@ -16556,6 +16620,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not is_internal:
             self._scale_to_zero_note_real_inbound()
 
+        # Fire transport-safety hooks for every event, including internal
+        # background completions. These hooks may only fail closed by skipping;
+        # rewriting remains exclusive to the user-originated dispatch hook.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _transport_results = _invoke_hook(
+                "pre_gateway_transport",
+                fail_closed=True,
+                event=event,
+                gateway=self,
+                session_store=getattr(self, "session_store", None),
+            )
+        except Exception as _transport_exc:
+            logger.warning("pre_gateway_transport invocation failed: %s", _transport_exc)
+            # Telegram presentation safety is fail-closed if hook dispatch itself
+            # cannot be evaluated; other platforms preserve legacy behavior.
+            if source.platform is Platform.TELEGRAM:
+                return None
+            _transport_results = []
+
+        for _transport_result in _transport_results:
+            if isinstance(_transport_result, dict) and _transport_result.get("action") == "skip":
+                logger.info(
+                    "pre_gateway_transport skip: reason=%s platform=%s chat=%s",
+                    _transport_result.get("reason"),
+                    source.platform.value if source.platform else "unknown",
+                    source.chat_id or "unknown",
+                )
+                return None
+
         # Fire pre_gateway_dispatch plugin hook for user-originated messages.
         # Plugins receive the MessageEvent and may return a dict influencing flow:
         #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
@@ -17042,6 +17136,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _denied = self._check_slash_access(source, _cmd_def_inner.name)
                 if _denied is not None:
                     return _denied
+
+            # Plugin commands are presentation/control operations and must not
+            # be queued, steered, or interpreted as agent input mid-turn.
+            if _evt_cmd and _cmd_def_inner is None:
+                try:
+                    from hermes_cli.plugins import (
+                        get_plugin_command_handler as _get_plugin_handler,
+                        invoke_plugin_command as _invoke_plugin_command,
+                    )
+                    _plugin_command = _evt_cmd.replace("_", "-")
+                    if _get_plugin_handler(_plugin_command):
+                        _denied = self._check_slash_access(source, _plugin_command)
+                        if _denied is not None:
+                            return _denied
+                        _plugin_result = _invoke_plugin_command(
+                            _plugin_command,
+                            event.get_command_args().strip(),
+                            event=event,
+                            gateway=self,
+                        )
+                        if asyncio.iscoroutine(_plugin_result):
+                            _plugin_result = await _plugin_result
+                        return str(_plugin_result) if _plugin_result else None
+                except Exception as _plugin_exc:
+                    logger.warning("Active-session plugin command dispatch failed: %s", _plugin_exc)
+                    return "Command failed safely; it was not sent to the active agent."
 
             # Any recognized slash command: dispatch according to its
             # declared busy_policy (dispatch / interrupt_then_dispatch /
@@ -17770,19 +17890,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Plugin-registered slash commands
         if command:
             try:
-                from hermes_cli.plugins import get_plugin_command_handler
+                from hermes_cli.plugins import (
+                    get_plugin_command_handler,
+                    invoke_plugin_command,
+                )
                 # Normalize underscores to hyphens so Telegram's underscored
                 # autocomplete form matches plugin commands registered with
                 # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
+                plugin_command = command.replace("_", "-")
+                plugin_handler = get_plugin_command_handler(plugin_command)
                 if plugin_handler:
+                    denied = self._check_slash_access(source, plugin_command)
+                    if denied is not None:
+                        return denied
                     user_args = event.get_command_args().strip()
-                    result = plugin_handler(user_args)
+                    result = invoke_plugin_command(
+                        plugin_command,
+                        user_args,
+                        event=event,
+                        gateway=self,
+                    )
                     if asyncio.iscoroutine(result):
                         result = await result
                     return str(result) if result else None
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)
+                return "Command failed safely; it was not sent to the agent."
 
         # Skill slash commands: /skill-name loads the skill and sends to agent.
         # resolve_skill_command_key() handles the Telegram underscore/hyphen
@@ -19076,20 +19209,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             mins = policy.idle_minutes % 60
                             duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
                             reason_text = f"inactive for {duration}"
-                        notice = (
-                            f"◐ Session automatically reset ({reason_text}). "
-                            f"Conversation history cleared.\n"
-                            f"Use /resume to browse and restore a previous session.\n"
-                            f"Adjust reset timing in config.yaml under session_reset."
-                        )
+                        session_info = ""
                         try:
                             session_info = await asyncio.to_thread(
                                 self._reset_notice_session_info, source
                             )
-                            if session_info:
-                                notice = f"{notice}\n\n{session_info}"
                         except Exception:
                             pass
+                        notice = _build_auto_reset_notice(
+                            source.platform, reason_text, session_info
+                        )
+                        notice = _finalize_gateway_output(
+                            source,
+                            notice,
+                            user_message=str(getattr(event, "text", "") or ""),
+                            gateway=self,
+                            force_brief=True,
+                        )
                         await adapter.send(
                             source.chat_id, notice,
                             metadata=self._thread_metadata_for_source(source),
@@ -20321,6 +20457,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Prepend reasoning/thinking if display is enabled (per-platform).
             # Mattermost requires explicit per-platform opt-in because this is
             # scratch text, not ordinary final-answer content.
+            _gateway_metadata_added = False
             try:
                 _show_reasoning_effective = _resolve_gateway_display_bool(
                     _load_gateway_config(),
@@ -20375,6 +20512,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # break the outer code block used to render it.
                         display_reasoning = escape_code_fences_for_display(display_reasoning)
                         response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+                    _gateway_metadata_added = True
 
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When
@@ -20397,6 +20535,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _footer_line = ""
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
+                _gateway_metadata_added = True
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -20737,7 +20876,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_entry.session_id,
                 )
                 response = ""
-
+            elif response:
+                # Last text mutation before voice/media delivery or returning to
+                # the adapter send path. Nothing user-visible may be appended
+                # after this strict transform + immutable validation boundary.
+                response = _finalize_gateway_output(
+                    source,
+                    response,
+                    user_message=str(getattr(event, "text", "") or ""),
+                    gateway=self,
+                    force_brief=_gateway_metadata_added,
+                )
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
             # Skip when streaming TTS already delivered audio for this turn (#60671).
@@ -20778,9 +20927,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         _foot_adapter = self._adapter_for_source(source)
                         if _foot_adapter:
+                            _safe_footer = _finalize_gateway_output(
+                                source,
+                                _footer_line,
+                                user_message=str(getattr(event, "text", "") or ""),
+                                gateway=self,
+                                force_brief=True,
+                            )
                             await _foot_adapter.send(
                                 source.chat_id,
-                                _footer_line,
+                                _safe_footer,
                                 metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
                             )
                     except Exception as _e:
@@ -20901,17 +21057,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # 500 with a large session often means the payload is too large
                 # for the API to process — treat it the same way.
                 if _hist_len > 50:
-                    return (
+                    return _finalize_gateway_output(
+                        source,
                         "⚠️ Session too large for the model's context window.\n"
                         "Use /compact to compress the conversation, or "
-                        "/reset to start fresh."
+                        "/reset to start fresh.",
+                        user_message=str(getattr(event, "text", "") or ""),
+                        gateway=self,
                     )
                 elif status_code == 400:
                     status_hint = " The request was rejected by the API."
-            return (
-                f"Sorry, I encountered an unexpected error.{status_hint}\n"
-                "Try again or use /reset to start a fresh session."
+            return _finalize_gateway_output(
+                source,
+                (
+                    f"Sorry, I encountered an unexpected error.{status_hint}\n"
+                    "Try again or use /reset to start a fresh session."
+                ),
+                user_message=str(getattr(event, "text", "") or ""),
+                gateway=self,
             )
+
         finally:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
@@ -22451,6 +22616,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         _thread_metadata = self._thread_metadata_for_source(source, event_message_id)
+        _is_telegram = _platform_config_key(source.platform) == "telegram"
 
         try:
             user_config = _load_gateway_config()
@@ -22459,9 +22625,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 user_config=user_config,
             )
             if not runtime_kwargs.get("api_key"):
+                _no_credentials_text = (
+                    "結果：背景任務未執行\n"
+                    "變更：目前無法安全啟動背景任務。\n"
+                    "下一步：請檢查模型供應商設定後重試。"
+                    if _is_telegram
+                    else f"❌ Background task {task_id} failed: no provider credentials configured."
+                )
                 await adapter.send(
                     source.chat_id,
-                    f"❌ Background task {task_id} failed: no provider credentials configured.",
+                    _no_credentials_text,
                     metadata=_thread_metadata,
                 )
                 return
@@ -22546,7 +22719,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
-                response = f"Error: {result['error']}"
+                response = (
+                    "結果：背景任務失敗\n"
+                    "變更：背景處理未能安全完成。\n"
+                    "下一步：請重試；若持續失敗，再檢查 Gateway 日誌。"
+                    if _is_telegram
+                    else f"Error: {result['error']}"
+                )
 
             # Extract media files from the response
             if response:
@@ -22556,7 +22735,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 images, text_content = adapter.extract_images(response)
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
-                header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
+                header = "" if _is_telegram else f'✅ Background task complete\nPrompt: "{preview}"\n\n'
 
                 if text_content:
                     await adapter.send(
@@ -22565,9 +22744,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         metadata=_thread_metadata,
                     )
                 elif not images and not media_files:
+                    _empty_extracted_text = (
+                        "結果：背景任務已完成\n"
+                        "變更：任務沒有產生可顯示的文字或附件。\n"
+                        "下一步：如有需要，請調整要求後重試。"
+                        if _is_telegram
+                        else header + "(No response generated)"
+                    )
                     await adapter.send(
                         chat_id=source.chat_id,
-                        content=header + "(No response generated)",
+                        content=_empty_extracted_text,
                         metadata=_thread_metadata,
                     )
 
@@ -22622,18 +22808,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         pass
             else:
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
+                _empty_text = (
+                    "結果：背景任務已完成\n"
+                    "變更：任務沒有產生可顯示的文字或附件。\n"
+                    "下一步：如有需要，請調整要求後重試。"
+                    if _is_telegram
+                    else f'✅ Background task complete\nPrompt: "{preview}"\n\n(No response generated)'
+                )
                 await adapter.send(
                     chat_id=source.chat_id,
-                    content=f'✅ Background task complete\nPrompt: "{preview}"\n\n(No response generated)',
+                    content=_empty_text,
                     metadata=_thread_metadata,
                 )
 
         except Exception as e:
             logger.exception("Background task %s failed", task_id)
             try:
+                _failure_text = (
+                    "結果：背景任務失敗\n"
+                    "變更：背景處理未能安全完成。\n"
+                    "下一步：請重試；若持續失敗，再檢查 Gateway 日誌。"
+                    if _is_telegram
+                    else f"❌ Background task {task_id} failed: {e}"
+                )
                 await adapter.send(
                     chat_id=source.chat_id,
-                    content=f"❌ Background task {task_id} failed: {e}",
+                    content=_failure_text,
                     metadata=_thread_metadata,
                 )
             except Exception:

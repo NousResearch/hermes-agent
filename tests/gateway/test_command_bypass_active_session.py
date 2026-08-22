@@ -85,6 +85,22 @@ class TestCommandBypassActiveSession:
     """Commands that must bypass the active-session guard."""
 
     @pytest.mark.asyncio
+    async def test_plugin_command_bypasses_guard(self, monkeypatch):
+        """Registered plugin commands must dispatch, never become agent input."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_plugin_command_handler",
+            lambda name: (lambda args: "ok") if name == "brief" else None,
+        )
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/brief"))
+
+        assert sk not in adapter._pending_messages
+        assert any("handled:brief" in response for response in adapter.sent_responses)
+
+    @pytest.mark.asyncio
     async def test_stop_bypasses_guard(self):
         """/stop must be dispatched directly, not queued."""
         adapter = _make_adapter()

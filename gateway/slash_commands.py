@@ -123,6 +123,26 @@ def _home_thread_from_source(source) -> Optional[str]:
     return str(thread_id)
 
 
+def _apply_status_extensions(status: str, *, event: MessageEvent, gateway: Any) -> str:
+    """Apply presentation-only plugin extensions to canonical /status output.
+
+    This runs inside the built-in status handler, after normal authorization and
+    active-agent routing have selected it. Plugins cannot rewrite the command or
+    bypass command access control through this extension point.
+    """
+    try:
+        from hermes_cli.plugins import invoke_hook
+
+        for result in invoke_hook(
+            "extend_gateway_status", status=status, event=event, gateway=gateway
+        ):
+            if isinstance(result, str) and result:
+                status = result
+    except Exception as exc:
+        logger.warning("Status extension hook failed: %s", exc)
+    return status
+
+
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
@@ -768,7 +788,7 @@ class GatewaySlashCommandsMixin:
             t("gateway.status.platforms", platforms=', '.join(connected_platforms)),
         ])
 
-        return "\n".join(lines)
+        return _apply_status_extensions("\n".join(lines), event=event, gateway=self)
 
     @staticmethod
     def _redact_matrix_session_key(session_key: str) -> str:

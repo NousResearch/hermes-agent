@@ -120,6 +120,88 @@ async def test_unknown_slash_command_returns_guidance(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_unknown_slash_command_underscored_form_also_guarded(monkeypatch):
+    """Telegram may send /foo_bar — same guard must trigger for underscored
+    commands that normalize to unknown hyphenated names."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError(
+            "unknown slash command leaked through to the agent"
+        )
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/made_up_thing"))
+
+    assert result is not None
+    assert "Unknown command" in result
+    assert "/made_up_thing" in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_idle_plugin_command_failure_is_consumed(monkeypatch):
+    """Cold-path plugin failures must not fall through to unknown-command routing."""
+    runner = _make_runner()
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_plugin_command_handler", lambda name: object()
+    )
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("internal plugin detail")
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_plugin_command", _raise)
+    result = await runner._handle_message(_make_event("/brief"))
+
+    assert result
+    assert "internal plugin detail" not in result
+    assert "Unknown command" not in result
+
+
+@pytest.mark.asyncio
+async def test_active_plugin_command_failure_is_consumed(monkeypatch):
+    """A recognized plugin command must never fall through as agent input."""
+    import gateway.run as gateway_run
+    from hermes_cli import plugins as plugins_mod
+
+    runner = _make_runner()
+    session_key = build_session_key(_make_source())
+    runner._running_agents[session_key] = MagicMock()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("failed plugin command leaked to agent")
+    )
+    runner._handle_active_session_busy_message = AsyncMock(
+        side_effect=AssertionError("failed plugin command reached busy routing")
+    )
+
+    def _raise_command(*args, **kwargs):
+        raise RuntimeError("internal-command-detail")
+
+    monkeypatch.setattr(
+        plugins_mod,
+        "get_plugin_command_handler",
+        lambda name: _raise_command if name == "brief" else None,
+    )
+    monkeypatch.setattr(plugins_mod, "invoke_plugin_command", _raise_command)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "test-key"}
+    )
+
+    result = await runner._handle_message(_make_event("/brief"))
+
+    assert result is not None
+    assert "internal-command-detail" not in str(result)
+    assert session_key not in runner._pending_messages
+    runner._run_agent.assert_not_called()
+    runner._handle_active_session_busy_message.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
     """A real built-in like /status must NOT hit the unknown-command guard."""
     runner = _make_runner()

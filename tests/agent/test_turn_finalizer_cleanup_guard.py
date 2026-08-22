@@ -164,3 +164,67 @@ def test_clean_turn_has_no_cleanup_errors_key():
     assert "cleanup_errors" not in result
 
 
+def test_required_final_output_hook_failure_does_not_leak_original(monkeypatch):
+    import hermes_cli.plugins as plugins_mod
+    from hermes_cli.plugins import PluginManager
+
+    manager = PluginManager()
+
+    def _boom(**kwargs):
+        raise RuntimeError("final safety failed")
+
+    manager._hooks["finalize_llm_output"] = [_boom]
+    monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: manager)
+    agent = _StubAgent(raise_in=())
+    agent.platform = "telegram"
+
+    result = _run(agent)
+
+    assert result["final_response"] != "PARTIAL SUMMARY FROM MODEL"
+    assert "無法安全顯示" in result["final_response"]
+    assert result["response_transformed"] is True
+
+
+def test_required_finalizer_runs_after_legacy_transform(monkeypatch):
+    import hermes_cli.plugins as plugins_mod
+    from hermes_cli.plugins import PluginManager
+
+    manager = PluginManager()
+    manager._hooks["transform_llm_output"] = [
+        lambda **kwargs: kwargs["response_text"] + " legacy-added-detail"
+    ]
+    manager._hooks["finalize_llm_output"] = [lambda **kwargs: "SAFE FINAL"]
+    monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: manager)
+    agent = _StubAgent(raise_in=())
+    agent.platform = "telegram"
+
+    result = _run(agent)
+
+    assert result["final_response"] == "SAFE FINAL"
+
+
+def test_terminal_validator_blocks_post_sanitizer_callback_mutation(monkeypatch):
+    import hermes_cli.plugins as plugins_mod
+    from hermes_cli.plugins import PluginManager
+
+    manager = PluginManager()
+    manager._hooks["finalize_llm_output"] = [
+        lambda **kwargs: "SAFE FINAL",
+        lambda **kwargs: kwargs["response_text"] + "\n" + "sk-" + "proj-unsafe-appended-value",
+    ]
+
+    def _terminal_validator(**kwargs):
+        if "sk-proj-" in kwargs["response_text"]:
+            raise RuntimeError("terminal validation rejected output")
+        return True
+
+    manager._hooks["validate_llm_output"] = [_terminal_validator]
+    monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: manager)
+    agent = _StubAgent(raise_in=())
+    agent.platform = "telegram"
+
+    result = _run(agent)
+
+    assert "sk-proj-" not in result["final_response"]
+    assert "無法安全顯示" in result["final_response"]
+    assert result["response_transformed"] is True

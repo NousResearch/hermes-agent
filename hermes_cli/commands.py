@@ -563,7 +563,16 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     ACTIVE_SESSION_BYPASS_COMMANDS remains the subset of commands with
     explicit Level-2 handlers; the rest fall through to the catch-all.
     """
-    return resolve_command(command_name) is not None if command_name else False
+    if not command_name:
+        return False
+    if resolve_command(command_name) is not None:
+        return True
+    try:
+        from hermes_cli.plugins import get_plugin_command_handler
+
+        return get_plugin_command_handler(command_name.replace("_", "-")) is not None
+    except Exception:
+        return False
 
 
 def _resolve_config_gates() -> set[str]:

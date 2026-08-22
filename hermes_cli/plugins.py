@@ -163,10 +163,22 @@ VALID_HOOKS: Set[str] = {
     "post_tool_call",
     "transform_terminal_output",
     "transform_tool_result",
+    "finalize_gateway_output",
+    "validate_gateway_output",
+    # Terminal, non-mutating output validators. Callbacks may only return
+    # None/True; any rejection or exception fails closed at the egress caller.
+    "validate_llm_output",
+    # Required final-output guard. Unlike transform_llm_output, callbacks are
+    # chained in registration order and exceptions propagate to the caller.
+    "finalize_llm_output",
     # Transform LLM output before it's returned to the user.
     # Plugins return a string to replace the response text, or None/empty to leave unchanged.
     # First non-None string wins. Useful for vocabulary/personality transformation.
     "transform_llm_output",
+    # Extend canonical gateway /status output after auth and active-run routing.
+    # Callback kwargs: status, event, gateway. Return a complete replacement
+    # status string, or None to leave it unchanged.
+    "extend_gateway_status",
     "pre_llm_call",
     "post_llm_call",
     # Streaming LLM output observer hooks. Fired asynchronously off the token
@@ -223,7 +235,12 @@ VALID_HOOKS: Set[str] = {
     "on_skill_lifecycle",
     "subagent_start",
     "subagent_stop",
-    # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
+    # Gateway transport-safety hook. Fired for every inbound MessageEvent,
+    # including internal events, before any user hook or possible output.
+    # Safety plugins may return {"action": "skip", "reason": "..."}.
+    # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
+    "pre_gateway_transport",
+    # Gateway pre-dispatch hook. Fired once per user-originated MessageEvent
     # after the internal-event guard but BEFORE auth/pairing and agent
     # dispatch. Plugins may return a dict to influence flow:
     #   {"action": "skip",    "reason": "..."}  -> drop message (no reply)
@@ -5101,14 +5118,18 @@ class PluginManager:
         }
         return callback(**accepted_payload)
 
-    def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
+    def invoke_hook(
+        self, hook_name: str, *, fail_closed: bool = False, **kwargs: Any
+    ) -> List[Any]:
         """Call all registered callbacks for *hook_name*.
 
         Hook payloads evolve additively. Callbacks that accept ``**kwargs``
         receive the complete payload; older callbacks with a narrow signature
         receive only the keyword arguments they declare. Each callback is
         wrapped in its own try/except so a misbehaving plugin cannot break the
-        core agent loop.
+        core agent loop. When ``fail_closed`` is true, a callback exception is
+        surfaced as an ``action=skip`` result so a security-sensitive caller
+        can halt dispatch.
 
         Returns a list of non-``None`` return values from callbacks.
 
@@ -5144,6 +5165,8 @@ class PluginManager:
                     getattr(cb, "__name__", repr(cb)),
                     exc,
                 )
+                if fail_closed:
+                    results.append({"action": "skip", "reason": "hook-callback-error"})
         return results
 
     def _subscribe_event(
@@ -5342,6 +5365,63 @@ class PluginManager:
             self._event_pending_by_generation[generation] = pending + 1
             self._ensure_event_worker_locked()
             return len(subscriptions)
+
+    def invoke_text_hook(
+        self, hook_name: str, *, response_text: str, **kwargs: Any
+    ) -> tuple[str, bool]:
+        """Run required text callbacks sequentially and propagate failures.
+
+        Each non-empty string becomes the input to the next callback. ``None``
+        or an empty string is pass-through. Any other return type, or any
+        callback exception, is a hard failure for the caller to handle safely.
+        """
+        kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+        current = response_text
+        transformed = False
+        for cb in self._hooks.get(hook_name, []):
+            try:
+                ret = self._invoke_hook_callback(
+                    cb, {"response_text": current, **kwargs}
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Required text hook '%s' callback %s raised: %s",
+                    hook_name,
+                    getattr(cb, "__name__", repr(cb)),
+                    exc,
+                )
+                raise
+            if ret is None or ret == "":
+                continue
+            if not isinstance(ret, str):
+                raise TypeError(
+                    f"Required text hook '{hook_name}' callback returned "
+                    f"{type(ret).__name__}, expected str or None"
+                )
+            current = ret
+            transformed = True
+        return current, transformed
+
+    def invoke_validation_hook(
+        self, hook_name: str, *, response_text: str, **kwargs: Any
+    ) -> None:
+        """Run terminal validators without permitting output mutation.
+
+        Validators receive the immutable final text and may return ``None`` or
+        ``True``. ``False``, any other type, or an exception rejects delivery.
+        """
+        kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+        for callback in self._hooks.get(hook_name, ()):
+            result = self._invoke_hook_callback(
+                callback, {"response_text": response_text, **kwargs}
+            )
+            if result is False:
+                raise RuntimeError(f"Terminal validation hook '{hook_name}' rejected output")
+            if result is not None and result is not True:
+                raise TypeError(
+                    f"Terminal validation hook '{hook_name}' must return None or True, "
+                    f"got {type(result).__name__}"
+                )
 
     def has_hook(self, hook_name: str) -> bool:
         """Return True when at least one callback is registered for a hook."""
@@ -5889,6 +5969,22 @@ def render_system_prompt_sections(
 ) -> List[RenderedPluginSystemPromptSection]:
     """Render plugin prompt sections after idempotent plugin discovery."""
     return _ensure_plugins_discovered().render_system_prompt_sections(session_info)
+
+
+def invoke_text_hook(
+    hook_name: str, *, response_text: str, **kwargs: Any
+) -> tuple[str, bool]:
+    """Invoke a required sequential text hook without swallowing failures."""
+    return _delivery_manager().invoke_text_hook(
+        hook_name, response_text=response_text, **kwargs
+    )
+
+
+def invoke_validation_hook(hook_name: str, *, response_text: str, **kwargs: Any) -> None:
+    """Invoke terminal validators; any rejection propagates to the caller."""
+    _delivery_manager().invoke_validation_hook(
+        hook_name, response_text=response_text, **kwargs
+    )
 
 
 def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:
@@ -6458,6 +6554,26 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+def invoke_plugin_command(name: str, args: str, **context: Any) -> Any:
+    """Invoke a plugin command, passing only context parameters it accepts.
+
+    Legacy one-argument handlers remain compatible. Event-aware handlers can
+    request ``event``/``gateway`` explicitly or accept ``**kwargs``.
+    """
+    handler = get_plugin_command_handler(name)
+    if handler is None:
+        return None
+    signature = inspect.signature(handler)
+    accepts_all = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    accepted = context if accepts_all else {
+        key: value for key, value in context.items() if key in signature.parameters
+    }
+    return handler(args, **accepted)
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

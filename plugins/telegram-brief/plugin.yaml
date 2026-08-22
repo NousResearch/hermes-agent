@@ -1,0 +1,12 @@
+name: telegram-brief
+version: 1.0.0
+description: "Telegram final-answer-first reporting with /brief, /detail, and mode-aware /status."
+author: "David Lin / Hermes"
+hooks:
+  - pre_gateway_transport
+  - pre_llm_call
+  - finalize_llm_output
+  - validate_llm_output
+  - finalize_gateway_output
+  - validate_gateway_output
+  - extend_gateway_status

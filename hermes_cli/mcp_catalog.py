@@ -426,6 +426,15 @@ def is_enabled(name: str) -> bool:
     cfg = servers.get(name)
     if not cfg:
         return False
+    # ``profiles.configure`` persists per-profile MCP toggles via the
+    # per-server ``disabled`` key; honor it here so the catalog agrees with
+    # the runtime (#89441).
+    disabled = cfg.get("disabled", False)
+    if isinstance(disabled, str):
+        if disabled.lower() in {"true", "1", "yes"}:
+            return False
+    elif disabled:
+        return False
     enabled = cfg.get("enabled", True)
     if isinstance(enabled, str):
         return enabled.lower() in {"true", "1", "yes"}

@@ -2287,8 +2287,10 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
     Shared by the gateway/CLI platform resolver (``_get_platform_tools``) and
     the cron per-job toolset resolver (``cron.scheduler``) so every path agrees
     on MCP membership. A server is enabled unless its config sets an explicitly
-    falsey ``enabled`` (per ``_parse_enabled_flag``: false/0/no/off) — a missing
-    flag or an unrecognized value is treated as enabled.
+    falsey ``enabled`` (per ``_parse_enabled_flag``: false/0/no/off) or a
+    truthy ``disabled`` — the per-server key ``profiles.configure`` persists
+    profile MCP toggles with (#89441). A missing flag or an unrecognized value
+    is treated as enabled.
 
     Portable Agent Plugins contribute MCP servers in-memory rather than via
     ``config.yaml`` (see ``PluginManager.get_portable_mcp_servers``). Those are
@@ -2302,6 +2304,7 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
         str(name)
         for name, server_cfg in mcp_servers.items()
         if isinstance(server_cfg, dict)
+        and not _parse_enabled_flag(server_cfg.get("disabled", False), default=False)
         and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
     }
     try:
@@ -2679,6 +2682,32 @@ def _get_platform_tools(
             name.strip() for name in parse_config_string_list(disabled_toolsets) if name.strip()
         }
         enabled_toolsets -= disabled_set
+
+    # Per-profile toolset pin (tools.enabled_toolsets, written by
+    # `profiles.configure` / the desktop Edit Profile dialog). When set it is
+    # RESTRICTIVE: the profile may only use the toolsets on its pin list, so
+    # intersect the runtime resolution with it. Only toolsets the profile
+    # editor can actually toggle (configurable + plugin) are in scope — MCP
+    # servers are governed by their own per-server enabled/disabled flags and
+    # non-configurable platform toolsets are not offerable in the editor, so
+    # both pass through the pin untouched. An absent/empty pin means an
+    # unpinned profile: current behavior unchanged (#89441). The value may
+    # arrive as a JSON-array string from `hermes config set`, mirroring the
+    # disabled_toolsets handling above.
+    tools_cfg = config.get("tools")
+    if isinstance(tools_cfg, dict):
+        pinned_raw = tools_cfg.get("enabled_toolsets")
+        if pinned_raw:
+            from agent.skill_utils import parse_config_string_list
+
+            pinned_set = {
+                name.strip() for name in parse_config_string_list(pinned_raw) if name.strip()
+            }
+            if pinned_set:
+                pin_scope = configurable_keys | plugin_ts_keys
+                enabled_toolsets = (
+                    enabled_toolsets - pin_scope
+                ) | (enabled_toolsets & pin_scope & pinned_set)
 
     # #38798: if this platform was explicitly configured but every toolset name
     # is invalid (e.g. a migration or hand-edit left `hermes` instead of

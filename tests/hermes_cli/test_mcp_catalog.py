@@ -679,3 +679,52 @@ class TestShippedCatalog:
                     )
 
         assert not problems, "unpinned catalog entries:\n" + "\n".join(problems)
+
+
+# ---------------------------------------------------------------------------
+# is_enabled honors the per-server `disabled` key (#89441)
+# ---------------------------------------------------------------------------
+
+
+def _servers_with(**server_cfg) -> dict:
+    return {"srv": {"command": "npx", **server_cfg}}
+
+
+def test_is_enabled_disabled_true_off_without_enabled_key():
+    """profiles.configure persists per-profile MCP toggles via `disabled`; a
+    server with `disabled: true` (and no `enabled` key) must be OFF."""
+    import hermes_cli.mcp_catalog as mc
+
+    with patch.object(mc, "installed_servers", return_value=_servers_with(disabled=True)):
+        assert mc.is_enabled("srv") is False
+
+
+def test_is_enabled_disabled_string_true_off():
+    import hermes_cli.mcp_catalog as mc
+
+    with patch.object(mc, "installed_servers", return_value=_servers_with(disabled="true")):
+        assert mc.is_enabled("srv") is False
+
+
+def test_is_enabled_enabled_false_still_off():
+    """`enabled: false` keeps working — the new key is additive."""
+    import hermes_cli.mcp_catalog as mc
+
+    with patch.object(mc, "installed_servers", return_value=_servers_with(enabled=False)):
+        assert mc.is_enabled("srv") is False
+
+
+def test_is_enabled_no_flags_on():
+    import hermes_cli.mcp_catalog as mc
+
+    with patch.object(mc, "installed_servers", return_value=_servers_with()):
+        assert mc.is_enabled("srv") is True
+
+
+def test_is_enabled_disabled_false_and_enabled_true_on():
+    import hermes_cli.mcp_catalog as mc
+
+    with patch.object(
+        mc, "installed_servers", return_value=_servers_with(disabled=False, enabled=True)
+    ):
+        assert mc.is_enabled("srv") is True

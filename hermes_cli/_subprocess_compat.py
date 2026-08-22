@@ -28,11 +28,14 @@ guarantee.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
-from typing import Mapping, Sequence
+from pathlib import Path, PureWindowsPath
+from typing import Mapping, NamedTuple, Sequence
 
 __all__ = [
     "IS_WINDOWS",
@@ -93,7 +96,631 @@ def split_command_line(line: str) -> list[str]:
 # -----------------------------------------------------------------------------
 
 
-def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
+_NPM_CMD_SHIM_HEADER = (
+    "@echo off",
+    "goto start",
+    ":find_dp0",
+    "set dp0=%~dp0",
+    "exit /b",
+    ":start",
+    "setlocal",
+    "call :find_dp0",
+)
+_NPM_CMD_SHIM_GENERATED_COMMENT = ":: created by npm, please don't edit manually."
+_NPM_CMD_SHIM_LAUNCH_PREFIXES = (
+    "endlocal & goto #_undefined_# 2>nul || title %comspec% & ",
+    "endlocal & (call) || title %comspec% & ",
+)
+_NPM_CMD_SHIM_TARGET = re.compile(
+    r'^"%_prog%"\s+"(?P<target>%dp0%\\[^"\r\n]+)"\s+%\*$', re.I
+)
+_LEGACY_NODE_CMD_SHIM_LOCAL = re.compile(
+    r'^"%~dp0\\node\.exe"\s+"(?P<target>%~dp0\\[^"\r\n]+)"\s+%\*$',
+    re.I,
+)
+_LEGACY_NODE_CMD_SHIM_PATH = re.compile(
+    r'^node\s+"(?P<target>%~dp0\\[^"\r\n]+)"\s+%\*$',
+    re.I,
+)
+
+
+class _NodeShimTarget(NamedTuple):
+    entrypoint: Path
+    prefer_adjacent_node: bool
+    package_name: str | None = None
+    removes_interior_js_from_pathext: bool = False
+
+
+def _generated_cmd_shim_body(lines: list[str]) -> list[str]:
+    """Remove only npm's known generated preamble and leading blank lines."""
+    index = 0
+    while index < len(lines) and not lines[index].strip():
+        index += 1
+    if (
+        index < len(lines)
+        and lines[index].strip().casefold() == _NPM_CMD_SHIM_GENERATED_COMMENT
+    ):
+        index += 1
+        while index < len(lines) and not lines[index].strip():
+            index += 1
+    return lines[index:]
+
+
+def _modern_npm_cmd_shim_entrypoint(lines: list[str]) -> str | None:
+    """Extract a target from the current npm ``cmd-shim`` Node template."""
+    if tuple(line.casefold() for line in lines[:8]) != _NPM_CMD_SHIM_HEADER:
+        return None
+
+    body = [line.strip() for line in lines[8:] if line.strip()]
+    # Do not skip generated @SET declarations here. Native argv conversion
+    # cannot reproduce their environment without changing this API's contract.
+    index = 0
+    required_prefix = [
+        'if exist "%dp0%\\node.exe" (',
+        'set "_prog=%dp0%\\node.exe"',
+        ") else (",
+        'set "_prog=node"',
+    ]
+    if [line.casefold() for line in body[index : index + 4]] != required_prefix:
+        return None
+
+    index += 4
+    if index < len(body) and body[index].casefold() == (
+        "set pathext=%pathext:;.js;=;%"
+    ):
+        index += 1
+    if index >= len(body) or body[index] != ")":
+        return None
+    index += 1
+    if len(body) != index + 1:
+        return None
+
+    launch = body[index]
+    folded_launch = launch.casefold()
+    launch_prefix = next(
+        (
+            prefix
+            for prefix in _NPM_CMD_SHIM_LAUNCH_PREFIXES
+            if folded_launch.startswith(prefix)
+        ),
+        None,
+    )
+    if launch_prefix is None:
+        return None
+    native_command = launch[len(launch_prefix) :]
+    if native_command.casefold().startswith("set pathext=%pathext:;.js;=;% & "):
+        native_command = native_command[len("set PATHEXT=%PATHEXT:;.JS;=;% & ") :]
+    match = _NPM_CMD_SHIM_TARGET.fullmatch(native_command)
+    return match.group("target") if match else None
+
+
+def _npm_cli_cmd_shim_entrypoint(lines: list[str], command: str) -> str | None:
+    """Recognize npm/npx's exact release launcher and return its CLI file.
+
+    npm CLI ships hand-maintained Windows launchers rather than the generic
+    ``cmd-shim`` template. Match the complete non-blank template shipped from
+    npm 11.12.1 through 12.0.2 so a custom batch file cannot gain native
+    execution merely by declaring the same variables.
+    """
+    if command not in {"npm", "npx"}:
+        return None
+    cli = command.upper()
+    cli_file = f"{command}-cli.js"
+    body = [line.strip() for line in lines if line.strip()]
+    expected = [
+        _NPM_CMD_SHIM_GENERATED_COMMENT,
+        "@ECHO OFF",
+        "SETLOCAL",
+        'SET "NODE_EXE=%~dp0\\node.exe"',
+        'IF NOT EXIST "%NODE_EXE%" (',
+        'SET "NODE_EXE=node"',
+        ")",
+        'SET "NPM_PREFIX_JS=%~dp0\\node_modules\\npm\\bin\\npm-prefix.js"',
+        f'SET "{cli}_CLI_JS=%~dp0\\node_modules\\npm\\bin\\{cli_file}"',
+        'FOR /F "delims=" %%F IN (\'CALL "%NODE_EXE%" "%NPM_PREFIX_JS%"\') DO (',
+        f'SET "NPM_PREFIX_{cli}_CLI_JS=%%F\\node_modules\\npm\\bin\\{cli_file}"',
+        ")",
+        f'IF EXIST "%NPM_PREFIX_{cli}_CLI_JS%" (',
+        f'SET "{cli}_CLI_JS=%NPM_PREFIX_{cli}_CLI_JS%"',
+        ")",
+        f'"%NODE_EXE%" "%{cli}_CLI_JS%" %*',
+    ]
+    if [line.casefold() for line in body] != [line.casefold() for line in expected]:
+        return None
+    return cli_file
+
+
+def _yarn_classic_cmd_shim_entrypoint(lines: list[str]) -> str | None:
+    """Extract Yarn Classic 1.22.22's exact direct-node target."""
+    body = [line.strip() for line in lines if line.strip()]
+    if [line.casefold() for line in body] != [
+        "@echo off",
+        'node "%~dp0\\yarn.js" %*',
+    ]:
+        return None
+    return "%~dp0\\yarn.js"
+
+
+def _yarn_classic_delegated_entrypoint(
+    shim_path: Path, lines: list[str]
+) -> str | None:
+    """Resolve Yarn Classic's exact ``yarnpkg.cmd`` one-hop delegation."""
+    body = [line.strip() for line in lines if line.strip()]
+    if [line.casefold() for line in body] != [
+        "@echo off",
+        '"%~dp0\\yarn.cmd" %*',
+    ]:
+        return None
+
+    yarn_shim = shim_path.parent / "yarn.cmd"
+    try:
+        yarn_lines = yarn_shim.read_text(encoding="utf-8-sig").splitlines()
+    except (OSError, UnicodeError):
+        return None
+    return _yarn_classic_cmd_shim_entrypoint(yarn_lines)
+
+
+def _corepack_cmd_shim_entrypoint(lines: list[str]) -> str | None:
+    """Extract a current Corepack ``@zkochan/cmd-shim`` target.
+
+    Corepack 0.34.6 ships this compact direct-node template both within its
+    npm package and in the ``nodewin`` layout copied into Node distributions.
+    No interpreter options or user environment assignments are accepted.
+    Package metadata still has to bind the returned target to the command.
+    """
+    body = [line.strip() for line in lines if line.strip()]
+    if len(body) != 7:
+        return None
+    expected = [
+        "@setlocal",
+        '@if exist "%~dp0\\node.exe" (',
+        None,
+        ") else (",
+        "@set pathext=%pathext:;.js;=;%",
+        None,
+        ")",
+    ]
+    folded = [line.casefold() for line in body]
+    if any(
+        value is not None and folded[index] != value
+        for index, value in enumerate(expected)
+    ):
+        return None
+
+    local_match = _LEGACY_NODE_CMD_SHIM_LOCAL.fullmatch(body[2])
+    path_match = _LEGACY_NODE_CMD_SHIM_PATH.fullmatch(body[5])
+    if not local_match or not path_match:
+        return None
+    local_target = local_match.group("target")
+    path_target = path_match.group("target")
+    return local_target if local_target.casefold() == path_target.casefold() else None
+
+
+def _legacy_node_cmd_shim_entrypoint(lines: list[str]) -> str | None:
+    """Extract a target from npm/Yarn's historical direct-node template."""
+    # A leading NODE_PATH declaration is intentionally not discarded: leaving
+    # the shim unresolved is safer than silently changing its launch semantics.
+    body = [line.strip() for line in lines if line.strip()]
+    folded = [line.casefold() for line in body]
+    if len(body) == 5:
+        structural = [
+            '@if exist "%~dp0\\node.exe" (',
+            None,
+            ") else (",
+            None,
+            ")",
+        ]
+        local_index, path_index = 1, 3
+    elif len(body) == 7:
+        structural = [
+            '@if exist "%~dp0\\node.exe" (',
+            None,
+            ") else (",
+            "@setlocal",
+            "@set pathext=%pathext:;.js;=;%",
+            None,
+            ")",
+        ]
+        local_index, path_index = 1, 5
+    else:
+        return None
+    if any(
+        expected is not None and folded[index] != expected
+        for index, expected in enumerate(structural)
+    ):
+        return None
+
+    local_match = _LEGACY_NODE_CMD_SHIM_LOCAL.fullmatch(body[local_index])
+    path_match = _LEGACY_NODE_CMD_SHIM_PATH.fullmatch(body[path_index])
+    if not local_match or not path_match:
+        return None
+    local_target = local_match.group("target")
+    path_target = path_match.group("target")
+    return local_target if local_target.casefold() == path_target.casefold() else None
+
+
+def _package_bin_entrypoint(
+    package_json: Path, command: str, package_name: str | None = None
+) -> Path | None:
+    """Return a contained, existing package ``bin`` entry for ``command``."""
+    try:
+        package = json.loads(package_json.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(package, dict):
+        return None
+    if package_name is not None and str(package.get("name") or "").casefold() != (
+        package_name.casefold()
+    ):
+        return None
+
+    bins = package.get("bin")
+    relative: object = None
+    if isinstance(bins, dict):
+        relative = next(
+            (
+                value
+                for name, value in bins.items()
+                if str(name).casefold() == command
+            ),
+            None,
+        )
+    elif isinstance(bins, str):
+        declared_name = str(package.get("name") or "").rsplit("/", 1)[-1]
+        if declared_name.casefold() == command:
+            relative = bins
+    if not isinstance(relative, str) or not relative:
+        return None
+
+    package_dir = package_json.parent.resolve()
+    entrypoint = (package_dir / relative).resolve()
+    try:
+        entrypoint.relative_to(package_dir)
+    except ValueError:
+        return None
+    return entrypoint if entrypoint.is_file() else None
+
+
+def _node_executable(
+    shim_path: Path,
+    prefer_adjacent: bool,
+    cwd: str | os.PathLike[str] | None = None,
+    *,
+    search_cwd: bool = True,
+    removes_interior_js_from_pathext: bool = False,
+) -> str | None:
+    """Resolve the native Node executable used by a supported launcher."""
+    adjacent_node = shim_path.parent / "node.exe"
+    if prefer_adjacent and adjacent_node.is_file():
+        return str(adjacent_node.resolve())
+    if IS_WINDOWS and cwd is not None:
+        node = _which_windows_command_from_cwd(
+            "node",
+            cwd,
+            search_cwd=search_cwd,
+            removes_interior_js_from_pathext=removes_interior_js_from_pathext,
+        )[0]
+    else:
+        node = shutil.which("node.exe") or shutil.which("node")
+    if node is None:
+        return None
+    if IS_WINDOWS:
+        return node if Path(node).suffix.casefold() in {".com", ".exe"} else None
+    return None if node.casefold().endswith((".cmd", ".bat")) else node
+
+
+def _npm_cli_selected_entrypoint(
+    shim_path: Path,
+    command: str,
+    cli_file: str,
+    cwd: str | os.PathLike[str] | None,
+    *,
+    search_cwd: bool,
+) -> Path | None:
+    """Reproduce npm's prefix probe and preserve the CLI it selects."""
+    local_package = shim_path.parent / "node_modules" / "npm"
+    package_json = local_package / "package.json"
+    local_entrypoint = _package_bin_entrypoint(package_json, command, "npm")
+    expected_local = (local_package / "bin" / cli_file).resolve()
+    if local_entrypoint is None or local_entrypoint != expected_local:
+        return None
+
+    prefix_probe = (local_package / "bin" / "npm-prefix.js").resolve()
+    try:
+        prefix_probe.relative_to(local_package.resolve())
+    except ValueError:
+        return None
+    if not prefix_probe.is_file():
+        return None
+
+    node = _node_executable(
+        shim_path,
+        prefer_adjacent=True,
+        cwd=cwd,
+        search_cwd=search_cwd,
+    )
+    if node is None:
+        return None
+    try:
+        result = subprocess.run(
+            [node, str(prefix_probe)],
+            capture_output=True,
+            check=False,
+            creationflags=windows_hide_flags(),
+            cwd=os.fspath(cwd) if cwd is not None else None,
+            shell=False,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        return None
+
+    stdout = result.stdout or ""
+    prefixes = [line.strip() for line in stdout.splitlines() if line.strip()]
+    if not prefixes:
+        return local_entrypoint
+    if len(prefixes) != 1:
+        return None
+
+    selected_prefix = Path(prefixes[0])
+    if not selected_prefix.is_absolute():
+        return None
+    selected_entrypoint = (
+        selected_prefix / "node_modules" / "npm" / "bin" / cli_file
+    ).resolve()
+    # npm's batch launcher changes targets only when this exact file exists.
+    return selected_entrypoint if selected_entrypoint.is_file() else local_entrypoint
+
+
+def _npm_cmd_shim_entrypoint(
+    shim_path: Path,
+    cwd: str | os.PathLike[str] | None,
+    *,
+    search_cwd: bool,
+) -> _NodeShimTarget | None:
+    """Return the native target semantics of a supported Node batch shim."""
+    try:
+        lines = shim_path.read_text(encoding="utf-8-sig").splitlines()
+    except (OSError, UnicodeError):
+        return None
+
+    command = shim_path.stem.casefold()
+    npm_cli_file = _npm_cli_cmd_shim_entrypoint(lines, command)
+    if npm_cli_file is not None:
+        selected = _npm_cli_selected_entrypoint(
+            shim_path,
+            command,
+            npm_cli_file,
+            cwd,
+            search_cwd=search_cwd,
+        )
+        if selected is None:
+            return None
+        return _NodeShimTarget(selected, True, "npm")
+
+    if command == "yarn":
+        target = _yarn_classic_cmd_shim_entrypoint(lines)
+        if target is not None:
+            relative_target = target[len("%~dp0\\") :]
+            entrypoint = (
+                shim_path.parent / relative_target.replace("\\", os.sep)
+            ).resolve()
+            return _NodeShimTarget(entrypoint, False, "yarn")
+    elif command == "yarnpkg":
+        target = _yarn_classic_delegated_entrypoint(shim_path, lines)
+        if target is not None:
+            relative_target = target[len("%~dp0\\") :]
+            entrypoint = (
+                shim_path.parent / relative_target.replace("\\", os.sep)
+            ).resolve()
+            return _NodeShimTarget(entrypoint, False, "yarn")
+
+    body = _generated_cmd_shim_body(lines)
+    target = _modern_npm_cmd_shim_entrypoint(body)
+    if target is None:
+        target = _corepack_cmd_shim_entrypoint(body)
+    if target is None:
+        target = _legacy_node_cmd_shim_entrypoint(body)
+    if target is None:
+        return None
+
+    folded_target = target.casefold()
+    prefix = "%dp0%\\" if folded_target.startswith("%dp0%\\") else "%~dp0\\"
+    relative_target = target[len(prefix) :]
+    entrypoint = (shim_path.parent / relative_target.replace("\\", os.sep)).resolve()
+    removes_interior_js_from_pathext = any(
+        "set pathext=%pathext:;.js;=;%" in line.casefold() for line in body
+    )
+    return _NodeShimTarget(
+        entrypoint,
+        True,
+        removes_interior_js_from_pathext=removes_interior_js_from_pathext,
+    )
+
+
+def _node_package_entrypoint(
+    shim: str,
+    cwd: str | os.PathLike[str] | None,
+    *,
+    search_cwd: bool,
+) -> list[str] | None:
+    """Return ``[node.exe, script]`` for an npm-generated Windows shim.
+
+    Batch shims cannot safely receive arbitrary argv: Windows can route them
+    through ``cmd.exe`` even when the caller passes ``shell=False``. npm's
+    shims are only launch adapters for a package ``bin`` entry, so resolve the
+    same package metadata and invoke that JavaScript entrypoint with Node
+    directly. Every subsequent value then remains in the native argv channel.
+    """
+    shim_path = Path(shim)
+    shim_target = _npm_cmd_shim_entrypoint(
+        shim_path,
+        cwd,
+        search_cwd=search_cwd,
+    )
+    if shim_target is None:
+        return None
+    shim_entrypoint = shim_target.entrypoint
+    command = shim_path.stem.casefold()
+    package_roots = [shim_path.parent / "node_modules"]
+    if shim_path.parent.name.casefold() == ".bin":
+        package_roots.insert(0, shim_path.parent.parent)
+
+    package_jsons: list[Path] = []
+    selected_package = shim_entrypoint.parent.parent / "package.json"
+    if selected_package.is_file():
+        package_jsons.append(selected_package)
+    packaged_corepack = shim_path.parent.parent / "package.json"
+    if packaged_corepack.is_file():
+        package_jsons.append(packaged_corepack)
+    for root in package_roots:
+        direct = root / command / "package.json"
+        if direct.is_file():
+            package_jsons.append(direct)
+        if root.is_dir():
+            package_jsons.extend(sorted(root.glob("*/package.json")))
+            package_jsons.extend(sorted(root.glob("@*/*/package.json")))
+
+    seen: set[Path] = set()
+    for package_json in package_jsons:
+        if package_json in seen:
+            continue
+        seen.add(package_json)
+        entrypoint = _package_bin_entrypoint(
+            package_json, command, shim_target.package_name
+        )
+        if entrypoint is None:
+            continue
+        if str(entrypoint).casefold() != str(shim_entrypoint).casefold():
+            continue
+
+        node = _node_executable(
+            shim_path,
+            prefer_adjacent=shim_target.prefer_adjacent_node,
+            cwd=cwd,
+            search_cwd=search_cwd,
+            removes_interior_js_from_pathext=(
+                shim_target.removes_interior_js_from_pathext
+            ),
+        )
+        if node:
+            return [node, str(entrypoint)]
+    return None
+
+
+def _windows_command_candidates(
+    name: str,
+    *,
+    removes_interior_js_from_pathext: bool = False,
+) -> list[str]:
+    """Return *name* candidates in native Windows PATHEXT order."""
+    pathext_source = os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
+    if removes_interior_js_from_pathext:
+        # Corepack's ``%PATHEXT:;.JS;=;%`` is a literal substring
+        # replacement. It does not remove .JS when that token lacks a leading
+        # or trailing semicolon at a PATHEXT boundary.
+        pathext_source = re.sub(r";\.JS;", ";", pathext_source, flags=re.I)
+    pathext = [extension.strip() for extension in pathext_source.split(";")]
+    pathext = [extension for extension in pathext if extension]
+    candidates = [f"{name}{extension}" for extension in pathext]
+    if PureWindowsPath(name).suffix:
+        candidates.insert(0, name)
+    return candidates
+
+
+def _which_windows_explicit_command(
+    name: str,
+    *,
+    allowed_root: str | os.PathLike[str] | None = None,
+) -> str | None:
+    """Apply Python 3.12-style PATHEXT lookup to a path-qualified command."""
+    root = Path(allowed_root).resolve() if allowed_root is not None else None
+    for candidate_name in _windows_command_candidates(name):
+        candidate = Path(candidate_name)
+        if not candidate.is_file():
+            continue
+        if root is None:
+            return os.fspath(candidate)
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(
+                "resolved Windows executable is outside its allowed root"
+            ) from exc
+        return os.fspath(resolved)
+    return None
+
+
+def _which_windows_command_from_cwd(
+    name: str,
+    cwd: str | os.PathLike[str],
+    *,
+    search_cwd: bool = True,
+    removes_interior_js_from_pathext: bool = False,
+) -> tuple[str | None, str]:
+    """Resolve a bare Windows command as though *cwd* were already active.
+
+    ``shutil.which`` may implicitly search the parent process's current
+    directory on Windows, even when a different child ``cwd`` will be passed
+    to ``subprocess``. Probe the intended child directory and each PATH entry
+    through an explicit path instead, retaining PATHEXT handling without
+    exposing Hermes's unrelated launch directory. Windows suppresses the
+    initial child-directory probe when ``NoDefaultCurrentDirectoryInExePath``
+    is present or ``search_cwd`` is false. Relative PATH entries remain
+    interpreted against the intended child directory; empty entries retain
+    that meaning only while current-directory search is enabled.
+
+    The second return value is an explicit, non-searching fallback. Passing it
+    to ``CreateProcessW`` fails closed when no candidate exists instead of
+    giving the operating system another chance to search the parent cwd.
+    """
+    child_cwd = Path(cwd).resolve()
+    searches_current_directory = search_cwd and (
+        "NoDefaultCurrentDirectoryInExePath" not in os.environ
+    )
+    search_dirs = [child_cwd] if searches_current_directory else []
+    for entry in os.get_exec_path():
+        if not entry and not searches_current_directory:
+            continue
+        directory = Path(entry) if entry else child_cwd
+        if not directory.is_absolute():
+            directory = child_cwd / directory
+        search_dirs.append(directory)
+
+    candidates = _windows_command_candidates(
+        name,
+        removes_interior_js_from_pathext=removes_interior_js_from_pathext,
+    )
+
+    seen: set[str] = set()
+    # Reuse the first directory that this helper will explicitly probe. This
+    # leaves CreateProcessW an absolute, non-searching miss without pointing it
+    # back at the repository when native cwd search is disabled. os.get_exec_path
+    # normally supplies at least one entry; retain an invalid Win32 component as
+    # the fail-closed boundary for a mocked or otherwise empty search path.
+    fallback_directory = search_dirs[0] if search_dirs else child_cwd / "<PATH>"
+    fallback = os.fspath(fallback_directory / name)
+    for directory in search_dirs:
+        key = os.path.normcase(os.path.abspath(os.fspath(directory))).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        for candidate_name in candidates:
+            candidate = directory / candidate_name
+            if candidate.is_file():
+                return os.fspath(candidate), fallback
+    return None, fallback
+
+
+def resolve_node_command(
+    name: str,
+    argv: Sequence[str],
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+    search_cwd: bool = True,
+    allowed_root: str | os.PathLike[str] | None = None,
+) -> list[str]:
     """Resolve a Node-ecosystem command name to an absolute-path argv.
 
     On Windows, commands like ``npm``, ``npx``, ``yarn``, ``pnpm``,
@@ -101,9 +728,14 @@ def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
     ``subprocess.Popen(["npm", "install"])`` fails with WinError 193
     because CreateProcessW doesn't execute batch files directly.
 
-    ``shutil.which(name)`` *does* resolve ``.cmd`` via PATHEXT and returns
-    the fully-qualified path — which CreateProcessW accepts because the
-    extension tells Windows to route through ``cmd.exe /c``.
+    ``shutil.which`` *does* resolve ``.cmd`` via PATHEXT. When a Windows
+    ``cwd`` is supplied, bare commands reproduce cmd.exe's child-directory
+    search unless ``NoDefaultCurrentDirectoryInExePath`` opts out, then search
+    PATH without consulting Hermes's parent-process cwd. npm-generated batch
+    shims are resolved further to their package ``bin`` JavaScript entrypoint
+    and invoked with ``node.exe``. That avoids the implicit ``cmd.exe`` path,
+    where metacharacters in otherwise legitimate arguments can be
+    reinterpreted as shell syntax.
 
     On POSIX ``shutil.which`` also returns a fully-qualified path when
     found.  That's a small change from bare-name resolution (the OS does
@@ -111,9 +743,12 @@ def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
     benefit of making the argv reproducible in logs.
 
     Behavior when the command is not on PATH:
-    - On Windows: return the bare name — caller can still try with
-      ``shell=True`` as a last resort, OR the subsequent Popen will
-      raise FileNotFoundError with a readable error we want to surface.
+    - On Windows with ``cwd``: return an explicit path in the first searched
+      directory so a subsequent CreateProcessW call fails closed without
+      searching the parent-process directory.
+    - On Windows without ``cwd``: return the bare name — caller can still try
+      with ``shell=True`` as a last resort, OR the subsequent Popen will raise
+      FileNotFoundError with a readable error we want to surface.
     - On POSIX: same.  Bare ``npm`` on a Linux box without npm installed
       fails the same way it did before this function existed.
 
@@ -121,14 +756,52 @@ def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
         name: The command name to resolve (``npm``, ``npx``, ``node`` …).
         argv: The remaining arguments.  Must NOT include ``name`` itself —
             this function builds the full argv list.
+        cwd: The child working directory that governs bare executable search
+            and npm/npx prefix selection. Defaults to the current process
+            directory and ordinary ``shutil.which`` behavior.
+        search_cwd: Whether bare Windows commands may resolve from ``cwd``
+            before PATH. Defaults to native Windows search semantics.
+        allowed_root: Optional containment root for a path-qualified Windows
+            executable. The selected PATHEXT candidate must resolve within it.
 
     Returns:
         A list suitable for passing to subprocess.Popen/run/call.
     """
-    resolved = shutil.which(name)
+    fallback = name
+    windows_name = PureWindowsPath(name)
+    is_bare_windows_name = (
+        IS_WINDOWS
+        and cwd is not None
+        and "/" not in name
+        and "\\" not in name
+        and not windows_name.drive
+    )
+    if is_bare_windows_name:
+        resolved, fallback = _which_windows_command_from_cwd(
+            name,
+            cwd,
+            search_cwd=search_cwd,
+        )
+    elif IS_WINDOWS and (
+        "/" in name or "\\" in name or bool(windows_name.drive)
+    ):
+        resolved = _which_windows_explicit_command(
+            name,
+            allowed_root=allowed_root,
+        )
+    else:
+        resolved = shutil.which(name)
     if resolved:
+        if IS_WINDOWS and resolved.lower().endswith((".cmd", ".bat")):
+            native = _node_package_entrypoint(
+                resolved,
+                cwd,
+                search_cwd=search_cwd,
+            )
+            if native:
+                return [*native, *argv]
         return [resolved, *argv]
-    return [name, *argv]
+    return [fallback, *argv]
 
 
 # -----------------------------------------------------------------------------

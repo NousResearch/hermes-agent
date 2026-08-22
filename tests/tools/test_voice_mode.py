@@ -209,7 +209,7 @@ class TestDetectAudioEnvironment:
                             lambda: (MagicMock(), MagicMock()))
 
         proc_version = tmp_path / "proc_version"
-        proc_version.write_text("Linux 5.15.0-microsoft-standard-WSL2")
+        proc_version.write_text("Linux 5.15.0-microsoft-standard-WSL2", encoding="utf-8")
 
         _real_open = open
         def _fake_open(f, *a, **kw):
@@ -589,6 +589,104 @@ class TestPlayAudioFile:
         assert result is True
         mock_sd_obj.play.assert_called_once()
         mock_sd_obj.stop.assert_called_once()
+
+
+class TestStreamTtsToSpeakerPlayback:
+    @staticmethod
+    def _run_stream(monkeypatch, chunks=(b"\x00\x00",)):
+        import queue
+        import threading
+
+        from tools import tts_tool
+
+        class FakeStreamer:
+            sample_rate, channels = 24000, 1
+
+            def stream(self, _text):
+                return iter(chunks)
+
+        monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "elevenlabs"})
+        monkeypatch.setattr(
+            "tools.tts_streaming.resolve_streaming_provider",
+            lambda *_args, **_kwargs: FakeStreamer(),
+        )
+        text_queue = queue.Queue()
+        text_queue.put("This sentence is long enough to stream. ")
+        text_queue.put(None)
+        done_event = threading.Event()
+        tts_tool.stream_tts_to_speaker(text_queue, threading.Event(), done_event)
+        assert done_event.is_set()
+
+    def test_ffplay_streams_pcm_with_hidden_windows_console(self, monkeypatch):
+        from tools import tts_tool
+
+        process = MagicMock()
+        popen = MagicMock(return_value=process)
+        monkeypatch.setattr(tts_tool.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(tts_tool.shutil, "which", lambda _name: "/mock/ffplay")
+        monkeypatch.setattr(tts_tool.subprocess, "Popen", popen)
+        monkeypatch.setattr(tts_tool, "windows_hide_flags", lambda: 123)
+
+        self._run_stream(monkeypatch, (b"\x00\x00", b"\x01\x00"))
+
+        assert process.stdin.write.call_count == 2
+        assert process.stdin.flush.call_count == 2
+        process.stdin.close.assert_called_once()
+        process.wait.assert_called_once_with(timeout=5)
+        assert popen.call_args.kwargs["creationflags"] == 123
+
+    def test_ffplay_broken_pipe_still_cleans_up(self, monkeypatch):
+        from tools import tts_tool
+
+        process = MagicMock()
+        process.stdin.write.side_effect = BrokenPipeError
+        monkeypatch.setattr(tts_tool.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(tts_tool.shutil, "which", lambda _name: "/mock/ffplay")
+        monkeypatch.setattr(tts_tool.subprocess, "Popen", lambda *_args, **_kwargs: process)
+        monkeypatch.setattr("tools.voice_mode.play_audio_file", MagicMock())
+
+        self._run_stream(monkeypatch)
+
+        process.stdin.close.assert_called_once()
+        process.wait.assert_called_once_with(timeout=5)
+
+    def test_missing_ffplay_falls_back_to_tempfile_playback(self, monkeypatch):
+        from tools import tts_tool
+        from tools import voice_mode
+
+        play_audio_file = MagicMock(return_value=True)
+        monkeypatch.setattr(tts_tool.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(tts_tool.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(voice_mode, "play_audio_file", play_audio_file)
+
+        self._run_stream(monkeypatch)
+
+        play_audio_file.assert_called_once()
+
+    def test_windows_stream_uses_sounddevice_without_ffplay(self, monkeypatch):
+        pytest.importorskip("numpy")
+        from tools import tts_tool
+
+        output_stream = MagicMock()
+        monkeypatch.setattr(tts_tool.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(
+            tts_tool,
+            "_import_sounddevice",
+            lambda: MagicMock(OutputStream=lambda **_kwargs: output_stream),
+        )
+        monkeypatch.setattr(
+            tts_tool.shutil,
+            "which",
+            lambda _name: pytest.fail("Windows streaming should not require ffplay"),
+        )
+
+        self._run_stream(monkeypatch)
+
+        output_stream.start.assert_called_once()
+        output_stream.write.assert_called_once()
+        output_stream.stop.assert_called_once()
+        output_stream.close.assert_called_once()
+
 
 # ============================================================================
 # macOS output policy (no sounddevice for OUTPUT -> avoids TCC prompt)

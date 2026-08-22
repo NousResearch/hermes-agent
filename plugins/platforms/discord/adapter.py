@@ -1149,6 +1149,11 @@ class DiscordAdapter(BasePlatformAdapter):
         )
         self._liveness_task: Optional[asyncio.Task] = None
         self._liveness_notification_task: Optional[asyncio.Task] = None
+        # Background watchdog that keeps the presence activity in sync with
+        # config.yaml changes (model, profile).  Default 60s interval.
+        self._activity_watchdog_task: Optional[asyncio.Task] = None
+        self._activity_watchdog_interval = 60.0
+        self._last_activity_state: Optional[Tuple[str, str, str]] = None  # (type, rendered state, rendered details)
         # True while disconnect() is intentionally closing discord.py. The
         # bot task's done callback uses this to distinguish an operator/service
         # shutdown from a runtime websocket crash.
@@ -1395,6 +1400,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 await adapter_self._resolve_allowed_usernames()
                 adapter_self._ready_event.set()
 
+                # Set custom presence activity if configured
+                await adapter_self._apply_activity()
+
                 if adapter_self._post_connect_task and not adapter_self._post_connect_task.done():
                     adapter_self._post_connect_task.cancel()
                 adapter_self._post_connect_task = asyncio.create_task(
@@ -1476,6 +1484,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
             self._running = True
             self._start_liveness_probe()
+            self._start_activity_watchdog()
             return True
 
         except asyncio.TimeoutError:
@@ -2089,6 +2098,54 @@ class DiscordAdapter(BasePlatformAdapter):
                 logger.debug("[%s] Liveness task shutdown failed", self.name, exc_info=True)
             setattr(self, task_name, None)
 
+    def _start_activity_watchdog(self) -> None:
+        """Start the periodic presence-activity watchdog."""
+        if self._activity_watchdog_task and not self._activity_watchdog_task.done():
+            return
+        self._activity_watchdog_task = asyncio.create_task(
+            self._activity_watchdog_loop(), name="discord-activity-watchdog"
+        )
+
+    async def _activity_watchdog_loop(self) -> None:
+        """Periodically re-read activity config and update presence if changed."""
+        interval = self._activity_watchdog_interval
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                return
+            if not self._running or self._disconnecting:
+                return
+            try:
+                await self._apply_activity()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.debug("[%s] Activity watchdog iteration error", self.name, exc_info=True)
+
+    async def _clear_activity(self) -> None:
+        """Clear presence activity (removes the activity, keeps status)."""
+        if self._client is None:
+            return
+        try:
+            await self._client.change_presence(activity=None)
+            self._last_activity_state = None
+        except Exception as e:
+            logger.debug("[%s] Failed to clear activity: %s", self.name, e)
+
+    async def _cancel_activity_watchdog_task(self) -> None:
+        """Cancel the activity watchdog task."""
+        if self._activity_watchdog_task and not self._activity_watchdog_task.done():
+            self._activity_watchdog_task.cancel()
+            try:
+                await self._activity_watchdog_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug("[%s] Activity watchdog shutdown failed", self.name, exc_info=True)
+            self._activity_watchdog_task = None
+            self._last_activity_state = None
+
     async def cancel_background_tasks(self) -> None:
         """Cancel background tasks, but first flush any pending text-batch sends.
 
@@ -2126,6 +2183,8 @@ class DiscordAdapter(BasePlatformAdapter):
                         task.cancel()
         self._pending_text_batch_tasks.clear()
         self._pending_text_batches.clear()
+        # Cancel the activity watchdog before delegating
+        await self._cancel_activity_watchdog_task()
         await super().cancel_background_tasks()
 
     def _text_batch_flush_deadline_seconds(self) -> float:
@@ -2199,6 +2258,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 await self._missed_message_backfill_task
             except asyncio.CancelledError:
                 pass
+
+        # Cancel the activity watchdog before stopping the client
+        await self._cancel_activity_watchdog_task()
 
         self._running = False
         self._client = None
@@ -4346,6 +4408,139 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("Could not load discord.%s config: %s", key, e)
             return default
+
+    # Discord API rejects activity name/details longer than 128 chars
+    # (HTTP 400); discord.py does not enforce this client-side.
+    _ACTIVITY_FIELD_MAX = 128
+
+    def _load_discord_activity_config(self) -> Dict[str, Any]:
+        """Read discord.activity from config.yaml.
+
+        Returns a dict with ``type``, ``state``, and optionally ``details``
+        keys, or empty dict to disable presence activity.  ``state`` and
+        ``details`` may contain ``{{model}}`` and ``{{profile}}`` template
+        variables.
+        """
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config() or {}
+            activity = (cfg.get("discord") or {}).get("activity") or {}
+            if not isinstance(activity, dict):
+                return {}
+            # enabled defaults to False (disabled); must be explicitly True
+            if not activity.get("enabled"):
+                return {}
+            atype = str(activity.get("type", "")).strip().lower()
+            name = str(activity.get("state") or "").strip()
+            if not atype or not name:
+                return {}
+            details = str(activity.get("details") or "").strip()
+            result: Dict[str, Any] = {"type": atype, "state": name}
+            if details:
+                result["details"] = details
+            return result
+        except Exception as e:
+            logger.debug("Could not load discord.activity config: %s", e)
+        return {}
+
+    def _activity_template_vars(self) -> Tuple[str, str]:
+        """Return (model_name, profile_name) for activity template rendering.
+
+        The profile is the running profile (inferred from HERMES_HOME), not a
+        config key — the gateway process is bound to one profile at startup.
+        """
+        model_name = ""
+        try:
+            from hermes_cli.config import load_config_readonly
+            config = load_config_readonly() or {}
+            model_cfg = config.get("model", {}) or {}
+            model_name = str(model_cfg.get("default") or "").strip()
+        except Exception as e:
+            logger.debug("Could not resolve model for activity: %s", e)
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            profile_name = get_active_profile_name() or "default"
+        except Exception:
+            profile_name = "default"
+        return model_name, profile_name
+
+    def _render_activity_templates(self, text: str, model_name: str,
+                                   profile_name: str) -> str:
+        """Expand {{model}} and {{profile}} in an activity text field.
+
+        The rendered result is truncated to the Discord API limit so a long
+        model name can't make every presence update 400.
+        """
+        if not text:
+            return ""
+        rendered = text.replace("{{model}}", model_name).replace("{{profile}}", profile_name)
+        return rendered[: self._ACTIVITY_FIELD_MAX]
+
+    def _activity_type(self, atype: str):
+        """Map an activity type string to the discord.ActivityType enum.
+
+        Returns None (and logs a warning) for unknown types.
+        """
+        type_map = {
+            "playing":   discord.ActivityType.playing,
+            "watching":  discord.ActivityType.watching,
+            "listening": discord.ActivityType.listening,
+            "competing": discord.ActivityType.competing,
+        }
+        mapped = type_map.get(atype)
+        if mapped is None:
+            logger.warning(
+                "[%s] Unknown activity type %r; valid: %s",
+                self.name, atype, sorted(type_map),
+            )
+        return mapped
+
+    async def _apply_activity(self) -> None:
+        """Set bot presence activity. Called on connect and by the watchdog."""
+        activity_cfg = self._load_discord_activity_config()
+        if not activity_cfg:
+            if self._last_activity_state is not None:
+                await self._clear_activity()
+            return
+
+        atype = activity_cfg["type"]
+        activity_type = self._activity_type(atype)
+        if activity_type is None:
+            return
+
+        if self._client is None:
+            logger.debug("[%s] Cannot set activity — client is None", self.name)
+            return
+
+        state = activity_cfg["state"]
+        details = activity_cfg.get("details", "")
+        model_name, profile_name = self._activity_template_vars()
+        rendered = self._render_activity_templates(state, model_name, profile_name)
+        rendered_details = self._render_activity_templates(details, model_name, profile_name)
+
+        cache_key = (atype, rendered, rendered_details)
+        if cache_key == self._last_activity_state:
+            return
+
+        try:
+            activity_kwargs: Dict[str, Any] = {
+                "type": activity_type,
+                "name": rendered,
+            }
+            if rendered_details:
+                activity_kwargs["details"] = rendered_details
+            activity = discord.Activity(**activity_kwargs)
+
+            await self._client.change_presence(activity=activity)
+
+            self._last_activity_state = cache_key
+            logger.info(
+                "[%s] Set presence activity: %s %s%s",
+                self.name, atype, rendered,
+                f' "{rendered_details}"' if rendered_details else "",
+            )
+        except Exception as e:
+            logger.debug("[%s] Failed to set presence activity: %s", self.name, e)
 
     def _load_voice_timeout(self) -> int:
         """Return voice-channel inactivity timeout seconds; 0 disables it."""

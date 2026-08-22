@@ -34,6 +34,19 @@ def _ensure_discord_mock():
         sys.modules["discord"].AllowedMentions = _FakeAllowedMentions
         return
 
+    if sys.modules.get("discord") is not None:
+        # discord is already imported (e.g. by another test file loading first).
+        # Ensure ActivityType attrs exist so the adapter's type map works.
+        at = getattr(sys.modules["discord"], "ActivityType", None)
+        if at is not None:
+            for _name in ("playing", "watching", "listening", "competing"):
+                if not hasattr(at, _name):
+                    sub = MagicMock()
+                    sub._mock_name = _name
+                    setattr(at, _name, sub)
+        sys.modules["discord"].AllowedMentions = _FakeAllowedMentions
+        return
+
     if sys.modules.get("discord") is None:
         discord_mod = MagicMock()
         discord_mod.Intents.default.return_value = MagicMock()
@@ -65,7 +78,16 @@ def _ensure_discord_mock():
 
     sys.modules["discord"].AllowedMentions = _FakeAllowedMentions
 
+    # Ensure ActivityType sub-mocks exist with the right attribute names so
+    # tests can do `discord.ActivityType.watching` etc. and assertions match.
+    at = sys.modules["discord"].ActivityType
+    for _name in ("playing", "watching", "listening", "competing"):
+        if not hasattr(at, _name):
+            sub = MagicMock()
+            sub._mock_name = _name
+            setattr(at, _name, sub)
 
+    return
 _ensure_discord_mock()
 
 import plugins.platforms.discord.adapter as discord_platform  # noqa: E402

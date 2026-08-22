@@ -2258,6 +2258,13 @@ DEFAULT_CONFIG = {
         # The adapter also probes clip duration and extends this floor by a
         # padding window, so long TTS readbacks are not cut at exactly 120s.
         "voice_playback_timeout_seconds": 120,
+        # Custom rich presence / bot activity status. Disabled by default.
+        "activity": {
+            "enabled": False,        # Must be explicitly True to activate
+            "type": "watching",      # playing | watching | listening | competing
+            "state": "{{model}}",    # Text shown after the verb; supports {{model}} and {{profile}} templates
+            "details": ""            # Secondary info line; supports the same templates
+        },
         # Voice-channel audio effects (the continuous mixer). OFF by default.
         # When enabled, the bot installs a software mixer on the outgoing voice
         # stream so a low ambient "thinking" bed, verbal acknowledgements, and

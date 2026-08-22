@@ -17,6 +17,7 @@ resolved through :func:`_ra` so those patches keep working.
 from __future__ import annotations
 
 import json
+import inspect
 import logging
 import os
 import random
@@ -88,6 +89,7 @@ from agent.retry_utils import (
     zai_coding_overload_retry_ceiling,
 )
 from agent.repetition_guard import is_repetition_dominated
+from agent.reasoning_summaries import reasoning_summary_titles
 from agent.trajectory import has_incomplete_scratchpad
 # Bind before the turn starts so a source-tree swap cannot load a skewed
 # finalizer at turn end.
@@ -116,6 +118,62 @@ RUN_BUDGET_WRAPUP_NOTICE = (
     "now. Produce the required final deliverable (answer/JSON/summary) from "
     "the state you already have, completing only mandatory writes."
 )
+
+
+def _tool_progress_callback_accepts_titles(callback: Any) -> bool:
+    try:
+        parameters = inspect.signature(callback).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == "titles"
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
+def _notify_reasoning_progress(agent: Any, assistant_message: Any) -> None:
+    callback = getattr(agent, "tool_progress_callback", None)
+    if callback is None:
+        return
+    think_text = (getattr(assistant_message, "content", None) or "").strip()
+    think_text = re.sub(
+        r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>', '', think_text
+    ).strip()
+    summary_text = ""
+    summary_titles = []
+    if getattr(agent, "api_mode", None) == "codex_responses":
+        summary_text = (getattr(assistant_message, "reasoning", None) or "").strip()
+        summary_titles = reasoning_summary_titles(summary_text)
+    first_line = think_text.split('\n')[0][:80] if think_text else ""
+    if getattr(agent, '_delegate_depth', 0) > 0:
+        if first_line:
+            try:
+                callback("_thinking", first_line)
+            except Exception:
+                logger.debug(
+                    "tool_progress_callback raised while relaying delegated thinking",
+                    exc_info=True,
+                )
+        return
+    if not (think_text or summary_titles):
+        return
+    kwargs = {}
+    if summary_titles and _tool_progress_callback_accepts_titles(callback):
+        kwargs["titles"] = summary_titles
+    try:
+        callback(
+            "reasoning.available",
+            "_thinking",
+            (summary_text or think_text)[:500],
+            None,
+            **kwargs,
+        )
+    except Exception:
+        logger.debug(
+            "tool_progress_callback raised while emitting reasoning metadata",
+            exc_info=True,
+        )
 
 
 def _maybe_inject_run_budget_wrapup(agent: Any, messages: List[Dict[str, Any]]) -> bool:
@@ -6716,27 +6774,7 @@ def run_conversation(
                 else:
                     agent._vprint(f"{agent.log_prefix}🤖 Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
 
-            # Notify progress callback of model's thinking (used by subagent
-            # delegation to relay the child's reasoning to the parent display).
-            if (assistant_message.content and agent.tool_progress_callback):
-                _think_text = assistant_message.content.strip()
-                # Strip reasoning XML tags that shouldn't leak to parent display
-                _think_text = re.sub(
-                    r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>', '', _think_text
-                ).strip()
-                # For subagents: relay first line to parent display (existing behaviour).
-                # For all agents with a structured callback: emit reasoning.available event.
-                first_line = _think_text.split('\n')[0][:80] if _think_text else ""
-                if first_line and getattr(agent, '_delegate_depth', 0) > 0:
-                    try:
-                        agent.tool_progress_callback("_thinking", first_line)
-                    except Exception:
-                        pass
-                elif _think_text:
-                    try:
-                        agent.tool_progress_callback("reasoning.available", "_thinking", _think_text[:500], None)
-                    except Exception:
-                        pass
+            _notify_reasoning_progress(agent, assistant_message)
             
             # Check for incomplete <REASONING_SCRATCHPAD> (opened but never closed)
             # This means the model ran out of output tokens mid-reasoning — retry up to 2 times

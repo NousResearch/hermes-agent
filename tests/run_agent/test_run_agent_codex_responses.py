@@ -1655,6 +1655,101 @@ def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
     assert function_output["call_id"] == "call_1"
 
 
+def test_run_conversation_exposes_codex_summary_titles(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    responses = [
+        SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="reasoning",
+                    id="rs_1",
+                    encrypted_content="enc_1",
+                    summary=[
+                        SimpleNamespace(text="**Inspecting files**\nDetails"),
+                        SimpleNamespace(text="**Running tests**\nMore details"),
+                    ],
+                ),
+                SimpleNamespace(
+                    type="function_call",
+                    id="fc_1",
+                    call_id="call_1",
+                    name="terminal",
+                    arguments="{}",
+                ),
+            ],
+            usage=SimpleNamespace(input_tokens=12, output_tokens=4, total_tokens=16),
+            status="completed",
+            model="gpt-5-codex",
+        ),
+        _codex_message_response("done"),
+    ]
+    events = []
+    agent.tool_progress_callback = lambda *args, **kwargs: events.append((args, kwargs))
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda _kwargs: responses.pop(0))
+    monkeypatch.setattr(agent, "_execute_tool_calls", lambda *_args, **_kwargs: None)
+
+    result = agent.run_conversation("inspect and test")
+
+    assert result["completed"] is True
+    reasoning = [event for event in events if event[0][0] == "reasoning.available"]
+    titled = next(event for event in reasoning if event[1].get("titles"))
+    assert titled[0][2].startswith("**Inspecting files**")
+    assert titled[1]["titles"] == ["Inspecting files", "Running tests"]
+
+
+def test_reasoning_progress_keeps_titles_additive_and_delegation_content_based():
+    from agent.conversation_loop import _notify_reasoning_progress
+
+    message = SimpleNamespace(
+        content="Visible first line\nmore",
+        reasoning="**Provider summary**\nDetails",
+    )
+
+    fixed_events = []
+    fixed_callback = lambda event, name, preview, args: fixed_events.append(
+        (event, name, preview, args)
+    )
+    _notify_reasoning_progress(
+        SimpleNamespace(
+            tool_progress_callback=fixed_callback,
+            api_mode="codex_responses",
+            _delegate_depth=0,
+        ),
+        message,
+    )
+    assert fixed_events == [
+        ("reasoning.available", "_thinking", "**Provider summary**\nDetails", None)
+    ]
+
+    non_codex_events = []
+    _notify_reasoning_progress(
+        SimpleNamespace(
+            tool_progress_callback=lambda *args, **kwargs: non_codex_events.append(
+                (args, kwargs)
+            ),
+            api_mode="chat_completions",
+            _delegate_depth=0,
+        ),
+        message,
+    )
+    assert non_codex_events == [
+        (("reasoning.available", "_thinking", "Visible first line\nmore", None), {})
+    ]
+
+    delegated_events = []
+    _notify_reasoning_progress(
+        SimpleNamespace(
+            tool_progress_callback=lambda *args, **kwargs: delegated_events.append(
+                (args, kwargs)
+            ),
+            api_mode="codex_responses",
+            _delegate_depth=1,
+        ),
+        message,
+    )
+    assert delegated_events == [(('_thinking', 'Visible first line'), {})]
+
+
 
 
 
@@ -2108,7 +2203,7 @@ def test_dump_api_request_debug_uses_responses_url(monkeypatch, tmp_path):
 
     dump_file = agent._dump_api_request_debug(_codex_request_kwargs(), reason="preflight")
 
-    payload = json.loads(dump_file.read_text())
+    payload = json.loads(dump_file.read_text(encoding="utf-8"))
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/responses"
 
 
@@ -2132,7 +2227,7 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
         reason="preflight",
     )
 
-    payload = json.loads(dump_file.read_text())
+    payload = json.loads(dump_file.read_text(encoding="utf-8"))
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"
 
 

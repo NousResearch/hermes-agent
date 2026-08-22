@@ -625,6 +625,49 @@ class TestDisconnectedAgentReap:
 class TestRunEventCallback:
 
     @pytest.mark.asyncio
+    async def test_reasoning_titles_are_optional_additive_metadata(self, adapter):
+        run_id = "run_reasoning_titles"
+        loop = asyncio.get_running_loop()
+        queue = asyncio.Queue()
+        adapter._run_streams[run_id] = queue
+
+        callback = adapter._make_run_event_callback(run_id, loop)
+        callback("reasoning.available", "_thinking", "First summary", None)
+        callback(
+            "reasoning.available",
+            "_thinking",
+            "Second summary",
+            None,
+            titles=["Inspecting files", "Running tests"],
+        )
+
+        legacy = await asyncio.wait_for(queue.get(), timeout=1.0)
+        titled = await asyncio.wait_for(queue.get(), timeout=1.0)
+        assert "titles" not in legacy
+        assert titled["titles"] == ["Inspecting files", "Running tests"]
+
+    @pytest.mark.asyncio
+    async def test_reasoning_titles_reject_malformed_public_metadata(self, adapter):
+        run_id = "run_reasoning_titles_invalid"
+        loop = asyncio.get_running_loop()
+        queue = asyncio.Queue()
+        adapter._run_streams[run_id] = queue
+        callback = adapter._make_run_event_callback(run_id, loop)
+
+        callback("reasoning.available", "_thinking", "Mixed", None, titles=["valid", 7])
+        callback("reasoning.available", "_thinking", "Long", None, titles=["x" * 121])
+        callback(
+            "reasoning.available",
+            "_thinking",
+            "Many",
+            None,
+            titles=[f"title-{index}" for index in range(9)],
+        )
+
+        events = [await asyncio.wait_for(queue.get(), timeout=1.0) for _ in range(3)]
+        assert all("titles" not in event for event in events)
+
+    @pytest.mark.asyncio
     async def test_subagent_events_redact_secrets_and_carry_child_session(self, adapter):
         """Free-text fields (goal/summary/output_tail/preview) must pass the
         forced secret redaction before hitting the public /v1/runs stream,

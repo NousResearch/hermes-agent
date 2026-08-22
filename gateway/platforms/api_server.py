@@ -122,6 +122,10 @@ from gateway.platforms.base import (
     validate_media_delivery_path,
 )
 from agent.redact import redact_sensitive_text
+from agent.reasoning_summaries import (
+    REASONING_SUMMARY_MAX_TITLE_CHARS,
+    REASONING_SUMMARY_MAX_TITLES,
+)
 from agent.interrupt_compat import request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
 from gateway.browser_control_artifacts import (
@@ -7434,12 +7438,25 @@ class APIServerAdapter(BasePlatformAdapter):
                     "error": kwargs.get("is_error", False),
                 })
             elif event_type == "reasoning.available":
-                _push({
+                event = {
                     "event": "reasoning.available",
                     "run_id": run_id,
                     "timestamp": ts,
                     "text": preview or "",
-                })
+                }
+                titles = kwargs.get("titles")
+                if (
+                    isinstance(titles, list)
+                    and 0 < len(titles) <= REASONING_SUMMARY_MAX_TITLES
+                    and all(
+                        isinstance(title, str)
+                        and bool(title.strip())
+                        and len(title) <= REASONING_SUMMARY_MAX_TITLE_CHARS
+                        for title in titles
+                    )
+                ):
+                    event["titles"] = list(titles)
+                _push(event)
             elif event_type in {"subagent.start", "subagent.complete"}:
                 event = {
                     "event": event_type,

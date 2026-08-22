@@ -243,13 +243,28 @@ jobs:
           if-no-files-found: error
 
   # ── Attach everything to the GitHub Release ─────────────────────────────
+  # Runs on release publish AND on workflow_dispatch: dispatch runs attach
+  # to the release named by the `version` input, or the latest release.
   upload-to-release:
     name: Upload all artifacts to Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: [build-appimage-deb-rpm, build-flatpak, build-snap]
-    if: github.event_name == 'release'
     steps:
+      - name: Resolve target release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "${{ github.event.release.tag_name }}" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+          elif [ -n "${{ inputs.version }}" ]; then
+            TAG="${{ inputs.version }}"
+          else
+            TAG="$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name)"
+          fi
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+          echo "Uploading artifacts to release $TAG"
+
       - name: Download all built artifacts
         uses: actions/download-artifact@v4
         with:
@@ -269,6 +284,7 @@ jobs:
         uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
         with:
           files: artifacts/linux-snap/hermes-desktop_*.snap
+          tag: ${{ env.RELEASE_TAG }}
           name: Hermes Desktop Snap (Linux)
           body: |
             Official Hermes Desktop Snap for Linux.
@@ -278,6 +294,7 @@ jobs:
         uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
         with:
           files: artifacts/linux-packages-appimage-deb-rpm/*.AppImage
+          tag: ${{ env.RELEASE_TAG }}
           name: Hermes Desktop AppImage (Linux)
           body: |
             Official Hermes Desktop AppImage for Linux.
@@ -287,6 +304,7 @@ jobs:
         uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
         with:
           files: artifacts/linux-packages-appimage-deb-rpm/*.deb
+          tag: ${{ env.RELEASE_TAG }}
           name: Hermes Desktop deb (Debian/Ubuntu)
           body: |
             Official Hermes Desktop .deb package.
@@ -296,6 +314,7 @@ jobs:
         uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
         with:
           files: artifacts/linux-packages-appimage-deb-rpm/*.rpm
+          tag: ${{ env.RELEASE_TAG }}
           name: Hermes Desktop rpm (Fedora/RHEL)
           body: |
             Official Hermes Desktop .rpm package.

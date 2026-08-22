@@ -22,8 +22,10 @@ keep the exact logger name (``"agent.conversation_loop"``).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from pathlib import Path
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.message_content import flatten_message_text
@@ -56,6 +58,148 @@ _VERIFICATION_CONTINUATION_FLAGS = (
 )
 
 
+# ── Kanban worktree snapshot (#73234) ──────────────────────────────────
+# When a kanban worker dies on iteration-budget exhaustion, whatever it
+# had staged/uncommitted in its workspace used to be invisible to
+# recovery: the dispatcher reclaims the released claim and the next
+# attempt starts from a worktree nobody described. We append ONE durable
+# comment to the card carrying a compact machine-readable summary (a
+# ``[kanban:worktree-snapshot] `` prefixed JSON payload, same pattern as
+# the swarm blackboard comments) plus a human-readable handoff hint and
+# the tracked diff stat. Pure git plumbing — no LLM calls, best-effort,
+# and silent on clean / non-git workspaces so ordinary completions stay
+# zero-noise.
+_KANBAN_WORKTREE_SNAPSHOT_PREFIX = "[kanban:worktree-snapshot] "
+_KANBAN_WORKTREE_SNAPSHOT_AUTHOR = "worktree-snapshot"
+_KANBAN_SNAPSHOT_MAX_FILES = 50
+_KANBAN_SNAPSHOT_DIFF_STAT_MAX_CHARS = 2000
+_KANBAN_SNAPSHOT_GIT_TIMEOUT = 10
+
+
+def _git_in_workspace(args: list, workspace: str) -> "subprocess.CompletedProcess | None":
+    """Run a read-only git command inside ``workspace``; None on any failure."""
+    import subprocess
+    try:
+        return subprocess.run(
+            ["git", "-C", workspace, *args],
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=_KANBAN_SNAPSHOT_GIT_TIMEOUT,
+            check=False,
+        )
+    except Exception:
+        return None
+
+
+def _snapshot_kanban_worktree_state(
+    kanban_task: str,
+    api_call_count: int,
+    max_iterations: int,
+    logger: logging.Logger,
+) -> None:
+    """Best-effort durable snapshot of a dying worker's worktree state.
+
+    Appends one comment to kanban task ``kanban_task`` describing the
+    staged/uncommitted changes in ``$HERMES_KANBAN_WORKSPACE`` (worktree
+    path, changed-file list capped at :data:`_KANBAN_SNAPSHOT_MAX_FILES`,
+    tracked diff stat, handoff hint). Clean worktrees, missing
+    workspaces, and non-git directories produce NO comment — zero noise
+    outside the exact recovery scenario. Never raises.
+    """
+    workspace = (os.environ.get("HERMES_KANBAN_WORKSPACE") or "").strip()
+    if not workspace:
+        return
+
+    status = _git_in_workspace(["status", "--porcelain"], workspace)
+    if status is None or status.returncode != 0:
+        # Not a git checkout (scratch workspace) or git is broken/unavailable
+        # — nothing git-recoverable to describe.
+        return
+    porcelain_lines = [
+        ln for ln in (status.stdout or "").splitlines() if ln.strip()
+    ]
+    if not porcelain_lines:
+        # Clean worktree — the dispatcher can reclaim without losing work.
+        return
+
+    files = [ln[3:].strip().strip('"') for ln in porcelain_lines]
+    untracked_count = sum(1 for ln in porcelain_lines if ln.startswith("??"))
+    staged_count = sum(
+        1 for ln in porcelain_lines
+        if ln[0] not in (" ", "?") and not ln.startswith("??")
+    )
+    files_truncated = len(files) > _KANBAN_SNAPSHOT_MAX_FILES
+    listed_files = files[:_KANBAN_SNAPSHOT_MAX_FILES]
+
+    # Tracked-change summary (staged + unstaged vs HEAD). Best-effort: an
+    # unborn HEAD or a failed diff just omits the stat section.
+    diff_stat = ""
+    diff = _git_in_workspace(["diff", "--stat", "HEAD"], workspace)
+    if diff is not None and diff.returncode == 0:
+        diff_stat = (diff.stdout or "").strip()
+
+    from hermes_cli import kanban_db as _kb
+    branch = _kb._git_current_branch(Path(workspace))
+
+    payload = {
+        "type": "worktree_snapshot",
+        "reason": "iteration_budget_exhausted",
+        "budget_used": api_call_count,
+        "budget_max": max_iterations,
+        "workspace": workspace,
+        "branch": branch,
+        "changed_files": len(files),
+        "staged_files": staged_count,
+        "untracked_files": untracked_count,
+        "files": listed_files,
+        "files_truncated": files_truncated,
+    }
+    parts = [
+        _KANBAN_WORKTREE_SNAPSHOT_PREFIX
+        + json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        "",
+        (
+            f"Worker exhausted its iteration budget "
+            f"({api_call_count}/{max_iterations}) with {len(files)} "
+            "uncommitted change(s) still in the workspace above. Handoff: "
+            "inspect the workspace, then commit, stash, or discard the "
+            "listed files before re-dispatching or completing this card."
+        ),
+    ]
+    if diff_stat:
+        stat_block = diff_stat
+        truncated = False
+        if len(stat_block) > _KANBAN_SNAPSHOT_DIFF_STAT_MAX_CHARS:
+            stat_block = stat_block[:_KANBAN_SNAPSHOT_DIFF_STAT_MAX_CHARS]
+            truncated = True
+        parts += [
+            "",
+            "Diff stat (tracked changes vs HEAD)" + (" (truncated):" if truncated else ":"),
+            "```text",
+            stat_block,
+            "```",
+        ]
+    elif untracked_count:
+        parts += [
+            "",
+            "No tracked modifications — all listed files are untracked.",
+        ]
+
+    conn = _kb.connect()
+    try:
+        _kb.add_comment(
+            conn,
+            kanban_task,
+            _KANBAN_WORKTREE_SNAPSHOT_AUTHOR,
+            "\n".join(parts),
+        )
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def _record_kanban_budget_exhausted(
     kanban_task: str,
     api_call_count: int,
@@ -65,11 +209,27 @@ def _record_kanban_budget_exhausted(
     """Record a terminal ``timed_out`` outcome for a kanban worker that
     exhausted its iteration budget.
 
+    Before releasing the claim (#73234), snapshot whatever the worker
+    left staged/uncommitted in its workspace into a durable task comment
+    so recovery does not have to guess what was in flight. The snapshot
+    is independently guarded — a failure there never skips the failure
+    record below.
+
     This is a bounded fallback (#87096): the CAS invariant in ``_end_run``
     (``WHERE ended_at IS NULL``) guarantees idempotence — if another path
     already closed the run this is a no-op — so it is safe to call from
     multiple exit paths.
     """
+    try:
+        _snapshot_kanban_worktree_state(
+            kanban_task, api_call_count, max_iterations, logger,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to snapshot worktree state for task %s",
+            kanban_task,
+            exc_info=True,
+        )
     try:
         from hermes_cli import kanban_db as _kb
         _conn = _kb.connect()

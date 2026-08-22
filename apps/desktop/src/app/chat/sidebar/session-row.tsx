@@ -219,7 +219,7 @@ function SidebarSessionRowImpl({
     trailing.push({
       key: 'figures',
       node: (
-        <span className="pointer-events-none whitespace-nowrap text-[0.625rem] leading-none text-(--ui-text-tertiary)">
+        <span className="pointer-events-none whitespace-nowrap text-[0.625rem] leading-[13px] text-(--ui-text-tertiary)">
           {head}
           {/* The figures own their tail: the separator goes with it. */}
           <span className={cn('inline-block text-right', TAIL_HIDES)}>
@@ -294,8 +294,9 @@ function SidebarSessionRowImpl({
   // against it. In the card it renders INSIDE the header row instead — the
   // shell column would span the card's full height and shave every line,
   // when only the header shares its line with the age and kebab.
+  // Trailing padding mirrors the leading inset so timestamps do not sit on the row edge. Refs #89112.
   const actionsNode = (
-    <div className="relative z-2 flex shrink-0 items-center justify-end gap-1" data-row-actions>
+    <div className="relative z-2 flex shrink-0 items-center justify-end gap-1 pe-2" data-row-actions>
       {trailing.map(({ key, node }, index) => (
         <span
           className={
@@ -493,8 +494,9 @@ function SidebarSessionRowImpl({
                   {handoffBadge}
                   <span className="min-w-0 flex-1 self-center">
                     <OverflowTip label={title}>
+                      {/* The shared leading-none label clips g/y/p/q descenders; this line height keeps them visible. Refs #89112. */}
                       <SidebarRowLabel
-                        className="hover-marquee block font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
+                        className="hover-marquee block leading-[17px] font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
                         onPointerEnter={armMarquee}
                         onPointerLeave={disarmMarquee}
                       >
@@ -505,12 +507,12 @@ function SidebarSessionRowImpl({
                         deterministic metadata line; detailed adds the initial
                         request preview. Compact keeps today's one-line row. */}
                     {density !== 'compact' && details.metadata && (
-                      <span className="mt-0.5 block truncate text-[0.625rem] leading-none text-(--ui-text-tertiary)">
+                      <span className="mt-0.5 block truncate text-[0.625rem] leading-[13px] text-(--ui-text-tertiary)">
                         {details.metadata}
                       </span>
                     )}
                     {density === 'detailed' && details.preview && (
-                      <span className="mt-1 block truncate text-[0.625rem] leading-none text-(--ui-text-quaternary)">
+                      <span className="mt-1 block truncate text-[0.625rem] leading-[13px] text-(--ui-text-quaternary)">
                         {details.preview}
                       </span>
                     )}
@@ -528,7 +530,7 @@ function SidebarSessionRowImpl({
                     entire width — nothing truncates against the kebab. */}
                 <div className="flex min-w-0 items-center gap-1.5">
                   {leadNode}
-                  <span className="min-w-0 flex-1 truncate text-[0.6875rem] leading-none text-(--ui-text-tertiary)">
+                  <span className="min-w-0 flex-1 truncate text-[0.6875rem] leading-[14px] text-(--ui-text-tertiary)">
                     {context}
                   </span>
                   {handoffBadge}
@@ -539,7 +541,7 @@ function SidebarSessionRowImpl({
                 <div className="-mt-[0.2em] flex min-w-0 flex-col gap-[0.3rem]">
                   <OverflowTip label={title}>
                     <SidebarRowLabel
-                      className="hover-marquee text-[0.8125rem] leading-none font-medium text-(--ui-text-primary) group-data-[working=true]:text-foreground"
+                      className="hover-marquee text-[0.8125rem] leading-[17px] font-medium text-(--ui-text-primary) group-data-[working=true]:text-foreground"
                       onPointerEnter={armMarquee}
                       onPointerLeave={disarmMarquee}
                     >
@@ -547,13 +549,13 @@ function SidebarSessionRowImpl({
                     </SidebarRowLabel>
                   </OverflowTip>
                   {session.preview && rowMeta.includes('preview') ? (
-                    <span className="min-w-0 truncate text-[0.625rem] leading-none text-(--ui-text-quaternary)">
+                    <span className="min-w-0 truncate text-[0.625rem] leading-[13px] text-(--ui-text-quaternary)">
                       {session.preview}
                     </span>
                   ) : null}
                 </div>
                 {model || size || todoProgress ? (
-                  <span className="flex min-w-0 items-baseline gap-2 text-[0.625rem] leading-none text-(--ui-text-tertiary)">
+                  <span className="flex min-w-0 items-baseline gap-2 text-[0.625rem] leading-[13px] text-(--ui-text-tertiary)">
                     {model ? <span className="min-w-0 truncate">{model}</span> : null}
                     {size ? <span className="shrink-0 tabular-nums">{size}</span> : null}
                     {todoProgress ? (

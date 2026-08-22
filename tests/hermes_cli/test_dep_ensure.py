@@ -13,7 +13,7 @@ def test_find_install_script_from_checkout(tmp_path):
     from hermes_cli.dep_ensure import _find_install_script
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir()
-    (scripts_dir / "install.sh").write_text("#!/bin/bash", encoding="utf-8")
+    (scripts_dir / "install.sh").write_text("#!/usr/bin/env bash", encoding="utf-8")
     path, shell = _find_install_script(package_dir=tmp_path / "hermes_cli", repo_root=tmp_path)
     assert path is not None
     assert path.name == "install.sh"

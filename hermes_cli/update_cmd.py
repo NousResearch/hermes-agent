@@ -3425,8 +3425,8 @@ def _ensure_acp_launcher() -> None:
     reconstruct interpreter/entrypoint paths.
 
     No-op on Windows (install.ps1 copies ``hermes.exe`` + ``hermes-acp.exe``
-    into ``$InstallDir\bin`` and puts THAT on the user PATH — never the whole
-    ``venv\Scripts`` dir, which would shadow the user's ``python`` (#83797) —
+    into ``$InstallDir\\bin`` and puts THAT on the user PATH — never the whole
+    ``venv\\Scripts`` dir, which would shadow the user's ``python`` (#83797) —
     so ``hermes-acp.exe`` already resolves) and wherever a ``hermes-acp`` is
     already present next to the ``hermes`` command.  Unwritable directories
     (e.g. ``/usr/local/bin`` as non-root) are skipped silently.  Idempotent.

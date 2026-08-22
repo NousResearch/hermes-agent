@@ -4683,6 +4683,31 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 exc,
             )
             return False
+        # The write connection is healthy again, but the read-only pool is
+        # NOT: those connections were opened against the same file that was
+        # replaced/truncated out from under us, so every pooled reader holds a
+        # stale descriptor that will keep raising "file is not a database" on
+        # checkout. Without this drain, the write path self-heals while the
+        # read path (session_search, transcript reload, recall) stays broken
+        # until process restart — the gateway serves messages fine (writer)
+        # but every FTS/read query fails, exactly the confusing split
+        # symptom seen in production 2026-08-15.
+        with self._read_conns_lock:
+            while True:
+                try:
+                    conn = self._read_pool.get_nowait()
+                except queue.Empty:
+                    break
+                self._close_read_conn(conn)
+            # Readers that were in flight when the corruption hit may also
+            # be mid-checkout; the pool is now empty so their return path
+            # closes them as surplus (put_nowait succeeds into an empty pool
+            # only if they were checked out before this drain; the closed-flag
+            # is deliberately NOT set here — we still want future reads to
+            # open fresh connections, just not reuse stale ones).
+        # Reset the open-failure backoff so a read that raced the corruption
+        # doesn't wait out the stamp before retrying on a fresh connection.
+        self._read_open_failed_at = 0.0
         logger.warning(
             "state.db connection reopened successfully; retrying the failed write."
         )

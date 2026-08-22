@@ -96,6 +96,43 @@ class TestReconnectAfterNotADb:
             db._conn = None
             db.close()
 
+    def test_reconnect_drains_stale_read_pool(self, tmp_path):
+        """After self-heal, stale read-only pool connections are discarded.
+
+        A sibling process replacing/truncating the backing file breaks every
+        connection, not just the writer.  The write path reconnects via
+        ``_reconnect_after_notadb``; without draining ``_read_pool`` the
+        pooled readers keep raising ``file is not a database`` on checkout and
+        the read path (session_search / transcript reload) stays broken until
+        process restart — the confusing write-OK/read-broken split symptom.
+        """
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            db.create_session(session_id="s1", source="cli", model="test")
+
+            # Prime the read pool with a live connection (WAL read path).
+            conn = db._checkout_read_conn()
+            assert conn is not None
+            with db._read_conns_lock:
+                db._read_pool.put_nowait(conn)
+
+            # Simulate the runtime corruption class on the writer; the pooled
+            # reader is opened against the same now-stale file.
+            db._conn = _NotADbOnce(db._conn)
+
+            # Self-heal: write path reconnects.
+            db.create_session(session_id="s2", source="cli", model="test")
+            assert db._notadb_reconnect_attempted is True
+
+            # The stale pooled reader must have been drained — otherwise the
+            # next checkout returns the poisoned connection.
+            with db._read_conns_lock:
+                assert db._read_pool.empty()
+            # And a fresh read works (new connection against the healthy file).
+            assert db.get_session("s2") is not None
+        finally:
+            db.close()
+
 
 class TestOnDiskJournalModeEioRetry:
     def _conn_raising_then(self, failures, result_rows):

@@ -1,6 +1,7 @@
 """OpenRouter provider profile."""
 
 import logging
+import time
 from typing import Any
 
 from agent.portal_tags import get_conversation_context
@@ -11,6 +12,8 @@ from providers.base import ProviderProfile
 logger = logging.getLogger(__name__)
 
 _CACHE: list[str] | None = None
+_CACHE_TIMESTAMP: float = 0.0
+_CACHE_TTL_SECONDS = 3600.0  # 1 hour
 
 # Anthropic model families that still accept an explicit "disable thinking"
 # request (the manual ``thinking: {type: "disabled"}`` form OpenRouter emits
@@ -100,13 +103,15 @@ class OpenRouterProfile(ProviderProfile):
         here. The picker early-returns via the dedicated openrouter path before
         reaching this method, so filtering here would be unreachable.
         """
-        global _CACHE  # noqa: PLW0603
-        if _CACHE is not None:
+        global _CACHE, _CACHE_TIMESTAMP  # noqa: PLW0603
+        now = time.monotonic()
+        if _CACHE is not None and (now - _CACHE_TIMESTAMP) < _CACHE_TTL_SECONDS:
             return _CACHE
         try:
             result = super().fetch_models(api_key=None, base_url=base_url, timeout=timeout)
             if result is not None:
                 _CACHE = result
+                _CACHE_TIMESTAMP = now
             return result
         except Exception as exc:
             logger.debug("fetch_models(openrouter): %s", exc)
@@ -250,3 +255,5 @@ openrouter = OpenRouterProfile(
 )
 
 register_provider(openrouter)
+
+

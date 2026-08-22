@@ -91,7 +91,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
 | `hermes claw` | OpenClaw migration helpers. |
-| `hermes import-agent` | Import a Claude Code (`~/.claude`) or Codex CLI (`~/.codex`) setup. |
+| `hermes import-agent` | Import a Claude Code (`~/.claude`), Codex CLI (`~/.codex`), or Cursor (`~/.cursor`) setup. |
 | `hermes dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
 | `hermes serve` | Start the Hermes backend server (headless; powers the desktop app and remote backends). |
 | `hermes desktop` (alias `gui`) | Build and launch the native Electron desktop app. |
@@ -1605,15 +1605,15 @@ hermes claw migrate --source /home/user/old-openclaw
 ## `hermes import-agent`
 
 ```bash
-hermes import-agent [claude-code|codex] [options]
+hermes import-agent [claude-code|codex|cursor] [options]
 ```
 
-Import a **Claude Code** (`~/.claude`) or **OpenAI Codex CLI** (`~/.codex`) setup into Hermes. Maps `CLAUDE.md`/`AGENTS.md` instructions to memory entries, `Bash(...)` permission allow/deny rules to `command_allowlist`/`approvals.deny`, MCP servers to `mcp_servers` in `config.yaml`, and skill directories into `~/.hermes/skills/`. Always previews before applying; API keys and credentials are never imported.
+Import a **Claude Code** (`~/.claude`), **OpenAI Codex CLI** (`~/.codex`), or **Cursor** (`~/.cursor`) setup into Hermes. Maps `CLAUDE.md`/`AGENTS.md` instructions and Cursor rules to memory entries, `Bash(...)` permission allow/deny rules to `command_allowlist`/`approvals.deny`, MCP servers to `mcp_servers` in `config.yaml`, and skill directories into `~/.hermes/skills/`. Always previews before applying; API keys and credentials are never imported.
 
 | Option | Description |
 | --- | --- |
-| `agent` | `claude-code` or `codex` (default: auto-detect). |
-| `--source <path>` | Custom source directory (default: `~/.claude` or `~/.codex`). |
+| `agent` | `claude-code`, `codex`, or `cursor` (default: auto-detect). |
+| `--source <path>` | Custom source directory (default: `~/.claude`, `~/.codex`, or `~/.cursor`). |
 | `--dry-run` | Preview only — write nothing. |
 | `--overwrite` | Replace conflicting MCP servers / skills (default: skip). |
 | `--yes`, `-y` | Skip confirmation prompts. |

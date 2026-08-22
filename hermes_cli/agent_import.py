@@ -1,9 +1,10 @@
 """hermes import-agent — import Claude Code / Codex CLI setups into Hermes.
 
 Usage:
-    hermes import-agent                       # auto-detect ~/.claude or ~/.codex
+    hermes import-agent                       # auto-detect ~/.claude, ~/.codex or ~/.cursor
     hermes import-agent claude-code           # import from ~/.claude
     hermes import-agent codex                 # import from ~/.codex
+    hermes import-agent cursor                # import from ~/.cursor
     hermes import-agent claude-code --dry-run # preview only, no changes
     hermes import-agent codex --source /path/to/.codex
 
@@ -29,6 +30,15 @@ codex (~/.codex):
     config.toml [mcp_servers.*]     → config.yaml mcp_servers
     memories/*.md                   → memory entries in HERMES_HOME/memories/MEMORY.md
     skills/<name>/SKILL.md          → HERMES_HOME/skills/codex-imports/<name>/
+
+cursor (~/.cursor):
+    AGENTS.md                       → memory entries in HERMES_HOME/memories/MEMORY.md
+    rules/*.md, rules/*.mdc         → memory entries (frontmatter stripped)
+    mcp.json mcpServers             → config.yaml mcp_servers
+    skills/**/<name>/SKILL.md       → HERMES_HOME/skills/cursor-imports/<name>/
+                                      (Cursor supports nested category dirs;
+                                      the skill's identity is the folder that
+                                      holds SKILL.md, so discovery is recursive)
 
 Secrets are NEVER imported: credential files (.credentials.json, auth.json)
 are ignored, and MCP server env vars with secret-looking names (KEY, TOKEN,
@@ -59,16 +69,18 @@ ENTRY_DELIMITER = "\n§\n"
 # default memory limit).
 MEMORY_CHAR_LIMIT = 20_000
 
-SUPPORTED_AGENTS = ("claude-code", "codex")
+SUPPORTED_AGENTS = ("claude-code", "codex", "cursor")
 
 _AGENT_DEFAULT_DIRS = {
     "claude-code": ".claude",
     "codex": ".codex",
+    "cursor": ".cursor",
 }
 
 _SKILL_CATEGORY = {
     "claude-code": "claude-code-imports",
     "codex": "codex-imports",
+    "cursor": "cursor-imports",
 }
 
 # Env var names that look like credentials — never copied into config.yaml.
@@ -79,12 +91,27 @@ _SECRET_KEY_RE = re.compile(
 )
 
 # Files inside the source tree that hold credentials — never read.
-_CREDENTIAL_FILENAMES = (".credentials.json", "auth.json", "credentials.json")
+_CREDENTIAL_FILENAMES = (
+    ".credentials.json", "auth.json", "credentials.json", "cli-config.json",
+)
+
+# Leading YAML frontmatter block (used by Cursor .mdc rules and SKILL.md).
+_FRONTMATTER_RE = re.compile(r"\A---\s*\n.*?\n---\s*\n", re.DOTALL)
 
 
 def is_secret_key(key: str) -> bool:
     """Return True when an env-var name looks like a credential."""
     return bool(_SECRET_KEY_RE.search(key or ""))
+
+
+def strip_frontmatter(text: str) -> str:
+    """Drop a leading ``---`` YAML frontmatter block, if present.
+
+    Cursor rule files (``.mdc``) carry frontmatter (``description``,
+    ``globs``, ``alwaysApply``) that is routing metadata, not instructions —
+    importing it as memory entries would just add noise.
+    """
+    return _FRONTMATTER_RE.sub("", text or "", count=1)
 
 
 def normalize_text(text: str) -> str:
@@ -469,6 +496,8 @@ class AgentImporter:
             return self.build_report()
         if self.agent == "claude-code":
             self._run_claude_code()
+        elif self.agent == "cursor":
+            self._run_cursor()
         else:
             self._run_codex()
         return self.build_report()
@@ -496,6 +525,12 @@ class AgentImporter:
                                 kind="mcp-servers")
         self.import_memories_dir(self.source_root / "memories")
         self.import_skills(self.source_root / "skills")
+
+    def _run_cursor(self) -> None:
+        self.import_context_file(self.source_root / "AGENTS.md", kind="agents-md")
+        self.import_cursor_rules(self.source_root / "rules")
+        self.import_mcp_servers(self._cursor_mcp_servers(), kind="mcp-servers")
+        self.import_skills(self.source_root / "skills", recursive=True)
 
     # -- parsers (fail soft: bad files become per-item error records) -------
 
@@ -551,6 +586,21 @@ class AgentImporter:
             return {}
         return data if isinstance(data, dict) else {}
 
+    def _cursor_mcp_servers(self) -> Dict[str, Any]:
+        """Collect mcpServers from ~/.cursor/mcp.json."""
+        path = self.source_root / "mcp.json"
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(read_text(path))
+        except (json.JSONDecodeError, OSError) as exc:
+            self.record("mcp-servers", path, None, "error",
+                        f"Could not parse mcp.json: {exc}")
+            return {}
+        if isinstance(data, dict) and isinstance(data.get("mcpServers"), dict):
+            return data["mcpServers"]
+        return {}
+
     # -- mappers -------------------------------------------------------------
 
     def import_context_file(self, source: Path, kind: str) -> None:
@@ -591,6 +641,36 @@ class AgentImporter:
                         "No importable entries found")
             return
         self._merge_memory_entries("memories", memories_dir, destination, incoming)
+
+    def import_cursor_rules(self, rules_dir: Path) -> None:
+        """cursor rules/*.md + rules/*.mdc → memory entries in MEMORY.md.
+
+        ``.mdc`` files carry YAML frontmatter with routing metadata
+        (``globs``, ``alwaysApply``); it is stripped so only the instruction
+        body becomes memory entries.
+        """
+        destination = self.target_root / "memories" / "MEMORY.md"
+        if not rules_dir.is_dir():
+            self.record("rules", None, destination, "skipped",
+                        "No rules directory found")
+            return
+        incoming: List[str] = []
+        rule_files = sorted(
+            p for p in rules_dir.rglob("*")
+            if p.is_file() and p.suffix in (".md", ".mdc")
+        )
+        for rule_file in rule_files:
+            try:
+                incoming.extend(extract_markdown_entries(
+                    strip_frontmatter(read_text(rule_file))))
+            except OSError as exc:
+                self.record("rules", rule_file, destination, "error",
+                            f"Could not read file: {exc}")
+        if not incoming:
+            self.record("rules", rules_dir, destination, "skipped",
+                        "No importable entries found")
+            return
+        self._merge_memory_entries("rules", rules_dir, destination, incoming)
 
     def _merge_memory_entries(self, kind: str, source: Path,
                               destination: Path, incoming: List[str]) -> None:
@@ -804,28 +884,48 @@ class AgentImporter:
             config["mcp_servers"] = existing
             dump_yaml_file(destination, config)
 
-    def import_skills(self, source_root: Path) -> None:
-        """skills/<name>/SKILL.md dirs → HERMES_HOME/skills/<category>/<name>."""
+    def import_skills(self, source_root: Path, recursive: bool = False) -> None:
+        """skills/<name>/SKILL.md dirs → HERMES_HOME/skills/<category>/<name>.
+
+        ``recursive=True`` (Cursor) also discovers nested category layouts
+        like ``skills/shipping/land-it/SKILL.md`` — per Cursor's docs the
+        skill's identity is the folder containing SKILL.md, not the parent
+        category, so ``land-it`` is imported flat under the Hermes category
+        dir.  Name collisions across categories are per-item conflicts.
+        """
         category = _SKILL_CATEGORY[self.agent]
         destination_root = self.target_root / "skills" / category
         if not source_root.is_dir():
             self.record("skills", None, destination_root, "skipped",
                         "No skills directory found")
             return
-        skill_dirs = [
-            p for p in sorted(source_root.iterdir())
-            if p.is_dir() and (p / "SKILL.md").exists()
-        ]
+        if recursive:
+            skill_dirs = sorted(
+                {p.parent for p in source_root.rglob("SKILL.md")
+                 if p.parent != source_root}
+            )
+        else:
+            skill_dirs = [
+                p for p in sorted(source_root.iterdir())
+                if p.is_dir() and (p / "SKILL.md").exists()
+            ]
         if not skill_dirs:
             self.record("skills", source_root, destination_root, "skipped",
                         "No skills with SKILL.md found")
             return
+        planned: set = set()
         for skill_dir in skill_dirs:
             destination = destination_root / skill_dir.name
+            if skill_dir.name in planned:
+                self.record("skill", skill_dir, destination, "conflict",
+                            "Duplicate skill name in source tree — "
+                            "already imported from another category")
+                continue
             if destination.exists() and not self.overwrite:
                 self.record("skill", skill_dir, destination, "conflict",
                             "Destination skill already exists")
                 continue
+            planned.add(skill_dir.name)
             if self.execute:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 if destination.exists():
@@ -866,13 +966,15 @@ def import_agent_command(args) -> None:
         detected = detect_agents()
         if not detected:
             print()
-            print_error("No supported agent setup found (~/.claude or ~/.codex).")
+            print_error("No supported agent setup found "
+                        "(~/.claude, ~/.codex, or ~/.cursor).")
             print_info("Specify one explicitly: hermes import-agent claude-code --source /path")
             return
         if len(detected) > 1 and explicit_source is None:
             print()
             print_info("Multiple agent setups detected: " + ", ".join(detected))
-            print_info("Pick one: hermes import-agent claude-code   or   hermes import-agent codex")
+            print_info("Pick one: hermes import-agent " +
+                       "   or   hermes import-agent ".join(detected))
             return
         agent = detected[0]
 

@@ -6989,6 +6989,7 @@ class _RuntimeFallbackResolution(NamedTuple):
     runtime: dict
     selected_model: str | None
     used_fallback: bool
+    selected_entry: dict | None
 
 
 def _resolve_runtime_with_fallback(
@@ -7010,6 +7011,7 @@ def _resolve_runtime_with_fallback(
             resolve_runtime_provider(**kwargs),
             None,
             False,
+            None,
         )
     except AuthError as primary_exc:
         fb_chain = _load_fallback_model() or []
@@ -7033,6 +7035,8 @@ def _resolve_runtime_with_fallback(
                 if fb_api_key:
                     fb_kwargs["explicit_api_key"] = fb_api_key
                 runtime = resolve_runtime_provider(**fb_kwargs)
+                if entry.get("api_mode"):
+                    runtime["api_mode"] = entry["api_mode"]
                 import logging
 
                 logging.getLogger(__name__).warning(
@@ -7041,7 +7045,7 @@ def _resolve_runtime_with_fallback(
                     fb_provider,
                     fb_model,
                 )
-                return _RuntimeFallbackResolution(runtime, fb_model, True)
+                return _RuntimeFallbackResolution(runtime, fb_model, True, dict(entry))
             except Exception:
                 continue
         raise
@@ -7122,6 +7126,7 @@ def _make_agent(
     # Prefer a per-session model override (set by a prior in-session /model
     # switch) over global config/env resolution. Resume-time stored sessions may
     # also pass scalar model/provider/runtime knobs from the persisted DB row.
+    fallback_entry = None
     if isinstance(model_override, dict) and model_override.get("model"):
         model = str(model_override.get("model") or "")
         requested_provider = model_override.get("provider") or provider_override or None
@@ -7156,6 +7161,7 @@ def _make_agent(
         resolve_kwargs["target_model"] = model or None
         resolution = _resolve_runtime_with_fallback(resolve_kwargs)
         runtime = resolution.runtime
+        fallback_entry = resolution.selected_entry
         if resolution.used_fallback:
             if not resolution.selected_model:
                 raise RuntimeError("Auth fallback resolved without a model")
@@ -7181,12 +7187,23 @@ def _make_agent(
             "target_model": model or None,
         })
         runtime = resolution.runtime
+        fallback_entry = resolution.selected_entry
         if resolution.used_fallback:
             if not resolution.selected_model:
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
     _pr = _load_provider_routing()
-    return AIAgent(
+    if reasoning_config_override is not None:
+        initial_reasoning_config = reasoning_config_override
+    elif isinstance(fallback_entry, dict):
+        from hermes_cli.fallback_config import resolve_fallback_reasoning_config
+
+        initial_reasoning_config = resolve_fallback_reasoning_config(
+            cfg, str(model or ""), fallback_entry
+        )
+    else:
+        initial_reasoning_config = _load_reasoning_config(str(model or ""))
+    agent = AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 500),
         provider=runtime.get("provider"),
@@ -7203,9 +7220,7 @@ def _make_agent(
         # change on the classic CLI side.
         verbose_logging=False,
         reasoning_config=(
-            reasoning_config_override
-            if reasoning_config_override is not None
-            else _load_reasoning_config(str(model or ""))
+            initial_reasoning_config
         ),
         service_tier=(
             service_tier_override
@@ -7233,6 +7248,8 @@ def _make_agent(
         fallback_model=_load_fallback_model(),
         **_agent_cbs(sid),
     )
+    agent._reasoning_config_session_override = reasoning_config_override is not None
+    return agent
 
 
 def _init_session(

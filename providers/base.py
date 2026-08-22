@@ -194,6 +194,10 @@ class ProviderProfile:
         """
         return self.default_max_tokens
 
+    def reasoning_effort_levels(self, model: str | None) -> list[str] | None:
+        """Return model-specific reasoning levels, or None when unknown."""
+        return None
+
     def fetch_models(
         self,
         *,

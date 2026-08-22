@@ -328,7 +328,11 @@ export default function ConfigPage() {
       : prettyCategoryName(activeCategory);
     let next: Record<string, unknown> = config;
     for (const [key] of scopedFields) {
-      next = setNestedValue(next, key, getNestedValue(defaults, key));
+      next = setNestedValue(
+        next,
+        key,
+        key === "agent.reasoning_effort" ? "" : getNestedValue(defaults, key),
+      );
     }
     setConfig(next);
     showToast(

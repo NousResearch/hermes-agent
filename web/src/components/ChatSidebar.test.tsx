@@ -7,8 +7,14 @@ import { EVENTS_CONNECT_TIMEOUT_MS } from "@/lib/events-reconnect";
 
 const apiMocks = vi.hoisted(() => ({
   buildWsUrl: vi.fn(async () => "ws://localhost/api/events?channel=chat-1"),
-  getModelInfo: vi.fn(async () => ({
-    capabilities: { supports_reasoning: false },
+  getModelInfo: vi.fn(async (): Promise<{
+    capabilities: { supports_reasoning: boolean; reasoning_levels?: string[] | null };
+    model: string;
+  }> => ({
+    capabilities: {
+      supports_reasoning: false,
+      reasoning_levels: undefined,
+    },
     model: "test/model",
   })),
 }));
@@ -59,7 +65,9 @@ vi.mock("@/components/ModelReloadConfirm", () => ({
   ModelReloadConfirm: () => null,
 }));
 vi.mock("@/components/ReasoningPicker", () => ({
-  ReasoningPicker: () => null,
+  ReasoningPicker: ({ reasoningLevels }: { reasoningLevels?: string[] | null }) => (
+    <span data-reasoning-picker data-levels={reasoningLevels?.join(",") ?? "unknown"} />
+  ),
 }));
 vi.mock("@nous-research/ui/ui/components/button", () => ({
   Button: ({ children }: { children?: ReactNode }) => <button>{children}</button>,
@@ -127,6 +135,109 @@ afterEach(async () => {
   await act(async () => root?.unmount());
   container?.remove();
   vi.unstubAllGlobals();
+});
+
+describe("ChatSidebar reasoning picker capability gating", () => {
+  it("shows the picker when the provider declares reasoning levels", async () => {
+    apiMocks.getModelInfo.mockResolvedValue({
+      capabilities: { supports_reasoning: false, reasoning_levels: ["high"] },
+      model: "test/model",
+    });
+    const { ChatSidebar } = await import("./ChatSidebar");
+
+    await render(<ChatSidebar channel="chat-1" />);
+    await vi.waitFor(() => expect(container.querySelector("[data-reasoning-picker]")).not.toBeNull());
+    expect(container.querySelector("[data-reasoning-picker]")?.getAttribute("data-levels")).toBe("high");
+  });
+
+  it("does not reuse the previous profile capability state while loading", async () => {
+    let resolveNext!: (value: {
+      capabilities: { supports_reasoning: boolean; reasoning_levels?: string[] | null };
+      model: string;
+    }) => void;
+    apiMocks.getModelInfo
+      .mockResolvedValue({
+        capabilities: { supports_reasoning: false, reasoning_levels: [] },
+        model: "profile-b/loading",
+      })
+      .mockResolvedValueOnce({
+        capabilities: { supports_reasoning: true, reasoning_levels: ["high"] },
+        model: "profile-a/old-model",
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveNext = resolve;
+          }),
+      );
+    const { ChatSidebar } = await import("./ChatSidebar");
+
+    await render(<ChatSidebar channel="chat-1" profile="profile-a" />);
+    await vi.waitFor(() => expect(container.textContent).toContain("old-model"));
+    await act(async () => {
+      root.render(<ChatSidebar channel="chat-1" profile="profile-b" />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).not.toContain("old-model");
+    expect(container.querySelector("[data-reasoning-picker]")).toBeNull();
+    await act(async () => {
+      resolveNext({
+        capabilities: { supports_reasoning: false, reasoning_levels: ["high"] },
+        model: "",
+      });
+      await Promise.resolve();
+    });
+    expect(container.textContent).not.toContain("old-model");
+  });
+
+  it("ignores a late model-info response after the chat profile changes", async () => {
+    type ModelInfo = {
+      capabilities: { supports_reasoning: boolean; reasoning_levels?: string[] | null };
+      model: string;
+    };
+    const requests: Array<{ resolve: (value: ModelInfo) => void }> = [];
+    apiMocks.getModelInfo.mockImplementation(
+      () =>
+        new Promise<ModelInfo>((resolve) => {
+          requests.push({ resolve });
+        }),
+    );
+    const { ChatSidebar } = await import("./ChatSidebar");
+
+    await render(<ChatSidebar channel="chat-1" profile="profile-a" />);
+    await act(async () => {
+      root.render(<ChatSidebar channel="chat-1" profile="profile-b" />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(requests.length).toBeGreaterThanOrEqual(2));
+
+    const latest = requests.at(-1)!;
+    await act(async () => {
+      latest.resolve({
+        capabilities: { supports_reasoning: false, reasoning_levels: ["high"] },
+        model: "profile-b/model",
+      });
+      await Promise.resolve();
+    });
+    const stale = requests[0];
+    await act(async () => {
+      stale.resolve({
+        capabilities: { supports_reasoning: true, reasoning_levels: [] },
+        model: "profile-a/model",
+      });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("model");
+    expect(container.querySelector("[data-reasoning-picker]")?.getAttribute("data-levels")).toBe("high");
+  });
 });
 
 describe("ChatSidebar event socket", () => {

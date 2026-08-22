@@ -1154,6 +1154,13 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "API service tier (OpenAI/Anthropic)",
         "options": ["", "auto", "default", "flex"],
     },
+    "agent.reasoning_effort": {
+        "type": "select",
+        "description": "Reasoning effort for the main agent",
+        "category": "agent",
+        "emptyLabel": "Inherit provider default",
+        "options": ["", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+    },
     "delegation.reasoning_effort": {
         "type": "select",
         "description": "Reasoning effort for delegated subagents",
@@ -1303,11 +1310,14 @@ CONFIG_SCHEMA = _build_schema_from_config(DEFAULT_CONFIG)
 # by the normalize/denormalize cycle.  Insert model_context_length right after
 # the "model" key so it renders adjacent in the frontend.
 _mcl_entry = _SCHEMA_OVERRIDES["model_context_length"]
+_reasoning_entry = _SCHEMA_OVERRIDES["agent.reasoning_effort"]
+_REASONING_EFFORT_OPTIONS = tuple(_reasoning_entry["options"])
 _ordered_schema: Dict[str, Dict[str, Any]] = {}
 for _k, _v in CONFIG_SCHEMA.items():
     _ordered_schema[_k] = _v
     if _k == "model":
         _ordered_schema["model_context_length"] = _mcl_entry
+        _ordered_schema["agent.reasoning_effort"] = _reasoning_entry
 CONFIG_SCHEMA = _ordered_schema
 
 
@@ -1561,7 +1571,11 @@ from hermes_cli.web_models import (  # noqa: F401
     ProfileActiveUpdate,
     ProfileDescriptionUpdate,
     ProfileModelUpdate,
+    ProfileReasoningUpdate,
+    ProfileSettingsUpdate,
     ProfileDescribeAuto,
+    ProfileFallbackEntry,
+    ProfileFallbackUpdate,
     SkillToggle,
     SkillCreate,
     SkillContentUpdate,
@@ -6898,9 +6912,12 @@ def get_model_info(profile: Optional[str] = None):
     frontend can display "Auto-detected: 200K" alongside the override field.
     Also returns model capabilities (vision, reasoning, tools) when available.
     """
+    scope = _profile_scope(profile)
+    entered_scope = False
     try:
-        with _profile_scope(profile):
-            cfg = load_config()
+        scope.__enter__()
+        entered_scope = True
+        cfg = load_config()
         model_cfg = cfg.get("model", "")
 
         # Extract model name and provider from the config
@@ -6955,6 +6972,17 @@ def get_model_info(profile: Optional[str] = None):
         except Exception:
             pass
 
+        try:
+            from providers import get_provider_profile
+
+            provider_profile = get_provider_profile(provider)
+            if provider_profile is not None:
+                levels = provider_profile.reasoning_effort_levels(model_name)
+                if levels is not None:
+                    caps["reasoning_levels"] = list(levels)
+        except Exception:
+            pass
+
         return {
             "model": model_name,
             "provider": provider,
@@ -6970,6 +6998,9 @@ def get_model_info(profile: Optional[str] = None):
     except Exception:
         _log.exception("GET /api/model/info failed")
         return dict(_EMPTY_MODEL_INFO)
+    finally:
+        if entered_scope:
+            scope.__exit__(None, None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -7639,6 +7670,26 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
                 }
         except Exception:
             pass  # can't read disk config — just use the string form
+
+    # The main reasoning selector is a virtual field. Keep it sparse on disk:
+    # empty means inherit, while invalid values must not be written by the
+    # generic config form.
+    agent_config = config.get("agent")
+    if isinstance(agent_config, dict) and "reasoning_effort" in agent_config:
+        raw_effort = agent_config.get("reasoning_effort")
+        if raw_effort is False:
+            agent_config["reasoning_effort"] = "none"
+        elif not isinstance(raw_effort, str):
+            raise HTTPException(status_code=400, detail="invalid agent.reasoning_effort")
+        else:
+            normalized_effort = raw_effort.strip().lower()
+            if normalized_effort not in _REASONING_EFFORT_OPTIONS:
+                raise HTTPException(status_code=400, detail="invalid agent.reasoning_effort")
+            if normalized_effort:
+                agent_config["reasoning_effort"] = normalized_effort
+            else:
+                agent_config.pop("reasoning_effort", None)
+
     return config
 
 
@@ -14584,6 +14635,9 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "is_default": bool(_profile_attr(info, "is_default", False)),
         "model": _profile_attr(info, "model"),
         "provider": _profile_attr(info, "provider"),
+        "reasoning_effort": _read_profile_reasoning_effort(
+            Path(str(_profile_attr(info, "path", "")))
+        ),
         "has_env": bool(_profile_attr(info, "has_env", False)),
         "skill_count": int(_profile_attr(info, "skill_count", 0) or 0),
         "gateway_running": bool(_profile_attr(info, "gateway_running", False)),
@@ -14614,6 +14668,7 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
             "is_default": True,
             "model": model,
             "provider": provider,
+            "reasoning_effort": _safe(lambda: _read_profile_reasoning_effort(default_home), ""),
             "has_env": (default_home / ".env").exists(),
             "skill_count": _safe(lambda: profiles_mod._count_skills(default_home), 0),
             "gateway_running": _safe(lambda: profiles_mod._check_gateway_running(default_home), False),
@@ -14644,6 +14699,7 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
                 "is_default": False,
                 "model": model,
                 "provider": provider,
+                "reasoning_effort": _safe(lambda entry=entry_path: _read_profile_reasoning_effort(entry), ""),
                 "has_env": _safe(lambda entry=entry_path: (entry / ".env").exists(), False),
                 "skill_count": _safe(lambda entry=entry_path: profiles_mod._count_skills(entry), 0),
                 "gateway_running": _safe(lambda entry=entry_path: profiles_mod._check_gateway_running(entry), False),
@@ -14693,6 +14749,229 @@ def _write_profile_model(profile_dir: Path, provider: str, model: str) -> None:
         cfg = load_config()
         cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), provider, model)
         save_config(cfg)
+    finally:
+        reset_hermes_home_override(token)
+
+
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+
+def _profile_reasoning_options() -> tuple[str, ...]:
+    return _REASONING_EFFORT_OPTIONS
+
+
+def _read_profile_reasoning_effort(profile_dir: Path) -> str:
+    token = set_hermes_home_override(str(profile_dir))
+    try:
+        config = load_config() or {}
+        agent_config = config.get("agent")
+        raw = agent_config.get("reasoning_effort") if isinstance(agent_config, dict) else ""
+        if raw is False:
+            return "none"
+        value = str(raw or "").strip().lower()
+        return value if value in _REASONING_EFFORT_OPTIONS else ""
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _write_profile_reasoning_effort(profile_dir: Path, effort: str) -> str:
+    token = set_hermes_home_override(str(profile_dir))
+    try:
+        config = load_config() or {}
+        agent_config = config.get("agent")
+        if not isinstance(agent_config, dict):
+            agent_config = {}
+            config["agent"] = agent_config
+        if effort:
+            agent_config["reasoning_effort"] = effort
+        else:
+            agent_config.pop("reasoning_effort", None)
+        save_config(config)
+        return effort
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _write_profile_settings(
+    profile_dir: Path,
+    *,
+    provider: Optional[str],
+    model: Optional[str],
+    effort: str,
+) -> Dict[str, Any]:
+    """Write model and reasoning changes as one scoped config transaction."""
+    token = set_hermes_home_override(str(profile_dir))
+    try:
+        config = load_config() or {}
+        if provider is not None and model is not None:
+            normalized_provider, normalized_model = _normalize_main_model_assignment(
+                provider, model
+            )
+            config["model"] = _apply_main_model_assignment(
+                config.get("model", {}), normalized_provider, normalized_model
+            )
+        agent_config = config.get("agent")
+        if not isinstance(agent_config, dict):
+            agent_config = {}
+            config["agent"] = agent_config
+        if effort:
+            agent_config["reasoning_effort"] = effort
+        else:
+            agent_config.pop("reasoning_effort", None)
+        save_config(config)
+        # The response describes the submitted model change. A reasoning-only
+        # save returns nulls so callers do not mistake it for a model change.
+        return {
+            "provider": provider,
+            "model": model,
+            "reasoning_effort": effort,
+        }
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _profile_fallback_public_entry(entry: Dict[str, Any], source_index: int) -> Dict[str, Any]:
+    from hermes_cli.fallback_config import normalize_fallback_reasoning_effort
+
+    try:
+        effort = normalize_fallback_reasoning_effort(entry.get("reasoning_effort"))
+    except ValueError:
+        effort = ""
+    base_url = entry.get("base_url")
+    base_url = base_url.strip().rstrip("/") if isinstance(base_url, str) and base_url.strip() else None
+    api_mode = entry.get("api_mode")
+    api_mode = api_mode.strip() if isinstance(api_mode, str) and api_mode.strip() else None
+    provider = str(entry.get("provider") or "").strip()
+    model = str(entry.get("model") or "").strip()
+    return {
+        "source_index": source_index,
+        "source_provider": provider or None,
+        "source_model": model or None,
+        "source_base_url": base_url,
+        "source_api_mode": api_mode,
+        "provider": provider,
+        "model": model,
+        "reasoning_effort": effort,
+        "base_url": base_url,
+        "api_mode": api_mode,
+    }
+
+
+def _read_profile_fallbacks(profile_dir: Path) -> List[Dict[str, Any]]:
+    from hermes_cli.fallback_config import get_fallback_chain
+
+    token = set_hermes_home_override(str(profile_dir))
+    try:
+        config = load_config() or {}
+        return [
+            _profile_fallback_public_entry(entry, index)
+            for index, entry in enumerate(get_fallback_chain(config))
+        ]
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _write_profile_fallbacks(
+    profile_dir: Path,
+    requested: List["ProfileFallbackEntry"],
+) -> List[Dict[str, Any]]:
+    """Persist public fallback edits without exposing or cross-copying secrets."""
+    from hermes_cli.fallback_config import get_fallback_chain, normalize_fallback_reasoning_effort
+
+    def identity(value: Any) -> str:
+        return str(value or "").strip().rstrip("/").lower()
+
+    def route_identity(entry: Dict[str, Any]) -> tuple[str, str, str]:
+        """Match the runtime identity used by get_fallback_chain()."""
+        return (
+            identity(entry.get("provider")),
+            identity(entry.get("model")),
+            identity(entry.get("base_url")),
+        )
+
+    def source_route_identity(entry: Dict[str, Any]) -> tuple[str, str, str, str]:
+        """Match an existing public entry without treating mode as its route."""
+        return (
+            *route_identity(entry),
+            identity(entry.get("api_mode")),
+        )
+
+    token = set_hermes_home_override(str(profile_dir))
+    try:
+        config = load_config() or {}
+        existing = get_fallback_chain(config)
+        new_chain: List[Dict[str, Any]] = []
+        seen_routes: set[tuple[str, str, str]] = set()
+        for item in requested:
+            provider = (item.provider or "").strip()
+            model = (item.model or "").strip()
+            if not provider or not model:
+                raise ValueError("fallback provider and model are required")
+            effort = normalize_fallback_reasoning_effort(item.reasoning_effort)
+            source_identity = None
+            if item.source_provider and item.source_model:
+                source_identity = (
+                    identity(item.source_provider),
+                    identity(item.source_model),
+                    identity(item.source_base_url),
+                    identity(item.source_api_mode),
+                )
+            elif isinstance(item.source_index, int) and not isinstance(item.source_index, bool):
+                # Legacy clients are trusted only when the public route still
+                # matches the indexed entry; stale indexes never copy secrets.
+                source_identity = (
+                    identity(provider),
+                    identity(model),
+                    identity(item.base_url),
+                    identity(item.api_mode),
+                )
+
+            old: Dict[str, Any] = {}
+            candidates: List[Dict[str, Any]] = []
+            if isinstance(item.source_index, int) and not isinstance(item.source_index, bool):
+                if 0 <= item.source_index < len(existing):
+                    candidates.append(existing[item.source_index])
+            if source_identity is not None:
+                candidates.extend(
+                    candidate
+                    for candidate in existing
+                    if candidate not in candidates
+                    and source_route_identity(candidate) == source_identity
+                )
+            for candidate in candidates:
+                if source_identity is not None and source_route_identity(candidate) != source_identity:
+                    continue
+                if identity(candidate.get("provider")) == identity(provider):
+                    old = dict(candidate)
+                    break
+
+            route = {
+                "provider": provider,
+                "model": model,
+                "base_url": old.get("base_url"),
+                "api_mode": old.get("api_mode"),
+            }
+            route_key = route_identity(route)
+            if route_key in seen_routes:
+                raise ValueError("fallback provider/model routes must be unique")
+            seen_routes.add(route_key)
+
+            entry = dict(old)
+            entry["provider"] = provider
+            entry["model"] = model
+            if effort:
+                entry["reasoning_effort"] = effort
+            else:
+                entry.pop("reasoning_effort", None)
+            new_chain.append(entry)
+
+        config["fallback_providers"] = new_chain
+        config.pop("fallback_model", None)
+        save_config(config)
+        return [
+            _profile_fallback_public_entry(entry, index)
+            for index, entry in enumerate(new_chain)
+        ]
     finally:
         reset_hermes_home_override(token)
 
@@ -14794,6 +15073,10 @@ from hermes_cli.web_routers.profiles import (  # noqa: E402,F401 — legacy re-e
     update_profile_soul,
     update_profile_description_endpoint,
     update_profile_model_endpoint,
+    update_profile_settings_endpoint,
+    update_profile_reasoning_endpoint,
+    get_profile_fallbacks_endpoint,
+    update_profile_fallbacks_endpoint,
     describe_profile_auto_endpoint,
 )
 

@@ -23,8 +23,15 @@ def test_init_tries_fallback_when_primary_returns_none():
     a fallback entry, __init__ should NOT raise RuntimeError."""
     fb = _mock_client()
 
+    calls = []
+
     def fake_resolve(provider, model=None, raw_codex=False,
-                     explicit_base_url=None, explicit_api_key=None):
+                     explicit_base_url=None, explicit_api_key=None, api_mode=None):
+        calls.append({
+            "provider": provider,
+            "model": model,
+            "api_mode": api_mode,
+        })
         if provider == "tencent-token-plan":
             return fb, "kimi2.5"
         return None, None  # primary exhausted
@@ -42,10 +49,21 @@ def test_init_tries_fallback_when_primary_returns_none():
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
-            fallback_model=[{"provider": "tencent-token-plan", "model": "kimi2.5"}],
+            reasoning_config={"enabled": True, "effort": "low"},
+            fallback_model=[
+                {
+                    "provider": "tencent-token-plan",
+                    "model": "kimi2.5",
+                    "api_mode": "codex_responses",
+                    "reasoning_effort": "high",
+                }
+            ],
         )
         assert agent.provider == "tencent-token-plan"
         assert agent.model == "kimi2.5"
+        assert agent.api_mode == "codex_responses"
+        assert calls[-1]["api_mode"] == "codex_responses"
+        assert agent.reasoning_config == {"enabled": True, "effort": "low"}
         assert agent._fallback_activated is True
 
 

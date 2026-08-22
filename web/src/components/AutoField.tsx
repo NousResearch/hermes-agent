@@ -2,6 +2,7 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
+import { effortLabel } from "@/lib/reasoning-effort";
 
 function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; schemaKey: string }) {
   const keyPath = schemaKey.includes(".") ? schemaKey : "";
@@ -122,7 +123,11 @@ export function AutoField({
         <Select value={String(value ?? "")} onValueChange={(v) => onChange(v)}>
           {options.map((opt) => (
             <SelectOption key={opt} value={opt}>
-              {opt || "(none)"}
+              {opt
+                ? schemaKey === "agent.reasoning_effort"
+                  ? effortLabel(opt)
+                  : opt
+                : (schema.emptyLabel as string) || "(none)"}
             </SelectOption>
           ))}
         </Select>

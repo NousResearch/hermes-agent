@@ -51,7 +51,7 @@ import { titleFromSessionInfoPayload } from "@/lib/chat-title";
 
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 interface SessionInfo {
   cwd?: string;
@@ -137,11 +137,25 @@ export function ChatSidebar({
   // this card stays scoped to the PTY even if the global dashboard switcher
   // changes while the chat is open.
   const [effectiveModel, setEffectiveModel] = useState("");
+  const [modelInfoFor, setModelInfoFor] = useState("");
   // Whether the effective model supports reasoning effort — gates the
   // ReasoningPicker. Read from the same `/api/model/info` capabilities the
   // (currently unused) ModelInfoCard surfaces, so the dashboard exposes a
   // control to *set* the level, not just a read-only "Reasoning" badge.
   const [supportsReasoning, setSupportsReasoning] = useState(false);
+  // Provider-known reasoning-effort dial values for the effective model
+  // (undefined → full list; [] → no dial). Read alongside supportsReasoning
+  // so the picker shows only valid levels per model.
+  const [reasoningLevels, setReasoningLevels] = useState<string[] | null>(
+    null,
+  );
+  const modelInfoRequest = useRef(0);
+  const modelInfoProfile = profile ?? "";
+  const modelInfoProfileRef = useRef(modelInfoProfile);
+  useLayoutEffect(() => {
+    modelInfoProfileRef.current = modelInfoProfile;
+    modelInfoRequest.current += 1;
+  }, [modelInfoProfile]);
   // Bumped on model change/save so ReasoningPicker re-reads the saved effort
   // (config is profile-scoped the same way the model badge is).
   const [modelRefreshKey, setModelRefreshKey] = useState(0);
@@ -155,11 +169,24 @@ export function ChatSidebar({
   );
 
   const refreshEffectiveModel = useCallback(() => {
+    const requestProfile = profile ?? "";
+    const requestId = ++modelInfoRequest.current;
     void api
       .getModelInfo(profile)
       .then((r) => {
-        if (r?.model) setEffectiveModel(String(r.model));
+        if (
+          modelInfoProfileRef.current !== requestProfile ||
+          modelInfoRequest.current !== requestId
+        ) {
+          return;
+        }
+        setEffectiveModel(String(r?.model ?? ""));
+        setModelInfoFor(requestProfile);
         setSupportsReasoning(!!r?.capabilities?.supports_reasoning);
+        const levels = r?.capabilities?.reasoning_levels;
+        setReasoningLevels(
+          levels === undefined ? null : levels,
+        );
         // Bump so ReasoningPicker re-reads the saved effort for the new model.
         setModelRefreshKey((k) => k + 1);
       })
@@ -446,8 +473,16 @@ export function ChatSidebar({
 
   // The picker writes config.yaml over REST and reloads — it doesn't ride the
   // sidecar gateway session, so it's available whenever the sidebar is mounted.
-  const modelName = effectiveModel || info.model || "—";
+  const modelInfoMatchesScope = modelInfoFor === modelInfoProfile;
+  const scopedEffectiveModel = modelInfoMatchesScope ? effectiveModel : "";
+  const scopedSupportsReasoning = modelInfoMatchesScope ? supportsReasoning : false;
+  const scopedReasoningLevels = modelInfoMatchesScope ? reasoningLevels : null;
+  const modelName = scopedEffectiveModel || "—";
   const modelLabel = modelName.split("/").slice(-1)[0] ?? "—";
+  const reasoningDialAvailable =
+    scopedReasoningLevels === null || scopedReasoningLevels === undefined
+      ? scopedSupportsReasoning
+      : scopedReasoningLevels.length > 0;
   const banner = error ?? info.credential_warning ?? null;
 
   return (
@@ -487,12 +522,13 @@ export function ChatSidebar({
         </Badge>
       </Card>
 
-      {supportsReasoning && (
+      {reasoningDialAvailable && (
         <Card className="py-0">
           <ReasoningPicker
             currentModel={modelName}
             profile={profile}
             refreshKey={modelRefreshKey}
+            reasoningLevels={scopedReasoningLevels}
             onChanged={(effort) =>
               setModelNotice(
                 `Reasoning effort set to ${effort}. Run /new or refresh the page to apply it to this chat.`,

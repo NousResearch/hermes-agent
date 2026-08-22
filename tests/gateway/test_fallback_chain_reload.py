@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 
 def test_refresh_fallback_model_rereads_config(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from gateway.run import GatewayRunner
 
     monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
@@ -31,22 +32,58 @@ def test_refresh_fallback_model_rereads_config(tmp_path, monkeypatch):
     )
     runner._load_fallback_model = GatewayRunner._load_fallback_model
     bound = GatewayRunner._refresh_fallback_model.__get__(runner)
-    chain = bound()
+    home_token = set_hermes_home_override(str(tmp_path))
+    try:
+        chain = bound()
+        assert chain == [{"provider": "deepseek", "model": "deepseek-v4-flash"}]
+        assert runner._fallback_model == chain
 
-    assert chain == [{"provider": "deepseek", "model": "deepseek-v4-flash"}]
-    assert runner._fallback_model == chain
+        cfg.write_text(
+            "fallback_providers:\n"
+            "  - provider: openrouter\n"
+            "    model: anthropic/claude-sonnet-4.6\n"
+        )
+        updated = bound()
+    finally:
+        reset_hermes_home_override(home_token)
 
-    cfg.write_text(
-        "fallback_providers:\n"
-        "  - provider: openrouter\n"
-        "    model: anthropic/claude-sonnet-4.6\n"
-    )
-    updated = bound()
     assert updated == [
         {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"}
     ]
     assert runner._fallback_model == updated
 
+
+def test_refresh_fallback_model_reads_active_profile_home(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from gateway.run import GatewayRunner
+
+    root_home = tmp_path / "root"
+    profile_home = tmp_path / "profiles" / "secondary"
+    root_home.mkdir(parents=True)
+    profile_home.mkdir(parents=True)
+    (root_home / "config.yaml").write_text(
+        "fallback_providers:\n"
+        "  - provider: root-provider\n"
+        "    model: root-model\n"
+    )
+    (profile_home / "config.yaml").write_text(
+        "fallback_providers:\n"
+        "  - provider: secondary-provider\n"
+        "    model: secondary-model\n"
+    )
+    monkeypatch.setattr("gateway.run._hermes_home", root_home)
+
+    runner = SimpleNamespace(_fallback_model=None)
+    runner._load_fallback_model = GatewayRunner._load_fallback_model
+    bound = GatewayRunner._refresh_fallback_model.__get__(runner)
+    home_token = set_hermes_home_override(str(profile_home))
+    try:
+        chain = bound()
+    finally:
+        reset_hermes_home_override(home_token)
+
+    assert chain == [{"provider": "secondary-provider", "model": "secondary-model"}]
+    assert runner._fallback_model == chain
 
 def test_apply_fallback_chain_skips_while_cooldown_holds_fallback():
     """Do not clobber a live fallback activation during its cooldown window."""
@@ -118,3 +155,80 @@ def test_load_fallback_model_static_unchanged_contract(tmp_path, monkeypatch):
         {"provider": "deepseek", "model": "deepseek-v4-flash"},
         {"provider": "nous", "model": "Hermes-4"},
     ]
+
+
+def test_gateway_primary_auth_fallback_preserves_selected_reasoning_entry(monkeypatch):
+    from gateway.run import _try_resolve_fallback_provider
+
+    entry = {
+        "provider": "secondary-provider",
+        "model": "secondary-model",
+        "reasoning_effort": "high",
+        "api_mode": "codex_responses",
+    }
+    monkeypatch.setattr("gateway.run._load_gateway_runtime_config", lambda: {})
+    monkeypatch.setattr("gateway.run.get_fallback_chain", lambda _cfg: [entry])
+    monkeypatch.setattr(
+        "hermes_cli.fallback_config.resolve_entry_api_key",
+        lambda _entry: "test-key",
+    )
+    calls = []
+
+    def resolve(**kwargs):
+        calls.append(kwargs)
+        return {
+            "provider": "secondary-provider",
+            "requested_provider": "secondary-provider",
+            "api_key": "test-key",
+            "base_url": "https://secondary.invalid/v1",
+            "api_mode": "chat_completions",
+        }
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", resolve
+    )
+
+    resolved = _try_resolve_fallback_provider()
+
+    assert resolved is not None
+    assert resolved["model"] == "secondary-model"
+    assert resolved["fallback_entry"] == entry
+    assert resolved["api_mode"] == "codex_responses"
+    assert calls[0]["target_model"] == "secondary-model"
+
+
+def test_tui_primary_auth_fallback_preserves_selected_reasoning_entry(monkeypatch):
+    from hermes_cli.auth import AuthError
+    from tui_gateway.server import _resolve_runtime_with_fallback
+
+    entry = {
+        "provider": "secondary-provider",
+        "model": "secondary-model",
+        "reasoning_effort": "high",
+        "api_mode": "codex_responses",
+    }
+    monkeypatch.setattr("tui_gateway.server._load_fallback_model", lambda: [entry])
+    calls = []
+
+    def resolve(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("requested") == "primary-provider":
+            raise AuthError("primary unavailable", provider="primary-provider")
+        return {
+            "provider": "secondary-provider",
+            "requested_provider": "secondary-provider",
+            "api_key": "test-key",
+            "base_url": "https://secondary.invalid/v1",
+            "api_mode": "chat_completions",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve)
+
+    resolved = _resolve_runtime_with_fallback(
+        {"requested": "primary-provider", "target_model": "primary-model"}
+    )
+
+    assert resolved.used_fallback is True
+    assert resolved.selected_model == "secondary-model"
+    assert resolved.selected_entry == entry
+    assert resolved.runtime["api_mode"] == "codex_responses"
+    assert calls[0]["target_model"] == "primary-model"

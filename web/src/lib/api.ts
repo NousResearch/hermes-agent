@@ -710,6 +710,52 @@ export const api = {
         body: JSON.stringify({ provider, model }),
       },
     ),
+  setProfileSettings: (
+    name: string,
+    provider: string | null,
+    model: string | null,
+    effort: string,
+  ) =>
+    fetchJSON<{
+      ok: boolean;
+      provider: string | null;
+      model: string | null;
+      reasoning_effort: string;
+    }>(
+      `/api/profiles/${encodeURIComponent(name)}/settings`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: provider ?? "", model: model ?? "", effort }),
+      },
+    ),
+  getProfileFallbacks: (name: string) =>
+    fetchJSON<{ fallbacks: ProfileFallbackInfo[] }>(
+      `/api/profiles/${encodeURIComponent(name)}/fallbacks`,
+    ),
+  updateProfileFallbacks: (
+    name: string,
+    fallbacks: Array<{
+      source_index?: number | null;
+      source_provider?: string | null;
+      source_model?: string | null;
+      source_base_url?: string | null;
+      source_api_mode?: string | null;
+      provider: string;
+      model: string;
+      reasoning_effort: string;
+      base_url?: string | null;
+      api_mode?: string | null;
+    }>,
+  ) =>
+    fetchJSON<{ ok: boolean; fallbacks: ProfileFallbackInfo[] }>(
+      `/api/profiles/${encodeURIComponent(name)}/fallbacks`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fallbacks }),
+      },
+    ),
   renameProfile: (name: string, newName: string) =>
     fetchJSON<{ ok: boolean; name: string; path: string }>(
       `/api/profiles/${encodeURIComponent(name)}`,
@@ -2169,12 +2215,26 @@ export interface ProfileDescribeAutoResult {
   description_auto: boolean;
 }
 
+export interface ProfileFallbackInfo {
+  source_index: number;
+  source_provider?: string | null;
+  source_model?: string | null;
+  source_base_url?: string | null;
+  source_api_mode?: string | null;
+  provider: string;
+  model: string;
+  reasoning_effort: string;
+  base_url: string | null;
+  api_mode: string | null;
+}
+
 export interface ProfileInfo {
   name: string;
   path: string;
   is_default: boolean;
   model: string | null;
   provider: string | null;
+  reasoning_effort: string;
   has_env: boolean;
   skill_count: number;
   gateway_running: boolean;
@@ -2400,6 +2460,7 @@ export interface ModelInfoResponse {
     context_window?: number;
     max_output_tokens?: number;
     model_family?: string;
+    reasoning_levels?: string[] | null;
   };
 }
 
@@ -2415,6 +2476,14 @@ export interface ModelOptionProvider {
   source?: string;
   warning?: string;
   authenticated?: boolean;
+  capabilities?: Record<
+    string,
+    {
+      fast?: boolean;
+      reasoning?: boolean;
+      reasoning_levels?: string[] | null;
+    }
+  >;
 }
 
 export interface ModelOptionsResponse {

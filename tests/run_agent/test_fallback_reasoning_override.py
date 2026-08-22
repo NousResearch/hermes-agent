@@ -132,3 +132,41 @@ class TestFallbackReasoningOverride:
 
         assert result is not None
         assert result.get("enabled") is False
+
+    def test_session_reasoning_override_survives_fallback_resolution(self):
+        from agent.chat_completion_helpers import _apply_fallback_reasoning_config
+
+        agent = MagicMock()
+        agent.model = "fallback-model"
+        agent.reasoning_config = {"enabled": True, "effort": "low"}
+        agent._reasoning_config_session_override = True
+
+        with patch("agent.chat_completion_helpers.resolve_fallback_reasoning_config") as resolver:
+            _apply_fallback_reasoning_config(
+                agent,
+                {"provider": "secondary", "model": "fallback-model", "reasoning_effort": "high"},
+            )
+
+        resolver.assert_not_called()
+        assert agent.reasoning_config == {"enabled": True, "effort": "low"}
+
+    def test_unmarked_agent_receives_fallback_reasoning_resolution(self):
+        from agent.chat_completion_helpers import _apply_fallback_reasoning_config
+
+        agent = MagicMock()
+        agent.model = "fallback-model"
+        agent.reasoning_config = {"enabled": True, "effort": "low"}
+        agent._reasoning_config_session_override = False
+        resolved = {"enabled": True, "effort": "high"}
+
+        with patch(
+            "agent.chat_completion_helpers.resolve_fallback_reasoning_config",
+            return_value=resolved,
+        ) as resolver:
+            _apply_fallback_reasoning_config(
+                agent,
+                {"provider": "secondary", "model": "fallback-model", "reasoning_effort": "high"},
+            )
+
+        resolver.assert_called_once()
+        assert agent.reasoning_config == resolved

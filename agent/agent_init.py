@@ -1392,6 +1392,7 @@ def init_agent(
                                 _fb["provider"], model=_fb["model"], raw_codex=True,
                                 explicit_base_url=_fb.get("base_url"),
                                 explicit_api_key=_fb_explicit_key,
+                                api_mode=_fb.get("api_mode"),
                             )
                         except Exception as _fb_exc:
                             logger.debug(
@@ -1402,6 +1403,21 @@ def init_agent(
                         if _fb_client is not None:
                             agent.provider = _fb["provider"]
                             agent.model = _fb_model or _fb["model"]
+                            if _fb.get("api_mode"):
+                                agent.api_mode = _fb["api_mode"]
+                            try:
+                                from hermes_cli.fallback_config import resolve_fallback_reasoning_config
+                                from hermes_cli.config import load_config
+
+                                if reasoning_config is None:
+                                    agent.reasoning_config = resolve_fallback_reasoning_config(
+                                        load_config() or {}, agent.model, _fb
+                                    )
+                            except Exception as _reasoning_err:
+                                logger.debug(
+                                    "Init-time fallback reasoning resolution failed: %s",
+                                    _reasoning_err,
+                                )
                             agent._fallback_activated = True
                             client_kwargs = {
                                 "api_key": _fb_client.api_key,
@@ -3043,6 +3059,11 @@ def init_agent(
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
         "client_kwargs": dict(agent._client_kwargs),
+        "reasoning_config": (
+            dict(agent.reasoning_config)
+            if isinstance(agent.reasoning_config, dict)
+            else agent.reasoning_config
+        ),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),

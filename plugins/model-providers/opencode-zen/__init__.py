@@ -67,6 +67,16 @@ class OpenCodeGoProfile(ProviderProfile):
             return cap
         return self.default_max_tokens
 
+    def reasoning_effort_levels(self, model: str | None) -> list[str] | None:
+        """Return only the effort values accepted by this relay model."""
+        if _is_glm_5_2_model(model):
+            return ["none", "high", "max"]
+        if _is_kimi_k2_model(model):
+            return ["none", "low", "medium", "high"]
+        if _is_deepseek_thinking_model(model):
+            return ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+        return []
+
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -192,6 +202,11 @@ def _build_ox_alpha_reasoning_extras(
 
 class OpenCodeZenProfile(ProviderProfile):
     """OpenCode Zen - model-specific reasoning controls."""
+
+    def reasoning_effort_levels(self, model: str | None) -> list[str] | None:
+        if _flat_model_name(model) == "x-preview-f-free":
+            return ["low", "high", "max"]
+        return None
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context

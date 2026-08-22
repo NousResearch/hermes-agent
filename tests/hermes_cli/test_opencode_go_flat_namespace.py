@@ -25,6 +25,7 @@ from unittest.mock import patch
 
 from hermes_cli.model_normalize import normalize_model_for_provider
 from hermes_cli.model_switch import switch_model
+from providers import get_provider_profile
 
 
 # Live catalog opencode-go currently returns from /v1/models (snapshot).
@@ -38,9 +39,11 @@ _OPENCODE_GO_LIVE = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# normalize_model_for_provider: strip vendor prefix for flat-namespace providers
-# ---------------------------------------------------------------------------
+def test_opencode_zen_ox_alpha_declares_wire_reasoning_levels():
+    profile = get_provider_profile("opencode-zen")
+    assert profile is not None
+    assert profile.reasoning_effort_levels("x-preview-f-free") == ["low", "high", "max"]
+    assert profile.reasoning_effort_levels("another-zen-model") is None
 
 
 def test_opencode_go_strips_deepseek_prefix():

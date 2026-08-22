@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
 
 # --- from web_server.py (originally lines 1273-1372) ---
@@ -627,8 +627,37 @@ class ProfileModelUpdate(BaseModel):
     model: str
 
 
+class ProfileReasoningUpdate(BaseModel):
+    effort: str = ""
+
+
+class ProfileSettingsUpdate(BaseModel):
+    provider: str = ""
+    model: str = ""
+    effort: str = ""
+
+
 class ProfileDescribeAuto(BaseModel):
     overwrite: bool = False
+
+
+class ProfileFallbackEntry(BaseModel):
+    source_index: Optional[int] = None
+    # Public route identity lets the writer match an existing entry without
+    # exposing or trusting credential-bearing fields.
+    source_provider: Optional[str] = None
+    source_model: Optional[str] = None
+    source_base_url: Optional[str] = None
+    source_api_mode: Optional[str] = None
+    provider: str
+    model: str
+    reasoning_effort: str = ""
+    base_url: Optional[str] = None
+    api_mode: Optional[str] = None
+
+
+class ProfileFallbackUpdate(BaseModel):
+    fallbacks: List[ProfileFallbackEntry] = Field(default_factory=list)
 
 
 # --- from web_server.py (originally lines 15831-15834) ---

@@ -3,6 +3,7 @@ import {
   EFFORT_OPTIONS,
   VALID_EFFORTS,
   normalizeEffort,
+  filterEffortOptions,
 } from "./reasoning-effort";
 
 describe("normalizeEffort", () => {
@@ -38,10 +39,33 @@ describe("EFFORT_OPTIONS", () => {
   });
 
   it("covers the real reasoning levels plus thinking-off", () => {
-    // Invariant against hermes_constants.VALID_REASONING_EFFORTS + 'none'.
     const values = new Set(EFFORT_OPTIONS.map((o) => o.value));
     for (const level of ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]) {
       expect(values.has(level)).toBe(true);
     }
+  });
+});
+
+describe("filterEffortOptions", () => {
+  it("keeps the full list when the provider has no level declaration", () => {
+    expect(filterEffortOptions(undefined).map((option) => option.value)).toEqual(
+      EFFORT_OPTIONS.map((option) => option.value),
+    );
+  });
+
+  it("filters to provider-declared levels while preserving an existing saved value", () => {
+    expect(filterEffortOptions(["none", "high"], "ultra").map((option) => option.value)).toEqual([
+      "none",
+      "high",
+      "ultra",
+    ]);
+  });
+
+  it("returns no options when the model declares no reasoning dial", () => {
+    expect(filterEffortOptions([])).toEqual([]);
+  });
+
+  it("does not resurrect a saved value for a model with no reasoning dial", () => {
+    expect(filterEffortOptions([], "high")).toEqual([]);
   });
 });

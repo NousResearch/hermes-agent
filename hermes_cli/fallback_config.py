@@ -99,3 +99,43 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
             chain.append(entry)
 
     return chain
+
+
+def normalize_fallback_reasoning_effort(value: Any) -> str:
+    """Canonicalize a fallback's optional per-entry reasoning policy."""
+    from hermes_constants import parse_reasoning_effort
+
+    if value is None:
+        return ""
+    if value is False:
+        return "none"
+    raw = str(value).strip().lower()
+    if not raw:
+        return ""
+    if raw in {"false", "disabled"}:
+        return "none"
+    if parse_reasoning_effort(raw) is None:
+        raise ValueError(
+            "reasoning_effort must be empty, none, minimal, low, medium, high, xhigh, max, or ultra"
+        )
+    return raw
+
+
+def resolve_fallback_reasoning_config(
+    config: dict[str, Any] | None,
+    model: str,
+    entry: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Resolve an entry override, falling back to normal model policy."""
+    from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
+
+    if isinstance(entry, dict) and "reasoning_effort" in entry:
+        try:
+            normalized = normalize_fallback_reasoning_effort(entry.get("reasoning_effort"))
+        except ValueError:
+            normalized = ""
+        if normalized:
+            explicit = parse_reasoning_effort(normalized)
+            if explicit is not None:
+                return explicit
+    return resolve_reasoning_config(config, model)

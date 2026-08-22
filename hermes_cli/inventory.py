@@ -454,6 +454,11 @@ def _apply_capabilities(rows: list[dict]) -> None:
     from hermes_cli.models import model_supports_fast_mode
 
     try:
+        from providers import get_provider_profile
+    except Exception:
+        get_provider_profile = None
+
+    try:
         from agent.models_dev import get_model_capabilities
     except Exception:
         get_model_capabilities = None  # type: ignore[assignment]
@@ -462,6 +467,12 @@ def _apply_capabilities(rows: list[dict]) -> None:
         slug = row.get("slug") or ""
         caps: dict[str, dict[str, Any]] = {}
         read_reasoning_catalog = _reasoning_catalog_reader(slug.lower())
+        provider_profile = None
+        if get_provider_profile is not None:
+            try:
+                provider_profile = get_provider_profile(slug)
+            except Exception:
+                provider_profile = None
 
         for model in row.get("models") or []:
             reasoning = True
@@ -477,6 +488,13 @@ def _apply_capabilities(rows: list[dict]) -> None:
                 "fast": bool(model_supports_fast_mode(model)),
                 "reasoning": reasoning,
             }
+            if provider_profile is not None:
+                try:
+                    levels = provider_profile.reasoning_effort_levels(model)
+                except Exception:
+                    levels = None
+                if levels is not None:
+                    entry["reasoning_levels"] = list(levels)
 
             if reasoning and read_reasoning_catalog is not None:
                 try:

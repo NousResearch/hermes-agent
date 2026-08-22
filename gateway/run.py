@@ -3057,9 +3057,12 @@ def _try_resolve_fallback_provider() -> dict | None:
 
                 runtime = resolve_runtime_provider(
                     requested=entry.get("provider"),
+                    target_model=entry.get("model"),
                     explicit_base_url=entry.get("base_url"),
                     explicit_api_key=resolve_entry_api_key(entry),
                 )
+                if entry.get("api_mode"):
+                    runtime["api_mode"] = entry["api_mode"]
                 # Log the literal `provider` key from config, not the resolved
                 # runtime category — an Ollama fallback resolves through the
                 # OpenAI-compatible path and would otherwise be logged as
@@ -3079,6 +3082,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
                     "model": entry.get("model"),
+                    "fallback_entry": dict(entry),
                 }
             except Exception as fb_exc:
                 logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
@@ -5420,6 +5424,22 @@ class TurnRunner:
             session_key=ctx.session_key,
             model=model,
         )
+        fallback_entry = runtime_kwargs.get("fallback_entry")
+        has_session_reasoning_override = False
+        if ctx.session_key:
+            session_state = self._runner._peek_session_state(ctx.session_key)
+            has_session_reasoning_override = bool(
+                session_state
+                and session_state.conversation.reasoning_override is not None
+            )
+        if isinstance(fallback_entry, dict) and not has_session_reasoning_override:
+            from hermes_cli.fallback_config import resolve_fallback_reasoning_config
+
+            fallback_reasoning = resolve_fallback_reasoning_config(
+                ctx.user_config or {}, model, fallback_entry
+            )
+            if fallback_reasoning is not None:
+                reasoning_config = fallback_reasoning
         self._runner._reasoning_config = reasoning_config
         self._runner._service_tier = self._runner._resolve_session_service_tier(
             source=ctx.source, session_key=ctx.session_key
@@ -5877,6 +5897,7 @@ class TurnRunner:
         agent.notice_clear_callback = None
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config = reasoning_config
+        agent._reasoning_config_session_override = has_session_reasoning_override
         agent.service_tier = self._runner._service_tier
         agent.request_overrides = turn_route.get("request_overrides") or {}
         # Must-deliver notes for THIS turn ride the current user message
@@ -9841,7 +9862,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         try:
             from hermes_cli.config import read_user_config_raw
-            cfg_path = _hermes_home / "config.yaml"
+            cfg_path = Path(get_hermes_home()) / "config.yaml"
             if not cfg_path.exists():
                 self._fallback_model = None
                 return self._fallback_model
@@ -19688,15 +19709,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         exc_info=True,
                                     )
                                 _hyg_session_db = getattr(self._session_db, "_db", self._session_db)
+                                _hyg_runtime = dict(_hyg_runtime)
+                                _hyg_fallback_entry = _hyg_runtime.pop("fallback_entry", None)
+                                _hyg_reasoning_config = self._resolve_session_reasoning_config(
+                                    source=source,
+                                    session_key=session_key,
+                                    model=_hyg_model,
+                                )
+                                _hyg_state = self._peek_session_state(session_key)
+                                _hyg_has_session_reasoning_override = bool(
+                                    _hyg_state
+                                    and _hyg_state.conversation.reasoning_override is not None
+                                )
+                                if (
+                                    isinstance(_hyg_fallback_entry, dict)
+                                    and not _hyg_has_session_reasoning_override
+                                ):
+                                    from hermes_cli.fallback_config import resolve_fallback_reasoning_config
+
+                                    _hyg_fallback_reasoning = resolve_fallback_reasoning_config(
+                                        _hyg_data if isinstance(_hyg_data, dict) else {},
+                                        _hyg_model,
+                                        _hyg_fallback_entry,
+                                    )
+                                    if _hyg_fallback_reasoning is not None:
+                                        _hyg_reasoning_config = _hyg_fallback_reasoning
                                 _hyg_agent = AIAgent(
                                     **_hyg_runtime,
                                     model=_hyg_model,
                                     max_iterations=4,
                                     quiet_mode=True,
+                                    reasoning_config=_hyg_reasoning_config,
                                     skip_memory=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
                                     session_db=_hyg_session_db,
+                                )
+                                _hyg_agent._reasoning_config_session_override = (
+                                    _hyg_has_session_reasoning_override
                                 )
                                 _seed_hygiene_system_prompt(
                                     _hyg_agent,
@@ -22686,9 +22736,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
+            _background_session_key = None
+            try:
+                _background_session_key = self._session_key_for_source(source)
+            except Exception:
+                pass
             reasoning_config = self._resolve_session_reasoning_config(
-                source=source, model=model
+                source=source,
+                session_key=_background_session_key,
+                model=model,
             )
+            fallback_entry = runtime_kwargs.get("fallback_entry")
+            has_session_reasoning_override = False
+            if _background_session_key:
+                _background_state = self._peek_session_state(_background_session_key)
+                has_session_reasoning_override = bool(
+                    _background_state
+                    and _background_state.conversation.reasoning_override is not None
+                )
+            if isinstance(fallback_entry, dict) and not has_session_reasoning_override:
+                from hermes_cli.fallback_config import resolve_fallback_reasoning_config
+
+                fallback_reasoning = resolve_fallback_reasoning_config(
+                    user_config or {}, model, fallback_entry
+                )
+                if fallback_reasoning is not None:
+                    reasoning_config = fallback_reasoning
             self._reasoning_config = reasoning_config
             self._service_tier = self._resolve_session_service_tier(source=source)
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
@@ -22742,6 +22815,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
                 )
+                agent._reasoning_config_session_override = has_session_reasoning_override
                 try:
                     return agent.run_conversation(
                         user_message=enriched_prompt,

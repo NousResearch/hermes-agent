@@ -12,10 +12,12 @@ import {
   AlignLeft,
   Check,
   ChevronDown,
+  ChevronUp,
   Cpu,
   MoreVertical,
   Pencil,
   Package,
+  Plus,
   Sparkles,
   Terminal,
   Trash2,
@@ -25,7 +27,11 @@ import {
 import spinners from "unicode-animations";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
-import type { ActiveProfileInfo, ProfileInfo } from "@/lib/api";
+import type {
+  ActiveProfileInfo,
+  ProfileFallbackInfo,
+  ProfileInfo,
+} from "@/lib/api";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
@@ -45,10 +51,15 @@ import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
+import { EFFORT_OPTIONS, filterEffortOptions } from "@/lib/reasoning-effort";
 
 // Mirrors hermes_cli/profiles.py::_PROFILE_ID_RE so we can reject obviously
 // invalid names (uppercase, spaces, …) before round-tripping a doomed POST.
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+type FallbackDraft = Omit<ProfileFallbackInfo, "source_index"> & {
+  source_index: number | null;
+};
 
 /** Braille unicode spinner (`unicode-animations`); static first frame when reduced motion is preferred. */
 function ProfilesLoadingSpinner() {
@@ -304,6 +315,23 @@ export default function ProfilesPage() {
       editModel: p.editModel ?? "Change model",
       modelSaved: p.modelSaved ?? "Model updated",
       modelSelect: p.modelSelect ?? "Select a model",
+      reasoningEffort: p.reasoningEffort ?? "Reasoning effort",
+      reasoningInherit: p.reasoningInherit ?? "Inherit provider default",
+      reasoningSaved: p.reasoningSaved ?? "Reasoning effort updated",
+      reasoningUnset: p.reasoningUnset ?? "provider default",
+      fallbacks: p.fallbacks ?? "Fallback chain",
+      fallbackAdd: p.fallbackAdd ?? "Add fallback",
+      fallbackRemove: p.fallbackRemove ?? "Remove fallback",
+      fallbackMoveUp: p.fallbackMoveUp ?? "Move fallback up",
+      fallbackMoveDown: p.fallbackMoveDown ?? "Move fallback down",
+      fallbackSelect: p.fallbackSelect ?? "Select a fallback model",
+      fallbackNone: p.fallbackNone ?? "No fallback models configured",
+      fallbackLoadFailed:
+        p.fallbackLoadFailed ??
+        "Fallback chain could not be loaded; model and reasoning can still be saved.",
+      fallbackSaved: p.fallbackSaved ?? "Fallback chain updated",
+      fallbackCustomEndpoint:
+        p.fallbackCustomEndpoint ?? "Custom endpoint retained",
       actions: p.actions ?? "Actions",
       manageSkills: p.manageSkills ?? "Manage skills & tools",
       activeSetHint:
@@ -323,11 +351,25 @@ export default function ProfilesPage() {
   // Model picker (lazy-loaded the first time a picker is opened). modelChoice
   // is a "slug\u0000model" key, or "" to inherit from clone/default.
   const [modelChoices, setModelChoices] = useState<
-    { provider: string; model: string; label: string }[] | null
+    | {
+        provider: string;
+        model: string;
+        label: string;
+        reasoningLevels?: string[] | null;
+      }[]
+    | null
   >(null);
-  const modelChoicesLoading = useRef(false);
+  // The model catalog is profile-scoped: provider/model availability can differ
+  // between profiles because each profile owns its own credentials/config.
+  const [modelChoicesScope, setModelChoicesScope] = useState<string | null>(null);
+  const modelChoicesLoading = useRef<string | null>(null);
+  const modelChoicesRequestGeneration = useRef(0);
   const [modelChoice, setModelChoice] = useState("");
-  const closeCreateModal = useCallback(() => setCreateModalOpen(false), []);
+  const closeCreateModal = useCallback(() => {
+    modelChoicesRequestGeneration.current += 1;
+    modelChoicesLoading.current = null;
+    setCreateModalOpen(false);
+  }, []);
   const createModalRef = useModalBehavior({
     open: createModalOpen,
     onClose: closeCreateModal,
@@ -361,37 +403,87 @@ export default function ProfilesPage() {
   // Inline model editor state
   const [editingModelFor, setEditingModelFor] = useState<string | null>(null);
   const [modelEditChoice, setModelEditChoice] = useState("");
+  const [modelEditInitialChoice, setModelEditInitialChoice] = useState("");
+  const [reasoningEditChoice, setReasoningEditChoice] = useState("");
+  const [fallbackEdits, setFallbackEdits] = useState<FallbackDraft[]>([]);
+  const [fallbacksLoading, setFallbacksLoading] = useState(false);
+  const [fallbacksLoaded, setFallbacksLoaded] = useState(false);
+  const [fallbacksLoadFailed, setFallbacksLoadFailed] = useState(false);
   const [modelSaving, setModelSaving] = useState(false);
+  // Tracks the latest fallback-chain request so out-of-order responses don't
+  // overwrite state when the user switches profiles or closes the editor.
+  const activeFallbackRequest = useRef<string | null>(null);
+  const fallbackRequestGeneration = useRef(0);
+  // Invalidates an in-flight model save when the editor changes or closes so
+  // a late response cannot affect a newer editor.
+  const activeModelRequest = useRef(0);
+  const invalidateModelSave = useCallback(() => {
+    activeModelRequest.current += 1;
+    setModelSaving(false);
+  }, []);
 
   // Per-profile "set active" in-flight name
   const [settingActive, setSettingActive] = useState<string | null>(null);
 
   const modelKey = (provider: string | null, model: string | null) =>
-    provider && model ? `${provider}\u0000${model}` : "";
+    model ? `${provider ?? ""}\u0000${model}` : "";
 
-  const loadModelChoices = useCallback(() => {
-    if (modelChoices !== null || modelChoicesLoading.current) return;
-    modelChoicesLoading.current = true;
-    api
-      .getModelOptions()
-      .then((res) => {
-        const flat: { provider: string; model: string; label: string }[] = [];
-        for (const prov of res.providers ?? []) {
-          for (const m of prov.models ?? []) {
-            flat.push({
-              provider: prov.slug,
-              model: m,
-              label: `${prov.name} · ${m}`,
-            });
+  const loadModelChoices = useCallback(
+    (profile?: string) => {
+      const scope = profile ?? "";
+      if (modelChoices !== null && modelChoicesScope === scope) return;
+      if (modelChoicesLoading.current === scope) return;
+
+      // Clear the previous profile's catalog immediately. Keeping it visible
+      // while the new request is in flight could present profile A's models
+      // while editing profile B.
+      setModelChoices(null);
+      setModelChoicesScope(scope);
+      const requestId = ++modelChoicesRequestGeneration.current;
+      modelChoicesLoading.current = scope;
+      api
+        .getModelOptions(profile)
+        .then((res) => {
+          if (
+            modelChoicesLoading.current !== scope
+            || modelChoicesRequestGeneration.current !== requestId
+          ) return;
+          const flat: {
+            provider: string;
+            model: string;
+            label: string;
+            reasoningLevels?: string[] | null;
+          }[] = [];
+          for (const prov of res.providers ?? []) {
+            const caps = prov.capabilities ?? {};
+            for (const m of prov.models ?? []) {
+              flat.push({
+                provider: prov.slug,
+                model: m,
+                label: `${prov.name} · ${m}`,
+                reasoningLevels: caps[m]?.reasoning_levels,
+              });
+            }
           }
-        }
-        setModelChoices(flat);
-      })
-      .catch(() => setModelChoices([]))
-      .finally(() => {
-        modelChoicesLoading.current = false;
-      });
-  }, [modelChoices]);
+          setModelChoices(flat);
+        })
+        .catch(() => {
+          if (
+            modelChoicesLoading.current === scope
+            && modelChoicesRequestGeneration.current === requestId
+          ) setModelChoices([]);
+        })
+        .finally(() => {
+          if (
+            modelChoicesLoading.current === scope
+            && modelChoicesRequestGeneration.current === requestId
+          ) {
+            modelChoicesLoading.current = null;
+          }
+        });
+    },
+    [modelChoices, modelChoicesScope],
+  );
 
   const load = useCallback(() => {
     Promise.all([api.getProfiles(), api.getActiveProfile().catch(() => null)])
@@ -517,10 +609,14 @@ export default function ProfilesPage() {
   const closeEditor = useCallback(() => {
     activeSoulRequest.current = null;
     activeDescRequest.current = null;
+    activeFallbackRequest.current = null;
+    modelChoicesRequestGeneration.current += 1;
+    modelChoicesLoading.current = null;
+    invalidateModelSave();
     setEditingModelFor(null);
     setEditingDescFor(null);
     setEditingSoulFor(null);
-  }, []);
+  }, [invalidateModelSave]);
 
   const openSoulEditor = useCallback(
     async (name: string) => {
@@ -530,6 +626,7 @@ export default function ProfilesPage() {
         closeEditor();
         return;
       }
+      invalidateModelSave();
       setEditingDescFor(null);
       setEditingModelFor(null);
       setEditingSoulFor(name);
@@ -546,7 +643,7 @@ export default function ProfilesPage() {
         }
       }
     },
-    [closeEditor, editingSoulFor, showToast, t.status.error],
+    [closeEditor, editingSoulFor, invalidateModelSave, showToast, t.status.error],
   );
 
   const handleSaveSoul = async (name: string) => {
@@ -569,13 +666,14 @@ export default function ProfilesPage() {
         closeEditor();
         return;
       }
+      invalidateModelSave();
       activeDescRequest.current = p.name;
       setEditingSoulFor(null);
       setEditingModelFor(null);
       setEditingDescFor(p.name);
       setDescText(p.description ?? "");
     },
-    [closeEditor, editingDescFor],
+    [closeEditor, editingDescFor, invalidateModelSave],
   );
 
   const handleSaveDesc = async (name: string) => {
@@ -651,14 +749,147 @@ export default function ProfilesPage() {
         closeEditor();
         return;
       }
+      invalidateModelSave();
       setEditingSoulFor(null);
       setEditingDescFor(null);
       setEditingModelFor(p.name);
-      setModelEditChoice(modelKey(p.provider, p.model));
-      loadModelChoices();
+      const initialChoice = modelKey(p.provider, p.model);
+      setModelEditChoice(initialChoice);
+      setModelEditInitialChoice(initialChoice);
+      setReasoningEditChoice(p.reasoning_effort ?? "");
+      setFallbackEdits([]);
+      setFallbacksLoaded(false);
+      setFallbacksLoadFailed(false);
+      setFallbacksLoading(true);
+      const fallbackRequestToken = `${p.name}:${++fallbackRequestGeneration.current}`;
+      activeFallbackRequest.current = fallbackRequestToken;
+      loadModelChoices(p.name);
+      void api
+        .getProfileFallbacks(p.name)
+        .then((response) => {
+          if (activeFallbackRequest.current !== fallbackRequestToken) return;
+          setFallbackEdits(
+            response.fallbacks.map((entry) => ({
+              source_index: entry.source_index,
+              source_provider: entry.source_provider ?? null,
+              source_model: entry.source_model ?? null,
+              source_base_url: entry.source_base_url ?? null,
+              source_api_mode: entry.source_api_mode ?? null,
+              provider: entry.provider,
+              model: entry.model,
+              reasoning_effort: entry.reasoning_effort ?? "",
+              base_url: entry.base_url,
+              api_mode: entry.api_mode,
+            })),
+          );
+          setFallbacksLoadFailed(false);
+          setFallbacksLoaded(true);
+        })
+        .catch((error) => {
+          if (activeFallbackRequest.current === fallbackRequestToken) {
+            setFallbacksLoadFailed(true);
+            showToast(`${t.status.error}: ${error}`, "error");
+          }
+        })
+        .finally(() => {
+          if (activeFallbackRequest.current === fallbackRequestToken) {
+            setFallbacksLoading(false);
+          }
+        });
     },
-    [closeEditor, editingModelFor, loadModelChoices],
+    [
+      closeEditor,
+      editingModelFor,
+      invalidateModelSave,
+      loadModelChoices,
+      showToast,
+      t.status.error,
+    ],
   );
+
+  // Keep a persisted custom/unknown model visible in the picker even when the
+  // dashboard catalog has no matching option. It remains a display-only
+  // option: the save path below still only writes catalog selections.
+  const unlistedInitialModel =
+    modelChoices !== null &&
+    modelEditInitialChoice !== "" &&
+    !modelChoices.some(
+      (c) => `${c.provider}\u0000${c.model}` === modelEditInitialChoice,
+    );
+
+  const fallbackModelOptions = (entry: FallbackDraft) => {
+    const current = modelKey(entry.provider, entry.model);
+    const listed = modelChoices ?? [];
+    if (
+      current &&
+      !listed.some((choice) => `${choice.provider}\u0000${choice.model}` === current)
+    ) {
+      return [
+        {
+          provider: entry.provider,
+          model: entry.model,
+          label: `${entry.provider} · ${entry.model}`,
+        },
+        ...listed,
+      ];
+    }
+    return listed;
+  };
+
+  // Reasoning dial options for a selected model: provider-known levels when
+  // the catalog carries them, full list when unknown, empty when the model
+  // has no dial (caller hides the select).
+  const reasoningOptionsFor = (
+    provider: string | null,
+    model: string | null,
+    savedEffort?: string,
+  ) => {
+    if (!provider || !model) return EFFORT_OPTIONS;
+    const choice = (modelChoices ?? []).find(
+      (c) => `${c.provider}\u0000${c.model}` === `${provider}\u0000${model}`,
+    );
+    return filterEffortOptions(choice?.reasoningLevels, savedEffort);
+  };
+
+  const addFallback = () => {
+    setFallbackEdits((previous) => [
+      ...previous,
+      {
+        source_index: null,
+        source_provider: null,
+        source_model: null,
+        source_base_url: null,
+        source_api_mode: null,
+        provider: "",
+        model: "",
+        reasoning_effort: "",
+        base_url: null,
+        api_mode: null,
+      },
+    ]);
+  };
+
+  const updateFallback = (index: number, patch: Partial<FallbackDraft>) => {
+    setFallbackEdits((previous) =>
+      previous.map((entry, entryIndex) =>
+        entryIndex === index ? { ...entry, ...patch } : entry,
+      ),
+    );
+  };
+
+  const removeFallback = (index: number) => {
+    setFallbackEdits((previous) => previous.filter((_, i) => i !== index));
+  };
+
+  const moveFallback = (index: number, direction: -1 | 1) => {
+    setFallbackEdits((previous) => {
+      const nextIndex = index + direction;
+      if (nextIndex < 0 || nextIndex >= previous.length) return previous;
+      const next = [...previous];
+      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+      return next;
+    });
+  };
 
   const handleSaveModel = async (name: string) => {
     const picked = modelEditChoice
@@ -666,23 +897,91 @@ export default function ProfilesPage() {
           (c) => `${c.provider}\u0000${c.model}` === modelEditChoice,
         )
       : undefined;
-    if (!picked) return;
+    const unchangedUnlistedModel =
+      modelEditChoice !== "" && modelEditChoice === modelEditInitialChoice;
+    if (modelEditChoice && modelChoices?.length && !picked && !unchangedUnlistedModel) {
+      return;
+    }
+    if (
+      fallbacksLoaded &&
+      fallbackEdits.some((entry) => !entry.provider.trim() || !entry.model.trim())
+    ) {
+      return;
+    }
+    const changedModel =
+      picked !== undefined && modelEditChoice !== modelEditInitialChoice ? picked : null;
+    const requestId = ++activeModelRequest.current;
     setModelSaving(true);
     try {
-      await api.setProfileModel(name, picked.provider, picked.model);
-      showToast(`${L.modelSaved}: ${picked.model}`, "success");
+      const settings = await api.setProfileSettings(
+        name,
+        changedModel?.provider ?? null,
+        changedModel?.model ?? null,
+        reasoningEditChoice,
+      );
+      if (activeModelRequest.current !== requestId) return;
       setProfiles((prev) =>
         prev.map((p) =>
           p.name === name
-            ? { ...p, model: picked.model, provider: picked.provider }
+            ? {
+                ...p,
+                ...(changedModel
+                  ? { model: changedModel.model, provider: changedModel.provider }
+                  : {}),
+                reasoning_effort: settings.reasoning_effort,
+              }
             : p,
         ),
       );
+      if (changedModel) {
+        showToast(`${L.modelSaved}: ${changedModel.model}`, "success");
+      }
+      showToast(
+        `${L.reasoningSaved}: ${settings.reasoning_effort || L.reasoningUnset}`,
+        "success",
+      );
+      if (fallbacksLoaded) {
+        const fallbackResponse = await api.updateProfileFallbacks(
+          name,
+          fallbackEdits.map(
+            ({
+              source_index,
+              source_provider,
+              source_model,
+              source_base_url,
+              source_api_mode,
+              provider,
+              model,
+              reasoning_effort,
+              base_url,
+              api_mode,
+            }) => ({
+              source_index,
+              source_provider,
+              source_model,
+              source_base_url,
+              source_api_mode,
+              provider,
+              model,
+              reasoning_effort,
+              base_url,
+              api_mode,
+            }),
+          ),
+        );
+        if (activeModelRequest.current !== requestId) return;
+        setFallbackEdits(fallbackResponse.fallbacks);
+        showToast(L.fallbackSaved, "success");
+      }
       setEditingModelFor(null);
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      if (activeModelRequest.current === requestId) {
+        showToast(`${t.status.error}: ${e}`, "error");
+      }
     } finally {
-      setModelSaving(false);
+      if (activeModelRequest.current === requestId) {
+        setModelSaving(false);
+      }
     }
   };
 
@@ -700,6 +999,15 @@ export default function ProfilesPage() {
     open: editorName != null,
     onClose: closeEditor,
   });
+
+  const mainModelParts = modelEditChoice
+    ? modelEditChoice.split("\u0000")
+    : [];
+  const mainReasoningOptions = reasoningOptionsFor(
+    mainModelParts[0] || null,
+    mainModelParts[1] || null,
+    reasoningEditChoice || undefined,
+  );
 
   const handleCopyTerminalCommand = async (name: string) => {
     let cmd: string;
@@ -1092,7 +1400,9 @@ export default function ProfilesPage() {
                       <div className="flex items-start gap-2">
                         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
                           <span className="font-medium text-sm truncate">
-                            {p.display_name?.trim() ? `${p.display_name.trim()} (${p.name})` : p.name}
+                            {p.display_name?.trim()
+                              ? `${p.display_name.trim()} (${p.name})`
+                              : p.name}
                           </span>
 
                           {active && (
@@ -1216,6 +1526,10 @@ export default function ProfilesPage() {
                           {t.profiles.skills}: {p.skill_count}
                         </span>
 
+                        <span className="truncate">
+                          {L.reasoningEffort}: {p.reasoning_effort || L.reasoningUnset}
+                        </span>
+
                         <span className="font-mono truncate">{p.path}</span>
                       </div>
                     </>
@@ -1240,7 +1554,7 @@ export default function ProfilesPage() {
           <div
             className={cn(
               themedBody,
-              "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]",
+              "relative w-full max-w-2xl border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]",
             )}
           >
             <Button
@@ -1270,14 +1584,15 @@ export default function ProfilesPage() {
             <div
               className={cn(
                 "p-5 grid gap-4",
-                editorKind === "soul" && "min-h-0 overflow-y-auto",
+                (editorKind === "model" || editorKind === "soul") &&
+                  "min-h-0 overflow-y-auto",
               )}
             >
-              {editorKind === "model" &&
-                (modelChoices !== null && modelChoices.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">{L.modelNone}</p>
-                ) : (
-                  <>
+              {editorKind === "model" && (
+                <>
+                  {modelChoices !== null && modelChoices.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">{L.modelNone}</p>
+                  ) : (
                     <Select
                       value={modelEditChoice}
                       disabled={modelChoices === null}
@@ -1286,6 +1601,11 @@ export default function ProfilesPage() {
                       }
                       onValueChange={setModelEditChoice}
                     >
+                      {unlistedInitialModel && (
+                        <SelectOption value={modelEditInitialChoice}>
+                          {modelEditInitialChoice.replace("\u0000", " · ")}
+                        </SelectOption>
+                      )}
                       {(modelChoices ?? []).map((c) => (
                         <SelectOption
                           key={`${c.provider}\u0000${c.model}`}
@@ -1295,26 +1615,204 @@ export default function ProfilesPage() {
                         </SelectOption>
                       ))}
                     </Select>
+                  )}
 
-                    <div className="flex justify-end">
+                  {mainReasoningOptions.length > 0 && (
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="profile-reasoning-effort">
+                        {L.reasoningEffort}
+                      </Label>
+                      <Select
+                        id="profile-reasoning-effort"
+                        value={reasoningEditChoice}
+                        disabled={modelSaving}
+                        onValueChange={setReasoningEditChoice}
+                      >
+                        <SelectOption value="">{L.reasoningInherit}</SelectOption>
+                        {mainReasoningOptions.map((option) => (
+                          <SelectOption key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectOption>
+                        ))}
+                      </Select>
+                    </div>
+                  )}
+
+                  <fieldset
+                    className="grid gap-3 border-t border-border pt-4"
+                    data-profile-fallbacks
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <legend className="font-mondwest text-display text-xs tracking-wider text-muted-foreground">
+                        {L.fallbacks}
+                      </legend>
                       <Button
+                        ghost
                         size="sm"
-                        className="uppercase"
-                        onClick={() => handleSaveModel(editorName)}
+                        className="gap-1.5"
+                        onClick={addFallback}
                         disabled={
                           modelSaving ||
-                          !modelChoices?.some(
-                            (c) =>
-                              `${c.provider}\u0000${c.model}` ===
-                              modelEditChoice,
-                          )
+                          fallbacksLoading ||
+                          !fallbacksLoaded ||
+                          modelChoices === null ||
+                          modelChoices.length === 0
                         }
                       >
-                        {modelSaving ? t.common.saving : t.common.save}
+                        <Plus className="h-3.5 w-3.5" />
+                        {L.fallbackAdd}
                       </Button>
                     </div>
-                  </>
-                ))}
+
+                    {fallbacksLoading && (
+                      <p className="text-xs text-muted-foreground">{L.modelLoading}</p>
+                    )}
+
+                    {!fallbacksLoading && fallbacksLoadFailed && (
+                      <p className="text-xs text-destructive">
+                        {L.fallbackLoadFailed}
+                      </p>
+                    )}
+
+                    {!fallbacksLoading && fallbacksLoaded && fallbackEdits.length === 0 && (
+                      <p className="text-xs text-muted-foreground">{L.fallbackNone}</p>
+                    )}
+
+                    {fallbackEdits.map((entry, index) => {
+                      const current = modelKey(entry.provider, entry.model);
+                      const fallbackReasoningOptions = reasoningOptionsFor(
+                        entry.provider || null,
+                        entry.model || null,
+                        entry.reasoning_effort || undefined,
+                      );
+                      return (
+                        <div
+                          key={index}
+                          className="grid gap-2 border border-border p-3"
+                          data-fallback-entry
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                              #{index + 1}
+                            </span>
+                            <div className="flex items-center gap-1">
+                              <Button
+                                ghost
+                                size="icon"
+                                title={L.fallbackMoveUp}
+                                aria-label={L.fallbackMoveUp}
+                                disabled={index === 0 || modelSaving || !fallbacksLoaded}
+                                onClick={() => moveFallback(index, -1)}
+                              >
+                                <ChevronUp className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                ghost
+                                size="icon"
+                                title={L.fallbackMoveDown}
+                                aria-label={L.fallbackMoveDown}
+                                disabled={
+                                  index === fallbackEdits.length - 1 ||
+                                  modelSaving ||
+                                  !fallbacksLoaded
+                                }
+                                onClick={() => moveFallback(index, 1)}
+                              >
+                                <ChevronDown className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                ghost
+                                size="icon"
+                                title={L.fallbackRemove}
+                                aria-label={L.fallbackRemove}
+                                disabled={modelSaving || !fallbacksLoaded}
+                                onClick={() => removeFallback(index)}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          </div>
+
+                          <Select
+                            value={current}
+                            disabled={
+                              modelChoices === null ||
+                              modelSaving ||
+                              !fallbacksLoaded
+                            }
+                            placeholder={L.fallbackSelect}
+                            onValueChange={(value) => {
+                              const separator = value.indexOf("\u0000");
+                              if (separator < 1) return;
+                              updateFallback(index, {
+                                provider: value.slice(0, separator),
+                                model: value.slice(separator + 1),
+                              });
+                            }}
+                          >
+                            {fallbackModelOptions(entry).map((choice) => (
+                              <SelectOption
+                                key={`${choice.provider}\u0000${choice.model}`}
+                                value={`${choice.provider}\u0000${choice.model}`}
+                              >
+                                {choice.label}
+                              </SelectOption>
+                            ))}
+                          </Select>
+
+                          {fallbackReasoningOptions.length > 0 && (
+                            <Select
+                              value={entry.reasoning_effort}
+                              disabled={modelSaving || !fallbacksLoaded}
+                              onValueChange={(value) =>
+                                updateFallback(index, { reasoning_effort: value })
+                              }
+                            >
+                              <SelectOption value="">{L.reasoningInherit}</SelectOption>
+                              {fallbackReasoningOptions.map((option) => (
+                                <SelectOption key={option.value} value={option.value}>
+                                  {option.label}
+                                </SelectOption>
+                              ))}
+                            </Select>
+                          )}
+
+                          {entry.base_url && (
+                            <p className="truncate text-[11px] text-muted-foreground">
+                              {L.fallbackCustomEndpoint}: {entry.base_url}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </fieldset>
+
+                  <div className="flex justify-end">
+                    <Button
+                      size="sm"
+                      className="uppercase"
+                      onClick={() => handleSaveModel(editorName)}
+                      disabled={
+                        modelSaving ||
+                        (fallbacksLoaded &&
+                          fallbackEdits.some(
+                            (entry) => !entry.provider.trim() || !entry.model.trim(),
+                          )) ||
+                        (modelEditChoice !== "" &&
+                          (modelChoices === null ||
+                            (modelChoices.length > 0 &&
+                              !modelChoices.some(
+                                (c) =>
+                                  `${c.provider}\u0000${c.model}` === modelEditChoice,
+                              ) &&
+                              modelEditChoice !== modelEditInitialChoice)))
+                      }
+                    >
+                      {modelSaving ? t.common.saving : t.common.save}
+                    </Button>
+                  </div>
+                </>
+              )}
 
               {editorKind === "desc" && (
                 <>

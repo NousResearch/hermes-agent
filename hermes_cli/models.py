@@ -136,6 +136,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("stealth/ox-alpha",                       "free"),  # "Ox Alpha" stealth reasoning model — 1M ctx
     ("openrouter/elephant-alpha",              "free"),
     ("z-ai/glm-5.2:free",                      "free"),
+    ("dots-studio/dots-3-note-preview:free",    "free"),
     ("poolside/laguna-s-2.1:free",             "free"),
     ("poolside/laguna-xs-2.1:free",            "free"),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),

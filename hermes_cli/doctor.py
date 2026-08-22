@@ -1409,6 +1409,9 @@ def run_doctor(args):
                 "lmstudio",
                 "nous",
                 "nvidia",
+                # Vertex AI model IDs include the publisher namespace
+                # (for example google/gemini-3.7-flash).
+                "vertex",
                 # Fireworks' native model IDs are slash-form
                 # (accounts/fireworks/models/... and .../routers/...), so a "/"
                 # is expected, not an aggregator vendor prefix.

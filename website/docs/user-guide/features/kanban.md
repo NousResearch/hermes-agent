@@ -300,7 +300,7 @@ parent, missing input, unmet capability) before unblocking, or raise
 | `kanban_request_review` | Start same-card review with a durable `summary`, optional `metadata`, and optional reviewer profile. The task moves to `review`; this is not a block. | `summary` |
 | `kanban_request_changes` | Reviewer verdict from an active review run. Closes that run, reapplies parent gating, and routes the task to its original implementer without block-loop accounting. | `reason` |
 | `kanban_block` | Stop work and route by why: `kind=dependency` (waits in `todo`, auto-resumes), `needs_input`/`capability`/`transient` (surface to a human). Repeated same-kind re-blocks auto-escalate to `triage`. | `reason` |
-| `kanban_heartbeat` | Signal liveness during long operations. Pure side-effect. | — |
+| `kanban_heartbeat` | Tell humans you are still here during long operations. Renews *liveness* only — it never renews the separate *progress* lease, whatever its `note` says. Pure side-effect. | — |
 | `kanban_comment` | Append a durable note to the task thread. | `task_id`, `body` |
 | `kanban_attach` | Attach a file to a task by passing its bytes inline (base64); stored under the task's attachments dir (25 MB cap). | file bytes + name |
 | `kanban_attach_url` | Attach a file to a task by URL. | `url` |
@@ -392,13 +392,166 @@ Keep secrets, raw logs, tokens, OAuth material, and unrelated transcripts out of
 tests, say so explicitly in `summary` and use `metadata` for the evidence that
 does exist, such as source URLs, issue ids, or manual review steps.
 
+### Liveness vs. progress {#liveness-vs-progress}
+
+:::warning Behaviour change on upgrade — the progress guard is ON by default
+
+`kanban.no_progress_timeout_seconds` defaults to `2700` (45 min) and applies
+to every dispatch surface (gateway watcher, `hermes kanban dispatch`, the
+standalone daemon, the dashboard's dispatch nudge). Before this change, a
+running claim was renewed by *any* model traffic and no watchdog could ever
+reclaim a worker that reasoned without acting.
+
+What changes for an existing board:
+
+- A running task whose worker makes no tool call and no board transition for
+  45 minutes is now **terminated and re-queued as a failed attempt**, so it
+  also ticks `consecutive_failures` and can auto-block after
+  `kanban.failure_limit` rounds. `stale` reclaims remain penalty-free.
+- Termination now signals the worker's whole **process group** when the
+  worker leads one (dispatcher-spawned workers do). Anything the worker had
+  spawned — a build, a crawl, a training run — is terminated with it instead
+  of being left behind holding the workspace. Windows behaviour is unchanged.
+- Because that widens the blast radius of a wrong PID, **every** reclaim path
+  (TTL, stale, no-progress, `max_runtime_seconds`, dashboard drag-off-running,
+  ancestor invalidation) now re-verifies the worker's recorded birth identity
+  before signalling and refuses to signal anything it cannot prove it owns —
+  once before the SIGTERM, and again before the SIGKILL, because the grace
+  window in between is long enough for the worker to exit and its PID to be
+  reused. Workers already running at upgrade time have no recorded identity,
+  so they are never force-terminated; they are reclaimed once their process
+  exits, and each declined attempt is reported as `reclaim_deferred`
+  (`reason: ownership_unproven`, or `escalation_ownership_unproven` when only
+  the SIGKILL was withheld).
+- Workflows that legitimately sit inside a single quiet tool-free model call
+  are unaffected: that call renews *liveness*, and liveness is not what this
+  guard measures. Long **foreground** tool calls are unaffected too.
+- Upgrading is data-safe. `last_progress_at` is added as a nullable column on
+  `tasks` and `task_runs`; pre-existing rows stay `NULL` and are measured
+  from their run's `started_at`, never treated as infinitely stale.
+
+Set `kanban.no_progress_timeout_seconds: 0` to opt out entirely, or raise it
+if your boards run genuinely long single-call work.
+
+:::
+
+
+A running claim is held by **two independent leases**. Keeping them separate
+is what lets the dispatcher be patient with a slow model and impatient with a
+worker that is busy going nowhere.
+
+| Lease | Column | Answers | Renewed by |
+|---|---|---|---|
+| **Liveness** | `last_heartbeat_at` (+ `claim_expires`) | "Is the worker process and its provider responsive?" | Any agent activity — including raw stream tokens, API waits and retry backoff. Bridged automatically; a worker never has to prove it exists. |
+| **Progress** | `last_progress_at` | "Has anything observable happened *outside* the model's token stream?" | A tool invocation (attempted, in-flight, or completed) seen by the tool-execution middleware, a board state transition (comment, attach, complete, block, link, edit…), or the claim that started the run. |
+
+The rule in one line: **reasoning renews liveness, never progress.** Or, put
+as a test you can apply to any new signal: if a worker could emit it while
+producing nothing, it is liveness.
+
+That asymmetry is deliberate. A single tool-free model call that legitimately
+takes twenty minutes keeps its claim, because liveness carries it. A worker
+that reasons for thousands of tokens, calls no tool, changes no state and
+produces no artifact does *not* keep its claim, because nothing renewed
+progress. Before the split, one clock served both questions and the second
+case renewed indefinitely.
+
+Some consequences worth knowing:
+
+- **A tool call that *blocks* is not "no progress."** While a tool is
+  executing in the worker's own thread, the in-flight ticker keeps renewing
+  progress, so a long foreground build or crawl is unaffected by
+  `kanban.no_progress_timeout_seconds`.
+- **Background work is measured through the worker, not the job.** A tool
+  that hands work off and returns immediately — `terminal(background=true)`,
+  which is the only way to run past the foreground timeout cap — renews
+  progress at its two edges, not once per minute of the job it started. That
+  is deliberate: the thing being watched is the worker. A worker that starts
+  a background build and then polls it is calling tools, so its progress
+  lease keeps moving; one that starts it and falls into a reasoning loop is
+  not, and should be reclaimed.
+- **`kanban_heartbeat` can never hold a claim open.** It renews liveness and
+  records its `note` as commentary for humans. It does **not** renew progress
+  — not with a note, not with a detailed note, not with a note never sent
+  before. The note is free text the model writes and nothing validates it
+  against the world, so gating a lease on it would be a spelling test rather
+  than a guard: a worker stuck in a reasoning loop passes it by varying a
+  sentence, and alternating two notes defeats any "is this note new?" check.
+  For the same reason the tool is excluded from the "a tool ran" signal. The
+  tool result states this contract explicitly.
+- **A human moving the card renews the worker's progress lease.** Progress is
+  renewed by board *state transitions*, and the transition table does not
+  record who caused them: a comment you add from the dashboard, an attachment
+  you upload, a link you draw, or an edit you make to the title or body all
+  stamp `last_progress_at` on the running task exactly as the worker's own
+  would. So a card you are actively curating will not be reclaimed for
+  no-progress while you keep touching it, even if its worker is doing nothing
+  at all. This is a real hole in the guard, and it is the deliberate trade:
+  the alternative — attributing every transition to an actor and filtering on
+  it — buys a rarely-exercised edge case at the cost of a much more delicate
+  boundary, and the *dangerous* direction (a worker renewing its own lease
+  from text it authored) is closed regardless. If you want a wedged worker
+  reclaimed, stop commenting on its card and let the lease expire, or reclaim
+  it yourself from the dashboard.
+- **A no-progress reclaim counts as a failed attempt.** `stale` does not,
+  because absent heartbeats can mean legitimately quiet long work. No-progress
+  is evidence-based: the model was demonstrably live and produced nothing, so
+  respawning it unboundedly is a spin loop. After `kanban.failure_limit`
+  rounds the card auto-blocks for a human.
+- **Nothing is ever signalled without proof of ownership.** A PID is a
+  recycled integer, so `tasks.worker_pid` alone is not an identity: the worker
+  it named can exit and the kernel can hand that number to your editor, a
+  database, or another agent's dispatcher. At spawn the dispatcher therefore
+  records the process's *birth identity* alongside its PID — on Linux the
+  `starttime` field of `/proc/<pid>/stat` pinned to the kernel's `boot_id`,
+  plus the session and process-group ids; elsewhere `psutil`'s creation time —
+  and every reclaim path re-reads and re-verifies it before it is allowed to
+  send a signal. Termination also requires that the live process is still its
+  own session and process-group leader, which is what `start_new_session=True`
+  gives a dispatcher-spawned worker and what proves the group belongs to the
+  dispatcher. This matters most precisely because reclaim signals a process
+  *group*: acting on a recycled PID kills one wrong process; acting on a
+  recycled PID's group kills a whole wrong tree. On Linux the `boot_id` is
+  required, not optional: `starttime` is measured in ticks since boot, so
+  without it a record written before a reboot can be satisfied by a process
+  that happens to hold the same PID after one. A worker whose `boot_id` could
+  not be read gets no identity at all, and is therefore never signalled.
+- **The proof is taken again before the SIGKILL.** Termination is SIGTERM, a
+  five-second grace, then SIGKILL — and the verdict that authorised the
+  SIGTERM has aged by the whole grace window before the SIGKILL is due. The
+  likeliest reason a PID is still alive at the end of that window is not a
+  stubborn worker but a worker that exited promptly and had its number reused,
+  which is exactly the case a SIGKILL cannot be taken back from. So ownership
+  is re-verified immediately before escalating, and the signal mode and
+  process group are resolved again from that second verdict rather than reused
+  from the first. If it does not come back proven, no SIGKILL is sent at all
+  and the claim is held with `reason: escalation_ownership_unproven`.
+- **An unprovable worker is never killed, and never silently forgotten.** If
+  the identity is missing (a row claimed before the column existed), cannot be
+  read, does not match (the PID was reused), or the process is not a session
+  leader, the dispatcher signals **nothing** and *holds* the claim instead of
+  requeueing it — releasing it would start a second worker beside whatever is
+  actually running. It emits a `reclaim_deferred` event with
+  `reason: ownership_unproven` and an `ownership_reason` naming the specific
+  failure, and it deliberately leaves the stale `last_progress_at` in place,
+  so the same condition is re-detected and re-reported on every following
+  tick rather than going quiet. Such a card stays `running` until its recorded
+  process actually exits — at which point the normal reclaim completes. If you
+  see `ownership_unproven` repeating, check the PID by hand; the honest answer
+  is that the dispatcher does not know what that process is.
+- **Upgrading is safe.** Runs claimed before the column existed have
+  `last_progress_at = NULL` and are measured from when their attempt started,
+  never treated as infinitely stale. They also have no `worker_identity`, so
+  an in-flight worker from before the upgrade is never force-terminated — it
+  is reclaimed once its process exits.
+
 ### The worker lifecycle
 
 Every profile that works kanban tasks automatically gets the worker lifecycle — it's injected into the worker's system prompt at spawn (the `KANBAN_GUIDANCE` block), so there is **nothing to install or configure**. It teaches the worker the full lifecycle in **tool calls**, not CLI commands:
 
 1. On spawn, call `kanban_show()` to read title + body + parent handoffs + prior attempts + full comment thread.
 2. `cd $HERMES_KANBAN_WORKSPACE` (via the terminal tool) and do the work there.
-3. Call `kanban_heartbeat(note="...")` every few minutes during long operations. **If your work may run longer than 1 hour, call `kanban_heartbeat` at least once an hour** — the dispatcher reclaims tasks that have been running past `kanban.dispatch_stale_timeout_seconds` (default 4 h) with no heartbeat in the last hour, on the assumption the worker crashed without cleanup. A reclaim is benign (the task goes back to `ready` for re-dispatch without a failure-counter tick) but you lose your current run's progress.
+3. Act, don't just stay alive. The board tracks two independent clocks — see [Liveness vs. progress](#liveness-vs-progress). *Liveness* renews on its own from ordinary model traffic. *Progress* renews only from **doing** things: a tool call, or a board transition. Nothing the worker *writes* renews it — `kanban_heartbeat` is a liveness signal plus a note for humans, and no wording of that note will hold the claim open. If nothing renews progress for `kanban.no_progress_timeout_seconds` (default 45 min) the dispatcher terminates the worker and re-queues the task as a **failed attempt**. Take the smallest concrete step early, then keep acting in small steps. **If your work may run longer than 1 hour, call `kanban_heartbeat` at least once an hour** — the dispatcher separately reclaims tasks that have been running past `kanban.dispatch_stale_timeout_seconds` (default 4 h) with no heartbeat in the last hour, on the assumption the worker crashed without cleanup. That reclaim is benign (the task goes back to `ready` for re-dispatch without a failure-counter tick) but you lose your current run's progress.
 4. Complete with `kanban_complete(summary="...", metadata={...})`, or `kanban_block(reason="...")` if stuck.
 
 That final `kanban_complete` / `kanban_block` call is part of the worker
@@ -795,6 +948,8 @@ All commands are also available as a slash command in the interactive CLI and in
 | `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
+| `kanban.no_progress_timeout_seconds` | `2700` (45 min) | Bound on the **progress lease** — see [Liveness vs. progress](#liveness-vs-progress). A running task whose worker is alive but has shown no observable progress for this long is terminated and re-queued as a failed attempt. `0` disables the check. Booleans, unparseable values, negatives and anything in `1..59` are refused with a logged warning and fall back to the default rather than silently disabling or over-tightening the guard — a sub-minute progress bound would reclaim healthy workers, so it reads as a units slip (minutes written into a seconds field). |
+| `kanban.dispatch_stale_timeout_seconds` | `14400` (4 h) | Bound on the **liveness lease**. A task running longer than this whose worker has sent no heartbeat in the last hour is reclaimed without a failure-counter tick. |
 
 ```yaml
 kanban:
@@ -826,7 +981,7 @@ The dashboard plugin API now exposes these read-only endpoints (plus a run-contr
 
 | Endpoint | Returns |
 |----------|---------|
-| `GET /api/plugins/kanban/workers/active` | Currently spawned workers with PID, profile, task id, started-at, last heartbeat |
+| `GET /api/plugins/kanban/workers/active` | Currently spawned workers with PID, profile, task id, started-at, and both leases — `last_heartbeat_at` (liveness) plus `last_progress_at` / `progress_age_seconds` (progress) |
 | `GET /api/plugins/kanban/runs/{id}` | Single-run detail — task id, status, started/ended, exit code, log path |
 | `POST /api/plugins/kanban/runs/{run_id}/terminate` | Terminate a reclaimable run — stops the worker and frees the task for re-dispatch |
 | `GET /api/plugins/kanban/inspect` | Combined dispatcher snapshot — backlog, in-progress count vs. `max_in_progress`, recent events |
@@ -1146,13 +1301,15 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 
 | Kind | Payload | When |
 |---|---|---|
-| `spawned` | `{pid}` | Dispatcher successfully started a worker process. |
+| `spawned` | `{pid, identity}` | Dispatcher successfully started a worker process. `identity: false` means no birth identity could be captured for that PID, so this worker can never be force-reclaimed — only reclaimed after it exits. |
 | `heartbeat` | `{note?}` | Worker called `hermes kanban heartbeat $TASK` to signal liveness during long operations. |
-| `reclaimed` | `{stale_lock}` | Claim TTL expired without a completion; task goes back to `ready`. |
-| `crashed` | `{pid, claimer}` | Worker PID no longer alive but TTL hadn't expired yet. |
-| `timed_out` | `{pid, elapsed_seconds, limit_seconds, sigkill}` | `max_runtime_seconds` exceeded; dispatcher SIGTERM'd (then SIGKILL'd after 5 s grace) and re-queued. |
-| `stale` | `{elapsed_seconds, last_heartbeat_at, heartbeat_age_seconds, timeout_seconds, pid, terminated}` | Task ran longer than `kanban.dispatch_stale_timeout_seconds` (default 4 h) AND no `kanban_heartbeat` arrived in the last hour. Dispatcher SIGTERM'd the host-local worker (if any), reset the task to `ready` for re-dispatch. Does NOT tick the failure counter (stale is dispatcher-side absence detection, not a worker fault). Workers running long operations should call `kanban_heartbeat` at least once an hour to avoid this. |
-| `reconciled` | `{reason, claim_lock, claim_expires, worker_pid}` | Orphaned-card reconciliation: the card was `running` with broken claim bookkeeping (`claim_lock` or `claim_expires` NULL — crash mid-claim, manual SQL, DB restore) and no live worker, so none of the TTL/crash/stale paths could ever recover it. The dispatcher requeued it to `ready` with an explanatory comment. Gated by `kanban.reconcile_orphans` in config.yaml (default `true`). |
+| `reclaimed` | `{stale_lock, worker_pid, claim_expires, host_local, heartbeat_stale, retry_status, ownership, ownership_reason, terminated, process_group}` | Claim TTL expired without a completion; task goes back to `ready`. The worker is terminated first, but only if its recorded birth identity still matches the live process — otherwise nothing is signalled and the claim is held (see `reclaim_deferred`). |
+| `crashed` | `{pid, claimer, exit_kind?, exit_code?, pid_recycled?}` | Worker PID no longer alive but TTL hadn't expired yet. `pid_recycled: true` is the other case: the PID *is* alive, but its birth identity no longer matches the one recorded at spawn — so it is not our worker, whatever the number says. That run is closed as crashed (nothing is ever signalled), which is what stops a recycled PID from pinning a card in `running` forever while every reclaim path correctly declines to kill it. |
+| `timed_out` | `{pid, elapsed_seconds, limit_seconds, sigkill, ownership, ownership_reason, terminated, process_group}` | `max_runtime_seconds` exceeded; dispatcher SIGTERM'd (then SIGKILL'd after 5 s grace) and re-queued. Subject to the same ownership proof as every other reclaim — an expired runtime cap is not a licence to signal a PID that may have been reused. |
+| `stale` | `{elapsed_seconds, last_heartbeat_at, heartbeat_age_seconds, timeout_seconds, pid, ownership, ownership_reason, terminated, process_group}` | Task ran longer than `kanban.dispatch_stale_timeout_seconds` (default 4 h) AND no `kanban_heartbeat` arrived in the last hour. Dispatcher SIGTERM'd the host-local worker (if any) — its whole process group when it leads one, so its descendants go too; `process_group` records which — and reset the task to `ready` for re-dispatch. Does NOT tick the failure counter (stale is dispatcher-side absence detection, not a worker fault). Workers running long operations should call `kanban_heartbeat` at least once an hour to avoid this. |
+| `no_progress` | `{classification, worker_state, liveness, last_progress_at, progress_age_seconds, timeout_seconds, last_heartbeat_at, heartbeat_age_seconds, pid, retry_status, ownership, ownership_reason, terminated, process_group}` | The worker's **progress lease** expired: it was demonstrably alive (streaming, reasoning, heartbeating) but produced no tool call and no board transition for `kanban.no_progress_timeout_seconds` (default 45 min). Dispatcher SIGTERM'd the host-local worker — its whole process group when it leads one, so anything it had spawned goes with it — and re-queued the task. `worker_state` (`alive`/`remote`/`unknown`) and `liveness` (`fresh`/`stale`/`never`) say *why*, so you can tell a reasoning loop from a wedged process. Unlike `stale`, this **does** tick the failure counter — a worker that thinks without acting would otherwise respawn forever — so `kanban.failure_limit` rounds of it auto-block the card via `gave_up`. A dispatcher comment on the card records the same reason and is read by the next worker. |
+| `reclaim_deferred` | `{reason, trigger, claim_lock, claim_expires_now, prev_pid, ownership, ownership_reason, ownership_unproven, escalation_ownership_unproven, escalation_ownership_reason, terminated}` | A reclaim was detected but **not** carried out, and the claim is being held rather than released — releasing it would spawn a second worker beside a live process. `trigger` says which watchdog fired (`ttl_expired_worker_alive`, `heartbeat_stale_worker_alive`, `no_progress_worker_alive`, `max_runtime_worker_alive`); `reason` is that same trigger (we signalled, the worker refused to die — the cgroup-throttle case, which self-corrects), `ownership_unproven` (we signalled **nothing** because the recorded birth identity is absent, unreadable, mismatched, missing a `boot_id`, or the process is not a session leader — see `ownership_reason`), or `escalation_ownership_unproven` (we sent the SIGTERM against a proven worker, and by the end of the grace window the PID no longer verified, so the SIGKILL was withheld — see `escalation_ownership_reason`). The claim's TTL is extended by a short grace and the next tick retries; the progress lease is left stale on purpose so the condition keeps being reported. |
+| `reconciled` | `{reason, claim_lock, claim_expires, worker_pid}` | Orphaned-card reconciliation: the card was `running` with broken claim bookkeeping (`claim_lock` or `claim_expires` NULL — crash mid-claim, manual SQL, DB restore) and no live worker (or a live PID whose birth identity proves it is no longer that worker), so none of the TTL/crash/stale paths could ever recover it. The dispatcher requeued it to `ready` with an explanatory comment. Gated by `kanban.reconcile_orphans` in config.yaml (default `true`). |
 | `respawn_guarded` | `{reason}` | Dispatcher refused to re-spawn this ready task this tick. Reasons: `blocker_auth` (last failure was a quota/auth/429 error — wait for the rate window to reset), `recent_success` (a completed run happened in the last hour — wait for review before re-running), `active_pr` (a GitHub PR URL appears in a recent comment — a prior worker already opened a PR). The task stays in `ready`; the next tick gets another chance to spawn. If the underlying condition persists, the normal `consecutive_failures` circuit breaker will auto-block via `gave_up` after `failure_limit` failures. |
 | `spawn_failed` | `{error, failures}` | One spawn attempt failed (missing PATH, workspace unmountable, …). Counter increments; task returns to `ready` for retry. |
 | `protocol_violation` | `{pid, claimer, exit_code, protocol_violation}` | Worker exited successfully while the task was still `running`, usually because it answered without calling `kanban_complete` or `kanban_block`. Emitted on every violation (the payload's `protocol_violation: true` marker is copied into the run metadata and feeds the violation-only retry budget). Below the budget — up to `_PROTOCOL_VIOLATION_FAILURE_LIMIT` (default 3) *consecutive* violations, per-task `max_retries` overriding — the task simply returns to `ready` for another attempt; when the streak reaches the bound the dispatcher also emits `gave_up` and auto-blocks. |

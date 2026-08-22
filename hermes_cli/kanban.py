@@ -81,6 +81,12 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        # Two independent leases on a running claim — liveness ("the worker is
+        # responsive") and progress ("something observable happened"). Both are
+        # exported so scripted monitors can tell a busy worker from a
+        # productive one.
+        "last_heartbeat_at": t.last_heartbeat_at,
+        "last_progress_at": t.last_progress_at,
     }
 
 
@@ -367,8 +373,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "circuit breaker. Trip on the Nth failure — "
                                "e.g. --max-retries 1 blocks on the first "
                                "failure (no retries), --max-retries 3 allows "
-                               "two retries. Omit to use the dispatcher's "
-                               "kanban.failure_limit config "
+                               "two retries. Counts spawn_failed, timed_out, "
+                               "crashed and no_progress attempts (stale "
+                               "reclaims are free). Omit to use the "
+                               "dispatcher's kanban.failure_limit config "
                                f"(default {kb.DEFAULT_FAILURE_LIMIT}).")
     p_create.add_argument("--model", default=None, dest="model_override",
                           help="Pin the worker to this model (passed as "
@@ -1739,6 +1747,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
                     "error": r.error,
                     "metadata": r.metadata,
                     "worker_pid": r.worker_pid,
+                    "last_heartbeat_at": r.last_heartbeat_at,
+                    "last_progress_at": r.last_progress_at,
                     "started_at": r.started_at,
                     "ended_at": r.ended_at,
                 }
@@ -1780,6 +1790,23 @@ def _cmd_show(args: argparse.Namespace) -> int:
         else:
             print(f"  max-retries: {kb.DEFAULT_FAILURE_LIMIT} (default)")
     print(f"  created:   {_fmt_ts(task.created_at)} by {task.created_by or '-'}")
+    if task.status == "running":
+        # The pair is the diagnostic: a fresh liveness age next to a stale
+        # progress age is a worker that is talking but not acting — exactly
+        # the shape `detect_no_progress_running` reclaims.
+        _now = int(time.time())
+
+        def _age(ts):
+            return f"{_now - int(ts)}s ago" if ts else "never"
+
+        _limit = kb.resolve_no_progress_timeout_seconds(
+            kb.configured_kanban_setting("no_progress_timeout_seconds")
+        )
+        print(
+            f"  leases:    liveness {_age(task.last_heartbeat_at)}, "
+            f"progress {_age(task.last_progress_at)} "
+            f"(no-progress limit: {_limit or 'disabled'}s)"
+        )
 
     # Diagnostics section — surface active distress signals at the top
     # of show output so CLI users see them before scrolling through
@@ -2643,6 +2670,12 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             _kanban_cfg.get("max_in_progress_per_profile")
         )
         max_in_progress = _coerce_positive_int(_kanban_cfg.get("max_in_progress"))
+        # Progress-lease bound. Same resolution the gateway-embedded
+        # dispatcher uses, so a tick behaves identically whichever surface
+        # ran it.
+        no_progress_timeout_seconds = kb.resolve_no_progress_timeout_seconds(
+            _kanban_cfg.get("no_progress_timeout_seconds")
+        )
         # Memory-derived default when unset (OOF-30/OOF-77) — same
         # fallback the gateway-embedded dispatcher applies, so behaviour
         # matches regardless of which path runs the tick.
@@ -2658,6 +2691,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_in_progress_per_profile = None
         max_in_progress = None
         max_spawn = getattr(args, "max", None)
+        no_progress_timeout_seconds = kb.DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
             conn,
@@ -2667,6 +2701,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            no_progress_timeout_seconds=no_progress_timeout_seconds,
         )
     if getattr(args, "json", False):
         print(json.dumps({
@@ -2674,6 +2709,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "crashed": res.crashed,
             "timed_out": res.timed_out,
             "stale": res.stale,
+            "no_progress": res.no_progress,
             "auto_blocked": res.auto_blocked,
             "promoted": res.promoted,
             "spawned": [
@@ -2699,6 +2735,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     print(f"Stale:        {len(res.stale)}")
     if res.stale:
         print(f"  {', '.join(res.stale)}")
+    print(f"No progress:  {len(res.no_progress)}")
+    if res.no_progress:
+        print(f"  {', '.join(res.no_progress)}")
     print(f"Auto-blocked: {len(res.auto_blocked)}")
     if res.auto_blocked:
         print(f"  {', '.join(res.auto_blocked)}")
@@ -2755,7 +2794,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             "    kanban:\n"
             "      dispatch_in_gateway: true      # default\n"
             "      dispatch_interval_seconds: 60\n"
-            "      failure_limit: 2              # consecutive non-success attempts before auto-block\n"
+            "      failure_limit: 2              # consecutive spawn_failed/timed_out/crashed/no_progress before auto-block\n"
             "\n"
             "Running both the gateway AND this standalone daemon will\n"
             "race for claims. If you truly need the old standalone\n"

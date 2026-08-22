@@ -901,7 +901,7 @@ export function TaskDrawer({
                 <ScrollFade max="11rem">
                   <ul className="flex flex-col gap-1.5">
                     {detail.runs.map(run => {
-                      const failed = ['crashed', 'failed', 'timed_out', 'gave_up'].includes(run.outcome ?? run.status)
+                      const failed = ['crashed', 'failed', 'timed_out', 'no_progress', 'gave_up'].includes(run.outcome ?? run.status)
 
                       return (
                         <li className="flex flex-col gap-0.5 text-[0.71rem]" key={run.id}>

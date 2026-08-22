@@ -193,6 +193,7 @@ type KanbanMessages = {
     gaveUpTitle: string
     crashedTitle: string
     timedOutTitle: string
+    noProgressTitle: string
     openKanban: string
     artifacts: (n: number) => string
   }
@@ -395,6 +396,7 @@ export const en: KanbanMessages = {
     gaveUpTitle: 'Task gave up',
     crashedTitle: 'Worker crashed — will retry',
     timedOutTitle: 'Task timed out — will retry',
+    noProgressTitle: 'No observable progress — worker terminated, will retry',
     openKanban: 'Open Kanban',
     artifacts: (n: number) => `${n} artifacts`
   }
@@ -596,6 +598,7 @@ const ja: KanbanMessages = {
     gaveUpTitle: 'タスクを断念しました',
     crashedTitle: 'ワーカーがクラッシュ — 再試行します',
     timedOutTitle: 'タスクがタイムアウト — 再試行します',
+    noProgressTitle: '観測可能な進捗なし — ワーカーを終了、再試行します',
     openKanban: 'かんばんを開く',
     artifacts: (n: number) => `成果物 ${n} 件`
   }
@@ -794,6 +797,7 @@ const zh: KanbanMessages = {
     gaveUpTitle: '任务已放弃',
     crashedTitle: '工作单元崩溃 — 将重试',
     timedOutTitle: '任务超时 — 将重试',
+    noProgressTitle: '无可观测进展 — worker 已终止，将重试',
     openKanban: '打开看板',
     artifacts: (n: number) => `${n} 个产物`
   }
@@ -992,6 +996,7 @@ const zhHant: KanbanMessages = {
     gaveUpTitle: '任務已放棄',
     crashedTitle: '工作單元當機 — 將重試',
     timedOutTitle: '任務逾時 — 將重試',
+    noProgressTitle: '無可觀測進展 — worker 已終止，將重試',
     openKanban: '開啟看板',
     artifacts: (n: number) => `${n} 個產物`
   }

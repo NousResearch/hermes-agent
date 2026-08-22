@@ -26,6 +26,16 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
+def _resolve_no_progress_timeout_seconds(
+    kanban_cfg: dict[str, Any],
+    kb: Any,
+) -> int:
+    """Resolve the progress lease through the DB layer's fail-safe parser."""
+    return kb.resolve_no_progress_timeout_seconds(
+        kanban_cfg.get("no_progress_timeout_seconds")
+    )
+
+
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -239,7 +249,12 @@ class GatewayKanbanWatchersMixin:
         # but is not a block (see kanban_db.request_review); the task is not
         # archived, so the subscription stays alive and later review
         # cycles keep notifying.
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested")
+        # ``no_progress`` sits with ``crashed``/``timed_out``: the dispatcher
+        # terminated the worker and re-queued the card as a failed attempt.
+        # A subscriber who is told about a crash but not about a progress
+        # reclaim would watch a task silently restart, which is the exact
+        # confusion the terminal-kind list exists to prevent.
+        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "no_progress", "status", "archived", "unblocked", "block_loop_detected", "review_requested")
         # Subscriptions are removed only when the task reaches the irreversible
         # archived status. ``done`` is reversible in review/controller flows,
         # so removing its subscription would silence a later reopen. We used
@@ -603,6 +618,18 @@ class GatewayKanbanWatchersMixin:
                                 f"⏱ {board_tag}{tag}Kanban {sub['task_id']} timed out "
                                 f"(max_runtime={limit}s); will retry"
                             )
+                        elif kind == "no_progress":
+                            _age = 0
+                            _limit = 0
+                            if ev.payload:
+                                _age = int(ev.payload.get("progress_age_seconds") or 0)
+                                _limit = int(ev.payload.get("timeout_seconds") or 0)
+                            msg = (
+                                f"⏱ {board_tag}{tag}Kanban {sub['task_id']} made no "
+                                f"observable progress for {_age}s "
+                                f"(limit {_limit}s) — worker terminated; "
+                                f"will retry"
+                            )
                         elif kind == "status":
                             new_status = ""
                             if ev.payload and ev.payload.get("status"):
@@ -781,7 +808,7 @@ class GatewayKanbanWatchersMixin:
                         #   claim exactly like a failed send() above, so the
                         #   next tick retries.
                         task_terminal = task and task.status == "archived"
-                        _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
+                        _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "no_progress", "blocked")
                         _wake_kinds = (
                             {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
                             if wake_agent
@@ -817,6 +844,7 @@ class GatewayKanbanWatchersMixin:
                             if "gave_up" in _wake_kinds: _parts.append(t("gateway.kanban.wake.gave_up"))
                             if "crashed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.crashed"))
                             if "timed_out" in _wake_kinds: _parts.append(t("gateway.kanban.wake.timed_out"))
+                            if "no_progress" in _wake_kinds: _parts.append(t("gateway.kanban.wake.no_progress"))
                             if "blocked" in _wake_kinds: _parts.append(t("gateway.kanban.wake.blocked"))
                             _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
                             _synth = t(
@@ -1360,6 +1388,25 @@ class GatewayKanbanWatchersMixin:
             )
             stale_timeout_seconds = 0
 
+        # kanban.no_progress_timeout_seconds — the PROGRESS lease bound.
+        # Unlike stale detection this is ON by default (see
+        # kanban_db.resolve_no_progress_timeout_seconds): a worker that is
+        # demonstrably alive but produces no tool call and no board
+        # transition renews its claim forever otherwise. 0 disables.
+        #
+        # The DB-layer parser owns validity — bools, non-integers, negatives
+        # and sub-minute windows all fall back to the default rather than
+        # silently switching the guard off, and it logs its own WARNING for
+        # each. Keeping the check there means one definition of a valid
+        # progress bound instead of a second copy drifting here.
+        no_progress_timeout_seconds = _resolve_no_progress_timeout_seconds(
+            kanban_cfg, _kb,
+        )
+        logger.info(
+            "kanban dispatcher: no_progress_timeout_seconds=%s",
+            no_progress_timeout_seconds or "disabled",
+        )
+
         # kanban.reconcile_orphans (config.yaml, default true): each tick,
         # requeue 'running' cards whose claim bookkeeping is broken (no
         # valid claim, dead/gone worker) — the zombie-card reconciliation
@@ -1500,6 +1547,7 @@ class GatewayKanbanWatchersMixin:
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
                     stale_timeout_seconds=stale_timeout_seconds,
+                    no_progress_timeout_seconds=no_progress_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
                     reconcile_orphans=reconcile_orphans,

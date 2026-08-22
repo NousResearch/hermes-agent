@@ -266,9 +266,33 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
         killed.append((pid, sig))
 
     # We bypass _pid_alive by stubbing it so the grace-poll exits fast.
+    #
+    # Patch BOTH module objects: earlier tests in a full-suite run reload
+    # ``hermes_cli.kanban_db``, so the freshly-resolved ``_kb`` and the ``kb``
+    # this module bound at import time can be different objects, and this test
+    # drives ``kb`` while stubbing ``_kb``. Same hazard ``_drive_worker_exit``
+    # documents below; here it silently sent the stub to the module nobody was
+    # calling.
     import hermes_cli.kanban_db as _kb
-    original_alive = _kb._pid_alive
-    _kb._pid_alive = lambda pid: False  # pretend SIGTERM worked immediately
+    _modules = {_kb, kb}
+    original_alive = {m: m._pid_alive for m in _modules}
+    for m in _modules:
+        m._pid_alive = lambda pid: False  # pretend SIGTERM worked immediately
+
+    # This test stands in for a worker with the pytest process's own pid, which
+    # is NOT a session leader — and reclaim now refuses to signal a process
+    # that is not the dispatcher-spawned session leader it recorded. Present a
+    # birth identity shaped like a real ``start_new_session=True`` worker so
+    # the test exercises the timeout path rather than the (separately tested)
+    # ownership refusal.
+    original_capture = {m: m.capture_worker_identity for m in _modules}
+    _stub_identity = lambda pid: {  # noqa: E731
+        "v": _kb.WORKER_IDENTITY_VERSION, "scheme": "linux_proc",
+        "pid": int(pid), "starttime": 4242, "pgid": int(pid), "sid": int(pid),
+        "ppid": 1, "boot_id": "boot-under-test",
+    }
+    for m in _modules:
+        m.capture_worker_identity = _stub_identity
 
     try:
         conn = kb.connect()
@@ -311,7 +335,9 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
         finally:
             conn.close()
     finally:
-        _kb._pid_alive = original_alive
+        for m in _modules:
+            m._pid_alive = original_alive[m]
+            m.capture_worker_identity = original_capture[m]
 
 
 
@@ -1259,9 +1285,28 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
         assert len(reclaim_evs) == 1
         assert reclaim_evs[0].get("manual") is True
         assert reclaim_evs[0].get("reason") == "test reason"
-        assert reclaim_evs[0].get("termination_attempted") is True
-        assert reclaim_evs[0].get("terminated") is True
-        assert killed == [signal.SIGTERM]
+        # Ownership proof: this row's pid was injected by raw SQL with no
+        # ``worker_identity``, exactly like a claim made before that column
+        # existed. Reclaim must therefore signal NOTHING — the pid may name
+        # anything by now. The operator-driven reclaim still releases the card
+        # (that is its whole purpose), but the receipt says plainly that no
+        # worker was killed rather than implying one was.
+        assert reclaim_evs[0].get("termination_attempted") is not True
+        assert reclaim_evs[0].get("signalled") is False
+        assert reclaim_evs[0].get("ownership_reason") in {
+            "identity_absent", "already_dead",
+        }
+        # ``terminated`` now tracks the pid's actual fate: True when it was
+        # already gone (nothing to kill, nothing to be wrong about), False when
+        # an unprovable process is still there. Which of those holds for a
+        # hand-injected pid depends on the machine, so assert the invariant
+        # that does not: no signal was sent, on either branch.
+        if reclaim_evs[0].get("ownership_reason") == "already_dead":
+            assert reclaim_evs[0].get("terminated") is True
+        else:
+            assert reclaim_evs[0].get("ownership_reason") == "identity_absent"
+            assert reclaim_evs[0].get("terminated") is False
+        assert killed == []
     finally:
         conn.close()
 

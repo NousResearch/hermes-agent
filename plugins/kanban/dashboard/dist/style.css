@@ -907,6 +907,7 @@
 .hermes-kanban-run--blocked { border-left-color: var(--color-destructive, #d14a4a); }
 .hermes-kanban-run--crashed,
 .hermes-kanban-run--timed_out,
+.hermes-kanban-run--no_progress,
 .hermes-kanban-run--gave_up,
 .hermes-kanban-run--spawn_failed {
   border-left-color: var(--color-destructive, #d14a4a);

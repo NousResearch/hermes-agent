@@ -573,7 +573,7 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     most_recent_outcome = None
     for r in reversed(ordered_runs):
         oc = _task_field(r, "outcome")
-        if oc in {"spawn_failed", "timed_out", "crashed"}:
+        if oc in {"spawn_failed", "timed_out", "crashed", "no_progress"}:
             most_recent_outcome = oc
             break
 
@@ -591,7 +591,7 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
             label=f"Fix profile auth: hermes -p {assignee} auth",
             payload={"command": f"hermes -p {assignee} auth"},
         ))
-    elif most_recent_outcome in {"timed_out", "crashed"}:
+    elif most_recent_outcome in {"timed_out", "crashed", "no_progress"}:
         # Worker got off the ground but died. Logs are the right place
         # to diagnose; reclaim/reassign are the recovery levers.
         task_id = _task_field(task, "id")
@@ -613,6 +613,10 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
         "spawn_failed": "spawn",
         "timed_out": "timeout",
         "crashed": "crash",
+        # The worker was alive and talking to its provider but produced no
+        # tool call, board transition, or evidence-bearing checkpoint before
+        # kanban.no_progress_timeout_seconds elapsed.
+        "no_progress": "no-progress",
     }.get(most_recent_outcome or "", "failure")
     if err_snippet:
         title = f"Agent {outcome_label} x{failures}: {err_snippet.splitlines()[0][:160]}"

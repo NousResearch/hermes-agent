@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
@@ -274,7 +275,7 @@ def _goal_mode_handoff_rejection(task, evidence: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Runtime-activity → board-heartbeat bridge (#31752)
+# Runtime-activity → board-LIVENESS bridge (#31752)
 # ---------------------------------------------------------------------------
 # When the agent ticks ``_touch_activity`` during normal work (between
 # tool calls, mid-stream chunks, etc.), we want the kanban board's
@@ -284,6 +285,14 @@ def _goal_mode_handoff_rejection(task, evidence: str) -> Optional[str]:
 # stale. The model is not required to call the explicit ``kanban_heartbeat``
 # tool for this to work — that tool stays available for workers that want
 # to attach a note or pre-emptively extend a claim across a known-long op.
+#
+# This bridge renews LIVENESS ONLY. It deliberately does not touch the
+# progress lease: a stream chunk proves the provider is answering, not that
+# the worker is accomplishing anything. Conflating the two is what let a
+# worker reason for thousands of tokens with zero tool calls while renewing
+# its claim indefinitely. Progress evidence arrives through
+# ``note_tool_progress_from_env`` (tool executor) and the board's own state
+# transitions instead.
 #
 # Constraints:
 #   - Best-effort: never raise. The agent loop must not care if the bridge
@@ -295,7 +304,14 @@ def _goal_mode_handoff_rejection(task, evidence: str) -> Optional[str]:
 #     explicit tool which carries a model-supplied note.
 
 _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
-_auto_heartbeat_last_attempt: float = 0.0
+_auto_heartbeat_last_attempt: Optional[float] = None
+# Both limiter timestamps are read-compared-written from more than one
+# thread: the agent loop plus one in-flight ticker thread per concurrent tool
+# call (agent/tool_executor.py). Unguarded, two threads can both observe the
+# stale value and both write, which is how a rate limiter quietly stops
+# limiting. The critical section is three lines of arithmetic — no DB work
+# happens inside it — so a plain Lock costs nothing.
+_auto_heartbeat_lock = threading.Lock()
 
 
 def heartbeat_current_worker_from_env() -> bool:
@@ -316,18 +332,23 @@ def heartbeat_current_worker_from_env() -> bool:
         workers that never went through the dispatcher path
 
     Rate-limited via the module-level ``_auto_heartbeat_last_attempt``
-    timestamp (monotonic clock); not thread-safe in the strict sense, but
-    the worst case is one extra DB write per race, which is harmless.
+    timestamp (monotonic clock), guarded by ``_auto_heartbeat_lock`` because
+    tool-executor ticker threads call this concurrently with the agent loop.
     """
     global _auto_heartbeat_last_attempt
     tid = os.environ.get("HERMES_KANBAN_TASK")
     if not tid:
         return False
     import time as _time
-    now = _time.monotonic()
-    if (now - _auto_heartbeat_last_attempt) < _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS:
-        return False
-    _auto_heartbeat_last_attempt = now
+    with _auto_heartbeat_lock:
+        now = _time.monotonic()
+        if (
+            _auto_heartbeat_last_attempt is not None
+            and now - _auto_heartbeat_last_attempt
+            < _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS
+        ):
+            return False
+        _auto_heartbeat_last_attempt = now
     try:
         kb, conn = _connect()
         try:
@@ -354,6 +375,107 @@ def heartbeat_current_worker_from_env() -> bool:
         return True
     except Exception:
         logger.debug("auto-heartbeat: bridge failed", exc_info=True)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Tool-invocation → board-PROGRESS bridge
+# ---------------------------------------------------------------------------
+# A tool invocation is the cheapest general-purpose proof that a worker left
+# its own token stream and did something in the world. The tool executor
+# calls this when a tool starts, while it is in flight, and when it
+# completes — attempted counts, because leaving the reasoning loop is the
+# signal, not whether the tool succeeded. In-flight ticks matter too: a tool
+# that BLOCKS for an hour keeps renewing progress for its whole duration.
+#
+# Note the "blocks" qualifier. A tool that hands work off and returns
+# immediately — terminal with ``background=True``, which is the only way to
+# run past the foreground timeout cap — gets exactly one pair of edge ticks,
+# not a tick per minute of the work it started. That is correct: the worker,
+# not the dispatcher, is the thing being measured, and a worker that
+# launched a background job and then polls it is calling tools (progress),
+# while one that launched it and fell into a reasoning loop is not.
+#
+# ``kanban_heartbeat`` is excluded. It is a tool call whose only effect is
+# renewing the lease, so counting it as evidence would make the guard
+# trivially defeatable by a model told to heartbeat while it thinks. That is
+# a self-reference exclusion, not a model-specific heuristic: the exclusion
+# list holds tools that exist purely to renew the lease.
+_NON_PROGRESS_TOOL_NAMES = frozenset({"kanban_heartbeat"})
+
+# Deliberately SKEWED below the tool executor's in-flight tick cadence
+# (``agent/tool_executor.py::_TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S``, 30 s).
+# The two were equal, and equal is the one value that makes the limiter eat
+# the ticks it is supposed to pace. A tick only clears a 30 s window if the
+# last stamp was this thread's previous tick; the moment anything else stamps
+# in between — a concurrent tool's start/complete edge tick, another tool's
+# ticker thread — the next in-flight tick lands inside the window and is
+# dropped, and the effective progress cadence doubles to ~60 s. That is
+# harmless against a 45-minute lease and corrosive against a short one, and
+# it makes the observable behaviour depend on how many tools happen to be
+# running. Keeping the window strictly below the cadence means a tick that is
+# merely shadowed by a foreign stamp still lands, so a blocking tool renews
+# progress once per cadence regardless of what else is in flight.
+_AUTO_PROGRESS_MIN_INTERVAL_SECONDS = 20.0
+_auto_progress_last_attempt: Optional[float] = None
+# See ``_auto_heartbeat_lock``. Tracked with its own lock and its own
+# timestamp so a recent liveness write can never suppress a progress stamp.
+_auto_progress_lock = threading.Lock()
+
+
+def note_tool_progress_from_env(tool_name: Optional[str] = None) -> bool:
+    """Renew the kanban PROGRESS lease for the current worker, if any.
+
+    ``tool_name`` is the tool whose invocation is the evidence; ``None``
+    means "some tool ran" and counts. A lease-renewal tool does not.
+
+    Returns True when a progress write was attempted, False when the call
+    was skipped (not a kanban worker, an excluded tool, rate-limited, or a
+    swallowed error). Best-effort in the same sense as the liveness bridge:
+    it must never raise into the agent loop.
+
+    Rate-limited to one DB write per ``_AUTO_PROGRESS_MIN_INTERVAL_SECONDS``
+    per process, guarded by ``_auto_progress_lock`` (the tool executor runs
+    one in-flight ticker thread per concurrent tool call, all of them calling
+    here). That window is held strictly BELOW the executor's in-flight tick
+    cadence so a blocking tool's ticks are never alternately swallowed — see
+    the constant. Tracked separately from the liveness limiter so a recent
+    heartbeat can never suppress a progress stamp.
+    """
+    global _auto_progress_last_attempt
+    tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not tid:
+        return False
+    if tool_name in _NON_PROGRESS_TOOL_NAMES:
+        return False
+
+    import time as _time
+    with _auto_progress_lock:
+        now = _time.monotonic()
+        if (
+            _auto_progress_last_attempt is not None
+            and now - _auto_progress_last_attempt
+            < _AUTO_PROGRESS_MIN_INTERVAL_SECONDS
+        ):
+            return False
+        _auto_progress_last_attempt = now
+
+    try:
+        kb, conn = _connect()
+        try:
+            kb.record_progress(
+                conn, tid,
+                source=kb.PROGRESS_SOURCE_TOOL,
+                expected_run_id=_worker_run_id(tid),
+            )
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return True
+    except Exception:
+        logger.debug("auto-progress: bridge failed", exc_info=True)
         return False
 
 
@@ -1021,8 +1143,22 @@ def _handle_request_changes(args: dict, **kw) -> str:
         return tool_error(f"kanban_request_changes: {e}")
 
 
+# What the tool result tells the worker, every time. Stated at the moment it
+# matters instead of relying on the system prompt being remembered — and
+# stated as a fact about the mechanism, not as a lever the worker can pull.
+_HEARTBEAT_PROGRESS_HINT = (
+    "kanban_heartbeat renews LIVENESS only, whatever its note says; the note "
+    "is recorded as commentary in the event log. The separate PROGRESS lease "
+    "renews only from real tool calls and durable board transitions "
+    "(kanban_comment, kanban_attach, kanban_complete, kanban_block, ...). If "
+    "you have been thinking rather than acting, take the smallest concrete "
+    "step now — the dispatcher reclaims a task showing no progress for "
+    "kanban.no_progress_timeout_seconds."
+)
+
+
 def _handle_heartbeat(args: dict, **kw) -> str:
-    """Signal that the worker is still alive during a long operation.
+    """Signal liveness, and optionally leave a note for humans.
 
     Extends the claim TTL via ``heartbeat_claim`` AND records a heartbeat
     event via ``heartbeat_worker``. Without the ``heartbeat_claim`` half,
@@ -1030,6 +1166,24 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     blocks the agent for >DEFAULT_CLAIM_TTL_SECONDS still gets reclaimed
     by ``release_stale_claims`` — which is exactly the trap that
     ``heartbeat_claim``'s docstring warns against.
+
+    This tool NEVER renews the progress lease. Not with a note, not with a
+    detailed note, not with a note that has never been sent before. Its note
+    is free text the model writes: nothing validates it against the world, so
+    gating a lease on it is a spelling test rather than a guard, and a worker
+    stuck in a reasoning loop passes it by varying a sentence. The note is
+    still recorded — as a ``heartbeat`` event, i.e. commentary an operator
+    can read.
+
+    Progress renews only from signals the model cannot author: the
+    centralized tool-execution middleware (any real tool call, this one
+    excepted) and durable board state transitions. See
+    ``kanban_db.PROGRESS_RENEWAL_SOURCES``.
+
+    The response is a structured receipt (``liveness_renewed``,
+    ``progress_recorded``, ``progress_reason``) plus a ``hint``, so the
+    worker learns the actual contract from the tool result rather than
+    inferring a lever that does not exist.
     """
     delegated_err = _reject_delegated_child_mutation("kanban_heartbeat")
     if delegated_err:
@@ -1055,17 +1209,27 @@ def _handle_heartbeat(args: dict, **kw) -> str:
             claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
             kb.heartbeat_claim(conn, tid, claimer=claim_lock)
 
+            run_id = _worker_run_id(tid)
             ok = kb.heartbeat_worker(
                 conn,
                 tid,
                 note=note,
-                expected_run_id=_worker_run_id(tid),
+                expected_run_id=run_id,
             )
             if not ok:
                 return tool_error(
                     f"could not heartbeat {tid} (unknown id or not running)"
                 )
-            return _ok(task_id=tid)
+            # No record_progress call here, deliberately: there is no
+            # model-authored path into the progress lease.
+            return _ok(
+                task_id=tid,
+                liveness_renewed=True,
+                progress_recorded=False,
+                progress_reason="liveness_only",
+                note_recorded=bool(note),
+                hint=_HEARTBEAT_PROGRESS_HINT,
+            )
         finally:
             conn.close()
     except ValueError as e:
@@ -1980,10 +2144,13 @@ KANBAN_REQUEST_CHANGES_SCHEMA = {
 KANBAN_HEARTBEAT_SCHEMA = {
     "name": "kanban_heartbeat",
     "description": (
-        "Signal that you're still alive during a long operation "
-        "(training, encoding, large crawls). Call every few minutes so "
-        "humans see liveness separately from PID checks. Pure side "
-        "effect — no work changes."
+        "Tell humans you are still here during a long operation (training, "
+        "encoding, large crawls). Renews LIVENESS only. It does NOT renew "
+        "the separate PROGRESS lease, which moves only when you actually "
+        "call a tool or change the board — the dispatcher reclaims a task "
+        "showing no progress for kanban.no_progress_timeout_seconds, and "
+        "no heartbeat can hold that off. Pure side effect — no work "
+        "changes."
     ),
     "parameters": {
         "type": "object",
@@ -1995,8 +2162,9 @@ KANBAN_HEARTBEAT_SCHEMA = {
             "note": {
                 "type": "string",
                 "description": (
-                    "Optional short note describing current progress. "
-                    "Shown in the event log."
+                    "Optional short note on what you are waiting for. "
+                    "Recorded in the event log for humans to read; it has "
+                    "no effect on any lease."
                 ),
             },
             "board": _board_schema_prop(),

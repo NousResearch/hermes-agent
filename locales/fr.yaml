@@ -165,6 +165,7 @@ gateway:
       gave_up:             "gave up (retries exhausted)"
       crashed:             "crashed (worker exited); dispatcher will retry"
       timed_out:           "timed out; dispatcher will retry"
+      no_progress:         "made no observable progress; worker terminated, dispatcher will retry"
       blocked:             "blocked; needs attention"
       status_default:      "status changed"
       status_joiner:       ", "

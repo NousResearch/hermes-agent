@@ -112,7 +112,11 @@ def test_running_descendant_event_precedes_termination_via_reclaim_helper(
         finally:
             side.close()
         assert "descendant_invalidated" in kinds
-        kills.append((pid, claim_lock))
+        # ``stored_identity`` rides along in kwargs: the birth record is read
+        # inside the transaction, next to the pid it describes, because by the
+        # time a composing caller drains this list the claim row is already
+        # cleared.
+        kills.append((pid, claim_lock, kwargs.get("stored_identity")))
         return {"terminated": True}
 
     monkeypatch.setattr(kb, "_terminate_reclaimed_worker", fake_terminate)

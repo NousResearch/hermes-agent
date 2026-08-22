@@ -518,7 +518,43 @@ def _managed_values(
 # Cadence for the in-flight tool activity heartbeat. Must stay far below the
 # gateway turn-inactivity timeout (default 1800s) so a silent-but-healthy
 # tool call never looks idle to the watchdog.
+#
+# It must also stay strictly ABOVE the kanban progress limiter's window
+# (``tools.kanban_tools._AUTO_PROGRESS_MIN_INTERVAL_SECONDS``). Equal values
+# make the limiter drop every tick that a concurrent tool's edge stamp
+# happens to precede, halving the effective progress cadence; the skew is
+# asserted by a test so neither constant can be nudged into the other.
 _TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S = 30.0
+
+
+def _note_tool_progress(tool_name: str | None = None) -> None:
+    """Record a tool invocation as PROGRESS evidence on the kanban board.
+
+    Separate from ``agent._touch_activity``, which is the LIVENESS clock:
+    that one is stamped by stream chunks and API waits too, so a worker
+    reasoning in a loop keeps it fresh forever. A tool invocation is the
+    cheapest general proof that the worker left its own token stream and
+    acted, so it — and only it, on this path — renews the progress lease.
+
+    Called when a tool starts (attempted counts: leaving the reasoning loop
+    is the signal, not success), while it is in flight, and when it
+    completes. The in-flight ticks are what let a tool call that BLOCKS for
+    a long time outlive ``kanban.no_progress_timeout_seconds``. A tool that
+    returns immediately after handing work off (``background=True``) gets
+    only the two edge ticks — the worker's own subsequent polling is what
+    keeps its progress lease alive, which is the intended measurement.
+
+    Gated on the dispatcher-spawned-worker env var before importing
+    anything, so a normal chat session pays nothing. Best-effort: a bridge
+    failure must never break the agent loop.
+    """
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return
+    try:
+        from tools.kanban_tools import note_tool_progress_from_env
+        note_tool_progress_from_env(tool_name)
+    except Exception:
+        pass
 
 
 def _run_tool_activity_heartbeat(
@@ -526,6 +562,7 @@ def _run_tool_activity_heartbeat(
     stop_event: threading.Event,
     label: str,
     interval: float = _TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S,
+    tool_name: str | None = None,
 ) -> None:
     """Refresh the agent's activity clock while a tool call is in flight.
 
@@ -554,6 +591,12 @@ def _run_tool_activity_heartbeat(
     try:
         while not stop_event.wait(interval):
             agent._touch_activity(label)
+            # A tool that is genuinely executing is progress, not just
+            # liveness — otherwise a long quiet foreground build would trip
+            # the kanban no-progress guard while doing exactly what it was
+            # asked to do. The model cannot emit these ticks without a
+            # real tool blocking in this thread.
+            _note_tool_progress(tool_name)
     except Exception:
         # A heartbeat must never break the agent loop.
         pass
@@ -703,16 +746,26 @@ def _run_agent_tool_execution_middleware(
         _hb_thread = threading.Thread(
             target=_run_tool_activity_heartbeat,
             args=(agent, _hb_stop, f"tool running: {function_name}"),
-            kwargs={"interval": _TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S},
+            kwargs={
+                "interval": _TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S,
+                "tool_name": function_name,
+            },
             daemon=True,
             name=f"tool-activity-hb-{function_name[:24]}",
         )
         _hb_thread.start()
+        # Progress evidence for the kanban progress lease, at both edges of
+        # the call: attempted (the worker left its reasoning loop) and
+        # completed (it came back). Every tool — sequential and concurrent —
+        # funnels through this middleware, so these two lines plus the
+        # in-flight ticker cover the whole tool surface.
+        _note_tool_progress(function_name)
         try:
             return execute(final_args)
         finally:
             _hb_stop.set()
             _hb_thread.join(timeout=2.0)
+            _note_tool_progress(function_name)
 
     def _hermes_pipeline(relay_args: dict[str, Any]) -> Any:
         request_result = apply_tool_request_middleware(

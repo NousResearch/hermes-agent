@@ -31,6 +31,16 @@ class TestGatewayLifecyclePattern:
         "hermes  gateway  restart",         # double spaces
         "Hermez Gateway Restart".lower().replace("z", "s"),  # case handled
         "HERMES GATEWAY RESTART",           # uppercase
+        "hermes --profile hermes-fo gateway restart",
+        "hermes --profile hermes-fo gateway stop",
+        "hermes -p hermes-fo gateway restart",
+        "hermes --profile=hermes-fo gateway restart",
+        "hermes gateway --profile hermes-fo restart",
+        "hermes gateway -p hermes-fo stop",
+        "hermes '--profile=hermes-fo' gateway restart",
+        "hermes '-p' hermes-fo gateway restart",
+        "hermes gateway '--profile=hermes-fo' restart",
+        "hermes 'gateway' restart",
     ])
     def test_hermes_gateway_commands(self, text):
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
@@ -102,6 +112,9 @@ class TestGatewayLifecyclePattern:
         "Monitor the gateway and tell me if a restart is recommended",
         "research how the OpenAI API gateway handles restart after rate limiting",
         "compare AWS API Gateway vs Cloudflare on restart latency",
+        "hermes mcp add server --args gateway restart",
+        "hermes chat --oneshot gateway restart",
+        "hermes config set note gateway restart",
     ])
     def test_safe_commands(self, text):
         assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
@@ -269,6 +282,16 @@ class TestTerminalToolGatewayLifecycleGuard:
         "systemctl --user restart hermes-gateway",
         "systemctl stop hermes-gateway.service",
         "hermes gateway restart",
+        "hermes --profile hermes-fo gateway stop",
+        "hermes --profile hermes-fo gateway restart; echo not-direct",
+        "_HERMES_GATEWAY=0 hermes -p default gateway restart",
+        "_HERMES_GATEWAY=0 hermes --profile=default gateway restart",
+        "_HERMES_GATEWAY=0 hermes gateway --profile default restart",
+        "_HERMES_GATEWAY=0 hermes gateway -p default stop",
+        "_HERMES_GATEWAY=0 hermes '--profile=default' gateway restart",
+        "_HERMES_GATEWAY=0 hermes '-p' default gateway restart",
+        "_HERMES_GATEWAY=0 hermes gateway '--profile=default' restart",
+        "_HERMES_GATEWAY=0 hermes 'gateway' restart",
         "launchctl kickstart gui/501/ai.hermes.gateway",
         # #62891 exact reported shape and its bootstrap sibling.
         "launchctl submit -l ai.hermes.gateway-hard-restart-no-photon-notice -- /bin/sh ~/.hermes/scripts/hard_restart_gateway_no_photon_notice.sh",
@@ -295,6 +318,141 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 1
         assert "Blocked" in result["error"]
+
+    def test_allows_direct_restart_of_running_sibling_profile_inside_gateway(
+        self, monkeypatch, tmp_path
+    ):
+        import os
+        import tools.terminal_tool as tt
+
+        calls = []
+
+        class _FakeEnv:
+            env = {}
+
+            def execute(self, command, **kwargs):
+                calls.append(command)
+                return {"output": "restarted", "returncode": 0}
+
+        hermes_home = tmp_path / ".hermes"
+        sibling_home = hermes_home / "profiles" / "hermes-fo"
+        sibling_home.mkdir(parents=True)
+        (hermes_home / "gateway_state.json").write_text(
+            json.dumps({"pid": os.getpid(), "gateway_state": "running"}),
+            encoding="utf-8",
+        )
+        (sibling_home / "gateway_state.json").write_text(
+            json.dumps({"pid": os.getpid() + 1000, "gateway_state": "running"}),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=True)
+        monkeypatch.setattr(
+            "gateway.status.get_runtime_status_running_pid",
+            lambda runtime, expected_home: os.getpid() + 1000,
+        )
+        monkeypatch.setattr(
+            tt, "_check_all_guards", lambda command, env_type, **kwargs: {"approved": True}
+        )
+
+        result = json.loads(
+            tt.terminal_tool(command="hermes --profile hermes-fo gateway restart")
+        )
+
+        assert result["exit_code"] == 0
+        assert calls == [
+            "_HERMES_GATEWAY=0 hermes --profile hermes-fo gateway restart"
+        ]
+
+    def test_uses_process_home_when_turn_has_profile_context_override(
+        self, monkeypatch, tmp_path
+    ):
+        import os
+        import tools.terminal_tool as tt
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        hermes_home = tmp_path / ".hermes"
+        target_home = hermes_home / "profiles" / "hermes-fo"
+        routed_home = hermes_home / "profiles" / "routed"
+        target_home.mkdir(parents=True)
+        routed_home.mkdir(parents=True)
+        (hermes_home / "gateway_state.json").write_text(
+            json.dumps({"pid": os.getpid(), "gateway_state": "running"}),
+            encoding="utf-8",
+        )
+        (target_home / "gateway_state.json").write_text(
+            json.dumps({"pid": os.getpid() + 1000, "gateway_state": "running"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(
+            "gateway.status.get_runtime_status_running_pid",
+            lambda runtime, expected_home: os.getpid() + 1000,
+        )
+
+        token = set_hermes_home_override(routed_home)
+        try:
+            execution_command = tt._direct_sibling_gateway_restart_execution_command(
+                "hermes --profile hermes-fo gateway restart",
+                env_type="local",
+                background=False,
+                pty=False,
+            )
+        finally:
+            reset_hermes_home_override(token)
+
+        assert execution_command == (
+            "_HERMES_GATEWAY=0 hermes --profile hermes-fo gateway restart"
+        )
+
+    def test_does_not_clear_gateway_marker_for_stale_sibling_state(
+        self, monkeypatch, tmp_path
+    ):
+        import os
+        import tools.terminal_tool as tt
+
+        calls = []
+
+        class _FakeEnv:
+            env = {}
+
+            def execute(self, command, **kwargs):
+                calls.append(command)
+                return {"output": "blocked by child", "returncode": 1}
+
+        hermes_home = tmp_path / ".hermes"
+        sibling_home = hermes_home / "profiles" / "hermes-fo"
+        sibling_home.mkdir(parents=True)
+        (hermes_home / "gateway_state.json").write_text(
+            json.dumps({"pid": os.getpid(), "gateway_state": "running"}),
+            encoding="utf-8",
+        )
+        (sibling_home / "gateway_state.json").write_text(
+            json.dumps({"pid": 99999999, "gateway_state": "running"}),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=True)
+        monkeypatch.setattr(
+            "gateway.status.get_runtime_status_running_pid",
+            lambda runtime, expected_home: None,
+        )
+        monkeypatch.setattr(
+            tt, "_check_all_guards", lambda command, env_type, **kwargs: {"approved": True}
+        )
+
+        result = json.loads(
+            tt.terminal_tool(command="hermes --profile hermes-fo gateway restart")
+        )
+
+        assert result["exit_code"] == 1
+        assert "Blocked" in result["error"]
+        assert calls == []
 
     def test_blocks_lifecycle_command_hidden_in_referenced_script(
         self, monkeypatch, tmp_path

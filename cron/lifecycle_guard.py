@@ -55,11 +55,19 @@ class GatewayLifecycleBlocked(ValueError):
 # actual shell-command-shaped strings, not on prose.
 _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"(?i)"
-    # Branch A: `hermes gateway restart|stop` — the canonical foot-gun.
+    # Branch A: `hermes [PROFILE] gateway [PROFILE] restart|stop` — the
+    # canonical foot-gun. Hermes accepts ``--profile NAME``, ``-p NAME``, and
+    # ``--profile=NAME`` anywhere before argument parsing; match selectors on
+    # either side of ``gateway``. The terminal tool narrowly exempts one proven
+    # direct sibling restart before consulting this broad script/chain detector.
     # `start` is intentionally excluded: starting a gateway from inside a
     # gateway is benign (a no-op or "already running" error), and a
     # legitimate cron job might start a sibling profile's gateway.
-    r"(?:hermes\s+gateway\s+(?:restart|stop))"
+    r"(?:hermes\s+"
+    r"(?:(?:--profile(?:=\S+|\s+\S+)|-p\s+\S+)\s+)?"
+    r"gateway\s+"
+    r"(?:(?:--profile(?:=\S+|\s+\S+)|-p\s+\S+)\s+)?"
+    r"(?:restart|stop))"
     # Branch B: launchctl ops on a hermes-gateway label. macOS launchd
     # labels look like `ai.hermes.gateway` / `hermes-gateway`. Requiring the
     # gateway identifier prevents blocking unrelated hermes services (e.g.
@@ -95,12 +103,74 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
 _SHELL_LINE_CONTINUATION = re.compile(r"\\\r?\n[ \t]*")
 
 
+def _contains_hermes_gateway_lifecycle_tokens(text: str) -> bool:
+    """Detect quoted/profile-qualified Hermes lifecycle command tokens.
+
+    The regex above intentionally handles prose cheaply, but raw text cannot
+    see through shell quoting. Tokenize command segments, remove profile
+    selectors using the same accepted spellings as the CLI pre-parser, and
+    look for the resulting ``gateway restart|stop`` pair. This remains a pure,
+    total string check; filesystem/script recursion is handled separately.
+    """
+    control_chars = frozenset(";&|()")
+    for line in text.splitlines() or [text]:
+        try:
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
+            lexer.whitespace_split = True
+            lexer.commenters = "#"
+            tokens = list(lexer)
+        except ValueError:
+            continue
+
+        segments: list[list[str]] = []
+        current: list[str] = []
+        for token in tokens:
+            if token and set(token) <= control_chars:
+                if current:
+                    segments.append(current)
+                    current = []
+                continue
+            current.append(token)
+        if current:
+            segments.append(current)
+
+        for segment in segments:
+            for hermes_index, token in enumerate(segment):
+                executable = token.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+                if executable.lower() != "hermes":
+                    continue
+
+                filtered: list[str] = []
+                args = segment[hermes_index + 1 :]
+                index = 0
+                while index < len(args):
+                    argument = args[index]
+                    lowered = argument.lower()
+                    if lowered in {"--profile", "-p"}:
+                        index += 2
+                        continue
+                    if lowered.startswith("--profile="):
+                        index += 1
+                        continue
+                    filtered.append(lowered)
+                    index += 1
+
+                if filtered[:2] in (
+                    ["gateway", "restart"],
+                    ["gateway", "stop"],
+                ):
+                    return True
+    return False
+
+
 def contains_gateway_lifecycle_command(text: str) -> bool:
     """Return True if *text* contains a gateway lifecycle command pattern."""
     if not text:
         return False
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
-    return bool(_GATEWAY_LIFECYCLE_PATTERN.search(normalized))
+    return bool(_GATEWAY_LIFECYCLE_PATTERN.search(normalized)) or (
+        _contains_hermes_gateway_lifecycle_tokens(normalized)
+    )
 
 
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})

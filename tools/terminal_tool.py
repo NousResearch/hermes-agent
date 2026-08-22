@@ -2624,6 +2624,95 @@ def _resolve_command_cwd(
     return recorded or default_cwd
 
 
+def _direct_sibling_gateway_restart_execution_command(
+    command: str,
+    *,
+    env_type: str,
+    background: bool,
+    pty: bool,
+) -> Optional[str]:
+    """Return a child-safe command for one proven sibling-profile restart.
+
+    Gateway terminal children inherit ``_HERMES_GATEWAY=1``.  That marker is
+    intentionally a hard self-restart guard in ``hermes_cli.gateway``, but it
+    cannot distinguish an explicitly targeted sibling service.  Accept only the
+    exact direct CLI shape, prove both gateway identities from their state files,
+    and clear the marker for this one child process.  The original command still
+    flows through the normal approval/security checks.
+    """
+    if env_type != "local" or background or pty:
+        return None
+
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return None
+
+    if len(tokens) != 5 or tokens[:2] != ["hermes", "--profile"]:
+        return None
+    profile_name = tokens[2]
+    suffix = tokens[3:]
+
+    if suffix != ["gateway", "restart"] or not profile_name:
+        return None
+
+    try:
+        from hermes_cli.profiles import (
+            get_profile_dir,
+            normalize_profile_name,
+            profile_exists,
+            validate_profile_name,
+        )
+        from gateway.status import _get_process_hermes_home
+
+        canonical_profile = normalize_profile_name(profile_name)
+        validate_profile_name(canonical_profile)
+        if not profile_exists(canonical_profile):
+            return None
+        current_home = _get_process_hermes_home().expanduser().resolve()
+        target_home = get_profile_dir(canonical_profile).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    if current_home == target_home:
+        return None
+
+    def _gateway_pid(home: Path) -> Optional[int]:
+        try:
+            state = json.loads((home / "gateway_state.json").read_text(encoding="utf-8"))
+            if state.get("gateway_state") != "running":
+                return None
+            state_home = state.get("hermes_home")
+            if state_home and Path(state_home).expanduser().resolve() != home:
+                return None
+            pid = int(state.get("pid", 0))
+            return pid if pid > 0 else None
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    current_pid = _gateway_pid(current_home)
+    try:
+        from gateway.status import (
+            get_runtime_status_running_pid,
+            read_runtime_status,
+        )
+
+        target_runtime = read_runtime_status(target_home / "gateway_state.json")
+        if not target_runtime or target_runtime.get("gateway_state") != "running":
+            return None
+        target_pid = get_runtime_status_running_pid(
+            target_runtime,
+            expected_home=target_home,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+
+    if current_pid != os.getpid() or target_pid is None or target_pid == current_pid:
+        return None
+
+    return f"_HERMES_GATEWAY=0 {shlex.join(tokens)}"
+
+
 def terminal_tool(
     command: str,
     background: bool = False,
@@ -2876,7 +2965,14 @@ def terminal_tool(
         # never restart. This mirrors the `hermes gateway restart` guard in
         # hermes_cli/gateway.py and the cron-path guard in hermes_cli/cron.py,
         # but applies unconditionally (force=True cannot help here).
+        gateway_execution_command: Optional[str] = None
         if os.environ.get("_HERMES_GATEWAY") == "1":
+            gateway_execution_command = _direct_sibling_gateway_restart_execution_command(
+                command,
+                env_type=env_type,
+                background=background,
+                pty=pty,
+            )
             from cron.lifecycle_guard import (
                 _MAX_REFERENCED_SCRIPT_BYTES,
                 contains_gateway_lifecycle_command_or_referenced_script,
@@ -2959,10 +3055,13 @@ def terminal_tool(
                     pass
                 return None
 
-            if contains_gateway_lifecycle_command_or_referenced_script(
-                command,
-                cwd=guard_cwd,
-                read_remote_script=_read_script_in_env,
+            if (
+                gateway_execution_command is None
+                and contains_gateway_lifecycle_command_or_referenced_script(
+                    command,
+                    cwd=guard_cwd,
+                    read_remote_script=_read_script_in_env,
+                )
             ):
                 return json.dumps({
                     "output": "",
@@ -3379,7 +3478,10 @@ def terminal_tool(
                         # reads, RPC reads) intentionally stay unbounded.
                         "bounded_capture": True,
                     }
-                    result = env.execute(command, **execute_kwargs)
+                    result = env.execute(
+                        gateway_execution_command or command,
+                        **execute_kwargs,
+                    )
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str:

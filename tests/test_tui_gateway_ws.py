@@ -1,5 +1,6 @@
 import asyncio
 import concurrent.futures
+import datetime
 import json
 import threading
 import time
@@ -188,6 +189,81 @@ def test_ws_transport_serializes_concurrent_sends():
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
         loop.close()
+
+
+def test_ws_transport_replies_with_error_for_unserializable_response(caplog):
+    sent = []
+
+    class FakeWS:
+        async def send_text(self, line):
+            sent.append(json.loads(line))
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        transport = ws_mod.WSTransport(FakeWS(), loop, peer="serialization-test")
+
+        assert transport.write(
+            {
+                "jsonrpc": "2.0",
+                "id": "profiles",
+                "result": {"created": datetime.datetime(2026, 8, 22)},
+            }
+        ) is True
+        assert transport.write({"jsonrpc": "2.0", "id": "next", "result": {}}) is True
+
+        assert sent == [
+            {
+                "jsonrpc": "2.0",
+                "error": {"code": -32603, "message": "response serialization error"},
+                "id": "profiles",
+            },
+            {"jsonrpc": "2.0", "id": "next", "result": {}},
+        ]
+        assert "ws frame serialization failed" in caplog.text
+        assert transport._closed is False
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        loop.close()
+
+
+def test_ws_transport_write_async_recovers_from_unserializable_response(caplog):
+    async def scenario():
+        sent = []
+
+        class FakeWS:
+            async def send_text(self, line):
+                sent.append(json.loads(line))
+
+        transport = ws_mod.WSTransport(
+            FakeWS(), asyncio.get_running_loop(), peer="async-serialization-test"
+        )
+
+        assert await transport.write_async(
+            {
+                "jsonrpc": "2.0",
+                "id": "profiles-async",
+                "result": {"created": datetime.datetime(2026, 8, 22)},
+            }
+        ) is True
+        assert await transport.write_async(
+            {"jsonrpc": "2.0", "id": "next-async", "result": {}}
+        ) is True
+
+        assert sent == [
+            {
+                "jsonrpc": "2.0",
+                "error": {"code": -32603, "message": "response serialization error"},
+                "id": "profiles-async",
+            },
+            {"jsonrpc": "2.0", "id": "next-async", "result": {}},
+        ]
+        assert transport._closed is False
+
+    asyncio.run(scenario())
+    assert "ws frame serialization failed" in caplog.text
 
 
 def test_ws_transport_preserves_cross_batch_order():

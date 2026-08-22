@@ -124,11 +124,36 @@ class WSTransport:
             return False
         return params.get("type") in _STREAMING_EVENT_TYPES
 
+    def _serialize_frame(self, obj: dict) -> tuple[str, bool]:
+        """Serialize one frame, replacing invalid responses with an RPC error."""
+        try:
+            return json.dumps(obj, ensure_ascii=False), False
+        except Exception as exc:
+            # Pool workers own their futures, so letting serialization escape
+            # here silently abandons the request. Keep the connection usable
+            # and give the caller a terminal response with the original id.
+            rid = obj.get("id") if isinstance(obj, dict) else None
+            if not isinstance(rid, (str, int, float)) or isinstance(rid, bool):
+                rid = None
+            _log.error(
+                "ws frame serialization failed peer=%s id=%s error_type=%s error=%s",
+                self._peer,
+                rid,
+                type(exc).__name__,
+                exc,
+            )
+            fallback = {
+                "jsonrpc": "2.0",
+                "error": {"code": -32603, "message": "response serialization error"},
+                "id": rid,
+            }
+            return json.dumps(fallback, ensure_ascii=False), True
+
     def write(self, obj: dict) -> bool:
         if self._closed:
             return False
 
-        line = json.dumps(obj, ensure_ascii=False)
+        line, serialization_failed = self._serialize_frame(obj)
 
         try:
             on_loop = asyncio.get_running_loop() is self._loop
@@ -140,7 +165,7 @@ class WSTransport:
         # non-blocking — the worker returns immediately. Ordering is preserved
         # because every non-streaming frame (below) drains the buffer ahead of
         # itself.
-        if self._is_streaming_frame(obj):
+        if not serialization_failed and self._is_streaming_frame(obj):
             with self._token_lock:
                 self._pending_tokens.append(line)
                 if not self._token_flush_armed:
@@ -230,7 +255,8 @@ class WSTransport:
         with self._token_lock:
             batch = self._pending_tokens
             self._pending_tokens = []
-            batch.append(json.dumps(obj, ensure_ascii=False))
+            line, _serialization_failed = self._serialize_frame(obj)
+            batch.append(line)
         await self._safe_send_many(batch)
         return not self._closed
 

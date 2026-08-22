@@ -8,6 +8,7 @@ stale writer retry instead of silently replacing somebody else's state.
 
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -79,6 +80,18 @@ def test_ui_meta_revision_survives_key_deletion(home):
     )
     assert stale_recreate["ui_meta"] is False
     assert stale_recreate["ui_meta_conflicts"]["shared-room"]["actual"] == 2
+
+
+def test_profiles_list_normalizes_yaml_timestamps_in_ui_meta(home):
+    (home / "profile.yaml").write_text(
+        "ui_meta:\n  hermes-bots:\n    created: 2026-08-22T00:00:00Z\n",
+        encoding="utf-8",
+    )
+
+    row = _default_profile()
+
+    assert row["ui_meta"]["hermes-bots"]["created"] == "2026-08-22T00:00:00+00:00"
+    json.dumps(row)
 
 
 def test_two_concurrent_writers_cannot_both_replace_the_same_revision(home):

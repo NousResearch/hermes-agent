@@ -43,4 +43,38 @@ def test_a2a_call_schema_round_trips_through_tool_describe(monkeypatch):
         "agent",
         "message",
         "context_id",
+        "return_immediately",
     }
+
+
+def test_a2a_get_task_schema_round_trips_through_tool_describe(monkeypatch):
+    registry = ToolRegistry()
+
+    class _Context:
+        def register_tool(self, name, toolset, schema, handler, **kwargs):
+            registry.register(
+                name=name,
+                toolset=toolset,
+                schema=schema,
+                handler=handler,
+                **kwargs,
+            )
+
+    a2a_tools.register_tools(_Context())
+    definitions = registry.get_definitions({"a2a_get_task"})
+    monkeypatch.setattr(
+        tool_search,
+        "is_deferrable_tool_name",
+        lambda name: name == "a2a_get_task",
+    )
+
+    described = json.loads(
+        tool_search.dispatch_tool_describe(
+            {"name": "a2a_get_task"},
+            current_tool_defs=definitions,
+        )
+    )
+
+    assert described["description"]
+    assert described["parameters"]["required"] == ["agent", "task_id"]
+    assert set(described["parameters"]["properties"]) == {"agent", "task_id"}

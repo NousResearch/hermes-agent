@@ -62,6 +62,9 @@ logger = logging.getLogger(__name__)
 _DEFAULT_PORT = 9900
 _ORPHAN_TIMEOUT = 300  # seconds before a pending task is considered orphaned
 _WATCHDOG_INTERVAL = 60  # seconds between orphaned task watchdog runs
+# returnImmediately waiters skip the 5-minute orphan watchdog. This ceiling
+# still fails a hung gateway turn so a daemon thread cannot wait forever.
+_BACKGROUND_WAIT_SECONDS = 24 * 60 * 60
 _MAX_BODY = 1_048_576  # 1MB max request body — prevents DoS via memory exhaustion
 _SSE_KEEPALIVE = 5  # seconds between SSE keepalive comments
 
@@ -467,11 +470,16 @@ class A2AAdapter(BasePlatformAdapter):
 
     # ── Orphaned task watchdog ─────────────────────────────────────────────
 
+    def _live_task_ids(self) -> set[str]:
+        """Task ids that still have a waiter (the gateway turn is alive)."""
+        with self._pending_lock:
+            return set(self._pending.keys())
+
     def _watchdog_loop(self) -> None:
-        """Background thread that fails orphaned tasks (keeps them queryable)."""
+        """Fail stored tasks whose turn is gone. Skip tasks still running."""
         while not self._watchdog_stop.wait(_WATCHDOG_INTERVAL):
             try:
-                for tid in self.tasks.fail_orphans(_ORPHAN_TIMEOUT):
+                for tid in self.tasks.fail_orphans(_ORPHAN_TIMEOUT, skip=self._live_task_ids()):
                     logger.warning("A2A: orphaned task %s marked failed (timeout %ds)", tid, _ORPHAN_TIMEOUT)
                     protocol.metrics.tasks_failed += 1
             except Exception:
@@ -897,6 +905,12 @@ class A2AAdapter(BasePlatformAdapter):
         """Record the outcome of a dispatched task. Returns (state, reply) after
         redaction and input-required detection."""
         task_id = pending["task_id"]
+        rec = self.tasks.get(task_id)
+        if rec and rec["state"] in protocol.TERMINAL_STATES:
+            # Cancel (or a previous waiter) already closed this task.
+            self._pop_pending(task_id)
+            return rec["state"], rec.get("reply") or ""
+
         context_id = pending["context_id"]
         peer = pending["peer"]
         self._pop_pending(task_id)
@@ -948,10 +962,75 @@ class A2AAdapter(BasePlatformAdapter):
             except Exception:
                 return (protocol.STATE_FAILED, "[agent did not reply in time]")
 
+    @staticmethod
+    def _config_return_immediately(params: dict) -> bool:
+        """True when the caller asked for a task id now, not a blocking wait.
+
+        A2A v1.0 uses configuration.returnImmediately. Older peers used
+        configuration.blocking = false. Either one is enough.
+        """
+        cfg = params.get("configuration") if isinstance(params, dict) else None
+        if not isinstance(cfg, dict):
+            return False
+        if cfg.get("returnImmediately") is True or cfg.get("return_immediately") is True:
+            return True
+        if cfg.get("blocking") is False:
+            return True
+        return False
+
+    def _wait_in_background(self, pending: dict) -> None:
+        """Wait for the agent, then record the result.
+
+        Used when returnImmediately is set. The HTTP caller already has the
+        working task. A2A_REPLY_TIMEOUT applies only to blocking callers.
+        The wait still stops after _BACKGROUND_WAIT_SECONDS so a hung
+        gateway turn cannot pin a daemon thread and a forever-WORKING task.
+        """
+
+        def _run() -> None:
+            try:
+                fut: Future = pending["future"]
+                try:
+                    state, reply = fut.result(timeout=_BACKGROUND_WAIT_SECONDS)
+                except FuturesTimeout:
+                    logger.warning(
+                        "A2A: background waiter for task %s hit the %ss ceiling",
+                        pending.get("task_id"),
+                        _BACKGROUND_WAIT_SECONDS,
+                    )
+                    state, reply = (
+                        protocol.STATE_FAILED,
+                        "[agent did not reply in time]",
+                    )
+                except Exception:
+                    state, reply = protocol.STATE_FAILED, "[agent did not reply]"
+                self._finalize_task(pending, state, reply)
+            except Exception:
+                logger.debug("A2A: background waiter failed", exc_info=True)
+                try:
+                    self._finalize_task(
+                        pending, protocol.STATE_FAILED, "[agent did not reply]")
+                except Exception:
+                    pass
+
+        threading.Thread(
+            target=_run,
+            name=f"a2a-wait-{pending['task_id'][:12]}",
+            daemon=True,
+        ).start()
+
     def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
         terminal, pending = self._prepare_task(params, peer, agent=agent)
         if terminal is not None:
             result = protocol.send_message_response(terminal) if v1_response else terminal
+            return protocol.jsonrpc_result(req_id, result)
+        if self._config_return_immediately(params):
+            self._wait_in_background(pending)
+            task = protocol.build_task(
+                pending["task_id"], pending["context_id"], protocol.STATE_WORKING,
+                created_at=pending["created_iso"],
+            )
+            result = protocol.send_message_response(task) if v1_response else task
             return protocol.jsonrpc_result(req_id, result)
         state, reply = self._await_reply(pending)
         state, reply = self._finalize_task(pending, state, reply)

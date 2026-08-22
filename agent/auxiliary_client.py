@@ -9546,12 +9546,13 @@ def _call_llm_impl(
         kwargs["stream"] = True
         if stream_options:
             kwargs["stream_options"] = stream_options
-        if task == "moa_aggregator" and isinstance(client, CodexAuxiliaryClient):
-            # CodexAuxiliaryClient (openai-codex, xai-oauth, and any other
-            # Responses-shim provider) consumes the provider stream internally
-            # and returns a completed response object. Routing that nested
+        if task == "moa_aggregator" and _client_streams_internally(client):
+            # Internal-streaming shims (Codex Responses, Anthropic Messages,
+            # Bedrock Converse) consume the provider stream inside create()
+            # and return a completed response object. Routing that nested
             # MoA stream through Relay's generic managed stream makes the
-            # manager iterate the completed SimpleNamespace itself (#55933).
+            # manager iterate the completed SimpleNamespace itself (#55933;
+            # observed in production with kimi-coding as the aggregator).
             # Return the provider call directly; the MoA facade converts a
             # completed response into a one-chunk delta iterator at its
             # boundary.

@@ -4283,6 +4283,65 @@ class TestMoaAggregatorStreamingBypass:
         direct_create.assert_called_once()
         relay_stream.assert_not_called()
 
+    @pytest.mark.parametrize("client_kind", ["anthropic", "bedrock"])
+    def test_moa_aggregator_stream_bypasses_relay_for_other_internal_streaming_clients(
+        self, monkeypatch, client_kind
+    ):
+        """Anthropic Messages (kimi-coding, anthropic) and Bedrock Converse
+        shims consume the provider stream inside create() and return a
+        completed response object — the same contract as the Codex Responses
+        shim above. The MoA facade already converts ANY completed response
+        into a one-chunk iterator at its boundary, so call_llm must return
+        the direct create() result for every _client_streams_internally
+        client, not route it through Relay's managed stream (which iterates
+        the completed SimpleNamespace and dies with TypeError — observed in
+        production with kimi-coding as the MoA aggregator).
+        """
+        from agent.auxiliary_client import (
+            AnthropicAuxiliaryClient,
+            BedrockAuxiliaryClient,
+        )
+
+        completed = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+        )
+
+        if client_kind == "anthropic":
+            client = AnthropicAuxiliaryClient(
+                SimpleNamespace(close=lambda: None),
+                "k3",
+                api_key="test-key",
+                base_url="https://api.kimi.com/coding/v1",
+            )
+            provider, model = "kimi-coding", "k3"
+        else:
+            client = BedrockAuxiliaryClient(
+                "us-east-1", "anthropic.claude-3-sonnet-20240229-v1:0"
+            )
+            provider, model = "bedrock", "anthropic.claude-3-sonnet-20240229-v1:0"
+
+        direct_create = MagicMock(return_value=completed)
+        monkeypatch.setattr(client.chat.completions, "create", direct_create)
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client",
+            lambda *args, **kwargs: (client, model),
+        )
+        relay_stream = MagicMock(side_effect=AssertionError("_relay_sync_stream must not be used"))
+        monkeypatch.setattr("agent.auxiliary_client._relay_sync_stream", relay_stream)
+
+        result = call_llm(
+            task="moa_aggregator",
+            provider=provider,
+            model=model,
+            messages=[{"role": "user", "content": "只回答 OK"}],
+            stream=True,
+        )
+
+        assert result is completed
+        direct_create.assert_called_once()
+        relay_stream.assert_not_called()
+
 
 class TestSynchronousFallbackCachePlans:
     @staticmethod

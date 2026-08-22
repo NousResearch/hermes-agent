@@ -329,12 +329,12 @@ def test_run_one_job_keyboard_interrupt_skips_delivery_and_reraises(monkeypatch)
 
 def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path):
     """Regression: under profile isolation (multiplex active), run_one_job must
-    execute run_job inside a profile secret scope so credential reads
-    (resolve_runtime_provider -> get_secret) don't fail-close with
-    UnscopedSecretError, and must tear the scope down afterward.
+    keep one profile secret scope active through execution and delivery so
+    credential reads do not fail closed or fall through to another profile,
+    then tear the scope down after the complete job lifecycle.
 
-    Behavior contract: a scope is present during run_job and absent after,
-    regardless of the concrete secret values.
+    Behavior contract: the same scope is present during run_job and
+    _deliver_result, and no scope remains after run_one_job returns.
     """
     from agent import secret_scope as ss
 
@@ -343,6 +343,7 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
 
     scope_during_run = {}
+    scope_during_delivery = {}
 
     def fake_run_job(job, *, defer_agent_teardown=None, **kw):
         # This is where resolve_runtime_provider() would read a secret. Prove a
@@ -351,9 +352,14 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
         scope_during_run["base_url"] = ss.get_secret("OPENROUTER_BASE_URL")
         return (True, "out", "final", None)
 
+    def fake_deliver(*args, **kwargs):
+        scope_during_delivery["scope"] = ss.current_secret_scope()
+        scope_during_delivery["base_url"] = ss.get_secret("OPENROUTER_BASE_URL")
+        return None
+
     monkeypatch.setattr(s, "run_job", fake_run_job)
     monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
-    monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
+    monkeypatch.setattr(s, "_deliver_result", fake_deliver)
     monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
 
     ss.set_multiplex_active(True)
@@ -363,10 +369,12 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
         ss.set_multiplex_active(False)
 
     assert ok is True
-    # Scope was installed during run_job and the profile secret resolved.
+    # The same profile scope covered both execution and delivery.
     assert scope_during_run["scope"] is not None
     assert scope_during_run["base_url"] == "https://openrouter.ai/api/v1"
-    # And it was torn down after run_one_job returned (no leak).
+    assert scope_during_delivery["scope"] == scope_during_run["scope"]
+    assert scope_during_delivery["base_url"] == "https://openrouter.ai/api/v1"
+    # And it was torn down after the full lifecycle returned (no leak).
     assert ss.current_secret_scope() is None
 
 

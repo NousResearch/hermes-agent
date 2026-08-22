@@ -7158,6 +7158,13 @@ def _run_one_job_body(
     # computation and the post-delivery "alerted" transition.
     incident_acked = False
     failure_incident_id = None
+    from agent.secret_scope import (
+        build_profile_secret_scope,
+        reset_secret_scope,
+        set_secret_scope,
+    )
+
+    _scope_token = None
     try:
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
@@ -7182,18 +7189,11 @@ def _run_one_job_body(
         # becomes running only immediately before the actual run.
         mark_execution_running(execution_id)
 
-        # Run the job under the profile's secret scope. get_secret() fails
-        # closed outside a scope once profile isolation is in play (multiple
-        # gateway profiles / room→profile multiplexing), and cron fires from
-        # the ticker thread where no per-turn scope is installed — so
-        # resolve_runtime_provider() raised UnscopedSecretError before model
-        # selection, breaking every cron job. Mirrors the per-turn pattern in
-        # gateway/run.py (_profile_runtime_scope).
-        from agent.secret_scope import (
-            build_profile_secret_scope,
-            reset_secret_scope,
-            set_secret_scope,
-        )
+        # Run and deliver under the profile's secret scope. get_secret() fails
+        # closed outside a scope once profile isolation is active, and cron
+        # fires from a ticker thread with no per-turn scope. Delivery adapters
+        # can also resolve credentials, so resetting after run_job would leave
+        # _deliver_result unscoped. Mirrors gateway/run.py's per-turn pattern.
 
         _scope_token = set_secret_scope(
             build_profile_secret_scope(_get_hermes_home())
@@ -7229,8 +7229,7 @@ def _run_one_job_body(
             for _deferred_agent in _deferred_agents:
                 _teardown_cron_agent(_deferred_agent, job["id"])
             raise
-        finally:
-            reset_secret_scope(_scope_token)
+        # The outer finally resets the scope after delivery and bookkeeping.
 
         if _fire_claim_ownership_lost():
             for _deferred_agent in _deferred_agents:
@@ -7618,6 +7617,9 @@ def _run_one_job_body(
         if not isinstance(e, Exception):
             raise
         return False
+    finally:
+        if _scope_token is not None:
+            reset_secret_scope(_scope_token)
 
 
 def _notify_provider_jobs_changed() -> None:

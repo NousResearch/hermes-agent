@@ -188,6 +188,27 @@ _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
+# Markdown-aware chunk boundary detector (Phase 2 / L2).
+# Matches the *position immediately before* safe split points:
+#   - blank line (\n\n)               — paragraph break
+#   - ATX heading at line start       — # / ## / ### ... up to ######
+#   - horizontal rule                 — ---, ***, ___ (with optional spaces)
+#   - bullet list item at line start  — -, *, +
+#   - ordered list item at line start — 1. 2. ... 99.
+# The re.finditer() start position is consumed by truncate_message as the
+# candidate split offset, so the regex matches the newline BEFORE the
+# boundary (so :split_at still points to a "\n" char, matching the existing
+# "prefer newline" logic in base.truncate_message).
+_MARKDOWN_BOUNDARY_RE = re.compile(
+    r"(?:\n\n+)"                                  # blank line (paragraph break)
+    r"|(?:^#{1,6}\s)"                            # ATX heading (we want to split
+                                                 #   on the \n before it; treat
+                                                 #   position 0 as no-split)
+    r"|(?:^\s*[-*]{3,}\s*$)"                     # horizontal rule
+    r"|(?:^\s*[-*+]\s)"                          # bullet list item
+    r"|(?:^\s*\d+\.\s)",                         # ordered list item
+    re.MULTILINE,
+)
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
@@ -436,6 +457,11 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    # Phase 3 / L3 render settings — opt-in switch for native-element
+    # rendering of complex markdown (Path B in skill
+    # `feishu-markdown-preprocess`). Defaults to False so existing
+    # operators see no behavior change on upgrade.
+    enable_preprocess: bool = False
 
 
 @dataclass
@@ -1487,7 +1513,12 @@ class FeishuAdapter(BasePlatformAdapter):
     supports_code_blocks = True  # Feishu renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
-    MAX_MESSAGE_LENGTH = 8000
+    # 24000 leaves a 6KB buffer under Feishu's ~30KB per-message content cap
+    # (verified by im.v1.message.create 400 responses on 32768+ bytes). Larger
+    # windows reduce the chance of mid-table / mid-code-block truncation
+    # destroying renderable markdown — see Phase 2's markdown-aware chunker
+    # which slices on safe boundaries before this hard cap is ever hit.
+    MAX_MESSAGE_LENGTH = 24000
     # Max distinct chat IDs retained in _chat_locks before LRU eviction kicks in.
     CHAT_LOCK_MAX_SIZE: int = 1000
     # Threshold for detecting Feishu client-side message splits.
@@ -1660,6 +1691,15 @@ class FeishuAdapter(BasePlatformAdapter):
             allow_bots=allow_bots,
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
+            ),
+            # Phase 3 / L3 — opt-in native-element rendering.  Reads from
+            # ``extra.render.enable_preprocess`` (nested) for forward-compat
+            # with future render knobs (font, color, etc.); also honors a
+            # flat ``extra.enable_preprocess`` for back-compat.
+            enable_preprocess=_to_boolean(
+                extra.get("enable_preprocess", False)
+                if isinstance(extra.get("enable_preprocess"), bool)
+                else (extra.get("render", {}) or {}).get("enable_preprocess", False)
             ),
         )
 
@@ -4653,9 +4693,46 @@ class FeishuAdapter(BasePlatformAdapter):
         # MAX_MESSAGE_LENGTH, the per-chunk regex would otherwise
         # mis-classify a plain-prose chunk as ``text``. See #26841.
         if prefer_post or _MARKDOWN_HINT_RE.search(content):
+            # Phase 3 / L3 — try the native-element path (Path B) when
+            # ``enable_preprocess`` is on AND the content is complex enough
+            # to justify native rendering (headings, code blocks, lists,
+            # blockquotes — see ``feishu_markdown_preprocess.is_complex_markdown``).
+            # Pure markdown stays on Path A (tag: md) — Feishu's own parser
+            # handles bold/italic/tables/code blocks/etc. since #52786.
+            if self._render_settings.enable_preprocess:
+                try:
+                    from plugins.platforms.feishu import feishu_markdown_preprocess
+                    if feishu_markdown_preprocess.is_complex_markdown(content):
+                        native_payload = (
+                            feishu_markdown_preprocess
+                            .preprocess_to_post_payload(content)
+                        )
+                        if native_payload is not None:
+                            return "post", json.dumps(native_payload, ensure_ascii=False)
+                        # preprocess returned None — fall through to Path A.
+                except Exception as exc:
+                    logger.debug("[Feishu] preprocess fallback to tag: md: %s", exc)
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
+
+    @property
+    def _render_settings(self) -> Any:
+        """Best-effort accessor for render-related fields.
+
+        Returns ``self._settings`` when present (normal lifecycle), or a
+        minimal stub object exposing the render flags as ``False`` defaults
+        when the adapter was instantiated via ``__new__`` (tests that
+        exercise the build pipeline without running ``__init__``).
+
+        Stub stays intentionally tiny: only ``enable_preprocess`` matters
+        at the call site today; new flags added in future phases will get
+        their default-here counterparts.
+        """
+        if hasattr(self, "_settings"):
+            return self._settings
+        from types import SimpleNamespace
+        return SimpleNamespace(enable_preprocess=False)
 
     @staticmethod
     def _get_audio_duration_ms(file_path: str) -> int:

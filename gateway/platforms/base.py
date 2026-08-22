@@ -7286,6 +7286,55 @@ class BasePlatformAdapter(ABC):
         # language tag (possibly "") so we can reopen the fence.
         carry_lang: Optional[str] = None
 
+        # Markdown-aware boundary scan (Phase 2 / L2).
+        # Only meaningful for Feishu — other platforms use their own chunkers.
+        # Lazy-import the constant from the Feishu adapter so base.py stays
+        # decoupled from any platform module (preserves the import topology
+        # that tests/gateway/test_feishu*.py depend on).
+        try:
+            from plugins.platforms.feishu.adapter import _MARKDOWN_BOUNDARY_RE
+            _boundary_re = _MARKDOWN_BOUNDARY_RE
+        except Exception:  # ImportError, AttributeError, ValueError
+            _boundary_re = None
+
+        def _find_markdown_boundary(region: str, headroom: int) -> int:
+            """Find the latest safe markdown split point in ``region``.
+
+            Prefers block boundaries that Feishu's tag:md parser is guaranteed
+            to keep intact across chunks:
+
+              1. Blank line (``\\n\\n``) — paragraph break; never mid-paragraph.
+              2. ATX heading line (``^#{1,6} ``, at line start) — every heading
+                 opens a new block; splitting on the newline before it is safe.
+              3. Horizontal rule line (``^\\s*-{3,}\\s*$`` / ``^\\s*\\*{3,}\\s*$``)
+                 — three-char separator renders identically anywhere.
+              4. List item start (``^\\s*[-*+] `` or ``^\\s*\\d+\\. ``) — bullet
+                 or ordered-list opener; splitting on the newline before it
+                 keeps each item whole when possible.
+
+            Returns -1 when no boundary is found within the last 50% of the
+            region (caller falls back to newline/space/code-aware splitting).
+            The 50% floor prevents greedy backtracking that would pack a
+            single chunk full of orphan list fragments while starving the
+            next chunk of structural context.
+            """
+            if _boundary_re is None:
+                return -1
+            if not _boundary_re.search(region):
+                return -1
+            floor = headroom // 2
+            best = -1
+            # Walk matches left-to-right; the FIRST one at or past floor is
+            # the latest safe split (subsequent matches are further right and
+            # also ≥ floor, so they're equally valid; first-wins keeps the
+            # algorithm O(few) per chunk in the typical case).
+            for m in _boundary_re.finditer(region):
+                pos = m.start()
+                if pos >= floor:
+                    best = pos
+                    break
+            return best
+
         while remaining:
             # If we're continuing a code block from the previous chunk,
             # prepend a new opening fence with the same language tag.
@@ -7337,9 +7386,24 @@ class BasePlatformAdapter(ABC):
             else:
                 _cp_limit = headroom
             region = remaining[:_cp_limit]
-            split_at = region.rfind("\n")
-            if split_at < _cp_limit // 2:
-                split_at = region.rfind(" ")
+            # Markdown-aware preferred split (Phase 2 / L2). Try to find a
+            # safe structural boundary first; fall back to the existing
+            # newline → space → hard-cut ladder if none qualifies.
+            md_split = _find_markdown_boundary(region, _cp_limit)
+            if md_split > 0:
+                # The regex matches the newline BEFORE the boundary so md_split
+                # already points at a "\n" — move back one so the chunk ends
+                # with the newline (matching the existing semantics where
+                # split_at is the position where the cut happens, and
+                # remaining = remaining[split_at:].lstrip() trims the rest).
+                # If md_split lands on the boundary char itself (e.g. matched
+                # the blank line), keep it as-is — the lstrip on remaining
+                # will discard leading whitespace from the next chunk.
+                split_at = md_split
+            else:
+                split_at = region.rfind("\n")
+                if split_at < _cp_limit // 2:
+                    split_at = region.rfind(" ")
             if split_at < 1:
                 # Consume at least one codepoint. Without the max(1, …) floor,
                 # a zero _cp_limit — reachable when max_length is 0/1, or under

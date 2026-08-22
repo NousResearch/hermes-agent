@@ -2629,6 +2629,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             elif agent._provider_model_requires_responses_api(
                 fb_model,
                 provider=fb_provider,
+                api_key=(
+                    fb_api_key_hint
+                    or getattr(fb_client, "api_key", None)
+                ),
             ):
                 # GPT-5.x models usually need Responses API, but keep
                 # provider-specific exceptions like Copilot gpt-5-mini on

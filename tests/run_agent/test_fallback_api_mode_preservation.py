@@ -180,3 +180,29 @@ class TestPlainFallbackUnchanged:
         agent = _make_agent(fallback_model=fbs)
         _activate(agent, "https://api.anthropic.com/v1", "claude-opus-4-6")
         assert agent.api_mode == "anthropic_messages"
+
+
+class TestCopilotCatalogRouting:
+    def test_responses_only_non_gpt_fallback_uses_responses_api(self):
+        """Fallback activation must use the same catalog routing as primary."""
+        fbs = [{
+            "provider": "copilot",
+            "model": "grok-4.6",
+        }]
+        catalog = [{
+            "id": "grok-4.6",
+            "supported_endpoints": ["/responses"],
+        }]
+        agent = _make_agent(fallback_model=fbs)
+
+        with patch(
+            "hermes_cli.models.fetch_github_model_catalog",
+            return_value=catalog,
+        ):
+            _activate(
+                agent,
+                "https://api.githubcopilot.com",
+                "grok-4.6",
+            )
+
+        assert agent.api_mode == "codex_responses"

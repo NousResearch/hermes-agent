@@ -178,6 +178,8 @@ export const zhHant: Translations = {
   analytics: {
     period: "時間範圍：",
     totalTokens: "Token 總數",
+    apiEquivalentCost: "API 等價費用",
+    apiEquivalentCostHint: "按公開 API 價格計算的影子估值，不是服務商帳單。+ 或 N/A 表示部分訂閱 Token 沒有匹配的公開價格。",
     totalSessions: "工作階段總數",
     apiCalls: "API 呼叫",
     dailyTokenUsage: "每日 Token 用量",

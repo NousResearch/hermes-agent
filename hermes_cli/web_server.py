@@ -15403,6 +15403,94 @@ def _aux_task_summary(aux_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return result
 
 
+def _subscription_api_equivalent_totals(db, cutoff: float) -> Tuple[float, int]:
+    """Return a shadow API-rate value for subscription-included usage.
+
+    Route-level rows preserve model switches and auxiliary calls.  Aggregate
+    session counters are used only for a non-negative legacy residual, matching
+    the reconciliation contract in ``InsightsEngine._compute_model_breakdown``.
+    Canonical ``included`` / zero-invoice accounting fields remain untouched.
+    """
+    from agent.usage_pricing import (
+        CanonicalUsage,
+        estimate_api_equivalent_cost,
+    )
+
+    route_rows = [dict(row) for row in db._conn.execute("""
+        SELECT u.session_id, u.task, u.model, u.billing_provider, u.billing_base_url,
+               u.input_tokens, u.output_tokens, u.cache_read_tokens,
+               u.cache_write_tokens, u.reasoning_tokens,
+               COALESCE(u.api_call_count, 0) as api_calls
+        FROM session_model_usage u
+        JOIN sessions s ON s.id = u.session_id
+        WHERE s.started_at > ?
+    """, (cutoff,)).fetchall()]
+
+    token_keys = (
+        "input_tokens", "output_tokens", "cache_read_tokens",
+        "cache_write_tokens", "reasoning_tokens", "api_calls",
+    )
+    attributed: Dict[str, Dict[str, int]] = {}
+    total = 0.0
+    unpriced_tokens = 0
+
+    def _price(row: Dict[str, Any]) -> None:
+        nonlocal total, unpriced_tokens
+        usage = CanonicalUsage(
+            input_tokens=row.get("input_tokens") or 0,
+            output_tokens=row.get("output_tokens") or 0,
+            cache_read_tokens=row.get("cache_read_tokens") or 0,
+            cache_write_tokens=row.get("cache_write_tokens") or 0,
+            reasoning_tokens=row.get("reasoning_tokens") or 0,
+            request_count=row.get("api_calls") or 0,
+        )
+        result = estimate_api_equivalent_cost(
+            row.get("model") or "",
+            usage,
+            provider=row.get("billing_provider") or None,
+            base_url=row.get("billing_base_url") or None,
+        )
+        if result is None:
+            return
+        if result.amount_usd is None:
+            unpriced_tokens += usage.total_tokens
+        else:
+            total += float(result.amount_usd)
+
+    for row in route_rows:
+        _price(row)
+        if row.get("task"):
+            # Auxiliary counters do not roll up into sessions, so they are
+            # priced above but cannot reduce the main-loop legacy residual.
+            continue
+        session_totals = attributed.setdefault(
+            row["session_id"], {key: 0 for key in token_keys}
+        )
+        for key in token_keys:
+            session_totals[key] += row.get(key) or 0
+
+    session_rows = db._conn.execute("""
+        SELECT id, model, billing_provider, billing_base_url,
+               input_tokens, output_tokens, cache_read_tokens,
+               cache_write_tokens, reasoning_tokens,
+               COALESCE(api_call_count, 0) as api_calls
+        FROM sessions
+        WHERE started_at > ? AND model IS NOT NULL
+    """, (cutoff,)).fetchall()
+    for session_row in session_rows:
+        row = dict(session_row)
+        session_totals = attributed.get(row["id"], {})
+        residual = {
+            key: max(0, (row.get(key) or 0) - (session_totals.get(key) or 0))
+            for key in token_keys
+        }
+        if not any(residual.values()):
+            continue
+        _price({**row, **residual})
+
+    return total, unpriced_tokens
+
+
 def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
     from agent.insights import InsightsEngine
 
@@ -15444,6 +15532,13 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         aux_rows = _aux_usage_rows(db, cutoff)
         by_model = _merge_aux_into_by_model(by_model, aux_rows)
 
+        with _config_profile_scope(profile):
+            dashboard_cfg = load_config().get("dashboard") or {}
+        show_api_equivalent_cost = bool(
+            isinstance(dashboard_cfg, dict)
+            and dashboard_cfg.get("show_api_equivalent_cost") is True
+        )
+
         cur3 = db._conn.execute("""
             SELECT SUM(input_tokens) as total_input,
                    SUM(output_tokens) as total_output,
@@ -15456,6 +15551,15 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
             FROM sessions WHERE started_at > ?
         """, (cutoff,))
         totals = dict(cur3.fetchone())
+        if show_api_equivalent_cost:
+            api_equivalent_cost, unpriced_tokens = (
+                _subscription_api_equivalent_totals(db, cutoff)
+            )
+            totals["total_api_equivalent_cost"] = api_equivalent_cost
+            totals["api_equivalent_unpriced_tokens"] = unpriced_tokens
+        else:
+            totals["total_api_equivalent_cost"] = None
+            totals["api_equivalent_unpriced_tokens"] = None
         usage = InsightsEngine(db).get_usage_breakdown(days=days)
 
         return {

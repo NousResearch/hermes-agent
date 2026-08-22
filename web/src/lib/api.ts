@@ -2148,6 +2148,8 @@ export interface AnalyticsResponse {
     total_reasoning: number;
     total_estimated_cost: number;
     total_actual_cost: number;
+    total_api_equivalent_cost: number | null;
+    api_equivalent_unpriced_tokens: number | null;
     total_sessions: number;
     total_api_calls: number;
   };

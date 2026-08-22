@@ -2844,6 +2844,190 @@ class TestNewEndpoints:
         mock_generate.assert_not_called()
         assert any(tool["tool"] == "read_file" for tool in resp.json()["tools"])
 
+    def test_analytics_usage_can_show_subscription_api_equivalent_cost(self):
+        from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+        from hermes_cli.config import load_config, save_config
+        from hermes_state import SessionDB
+
+        config = load_config()
+        config.setdefault("dashboard", {})["show_api_equivalent_cost"] = True
+        save_config(config)
+
+        usage = CanonicalUsage(
+            input_tokens=1_000_000,
+            output_tokens=100_000,
+            cache_read_tokens=2_000_000,
+        )
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="api-equivalent-analytics-test",
+                source="cli",
+                model="gpt-5.6-sol",
+            )
+            db.update_token_counts(
+                "api-equivalent-analytics-test",
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read_tokens=usage.cache_read_tokens,
+                model="gpt-5.6-sol",
+                billing_provider="openai-codex",
+                billing_mode="subscription_included",
+                cost_status="included",
+                estimated_cost_usd=0,
+                actual_cost_usd=0,
+            )
+        finally:
+            db.close()
+
+        response = self.client.get("/api/analytics/usage?days=7")
+        assert response.status_code == 200
+        totals = response.json()["totals"]
+        direct_api = estimate_usage_cost(
+            "gpt-5.6-sol", usage, provider="openai"
+        )
+
+        assert direct_api.amount_usd is not None
+        assert totals["total_api_equivalent_cost"] == float(direct_api.amount_usd)
+        assert totals["total_actual_cost"] == 0
+        assert totals["total_estimated_cost"] == 0
+
+    def test_analytics_api_equivalent_cost_attributes_model_switches_by_route(self):
+        from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+        from hermes_cli.config import load_config, save_config
+        from hermes_state import SessionDB
+
+        config = load_config()
+        config.setdefault("dashboard", {})["show_api_equivalent_cost"] = True
+        save_config(config)
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="api-equivalent-route-switch-test",
+                source="cli",
+                model="gpt-5.6-sol",
+            )
+            db.update_token_counts(
+                "api-equivalent-route-switch-test",
+                input_tokens=1_000_000,
+                model="gpt-5.6-sol",
+                billing_provider="openai-codex",
+                billing_mode="subscription_included",
+                cost_status="included",
+            )
+            db.update_token_counts(
+                "api-equivalent-route-switch-test",
+                input_tokens=1_000_000,
+                model="gpt-5.6-sol",
+                billing_provider="openai",
+                billing_mode="api",
+                cost_status="estimated",
+            )
+        finally:
+            db.close()
+
+        response = self.client.get("/api/analytics/usage?days=7")
+        assert response.status_code == 200
+        direct_api = estimate_usage_cost(
+            "gpt-5.6-sol",
+            CanonicalUsage(input_tokens=1_000_000),
+            provider="openai",
+        )
+
+        assert direct_api.amount_usd is not None
+        assert response.json()["totals"]["total_api_equivalent_cost"] == float(
+            direct_api.amount_usd
+        )
+
+    def test_analytics_api_equivalent_cost_does_not_subtract_aux_from_legacy_main(self):
+        from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+        from hermes_cli.config import load_config, save_config
+        from hermes_state import SessionDB
+
+        config = load_config()
+        config.setdefault("dashboard", {})["show_api_equivalent_cost"] = True
+        save_config(config)
+
+        db = SessionDB()
+        try:
+            session_id = "api-equivalent-legacy-aux-test"
+            db.create_session(session_id=session_id, source="cli", model="gpt-5.6-sol")
+            db.update_token_counts(
+                session_id,
+                input_tokens=1_000_000,
+                model="gpt-5.6-sol",
+                billing_provider="openai-codex",
+                billing_mode="subscription_included",
+                cost_status="included",
+            )
+            db._conn.execute(
+                "DELETE FROM session_model_usage WHERE session_id = ? AND task = ''",
+                (session_id,),
+            )
+            db._conn.commit()
+            db.record_auxiliary_usage(
+                session_id,
+                "title_generation",
+                model="claude-sonnet-4",
+                billing_provider="anthropic",
+                input_tokens=400_000,
+            )
+        finally:
+            db.close()
+
+        response = self.client.get("/api/analytics/usage?days=7")
+        direct_api = estimate_usage_cost(
+            "gpt-5.6-sol",
+            CanonicalUsage(input_tokens=1_000_000),
+            provider="openai",
+        )
+
+        assert response.status_code == 200
+        assert direct_api.amount_usd is not None
+        assert response.json()["totals"]["total_api_equivalent_cost"] == float(
+            direct_api.amount_usd
+        )
+
+    def test_analytics_api_equivalent_cost_reports_unpriced_subscription_tokens(self):
+        from hermes_cli.config import load_config, save_config
+        from hermes_state import SessionDB
+
+        config = load_config()
+        config.setdefault("dashboard", {})["show_api_equivalent_cost"] = True
+        save_config(config)
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="api-equivalent-unpriced-test",
+                source="cli",
+                model="gpt-5.4",
+            )
+            db.update_token_counts(
+                "api-equivalent-unpriced-test",
+                input_tokens=1_000_000,
+                model="gpt-5.4",
+                billing_provider="openai-codex",
+                billing_mode="subscription_included",
+                cost_status="included",
+            )
+        finally:
+            db.close()
+
+        response = self.client.get("/api/analytics/usage?days=7")
+
+        assert response.status_code == 200
+        totals = response.json()["totals"]
+        assert totals["total_api_equivalent_cost"] == 0
+        assert totals["api_equivalent_unpriced_tokens"] == 1_000_000
+
+    def test_analytics_usage_hides_api_equivalent_cost_by_default(self):
+        response = self.client.get("/api/analytics/usage?days=7")
+
+        assert response.status_code == 200
+        assert response.json()["totals"]["total_api_equivalent_cost"] is None
+
 # ---------------------------------------------------------------------------
 # Model context length: normalize/denormalize + /api/model/info
 # ---------------------------------------------------------------------------

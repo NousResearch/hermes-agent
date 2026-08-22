@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from agent.usage_pricing import (
     CanonicalUsage,
     format_cost_label,
+    estimate_api_equivalent_cost,
     estimate_usage_cost,
     get_pricing_entry,
     normalize_usage,
@@ -458,6 +459,41 @@ class TestSubscriptionIncludedNotes:
         assert result.amount_usd == Decimal("0")
         assert len(result.notes) > 0
         assert any("subscription" in note.lower() for note in result.notes)
+
+
+def test_api_equivalent_cost_values_subscription_usage_without_changing_billing():
+    usage = CanonicalUsage(
+        input_tokens=1_000_000,
+        output_tokens=100_000,
+        cache_read_tokens=2_000_000,
+        cache_write_tokens=0,
+    )
+
+    included = estimate_usage_cost(
+        "gpt-5.6-sol", usage, provider="openai-codex"
+    )
+    equivalent = estimate_api_equivalent_cost(
+        "gpt-5.6-sol", usage, provider="openai-codex"
+    )
+    direct_api = estimate_usage_cost(
+        "gpt-5.6-sol", usage, provider="openai"
+    )
+
+    assert included.status == "included"
+    assert included.amount_usd == Decimal("0")
+    assert equivalent is not None
+    assert equivalent.status == "estimated"
+    assert equivalent.amount_usd == direct_api.amount_usd
+    assert equivalent.source == direct_api.source
+    assert any("not a provider invoice" in note.lower() for note in equivalent.notes)
+
+
+def test_api_equivalent_cost_ignores_pay_per_token_routes():
+    usage = CanonicalUsage(input_tokens=1_000, output_tokens=100)
+
+    assert estimate_api_equivalent_cost(
+        "gpt-5.6-sol", usage, provider="openai"
+    ) is None
 
 
 def test_normalize_usage_reads_kimi_top_level_cached_tokens():

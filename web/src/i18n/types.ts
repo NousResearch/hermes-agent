@@ -217,6 +217,8 @@ export interface Translations {
   analytics: {
     period: string;
     totalTokens: string;
+    apiEquivalentCost?: string;
+    apiEquivalentCostHint?: string;
     totalSessions: string;
     apiCalls: string;
     dailyTokenUsage: string;

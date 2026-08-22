@@ -176,6 +176,8 @@ export const zh: Translations = {
   analytics: {
     period: "时间范围：",
     totalTokens: "总 Token 数",
+    apiEquivalentCost: "API 等价费用",
+    apiEquivalentCostHint: "按公开 API 价格计算的影子估值，不是服务商账单。+ 或 N/A 表示部分订阅 Token 没有匹配的公开价格。",
     totalSessions: "总会话数",
     apiCalls: "API 调用",
     dailyTokenUsage: "每日 Token 用量",

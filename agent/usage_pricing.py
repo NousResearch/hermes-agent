@@ -1504,6 +1504,56 @@ def estimate_usage_cost(
     )
 
 
+_API_EQUIVALENT_PROVIDERS = {
+    # ChatGPT/Codex OAuth uses the subscription backend, but the equivalent
+    # pay-per-token product is OpenAI's direct API for the same model id.
+    "openai-codex": "openai",
+}
+
+
+def estimate_api_equivalent_cost(
+    model_name: str,
+    usage: CanonicalUsage,
+    *,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> Optional[CostResult]:
+    """Value subscription-included usage at the matching public API rate.
+
+    This is an observability-only shadow estimate.  It deliberately leaves the
+    canonical billing result untouched: callers still persist ``included`` and
+    a zero provider invoice for subscription routes.  ``None`` means the route
+    is not subscription-included or has no trustworthy API equivalent mapping.
+    """
+    route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
+    if route.billing_mode != "subscription_included":
+        return None
+
+    equivalent_provider = _API_EQUIVALENT_PROVIDERS.get(route.provider)
+    if not equivalent_provider:
+        return None
+
+    result = estimate_usage_cost(
+        route.model,
+        usage,
+        provider=equivalent_provider,
+    )
+    if result.amount_usd is None:
+        return result
+
+    return CostResult(
+        amount_usd=result.amount_usd,
+        status=result.status,
+        source=result.source,
+        label=result.label,
+        fetched_at=result.fetched_at,
+        pricing_version=result.pricing_version,
+        notes=result.notes + (
+            "API-equivalent estimate only; not a provider invoice.",
+        ),
+    )
+
+
 def has_known_pricing(
     model_name: str,
     provider: Optional[str] = None,

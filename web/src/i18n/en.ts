@@ -203,6 +203,9 @@ export const en: Translations = {
   analytics: {
     period: "Period:",
     totalTokens: "Total Tokens",
+    apiEquivalentCost: "API-equivalent cost",
+    apiEquivalentCostHint:
+      "Shadow estimate at public API rates — not your provider invoice. A + or N/A means some subscription tokens have no matching public price.",
     totalSessions: "Total Sessions",
     apiCalls: "API Calls",
     dailyTokenUsage: "Daily Token Usage",

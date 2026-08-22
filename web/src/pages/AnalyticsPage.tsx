@@ -17,6 +17,7 @@ import type {
   AnalyticsSkillEntry,
 } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
+import { apiEquivalentCostStat } from "@/lib/api-equivalent-cost";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";
@@ -481,6 +482,14 @@ export default function AnalyticsPage() {
     load();
   }, [load]);
 
+  const apiEquivalentStat = data
+    ? apiEquivalentCostStat(
+        data.totals.total_api_equivalent_cost,
+        t.analytics.apiEquivalentCost ?? "API-equivalent cost",
+        data.totals.api_equivalent_unpriced_tokens ?? 0,
+      )
+    : null;
+
   return (
     <div className="flex flex-col gap-6">
       <PluginSlot name="analytics:top" />
@@ -557,6 +566,7 @@ export default function AnalyticsPage() {
                       label: t.analytics.output,
                       value: formatTokens(data.totals.total_output),
                     },
+                    ...(apiEquivalentStat ? [apiEquivalentStat] : []),
                     {
                       label: t.analytics.totalSessions,
                       value: `${data.totals.total_sessions} (~${(data.totals.total_sessions / days).toFixed(1)}${t.analytics.perDayAvg})`,
@@ -570,6 +580,12 @@ export default function AnalyticsPage() {
                     },
                   ]}
                 />
+                {apiEquivalentStat && (
+                  <p className="mt-3 font-mondwest normal-case text-xs text-muted-foreground">
+                    {t.analytics.apiEquivalentCostHint ??
+                      "Shadow estimate at public API rates — not your provider invoice."}
+                  </p>
+                )}
               </CardContent>
             </Card>
 

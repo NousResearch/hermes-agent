@@ -1546,6 +1546,11 @@ DEFAULT_CONFIG = {
         # Set this to True to re-enable the surfaces with the understanding
         # that the numbers are a local lower-bound estimate, not billing.
         "show_token_analytics": False,
+        # Optional shadow value for subscription-included model usage.  When
+        # enabled, the dashboard prices recorded subscription tokens at the
+        # matching public API rate while keeping actual/estimated billing
+        # fields unchanged and clearly labelling the value as API-equivalent.
+        "show_api_equivalent_cost": False,
         # OAuth gate configuration (engaged when ``--host`` is set and
         # ``--insecure`` is not). The bundled Nous Portal plugin reads
         # both keys at startup; they are the canonical surface for these

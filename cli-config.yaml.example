@@ -1799,6 +1799,12 @@ updates:
 # Local dev / on-prem deploys should typically set these via config.yaml
 # (the ~/.hermes/.env file is reserved for API keys and secrets).
 #
+# Token analytics and subscription API-equivalent shadow cost are both opt-in:
+#
+# dashboard:
+#   show_token_analytics: false
+#   show_api_equivalent_cost: false  # public API-rate estimate, not an invoice
+#
 # dashboard:
 #   oauth:
 #     client_id: ""    # agent:{instance_id}; Portal provisions this at deploy

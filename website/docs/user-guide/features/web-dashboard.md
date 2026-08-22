@@ -279,7 +279,7 @@ View agent, gateway, and error log files with filtering and live tailing.
 
 Usage and cost analytics computed from session history. Select a time period (7, 30, or 90 days) to see:
 
-- **Summary cards** — total tokens (input/output), cache hit percentage, total estimated or actual cost, and total session count with daily average
+- **Summary cards** — total tokens (input/output), cache hit percentage, total estimated or actual cost, and total session count with daily average. Set `dashboard.show_api_equivalent_cost: true` to add a separately labelled API-equivalent shadow cost for subscription-included usage; it uses public API rates and is not a provider invoice.
 - **Daily token chart** — stacked bar chart showing input and output token usage per day, with hover tooltips showing breakdowns and cost
 - **Daily breakdown table** — date, session count, input tokens, output tokens, cache hit rate, and cost for each day
 - **Per-model breakdown** — table showing each model used, its session count, token usage, and estimated cost

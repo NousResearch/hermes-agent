@@ -248,6 +248,15 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         # localhost-only mode) — never from the request body.
         identity = security.authenticate(self.headers.get("Authorization"), client_ip)
         if identity is None:
+            security.audit(
+                "inbound",
+                None,
+                None,
+                "unauthorized",
+                decision="rejected_bad_token",
+                status=401,
+                ip=client_ip,
+            )
             self._json(401, protocol.jsonrpc_error(None, protocol.ERR_UNAUTHORIZED, "unauthorized"))
             return
 
@@ -293,6 +302,15 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             return
 
         if not security.is_trusted_peer(identity):
+            security.audit(
+                "inbound",
+                identity,
+                req_id,
+                f"peer '{identity}' not trusted",
+                decision="rejected_untrusted_peer",
+                status=403,
+                ip=client_ip,
+            )
             self._json(403, protocol.jsonrpc_error(
                 req_id, protocol.ERR_UNTRUSTED_PEER, f"peer '{identity}' not trusted"))
             return

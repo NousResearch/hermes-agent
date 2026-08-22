@@ -398,7 +398,9 @@ Check `hermes honcho status` -- verify `saveMessages: true` and `writeFrequency`
 Use `--clone` when creating: `hermes profile create <name> --clone`. For existing profiles: `hermes honcho sync`.
 
 ### Observation changes in dashboard not reflected
-Observation config is synced from the server on each session init. Start a new session after changing settings in the Honcho UI.
+Remove explicit local `observationMode` or `observation` keys, then start a new
+session. Explicit local values are authoritative; without them, observation
+config is synced from the server on each session init.
 
 ### Messages truncated
 Messages over `messageMaxChars` (default 25k) are automatically chunked with `[continued]` markers. If you're hitting this often, check if tool results or skill content is inflating message size.

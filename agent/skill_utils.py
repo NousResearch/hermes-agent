@@ -1161,7 +1161,13 @@ def resolve_skill_config_values(
 
 # ── Description extraction ────────────────────────────────────────────────
 
-SKILL_PROMPT_DESC_LIMIT = 60
+# The description is the primary routing signal a model sees when deciding
+# whether a skill applies — cutting it at a plain-sentence length silently
+# breaks routing for anything longer than a few words. Even at full length
+# across hundreds of skills the listing stays a rounding error against a
+# 200k-context budget, so the limit here is generous headroom rather than a
+# real token-saving measure (#84195).
+SKILL_PROMPT_DESC_LIMIT = 240
 
 
 def _normalize_skill_description(frontmatter: Dict[str, Any]) -> str:

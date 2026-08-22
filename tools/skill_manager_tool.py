@@ -569,7 +569,7 @@ def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[
     Returns error message or None if valid.
 
     When ``new_skill`` is True (create path only), the description must also
-    fit the 60-char system-prompt budget (SKILL_PROMPT_DESC_LIMIT) so newly
+    fit the system-prompt budget (SKILL_PROMPT_DESC_LIMIT) so newly
     authored skills never lose routing signal to index truncation. Edit and
     patch paths deliberately skip this so existing over-limit skills remain
     maintainable while their descriptions are cleaned up.
@@ -1734,10 +1734,10 @@ SKILL_MANAGE_SCHEMA = {
         "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
         "Good skills: trigger conditions, numbered steps with exact commands, "
         "pitfalls section, verification steps. Use skill_view() to see format examples.\n\n"
-        "Description: long descriptions are truncated to the first 57 chars "
+        f"Description: long descriptions are truncated to the first {SKILL_PROMPT_DESC_LIMIT} chars "
         "plus '...' in the system prompt skill index; longer text is visible "
         "via skills_list/skill_view. Keep the trigger self-contained in that "
-        "first 57-char window: 'Use when <trigger>. <one-line behavior>.'\n\n"
+        f"first {SKILL_PROMPT_DESC_LIMIT}-char window: 'Use when <trigger>. <one-line behavior>.'\n\n"
         "Pinned skills are protected from deletion only — skill_manage(action='delete') "
         "will refuse with a message pointing the user to `hermes curator unpin <name>`. "
         "Patches and edits go through on pinned skills so you can still improve them as "

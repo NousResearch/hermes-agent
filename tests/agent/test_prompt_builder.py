@@ -220,11 +220,13 @@ class TestParseSkillFile:
 
 
     def test_long_description_truncated(self, tmp_path):
+        from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT
+
         skill_file = tmp_path / "SKILL.md"
-        long_desc = "A" * 100
+        long_desc = "A" * (SKILL_PROMPT_DESC_LIMIT + 40)
         skill_file.write_text(f"---\ndescription: {long_desc}\n---\n")
         _, _, desc = _parse_skill_file(skill_file)
-        assert len(desc) <= 60
+        assert len(desc) <= SKILL_PROMPT_DESC_LIMIT
         assert desc.endswith("...")
 
 

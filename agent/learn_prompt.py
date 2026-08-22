@@ -12,8 +12,9 @@ that instructs the live agent to:
      current conversation for "what I just did", the user's text for pasted
      material).
   2. Author a skill via ``skill_manage`` that follows the Hermes
-     skill-authoring standards (description <=60 chars, the modern section
-     order, Hermes-tool framing, no invented commands). Small sources get one
+     skill-authoring standards (description within the system-prompt budget
+     defined by ``SKILL_PROMPT_DESC_LIMIT``, the modern section order,
+     Hermes-tool framing, no invented commands). Small sources get one
      tight SKILL.md; large prose sources (books, paper stacks, specs, doc
      corpora) get the knowledge-base layout — a lean SKILL.md index plus
      per-chapter ``references/`` files loaded on demand via ``skill_view``
@@ -28,27 +29,30 @@ gateway ``/learn``, the dashboard "Learn a skill" panel) calls
 
 from __future__ import annotations
 
+from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT
+
 # The house-style rules, distilled from AGENTS.md "Skill authoring standards
 # (HARDLINE)" and the hermes-agent-dev new-skill salvage reference. Embedded in
 # the prompt so the agent authors skills the way a maintainer would by hand.
-_AUTHORING_STANDARDS = """\
+_AUTHORING_STANDARDS = f"""\
 Follow the Hermes skill-authoring standards exactly. These are the same
 HARDLINE rules a maintainer enforces in review:
 
 Frontmatter:
 - name: lowercase-hyphenated, <=64 chars, no spaces.
-- description: ONE sentence, **<=60 characters**, ends with a period. State the
+- description: ONE sentence, **<={SKILL_PROMPT_DESC_LIMIT} characters**, ends with a period. State the
   capability, not the implementation. No marketing words (powerful,
   comprehensive, seamless, advanced, robust). Do NOT repeat the skill name. If
   the description contains a colon, wrap the whole value in double quotes.
   This is the most-violated rule and it is NOT cosmetic: the system-prompt
-  skill index truncates the description to 60 chars and loads it every
-  session, so anything past char 60 is silently cut and never routes. After
-  you write the description, COUNT the characters; if it is over 60, cut it
+  skill index truncates the description to {SKILL_PROMPT_DESC_LIMIT} chars and loads it every
+  session, so anything past char {SKILL_PROMPT_DESC_LIMIT} is silently cut and never routes. After
+  you write the description, COUNT the characters; if it is over {SKILL_PROMPT_DESC_LIMIT}, cut it
   down before saving — do not ship a sentence and hope.
-    Good (<=60): `Search arXiv papers by keyword, author, or ID.`
-    Bad (123):   `A comprehensive skill that lets the agent search arXiv for
-                  academic papers using keywords, authors, and categories.`
+    Good: `Search arXiv papers by keyword, author, or ID.`
+    Bad (marketing words, not just length): `A comprehensive skill that lets
+                  the agent search arXiv for academic papers using keywords,
+                  authors, and categories.`
 - version: 0.1.0
 - author: always the literal value `Hermes`. NEVER fill it from the host
   environment — the OS/login username (e.g. the `user=` line in your

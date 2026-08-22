@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
+from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT
 from hermes_constants import get_hermes_home
 from tools import skill_usage
 from utils import atomic_json_write
@@ -438,7 +439,7 @@ CURATOR_REVIEW_PROMPT = (
     "narrow skills where each one captures one session's specific bug is "
     "a FAILURE of the library — not a feature. An agent searching skills "
     "matches on descriptions, not on exact names (note: long descriptions "
-    "are truncated to 57 chars in the system prompt skill index — keep the "
+    f"are truncated to {SKILL_PROMPT_DESC_LIMIT} chars in the system prompt skill index — keep the "
     "trigger class in that window). One broad umbrella "
     "skill with labeled subsections beats five narrow siblings for "
     "discoverability, not the other way around.\n\n"

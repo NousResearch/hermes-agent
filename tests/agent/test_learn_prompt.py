@@ -12,6 +12,7 @@ from agent.learn_prompt import (
     _KNOWLEDGE_SKILL_STANDARDS,
     _SOURCE_HYGIENE,
 )
+from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT
 
 
 class TestBuildLearnPrompt:
@@ -48,7 +49,7 @@ class TestBuildLearnPrompt:
         # author credit, and the tool-framing table. Lock the coverage in.
         std = _AUTHORING_STANDARDS.lower()
         # #1 description: the count-and-trim self-check (the reported bug).
-        assert "count" in std and "60" in std
+        assert "count" in std and str(SKILL_PROMPT_DESC_LIMIT) in std
         # #3 platforms gating against OS-bound primitives.
         assert "platforms" in std
         # author is always the literal Hermes, never the host/OS identity (#52368).

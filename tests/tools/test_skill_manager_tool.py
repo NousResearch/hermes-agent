@@ -58,10 +58,21 @@ description: Updated description.
 Step 1: Do the new thing.
 """
 
+ONE_SENTENCE_DESC_CONTENT = """\
+---
+name: one-sentence-desc
+description: Use when deploying multi-region Kubernetes clusters with custom CNI plugins and service mesh.
+---
+
+# One Sentence Desc Skill
+
+Step 1.
+"""
+
 LONG_DESC_CONTENT = """\
 ---
 name: long-desc
-description: Use when deploying multi-region Kubernetes clusters with custom CNI plugins and service mesh.
+description: Use when deploying multi-region Kubernetes clusters across several cloud providers with custom CNI plugins, a service mesh, per-tenant network policies, mutual TLS between every workload, and an automated failover runbook that pages the on-call rotation.
 ---
 
 # Long Desc Skill
@@ -187,6 +198,20 @@ class TestCreateSkill:
         assert "System prompt will show" in result["system_prompt_preview"]
         fm, _ = parse_frontmatter(LONG_DESC_CONTENT)
         assert extract_skill_description(fm) in result["system_prompt_preview"]
+
+    def test_create_allows_full_one_sentence_description(self, tmp_path):
+        """A single ordinary sentence must survive whole (#84195) — the old
+        60-char limit truncated even routine one-sentence descriptions like
+        this 93-char example, destroying the routing signal it exists to
+        carry."""
+        with _skill_dir(tmp_path):
+            result = _create_skill("one-sentence-desc", ONE_SENTENCE_DESC_CONTENT)
+        assert result["success"] is True
+        fm, _ = parse_frontmatter(ONE_SENTENCE_DESC_CONTENT)
+        desc = fm["description"]
+        assert extract_skill_description(fm) == desc
+        assert len(desc) > 60
+        assert len(desc) <= SKILL_PROMPT_DESC_LIMIT
 
 
 class TestEditSkill:

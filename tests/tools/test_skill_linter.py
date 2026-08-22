@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT
 from tools.skill_linter import (
     ERROR,
     WARNING,
@@ -48,7 +49,7 @@ def test_clean_skill_has_no_findings():
 
 
 def test_description_too_long_is_warning():
-    long_desc = "x" * 80
+    long_desc = "x" * (SKILL_PROMPT_DESC_LIMIT + 1)
     content = CLEAN.replace(
         "Search arXiv papers by keyword, author, or ID.", long_desc
     )

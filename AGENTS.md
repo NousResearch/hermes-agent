@@ -1024,11 +1024,15 @@ must meet these standards before merge. Reviewers reject PRs that
 violate them.
 
 1. **`description` ≤ 60 characters, one sentence, ends with a period.**
-   Long descriptions bloat skill listings and dilute the model's
-   attention when many skills are loaded. State the capability, not
-   the implementation. No marketing words ("powerful",
-   "comprehensive", "seamless", "advanced"). Don't repeat the skill
-   name. Verify with:
+   This 60-char hardline (enforced by
+   `tests/skills/test_authoring_standards.py::test_description_hardline`)
+   is intentionally tighter than `SKILL_PROMPT_DESC_LIMIT` (currently 240,
+   see `agent/skill_utils.py`), which is only the system-prompt
+   truncation/new-skill-creation ceiling. Long descriptions bloat skill
+   listings and dilute the model's attention when many skills are loaded.
+   State the capability, not the implementation. No marketing words
+   ("powerful", "comprehensive", "seamless", "advanced"). Don't repeat the
+   skill name. Verify with:
    ```python
    import re, pathlib
    m = re.search(r'^description: (.*)$',

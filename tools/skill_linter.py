@@ -22,8 +22,8 @@ destroy the feature" posture):
   ``skill_manage`` create path, and a contributor running it locally all share
   one implementation.
 * Reuses ``agent.skill_utils`` helpers rather than re-parsing frontmatter, so
-  BOM handling / platform matching / the 60-char prompt budget stay in one
-  place.
+  BOM handling / platform matching / the prompt description budget
+  (``SKILL_PROMPT_DESC_LIMIT``) stay in one place.
 """
 
 from __future__ import annotations
@@ -155,7 +155,7 @@ def _check_name_format(frontmatter: Dict[str, Any]) -> List[LintFinding]:
 def _check_description(frontmatter: Dict[str, Any]) -> List[LintFinding]:
     findings: List[LintFinding] = []
     # Raw description as authored — extract_skill_description() applies the
-    # 60-char prompt truncation, so it can never exceed the limit; measure the
+    # prompt truncation, so it can never exceed the limit; measure the
     # raw frontmatter value for the length check.
     desc = str(frontmatter.get("description", "")).strip().strip("'\"")
     if not desc:

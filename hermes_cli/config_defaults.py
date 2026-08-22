@@ -2453,6 +2453,14 @@ DEFAULT_CONFIG = {
         # fnmatch globs matched against the basename (e.g. "*.mdc").
         "protected_instruction_files": True,
         "protected_instruction_extra_patterns": [],
+        # Optional profile-local least-privilege boundary for the built-in
+        # file toolset. Empty lists preserve the historical unrestricted
+        # behavior. deny_dirs takes precedence over both allowlists.
+        "file_scope": {
+            "read_dirs": [],
+            "write_dirs": [],
+            "deny_dirs": [],
+        },
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,

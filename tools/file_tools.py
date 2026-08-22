@@ -403,6 +403,131 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
     return resolved.resolve()
 
 
+def _canonical_scope_paths(filepaths: list[str], task_id: str = "default") -> list[str]:
+    """Return comparison-safe paths, batching remote canonicalization."""
+    resolved = [_resolve_path_for_task(path, task_id) for path in filepaths]
+    remote_paths = _terminal_env_type_for_task(task_id) != "local"
+    if remote_paths:
+        file_ops = _get_file_ops(task_id)
+        escaped = " ".join(file_ops._escape_shell_arg(str(path)) for path in resolved)
+        result = file_ops._exec(f"realpath -m -- {escaped}")
+        canonical = result.stdout.splitlines() if result.exit_code == 0 else []
+        if len(canonical) != len(filepaths):
+            raise RuntimeError(
+                "backend could not canonicalize all security.file_scope paths"
+            )
+        return [posixpath.normpath(path) for path in canonical]
+    return [
+        (
+            posixpath.normpath(str(path))
+            if isinstance(path, PurePosixPath)
+            else os.path.normcase(os.path.realpath(os.fspath(path)))
+        )
+        for path in resolved
+    ]
+
+
+def _canonical_path_within(candidate: str, root: str, *, remote_paths: bool) -> bool:
+    path_module = posixpath if remote_paths else os.path
+    try:
+        if path_module.commonpath((candidate, root)) == root:
+            return True
+    except ValueError:
+        return False
+    if remote_paths:
+        return False
+
+    # ``normcase`` handles Windows. On a case-insensitive macOS volume it is
+    # intentionally a no-op, so compare existing ancestors by filesystem
+    # identity as a fallback. This still rejects a differently-cased sibling
+    # on a case-sensitive volume because ``samefile`` will not match it.
+    root_path = Path(root)
+    for ancestor in (Path(candidate), *Path(candidate).parents):
+        try:
+            if ancestor.exists() and root_path.exists() and os.path.samefile(ancestor, root_path):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _file_scope_config() -> dict:
+    """Load the active profile's file scope without mutating config state."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+    except Exception:
+        return {}
+    security = config.get("security") if isinstance(config, dict) else None
+    scope = security.get("file_scope") if isinstance(security, dict) else None
+    return scope if isinstance(scope, dict) else {}
+
+
+def _scope_roots(scope: dict, key: str) -> list[str]:
+    raw = scope.get(key, [])
+    if raw in (None, []):
+        return []
+    if not isinstance(raw, list) or any(
+        not isinstance(path, str) or not path for path in raw
+    ):
+        raise RuntimeError(f"security.file_scope.{key} must be a list of paths")
+    return raw
+
+
+def _file_scope_errors(
+    filepaths: list[str], access: str, task_id: str = "default"
+) -> list[str | None]:
+    """Return one scope error per path, canonicalizing each backend in one pass."""
+    scope = _file_scope_config()
+    try:
+        deny_dirs = _scope_roots(scope, "deny_dirs")
+        allow_key = "read_dirs" if access == "read" else "write_dirs"
+        allowed_dirs = _scope_roots(scope, allow_key)
+        if not deny_dirs and not allowed_dirs:
+            return [None] * len(filepaths)
+
+        canonical = _canonical_scope_paths(
+            [*filepaths, *deny_dirs, *allowed_dirs], task_id
+        )
+        candidates = canonical[:len(filepaths)]
+        deny_roots = canonical[len(filepaths):len(filepaths) + len(deny_dirs)]
+        allow_roots = canonical[len(filepaths) + len(deny_dirs):]
+        remote_paths = _terminal_env_type_for_task(task_id) != "local"
+        errors: list[str | None] = []
+        for filepath, candidate in zip(filepaths, candidates):
+            if any(
+                _canonical_path_within(candidate, root, remote_paths=remote_paths)
+                for root in deny_roots
+            ):
+                errors.append(
+                    f"Refusing {access} access to '{filepath}': path is inside "
+                    "security.file_scope.deny_dirs."
+                )
+            elif allowed_dirs and not any(
+                _canonical_path_within(candidate, root, remote_paths=remote_paths)
+                for root in allow_roots
+            ):
+                errors.append(
+                    f"Refusing {access} access to '{filepath}': path is outside "
+                    f"security.file_scope.{allow_key}."
+                )
+            else:
+                errors.append(None)
+        return errors
+    except Exception as exc:
+        return [
+            f"Refusing {access} access to '{filepath}': could not safely "
+            f"apply security.file_scope ({exc})."
+            for filepath in filepaths
+        ]
+
+
+def _check_file_scope(filepath: str, access: str, task_id: str = "default") -> str | None:
+    """Return an error when *filepath* falls outside the active profile scope."""
+    return _file_scope_errors([filepath], access, task_id)[0]
+
+
 def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "default") -> str | None:
     """Warn when a relative path resolved OUTSIDE the task's workspace root.
 
@@ -634,6 +759,48 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
         allowed_counts = {}
         for file_path, count in result.counts.items():
             if _search_result_read_block_error(file_path, task_id):
+                omitted += 1
+                continue
+            allowed_counts[file_path] = count
+        result.counts = allowed_counts
+
+    return omitted
+
+
+def _filter_file_scope_search_results(result, task_id: str = "default") -> int:
+    """Remove search results whose resolved paths are outside the read scope."""
+    omitted = 0
+
+    if hasattr(result, "matches") and result.matches:
+        errors = _file_scope_errors(
+            [match.path for match in result.matches], "read", task_id
+        )
+        allowed_matches = []
+        for match, error in zip(result.matches, errors):
+            if error:
+                omitted += 1
+                continue
+            allowed_matches.append(match)
+        result.matches = allowed_matches
+
+    if hasattr(result, "files") and result.files:
+        errors = _file_scope_errors(list(result.files), "read", task_id)
+        allowed_files = []
+        for file_path, error in zip(result.files, errors):
+            if error:
+                omitted += 1
+                continue
+            allowed_files.append(file_path)
+        result.files = allowed_files
+
+    if hasattr(result, "counts") and result.counts:
+        count_items = list(result.counts.items())
+        errors = _file_scope_errors(
+            [file_path for file_path, _ in count_items], "read", task_id
+        )
+        allowed_counts = {}
+        for (file_path, count), error in zip(count_items, errors):
+            if error:
                 omitted += 1
                 continue
             allowed_counts[file_path] = count
@@ -1626,6 +1793,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
     try:
         offset, limit = normalize_read_pagination(offset, limit)
 
+        scope_err = _check_file_scope(path, "read", task_id)
+        if scope_err:
+            return tool_error(scope_err)
+
         # ── Device path guard ─────────────────────────────────────────
         # Block paths that would hang the process (infinite output,
         # blocking on input).  Pure path check — no I/O.
@@ -2230,6 +2401,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     Pass ``True`` after explicit user direction — same shape as ``force``
     on the terminal tool.
     """
+    scope_err = _check_file_scope(path, "write", task_id)
+    if scope_err:
+        return tool_error(scope_err)
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
@@ -2373,7 +2547,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 if _err:
                     return _err
                 _paths_to_check.append(v4a_path)
-    for _p in _paths_to_check:
+    _scope_errors = _file_scope_errors(_paths_to_check, "write", task_id)
+    for _p, scope_err in zip(_paths_to_check, _scope_errors):
+        if scope_err:
+            return tool_error(scope_err)
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
             return tool_error(sensitive_err)
@@ -2540,6 +2717,10 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
     try:
         offset, limit = normalize_search_pagination(offset, limit)
 
+        scope_err = _check_file_scope(path, "read", task_id)
+        if scope_err:
+            return tool_error(scope_err)
+
         # Track searches to detect *consecutive* repeated search loops.
         # Include pagination args so users can page through truncated
         # results without tripping the repeated-search guard.
@@ -2599,6 +2780,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
         omitted = _filter_read_blocked_search_results(result, task_id)
+        scope_omitted = _filter_file_scope_search_results(result, task_id)
         if hasattr(result, 'matches'):
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:
@@ -2610,6 +2792,14 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 f"{omitted} result(s) omitted because they target credential, "
                 "token, cache, or secret-bearing environment files."
             )
+        if scope_omitted:
+            scope_message = (
+                f"{scope_omitted} result(s) omitted by the active profile file scope."
+            )
+            if result_dict.get("_omitted"):
+                result_dict["_omitted"] += " " + scope_message
+            else:
+                result_dict["_omitted"] = scope_message
 
         # Populate negative cache when search root was missing. No early
         # return — same rationale as the read path: error results keep

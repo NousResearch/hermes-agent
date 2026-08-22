@@ -652,6 +652,26 @@ When a blocked URL is requested, the tool returns an error explaining the domain
 
 See [Website Blocklist](/user-guide/configuration#website-blocklist) in the configuration guide for full details.
 
+### Profile File Access Scope
+
+Profiles can apply least-privilege path boundaries to the built-in file tools:
+
+```yaml
+# In the profile's config.yaml
+security:
+  file_scope:
+    read_dirs:
+      - "~/Documents/Obsidian Vault"
+    write_dirs:
+      - "~/Documents/Obsidian Vault/Yonda queue"
+    deny_dirs:
+      - "~/Documents/Obsidian Vault/Private"
+```
+
+`read_dirs` controls `read_file` and `search_files`; `write_dirs` controls `write_file` and `patch`. Denials take precedence over allowlists. Missing or empty lists retain the historical unrestricted behavior, so existing profiles do not change after upgrading. Hermes canonicalizes paths before access, including `~`, `..`, symlinks, Unicode names, and the host filesystem's case behavior. Search results are filtered again so a denied subtree or symlink target cannot leak through a broader allowed search root.
+
+This boundary covers the `file` toolset only. It does not sandbox `terminal`, `execute_code`, plugins, or external processes that run as the same OS user. Disable those capabilities for a low-trust profile or combine this setting with an OS/container sandbox when they must not bypass the file-tool policy. The older `HERMES_WRITE_SAFE_ROOT` environment variable remains a deployment-level write boundary; `security.file_scope` is the profile-local configuration surface and adds separate read/write policy.
+
 ### SSRF Protection
 
 All URL-capable tools (web search, web extract, vision, browser) validate URLs before fetching them to prevent Server-Side Request Forgery (SSRF) attacks. Blocked addresses include:

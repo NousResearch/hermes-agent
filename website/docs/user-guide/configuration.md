@@ -2375,6 +2375,10 @@ Pre-execution security scanning and secret redaction:
 ```yaml
 security:
   redact_secrets: true           # Redact API key patterns in tool output and logs (on by default)
+  file_scope:                    # Optional per-profile boundary for the file toolset
+    read_dirs: []                # Allowed roots for read_file and search_files
+    write_dirs: []               # Allowed roots for write_file and patch
+    deny_dirs: []                # Denied roots; takes precedence over both allowlists
   tirith_enabled: true           # Enable Tirith security scanning for terminal commands
   tirith_path: "tirith"          # Path to tirith binary (default: "tirith" in $PATH)
   tirith_timeout: 5              # Seconds to wait for tirith scan before timing out
@@ -2386,6 +2390,7 @@ security:
 ```
 
 - `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **On by default**. Set to `false` explicitly only when you need raw credential-like strings for debugging or redactor development.
+- `file_scope` — optional path boundary for the active profile's built-in file tools. `read_dirs` applies to `read_file` and `search_files`; `write_dirs` applies to `write_file` and `patch`; `deny_dirs` always wins. Unset or empty lists preserve unrestricted file-tool behavior. Paths accept `~`, are resolved against the active task workspace, and are canonicalized before comparison so `..` and symlinks cannot escape a configured root. This does not restrict the `terminal` tool; disable `terminal` for a profile or use an OS/container sandbox when shell access must also be constrained.
 - `tirith_enabled` — when `true`, terminal commands are scanned by [Tirith](https://github.com/sheeki03/tirith) before execution to detect potentially dangerous operations.
 - `tirith_path` — path to the tirith binary. Set this if tirith is installed in a non-standard location.
 - `tirith_timeout` — maximum seconds to wait for a tirith scan. Commands proceed if the scan times out.

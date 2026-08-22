@@ -504,6 +504,145 @@ class TestHubLockFile:
 
 
 # ---------------------------------------------------------------------------
+# Hub path repair (resolve_installed_skill_path / find_installed_skill_dir_by_name)
+# ---------------------------------------------------------------------------
+
+
+def _write_skill(dir_path, name, body="do a thing"):
+    """Create <dir_path>/SKILL.md with a frontmatter name and return the dir."""
+    dir_path.mkdir(parents=True, exist_ok=True)
+    (dir_path / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: test skill\n---\n\n{body}\n",
+        encoding="utf-8",
+    )
+    return dir_path
+
+
+class TestHubPathRepair:
+
+    def test_frontmatter_name_parsed_without_yaml(self, tmp_path):
+        from tools.skills_hub import _frontmatter_name
+
+        d = _write_skill(tmp_path / "cat" / "alpha", "alpha")
+        assert _frontmatter_name(d / "SKILL.md") == "alpha"
+
+    def test_existing_path_is_not_repaired(self, tmp_path):
+        from tools.skills_hub import resolve_installed_skill_path
+
+        skills_dir = tmp_path / "skills"
+        _write_skill(skills_dir / "alpha", "alpha")
+        entry = {"name": "alpha", "install_path": "alpha"}
+        path, repaired = resolve_installed_skill_path(entry, skills_dir, lock=None)
+        assert path == skills_dir / "alpha"
+        assert repaired is False
+
+    def test_unique_candidate_repairs_and_updates_lock(self, tmp_path):
+        from tools.skills_hub import HubLockFile, resolve_installed_skill_path
+
+        skills_dir = tmp_path / "skills"
+        # Skill moved to a categorized path; lock still points at the old top-level.
+        _write_skill(skills_dir / "mlops" / "alpha", "alpha")
+        lock = HubLockFile(path=tmp_path / "lock.json")
+        lock.record_install(
+            name="alpha", source="github", identifier="x",
+            trust_level="trusted", scan_verdict="pass",
+            skill_hash="h", install_path="alpha", files=["SKILL.md"],
+        )
+        entry = {"name": "alpha", "install_path": "alpha"}
+        path, repaired = resolve_installed_skill_path(entry, skills_dir, lock=lock)
+        assert repaired is True
+        assert path == skills_dir / "mlops" / "alpha"
+        # Lock rewritten to the repaired, validated path.
+        assert lock.get_installed("alpha")["install_path"] == "mlops/alpha"
+
+    def test_ambiguous_candidates_refuse_repair(self, tmp_path):
+        from tools.skills_hub import (
+            find_installed_skill_dir_by_name,
+            resolve_installed_skill_path,
+        )
+
+        skills_dir = tmp_path / "skills"
+        # Two installed skills share the same frontmatter/dir name in different
+        # categories — a stale lock must NOT be silently repointed at either.
+        _write_skill(skills_dir / "mlops" / "alpha", "alpha", body="one")
+        _write_skill(skills_dir / "research" / "alpha", "alpha", body="two")
+
+        found, ambiguous = find_installed_skill_dir_by_name("alpha", skills_dir)
+        assert found is None
+        assert ambiguous is True
+
+        entry = {"name": "alpha", "install_path": "alpha"}
+        path, repaired = resolve_installed_skill_path(entry, skills_dir, lock=None)
+        # No repair: original (missing) path returned unchanged.
+        assert repaired is False
+        assert path == skills_dir / "alpha"
+
+    def test_content_hash_disambiguates_provenance(self, tmp_path):
+        from tools.skills_guard import content_hash
+        from tools.skills_hub import find_installed_skill_dir_by_name
+
+        skills_dir = tmp_path / "skills"
+        real = _write_skill(skills_dir / "mlops" / "alpha", "alpha", body="real one")
+        _write_skill(skills_dir / "research" / "alpha", "alpha", body="different")
+
+        expected = content_hash(real)
+        found, ambiguous = find_installed_skill_dir_by_name(
+            "alpha", skills_dir, expected_hash=expected
+        )
+        # The recorded hash pins the repair to the provenance-compatible dir.
+        assert found == real
+        assert ambiguous is False
+
+    def test_no_candidate_returns_missing_unrepaired(self, tmp_path):
+        from tools.skills_hub import resolve_installed_skill_path
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        entry = {"name": "ghost", "install_path": "ghost"}
+        path, repaired = resolve_installed_skill_path(entry, skills_dir, lock=None)
+        assert repaired is False
+        assert path == skills_dir / "ghost"
+
+    def test_hub_support_dir_is_skipped(self, tmp_path):
+        from tools.skills_hub import find_installed_skill_dir_by_name
+
+        skills_dir = tmp_path / "skills"
+        # A copy under .hub must never be treated as an install candidate.
+        _write_skill(skills_dir / ".hub" / "cache" / "alpha", "alpha")
+        _write_skill(skills_dir / "mlops" / "alpha", "alpha")
+        found, ambiguous = find_installed_skill_dir_by_name("alpha", skills_dir)
+        assert found == skills_dir / "mlops" / "alpha"
+        assert ambiguous is False
+
+    def test_update_install_path_rejects_name_mismatch(self, tmp_path):
+        from tools.skills_hub import HubLockFile
+
+        lock = HubLockFile(path=tmp_path / "lock.json")
+        lock.record_install(
+            name="alpha", source="github", identifier="x",
+            trust_level="trusted", scan_verdict="pass",
+            skill_hash="h", install_path="alpha", files=["SKILL.md"],
+        )
+        # A repaired path whose terminal component is not the skill name must be
+        # rejected by the shared lock-path validator (protects uninstall's
+        # rmtree boundary), not silently written.
+        with pytest.raises(ValueError):
+            lock.update_install_path("alpha", "mlops/somethingelse")
+
+    def test_direct_path_hit_is_unambiguous(self, tmp_path):
+        from tools.skills_hub import find_installed_skill_dir_by_name
+
+        skills_dir = tmp_path / "skills"
+        _write_skill(skills_dir / "alpha", "alpha")
+        # A shadow copy exists elsewhere, but the canonical top-level dir wins
+        # without triggering ambiguity.
+        _write_skill(skills_dir / "cat" / "alpha", "alpha")
+        found, ambiguous = find_installed_skill_dir_by_name("alpha", skills_dir)
+        assert found == skills_dir / "alpha"
+        assert ambiguous is False
+
+
+# ---------------------------------------------------------------------------
 # TapsManager
 # ---------------------------------------------------------------------------
 

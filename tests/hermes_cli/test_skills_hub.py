@@ -5,7 +5,7 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, do_audit, handle_skills_slash
 
 
 class _DummyLockFile:
@@ -489,3 +489,75 @@ def test_do_update_unmodified_skill_updates_normally(monkeypatch, tmp_path):
 
     assert installs == ["someone/hub-skill"]
     assert "Updated 1 skill(s)" in sink.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# do_audit: stale hub-path repair + ambiguity refusal (wiring)
+# ---------------------------------------------------------------------------
+
+
+def _make_skill(dir_path, name, body="body"):
+    dir_path.mkdir(parents=True, exist_ok=True)
+    (dir_path / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: d\n---\n\n{body}\n", encoding="utf-8"
+    )
+    return dir_path
+
+
+def _audit_console():
+    sink = StringIO()
+    return Console(file=sink, force_terminal=False, color_system=None), sink
+
+
+def test_do_audit_repairs_stale_hub_path(hub_env, monkeypatch, tmp_path):
+    """A moved skill (lock points at old top-level path) is repaired, then scanned."""
+    import tools.skills_hub as hub
+
+    skills_dir = tmp_path / "skills"
+    _make_skill(skills_dir / "mlops" / "alpha", "alpha")
+
+    lock = hub.HubLockFile()
+    lock.record_install(
+        name="alpha", source="github", identifier="x",
+        trust_level="trusted", scan_verdict="pass",
+        skill_hash="h", install_path="alpha", files=["SKILL.md"],
+    )
+
+    monkeypatch.setattr("tools.skills_guard.scan_skill", lambda path, source=None: "R")
+    monkeypatch.setattr("tools.skills_guard.format_scan_report", lambda result: "scan ok")
+
+    console, sink = _audit_console()
+    do_audit(console=console)
+
+    out = sink.getvalue()
+    assert "Repaired hub path for alpha" in out
+    assert "mlops/alpha" in out
+    # Lock was rewritten to the repaired path via the validated updater.
+    assert lock.get_installed("alpha")["install_path"] == "mlops/alpha"
+
+
+def test_do_audit_refuses_ambiguous_stale_path(hub_env, monkeypatch, tmp_path):
+    """Two same-named skills => audit reports ambiguity and does not repoint the lock."""
+    import tools.skills_hub as hub
+
+    skills_dir = tmp_path / "skills"
+    _make_skill(skills_dir / "mlops" / "alpha", "alpha", body="one")
+    _make_skill(skills_dir / "research" / "alpha", "alpha", body="two")
+
+    lock = hub.HubLockFile()
+    lock.record_install(
+        name="alpha", source="github", identifier="x",
+        trust_level="trusted", scan_verdict="pass",
+        skill_hash="h", install_path="alpha", files=["SKILL.md"],
+    )
+
+    monkeypatch.setattr("tools.skills_guard.scan_skill", lambda path, source=None: "R")
+    monkeypatch.setattr("tools.skills_guard.format_scan_report", lambda result: "scan ok")
+
+    console, sink = _audit_console()
+    do_audit(console=console)
+
+    out = sink.getvalue()
+    assert "ambiguous" in out.lower()
+    # Lock path left untouched: no silent repoint to either candidate.
+    assert lock.get_installed("alpha")["install_path"] == "alpha"

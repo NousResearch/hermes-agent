@@ -257,6 +257,43 @@ _APPROVAL_LABEL_MAP: Dict[str, str] = {
 }
 
 
+_FEISHU_MENU_ACK_TEXT_ZH: Dict[str, str] = {
+    "/new": "已接收：新会话，正在创建…",
+    "/status": "已接收：状态，正在查询…",
+    "/help": "已接收：帮助，正在整理命令…",
+    "/agents": "已接收：任务，正在查询…",
+    "/cron": "已接收：定时任务，正在查询…",
+    "/sessions": "已接收：会话列表，正在查询…",
+    "/memory": "已接收：记忆，正在查询…",
+    "/model": "已接收：模型，正在查询…",
+}
+
+_FEISHU_MENU_ACK_TEXT_EN: Dict[str, str] = {
+    "/new": "Received: New session — creating…",
+    "/status": "Received: Status — checking…",
+    "/help": "Received: Help — listing commands…",
+    "/agents": "Received: Tasks — checking…",
+    "/cron": "Received: Scheduled tasks — checking…",
+    "/sessions": "Received: Sessions — checking…",
+    "/memory": "Received: Memory — checking…",
+    "/model": "Received: Model — checking…",
+}
+
+
+def _bot_menu_ack_text(event_key: str, *, domain_name: str) -> str:
+    """Return a localized immediate acknowledgement for a menu click."""
+    normalized = str(event_key or "").strip()
+    if str(domain_name or "").strip().lower() == "lark":
+        return _FEISHU_MENU_ACK_TEXT_EN.get(
+            normalized,
+            f"Received: {normalized or 'menu command'} — processing…",
+        )
+    return _FEISHU_MENU_ACK_TEXT_ZH.get(
+        normalized,
+        f"已接收：{normalized or '菜单命令'}，正在处理…",
+    )
+
+
 async def _read_limited_feishu_webhook_body(request: Any, max_bytes: int) -> bytes:
     """Read at most ``max_bytes`` from an aiohttp request body."""
     try:
@@ -1723,6 +1760,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 "vc.bot.meeting_invited_v1",
                 self._on_meeting_invited_event,
             )
+            .register_p2_application_bot_menu_v6(self._on_bot_menu_event)
             .build()
         )
 
@@ -2011,6 +2049,76 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    async def _create_feishu_thread_seed(
+        self,
+        parent_chat_id: str,
+        name: str,
+        *,
+        reply_to_message_id: str,
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Create a Feishu topic seed and return ``(thread_id, message_id)``."""
+        anchor = str(reply_to_message_id or "").strip()
+        if not anchor:
+            return None, None
+        seed_text = str(name or "Hermes task").strip()[:120]
+        payload = json.dumps({"text": seed_text}, ensure_ascii=False)
+        try:
+            response = await self._feishu_send_with_retry(
+                chat_id=str(parent_chat_id),
+                msg_type="text",
+                payload=payload,
+                reply_to=anchor,
+                metadata={"thread_id": anchor},
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Feishu] Task topic creation failed for chat %s: %s",
+                parent_chat_id,
+                exc,
+            )
+            return None, None
+        if not self._response_succeeded(response):
+            logger.warning(
+                "[Feishu] Task topic creation was rejected for chat %s: %s",
+                parent_chat_id,
+                getattr(response, "msg", None) or "topic creation failed",
+            )
+            return None, None
+        data = getattr(response, "data", None)
+        message_id = getattr(data, "message_id", None)
+        thread_id = getattr(data, "thread_id", None)
+        if not thread_id:
+            logger.warning(
+                "[Feishu] Topic creation response for chat %s had no thread_id",
+                parent_chat_id,
+            )
+            return None, str(message_id) if message_id else None
+        return (
+            str(thread_id),
+            str(message_id) if message_id else None,
+        )
+
+    async def create_handoff_thread(
+        self,
+        parent_chat_id: str,
+        name: str,
+        *,
+        reply_to_message_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Create a Feishu topic by replying to an existing message in-thread.
+
+        Feishu topics are created from threaded replies rather than a separate
+        create-topic endpoint. ``reply_to_message_id`` is therefore required;
+        handoff/cron callers without an anchor safely fall back to the parent
+        chat via the base contract.
+        """
+        thread_id, _message_id = await self._create_feishu_thread_seed(
+            parent_chat_id,
+            name,
+            reply_to_message_id=str(reply_to_message_id or ""),
+        )
+        return thread_id
 
     async def edit_message(
         self,
@@ -2684,6 +2792,92 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         self._submit_on_loop(loop, handle_meeting_invited_event(self, data))
 
+    def _on_bot_menu_event(self, data: Any) -> None:
+        """Handle bot menu clicks as synthetic P2P text messages."""
+        event = getattr(data, "event", None)
+        if event is None:
+            return
+
+        event_key = str(getattr(event, "event_key", "") or "")
+        operator = getattr(event, "operator", None)
+        operator_id = getattr(operator, "operator_id", None)
+        open_id = str(getattr(operator_id, "open_id", "") or "")
+        if not event_key or not open_id:
+            logger.debug("[Feishu] Dropping malformed bot menu event")
+            return
+
+        header = getattr(data, "header", None)
+        event_id = str(getattr(header, "event_id", "") or "")
+        if not event_id:
+            timestamp = str(getattr(event, "timestamp", "") or "")
+            if not timestamp:
+                logger.warning("[Feishu] Bot menu event missing event_id and timestamp, dropping")
+                return
+            event_id = hashlib.sha256(
+                f"{open_id}\0{timestamp}\0{event_key}".encode("utf-8")
+            ).hexdigest()
+        dedup_key = f"feishu_bot_menu:{event_id}"
+
+        loop = self._loop
+        if not self._loop_accepts_callbacks(loop):
+            logger.warning("[Feishu] Dropping bot menu event before adapter loop is ready")
+            return
+
+        async def _handle_bot_menu() -> None:
+            if self._is_duplicate(dedup_key):
+                logger.debug("[Feishu] Dropping duplicate bot menu event: %s", event_id)
+                return
+
+            # Model the click as a P2P message from the operator so the normal
+            # Feishu allowlist/pairing admission policy remains authoritative.
+            sender = SimpleNamespace(sender_type="user", sender_id=operator_id)
+            message = SimpleNamespace(chat_type="p2p", chat_id=open_id)
+            reason = self._admit(sender, message)
+            if reason is not None:
+                logger.debug("[Feishu] Dropping bot menu event: %s", reason)
+                return
+
+            sender_profile = await self._resolve_sender_profile(operator_id)
+            user_name = sender_profile["user_name"] or getattr(operator, "operator_name", "") or open_id
+            source = self.build_source(
+                chat_id=open_id,
+                chat_name=user_name,
+                chat_type="dm",
+                user_id=sender_profile["user_id"],
+                user_name=user_name,
+                thread_id=None,
+                user_id_alt=sender_profile["user_id_alt"],
+            )
+            synthetic_event = MessageEvent(
+                text=event_key,
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=data,
+                message_id=event_id,
+                metadata={"_hermes_no_reply_anchor": True},
+                channel_prompt=self._resolve_channel_prompt(open_id),
+                timestamp=datetime.now(),
+            )
+            logger.info(
+                "[Feishu] Routing bot menu key=%r from user=%s as P2P text",
+                event_key,
+                open_id,
+            )
+            ack_result = await self.send(
+                open_id,
+                _bot_menu_ack_text(event_key, domain_name=self._domain_name),
+            )
+            if not ack_result.success:
+                logger.warning(
+                    "[Feishu] Bot menu acknowledgement failed for key=%r user=%s: %s",
+                    event_key,
+                    open_id,
+                    ack_result.error or "unknown error",
+                )
+            await self._handle_message_with_guards(synthetic_event)
+
+        self._submit_on_loop(loop, _handle_bot_menu())
+
     def _on_reaction_event(self, event_type: str, data: Any) -> None:
         """Route user reactions on bot messages as synthetic text events."""
         event = getattr(data, "event", None)
@@ -3336,6 +3530,101 @@ class FeishuAdapter(BasePlatformAdapter):
             if text.startswith("/"):
                 inbound_type = MessageType.COMMAND
 
+        forced_thread_id: Optional[str] = None
+        forced_reply_to_message_id: Optional[str] = None
+        normalized_command = text.strip()
+        thread_match = re.match(r"^/thread(?:\s+([\s\S]*))?$", normalized_command, re.IGNORECASE)
+        if inbound_type == MessageType.COMMAND and thread_match:
+            chat_id = getattr(message, "chat_id", "") or ""
+            # This provider-local command creates platform state before the
+            # synthetic task reaches the normal runner, so enforce the same
+            # central slash-access policy explicitly. It intentionally is not
+            # registered as a cross-platform command.
+            from gateway.slash_access import policy_for_source
+
+            sender_profile = await self._resolve_sender_profile(sender_id, is_bot=is_bot)
+            preliminary_source = self.build_source(
+                chat_id=chat_id,
+                chat_name=chat_id or "Feishu Chat",
+                chat_type="dm" if chat_type == "p2p" else "group",
+                user_id=sender_profile["user_id"],
+                user_name=sender_profile["user_name"],
+                thread_id=(
+                    getattr(message, "thread_id", None)
+                    or getattr(message, "root_id", None)
+                    or None
+                ),
+                user_id_alt=sender_profile["user_id_alt"],
+                is_bot=is_bot,
+            )
+            runner = getattr(self, "gateway_runner", None)
+            policy = (
+                policy_for_source(runner.config, preliminary_source)
+                if runner is not None
+                else None
+            )
+            denied = bool(
+                policy is not None
+                and policy.enabled
+                and not policy.can_run(preliminary_source.user_id, "thread")
+            )
+            if denied:
+                await self.send(
+                    chat_id,
+                    "⛔ /thread is admin-only here. Use /whoami to review your command access.",
+                    reply_to=message_id,
+                )
+                return
+            if chat_type != "p2p":
+                await self.send(
+                    chat_id,
+                    "/thread 目前只支持飞书机器人私聊。",
+                    reply_to=message_id,
+                )
+                return
+            existing_thread_id = (
+                getattr(message, "thread_id", None)
+                or getattr(message, "root_id", None)
+                or None
+            )
+            if existing_thread_id:
+                await self.send(
+                    chat_id,
+                    "/thread 只能从主私聊中创建；请回到主聊天后重试。",
+                    reply_to=message_id,
+                    metadata={
+                        "thread_id": existing_thread_id,
+                        "reply_to_message_id": message_id,
+                    },
+                )
+                return
+            task_text = (thread_match.group(1) or "").strip()
+            if not task_text:
+                await self.send(
+                    getattr(message, "chat_id", "") or "",
+                    "用法：/thread <任务描述>",
+                    reply_to=message_id,
+                )
+                return
+            chat_id = getattr(message, "chat_id", "") or ""
+            title = task_text.replace("\n", " ").strip()[:60]
+            thread_id, seed_message_id = await self._create_feishu_thread_seed(
+                chat_id,
+                f"Hermes 任务：{title}",
+                reply_to_message_id=message_id,
+            )
+            if not thread_id:
+                await self.send(
+                    chat_id,
+                    "新话题创建失败，任务尚未开始。请稍后重试。",
+                    reply_to=message_id,
+                )
+                return
+            text = task_text
+            inbound_type = MessageType.TEXT
+            forced_thread_id = thread_id
+            forced_reply_to_message_id = seed_message_id or message_id
+
         # Guard runs post-strip so a pure "@Bot" message (stripped to "") is dropped.
         if inbound_type == MessageType.TEXT and not text and not media_urls:
             logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
@@ -3346,9 +3635,15 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
-        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        thread_id = (
+            forced_thread_id
+            or getattr(message, "thread_id", None)
+            or getattr(message, "root_id", None)
+            or None
+        )
         reply_to_message_id = (
-            getattr(message, "parent_id", None)
+            forced_reply_to_message_id
+            or getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
             or getattr(message, "root_id", None)
             or None

@@ -1,11 +1,12 @@
+import { useStore } from '@nanostores/react'
 import { Fragment, memo, type ReactNode } from 'react'
 
 import { TabDropdown } from '@/components/ui/tab-dropdown'
 import type { IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $contentWidth } from '@/store/content-width'
 
-import { PAGE_MAX_W } from '../layout-constants'
-
+import { CONTENT_WIDTH_MAX_W } from '../layout-constants'
 import { OVERLAY_TOP_CLEARANCE } from './overlay-view'
 
 // The wide rail and the narrow dropdown swap at exactly the width where
@@ -80,6 +81,8 @@ export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
 }
 
 export function OverlayMain({ children, className }: OverlayMainProps) {
+  const contentWidth = useStore($contentWidth)
+  const maxW = CONTENT_WIDTH_MAX_W[contentWidth] ?? CONTENT_WIDTH_MAX_W.wide
   return (
     <main
       className={cn(
@@ -91,7 +94,7 @@ export function OverlayMain({ children, className }: OverlayMainProps) {
         // (inlined from PAGE_INSET_X so only overlay panes tighten, not the
         // shared page gutter). Narrow top drops toward the OverlayNav bar.
         'mx-auto flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-transparent pb-2 pt-[calc((var(--titlebar-height)/2+1rem)*2/3)] max-[47.5rem]:pt-[calc(0.5rem*2/3)] px-[clamp(0.8333rem,2.6667vw,2.6667rem)]',
-        PAGE_MAX_W,
+        maxW,
         className
       )}
     >

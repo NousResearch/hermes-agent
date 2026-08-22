@@ -15,6 +15,7 @@ import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
+import { $contentWidth, type ContentWidth, setContentWidth } from '@/store/content-width'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -346,6 +347,7 @@ export function AppearanceSettings() {
   const toolViewMode = useStore($toolViewMode)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const sessionListDensity = useStore($sessionListDensity)
+  const contentWidth = useStore($contentWidth)
   const tabStripDefault = useStore($tabStripDefault)
   const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
@@ -424,6 +426,12 @@ export function AppearanceSettings() {
     { id: 'comfortable', label: a.sessionDensityComfortable },
     { id: 'detailed', label: a.sessionDensityDetailed }
   ] as const satisfies readonly { id: SessionListDensity; label: string }[]
+
+  const contentWidthOptions = [
+    { id: 'narrow' as ContentWidth, label: a.contentWidthNarrow },
+    { id: 'comfortable' as ContentWidth, label: a.contentWidthComfortable },
+    { id: 'wide' as ContentWidth, label: a.contentWidthWide }
+  ] as const satisfies readonly { id: ContentWidth; label: string }[]
 
   const tabStripOptions = [
     { id: 'auto', label: a.tabStripAuto },
@@ -589,6 +597,22 @@ export function AppearanceSettings() {
             }
             description={a.sessionDensityDesc}
             title={a.sessionDensityTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setContentWidth(id)
+                }}
+                options={contentWidthOptions}
+                value={contentWidth}
+              />
+            }
+            description={a.contentWidthDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.contentWidth)}
+            title={a.contentWidthTitle}
           />
 
           <ListRow

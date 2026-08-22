@@ -17,6 +17,15 @@ export const PAGE_INSET_NEG_X = '-mx-[clamp(1.25rem,4vw,4rem)]'
 // displays. Pair with `mx-auto w-full` to center within the pane. Literal string
 // for Tailwind's scanner (see PAGE_INSET_X note).
 export const PAGE_MAX_W = 'max-w-[75rem]'
+export const PAGE_MAX_W_NARROW = 'max-w-[48rem]'
+export const PAGE_MAX_W_COMFORTABLE = 'max-w-[60rem]'
+export const PAGE_MAX_W_WIDE = PAGE_MAX_W
+
+export const CONTENT_WIDTH_MAX_W: Record<string, string> = {
+  narrow: PAGE_MAX_W_NARROW,
+  comfortable: PAGE_MAX_W_COMFORTABLE,
+  wide: PAGE_MAX_W_WIDE
+} as const
 
 // Below this viewport width a docked sidebar leaves no room for content, so both
 // rails auto-collapse into the hover-reveal overlay. Single source of truth for

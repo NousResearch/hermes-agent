@@ -1311,6 +1311,13 @@ DEFAULT_CONFIG = {
         # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
+        "tab_activity_indicator": False,
+        "tab_title_idle": "{title}",
+        "tab_title_busy": "{spinner} Hermes",
+        "tab_title_done": "{title}",
+        "tab_title_spinner_frames": [
+            "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+        ],
         # Stream the model's reasoning/thinking live before the response.
         # Default ON: on thinking models the reasoning phase can run tens of
         # seconds, and with this off the user stares at a spinner the whole

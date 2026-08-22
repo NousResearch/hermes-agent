@@ -94,6 +94,7 @@ class CommandDef:
     args_hint: str = ""                # argument placeholder: "<prompt>", "[name]"
     subcommands: tuple[str, ...] = ()  # tab-completable subcommands
     cli_only: bool = False             # only available in CLI
+    tui_only: bool = False             # only available in the Ink TUI
     gateway_only: bool = False         # only available in gateway/messaging
     gateway_config_gate: str | None = None  # config dotpath; when truthy, overrides cli_only for gateway
     # Mid-run (agent busy) gateway behavior.  Drives the Guard-2 dispatcher
@@ -150,6 +151,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, args_hint="[off|help|session-id]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
+    CommandDef("cls", "Clear visible TUI scrollback without ending the session", "Session",
+               cli_only=True, tui_only=True),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
                cli_only=True),
     CommandDef("history", "Show conversation history", "Session",
@@ -429,7 +432,7 @@ def _build_description(cmd: CommandDef) -> str:
 # Backwards-compatible flat dict: "/command" -> description
 COMMANDS: dict[str, str] = {}
 for _cmd in COMMAND_REGISTRY:
-    if not _cmd.gateway_only:
+    if not _cmd.gateway_only and not _cmd.tui_only:
         COMMANDS[f"/{_cmd.name}"] = _build_description(_cmd)
         for _alias in _cmd.aliases:
             COMMANDS[f"/{_alias}"] = f"{_cmd.description} (alias for /{_cmd.name})"
@@ -437,7 +440,7 @@ for _cmd in COMMAND_REGISTRY:
 # Backwards-compatible categorized dict
 COMMANDS_BY_CATEGORY: dict[str, dict[str, str]] = {}
 for _cmd in COMMAND_REGISTRY:
-    if not _cmd.gateway_only:
+    if not _cmd.gateway_only and not _cmd.tui_only:
         _cat = COMMANDS_BY_CATEGORY.setdefault(_cmd.category, {})
         _cat[f"/{_cmd.name}"] = COMMANDS[f"/{_cmd.name}"]
         for _alias in _cmd.aliases:

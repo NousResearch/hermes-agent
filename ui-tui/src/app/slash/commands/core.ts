@@ -75,6 +75,7 @@ const mouseModeFromArg = (arg: string, current: MouseTrackingMode): MouseTrackin
 
 const RESET_WORDS = new Set(['reset', 'clear', 'default'])
 const CYCLE_WORDS = new Set(['cycle', 'toggle'])
+const CLEAR_SCREEN_AND_SCROLLBACK = '\u001B[2J\u001B[3J\u001B[H'
 
 const DETAILS_USAGE =
   'usage: /details [hidden|collapsed|expanded|cycle]  or  /details <section> [hidden|collapsed|expanded|reset]'
@@ -212,6 +213,22 @@ export const coreCommands: SlashCommand[] = [
           onConfirm: commit,
           title: isNew ? 'Start a new session?' : 'Clear the current session?'
         }
+      })
+    }
+  },
+
+  {
+    help: 'clear visible scrollback without ending the session',
+    name: 'cls',
+    run: (_arg, ctx) => {
+      if (ctx.ui.busy) {
+        return ctx.transcript.sys('cannot clear scrollback while a turn is running')
+      }
+
+      ctx.transcript.setHistoryItems([])
+      queueMicrotask(() => {
+        process.stdout.write(CLEAR_SCREEN_AND_SCROLLBACK)
+        forceRedraw(process.stdout)
       })
     }
   },

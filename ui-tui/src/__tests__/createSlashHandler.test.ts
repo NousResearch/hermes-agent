@@ -99,6 +99,34 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenCalledWith('ui redrawn')
   })
 
+  it('clears visible scrollback without changing the active session', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+
+    expect(createSlashHandler(ctx)('/cls')).toBe(true)
+    expect(ctx.transcript.setHistoryItems).toHaveBeenCalledWith([])
+    expect(ctx.session.newSession).not.toHaveBeenCalled()
+    expect(ctx.session.resetVisibleHistory).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(getUiState().sid).toBe('sid-abc')
+
+    await Promise.resolve()
+    expect(write).toHaveBeenCalledWith(expect.stringContaining('\u001B[3J'))
+  })
+
+  it('keeps live turn output visible instead of claiming to clear it', () => {
+    patchUiState({ busy: true, sid: 'sid-abc' })
+    const ctx = buildCtx()
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+
+    expect(createSlashHandler(ctx)('/cls')).toBe(true)
+    expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('cannot clear scrollback while a turn is running')
+    expect(write).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
   it('opens the editor locally for /prompt without slash worker fallback', () => {
     const ctx = buildCtx()
 

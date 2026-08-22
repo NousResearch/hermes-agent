@@ -10,6 +10,8 @@ The routes:
   GET  /auth/login?provider=N → 302 to IDP, sets PKCE cookie
   GET  /auth/callback?code,state → completes login, sets session cookies
   POST /auth/logout        → clears cookies, best-effort revoke
+  POST /api/auth/revoke    → revoke one session lineage or all sessions
+                             server-side (auth-required; #76706)
   GET  /api/auth/providers → list registered providers (login bootstrap)
   GET  /api/auth/me        → current Session as JSON (auth-required)
 """
@@ -922,6 +924,99 @@ async def api_auth_me(request: Request):
         "provider": sess.provider,
         "expires_at": sess.expires_at,
     }
+
+
+# ---------------------------------------------------------------------------
+# Auth-required: session revocation (server-side kill switch)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/auth/revoke", name="auth_revoke")
+async def api_auth_revoke(request: Request):
+    """Revoke session(s) server-side. JSON counterpart of ``/auth/logout``.
+
+    ``/auth/logout`` clears the client's cookies and calls
+    ``revoke_session`` best-effort, but the stateless basic provider used
+    to have nothing to revoke — a captured refresh token stayed valid for
+    its full sliding 30-day window (issue #76706). Providers that opt in
+    keep a persisted revocation set keyed by token ``jti``, and this
+    endpoint drives it so an operator can kill a session (or every
+    session) without rotating the signing secret.
+
+    Request body (JSON, both optional):
+
+      * ``{"refresh_token": "..."}`` — revoke one session lineage. When
+        omitted, the caller's own refresh-token cookie is used.
+      * ``{"all": true}`` — revoke every session the providers can see.
+        Providers expose ``revoke_all_sessions`` for this; providers that
+        don't fall back to revoking the caller's own refresh token.
+
+    Best-effort per provider — mirrors ``/auth/logout``: failures are
+    logged, never raised. Auth-required (the gate rejects unauthenticated
+    ``/api/*`` requests before this handler runs).
+    """
+    sess = getattr(request.state, "session", None)
+    if sess is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    body: Dict[str, Any] = {}
+    try:
+        parsed = await request.json()
+        if isinstance(parsed, dict):
+            body = parsed
+    except Exception:  # noqa: BLE001 — malformed/absent body is not fatal
+        body = {}
+
+    revoke_all = bool(body.get("all"))
+    requested_rt = body.get("refresh_token") or ""
+    _at, cookie_rt = read_session_cookies(request)
+    rt = requested_rt or cookie_rt or ""
+
+    # Best-effort revoke. Try every provider so a session minted by any
+    # registered provider is revoked correctly. Failures are logged but
+    # never raised.
+    results: Dict[str, str] = {}
+    for provider in list_providers():
+        results[provider.name] = "ok"
+        try:
+            if revoke_all:
+                revoke_all_sessions = getattr(
+                    provider, "revoke_all_sessions", None
+                )
+                if callable(revoke_all_sessions):
+                    revoke_all_sessions()
+                elif rt:
+                    provider.revoke_session(refresh_token=rt)
+            elif rt:
+                provider.revoke_session(refresh_token=rt)
+        except Exception as e:  # noqa: BLE001 — best-effort
+            # Per-provider error is logged with detail; the response only
+            # carries a flag so internal paths/exceptions never leak.
+            results[provider.name] = "error"
+            _log.warning(
+                "dashboard-auth: revoke on %r failed: %s",
+                provider.name, e,
+            )
+
+    audit_log(
+        AuditEvent.REVOKE,
+        provider=(sess.provider if sess else "unknown"),
+        user_id=(sess.user_id if sess else ""),
+        ip=_client_ip(request),
+    )
+
+    resp = JSONResponse(
+        {"ok": True, "revoked_all": revoke_all, "providers": results}
+    )
+    if revoke_all or (rt and rt == cookie_rt):
+        # The caller's own session is gone (revoke-all kills everything;
+        # otherwise the revoked token was the caller's own). Drop the
+        # cookies so the SPA lands on /login cleanly instead of riding a
+        # doomed cookie until the next 401.
+        prefix = _prefix(request)
+        clear_session_cookies(resp, prefix=prefix)
+        clear_pkce_cookie(resp, prefix=prefix)
+    return resp
 
 
 # ---------------------------------------------------------------------------

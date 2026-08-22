@@ -2283,6 +2283,15 @@ web:
   # call attempts the chosen backend again (never sticky).
   keyless_rescue: true
 
+  # One-shot keyed backstop (default: true) — the mirror of keyless_rescue.
+  # When a call rode the keyless ring and EVERY vendor came back throttled,
+  # that single call retries on the vendor's keyed path if an API key is
+  # present; the next call starts on the free ring again (never sticky).
+  # OPT-IN: defaults to false, because this is the one web path that can
+  # spend an API key you didn't explicitly route through. Only reachable
+  # for a vendor pinned "free" that also has a key on file.
+  keyed_backstop: false
+
   # Pin Exa/Parallel to a tier (set by the hermes tools Free/Paid rows).
   # free = always the anonymous endpoint; paid = always the keyed SDK path;
   # unset = auto (key present -> paid, otherwise free).

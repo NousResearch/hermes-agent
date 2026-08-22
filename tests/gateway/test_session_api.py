@@ -45,6 +45,8 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/api/sessions", adapter._handle_create_session)
     app.router.add_get("/api/sessions/{session_id}", adapter._handle_get_session)
     app.router.add_patch("/api/sessions/{session_id}", adapter._handle_patch_session)
+    app.router.add_post("/api/sessions/{session_id}/archive", adapter._handle_archive_session)
+    app.router.add_post("/api/sessions/{session_id}/unarchive", adapter._handle_unarchive_session)
     app.router.add_delete("/api/sessions/{session_id}", adapter._handle_delete_session)
     app.router.add_get("/api/sessions/{session_id}/messages", adapter._handle_session_messages)
     app.router.add_post("/api/sessions/{session_id}/fork", adapter._handle_fork_session)
@@ -72,6 +74,14 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["skills_api"] is True
     assert features["realtime_voice"] is False
     assert data["endpoints"]["sessions"] == {"method": "GET", "path": "/api/sessions"}
+    assert data["endpoints"]["session_archive"] == {
+        "method": "POST",
+        "path": "/api/sessions/{session_id}/archive",
+    }
+    assert data["endpoints"]["session_unarchive"] == {
+        "method": "POST",
+        "path": "/api/sessions/{session_id}/unarchive",
+    }
     assert data["endpoints"]["session_chat_stream"] == {
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
@@ -869,6 +879,34 @@ async def test_patch_session_persists_pinned_and_archived(adapter, session_db):
         resp = await cli.patch(f"/api/sessions/{session_id}", json={"archived": True})
         assert (await resp.json())["session"]["archived"] is True
         assert bool(session_db.get_session(session_id)["archived"]) is True
+
+
+@pytest.mark.asyncio
+async def test_archive_session_endpoint_is_reversible(adapter, session_db):
+    session_id = session_db.create_session("archive-session", "api_server")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(f"/api/sessions/{session_id}/archive")
+        assert response.status == 200, await response.text()
+        payload = await response.json()
+        assert payload["session"]["archived"] is True
+        assert bool(session_db.get_session(session_id)["archived"]) is True
+
+        response = await cli.post(f"/api/sessions/{session_id}/unarchive")
+        assert response.status == 200, await response.text()
+        payload = await response.json()
+        assert payload["session"]["archived"] is False
+        assert bool(session_db.get_session(session_id)["archived"]) is False
+
+
+@pytest.mark.asyncio
+async def test_archive_session_endpoint_returns_404_for_unknown_session(adapter):
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post("/api/sessions/missing/archive")
+        assert response.status == 404
 
 
 @pytest.mark.asyncio

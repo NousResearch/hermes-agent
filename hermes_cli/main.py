@@ -8281,6 +8281,96 @@ def _get_systemd_service_for_pid(pid: int) -> str | None:
     return None
 
 
+def _query_launchd_domain(domain: str) -> tuple[dict[int, str], str | None]:
+    """Return direct service PIDs for a launchd bootstrap domain."""
+    from hermes_cli._subprocess_compat import bounded_probe_run
+
+    command = ["launchctl", "print", domain]
+    result = bounded_probe_run(command, timeout=5)
+    if result is None:
+        return {}, f"launchctl print {domain} failed or timed out"
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        kind, _, uid = domain.partition("/")
+        if f"Could not find domain for user {kind}: {uid}" in stderr:
+            return {}, None
+        return {}, stderr or f"launchctl print {domain} failed"
+
+    services: dict[int, str] = {}
+    in_services = False
+    closed_services = False
+    service_line = re.compile(
+        r"^\s*(\d+)\s+(?:-|[-+]?\d+|\([^)]*\))\s+(\S+)\s*$"
+    )
+    for line in (result.stdout or "").splitlines():
+        stripped = line.strip()
+        if stripped == "services = {":
+            in_services = True
+            continue
+        if in_services and stripped == "}":
+            closed_services = True
+            break
+        if not in_services:
+            continue
+        match = service_line.match(line)
+        if not match:
+            return {}, f"ambiguous launchctl output for {domain}"
+        service_pid = int(match.group(1))
+        if service_pid == 0:
+            continue
+        label = match.group(2)
+        previous = services.get(service_pid)
+        if previous is not None and previous != label:
+            return {}, f"ambiguous launchd PID {service_pid} in {domain}"
+        services[service_pid] = label
+
+    if not closed_services:
+        return {}, f"ambiguous launchctl output for {domain}"
+    return services, None
+
+
+def _get_launchd_job_for_pid(pid: int) -> tuple[str | None, str | None]:
+    """Return ``(qualified_target, error)`` for a direct launchd-managed PID."""
+    try:
+        uid = os.getuid()
+    except AttributeError:
+        return None, "current user ID is unavailable"
+
+    matches: list[str] = []
+    for kind in ("user", "gui"):
+        domain = f"{kind}/{uid}"
+        services, error = _query_launchd_domain(domain)
+        if error:
+            return None, error
+        label = services.get(pid)
+        if label:
+            matches.append(f"{domain}/{label}")
+
+    if len(matches) > 1:
+        return None, f"ambiguous launchd ownership for PID {pid}"
+    return (matches[0] if matches else None), None
+
+
+def _kickstart_launchd_job(target: str) -> tuple[bool, str]:
+    """Force-restart a launchd job and return success plus an error message."""
+    command = ["launchctl", "kickstart", "-k", target]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        return False, str(exc)
+    if result.returncode == 0:
+        return True, ""
+    return False, (result.stderr or result.stdout or "").strip()
+
+
 def _extract_scope_from_cgroup(cgroup_entry: str) -> str | None:
     """Extract the systemd scope (``user`` or ``system``) from a cgroup path.
 

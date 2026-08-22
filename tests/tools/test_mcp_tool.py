@@ -576,6 +576,59 @@ class TestToolHandler:
         finally:
             _servers.pop("test_srv", None)
 
+    def test_captures_context_before_mcp_loop_handoff(self):
+        """Gateway context must survive scheduling onto the MCP loop thread."""
+        import contextvars
+
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        platform = contextvars.ContextVar("mcp_test_platform", default="")
+        observed = []
+        server = _make_mock_server("test_srv")
+
+        async def call_tool(_name, arguments=None):
+            captured = server._pending_call_context
+            assert captured is not None
+            observed.append(captured.copy().run(platform.get))
+            return _make_call_result("ok", is_error=False)
+
+        server.session = SimpleNamespace(call_tool=call_tool)
+        _servers["test_srv"] = server
+
+        def run_on_background_context(coro_or_factory, timeout=30):
+            del timeout
+            coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+            result = []
+            errors = []
+
+            def worker():
+                try:
+                    result.append(contextvars.Context().run(asyncio.run, coro))
+                except BaseException as exc:  # pragma: no cover - surfaced below
+                    errors.append(exc)
+
+            thread = threading.Thread(target=worker)
+            thread.start()
+            thread.join()
+            if errors:
+                raise errors[0]
+            return result[0]
+
+        token = platform.set("gateway:webui")
+        try:
+            handler = _make_tool_handler("test_srv", "greet", 120)
+            with patch(
+                "tools.mcp_tool._run_on_mcp_loop",
+                side_effect=run_on_background_context,
+            ):
+                result = json.loads(handler({"name": "world"}))
+        finally:
+            platform.reset(token)
+            _servers.pop("test_srv", None)
+
+        assert result["result"] == "ok"
+        assert observed == ["gateway:webui"]
+
 
     def test_recycled_stdio_server_reconnects_lazily_on_tool_call(self):
         from tools.mcp_tool import _make_tool_handler, _servers

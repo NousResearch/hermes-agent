@@ -5818,14 +5818,17 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     )
                 return tool_error(f"MCP server '{server_name}' is not connected")
 
+        # Capture the agent context in the synchronous caller before the MCP
+        # coroutine crosses onto the dedicated background event loop. Tasks
+        # created there inherit the loop thread's context, not this caller's.
+        call_context = contextvars.copy_context()
+
         async def _call():
             _mark_server_call_started(server)
             async with server._rpc_lock:
-                # Snapshot the agent's context so an elicitation callback
-                # triggered during this call (fired on the MCP recv loop
-                # task, which doesn't inherit our contextvars) can replay
-                # it and detect the gateway platform / session for routing.
-                server._pending_call_context = contextvars.copy_context()
+                # Replay this caller-owned snapshot if the MCP server requests
+                # elicitation while the tool call is in flight.
+                server._pending_call_context = call_context
                 try:
                     result = await server.session.call_tool(tool_name, arguments=args)
                 finally:

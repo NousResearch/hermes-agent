@@ -10042,7 +10042,7 @@ def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[
     return None
 
 
-def _collect_kanban_notifications(session: dict) -> list:
+def _collect_kanban_notifications(session: dict, sid: str) -> list:
     """Claim unseen terminal kanban events for this TUI session's subscriptions.
 
     ``kanban_create`` auto-subscribes TUI/desktop sessions with
@@ -10115,6 +10115,22 @@ def _collect_kanban_notifications(session: dict) -> list:
                 if (sub.get("platform") or "").lower() != "tui":
                     continue
                 if sub.get("chat_id") != session_key:
+                    continue
+                metadata = sub.get("delivery_metadata") or {}
+                origin_ui_session_id = str(
+                    metadata.get("origin_ui_session_id") or ""
+                )
+                if origin_ui_session_id and _notification_event_belongs_elsewhere(
+                    sid,
+                    session,
+                    {
+                        "origin_ui_session_id": origin_ui_session_id,
+                        "session_key": sub.get("chat_id") or "",
+                    },
+                ):
+                    # Leave the shared cursor untouched for the originating UI.
+                    # Once that UI finalizes, durable-key fallback allows its
+                    # continuation to claim on a later poll.
                     continue
                 _old, _new, events = _kb.claim_unseen_events_for_sub(
                     conn,
@@ -10193,7 +10209,7 @@ def _notification_poller_loop(
         if _now - _last_kanban_poll >= _KANBAN_POLL_SECONDS:
             _last_kanban_poll = _now
             try:
-                _kanban_texts = _collect_kanban_notifications(session)
+                _kanban_texts = _collect_kanban_notifications(session, sid)
             except Exception as _kb_exc:
                 print(
                     f"[tui_gateway] kanban notification poll failed: "

@@ -1506,10 +1506,11 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
       are intentionally cleared (TUI is a single-channel local UI, not
       a multi-tenant chat surface), but the agent subprocess inherits
       ``HERMES_SESSION_KEY`` from the parent session. We subscribe with
-      ``platform="tui"`` and ``chat_id=<key>``; the TUI notification
-      poller (``tui_gateway/server.py``) reads ``kanban_notify_subs``
-      for these rows and posts the completion message into the running
-      session.
+      ``platform="tui"`` and ``chat_id=<key>``, and persist the concrete
+      ``HERMES_UI_SESSION_ID`` as the preferred live owner; the TUI
+      notification poller (``tui_gateway/server.py``) reads
+      ``kanban_notify_subs`` for these rows and posts the completion message
+      into the originating session.
 
     - **CLI / cron / test / unattached**: no persistent delivery channel,
       no-op.
@@ -1574,6 +1575,10 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
             except Exception:
                 notifier_profile = "default"
         delivery_metadata: dict[str, Any] = {}
+        if platform == "tui":
+            origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "")
+            if origin_ui_session_id:
+                delivery_metadata["origin_ui_session_id"] = origin_ui_session_id
         if thread_id:
             delivery_metadata["thread_id"] = thread_id
         if chat_type:

@@ -882,6 +882,7 @@ def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
     monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
     monkeypatch.setenv("HERMES_SESSION_KEY", "tui-session-abc")
+    monkeypatch.setenv("HERMES_UI_SESSION_ID", "tui-ui-session-123")
     monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
 
     out = kt._handle_create({
@@ -899,6 +900,9 @@ def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
     assert subs[0]["chat_id"] == "tui-session-abc"
     assert subs[0]["chat_type"] == "dm"
     assert subs[0]["delivery_mode"] == "notify"
+    assert subs[0]["delivery_metadata"] == {
+        "origin_ui_session_id": "tui-ui-session-123",
+    }
 
 
 def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):

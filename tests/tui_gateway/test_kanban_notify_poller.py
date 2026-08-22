@@ -27,11 +27,22 @@ def _session(key: str = SESSION_KEY) -> dict:
     return {"session_key": key}
 
 
-def _create_subscribed_task(*, chat_id: str = SESSION_KEY, platform: str = "tui"):
+def _create_subscribed_task(
+    *,
+    chat_id: str = SESSION_KEY,
+    platform: str = "tui",
+    delivery_metadata: dict | None = None,
+):
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="notify tui", assignee="worker")
-        kb.add_notify_sub(conn, task_id=tid, platform=platform, chat_id=chat_id)
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform=platform,
+            chat_id=chat_id,
+            delivery_metadata=delivery_metadata,
+        )
         return tid
     finally:
         conn.close()
@@ -60,7 +71,7 @@ class TestCollectKanbanNotifications:
         kb.create_board("second-board")
 
         with patch.object(kb, "connect", wraps=kb.connect) as spy_connect:
-            texts = _collect_kanban_notifications(_session())
+            texts = _collect_kanban_notifications(_session(), "sid-current")
 
         assert texts == []
         spy_connect.assert_not_called()
@@ -69,7 +80,7 @@ class TestCollectKanbanNotifications:
         tid = _create_subscribed_task()
         _complete(tid, summary="shipped the fix")
 
-        first = _collect_kanban_notifications(_session())
+        first = _collect_kanban_notifications(_session(), "sid-current")
 
         assert len(first) == 1
         assert tid in first[0]
@@ -80,7 +91,7 @@ class TestCollectKanbanNotifications:
         first_cursor = rows[0]["last_event_id"]
 
         # The retained subscription must not replay the completed event.
-        assert _collect_kanban_notifications(_session()) == []
+        assert _collect_kanban_notifications(_session(), "sid-current") == []
 
         conn = kb.connect()
         try:
@@ -93,7 +104,7 @@ class TestCollectKanbanNotifications:
         finally:
             conn.close()
 
-        reopened = _collect_kanban_notifications(_session())
+        reopened = _collect_kanban_notifications(_session(), "sid-current")
 
         assert len(reopened) == 2
         assert "ready" in reopened[0]
@@ -102,7 +113,7 @@ class TestCollectKanbanNotifications:
         assert len(rows) == 1
         assert rows[0]["chat_id"] == SESSION_KEY
         assert rows[0]["last_event_id"] > first_cursor
-        assert _collect_kanban_notifications(_session()) == []
+        assert _collect_kanban_notifications(_session(), "sid-current") == []
 
         conn = kb.connect()
         try:
@@ -111,7 +122,7 @@ class TestCollectKanbanNotifications:
             conn.close()
 
         # Archive is notification-terminal and removes the retained route.
-        assert _collect_kanban_notifications(_session()) == []
+        assert _collect_kanban_notifications(_session(), "sid-current") == []
         assert _sub_rows(tid) == []
 
     def test_matching_tui_sub_delivers_and_advances_cursor(self):
@@ -124,8 +135,8 @@ class TestCollectKanbanNotifications:
             conn.close()
 
         with patch.object(kb, "connect", wraps=kb.connect) as spy_connect:
-            first = _collect_kanban_notifications(_session())
-            second = _collect_kanban_notifications(_session())
+            first = _collect_kanban_notifications(_session(), "sid-current")
+            second = _collect_kanban_notifications(_session(), "sid-current")
 
         assert len(first) == 1
         assert "blocked" in first[0]
@@ -146,7 +157,7 @@ class TestCollectKanbanNotifications:
         _complete(tid)
 
         with patch.object(kb, "connect", wraps=kb.connect) as spy_connect:
-            texts = _collect_kanban_notifications(_session())
+            texts = _collect_kanban_notifications(_session(), "sid-current")
 
         assert texts == []
         spy_connect.assert_not_called()
@@ -160,13 +171,63 @@ class TestCollectKanbanNotifications:
         _complete(tid)
 
         with patch.object(kb, "connect", wraps=kb.connect) as spy_connect:
-            texts = _collect_kanban_notifications(_session())
+            texts = _collect_kanban_notifications(_session(), "sid-current")
 
         assert texts == []
         spy_connect.assert_not_called()
         rows = _sub_rows(tid)
         assert len(rows) == 1
         assert rows[0]["last_event_id"] == pre_cursor
+
+    def test_origin_ui_session_wins_same_key_race(self, monkeypatch):
+        import tui_gateway.server as server
+
+        origin = _session()
+        sibling = _session()
+        monkeypatch.setattr(
+            server,
+            "_sessions",
+            {"origin-sid": origin, "sibling-sid": sibling},
+        )
+        monkeypatch.setattr(server, "_get_db", lambda: None)
+        tid = _create_subscribed_task(
+            delivery_metadata={"origin_ui_session_id": "origin-sid"},
+        )
+        pre_cursor = _sub_rows(tid)[0]["last_event_id"]
+        _complete(tid, summary="owned completion")
+
+        assert _collect_kanban_notifications(sibling, "sibling-sid") == []
+        assert _sub_rows(tid)[0]["last_event_id"] == pre_cursor
+
+        texts = _collect_kanban_notifications(origin, "origin-sid")
+
+        assert len(texts) == 1
+        assert "owned completion" in texts[0]
+        assert _sub_rows(tid)[0]["last_event_id"] > pre_cursor
+
+    def test_finalized_origin_falls_back_to_live_continuation(self, monkeypatch):
+        import tui_gateway.server as server
+
+        finalized_origin = {"session_key": SESSION_KEY, "_finalized": True}
+        continuation = _session()
+        monkeypatch.setattr(
+            server,
+            "_sessions",
+            {
+                "origin-sid": finalized_origin,
+                "continuation-sid": continuation,
+            },
+        )
+        monkeypatch.setattr(server, "_get_db", lambda: None)
+        tid = _create_subscribed_task(
+            delivery_metadata={"origin_ui_session_id": "origin-sid"},
+        )
+        _complete(tid, summary="continued completion")
+
+        texts = _collect_kanban_notifications(continuation, "continuation-sid")
+
+        assert len(texts) == 1
+        assert "continued completion" in texts[0]
 
     def test_probe_error_falls_back_to_writable_delivery(self, monkeypatch):
         tid = _create_subscribed_task()
@@ -177,7 +238,7 @@ class TestCollectKanbanNotifications:
 
         monkeypatch.setattr(kb, "count_notify_subs", fail_probe)
         with patch.object(kb, "connect", wraps=kb.connect) as spy_connect:
-            texts = _collect_kanban_notifications(_session())
+            texts = _collect_kanban_notifications(_session(), "sid-current")
 
         assert len(texts) == 1
         assert tid in texts[0]
@@ -187,8 +248,12 @@ class TestCollectKanbanNotifications:
         tid = _create_subscribed_task()
         _complete(tid)
 
-        assert _collect_kanban_notifications({"session_key": ""}) == []
-        assert _collect_kanban_notifications({"session_key": None}) == []
+        assert (
+            _collect_kanban_notifications({"session_key": ""}, "sid-current") == []
+        )
+        assert (
+            _collect_kanban_notifications({"session_key": None}, "sid-current") == []
+        )
         assert len(_sub_rows(tid)) == 1
 
     def test_profile_scoped_session_reads_the_shared_board(self, tmp_path):
@@ -218,7 +283,7 @@ class TestCollectKanbanNotifications:
         # active while the poller collects (as a profile-bound RPC would set).
         token = set_hermes_home_override(str(other_profile_home))
         try:
-            texts = _collect_kanban_notifications(session)
+            texts = _collect_kanban_notifications(session, "sid-current")
         finally:
             reset_hermes_home_override(token)
 

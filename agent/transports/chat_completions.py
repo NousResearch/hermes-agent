@@ -135,12 +135,23 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
 
     if reasoning_config.get("enabled") is False:
         # Gemini can hide thought parts even when internal thinking still
-        # happens; omit thinkingLevel to avoid model-specific validation quirks.
-        return {"includeThoughts": False}
+        # happens; ``includeThoughts: False`` only omits thought parts from
+        # the returned response while the model still reasons internally and
+        # bills thought tokens against maxOutputTokens. To truly disable
+        # thinking so thought tokens don't starve a small max_tokens budget
+        # (e.g. title generation's 64 tokens), set thinkingBudget to 0 on
+        # models that support it. (#91927)
+        config: Dict[str, Any] = {"includeThoughts": False}
+        if normalized_model.startswith(("gemini-2.5-", "gemini-3", "gemini-3.1")):
+            config["thinkingBudget"] = 0
+        return config
 
     effort = str(reasoning_config.get("effort", "medium") or "medium").strip().lower()
     if effort == "none":
-        return {"includeThoughts": False}
+        config = {"includeThoughts": False}
+        if normalized_model.startswith(("gemini-2.5-", "gemini-3", "gemini-3.1")):
+            config["thinkingBudget"] = 0
+        return config
 
     thinking_config: Dict[str, Any] = {"includeThoughts": True}
 

@@ -46,6 +46,25 @@ class TestGenerateTitle:
         assert captured_kwargs["task"] == "title_generation"
         assert captured_kwargs["timeout"] is None
 
+    def test_passes_reasoning_disabled(self):
+        """Title generation must explicitly disable reasoning/thinking so
+        models that bill thought tokens against max_tokens (e.g. Gemini)
+        don't consume the entire 64-token budget on internal reasoning
+        and truncate the JSON title response. Regression for #91927."""
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = '{"title": "Test Title"}'
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            generate_title("question")
+
+        assert captured_kwargs.get("reasoning_config") == {"enabled": False}
+
 
 
     def test_strips_think_blocks(self):

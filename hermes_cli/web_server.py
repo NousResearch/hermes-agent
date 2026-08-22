@@ -7975,6 +7975,21 @@ def _custom_endpoint_id(raw: str, fallback: str = "custom") -> str:
     slug = re.sub(r"[^A-Za-z0-9_-]+", "-", (raw or "").strip()).strip("-_").lower()
     return slug or fallback
 
+def _resolve_provider_key(providers: Any, raw: str) -> str:
+    """Resolve a dashboard-supplied endpoint id to a real ``providers`` key.
+
+    Exact match wins first: the dashboard round-trips the true config key
+    (``custom:sakiko-dev``), and slugging it (``custom-sakiko-dev``) silently
+    targets a non-existent entry — deletes and activates 404, and edits write
+    a brand-new duplicate key instead of updating the original. Only ids that
+    don't exactly match an existing key (hand-typed slugs, fresh names) fall
+    through to the slugger.
+    """
+    candidate = (raw or "").strip()
+    if isinstance(providers, dict) and candidate in providers:
+        return candidate
+    return _custom_endpoint_id(candidate)
+
 
 def _models_from_custom_endpoint_entry(entry: Dict[str, Any]) -> List[str]:
     models: List[str] = []
@@ -8107,7 +8122,6 @@ def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str) -> 
 
 
 def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> Tuple[str, Dict[str, Any]]:
-    endpoint_id = _custom_endpoint_id(body.id or body.name)
     name = (body.name or "").strip()
     base_url = (body.base_url or "").strip().rstrip("/")
     model = (body.model or "").strip()
@@ -8125,6 +8139,24 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     providers = cfg.get("providers")
     if not isinstance(providers, dict):
         providers = {}
+    # Resolve against the real keys BEFORE slugging: an edit payload carries
+    # the existing key verbatim (``custom:sakiko-dev``) and must update that
+    # entry, not spawn a slugged duplicate (``custom-sakiko-dev``).
+    endpoint_id = _resolve_provider_key(providers, body.id or body.name)
+    # Duplicate guard for the NEW-endpoint path: refuse to fork a second entry
+    # for a base_url that's already configured — the sakiko / custom:sakiko-dev
+    # twin pair was born exactly this way.
+    if endpoint_id not in providers:
+        new_url = base_url.lower()
+        for pid, pentry in providers.items():
+            if not isinstance(pentry, dict):
+                continue
+            existing_url = str(pentry.get("base_url") or pentry.get("url") or pentry.get("api") or "").strip().rstrip("/").lower()
+            if existing_url and existing_url == new_url:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"base_url already configured as '{pid}'",
+                )
     existing = providers.get(endpoint_id)
     if not isinstance(existing, dict):
         existing = {}
@@ -8243,8 +8275,8 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     try:
         with _config_profile_scope(profile):
             cfg = load_config()
-            provider_key = _custom_endpoint_id(endpoint_id)
             providers = cfg.get("providers")
+            provider_key = _resolve_provider_key(providers, endpoint_id)
             entry = providers.get(provider_key) if isinstance(providers, dict) else None
             if not isinstance(entry, dict):
                 raise HTTPException(status_code=404, detail="custom endpoint not found")
@@ -8277,8 +8309,8 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     try:
         with _config_profile_scope(profile):
             cfg = load_config()
-            provider_key = _custom_endpoint_id(endpoint_id)
             providers = cfg.get("providers")
+            provider_key = _resolve_provider_key(providers, endpoint_id)
             if not isinstance(providers, dict) or provider_key not in providers:
                 raise HTTPException(status_code=404, detail="custom endpoint not found")
             providers.pop(provider_key, None)

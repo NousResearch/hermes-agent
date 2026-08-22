@@ -25,7 +25,9 @@ from __future__ import annotations
 import os
 import re
 from contextvars import ContextVar, Token
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Dict, Mapping, Optional
 
 
@@ -286,21 +288,44 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     return secrets
 
 
-def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
-    """Build a profile's secret mapping from its ``<home>/.env``.
+def _profile_external_secret_values(
+    home: Path,
+    *,
+    fail_closed: bool,
+) -> Dict[str, str]:
+    """Read cached external-source values with caller-selected failure policy."""
+    try:
+        from hermes_cli.env_loader import get_secret_source_values
+
+        return get_secret_source_values(home)
+    except Exception:
+        if fail_closed:
+            raise
+        return {}
+
+
+def build_profile_secret_scope(
+    hermes_home: Path,
+    *,
+    fail_closed_external: bool = False,
+) -> Dict[str, str]:
+    """Build a profile's secret mapping from its ``.env`` and optional ``.op.env``.
 
     Returns a fresh dict (safe to install via ``set_secret_scope``). Genuinely
     global vars are intentionally NOT copied in — ``get_secret`` reads those
     from ``os.environ`` directly, so the scope holds only profile secrets.
+    External-source failures preserve the historical fail-open behavior unless
+    a subprocess security boundary explicitly requests fail-closed resolution.
     """
     home = Path(hermes_home)
-    secrets = load_env_file(home / ".env")
-
-    try:
-        from hermes_cli.env_loader import get_secret_source_values
-        external_secrets = get_secret_source_values(home)
-    except Exception:
-        external_secrets = {}
+    # ``.env`` wins over the optional bootstrap file, matching env_loader's
+    # profile hydration contract. Both files are profile-owned inputs.
+    secrets = load_env_file(home / ".op.env")
+    secrets.update(load_env_file(home / ".env"))
+    external_secrets = _profile_external_secret_values(
+        home,
+        fail_closed=fail_closed_external,
+    )
 
     for key, value in external_secrets.items():
         if _is_global_env(key):
@@ -308,3 +333,109 @@ def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
         secrets[key] = value
 
     return secrets
+
+
+@dataclass(frozen=True)
+class ProfileEnvBoundary:
+    """Immutable source/target ownership boundary for a child environment.
+
+    ``source_owned_names`` is deliberately name-based provenance from the
+    launch/source profile, not a heuristic over variable spelling or a global
+    value-equality scan. ``target_values`` contains only the target profile's
+    values for those names, so an absent target value is removed rather than
+    inherited from ambient ``os.environ``.
+    """
+
+    source_home: Path
+    target_home: Path
+    source_owned_names: frozenset[str]
+    target_values: Mapping[str, str]
+
+    @property
+    def identity(self) -> str:
+        """Stable target identity used by snapshot owners and diagnostics."""
+        return str(self.target_home)
+
+    def sanitize(self, env: Mapping[str, str]) -> dict[str, str]:
+        """Return *env* with source-profile-owned names isolated to the target."""
+        result = dict(env)
+        if self.source_home == self.target_home:
+            return result
+        for name in self.source_owned_names:
+            if name in self.target_values:
+                result[name] = self.target_values[name]
+            else:
+                result.pop(name, None)
+        return result
+
+
+def get_profile_owned_secret_names(
+    hermes_home: str | os.PathLike,
+    *,
+    fail_closed_external: bool = False,
+) -> frozenset[str]:
+    """Return exact secret names owned by one profile, without reading values.
+
+    The profile's dotenv files and the external-source provenance snapshot are
+    the ownership sources. Ordinary shell exports are intentionally excluded:
+    they are user/process state, not profile-owned credentials.
+    """
+    home = Path(hermes_home)
+    names = set(load_env_file(home / ".op.env"))
+    names.update(load_env_file(home / ".env"))
+    names.update(
+        _profile_external_secret_values(
+            home,
+            fail_closed=fail_closed_external,
+        )
+    )
+    return frozenset(name for name in names if not _is_global_env(name))
+
+
+def build_profile_env_boundary(
+    source_home: str | os.PathLike | None = None,
+    target_home: str | os.PathLike | None = None,
+) -> ProfileEnvBoundary:
+    """Capture source/target profile identity and ownership for one execution.
+
+    When homes are omitted, the source is the process launch home and the
+    target is the context-local ``HERMES_HOME`` override, if present. Callers
+    such as standalone Kanban pass both homes explicitly and therefore do not
+    depend on gateway multiplex state.
+    """
+    if source_home is None:
+        from hermes_constants import get_process_hermes_home
+
+        source_home = get_process_hermes_home()
+    if target_home is None:
+        try:
+            from hermes_constants import get_hermes_home_override
+
+            target_home = get_hermes_home_override() or source_home
+        except Exception:
+            target_home = source_home
+    source = Path(source_home).resolve()
+    target = Path(target_home).resolve()
+    target_values = build_profile_secret_scope(
+        target,
+        fail_closed_external=True,
+    )
+    return ProfileEnvBoundary(
+        source_home=source,
+        target_home=target,
+        source_owned_names=get_profile_owned_secret_names(
+            source,
+            fail_closed_external=True,
+        ),
+        target_values=MappingProxyType(dict(target_values)),
+    )
+
+
+def sanitize_profile_owned_env(
+    env: Mapping[str, str],
+    boundary: ProfileEnvBoundary | None = None,
+) -> dict[str, str]:
+    """Apply a captured profile boundary without changing single-profile mode."""
+    if boundary is None:
+        return dict(env)
+    return boundary.sanitize(env)

@@ -36,6 +36,8 @@ def test_default_spawn_pins_assignee_profile_cli_toolsets(monkeypatch, tmp_path)
     root = tmp_path / ".hermes"
     profile = root / "profiles" / "elias"
     profile.mkdir(parents=True)
+    profile_home = profile / "home"
+    profile_home.mkdir()
     profile.joinpath("config.yaml").write_text(
         """
 platform_toolsets:
@@ -58,6 +60,7 @@ agent:
     )
     root.joinpath("config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
 
     from hermes_cli import kanban_db as kb
 
@@ -82,6 +85,7 @@ agent:
 
     assert pid == 4242
     assert captured["env"]["HERMES_HOME"] == str(profile)
+    assert captured["env"]["HOME"] == str(profile_home)
     assert captured["env"]["HERMES_KANBAN_TASK"] == "t_spawn_tools"
     assert "--toolsets" in captured["cmd"]
     pinned = captured["cmd"][captured["cmd"].index("--toolsets") + 1].split(",")

@@ -626,6 +626,21 @@ class BaseEnvironment(ABC):
         self.cwd = cwd
         self.timeout = timeout
         self.env = env or {}
+        self._profile_env_boundary = None
+        _multiplex_active = False
+        if self._profile_scoped_passthrough:
+            try:
+                from agent.secret_scope import build_profile_env_boundary, is_multiplex_active
+
+                _multiplex_active = is_multiplex_active()
+                if _multiplex_active:
+                    self._profile_env_boundary = build_profile_env_boundary()
+            except Exception as exc:
+                if _multiplex_active:
+                    raise RuntimeError(
+                        "profile environment boundary could not be captured for "
+                        "the execution environment"
+                    ) from exc
 
         self._session_id = uuid.uuid4().hex[:12]
         temp_dir = self.get_temp_dir().rstrip("/") or "/"
@@ -675,26 +690,51 @@ class BaseEnvironment(ABC):
         """Return profile-scoped names that must not persist in the snapshot.
 
         The set is monotonic for the environment lifetime. A skill/config
-        allowlist can be cleared after a value was captured; retaining the
-        exclusion prevents that old value from becoming visible to a later
-        profile through the shared snapshot.
+        allowlist can be cleared or source-profile ownership can grow after
+        construction; retaining every observed exclusion prevents an old value
+        from becoming visible to a later profile through the shared snapshot.
         """
         if not self._profile_scoped_passthrough:
             return ()
+        _multiplex_active = False
         try:
-            from agent.secret_scope import is_multiplex_active
-            if is_multiplex_active():
+            from agent.secret_scope import (
+                build_profile_env_boundary,
+                get_profile_owned_secret_names,
+                is_multiplex_active,
+            )
+
+            _multiplex_active = is_multiplex_active()
+            if _multiplex_active:
                 from tools.env_passthrough import get_all_passthrough
+
+                boundary = getattr(self, "_profile_env_boundary", None)
+                if boundary is None:
+                    boundary = build_profile_env_boundary()
+                    self._profile_env_boundary = boundary
+                # Ownership can grow after this long-lived environment was
+                # constructed (dotenv reload / external-source refresh).
+                # Refresh at every snapshot boundary and merge monotonically.
+                source_owned_names = get_profile_owned_secret_names(
+                    boundary.source_home,
+                    fail_closed_external=True,
+                )
                 names = (
                     *get_all_passthrough(),
                     *self._additional_profile_scoped_passthrough_names(),
+                    *source_owned_names,
                 )
                 self._snapshot_passthrough_names.update(
                     name
                     for name in names
                     if isinstance(name, str) and _SHELL_ENV_NAME_RE.fullmatch(name)
                 )
-        except Exception:
+        except Exception as exc:
+            if _multiplex_active:
+                raise RuntimeError(
+                    "profile-owned snapshot exclusions could not be refreshed; "
+                    "refusing to update or source the shared snapshot"
+                ) from exc
             logger.debug(
                 "Could not refresh profile-scoped snapshot exclusions",
                 exc_info=True,

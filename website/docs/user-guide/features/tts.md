@@ -130,7 +130,11 @@ tts:
 
 ### Audio Tags (Gemini, xAI)
 
-Google's Gemini 3.1 Flash TTS and xAI's Grok TTS support freeform square-bracket audio tags such as `[whispers]`, `[excitedly]`, `[very slow]`, `[laughs]`, and other expressive delivery notes. Enable `tts.gemini.audio_tags` or `tts.xai.auto_speech_tags` to have Hermes run a hidden rewrite pass before TTS. The rewrite inserts inline tags into the TTS script only; the visible chat reply stays unchanged.
+Google's Gemini 3.1 Flash TTS accepts freeform square-bracket audio tags such as `[whispers]`, `[excitedly]`, `[very slow]`, and `[laughs]`. [xAI uses a fixed speech-tag vocabulary][xai-tts-speech-tags]: inline effects such as `[pause]`, `[laugh]`, and `[sigh]` use square brackets, while sustained effects use wrapping tags such as `<whisper>...</whisper>` and `<slow>...</slow>`.
+
+Enable `tts.gemini.audio_tags` or `tts.xai.auto_speech_tags` to have Hermes run a hidden rewrite pass before TTS. The rewrite inserts the provider's tags into the TTS script only; the visible chat reply stays unchanged.
+
+[xai-tts-speech-tags]: https://docs.x.ai/developers/model-capabilities/audio/text-to-speech#speech-tags
 
 ```yaml
 tts:

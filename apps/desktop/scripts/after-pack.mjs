@@ -1,12 +1,18 @@
 /**
  * after-pack.mjs — electron-builder afterPack hook.
  *
- * Stamps the Hermes icon + identity onto the packed Windows Hermes.exe via
- * rcedit (delegated to set-exe-identity.mjs). This runs for EVERY packed build
- * — first install, `hermes desktop`, the installer's --update rebuild, and a
- * dev's manual `npm run pack` — so the branded exe can never silently revert
- * to the stock "Electron" icon/name (the bug when the stamp lived only in
- * install.ps1, which the update path doesn't use).
+ * Guards the packaged Electron artifact before it can be released:
+ *
+ * - Verifies the packaged `dist/electron-main.mjs` bundle still accepts both
+ *   HERMES_BACKEND_READY and HERMES_DASHBOARD_READY. This catches source /
+ *   packaged-artifact skew that makes Desktop kill a healthy backend after
+ *   "Timed out waiting for Hermes backend port announcement" (#60772).
+ * - Stamps the Hermes icon + identity onto the packed Windows Hermes.exe via
+ *   rcedit (delegated to set-exe-identity.mjs). This runs for EVERY packed
+ *   build — first install, `hermes desktop`, the installer's --update rebuild,
+ *   and a dev's manual `npm run pack` — so the branded exe can never silently
+ *   revert to the stock "Electron" icon/name (the bug when the stamp lived
+ *   only in install.ps1, which the update path doesn't use).
  *
  * Windows-only: rcedit edits PE resources, irrelevant on macOS/Linux where the
  * app identity comes from the bundle Info.plist / desktop entry. Best-effort:
@@ -21,9 +27,17 @@
 
 import path from 'node:path'
 
+import {
+  assertPackagedBackendReadyArtifact,
+  resolvePackagedAsarPath
+} from './backend-ready-artifact.mjs'
 import { stampExeIdentity } from './set-exe-identity.mjs'
 
 export default async function afterPack(context) {
+  const asarPath = resolvePackagedAsarPath(context)
+  assertPackagedBackendReadyArtifact(asarPath)
+  console.log(`[after-pack] verified backend readiness parser in ${asarPath}`)
+
   if (context.electronPlatformName !== 'win32') {
     return
   }

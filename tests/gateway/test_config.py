@@ -257,6 +257,40 @@ class TestGatewayConfigRoundtrip:
         assert restored.unauthorized_dm_behavior == "ignore"
         assert restored.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
 
+    def test_top_level_platform_nested_extra_preserved(self, tmp_path, monkeypatch):
+        """A per-platform setting under ``<platform>.extra`` must survive the
+        shared-key loop in ``load_gateway_config()``.
+
+        Regression: the shared-key loop only bridged known top-level keys
+        (dm_policy, group_policy, …) and silently dropped the platform's own
+        nested ``extra:`` dict. So ``whatsapp.extra.group_sessions_per_user:
+        false`` never reached ``PlatformConfig.extra``, and the session-key
+        paths (which honor per-platform extra) fell back to the global
+        default — every group member kept a separate context even though the
+        config asked for a shared group session.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "whatsapp:\n"
+            "  enabled: true\n"
+            "  extra:\n"
+            "    group_sessions_per_user: false\n"
+            "    bridge_port: 3000\n"
+            "  group_policy: allowlist\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        wa = config.platforms[Platform.WHATSAPP]
+        # Nested extra survives the shared-key loop
+        assert wa.extra.get("group_sessions_per_user") is False
+        assert wa.extra.get("bridge_port") == 3000
+        # Bridged top-level keys still land in extra
+        assert wa.extra.get("group_policy") == "allowlist"
+
     def test_email_defaults_to_ignore_for_unauthorized_dm_behavior(self):
         config = GatewayConfig(
             platforms={Platform.EMAIL: PlatformConfig(enabled=True)},

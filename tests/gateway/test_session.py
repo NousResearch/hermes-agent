@@ -700,6 +700,73 @@ class TestWhatsAppSessionKeyConsistency:
         assert second_entry.session_key == "agent:main:discord:group:guild-123"
         assert first_entry.session_id == second_entry.session_id
 
+    def test_store_honors_per_platform_group_sessions_override(self, store):
+        """Per-platform extra.group_sessions_per_user must win over the global
+        config in the main session-key path (mirrors the adapters' text-batching
+        keys). WhatsApp groups with the override set to False share one session
+        even though the global default is True."""
+        from gateway.config import PlatformConfig
+
+        store.config.group_sessions_per_user = True  # global default: isolated
+        store.config.platforms[Platform.WHATSAPP] = PlatformConfig(
+            enabled=True,
+            extra={"group_sessions_per_user": False},
+        )
+
+        alice = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="120363000000000000@g.us",
+            chat_type="group",
+            user_id="alice@lid",
+            user_name="Alice",
+        )
+        bob = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="120363000000000000@g.us",
+            chat_type="group",
+            user_id="bob@lid",
+            user_name="Bob",
+        )
+
+        alice_entry = store.get_or_create_session(alice)
+        bob_entry = store.get_or_create_session(bob)
+
+        # Shared group session — no per-user suffix, both resolve to the same key.
+        expected = "agent:main:whatsapp:group:120363000000000000@g.us"
+        assert alice_entry.session_key == expected
+        assert bob_entry.session_key == expected
+        assert alice_entry.session_id == bob_entry.session_id
+
+    def test_store_keeps_global_isolation_when_no_platform_override(self, store):
+        """Without a per-platform override, the global default (isolated
+        per-user group sessions) must be preserved."""
+        from gateway.config import PlatformConfig
+
+        store.config.group_sessions_per_user = True
+        store.config.platforms[Platform.WHATSAPP] = PlatformConfig(enabled=True)
+
+        alice = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="120363000000000000@g.us",
+            chat_type="group",
+            user_id="alice@lid",
+            user_name="Alice",
+        )
+        bob = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="120363000000000000@g.us",
+            chat_type="group",
+            user_id="bob@lid",
+            user_name="Bob",
+        )
+
+        alice_entry = store.get_or_create_session(alice)
+        bob_entry = store.get_or_create_session(bob)
+
+        # Isolated per-user sessions (global default) — distinct keys.
+        assert alice_entry.session_key != bob_entry.session_key
+        assert alice_entry.session_id != bob_entry.session_id
+
     def test_telegram_dm_includes_chat_id(self):
         """Non-WhatsApp DMs should also include chat_id to separate users."""
         source = SessionSource(

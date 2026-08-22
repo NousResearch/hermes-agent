@@ -1390,7 +1390,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "models_discovered",
         "context_length", "rate_limit_delay",
-        "request_timeout_seconds", "stale_timeout_seconds",
+        "request_timeout_seconds", "stale_timeout_seconds", "stream_retries",
         "discover_models", "extra_body", "extra_headers",
         "ssl_ca_cert", "ssl_verify",
     }

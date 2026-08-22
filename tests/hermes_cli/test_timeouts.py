@@ -5,6 +5,7 @@ import textwrap
 from hermes_cli.timeouts import (
     get_provider_request_timeout,
     get_provider_stale_timeout,
+    get_provider_stream_retries,
 )
 
 
@@ -100,6 +101,36 @@ def test_resolved_api_call_timeout_priority(monkeypatch, tmp_path):
     # Case C: no config, no env → 1800.0 default
     monkeypatch.delenv("HERMES_API_TIMEOUT", raising=False)
     assert agent2._resolved_api_call_timeout() == 1800.0
+
+
+def test_provider_stream_retries_model_override_allows_zero(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(tmp_path, """\
+        providers:
+          test-provider:
+            stream_retries: 2
+            models:
+              test/model:
+                stream_retries: 0
+        """)
+
+    assert get_provider_stream_retries("test-provider", "test/model") == 0
+    assert get_provider_stream_retries("test-provider", "other/model") == 2
+
+
+def test_provider_stream_retries_absent_or_invalid_returns_none(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(tmp_path, """\
+        providers:
+          negative:
+            stream_retries: -1
+          invalid:
+            stream_retries: nope
+        """)
+
+    assert get_provider_stream_retries("negative", "test/model") is None
+    assert get_provider_stream_retries("invalid", "test/model") is None
+    assert get_provider_stream_retries("missing", "test/model") is None
 
 
 

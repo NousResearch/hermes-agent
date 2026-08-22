@@ -120,11 +120,12 @@ class TestPerJobToolsetMcpMerge:
         assert not (set(result) & self._enabled_names())
 
 
-    def test_resolver_empty_per_job_falls_through_to_platform(self):
-        # No per-job list -> must delegate to _get_platform_tools (the platform
-        # fallback), NOT the per-job merge. Stub the platform resolver and assert
-        # it is the path taken and its result is returned.
-        job = {"enabled_toolsets": None}
+    @pytest.mark.parametrize("per_job", [None, []])
+    def test_resolver_unset_or_empty_per_job_inherits_platform(self, per_job):
+        # Missing/None and [] both mean clear the per-job override and inherit
+        # platform policy.  Job create/update normalize [] to None; keep the
+        # resolver compatible with hand-edited legacy records that retain [].
+        job = {"enabled_toolsets": per_job}
         sentinel = ["web", "finnhub"]
         with patch("hermes_cli.tools_config._get_platform_tools",
                    return_value=set(sentinel)) as m_platform:

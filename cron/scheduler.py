@@ -359,6 +359,9 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
             cron_cfg = {}
         if not isinstance(cron_cfg, dict):
             raise TypeError("cron config must be a mapping")
+        # Only the literal boolean True enables recursive scheduling.  Keep the
+        # historical off sentinels (False/None/""/integer 0) compatible, but
+        # reject 1 and string booleans so Python truthiness cannot widen policy.
         scheduling_gate = cron_cfg.get("allow_agent_scheduling", False)
         if scheduling_gate is True:
             disabled = ["messaging", "clarify"]
@@ -387,6 +390,9 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
         ):
             raise TypeError("agent.disabled_toolsets entries must be strings")
         if isinstance(raw_disabled, str) and raw_disabled.strip().startswith("["):
+            # ``hermes config set`` and JSON-mode saves can persist a list as a
+            # string.  A leading ``[`` therefore opts into strict serialized-list
+            # parsing; malformed syntax must not degrade into one inert name.
             import ast
 
             try:
@@ -483,6 +489,9 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
                 raise TypeError("job.enabled_toolsets must be a list")
             if any(not isinstance(item, str) for item in per_job):
                 raise TypeError("job.enabled_toolsets entries must be strings")
+        # Empty is the established clear/unset sentinel: create/update normalize
+        # [] to None, so both inherit platform policy.  A platform-level cron: []
+        # below is different — it is an explicit no-tools policy.
         if per_job:
             return _merge_mcp_into_per_job_toolsets(per_job, cfg or {})
         if (

@@ -667,6 +667,69 @@ class TestDelegateObservability(unittest.TestCase):
             result = json.loads(delegate_task(goal="Test empty sentinel", parent_agent=parent))
             self.assertEqual(result["results"][0]["status"], "failed")
 
+    def test_non_retryable_client_error_marks_status_failed(self):
+        """Regression (#82599): a child that aborted on a non-retryable
+        client error (HTTP 401, billing wall, ...) returns a NON-empty error
+        string as final_response with failed=True (see conversation_loop's
+        terminal abort paths). That error text must be reported as a failed
+        delegation, not dressed up as status=completed."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "glm-5.2"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "HTTP 401: token expired or incorrect",
+                "messages": [],
+                "api_calls": 1,
+                "completed": False,
+                "failed": True,
+                "error": "HTTP 401: token expired or incorrect",
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Reply with exactly: PING", parent_agent=parent))
+            entry = result["results"][0]
+
+            self.assertEqual(entry["status"], "failed")
+            self.assertEqual(entry["exit_reason"], "error")
+            # A hard abort is not truncation.
+            self.assertIs(entry["truncated"], False)
+            # The underlying error must reach the parent verbatim.
+            self.assertEqual(entry["error"], "HTTP 401: token expired or incorrect")
+
+    def test_budget_exhausted_with_summary_stays_completed(self):
+        """Contract guard for the fix above: completed=False alone does NOT
+        mean failure. A child that exhausted its iteration budget but still
+        produced a genuine summary stays status=completed with
+        exit_reason=max_iterations + truncated=True — only results explicitly
+        marked failed=True flip to failed."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 100
+            mock_child.session_completion_tokens = 50
+            mock_child.run_conversation.return_value = {
+                "final_response": "Refactored 3 of 5 modules before running out of budget",
+                "messages": [],
+                "api_calls": 10,
+                "completed": False,
+                "interrupted": False,
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Refactor modules", parent_agent=parent))
+            entry = result["results"][0]
+
+            self.assertEqual(entry["status"], "completed")
+            self.assertEqual(entry["exit_reason"], "max_iterations")
+            self.assertIs(entry["truncated"], True)
+            self.assertNotIn("error", entry)
+
 
 class TestSubagentCostRollup(unittest.TestCase):
     """Port of Kilo-Org/kilocode#9448 — parent's session_estimated_cost_usd

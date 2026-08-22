@@ -3019,8 +3019,19 @@ def _run_single_child(
         # it instead of silently accepting zero-content "success".
         _empty_sentinel = summary.strip() == "(empty)"
 
+        # The conversation loop's terminal abort paths (non-retryable client
+        # errors like HTTP 401, billing walls, content-policy blocks, ...)
+        # return the error text as final_response and mark the result with
+        # ``failed=True`` (#82599). That error string must not read as usable
+        # output: report the delegation as failed. Note ``completed=False``
+        # alone does NOT mean failure — an iteration-budget-exhausted child
+        # still returns a genuine summary and stays "completed"+truncated.
+        _child_failed = bool(result.get("failed"))
+
         if interrupted:
             status = "interrupted"
+        elif _child_failed:
+            status = "failed"
         elif summary and not _empty_sentinel:
             # A summary means the subagent produced usable output.
             # exit_reason ("completed" vs "max_iterations") already
@@ -3070,6 +3081,12 @@ def _run_single_child(
         # Determine exit reason
         if interrupted:
             exit_reason = "interrupted"
+        elif _child_failed:
+            # Terminal abort (non-retryable client error, billing wall, ...).
+            # Same vocabulary as the timeout/exception entry above; keeps
+            # ``truncated`` False and stops the transcript from reporting a
+            # contradictory exit_reason=max_iterations on a 1-call task.
+            exit_reason = "error"
         elif completed:
             exit_reason = "completed"
         else:

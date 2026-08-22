@@ -281,8 +281,14 @@ def _extract_multimodal_parts(content: Any) -> List[Dict[str, Any]]:
             text = item.get("text")
             if isinstance(text, str) and text:
                 parts.append({"text": text})
-        elif ptype == "image_url":
-            url = ((item.get("image_url") or {}).get("url") or "")
+        elif ptype in {"image_url", "video_url", "file"}:
+            url = ""
+            if ptype == "image_url":
+                url = ((item.get("image_url") or {}).get("url") or "")
+            elif ptype == "video_url":
+                url = ((item.get("video_url") or {}).get("url") or "")
+            elif ptype == "file":
+                url = ((item.get("file") or {}).get("file_data") or "")
             if not isinstance(url, str) or not url.startswith("data:"):
                 continue
             try:
@@ -296,6 +302,23 @@ def _extract_multimodal_parts(content: Any) -> List[Dict[str, Any]]:
                     "inlineData": {
                         "mimeType": mime,
                         "data": base64.b64encode(raw).decode("ascii"),
+                    }
+                }
+            )
+        elif ptype == "input_audio":
+            audio_info = item.get("input_audio") or {}
+            encoded = audio_info.get("data")
+            fmt = str(audio_info.get("format") or "").strip().lower()
+            if not isinstance(encoded, str) or not encoded:
+                continue
+            from agent.media_routing import normalize_audio_mime
+
+            mime = normalize_audio_mime(fmt)
+            parts.append(
+                {
+                    "inlineData": {
+                        "mimeType": mime,
+                        "data": encoded,
                     }
                 }
             )

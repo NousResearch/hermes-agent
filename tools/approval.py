@@ -5434,7 +5434,19 @@ def request_elicitation_consent(
         logger.warning("Elicitation consent: session lookup failed: %s", exc)
         return "decline"
 
-    if _is_gateway_approval_context():
+    # An installed thread-local callback is the authoritative interactive
+    # surface for CLI and ACP workers.  Those workers can also carry a nonempty
+    # session platform (for example ``cli``), which by itself is not proof that
+    # a gateway notify queue owns approval routing.
+    approval_callback = None
+    try:
+        from tools.terminal_tool import _get_approval_callback
+        approval_callback = _get_approval_callback()
+    except Exception:
+        # Missing terminal tooling or callback stays fail-closed below.
+        pass
+
+    if approval_callback is None and _is_gateway_approval_context():
         with _lock:
             notify_cb = _gateway_notify_cbs.get(session_key)
         if notify_cb is None:
@@ -5470,14 +5482,19 @@ def request_elicitation_consent(
             return "accept"
         return "decline"
 
-    # CLI / TUI path. allow_permanent=False because elicitation is a
-    # per-call confirmation — there is no pattern to remember.
+    # CLI / TUI path. Tool dispatch runs on a worker thread, where the CLI's
+    # thread-local callback is installed by propagate_context_to_thread(). Pass
+    # that callback explicitly so prompt_toolkit renders its approval panel;
+    # without it, the stdin-deadlock guard correctly but invisibly denies.
+    # allow_permanent=False because elicitation is a per-call confirmation —
+    # there is no pattern to remember.
     try:
         choice = prompt_dangerous_approval(
             message,
             description,
             timeout_seconds=timeout_seconds,
             allow_permanent=False,
+            approval_callback=approval_callback,
         )
     except Exception as exc:
         logger.error(

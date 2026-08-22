@@ -6,6 +6,10 @@ from unittest.mock import MagicMock, patch
 
 import cli as cli_module
 from cli import HermesCLI
+from gateway.session_context import clear_session_vars, set_session_vars
+from tools import approval as approval_module
+from tools.terminal_tool import set_approval_callback
+from tools.thread_context import propagate_context_to_thread
 
 
 class _FakeBuffer:
@@ -67,6 +71,49 @@ def _make_background_cli_stub():
 
 
 class TestCliApprovalUi:
+    def test_mcp_consent_renders_registered_cli_panel(self):
+        """The shared MCP consent seam drives the real CLI modal callback."""
+        cli = _make_cli_stub()
+        result = {}
+
+        def request_consent():
+            result["value"] = approval_module.request_elicitation_consent(
+                "MCP tool 'save_knowledge' wants to run",
+                "Untrusted server requests one write-capable operation",
+                timeout_seconds=5,
+            )
+
+        set_approval_callback(cli._approval_callback)
+        session_tokens = set_session_vars(
+            platform="cli", session_key="mcp-cli-panel-test"
+        )
+        try:
+            thread = threading.Thread(
+                target=propagate_context_to_thread(request_consent),
+                daemon=True,
+            )
+            thread.start()
+
+            deadline = time.time() + 2
+            while cli._approval_state is None and time.time() < deadline:
+                time.sleep(0.01)
+
+            assert cli._approval_state is not None
+            assert cli._approval_state["command"] == (
+                "MCP tool 'save_knowledge' wants to run"
+            )
+            assert cli._approval_state["choices"] == [
+                "once", "session", "deny"
+            ]
+            cli._approval_state["response_queue"].put("once")
+            thread.join(timeout=2)
+        finally:
+            clear_session_vars(session_tokens)
+            set_approval_callback(None)
+
+        assert not thread.is_alive()
+        assert result["value"] == "accept"
+
     def test_smart_denied_callback_offers_only_once_and_deny(self):
         cli = _make_cli_stub()
         result = {}

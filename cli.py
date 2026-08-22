@@ -16480,7 +16480,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # finishes; reset on the next turn.
             self._prompt_start_time = time.time()
             self._prompt_duration = 0.0
-            agent_thread = threading.Thread(target=run_agent, daemon=True)
+            # Carry the interactive CLI's callback/context ownership across
+            # the foreground turn boundary. The direct setters in ``run_agent``
+            # remain a compatibility fallback for direct ``chat()`` callers,
+            # while the shared wrapper provides the audited install/clear
+            # lifecycle used by other Hermes worker threads.
+            from tools.thread_context import propagate_context_to_thread
+
+            agent_thread = threading.Thread(
+                target=propagate_context_to_thread(
+                    run_agent,
+                    approval_callback=self._approval_callback,
+                    sudo_password_callback=self._sudo_password_callback,
+                ),
+                daemon=True,
+            )
             agent_thread.start()
 
             # Ambient "thinking" sound: calm bubble blips while the agent
@@ -20391,7 +20405,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     logger.warning("process_loop unhandled error (msg may be lost): %s", e)
         
         # Start processing thread
-        process_thread = threading.Thread(target=process_loop, daemon=True)
+        # ``run()`` owns the live prompt callbacks on this thread. Preserve
+        # them when handing foreground messages to the long-lived processing
+        # worker so nested agent/tool workers can inherit the same UI surface.
+        from tools.thread_context import propagate_context_to_thread
+
+        process_thread = threading.Thread(
+            target=propagate_context_to_thread(
+                process_loop,
+                approval_callback=self._approval_callback,
+                sudo_password_callback=self._sudo_password_callback,
+            ),
+            daemon=True,
+        )
         process_thread.start()
 
         # Wake word ("Hey Hermes") — start the always-on hotword listener if

@@ -38,6 +38,7 @@ import logging
 from typing import Callable
 
 logger = logging.getLogger(__name__)
+_UNSET = object()
 
 
 def _callback_api():
@@ -61,13 +62,24 @@ def _callback_api():
     )
 
 
-def propagate_context_to_thread(target: Callable) -> Callable:
+def propagate_context_to_thread(
+    target: Callable,
+    *,
+    approval_callback=_UNSET,
+    sudo_password_callback=_UNSET,
+) -> Callable:
     """Wrap *target* for execution on a worker thread with the *current*
     thread's ContextVars and approval/sudo callbacks propagated.
 
     Call this on the parent thread; pass the returned callable as the
     thread/executor target.  The returned callable forwards its positional
     and keyword arguments to *target* and returns its result.
+
+    ``approval_callback`` and ``sudo_password_callback`` normally default to
+    the callback registered on the calling thread. Interactive owners may pass
+    their bound callbacks explicitly when the parent is itself an intermediate
+    worker with no callback slot (for example CLI UI -> process loop -> agent
+    turn). This keeps ownership per instance while avoiding a global callback.
 
     Fail-closed: if callback installation raises, the callbacks are left
     unset (``None``).  That is the safe outcome — ``prompt_dangerous_approval``
@@ -80,8 +92,16 @@ def propagate_context_to_thread(target: Callable) -> Callable:
     setters = None
     try:
         get_approval, get_sudo, set_approval, set_sudo = _callback_api()
-        parent_approval_cb = get_approval()
-        parent_sudo_cb = get_sudo()
+        parent_approval_cb = (
+            get_approval()
+            if approval_callback is _UNSET
+            else approval_callback
+        )
+        parent_sudo_cb = (
+            get_sudo()
+            if sudo_password_callback is _UNSET
+            else sudo_password_callback
+        )
         setters = (set_approval, set_sudo)
     except Exception:
         logger.debug("Could not capture parent approval/sudo callbacks", exc_info=True)

@@ -1420,6 +1420,24 @@ auxiliary:
 
 The semaphore wraps the entire call including retries and fallbacks, so a single slow call counts only once toward the limit.
 
+### Prioritizing one-shot auxiliary cache entries for eviction
+
+One-shot tasks such as context compression produce KV/radix-cache prefixes that are unlikely to be reused. When an inference engine supports priority-based cache eviction, set its request-specific priority field through the task's `extra_body` so those entries are evicted before long-lived agent and subagent prefixes:
+
+```yaml
+auxiliary:
+  compression:
+    extra_body:
+      priority: -1000
+```
+
+This field is **inference-engine-specific**; Hermes forwards it but does not normalize its meaning:
+
+- **SGLang:** start the engine with `--radix-eviction-policy priority`. SGLang then evicts the lowest-priority radix-cache nodes first, so a negative value such as `-1000` makes compression entries easier to evict than entries using the default priority. See NVIDIA Dynamo's [SGLang guide for agentic workloads](https://docs.nvidia.com/dynamo/v1.0.2/user-guides/agents/sg-lang-for-agentic-workloads#priority-based-kv-cache-eviction).
+- **vLLM:** `priority` controls request scheduling, not KV-cache eviction; lower values are handled earlier, and nonzero values require priority scheduling to be enabled. Do not use the SGLang example as an eviction setting for vLLM. See the [vLLM OpenAI-compatible server reference](https://docs.vllm.ai/en/v0.13.0/serving/openai_compatible_server/).
+
+Check your inference engine's request schema before adding other `extra_body` fields.
+
 ### OpenRouter routing & Pareto Code for auxiliary tasks
 
 When an auxiliary task resolves to OpenRouter (either explicitly or via `provider: "main"` while your main agent is on OpenRouter), the main agent's `provider_routing` and `openrouter.min_coding_score` settings **do not propagate** — by design, each auxiliary task is independent. To set OpenRouter provider preferences or use the [Pareto Code router](/integrations/providers#openrouter-pareto-code-router) for a specific aux task, set them per-task via `extra_body`:

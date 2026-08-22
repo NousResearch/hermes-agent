@@ -1736,7 +1736,7 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
             },
             "script": {
                 "type": "string",
-                "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
+                "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear. IMPORTANT: the script always executes on the host that ticks cron (the scheduler/gateway process), NOT on the configured terminal.backend — so a script you wrote through ``terminal``/``write_file`` under a remote backend (ssh/docker/modal/daytona) will NOT be found. Create the script on the scheduler host's {display_hermes_home()}/scripts/, or have the script reach the backend itself."
             },
             "monitor_script": {
                 "type": "string",

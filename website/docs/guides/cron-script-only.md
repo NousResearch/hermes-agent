@@ -83,6 +83,14 @@ cronjob(
 
 From that point on every tick is free: the scheduler runs the script, pipes its stdout to Telegram if non-empty, and never touches a model.
 
+### Where the script has to live
+
+The script runs on the host that ticks cron — the scheduler/gateway process — **not** on `terminal.backend`.
+
+That matters if you've set a remote or sandboxed backend (`docker`, `ssh`, `modal`, …). The `write_file` call above then writes to the *backend's* filesystem, so cron never sees the file and every tick fails with "Script not found on the scheduler host" — for a path you can `ls` on the backend seconds earlier. Write the script to the scheduler host's `~/.hermes/scripts/` instead.
+
+The flip side: because the script runs on the scheduler host, `terminal.backend` doesn't sandbox it. It executes with the scheduler process's environment and filesystem access (though not its provider credentials — see the note above). If a watchdog needs to be contained, have the script drive the backend itself (`docker exec`, `ssh`) rather than assuming the backend wraps it. With a non-local backend configured, the scheduler logs a warning saying exactly this on the job's first run.
+
 ### What the agent decides for you
 
 When you phrase a request like "alert me when X" or "every N minutes check Y and tell me if Z", Hermes' `cronjob` tool description tells it to reach for `no_agent=True` whenever the message content is fully determined by the script. It falls back to the normal LLM-driven path when the request needs reasoning (*"summarize the new issues"*, *"pick the most interesting headlines"*, *"draft a friendly reminder"*).

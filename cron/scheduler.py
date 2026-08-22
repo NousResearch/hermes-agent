@@ -3669,6 +3669,128 @@ _RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
 _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS = _RUN_CLAIM_HEARTBEAT_SECONDS * 3
 
 
+def _effective_terminal_backend() -> str:
+    """Return the backend the terminal tool would actually use (default ``local``).
+
+    Read for DIAGNOSTICS only (#29849): script-backed cron jobs always execute
+    on the scheduler host, so when a remote/sandboxed backend is in effect the
+    messages below can name the mismatch instead of leaving the operator with a
+    bare "not found". Never changes where anything runs.
+
+    Mirrors the terminal tool's own resolution order rather than reading either
+    source alone (``tools/terminal_tool.py`` ``_ensure_terminal_env_bridged`` /
+    ``_get_env_config``), which is:
+
+    1. An explicit ``terminal.backend`` in config.yaml wins. The bridge calls
+       ``apply_terminal_config_to_env(override=True)`` when the RAW config has a
+       ``terminal`` section, overwriting even a deliberate ``TERMINAL_ENV``
+       (which may be stale from ``hermes setup``).
+    2. Otherwise an existing ``TERMINAL_ENV`` selection is preserved.
+    3. Otherwise the merged config default, floor ``local``.
+
+    Only keys present in the raw ``terminal`` section override env, so a section
+    without ``backend`` leaves an explicit ``TERMINAL_ENV`` authoritative —
+    hence the raw-vs-merged distinction here. Getting this order wrong names
+    the wrong host in the messages below and sends the operator to the wrong
+    machine while they diagnose a missing script.
+    """
+    # 1. Explicit raw terminal.backend overrides the environment.
+    try:
+        from hermes_cli.config import read_raw_config
+
+        raw_terminal = (read_raw_config() or {}).get("terminal")
+        if isinstance(raw_terminal, dict):
+            raw_backend = raw_terminal.get("backend")
+            if raw_backend and str(raw_backend).strip():
+                return str(raw_backend).strip().lower()
+    except Exception:
+        logger.debug(
+            "could not read raw terminal.backend for cron diagnostics", exc_info=True
+        )
+    # 2. An explicit environment selection is preserved when config is silent.
+    env_backend = os.environ.get("TERMINAL_ENV")
+    if env_backend and env_backend.strip():
+        return env_backend.strip().lower()
+    # 3. Fall back to the merged config default.
+    try:
+        cfg = load_config() or {}
+        terminal_cfg = cfg.get("terminal", {}) if isinstance(cfg, dict) else {}
+        backend = terminal_cfg.get("backend") if isinstance(terminal_cfg, dict) else None
+        if backend:
+            return str(backend).strip().lower() or "local"
+    except Exception:
+        logger.debug("could not read terminal.backend for cron diagnostics", exc_info=True)
+    return "local"
+
+
+# Script paths already noted as running outside the configured backend, so a
+# frequently-firing job logs the isolation notice once per process instead of
+# once per run. Capped so a pathological job-churn loop can't grow it forever;
+# insertion-ordered, and the oldest entry is evicted at the cap (a plain dict
+# is insertion-ordered, so the first key is the oldest).
+#
+# Eviction policy: the notice fires once per script for the most recent
+# _SCRIPT_HOST_NOTICES_MAX distinct paths. Only-remember-the-first-256 would
+# instead log the 257th path on EVERY tick (it could never be recorded, so the
+# dedupe check could never hit), turning a once-per-script diagnostic into
+# per-run spam. Evicting means a script can warn again only after 256 other
+# distinct paths have run since — bounded, and no script is ever silently
+# dropped from the diagnostic.
+_SCRIPT_HOST_NOTICES: dict = {}
+_SCRIPT_HOST_NOTICES_MAX = 256
+
+
+def _script_runs_on_scheduler_host_hint(backend: Optional[str] = None) -> str:
+    """One-line explanation of the script execution contract (#29849).
+
+    Empty for a ``local`` backend, where scheduler host and terminal backend
+    are the same machine and there is nothing to explain.
+    """
+    backend = backend or _effective_terminal_backend()
+    if backend == "local":
+        return ""
+    return (
+        f" Note: script-backed cron jobs always execute on the host that ticks "
+        f"cron (this scheduler process), NOT on the terminal backend in "
+        f"effect ({backend}, from TERMINAL_ENV or terminal.backend) — so a "
+        f"script written to the backend's "
+        f"filesystem by the agent is not visible here. Keep the script in this "
+        f"host's HERMES_HOME/scripts/, or drive the backend from the script "
+        f"itself."
+    )
+
+
+def _note_script_runs_outside_backend(script_path: Path, backend: str) -> None:
+    """Warn once per script that this execution leaves the configured backend.
+
+    Operators who set ``terminal.backend`` to ``docker``/``ssh`` reasonably read
+    that as the isolation boundary for what the agent runs. Script-backed cron
+    jobs predate and bypass it: they execute in the scheduler/gateway process
+    environment instead (#29849). This makes that visible in the log rather
+    than silent. Diagnostics only — execution is unchanged.
+    """
+    if backend == "local":
+        return
+    key = str(script_path)
+    if key in _SCRIPT_HOST_NOTICES:
+        return
+    # Record BEFORE logging, evicting the oldest entry at the cap, so the
+    # emit and the dedupe record can never disagree. Logging without
+    # recording is what made the 257th path warn on every tick.
+    while len(_SCRIPT_HOST_NOTICES) >= _SCRIPT_HOST_NOTICES_MAX:
+        _SCRIPT_HOST_NOTICES.pop(next(iter(_SCRIPT_HOST_NOTICES)))
+    _SCRIPT_HOST_NOTICES[key] = True
+    logger.warning(
+        "Cron script %s runs on the scheduler host, OUTSIDE the terminal "
+        "backend in effect (%s, from TERMINAL_ENV or terminal.backend). "
+        "Script-backed cron jobs are not sandboxed by "
+        "the terminal backend: this script executes with the scheduler "
+        "process's environment and filesystem access (#29849).",
+        script_path,
+        backend,
+    )
+
+
 def _get_script_timeout() -> int:
     """Resolve cron pre-run script timeout from module/env/config with a safe default."""
     if _SCRIPT_TIMEOUT != _DEFAULT_SCRIPT_TIMEOUT:
@@ -3947,6 +4069,23 @@ def _run_job_script(
     Shell support lets ``no_agent=True`` jobs ship classic bash watchdogs
     (the `memory-watchdog.sh` pattern) without wrapping them in Python.
 
+    **Execution host (#29849).** The script always runs on the host that ticks
+    cron — this scheduler process — via ``subprocess``, independent of
+    ``terminal.backend``. That is deliberate for the host-side automation this
+    supports (a watchdog that backs up ``HERMES_HOME`` has to run where
+    ``HERMES_HOME`` is), but it has two consequences worth stating plainly:
+
+    * A script the agent wrote through ``terminal``/``write_file`` under a
+      remote backend lives on the BACKEND's filesystem and is not visible here.
+    * ``terminal.backend`` is therefore NOT an isolation boundary for
+      script-backed cron: the script runs with this process's environment and
+      filesystem access. ``_note_script_runs_outside_backend`` logs that once
+      per script (bounded registry; see its eviction note) so it is visible
+      rather than silent.
+
+    Routing execution through the configured backend is a separate change that
+    needs a decision on defaults; see #29849.
+
     Subprocess environment is passed through ``_sanitize_subprocess_env`` so
     provider credentials and other Hermes-managed secrets are not inherited
     (SECURITY.md §2.3), matching terminal and MCP child processes.
@@ -4007,10 +4146,21 @@ def _run_job_script(
             f"({scripts_dir_resolved}): {script_path!r}"
         )
 
+    # Diagnostics for the scheduler-host contract (#29849). The reported
+    # symptom was a bare "Script not found" pointing at a path the user could
+    # `ls` on the remote backend seconds earlier — the message never said the
+    # lookup happened on a different machine. Name the mismatch instead.
+    _backend = _effective_terminal_backend()
+
     if not path.exists():
-        return False, f"Script not found: {path}"
+        return False, (
+            f"Script not found on the scheduler host: {path}"
+            f"{_script_runs_on_scheduler_host_hint(_backend)}"
+        )
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
+
+    _note_script_runs_outside_backend(path, _backend)
 
     script_timeout = _get_script_timeout()
 

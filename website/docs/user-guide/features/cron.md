@@ -604,6 +604,16 @@ Semantics:
 
 `.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash` (important on Windows Git Bash). Anything else runs under the current Python interpreter (`sys.executable`). Scripts must resolve inside `$HERMES_HOME/scripts/` — relative names, absolute paths, and `~`-prefixed paths are accepted when the resolved target stays in that directory; paths that escape it are rejected. Subprocess env is sanitized (`_sanitize_subprocess_env`): provider API credentials and other Hermes-managed secrets are **not** inherited by cron scripts.
 
+:::warning Scripts run on the scheduler host, not on `terminal.backend`
+
+Script-backed cron jobs always execute on the host that ticks cron — the scheduler/gateway process — regardless of `terminal.backend`. Two consequences:
+
+- **The script must exist on that host.** If you set a remote or sandboxed backend (`docker`, `ssh`, `modal`, …) and the agent wrote the script through `terminal` or `write_file`, the file landed on the *backend's* filesystem and cron cannot see it — you get "Script not found on the scheduler host" for a path you can `ls` on the backend. Keep the script in the scheduler host's `~/.hermes/scripts/`.
+- **`terminal.backend` is not an isolation boundary here.** The script runs with the scheduler process's environment and filesystem access. If you need the work sandboxed, have the script itself drive the backend (e.g. `docker exec`, `ssh`) rather than relying on the terminal backend to contain it.
+
+This is deliberate — host-side watchdogs have to run where `HERMES_HOME` is — but it surprises people, so the scheduler logs a warning naming the effective backend when the two differ.
+:::
+
 ### The agent sets these up for you
 
 The `cronjob` tool's schema exposes `no_agent` to Hermes directly, so you can describe a watchdog in chat and let the agent wire it up:

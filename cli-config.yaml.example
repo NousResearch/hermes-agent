@@ -1185,6 +1185,9 @@ platform_toolsets:
 #       # Route scripts default to a 30 second timeout. Scripts must live under
 #       # the active profile's scripts directory and receive webhook JSON on stdin.
 #       script_timeout_seconds: 30
+#   buzz:
+#     extra:
+#       presence: true  # Advertise online while connected; refreshes the 180-second Buzz lease
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

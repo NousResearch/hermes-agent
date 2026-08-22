@@ -22,6 +22,7 @@ Configuration in config.yaml::
               - ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
             home_channel: ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
             poll_interval: 4           # seconds between poll sweeps
+            presence: true             # advertise online status while connected
             cli_path: ""               # path to the buzz binary (default: PATH, then ~/bin/buzz)
             credentials_file: ""       # JSON file holding the nsec (fallback for BUZZ_PRIVATE_KEY)
             allowed_users: []          # empty = allow all; entries are hex pubkeys or npubs
@@ -99,6 +100,15 @@ _DM_DISCOVERY_EVERY = 5
 _DEFAULT_POLL_INTERVAL = 4.0
 _MIN_POLL_INTERVAL = 1.0
 _CLI_TIMEOUT = 30.0
+
+# Buzz presence is a 180-second relay lease, defined upstream as three
+# 60-second heartbeats so one missed refresh does not make a healthy agent
+# appear offline. Keep each publish bounded so the next fixed-rate attempt
+# still lands before the lease expires.
+_PRESENCE_RELAY_TTL = 180.0
+_PRESENCE_HEARTBEAT_INTERVAL = 60.0
+_PRESENCE_CLI_TIMEOUT = 10.0
+_PRESENCE_OFFLINE_TIMEOUT = 2.0
 
 # WebSocket transport (NIP-42 authenticated Nostr subscription).
 # kind 44100 is Buzz's channel-membership event — used for live DM discovery.
@@ -310,6 +320,13 @@ async def _exec_buzz(
         proc.kill()
         await proc.wait()
         return 124, "", json.dumps({"error": "timeout", "message": f"buzz {args[0] if args else ''} timed out after {timeout}s"})
+    except asyncio.CancelledError:
+        # Presence heartbeats are cancelled during gateway shutdown. Do not
+        # leave their buzz subprocess running after the adapter has stopped.
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        raise
     return (
         proc.returncode if proc.returncode is not None else 4,
         stdout.decode("utf-8", errors="replace"),
@@ -381,6 +398,17 @@ class BuzzAdapter(BasePlatformAdapter):
             interval = _DEFAULT_POLL_INTERVAL
         self.poll_interval = max(_MIN_POLL_INTERVAL, interval)
 
+        # Advertise this gateway identity as online while its inbound
+        # transport is active. This is config-only because it is not a secret
+        # and new settings belong in config.yaml.
+        _presence_cfg = extra.get("presence", True)
+        self.presence_enabled = str(_presence_cfg).strip().lower() not in (
+            "false",
+            "0",
+            "no",
+            "off",
+        )
+
         # Whether channel messages must @mention the agent to get a response.
         # Defaults to True (respond only when addressed). Set False to make the
         # agent respond to every message in a watched channel. DMs always
@@ -424,6 +452,7 @@ class BuzzAdapter(BasePlatformAdapter):
         # Runtime state
         self._poll_task: Optional[asyncio.Task] = None
         self._ws_task: Optional[asyncio.Task] = None
+        self._presence_task: Optional[asyncio.Task] = None
         self._ws_ready: Optional[asyncio.Event] = None
         self._ws_active = False  # True while the WS loop owns inbound delivery
         self._membership_since = 0
@@ -443,7 +472,13 @@ class BuzzAdapter(BasePlatformAdapter):
 
     # ── buzz-cli plumbing ─────────────────────────────────────────────────
 
-    async def _run_cli(self, args: List[str], *, input_text: Optional[str] = None) -> Tuple[int, str, str]:
+    async def _run_cli(
+        self,
+        args: List[str],
+        *,
+        input_text: Optional[str] = None,
+        timeout: float = _CLI_TIMEOUT,
+    ) -> Tuple[int, str, str]:
         if not self._private_key:
             self._private_key = _resolve_private_key(self._extra)
         return await _exec_buzz(
@@ -452,9 +487,78 @@ class BuzzAdapter(BasePlatformAdapter):
             relay_url=self.relay_url,
             private_key=self._private_key,
             input_text=input_text,
+            timeout=timeout,
         )
 
     # ── Connection lifecycle ──────────────────────────────────────────────
+
+    async def _set_presence(self, status: str, *, timeout: float) -> bool:
+        """Publish one best-effort Buzz presence update."""
+        try:
+            code, out, err = await self._run_cli(
+                ["users", "set-presence", "--status", status],
+                timeout=timeout,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Buzz: failed to publish %s presence — %s", status, exc)
+            return False
+        if code != 0:
+            logger.warning(
+                "Buzz: failed to publish %s presence — %s",
+                status,
+                _cli_error_message(err, code),
+            )
+            return False
+        try:
+            response = json.loads(out or "{}")
+        except ValueError:
+            response = {}
+        if not isinstance(response, dict) or response.get("accepted") is not True:
+            logger.warning("Buzz: relay did not accept %s presence", status)
+            return False
+        return True
+
+    async def _presence_loop(self) -> None:
+        """Publish and refresh the online lease on a fixed cadence."""
+        loop = asyncio.get_running_loop()
+        next_refresh = loop.time()
+        while True:
+            await asyncio.sleep(max(0.0, next_refresh - loop.time()))
+            next_refresh += _PRESENCE_HEARTBEAT_INTERVAL
+            await self._set_presence("online", timeout=_PRESENCE_CLI_TIMEOUT)
+
+    async def _cancel_presence_task(self) -> bool:
+        """Cancel the heartbeat without publishing a presence transition."""
+        task = self._presence_task
+        self._presence_task = None
+        if task is None:
+            return False
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning("Buzz: presence heartbeat stopped unexpectedly — %s", exc)
+        return True
+
+    async def _start_presence(self) -> None:
+        """Start one background presence task without delaying connect."""
+        if not self.presence_enabled:
+            return
+        # Presence is advisory. Keep the first publish in the task so a slow
+        # relay cannot consume the gateway's adapter-connect timeout.
+        await self._cancel_presence_task()
+        self._presence_task = asyncio.create_task(self._presence_loop())
+
+    async def _stop_presence(self) -> None:
+        """Stop refreshes, then best-effort publish a clean offline state."""
+        if not await self._cancel_presence_task():
+            return
+        await self._set_presence("offline", timeout=_PRESENCE_OFFLINE_TIMEOUT)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Verify relay credentials, seed high-water marks, start polling."""
@@ -557,6 +661,7 @@ class BuzzAdapter(BasePlatformAdapter):
         if transport_used == "poll":
             self._poll_task = asyncio.create_task(self._poll_loop())
         self._mark_connected()
+        await self._start_presence()
         logger.info(
             "Buzz: connected to %s as %s, watching %d channel(s) via %s%s",
             self.relay_url,
@@ -570,6 +675,7 @@ class BuzzAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop the inbound transport and drop runtime state."""
         self._mark_disconnected()
+        await self._stop_presence()
         lock_key = getattr(self, "_lock_key", None)
         if lock_key:
             try:
@@ -609,9 +715,9 @@ class BuzzAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
-        reply_target = reply_to or (metadata or {}).get("thread_id")
+        reply_target = self._reply_target(chat_id, reply_to, metadata)
         if reply_target:
-            args += ["--reply-to", str(reply_target)]
+            args += ["--reply-to", reply_target]
         code, out, err = await self._run_cli(args, input_text=content)
         if code != 0:
             return SendResult(
@@ -633,6 +739,28 @@ class BuzzAdapter(BasePlatformAdapter):
             message_id=str(event_id) if event_id else None,
             raw_response=data,
         )
+
+    def _reply_target(
+        self,
+        chat_id: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Resolve Buzz threading without turning every DM response into one.
+
+        The gateway supplies the triggering message ID as ``reply_to`` for
+        most platforms. In Buzz, that creates a thread and removes the response
+        from the main DM timeline. A real inbound Buzz thread is represented by
+        ``metadata.thread_id``; only that explicit thread marker may thread a
+        DM response. Shared channels retain the gateway's existing reply
+        behavior.
+        """
+        thread_id = (metadata or {}).get("thread_id")
+        state = self._channel_state.get(str(chat_id))
+        if state and state.get("chat_type") == "dm":
+            return str(thread_id) if thread_id else None
+        target = reply_to or thread_id
+        return str(target) if target else None
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Buzz has no typing indicator API — no-op."""
@@ -681,8 +809,9 @@ class BuzzAdapter(BasePlatformAdapter):
                 "--file", str(local),
                 "--content", "-",
             ]
-            if reply_to:
-                args += ["--reply-to", str(reply_to)]
+            reply_target = self._reply_target(chat_id, reply_to, metadata)
+            if reply_target:
+                args += ["--reply-to", reply_target]
             code, out, err = await self._run_cli(args, input_text=caption or "")
             if code != 0:
                 return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
@@ -1047,6 +1176,7 @@ class BuzzAdapter(BasePlatformAdapter):
         # open with "@Chip" even though no mention is required there, so the
         # strip applies to both chat types.
         dispatch_text = self._strip_mention(content)
+        thread_id = self._thread_id_from_event(event)
 
         await self._dispatch_message(
             text=dispatch_text,
@@ -1056,6 +1186,7 @@ class BuzzAdapter(BasePlatformAdapter):
             user_name=await self._resolve_user_name(pubkey),
             message_id=event_id,
             created_at=created_at,
+            thread_id=thread_id,
         )
 
     # ── DM classification (issue #68871) ──────────────────────────────────
@@ -1135,6 +1266,30 @@ class BuzzAdapter(BasePlatformAdapter):
         state["chat_type"] = "dm"
         self._channel_names.setdefault(channel_id, "DM")
         logger.info("Buzz: conversation %s reclassified as DM (message p-tagged to self)", channel_id)
+
+    @staticmethod
+    def _thread_id_from_event(event: dict) -> Optional[str]:
+        """Return the root of a real Buzz reply thread, if present.
+
+        Buzz uses NIP-10 ``e`` tags with ``root`` and ``reply`` markers. A
+        top-level message has no marked ``e`` tag. Prefer the root marker so
+        every message in a nested thread shares one Hermes session; fall back
+        to the immediate reply target when the event has no explicit root.
+        """
+        root_id = None
+        reply_id = None
+        for tag in event.get("tags") or []:
+            if not isinstance(tag, list) or len(tag) < 4 or tag[0] != "e":
+                continue
+            event_id = str(tag[1] or "")
+            if not event_id:
+                continue
+            marker = str(tag[3] or "").lower()
+            if marker == "root":
+                root_id = event_id
+            elif marker == "reply":
+                reply_id = event_id
+        return root_id or reply_id
 
     def _is_mentioned(self, content: str) -> bool:
         """True when the message addresses this agent (npub, hex, or name)."""
@@ -1219,6 +1374,7 @@ class BuzzAdapter(BasePlatformAdapter):
         user_name: str,
         message_id: str,
         created_at: int,
+        thread_id: Optional[str] = None,
     ) -> None:
         """Build a MessageEvent and hand it to the base class handler."""
         if not self._message_handler:
@@ -1230,6 +1386,9 @@ class BuzzAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=user_id,
             user_name=user_name,
+            thread_id=thread_id,
+            parent_chat_id=chat_id if thread_id else None,
+            message_id=message_id,
         )
 
         event = MessageEvent(

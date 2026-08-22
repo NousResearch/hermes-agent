@@ -2158,6 +2158,18 @@ def run_doctor(args):
     
     # Daytona (if using daytona backend)
     if terminal_env == "daytona":
+        from tools.environments.daytona import (
+            is_daytona_cloud_endpoint,
+            resolve_daytona_api_url,
+        )
+
+        daytona_api_url = resolve_daytona_api_url()
+        endpoint_kind = (
+            "Daytona Cloud"
+            if is_daytona_cloud_endpoint(daytona_api_url)
+            else "self-hosted"
+        )
+        check_ok("Daytona endpoint", f"({daytona_api_url}; {endpoint_kind})")
         daytona_key = os.getenv("DAYTONA_API_KEY")
         if daytona_key:
             check_ok("Daytona API key", "(configured)")

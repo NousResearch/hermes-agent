@@ -59,6 +59,9 @@ def daytona_sdk(monkeypatch):
 @pytest.fixture()
 def make_env(daytona_sdk, monkeypatch):
     """Factory that creates a DaytonaEnvironment with a mocked SDK."""
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+    monkeypatch.delenv("DAYTONA_API_URL", raising=False)
+    monkeypatch.delenv("DAYTONA_SERVER_URL", raising=False)
     # Prevent is_interrupted from interfering — patch where it's used (base.py)
     monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
     # Prevent skills/credential sync from consuming mock exec calls
@@ -221,6 +224,43 @@ class TestResourceConversion:
         kw = self._get_resources_kwargs(daytona_sdk)
         assert kw["memory"] == 1
         assert kw["disk"] == 1
+
+    def test_self_hosted_endpoint_preserves_disk_above_cloud_limit(
+        self, make_env, daytona_sdk, monkeypatch
+    ):
+        monkeypatch.setenv("DAYTONA_API_URL", "https://daytona.internal.example/api")
+
+        make_env(disk=51200)
+
+        assert self._get_resources_kwargs(daytona_sdk)["disk"] == 50
+        daytona_sdk.Daytona.assert_called_once_with()
+
+    def test_legacy_self_hosted_endpoint_preserves_disk_above_cloud_limit(
+        self, make_env, daytona_sdk, monkeypatch
+    ):
+        monkeypatch.setenv(
+            "DAYTONA_SERVER_URL", "https://daytona.internal.example/api"
+        )
+
+        make_env(disk=51200)
+
+        assert self._get_resources_kwargs(daytona_sdk)["disk"] == 50
+
+    def test_default_cloud_endpoint_caps_disk_at_cloud_limit(
+        self, make_env, daytona_sdk
+    ):
+        make_env(disk=51200)
+
+        assert self._get_resources_kwargs(daytona_sdk)["disk"] == 10
+
+    def test_explicit_cloud_endpoint_caps_disk_at_cloud_limit(
+        self, make_env, daytona_sdk, monkeypatch
+    ):
+        monkeypatch.setenv("DAYTONA_API_URL", "https://app.daytona.io/api/")
+
+        make_env(disk=51200)
+
+        assert self._get_resources_kwargs(daytona_sdk)["disk"] == 10
 
 
 # ---------------------------------------------------------------------------

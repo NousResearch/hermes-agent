@@ -278,6 +278,28 @@ def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
     assert "snapshot filesystem only" in out
 
 
+def test_doctor_reports_resolved_self_hosted_daytona_endpoint(monkeypatch, tmp_path):
+    monkeypatch.setenv("TERMINAL_ENV", "daytona")
+    monkeypatch.setenv("DAYTONA_API_KEY", "super-secret-value")
+    monkeypatch.setenv("DAYTONA_API_URL", "https://daytona.internal.example/api")
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "Daytona endpoint" in out
+    assert "https://daytona.internal.example/api" in out
+    assert "self-hosted" in out
+    assert "super-secret-value" not in out
+
+
 # ── Memory provider section (doctor should only check the *active* provider) ──
 
 

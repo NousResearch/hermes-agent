@@ -162,7 +162,7 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 | **docker** | Single persistent Docker container (shared across session, `/new`, subagents) | Full (namespaces, cap-drop) | Safe sandboxing, CI/CD |
 | **ssh** | Remote server via SSH | Network boundary | Remote dev, powerful hardware |
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
-| **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
+| **daytona** | Daytona Cloud or a self-hosted Daytona workspace | Full (container) | Persistent managed or self-hosted dev environments |
 | **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 
@@ -386,22 +386,29 @@ terminal:
 
 ### Daytona Backend
 
-Runs commands in a [Daytona](https://daytona.io) managed workspace. Supports stop/resume for persistence.
+Runs commands in a [Daytona](https://daytona.io) Cloud or self-hosted workspace. Supports stop/resume for persistence.
 
 ```yaml
 terminal:
   backend: daytona
   container_cpu: 1                 # CPU cores
   container_memory: 5120           # MB → converted to GiB
-  container_disk: 10240            # MB → converted to GiB (max 10 GiB)
+  container_disk: 10240            # MB → converted to GiB
   container_persistent: true       # Stop/resume instead of delete
 ```
 
-**Required:** `DAYTONA_API_KEY` environment variable.
+The Daytona SDK reads `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET` from the environment. `DAYTONA_API_KEY` is required. When `DAYTONA_API_URL` is unset, the SDK connects to Daytona Cloud at `https://app.daytona.io/api`. `DAYTONA_TARGET` optionally selects a runner target; otherwise Daytona uses the organization's default region.
+
+To connect to a self-hosted Daytona deployment, add the endpoint and API key to `~/.hermes/.env`:
+
+```bash
+DAYTONA_API_KEY=***
+DAYTONA_API_URL=https://daytona.internal.example.com/api
+```
 
 **Persistence:** When enabled, sandboxes are stopped (not deleted) on cleanup and resumed on next session. Sandbox names follow the pattern `hermes-{task_id}`.
 
-**Disk limit:** Daytona enforces a 10 GiB maximum. Requests above this are capped with a warning.
+**Disk limit:** Daytona Cloud enforces a 10 GiB maximum, so Hermes caps larger Cloud requests with a warning. Self-hosted endpoints receive the configured disk request unchanged.
 
 ### Vercel Sandbox Backend
 

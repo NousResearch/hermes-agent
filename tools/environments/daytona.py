@@ -1,6 +1,6 @@
-"""Daytona cloud execution environment.
+"""Daytona Cloud and self-hosted execution environment.
 
-Uses the Daytona Python SDK to run commands in cloud sandboxes.
+Uses the Daytona Python SDK to run commands in remote sandboxes.
 Supports persistent sandboxes: when enabled, sandboxes are stopped on cleanup
 and resumed on next creation, preserving the filesystem across sessions.
 """
@@ -26,9 +26,24 @@ from tools.environments.file_sync import (
 
 logger = logging.getLogger(__name__)
 
+DAYTONA_CLOUD_API_URL = "https://app.daytona.io/api"
+
+
+def resolve_daytona_api_url() -> str:
+    """Return the endpoint the Daytona SDK resolves from the environment."""
+    return (
+        os.getenv("DAYTONA_API_URL", "").strip()
+        or os.getenv("DAYTONA_SERVER_URL", "").strip()
+        or DAYTONA_CLOUD_API_URL
+    )
+
+
+def is_daytona_cloud_endpoint(api_url: str) -> bool:
+    return api_url.rstrip("/").lower() == DAYTONA_CLOUD_API_URL
+
 
 class DaytonaEnvironment(BaseEnvironment):
-    """Daytona cloud sandbox execution backend.
+    """Daytona remote sandbox execution backend.
 
     Spawn-per-call via _ThreadedProcessHandle wrapping blocking SDK calls.
     cancel_fn wired to sandbox.stop() for interrupt support.
@@ -75,9 +90,9 @@ class DaytonaEnvironment(BaseEnvironment):
 
         memory_gib = max(1, math.ceil(memory / 1024))
         disk_gib = max(1, math.ceil(disk / 1024))
-        if disk_gib > 10:
+        if disk_gib > 10 and is_daytona_cloud_endpoint(resolve_daytona_api_url()):
             logger.warning(
-                "Daytona: requested disk (%dGB) exceeds platform limit (10GB). "
+                "Daytona: requested disk (%dGB) exceeds Daytona Cloud limit (10GB). "
                 "Capping to 10GB.", disk_gib,
             )
             disk_gib = 10

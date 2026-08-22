@@ -184,7 +184,9 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `OPENVIKING_ENDPOINT` | OpenViking server URL (default: `http://127.0.0.1:1933`) |
 | `BRV_API_KEY` | ByteRover API key (optional, for cloud sync — local-first by default) ([app.byterover.dev](https://app.byterover.dev)) |
 | `SUPERMEMORY_API_KEY` | Semantic long-term memory with profile recall and session ingest ([supermemory.ai](https://supermemory.ai)) |
-| `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |
+| `DAYTONA_API_KEY` | API key for Daytona Cloud or a self-hosted Daytona deployment ([daytona.io](https://daytona.io/)) |
+| `DAYTONA_API_URL` | Daytona API endpoint (default: `https://app.daytona.io/api`); set this for a self-hosted deployment |
+| `DAYTONA_TARGET` | Optional Daytona runner target; the organization's default region is used when unset |
 | `VERCEL_TOKEN` | Vercel Sandbox access token ([vercel.com](https://vercel.com/)) |
 | `VERCEL_PROJECT_ID` | Vercel project ID (required with `VERCEL_TOKEN`) |
 | `VERCEL_TEAM_ID` | Vercel team ID (required with `VERCEL_TOKEN`) |

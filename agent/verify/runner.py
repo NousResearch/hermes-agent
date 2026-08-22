@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -98,6 +99,47 @@ class VerifyResult:
 
 def _tail(text: str, limit: int = _TAIL_CHARS) -> str:
     return text[-limit:] if len(text) > limit else text
+
+
+class _BackgroundOutputReader:
+    """Drain a backgrounded child's stdout for the lifetime of the readiness poll.
+
+    The started app writes into a fixed-size OS pipe buffer (64 KiB on Linux,
+    smaller elsewhere). Nothing drained that pipe until after teardown, so a
+    start command that logs more than the buffer holds before it binds its
+    port blocks in ``write()`` and never becomes ready — a healthy app is then
+    reported as a readiness failure for the whole ``ready_timeout`` window.
+
+    Only the last ``limit`` characters are retained: the caller wants a tail,
+    and a chatty server polled for 60s must not be able to grow this buffer
+    without bound.
+    """
+
+    def __init__(self, stream, limit: int = _TAIL_CHARS) -> None:
+        self._stream = stream
+        self._limit = limit
+        self._buf = ""
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._pump, daemon=True)
+
+    def start(self) -> "_BackgroundOutputReader":
+        self._thread.start()
+        return self
+
+    def _pump(self) -> None:
+        try:
+            for line in self._stream:
+                with self._lock:
+                    self._buf = (self._buf + line)[-self._limit :]
+        except (OSError, ValueError):
+            # Pipe closed under us by teardown — whatever we captured stands.
+            pass
+
+    def result(self, timeout: float = 5.0) -> str:
+        """Captured tail. Never raises: diagnostics must not fail the run."""
+        self._thread.join(timeout)
+        with self._lock:
+            return self._buf
 
 
 def _run_phase_command(
@@ -219,16 +261,14 @@ def _run_start_phase(
         text=True,
         errors="replace",
     )
-    output = ""
+    # Drain concurrently with the poll: the child must never block writing to
+    # a full pipe before it can bind its port.
+    reader = _BackgroundOutputReader(proc.stdout).start() if proc.stdout is not None else None
     try:
         ready, status, error = _poll_readiness(url, ready_timeout)
     finally:
         _terminate_process_group(proc)
-        try:
-            if proc.stdout is not None:
-                output = proc.stdout.read() or ""
-        except (OSError, ValueError):
-            output = ""
+        output = reader.result() if reader is not None else ""
     return ReadinessResult(
         url=url,
         ready=ready,

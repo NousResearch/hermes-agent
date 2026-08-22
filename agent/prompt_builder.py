@@ -20,7 +20,7 @@ from hermes_constants import (
     reset_hermes_home_override,
     set_hermes_home_override,
 )
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
@@ -2596,3 +2596,104 @@ def build_context_files_prompt(
     if not sections:
         return ""
     return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)
+
+
+def list_context_file_sources(
+    cwd: "str | Path | None" = None,
+    context_length: Optional[int] = None,
+    home_override: "Path | None" = None,
+) -> List[Dict[str, Any]]:
+    """Read-only manifest of every context/instruction file Hermes considers.
+
+    Returns one dict per candidate file with:
+      ``label``      — display name (e.g. ``AGENTS.md``, ``SOUL.md``)
+      ``path``       — absolute path
+      ``chars``      — raw file size in characters
+      ``est_tokens`` — chars/4 heuristic (same as context_breakdown)
+      ``loaded``     — whether this file made it into the system prompt
+      ``status``     — ``"loaded"``, ``"truncated"`` (loaded but over the
+                       cap), or ``"shadowed"`` (a higher-priority context
+                       type won — see build_context_files_prompt priority)
+
+    Mirrors the discovery in ``build_context_files_prompt`` without building
+    anything: no prompt mutation, no cache impact.  Powers the "Context
+    files" section of ``/context`` (inspired by Copilot CLI 1.0.81's
+    per-file /instructions listing).
+    """
+    cwd_path = Path(cwd).resolve() if cwd else Path(os.getcwd()).resolve()
+    max_chars = _get_context_file_max_chars(context_length)
+    sources: List[Dict[str, Any]] = []
+
+    def _entry(label: str, path: Path, loaded: bool) -> Dict[str, Any]:
+        try:
+            chars = len(path.read_text(encoding="utf-8"))
+        except Exception:
+            chars = 0
+        if not loaded:
+            status = "shadowed"
+        elif chars > max_chars:
+            status = "truncated"
+        else:
+            status = "loaded"
+        return {
+            "label": label,
+            "path": str(path),
+            "chars": chars,
+            "est_tokens": (chars + 3) // 4,
+            "loaded": loaded,
+            "status": status,
+        }
+
+    # Same priority ladder as build_context_files_prompt: only the FIRST
+    # matching context type is loaded; later types are shadowed.
+    winner_found = False
+
+    hermes_md = _find_hermes_md(cwd_path)
+    if hermes_md is not None:
+        sources.append(_entry(hermes_md.name, hermes_md, loaded=True))
+        winner_found = True
+
+    agents_seen = False
+    for directory in _agents_md_directory_chain(cwd_path):
+        for name in ["AGENTS.override.md", "AGENTS.md", "agents.md"]:
+            candidate = directory / name
+            if candidate.exists():
+                try:
+                    rel = os.path.relpath(candidate, cwd_path)
+                except ValueError:
+                    rel = str(candidate)
+                sources.append(_entry(rel, candidate, loaded=not winner_found))
+                agents_seen = True
+                break  # first name wins per directory
+    if agents_seen and not winner_found:
+        winner_found = True
+
+    for name in ["CLAUDE.md", "claude.md"]:
+        candidate = cwd_path / name
+        if candidate.exists():
+            sources.append(_entry(name, candidate, loaded=not winner_found))
+            winner_found = True
+            break
+
+    cursor_found = False
+    cursorrules = cwd_path / ".cursorrules"
+    if cursorrules.exists():
+        sources.append(_entry(".cursorrules", cursorrules, loaded=not winner_found))
+        cursor_found = True
+    cursor_rules_dir = cwd_path / ".cursor" / "rules"
+    if cursor_rules_dir.is_dir():
+        for mdc in sorted(cursor_rules_dir.glob("*.mdc")):
+            sources.append(
+                _entry(f".cursor/rules/{mdc.name}", mdc, loaded=not winner_found)
+            )
+            cursor_found = True
+    if cursor_found and not winner_found:
+        winner_found = True
+
+    # SOUL.md is independent of the project-context priority ladder.
+    _home = Path(home_override) if home_override is not None else get_hermes_home()
+    soul_path = _home / "SOUL.md"
+    if soul_path.exists():
+        sources.append(_entry("SOUL.md", soul_path, loaded=True))
+
+    return sources

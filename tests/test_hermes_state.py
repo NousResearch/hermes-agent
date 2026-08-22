@@ -3868,33 +3868,47 @@ class TestListCronJobRuns:
 
 
 
+    def _seed_ts_run(self, db, job_id: str, run_stamp: str) -> str:
+        sid = f"cron_{job_id}_{run_stamp}"
+        db.create_session(session_id=sid, source="cron")
+        db.end_session(sid, "completed")
+        return sid
+
     def test_prune_cron_job_runs_keeps_newest_per_job(self, db):
-        base = 1_700_000_000.0
-        for i in range(8):
-            self._seed_run(db, "alpha", i, base + i * 60)
-        for i in range(3):
-            self._seed_run(db, "beta", i, base + i * 60)
+        stamps = [f"20260818_{h:02d}0000" for h in range(10, 18)]
+        for stamp in stamps:
+            self._seed_ts_run(db, "alpha", stamp)
+        self._seed_ts_run(db, "beta", "20260818_090000")
         # A non-cron session must never be touched.
         db.create_session(session_id="user-session", source="desktop")
 
-        deleted = db.prune_cron_job_runs("alpha", keep=3)
+        deleted = db.prune_cron_job_runs("alpha", keep=5)
 
-        assert deleted == 5
-        remaining = db.list_cron_job_runs("alpha", limit=20)
-        assert [r["id"] for r in remaining] == [
-            f"cron_alpha_{i:08d}" for i in (7, 6, 5)
-        ]
+        assert deleted == 3
+        remaining = {r["id"] for r in db.list_cron_job_runs("alpha", limit=20)}
+        assert remaining == {f"cron_alpha_{s}" for s in stamps[3:]}
         # Other jobs and non-cron sessions untouched.
-        assert len(db.list_cron_job_runs("beta", limit=20)) == 3
+        assert len(db.list_cron_job_runs("beta", limit=20)) == 1
         assert db.get_session("user-session") is not None
 
     def test_prune_cron_job_runs_keep_zero_clears_job(self, db):
-        base = 1_700_000_000.0
-        for i in range(4):
-            self._seed_run(db, "alpha", i, base + i * 60)
+        for h in range(12, 16):
+            self._seed_ts_run(db, "alpha", f"20260818_{h:02d}0000")
 
         assert db.prune_cron_job_runs("alpha", keep=0) == 4
         assert db.list_cron_job_runs("alpha", limit=20) == []
+
+    def test_prune_skips_underscore_extension_jobs(self, db):
+        """#92133: job id `backup` must not prune `backup_weekly`'s runs —
+        the bare prefix range leaks underscore-extensions; the timestamp-
+        shaped remainder predicate scopes the prune to real run rows."""
+        self._seed_ts_run(db, "backup", "20260818_100000")
+        self._seed_ts_run(db, "backup_weekly", "20260818_110000")
+
+        deleted = db.prune_cron_job_runs("backup_weekly", keep=1)
+
+        assert deleted == 0
+        assert len(db.list_cron_job_runs("backup_weekly", limit=20)) == 1
 
 
 def test_gateway_session_peer_round_trip_and_recovery(db):

@@ -149,19 +149,36 @@ class SessionPortabilityMixin:
         prefix_hi = prefix[:-1] + chr(ord(prefix[-1]) + 1)
         # _execute_write owns self._lock (BEGIN IMMEDIATE + jitter retry);
         # wrapping it here would double-acquire a non-reentrant lock.
+        #
+        # The bare range leaks runs across jobs when one job id is an
+        # underscore-extension of another (backup vs backup_weekly —
+        # #92133): constrain the remainder to this run's timestamp shape
+        # (%Y%m%d_%H%M%S), which free-form job ids cannot satisfy.
+        ts_glob = "[0-9]" * 8 + "_" + "[0-9]" * 6
         keep_clause = ""
-        params: tuple = (prefix, prefix_hi)
+        params: tuple = (prefix, prefix_hi, len(prefix), ts_glob)
         if keep > 0:
             keep_clause = (
                 "AND id NOT IN ("
                 "SELECT id FROM sessions "
                 "WHERE source = 'cron' AND id >= ? AND id < ? "
+                "AND substr(id, ? + 1) GLOB ? "
                 "ORDER BY started_at DESC, id DESC LIMIT ?)"
             )
-            params = (prefix, prefix_hi, prefix, prefix_hi, keep)
+            params = (
+                prefix,
+                prefix_hi,
+                len(prefix),
+                ts_glob,
+                prefix,
+                prefix_hi,
+                len(prefix),
+                ts_glob,
+                keep,
+            )
         select_query = (
             "SELECT id FROM sessions WHERE source = 'cron' "
-            "AND id >= ? AND id < ? " + keep_clause
+            "AND id >= ? AND id < ? AND substr(id, ? + 1) GLOB ? " + keep_clause
         )
 
         def _do(conn):

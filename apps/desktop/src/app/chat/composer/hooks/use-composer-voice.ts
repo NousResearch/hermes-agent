@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { computed } from 'nanostores'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
@@ -62,6 +63,25 @@ export function useComposerVoice({
   const { t } = useI18n()
   // A tile's composer speaks ITS transcript, not the primary chat's.
   const { $messages } = useComposerScope()
+
+  // Wake the voice loop once when a pending reply first becomes speakable,
+  // without re-rendering the composer for every streamed token. The live
+  // speech feeder still reads $messages.get() every 150 ms for later deltas.
+  const $pendingVoiceReplyId = useMemo(
+    () =>
+      computed($messages, messages => {
+        const last = messages.findLast(message => message.role === 'assistant' && !message.hidden)
+
+        if (!last?.pending || !chatMessageText(last).trim()) {
+          return null
+        }
+
+        return last.id
+      }),
+    [$messages]
+  )
+
+  useStore($pendingVoiceReplyId)
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
   const ownsWakeIndicatorRef = useRef(false)
   const voiceStartRequest = useStore($voiceConversationStartRequest)

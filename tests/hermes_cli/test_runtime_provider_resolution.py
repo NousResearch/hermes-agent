@@ -841,6 +841,51 @@ def test_explicit_openrouter_skips_openai_base_url(monkeypatch):
 
 
 
+@pytest.mark.parametrize(
+    ("provider_id", "api_key_env", "base_url_env", "anthropic_base_url", "openai_base_url"),
+    [
+        (
+            "minimax",
+            "MINIMAX_API_KEY",
+            "MINIMAX_BASE_URL",
+            "https://api.minimax.io/anthropic",
+            "https://api.minimax.io/v1",
+        ),
+        (
+            "minimax-cn",
+            "MINIMAX_CN_API_KEY",
+            "MINIMAX_CN_BASE_URL",
+            "https://api.minimaxi.com/anthropic",
+            "https://api.minimaxi.com/v1",
+        ),
+    ],
+)
+def test_minimax_protocol_base_urls(
+    monkeypatch,
+    provider_id,
+    api_key_env,
+    base_url_env,
+    anthropic_base_url,
+    openai_base_url,
+):
+    """MiniMax defaults to Messages while official /v1 overrides use chat completions."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: provider_id)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv(api_key_env, "test-minimax-key")
+    monkeypatch.delenv(base_url_env, raising=False)
+
+    default = rp.resolve_runtime_provider(requested=provider_id)
+
+    assert default["api_mode"] == "anthropic_messages"
+    assert default["base_url"] == anthropic_base_url
+
+    monkeypatch.setenv(base_url_env, openai_base_url)
+    override = rp.resolve_runtime_provider(requested=provider_id)
+
+    assert override["api_mode"] == "chat_completions"
+    assert override["base_url"] == openai_base_url
+
+
 def test_minimax_config_base_url_overrides_hardcoded_default(monkeypatch):
     """model.base_url in config.yaml should override the hardcoded default (#6039)."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")

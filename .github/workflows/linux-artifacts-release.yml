@@ -48,9 +48,10 @@ jobs:
         working-directory: apps/desktop
         run: npm ci
 
-      - name: Build Electron app
+      - name: Build Electron app (unpacked)
         working-directory: apps/desktop
-        run: npm run build
+        # --dir = electron-builder without packaging: produces release/linux-unpacked
+        run: npm run builder -- --linux --dir
 
       - name: Upload unpacked build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -198,9 +199,8 @@ jobs:
           fetch-depth: 0
 
       - name: Install Snapcraft
-        uses: snapcore/action-install@b2ff61d1c7f3a9a3a5e3f0e8d8b3e5c7d1f2e4b6 # v1
-        with:
-          channel: latest/stable
+        # snapcraft CLI from the snap store (snapcore/action-install does not exist)
+        run: sudo snap install snapcraft --classic
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

@@ -5195,22 +5195,14 @@ def resolve_xai_oauth_runtime_credentials(
 # TLS verification helper
 # =============================================================================
 
-def _default_verify() -> bool | ssl.SSLContext:
-    """Platform-aware default SSL verify for httpx clients.
+from hermes_cli import auth_tls_verify as _auth_tls_verify  # noqa: E402
 
-    On macOS with Homebrew Python, the system OpenSSL cannot locate the
-    system trust store and valid public certs fail verification. When
-    certifi is importable we pin its bundle explicitly; elsewhere we
-    defer to httpx's built-in default (certifi via its own dependency).
-    Mirrors the weixin fix in 3a0ec1d93.
-    """
-    if sys.platform == "darwin":
-        try:
-            import certifi
-            return ssl.create_default_context(cafile=certifi.where())
-        except ImportError:
-            pass
-    return True
+_AUTH_TLS_VERIFY_COMPAT_LOCK = threading.RLock()
+_AUTH_TLS_DEFAULT_VERIFY_IMPL = _auth_tls_verify._default_verify
+
+
+def _default_verify() -> bool | ssl.SSLContext:
+    return _AUTH_TLS_DEFAULT_VERIFY_IMPL()
 
 
 def _resolve_verify(
@@ -5219,33 +5211,25 @@ def _resolve_verify(
     ca_bundle: Optional[str] = None,
     auth_state: Optional[Dict[str, Any]] = None,
 ) -> bool | ssl.SSLContext:
-    tls_state = auth_state.get("tls") if isinstance(auth_state, dict) else {}
-    tls_state = tls_state if isinstance(tls_state, dict) else {}
+    # The extracted implementation resolves _default_verify in its own
+    # globals. Temporarily bridge that lookup to this module so existing
+    # monkeypatches of hermes_cli.auth._default_verify remain effective.
+    # The nested proxy keeps lookup lazy, preserving the pre-extraction
+    # NameError behavior if callers delete that compatibility name.
+    def _compat_default_verify() -> bool | ssl.SSLContext:
+        return _default_verify()
 
-    effective_insecure = (
-        is_truthy_value(insecure, default=False) if insecure is not None
-        else is_truthy_value(tls_state.get("insecure", False), default=False)
-    )
-    effective_ca = (
-        ca_bundle
-        or tls_state.get("ca_bundle")
-        or os.getenv("HERMES_CA_BUNDLE")
-        or os.getenv("SSL_CERT_FILE")
-        or os.getenv("REQUESTS_CA_BUNDLE")
-    )
-
-    if effective_insecure:
-        return False
-    if effective_ca:
-        ca_path = str(effective_ca)
-        if not os.path.isfile(ca_path):
-            logger.warning(
-                "CA bundle path does not exist: %s — falling back to default certificates",
-                ca_path,
+    with _AUTH_TLS_VERIFY_COMPAT_LOCK:
+        previous_default_verify = _auth_tls_verify._default_verify
+        _auth_tls_verify._default_verify = _compat_default_verify
+        try:
+            return _auth_tls_verify._resolve_verify(
+                insecure=insecure,
+                ca_bundle=ca_bundle,
+                auth_state=auth_state,
             )
-            return _default_verify()
-        return ssl.create_default_context(cafile=ca_path)
-    return _default_verify()
+        finally:
+            _auth_tls_verify._default_verify = previous_default_verify
 
 
 # =============================================================================

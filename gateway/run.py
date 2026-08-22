@@ -25309,6 +25309,57 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.error("Watch notification injection error: %s", e)
             return False
 
+    def _completion_route_available(self, evt: dict) -> bool:
+        """Return whether this gateway can route a completion event.
+
+        This is a read-only preflight for the same routes used by
+        :meth:`_inject_watch_notification`. Opaque session IDs are routable
+        only when an explicit origin_session_id proves api_server provenance;
+        structured events require a matching platform adapter.
+
+        Durable completions use this before claiming their SQLite row. A
+        gateway that does not own a route must leave the row pending for the
+        CLI, TUI, or api_server consumer that can prove ownership instead of
+        burning one delivery attempt on every gateway restart.
+        """
+        from gateway.wake import adapter_supports_push
+
+        # Mirror _inject_watch_notification's precedence: a persisted/cached
+        # structured source is positive route proof even when the legacy
+        # session key itself is opaque.
+        source = self._build_process_event_source(evt)
+        if source is not None:
+            platform_name = (
+                source.platform.value
+                if hasattr(source.platform, "value")
+                else str(source.platform)
+            )
+            try:
+                platform = Platform(platform_name)
+            except (ValueError, KeyError):
+                platform = None
+            if platform is not None:
+                transport = resolve_delivery_transport(
+                    platform, self.config, self.adapters,
+                )
+                if transport is not None:
+                    return True
+            # Match _inject_watch_notification's native compatibility fallback
+            # for minimal runner stubs and exotic platform strings.
+            return any(
+                candidate.value == platform_name and adapter is not None
+                for candidate, adapter in self.adapters.items()
+            )
+
+        # Without a structured source, only an explicit origin_session_id
+        # proves that an opaque session belongs to api_server. A raw
+        # session_key alone may be owned by CLI/TUI (or predate the stamp).
+        raw_sid = str(evt.get("origin_session_id") or "").strip()
+        if not raw_sid:
+            return False
+        adapter = self.adapters.get(Platform.API_SERVER)
+        return adapter is not None and not adapter_supports_push(adapter)
+
     @staticmethod
     def _completion_delivery_identity(evt: dict) -> Optional[tuple[str, str, object]]:
         """Return a producer-stable identity when one is available.
@@ -25399,6 +25450,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _deliver_completion_notification(
         self, synth_text: str, evt: dict,
+        *, _durable_claim_id: Optional[str] = None,
     ) -> Optional[bool]:
         """Deliver once per live gateway, or return False for a retry.
 
@@ -25409,11 +25461,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         guarantee is claimed.
         """
         identity = self._completion_delivery_identity(evt)
-        durable_claim_id = ""
+        durable_claim_preestablished = _durable_claim_id is not None
+        durable_claim_id = _durable_claim_id or ""
         durable_delegation_id = ""
         if evt.get("type") == "async_delegation":
             durable_delegation_id = str(evt.get("delegation_id") or "")
-            if durable_delegation_id:
+            route_available = True
+            if durable_delegation_id and not durable_claim_preestablished:
+                try:
+                    route_available = self._completion_route_available(evt)
+                except Exception:
+                    # Preserve the preflight's read-only contract. Unexpected
+                    # resolver failures must fall back to the established
+                    # claim/deliver/release path rather than hot-loop forever
+                    # before the durable retry budget can advance.
+                    logger.exception(
+                        "Async delegation %s route preflight failed; "
+                        "falling back to normal delivery",
+                        durable_delegation_id,
+                    )
+            if durable_delegation_id and not route_available:
+                # This gateway is not the event's owner. Claiming the durable
+                # row would increment delivery_attempts even though delivery
+                # cannot succeed here, eventually terminally dropping the row
+                # after enough restarts. SQLite remains the durable inbox for
+                # the owning CLI/TUI/api_server consumer. Return None rather
+                # than False so the watcher does not hot-loop in memory.
+                logger.info(
+                    "Async delegation %s has no route in this gateway "
+                    "(session_key=%r); leaving it pending for its owner.",
+                    durable_delegation_id,
+                    str(evt.get("session_key") or ""),
+                )
+                return None
+            if durable_delegation_id and not durable_claim_preestablished:
                 try:
                     from tools.async_delegation import claim_completion_delivery
 
@@ -25802,14 +25883,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         A single-event group rides the existing per-event path unchanged. For
         a multi-event group the primary event is delivered through
-        ``_deliver_completion_notification`` (which owns its durable claim,
-        the lifecycle dedupe, and the target preflight), carrying a
-        consolidated text that also contains every sibling result whose
-        durable row THIS runner successfully claimed up front. Only after
-        adapter acceptance are the sibling claims acknowledged — the durable
-        ledger never acks work that was not delivered, and a sibling claimed
-        by another consumer is excluded from the consolidated text entirely
-        so its content cannot be double-delivered.
+        ``_deliver_completion_notification`` (which owns lifecycle dedupe and
+        target preflight), carrying a consolidated text that also contains
+        every sibling result whose durable row THIS runner successfully
+        claimed. Route ownership and the primary durable claim are established
+        before any sibling claim. Only after adapter acceptance are the claims
+        acknowledged — the durable ledger never acks work that was not
+        delivered, and a sibling claimed by another consumer is excluded from
+        the consolidated text entirely so its content cannot be double-delivered.
 
         Returns ``True`` after adapter acceptance, ``False`` when the caller
         should requeue the group for retry, and ``None`` when nothing in the
@@ -25846,29 +25927,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         primary_evt, primary_text = deliverable[0]
-        blocks = [primary_text]
-        siblings: list[tuple[dict, str]] = []
-        for evt, synth_text in deliverable[1:]:
-            claim_id = claim_event_delivery(evt, f"gateway-batch:{id(self)}")
-            if claim_id is None:
-                # Another consumer owns this row's delivery; keep its result
-                # out of our consolidated text so it is never double-injected.
-                continue
-            siblings.append((evt, claim_id))
-            blocks.append(synth_text)
-
-        if not siblings:
-            return await self._deliver_completion_notification(
-                primary_text, primary_evt,
+        route_available = True
+        try:
+            route_available = self._completion_route_available(primary_evt)
+        except Exception:
+            logger.exception(
+                "Coalesced async completion route preflight failed; "
+                "falling back to normal delivery",
             )
+        if not route_available:
+            return None
 
-        consolidated = self._format_coalesced_async_delegations(blocks)
+        primary_claim_id = claim_event_delivery(
+            primary_evt, f"gateway-batch-primary:{id(self)}",
+        )
+        if primary_claim_id is None:
+            return None
+
+        primary_claim_managed = False
+        siblings: list[tuple[dict, str]] = []
         delivered: Optional[bool] = False
         try:
+            blocks = [primary_text]
+            for evt, synth_text in deliverable[1:]:
+                claim_id = claim_event_delivery(evt, f"gateway-batch:{id(self)}")
+                if claim_id is None:
+                    # Another consumer owns this row's delivery; keep its result
+                    # out of our consolidated text so it is never double-injected.
+                    continue
+                siblings.append((evt, claim_id))
+                blocks.append(synth_text)
+
+            if not siblings:
+                primary_claim_managed = True
+                return await self._deliver_completion_notification(
+                    primary_text,
+                    primary_evt,
+                    _durable_claim_id=primary_claim_id,
+                )
+
+            consolidated = self._format_coalesced_async_delegations(blocks)
+            primary_claim_managed = True
             delivered = await self._deliver_completion_notification(
-                consolidated, primary_evt,
+                consolidated,
+                primary_evt,
+                _durable_claim_id=primary_claim_id,
             )
         finally:
+            if not primary_claim_managed:
+                try:
+                    release_event_delivery(primary_evt, primary_claim_id)
+                except Exception:
+                    logger.debug(
+                        "Could not release coalesced primary durable claim",
+                        exc_info=True,
+                    )
             if delivered is True:
                 for evt, claim_id in siblings:
                     try:

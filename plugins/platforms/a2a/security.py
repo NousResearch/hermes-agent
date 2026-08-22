@@ -171,6 +171,329 @@ def is_trusted_peer(identity: str) -> bool:
 
 
 # --------------------------------------------------------------------------
+# Trusted reverse-proxy identity resolution (Issue #80534)
+# --------------------------------------------------------------------------
+
+def get_trusted_proxies() -> set[str]:
+    """Return the configured trusted-proxy address/CIDR allow-list.
+
+    Empty means "do not trust any proxy" — identity stays derived from the
+    socket peer, the safe default. Configured via config.yaml under
+    ``a2a.trusted_proxies`` (list of IP addresses or CIDRs) or, as the
+    documented fallback, the ``A2A_TRUSTED_PROXIES`` env var (comma-separated).
+    Mirrors :func:`get_trusted_peers`.
+    """
+    env_proxies = os.getenv("A2A_TRUSTED_PROXIES", "").strip()
+    if env_proxies:
+        return {p.strip() for p in env_proxies.split(",") if p.strip()}
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        proxies_list = (cfg.get("a2a") or {}).get("trusted_proxies", [])
+        if isinstance(proxies_list, list):
+            return {str(p).strip() for p in proxies_list if p}
+    except Exception:
+        pass
+    return set()
+
+
+def _peer_in_proxies(peer_ip: str, proxies: set[str]) -> bool:
+    """True when ``peer_ip`` matches an entry in the proxy allow-list.
+
+    Entries may be a bare IP address or a CIDR (e.g. ``10.0.0.0/8``). A
+    non-IP ``peer_ip`` (e.g. ``"localhost"``) only matches a bare-string entry.
+    """
+    if not peer_ip or not proxies:
+        return False
+    try:
+        peer_addr = ipaddress.ip_address(peer_ip) if "/" not in peer_ip else None
+    except ValueError:
+        peer_addr = None
+    for entry in proxies:
+        entry = entry.strip()
+        if not entry:
+            continue
+        if "/" in entry:
+            if peer_addr is None:
+                continue
+            try:
+                network = ipaddress.ip_network(entry, strict=False)
+            except ValueError:
+                continue
+            if peer_addr in network:
+                return True
+        elif entry == peer_ip:
+            return True
+    return False
+
+
+def _is_valid_ip(value: str) -> bool:
+    """True when ``value`` parses as an IP address (v4 or v6)."""
+    if not value or "/" in value:
+        return False
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def _get_xff_values(headers) -> list[str]:
+    """Return all X-Forwarded-For field values in wire order.
+
+    HTTP allows multiple header fields with the same name (RFC 7230 §3.2.2);
+    they are semantically equivalent to a single field with comma-joined
+    values.  ``headers.get("X-Forwarded-For")`` returns only the first
+    occurrence, so ``X-Forwarded-For: 10.0.0.1`` (attacker) + ``X-Forwarded-For:
+    203.0.113.9`` (proxy-appended) would resolve to the attacker value.
+    This helper canonicalizes **all** field occurrences in wire order by
+    trying ``get_all``/``getlist``-style APIs, raw ``_headers``/``items()``,
+    and case-insensitive fallbacks so every header object type (stdlib
+    ``http.client.HTTPMessage``, ``email.message.Message``, Starlette/Werkzeug-
+    style, plain ``dict``) is handled.  The caller then joins/splits the
+    values to build the hop list.  Duplicate fields are not rejected outright
+    — they are canonicalized per RFC — so the right-to-left validated walk
+    still yields the proxy-appended real client, not the attacker value.
+    """
+    if headers is None:
+        return []
+    # 1. ``get_all`` / ``getlist``-style (stdlib Message, Starlette, Werkzeug)
+    for attr in ("get_all", "getlist", "get_list", "getList"):
+        meth = getattr(headers, attr, None)
+        if callable(meth):
+            for key in ("X-Forwarded-For", "x-forwarded-for"):
+                try:
+                    vals = meth(key)
+                except TypeError:
+                    try:
+                        vals = meth(key, None)
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+                if vals is None:
+                    continue
+                if isinstance(vals, (list, tuple)):
+                    cleaned: list[str] = []
+                    for v in vals:
+                        if v is None:
+                            continue
+                        try:
+                            cleaned.append(str(v))
+                        except Exception:
+                            continue
+                    if cleaned:
+                        return cleaned
+                    # empty list means header present but no values — treat as empty
+                    if isinstance(vals, list) and len(vals) == 0:
+                        return []
+                    continue
+                if isinstance(vals, str):
+                    return [vals]
+                try:
+                    return [str(vals)]
+                except Exception:
+                    continue
+    # 2. Raw ``_headers`` list (stdlib Message internals, preserves wire order)
+    try:
+        raw = getattr(headers, "_headers", None)
+        if isinstance(raw, list):
+            vals: list[str] = []
+            for k, v in raw:
+                if isinstance(k, str) and k.lower() == "x-forwarded-for":
+                    try:
+                        vals.append(str(v))
+                    except Exception:
+                        continue
+            if vals:
+                return vals
+    except Exception:
+        pass
+    # 3. ``get`` with case-insensitive fallbacks (dict-like, http.client)
+    try:
+        get_meth = getattr(headers, "get", None)
+        if callable(get_meth):
+            for key in ("X-Forwarded-For", "x-forwarded-for", "X-FORWARDED-FOR"):
+                try:
+                    # ``dict.get`` takes default; some custom gets may not
+                    try:
+                        val = get_meth(key, None)
+                    except TypeError:
+                        val = get_meth(key)
+                except Exception:
+                    continue
+                if val is not None:
+                    if isinstance(val, (list, tuple)):
+                        return [str(v) for v in val if v is not None]
+                    if isinstance(val, str):
+                        return [val]
+                    try:
+                        return [str(val)]
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    # 4. ``items()`` iteration (Message with duplicates, Starlette Headers)
+    try:
+        items = getattr(headers, "items", None)
+        if callable(items):
+            try:
+                pairs = items()
+            except Exception:
+                pairs = None
+            if pairs:
+                vals: list[str] = []
+                for k, v in pairs:
+                    if isinstance(k, str) and k.lower() == "x-forwarded-for":
+                        try:
+                            vals.append(str(v))
+                        except Exception:
+                            continue
+                if vals:
+                    return vals
+    except Exception:
+        pass
+    # 5. Dict with case-insensitive key scan
+    try:
+        if isinstance(headers, dict):
+            for k, v in headers.items():
+                if isinstance(k, str) and k.lower() == "x-forwarded-for":
+                    if isinstance(v, (list, tuple)):
+                        return [str(x) for x in v if x is not None]
+                    if isinstance(v, str):
+                        return [v]
+                    try:
+                        return [str(v)]
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    # 6. List/tuple of (k, v) pairs (WSGI raw headers)
+    try:
+        if isinstance(headers, (list, tuple)):
+            vals: list[str] = []
+            for item in headers:
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    k, v = item
+                    if isinstance(k, str) and k.lower() == "x-forwarded-for":
+                        try:
+                            vals.append(str(v))
+                        except Exception:
+                            continue
+            if vals:
+                return vals
+    except Exception:
+        pass
+    return []
+
+
+def resolve_client_identity(headers, client_ip: str = "") -> str:
+    """Resolve the real client IP for identity, honoring trusted proxies only.
+
+    Default (safe): return the raw socket ``client_ip`` — spoofable headers
+    are never trusted unconditionally.
+
+    Opt-in: when ``a2a.trusted_proxies`` / ``A2A_TRUSTED_PROXIES`` is set AND
+    the immediate socket peer matches a trusted proxy, derive the client IP
+    from ``X-Forwarded-For`` by **walking validated hops right-to-left**.
+    Proxies append each hop to the *right*, so the rightmost hop is the
+    direct upstream of the (trusted) socket peer and is trusted by
+    construction; each further hop to the left is only trusted when it is
+    itself a listed trusted proxy. The first hop that is not a listed proxy
+    is the real client. This rejects caller-supplied allowed addresses
+    prepended to the header (``X-Forwarded-For: 10.0.0.1, <real client>``
+    with ``10.0.0.1`` in trusted_proxies resolves to the real client, not
+    the spoofed value). If the header is absent, the socket peer is used so
+    a misconfigured proxy does not collapse to an empty identity.
+
+    Duplicate ``X-Forwarded-For`` fields are canonicalized in wire order
+    per RFC 7230 §3.2.2 (all field values joined with ``,`` before splitting
+    into hops).  A caller that injects ``X-Forwarded-For: <allowed>`` and a
+    proxy that appends ``X-Forwarded-For: <real client>`` as a second field
+    therefore yields hops ``[<allowed>, <real client>]``; the right-to-left
+    walk returns ``<real client>``, not the attacker-chosen ``<allowed>``.
+    This prevents ``headers.get("X-Forwarded-For")`` from picking only the
+    first occurrence (#80779 P1).
+
+    ``headers`` is a mapping with a ``get``/``get_all`` method (e.g.
+    ``http.client`` / ``BaseHTTPRequestHandler`` headers, Starlette Headers,
+    or a plain ``dict``).
+    """
+    proxies = get_trusted_proxies()
+    if proxies and _peer_in_proxies(client_ip, proxies):
+        xff_values = _get_xff_values(headers)
+        if xff_values:
+            # Canonicalize all field values in wire order (RFC 7230 §3.2.2):
+            # each field value may itself contain comma-separated hops.
+            hops: list[str] = []
+            for field_val in xff_values:
+                if not field_val:
+                    continue
+                try:
+                    s = str(field_val)
+                except Exception:
+                    continue
+                for hop in s.split(","):
+                    hop = hop.strip()
+                    if hop:
+                        hops.append(hop)
+            if hops:
+                for hop in reversed(hops):
+                    if _peer_in_proxies(hop, proxies):
+                        continue
+                    # The direct upstream of a trusted proxy must be an IP
+                    # address — anything else was forged by the caller, so
+                    # reject the header and fall back to the socket peer
+                    # rather than deriving identity from an unvalidated
+                    # value (#80534 P1).
+                    if not _is_valid_ip(hop):
+                        return client_ip
+                    return hop
+                return hops[0]
+    return client_ip
+
+
+def warn_on_insecure_identity_config() -> None:
+    """Emit startup warnings for identity-degrading A2A config (Issue #80534).
+
+    Idempotent and side-effect-free apart from logging — intended to be called
+    once during adapter startup. Two cases:
+
+    1. A shared ``A2A_BEARER_TOKEN`` with a non-loopback ``A2A_HOST`` and no
+       trusted-proxy config: behind a reverse proxy every caller collapses to
+       ``ip:<proxy>`` (shared rate-limit bucket, allow-list authorizes every
+       token-holder, identical audit entries). Per-peer identity requires
+       ``a2a.trusted_proxies``.
+    2. ``A2A_ALLOW_ALL_USERS`` set together with ``A2A_TRUSTED_PEERS``: the
+       allow-all short-circuit in :func:`is_trusted_peer` silently overrides
+       the explicitly configured allow-list.
+    """
+    shared = get_bearer_token()
+    peer_tokens = get_peer_tokens()
+    host = os.getenv("A2A_HOST", "").strip() or "127.0.0.1"
+    loopback = {"127.0.0.1", "localhost", "::1"}
+    if shared and not peer_tokens and host not in loopback and not get_trusted_proxies():
+        logger.warning(
+            "A2A: shared A2A_BEARER_TOKEN with non-loopback A2A_HOST=%s and no "
+            "a2a.trusted_proxies configured — behind a reverse proxy every "
+            "authenticated peer resolves to the same ip:<proxy> identity, "
+            "collapsing rate limiting, the trusted-peer allow-list, and the "
+            "audit log. Set a2a.trusted_proxies (or A2A_TRUSTED_PROXIES) to "
+            "derive per-peer identity from X-Forwarded-For, or use "
+            "A2A_PEER_TOKENS for per-peer credentials.",
+            host,
+        )
+    allow_all = os.getenv("A2A_ALLOW_ALL_USERS", "").strip().lower() in ("1", "true", "yes")
+    if allow_all and get_trusted_peers():
+        logger.warning(
+            "A2A: A2A_ALLOW_ALL_USERS is set together with A2A_TRUSTED_PEERS — "
+            "the allow-all flag short-circuits is_trusted_peer() and silently "
+            "overrides the configured allow-list. Unset A2A_ALLOW_ALL_USERS to "
+            "enforce the allow-list.",
+        )
+
+
+# --------------------------------------------------------------------------
 # Inbound injection filtering
 # --------------------------------------------------------------------------
 

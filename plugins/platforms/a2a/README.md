@@ -69,6 +69,40 @@ via `tasks/get`.
 - Conversations persist to `~/.hermes/a2a_conversations/` — they survive context
   compaction and restarts (`a2a_history` recalls them).
 
+## Reverse proxies & per-peer identity
+
+Behind a reverse proxy (nginx, k8s ingress, a tunnel/CDN), the socket peer is
+*always the proxy*. With a shared `A2A_BEARER_TOKEN` every authenticated caller
+therefore resolves to the same `ip:<proxy>` identity, which collapses rate
+limiting (one shared bucket), the trusted-peer allow-list (listing the proxy
+authorizes every token-holder), and the audit log (identical entries).
+
+Identity is **never** derived from `X-Forwarded-For` by default — that header
+is client-spoofable. Opt in with `a2a.trusted_proxies`:
+
+```yaml
+# ~/.hermes/config.yaml
+a2a:
+  trusted_proxies: ["10.0.0.0/8", "203.0.113.5"]   # IPs/CIDRs of your proxies
+```
+
+Only when the immediate socket peer matches a trusted proxy does the adapter
+consult `X-Forwarded-For`, **walking validated hops right-to-left**: the
+rightmost hop (appended by the trusted proxy itself) is trusted, and each
+further hop to the left is only trusted when it is itself a listed trusted
+proxy; the first hop that is not a listed proxy is the real client; a malformed or non-IP hop at that boundary is rejected outright (the header is forged) and identity falls back to the socket peer. Taking
+the leftmost hop blindly would let a caller prepend an allow-listed address
+before the proxy appends the real one (spoofing identity), so hops are never
+trusted beyond the configured proxy chain. The identity becomes
+`ip:<real_client>` instead of `ip:<proxy>`. When the peer is not a trusted
+proxy, behavior is unchanged (socket address). For true per-peer identity,
+prefer `A2A_PEER_TOKENS`, which is spoof-proof regardless of proxying.
+
+At startup, a shared token combined with a non-loopback `A2A_HOST` and no
+`trusted_proxies` logs a warning explaining the collapse. Setting
+`A2A_ALLOW_ALL_USERS` together with `A2A_TRUSTED_PEERS` also logs a warning,
+since the allow-all flag silently overrides the allow-list.
+
 ## Env vars
 
 | Var | Default | Meaning |
@@ -79,7 +113,8 @@ via `tasks/get`.
 | `A2A_PORT` | `9900` | Inbound port. |
 | `A2A_AGENT_NAME` | hostname-derived | Name on the Agent Card. |
 | `A2A_PUBLIC_URL` | _(unset)_ | Routable URL advertised on the card (reverse proxies). |
-| `A2A_TRUSTED_PEERS` | _(unset)_ | Allow-list of authenticated identities. |
+| `A2A_TRUSTED_PEERS` | _(unset)_ | Allow-list of authenticated identities (or `a2a.trusted_peers`). |
+| `A2A_TRUSTED_PROXIES` | _(unset)_ | Proxy IP/CIDR allow-list enabling X-Forwarded-For identity (or `a2a.trusted_proxies`). |
 | `A2A_ALLOW_ALL_USERS` | `false` | Allow any authed peer (dev only). |
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity. |
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20). |

@@ -229,7 +229,7 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             # Agent Cards are intentionally public; health topology is not.
             if security.localhost_only() or security.authenticate(
                 self.headers.get("Authorization"),
-                self.client_address[0] if self.client_address else "",
+                security.resolve_client_identity(self.headers, self.client_address[0] if self.client_address else ""),
             ) is not None:
                 payload["served_agents"] = self.adapter._served_agent_summary(
                     public_url=self._request_public_url() or None)
@@ -242,10 +242,14 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         adapter = self.adapter
-        client_ip = self.client_address[0] if self.client_address else ""
+        client_ip = security.resolve_client_identity(
+            self.headers, self.client_address[0] if self.client_address else "")
 
         # Identity comes from the presented credential (or the socket in
-        # localhost-only mode) — never from the request body.
+        # localhost-only mode) — never from the request body. The client IP is
+        # the socket peer by default; X-Forwarded-For is consulted only when the
+        # immediate peer is a configured trusted proxy (see
+        # security.resolve_client_identity).
         identity = security.authenticate(self.headers.get("Authorization"), client_ip)
         if identity is None:
             self._json(401, protocol.jsonrpc_error(None, protocol.ERR_UNAUTHORIZED, "unauthorized"))
@@ -445,6 +449,8 @@ class A2AAdapter(BasePlatformAdapter):
             "A2A: serving Agent Card + JSON-RPC on http://%s:%s (%s) as %r; %d routed agent(s)",
             self.host, self.port, exposure, self.agent_name, len(self._agents),
         )
+        # Warn about identity-degrading config once per (re)connect.
+        security.warn_on_insecure_identity_config()
         return True
 
     async def disconnect(self) -> None:

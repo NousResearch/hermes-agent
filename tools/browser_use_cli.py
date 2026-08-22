@@ -24,10 +24,9 @@ BACKEND_DISABLED = "off"
 # Cloud daemon names become the BU_NAME env var
 _SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
-# Internal marker set by _resolve_backend_cdp on the env dict when the
+# Internal marker set by _ensure_exec_cdp_endpoint on the env dict when the
 # resolved browser is EXCLUSIVE to this named session (per-name provider
-# browser, or a named Browser Use cloud browser). Popped before the
-# subprocess launches — never exported to the CLI.
+# browser). Popped before the subprocess launches — never exported to the CLI.
 _PRIVATE_BROWSER_SENTINEL = "_HERMES_BU_PRIVATE_BROWSER"
 
 # Preamble prepended to the model's code for named sessions on SHARED
@@ -94,14 +93,161 @@ _URL_RE = re.compile(r"https?://[^\s'\"\\)]+", re.IGNORECASE)
 
 
 def _blocked_url_in_code(code: str) -> Optional[str]:
-    """Return an error if a URL literal fails the built-in navigation checks."""
+    """Return an error if a URL literal fails the built-in navigation checks.
+
+    Runs in ``strict`` mode (Region D): the private-address gate is
+    unconditional w.r.t. the backend posture and fails closed on DNS errors.
+    """
     from tools.browser_tool import evaluate_url_safety
 
     for url in _URL_RE.findall(code or ""):
-        err = evaluate_url_safety(url)
+        err = evaluate_url_safety(url, strict=True)
         if err:
             return err.get("error", "Blocked: unsafe URL")
     return None
+
+
+# Marker the recheck trailer prints the landed URL behind. Long and unlikely
+# to occur in page text, so a page that echoes it cannot forge a "safe" URL:
+# the last occurrence wins (see _landed_url), and the trailer always runs
+# after any page output.
+_LANDED_URL_MARKER = "__HERMES_BROWSER_EXEC_LANDED_URL__:"
+
+# Env keys the model can control via the first (untrusted) invocation and
+# that may trigger harness/workspace bootstrap code auto-loading on a NEW
+# subprocess (ref. the harness's $BH_AGENT_WORKSPACE/agent_helpers.py seam).
+# The trusted probe must not inherit these, or the model could poison its
+# js/print helpers the same way it can the main script.
+_MODEL_CONTROLLED_PROBE_ENV = frozenset({
+    "BH_AGENT_WORKSPACE",
+    "BU_WORKSPACE",
+})
+
+# Matches ONLY the trailer's landing-report line: the marker immediately
+# followed by an absolute http(s) URL. Used to strip exactly that line from
+# output without touching page content that happens to echo the marker.
+_URL_RECHECK_REPORT_RE = re.compile(
+    r"^" + re.escape(_LANDED_URL_MARKER) + r"\s*https?://\S+$"
+)
+
+# Appended to exec code so the *executed* navigation target can be checked,
+# not just the literals the pre-check could see in the source. Mirrors
+# browser_tool's _current_page_private_url, which reads window.location.href
+# after an eval for exactly this reason. Wrapped in try/except so a session
+# with no page open (or a helper that raises) degrades to "no marker" rather
+# than turning a working exec into an error.
+# The marker literal is split across a concatenation so the trailer's own
+# source text never contains it: the code is echoed back by some CLI modes,
+# and a source echo must not read as a landing report.
+_URL_RECHECK_TRAILER = (
+    "\ntry:\n"
+    "    print({head!r} + {tail!r} + str(js('window.location.href')))\n"
+    "except Exception:\n"
+    "    pass\n"
+).format(head=_LANDED_URL_MARKER[:16], tail=_LANDED_URL_MARKER[16:])
+
+
+# ---------------------------------------------------------------
+# Trusted-boundary landed-URL observation (P1 review).
+#
+# The appended in-script trailer runs in the SAME namespace as the
+# model's untrusted code, so the model can rebind js/print/str and forge
+# a safe landing marker. The authoritative observation must therefore be
+# produced OUTSIDE that namespace: run a SECOND Browser Use subprocess
+# whose only input is Hermes-authored probe code (no model code), against
+# the same session/CDP. That fresh namespace cannot be rebound, so its
+# reported window.location.href is a trusted attestation of browser state.
+# ---------------------------------------------------------------
+def _trusted_landing_probe_code() -> str:
+    """Hermes-authored probe reading window.location.href in a fresh CLI.
+
+    No caller code is present, so js/print/str are the CLI's own builtins
+    and cannot have been rebound. The marker is produced by trusted code.
+    """
+    head = _LANDED_URL_MARKER[:16]
+    tail = _LANDED_URL_MARKER[16:]
+    return (
+        f"print({head!r} + {tail!r} + str(js('window.location.href')))"
+    )
+
+
+def _trusted_landed_url(cmd, env, popen_extra, timeout) -> Optional[str]:
+    """Run a fresh, trusted CLI probe and return the observed landed URL.
+
+    P1 hardening: the probe MUST NOT inherit any model-controlled workspace
+    or bootstrap state. ``BH_AGENT_WORKSPACE`` (and the harness's auto-loaded
+    ``agent_helpers.py`` seam) carry code the model can write in the first
+    invocation — loading it into the probe would let the model poison the
+    ``js``/``print`` helpers again. So this strips those env keys before the
+    probe runs, leaving only the trusted, Hermes-authored probe code with the
+    CLI's own builtins. Returns None if the probe could not run or reported
+    nothing trustworthy (fail-open: no result means no claim).
+    """
+    probe_env = dict(env)
+    for key in _MODEL_CONTROLLED_PROBE_ENV:
+        probe_env.pop(key, None)
+    probe = _trusted_landing_probe_code()
+    try:
+        p = subprocess.run(
+            cmd, input=probe, capture_output=True,
+            text=True, timeout=timeout, env=probe_env, **popen_extra,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return _landed_url(p.stdout)
+
+
+def _with_url_recheck(code: str) -> str:
+    """Append the landed-URL probe when doing so cannot break the caller's code.
+
+    ``ast.parse`` succeeding means the code is a syntactically complete
+    module, so appending another top-level statement is guaranteed to keep it
+    parseable. Code that does not parse is returned unchanged: it cannot
+    navigate anywhere, and mangling it would replace the CLI's own syntax
+    error with a confusing one.
+    """
+    import ast
+
+    try:
+        ast.parse(code)
+    except SyntaxError:
+        return code
+    return code + _URL_RECHECK_TRAILER
+
+
+def _landed_url(stdout: str) -> Optional[str]:
+    """Return the URL the browser actually ended on, or None if unknown.
+
+    Only an absolute http(s) URL counts. Anything else — a helper that
+    returned None, a truncated line, page text that happens to carry the
+    marker — is treated as "probe produced nothing", which fails open rather
+    than blocking on a value that was never a navigation target.
+    """
+    landed = None
+    for line in (stdout or "").splitlines():
+        idx = line.rfind(_LANDED_URL_MARKER)
+        if idx == -1:
+            continue
+        candidate = line[idx + len(_LANDED_URL_MARKER):].strip()
+        if candidate.lower().startswith(("http://", "https://")):
+            landed = candidate
+    return landed
+
+
+def _strip_landed_url_marker(stdout: str) -> str:
+    """Drop the probe's landing-report line so it stays invisible.
+
+    Only the line that carried the *landed URL* (the trailer's actual
+    output) is removed. A content line that merely happens to contain the
+    marker string is preserved — it is page data, not the probe report,
+    and dropping it would lose legitimate output (Point 3 review).
+    """
+    if _LANDED_URL_MARKER not in (stdout or ""):
+        return stdout
+    kept = [ln for ln in stdout.splitlines()
+            if not (_URL_RECHECK_REPORT_RE.match(ln))]
+    stripped = "\n".join(kept)
+    return stripped + "\n" if stdout.endswith("\n") and stripped else stripped
 
 
 def _base_subprocess_env() -> dict:
@@ -447,12 +593,13 @@ def _native_screenshot_result(result: Dict[str, Any], path: str) -> Optional[Dic
         return None
 
 
-def _resolve_backend_cdp(
-    env: dict, task_id: Optional[str], session_name: str = ""
-) -> Optional[str]:
-    """Point the harness at the configured browser backend's CDP endpoint.
+def _ensure_exec_cdp_endpoint(env: dict, task_id: Optional[str], session: Optional[str]) -> Optional[str]:
+    """Guarantee a monitorable CDP endpoint for ``browser_exec`` (Region A C1).
 
-    Resolution order (first hit wins):
+    Called in BOTH branches of ``browser_exec`` (plain and ``session=``/
+    ``BU_NAME``): every exec resolves an endpoint the Hermes-side network
+    monitor can attach to — or fails before the CLI spawns. Resolution order
+    (first hit wins):
 
     1. ``BU_CDP_WS`` / ``BU_CDP_URL`` already in the environment — explicit
        user/operator override, passed through untouched.
@@ -462,17 +609,22 @@ def _resolve_backend_cdp(
        gateway/Browser Use cloud, …): reuse the legacy stack's
        ``_get_session_info()`` so browser_exec shares the SAME provider
        session machinery — per-task session cache, expiry replacement,
-       inactivity reaper, and atexit cleanup — instead of duplicating it.
-    4. Nothing configured: return None; the harness attaches to local
-       Chrome (or Browser Use cloud via BU_AUTOSPAWN for legacy configs).
+       inactivity reaper, and atexit cleanup. Direct-API Browser Use cloud
+       configs (``provider_key == "browser-use"`` and no gateway) are
+       REFUSED: their autospawned browser is unknown to Hermes, so it cannot
+       be monitored.
+    4. Nothing configured: spawn a Hermes-supervised local headless Chrome
+       (``spawn_supervised_chrome``) and point the CLI at it. The no-endpoint
+       case no longer exists as a silent "let the harness auto-spawn" path.
 
-    ``session_name`` (the tool's ``session`` argument / BU_NAME) keys the
+    ``session`` (the tool's ``session`` argument / BU_NAME) keys the
     provider session cache when set, so every distinct name gets its OWN
     cloud browser and the same name reuses one — that is what makes named
     sessions actually concurrent-safe on provider backends instead of all
-    names sharing a single per-task browser.
+    names sharing a single per-task browser. It also labels the
+    supervised-Chrome cache key (per (task_id, session) reuse).
 
-    Returns an error string on provider failure, None on success.
+    Returns an error string on any failure, None on success.
     """
     if env.get("BU_CDP_WS") or env.get("BU_CDP_URL"):
         return None
@@ -500,50 +652,152 @@ def _resolve_backend_cdp(
     except Exception as e:
         logger.debug("Cloud provider lookup failed: %s", e)
         provider = None
-    if provider is None:
+    if provider is not None:
+        # Browser Use direct-API configs: the CLI talks to Browser Use cloud
+        # natively (BU_AUTOSPAWN / auth login) — that autospawned browser is
+        # by definition unknown to Hermes, so it cannot be CDP-monitored.
+        # The operator must pick a monitorable backend. (The Nous-gateway
+        # variant, use_gateway: true, DOES resolve through the provider: the
+        # gateway provisions the cloud browser server-side and returns its
+        # CDP URL.)
+        provider_key = str(getattr(provider, "name", "") or "").strip().lower()
+        if provider_key == _BACKEND_KEY and not is_truthy_value(
+            _read_browser_cfg().get("use_gateway"), default=False
+        ):
+            return (
+                "direct-API Browser Use cloud config cannot be CDP-monitored; "
+                "set `browser.cdp_url`/`BROWSER_CDP_URL` or "
+                "`browser.use_gateway: true`"
+            )
+        try:
+            # Named sessions get their OWN provider browser, keyed by name so
+            # the same name reuses one browser across calls and tasks, and
+            # different names never collide. Unnamed calls keep the per-task
+            # key.
+            cache_key = f"bu-named-{session}" if session else (task_id or "browser-exec-default")
+            session_info = _get_session_info(cache_key)
+        except Exception as e:
+            return (
+                f"Cloud browser provider {type(provider).__name__} failed to "
+                f"provide a session: {e}. Fix the provider configuration or "
+                "switch backends via `hermes tools` → Browser Automation."
+            )
+        cdp = str((session_info or {}).get("cdp_url") or "")
+        if not cdp:
+            return (
+                f"Cloud browser provider {type(provider).__name__} returned no "
+                "CDP endpoint, so Browser Use mode cannot drive it. Switch to "
+                "the built-in browser tools for this provider."
+            )
+        env["BU_CDP_URL" if cdp.startswith(("http://", "https://")) else "BU_CDP_WS"] = cdp
+        # A provider browser keyed bu-named-<name> is exclusive to this session —
+        # the own-tab preamble is unnecessary there (it would just leak a blank
+        # tab into a browser nobody else touches).
+        if session:
+            env[_PRIVATE_BROWSER_SENTINEL] = "1"
         return None
 
-    # Browser Use direct-API configs: the CLI talks to Browser Use cloud
-    # natively (BU_AUTOSPAWN / auth login) — routing through the legacy
-    # provider here would just create a second, redundant session. The
-    # Nous-gateway variant (use_gateway: true) DOES resolve through the
-    # provider: the gateway provisions the cloud browser server-side and
-    # returns its CDP URL, giving subscribers CLI mode with no raw key.
-    provider_key = str(getattr(provider, "name", "") or "").strip().lower()
-    if provider_key == _BACKEND_KEY and not is_truthy_value(
-        _read_browser_cfg().get("use_gateway"), default=False
-    ):
-        # Named BU cloud browsers are exclusive to their daemon — no shared
-        # tab to isolate from.
-        env[_PRIVATE_BROWSER_SENTINEL] = "1"
-        return None
-
+    # 4. Hermes-supervised local Chrome fallback — the exec runs monitored
+    #    or it errors; there is no unmonitorable auto-spawn path anymore.
     try:
-        # Named sessions get their OWN provider browser, keyed by name so the
-        # same name reuses one browser across calls and tasks, and different
-        # names never collide. Unnamed calls keep the per-task key.
-        cache_key = f"bu-named-{session_name}" if session_name else (task_id or "browser-exec-default")
-        session_info = _get_session_info(cache_key)
+        from tools.browser_exec_monitor import spawn_supervised_chrome
+
+        tag = f"{task_id or 'default'}:{session or 'default'}"
+        ws = spawn_supervised_chrome(tag)
     except Exception as e:
         return (
-            f"Cloud browser provider {type(provider).__name__} failed to "
-            f"provide a session: {e}. Fix the provider configuration or "
-            "switch backends via `hermes tools` → Browser Automation."
+            f"browser_exec requires a Hermes-resolvable CDP endpoint for its "
+            f"network monitor, and no local Chrome could be started: {e}. "
+            "Set `browser.cdp_url`/`BROWSER_CDP_URL` or configure a cloud "
+            "provider."
         )
-    cdp = str((session_info or {}).get("cdp_url") or "")
-    if not cdp:
-        return (
-            f"Cloud browser provider {type(provider).__name__} returned no "
-            "CDP endpoint, so Browser Use mode cannot drive it. Switch to "
-            "the built-in browser tools for this provider."
-        )
-    env["BU_CDP_URL" if cdp.startswith(("http://", "https://")) else "BU_CDP_WS"] = cdp
-    # A provider browser keyed bu-named-<name> is exclusive to this session —
-    # the own-tab preamble is unnecessary there (it would just leak a blank
-    # tab into a browser nobody else touches).
-    if session_name:
-        env[_PRIVATE_BROWSER_SENTINEL] = "1"
+    env["BU_CDP_WS"] = ws
     return None
+
+
+def _resolve_backend_cdp(env: dict, task_id: Optional[str]) -> Optional[str]:
+    """Back-compat wrapper around :func:`_ensure_exec_cdp_endpoint`.
+
+    Kept for existing callers/tests; ``browser_exec`` itself calls
+    ``_ensure_exec_cdp_endpoint`` directly (the session= path included).
+    """
+    return _ensure_exec_cdp_endpoint(env, task_id, None)
+
+
+def _exec_monitor_config() -> dict:
+    """Region A monitor config knobs from the ``browser:`` section."""
+    cfg = _read_browser_cfg()
+    return {
+        "enabled": not (
+            str(cfg.get("exec_network_monitor") or "").strip().lower() == "off"
+            or cfg.get("exec_network_monitor") is False
+        ),
+        "fail_open": is_truthy_value(cfg.get("exec_monitor_fail_open"), default=False),
+        "grace_s": float(cfg.get("exec_monitor_grace_s") or 1.0),
+        "attach_timeout_s": float(cfg.get("exec_monitor_attach_timeout_s") or 15.0),
+    }
+
+
+def _start_exec_network_monitor(env: dict, task_id: Optional[str]):
+    """Start the Region A CDP network monitor for one exec window.
+
+    Returns the ``NetworkExecMonitor`` instance, or None when the monitor is
+    disabled by config (``browser.exec_network_monitor: off`` — the
+    operator's explicit opt-out; the result is annotated ``"monitor":
+    "disabled"``). Reads the endpoint from the exact dict handed to the CLI
+    (``BU_CDP_WS`` / ``BU_CDP_URL`` — single source of truth), normalized
+    via ``_resolve_cdp_override``. Never raises: any start failure leaves the
+    monitor in ``attach_failed`` state, which the caller's decision rule
+    treats as withhold.
+    """
+    cfg = _exec_monitor_config()
+    if not cfg["enabled"]:
+        return None
+    cdp_url = env.get("BU_CDP_WS") or env.get("BU_CDP_URL") or ""
+    if not cdp_url:
+        return None
+    try:
+        from tools.browser_tool import _resolve_cdp_override
+
+        cdp_url = _resolve_cdp_override(cdp_url) or cdp_url
+    except Exception as e:
+        logger.debug("CDP endpoint normalization failed (%s); using raw URL", e)
+    try:
+        from tools.browser_exec_monitor import NetworkExecMonitor
+
+        monitor = NetworkExecMonitor(cdp_url, task_id=str(task_id or "default"))
+        monitor.start(timeout=cfg["attach_timeout_s"])
+        return monitor
+    except Exception as e:
+        logger.debug("browser_exec network monitor failed to start: %s", e)
+        return None
+
+
+def _exec_network_violation_error(violation: dict) -> dict:
+    """Build the withhold error for a latched monitor violation (Region A H3)."""
+    url = str(violation.get("url") or "")
+    policy = str(violation.get("policy") or "private")
+    event = str(violation.get("event") or "Network.requestWillBeSent")
+    return {
+        "success": False,
+        "error": (
+            f"Blocked: during execution the browser requested a URL the "
+            f"navigation policy rejects ({url} — {policy}); all output was "
+            f"withheld. Intermediate requests are monitored via CDP Network "
+            f"events ({event}); the final landing check alone cannot detect "
+            f"this."
+        ),
+    }
+
+
+def _monitor_unverified_error() -> dict:
+    return {
+        "success": False,
+        "error": (
+            "browser network monitoring could not be verified attached and "
+            "active; output withheld"
+        ),
+    }
 
 
 def browser_exec(
@@ -552,7 +806,33 @@ def browser_exec(
     timeout_s: int = _DEFAULT_TIMEOUT_S,
     task_id: Optional[str] = None,
 ):
-    """Run Python code through the browser-use CLI, and return its output"""
+    """Run Python code through the browser-use CLI, and return its output
+
+    Security posture (network-boundary class closure, PR #84999):
+    - ``_blocked_url_in_code`` checks URL *literals* in the source up front
+      (strict mode: unconditional w.r.t. backend, fail-closed on DNS).
+    - ``_with_url_recheck`` appends a trailer that reports the *final* landed
+      URL (window.location.href) after execution; the trusted boundary probe
+      re-observes it from a SECOND, workspace-stripped CLI subprocess.
+    - A Hermes-side CDP network monitor (Region A) attaches to the SAME
+      endpoint the CLI drives (guaranteed for every path incl. ``session=``)
+      and validates EVERY intermediate request — navigation, redirect hop,
+      subresource, iframe, new tab, cache-served, WS upgrade — with a
+      strict, ungated, fail-closed predicate; any violation withholds ALL
+      output.
+    - A socket egress interposer (Region B) blocks private-external direct
+      connects from the CLI subprocess (loopback + public allowed; IMDS
+      floor unconditional), with tamper-evident markers.
+    - A CDP Fetch page guard (Region C) enforces per-request at the network
+      boundary (pre-connect gate + browser-side remote-IP gate).
+    - The end-state landing recheck (Region D) consumes the shared
+      ``resolve_and_check_url`` helper: ``error:dns`` blocks even when proxy
+      env vars are set.
+    - The final verdict applies the Region E agreement truth table
+      (coverage precondition + violation/last-known/probe/tri-state rows).
+      Output is released only when the guard was verified attached and
+      active, no violation was observed, and the landing is safe.
+    """
     from tools.registry import tool_error, tool_result
 
     if not code or not code.strip():
@@ -579,23 +859,18 @@ def browser_exec(
                 "dashes, or underscores (e.g. 'r7k2')."
             )
         env["BU_NAME"] = session
-    # Route through the configured browser backend (Browserbase, Firecrawl,
-    # Nous gateway, CDP override, local Chrome, …). Named sessions compose
-    # with the backend: BU_NAME namespaces the harness daemon (its IPC
-    # socket, log, and pid), and on provider backends the name additionally
-    # keys its own cloud browser — so concurrent sessions stop clobbering
-    # each other's daemon (#86894). Browser Use direct-API cloud configs
-    # are the one exception: the CLI manages named cloud browsers natively,
-    # and _resolve_backend_cdp skips provider resolution for them.
-    backend_err = _resolve_backend_cdp(env, task_id, session_name=session)
+    # Region A C1: BOTH branches resolve a monitorable CDP endpoint. BU_NAME
+    # is the daemon label; BU_CDP_WS/BU_CDP_URL are the endpoint the daemon
+    # drives — orthogonal, both set. No endpoint → error before spawn.
+    backend_err = _ensure_exec_cdp_endpoint(env, task_id, session or None)
     if backend_err:
         return tool_error(backend_err)
 
     # On a SHARED browser (local Chrome / CDP override) a fresh named daemon
     # attaches to the first existing page — the same page a sibling daemon
     # may hold. Pin each named session to a tab it created before running
-    # the model's code. Private per-name browsers (provider-keyed or BU
-    # cloud) skip this: no one to collide with, and the extra tab would leak.
+    # the model's code. Private per-name browsers (provider-keyed) skip
+    # this: no one to collide with, and the extra tab would leak.
     private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)
     if session and not private_browser:
         code = _OWN_TAB_PREAMBLE + code
@@ -603,11 +878,6 @@ def browser_exec(
     workspace = _workspace_dir(task_id)
     if workspace:
         env["BH_AGENT_WORKSPACE"] = workspace
-
-    # BU_AUTOSPAWN makes the CLI start a Browser Use cloud browser when no
-    # local Chrome/CDP endpoint is reachable (their API key authenticates it)
-    if "BU_AUTOSPAWN" not in env and is_legacy_browser_use_cloud_config(_read_browser_cfg()):
-        env["BU_AUTOSPAWN"] = "1"
 
     try:
         timeout = max(_MIN_TIMEOUT_S, min(int(timeout_s), _MAX_TIMEOUT_S))
@@ -627,50 +897,171 @@ def browser_exec(
         except Exception as e:
             logger.debug("Windows hide-flags unavailable: %s", e)
 
+    # Region E H1 — arm the guard stack (A listener + C Fetch guard) BEFORE
+    # the CLI spawns. Any arm failure fails the exec closed. The module is
+    # imported once and called via its attributes so tests can patch the
+    # module-level hooks.
+    import tools.browser_use_guard as _exec_guard
+
+    guard_ctx = _exec_guard._prepare_guard(env, task_id, session or None, popen_extra=popen_extra)
+    if guard_ctx.get("error"):
+        if guard_ctx.get("monitor") is not None:
+            guard_ctx["monitor"].stop()
+        _exec_guard._teardown_ssrf_guard(guard_ctx.get("ssrf_guard"))
+        return tool_error(guard_ctx["error"])
+    guard_enabled = bool(guard_ctx.get("enabled"))
+
+    guard_env = env
+    if guard_enabled:
+        try:
+            guard_env = _exec_guard._guard_env(env, guard_ctx)
+        except Exception as e:
+            if guard_ctx.get("monitor") is not None:
+                guard_ctx["monitor"].stop()
+            _exec_guard._teardown_ssrf_guard(guard_ctx.get("ssrf_guard"))
+            return tool_error(f"browser_exec guard environment failed: {e}")
+        # Region E H3 — self-test BEFORE spawn; failure = withhold.
+        self_test_err = _exec_guard._guard_self_test(guard_ctx, guard_env)
+        if self_test_err:
+            if guard_ctx.get("monitor") is not None:
+                guard_ctx["monitor"].stop()
+            _exec_guard._teardown_ssrf_guard(guard_ctx.get("ssrf_guard"))
+            return tool_error(self_test_err)
+
+    exec_started = time.monotonic()
+    guard_ctx["exec_started"] = exec_started
+
     started = time.time()
     try:
-        proc = subprocess.run(
-            cmd,
-            input=code,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-            **popen_extra,
-        )
-    except subprocess.TimeoutExpired:
-        return tool_error(
-            f"browser-use exec timed out after {timeout}s. The daemon may "
-            "still be working; retry with a larger timeout_s (max "
-            f"{_MAX_TIMEOUT_S}), or split the work into several calls that "
-            "append to workspace files — anything already written to the "
-            "workspace is preserved."
-        )
-    except OSError as e:
-        return tool_error(f"Failed to launch browser-use CLI: {e}")
+        if guard_enabled:
+            run = _exec_guard._run_guarded_cli(
+                cmd, guard_env, _with_url_recheck(code),
+                popen_extra, timeout, guard_ctx,
+            )
+            if run.get("launch_error"):
+                return tool_error(f"Failed to launch browser-use CLI: {run['launch_error']}")
+            if run.get("timed_out"):
+                return tool_error(
+                    f"browser-use exec timed out after {timeout}s. The daemon may "
+                    "still be working; retry with a larger timeout_s (max "
+                    f"{_MAX_TIMEOUT_S}), or split the work into several calls that "
+                    "append to workspace files — anything already written to the "
+                    "workspace is preserved."
+                )
+        else:
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    input=_with_url_recheck(code),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    env=env,
+                    **popen_extra,
+                )
+            except subprocess.TimeoutExpired:
+                return tool_error(
+                    f"browser-use exec timed out after {timeout}s. The daemon may "
+                    "still be working; retry with a larger timeout_s (max "
+                    f"{_MAX_TIMEOUT_S}), or split the work into several calls that "
+                    "append to workspace files — anything already written to the "
+                    "workspace is preserved."
+                )
+            except OSError as e:
+                return tool_error(f"Failed to launch browser-use CLI: {e}")
+            run = {
+                "returncode": proc.returncode,
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+                "timed_out": False,
+                "guard_blocked": False,
+                "guard_died": False,
+                "markers": {"armed": None, "announce": None},
+                "egress_reason": None,
+            }
 
-    result = {
-        "success": proc.returncode == 0,
-        "exit_code": proc.returncode,
-        "output": proc.stdout,
-    }
-    if workspace:
-        result["workspace"] = workspace
-    if session:
-        result["session"] = session
-    stderr = (proc.stderr or "").strip()
-    if stderr:
-        if len(stderr) > _STDERR_CAP_CHARS:
-            stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
-        result["stderr"] = stderr
+        # Post-navigation recheck. The pre-check can only see URL literals in the
+        # source; this observes where the browser actually ended up. Per the P1
+        # review, the observation MUST come from outside the model's namespace:
+        # the in-script trailer can be forged by rebinding js/print/str, and the
+        # model could poison the workspace agent_helpers.py the probe would
+        # otherwise auto-load, so the authoritative URL is taken from a SECOND,
+        # trusted CLI subprocess that runs only Hermes-authored probe code and
+        # INHERITS NO model-controlled workspace/bootstrap env (so a planted
+        # helper cannot rewrite it). Output is withheld rather than annotated.
+        landed = _trusted_landed_url(cmd, guard_env, popen_extra, timeout)
+        monitor = guard_ctx.get("monitor") if guard_enabled else None
+        if landed and monitor is not None:
+            # The probe connected through the SAME env → same endpoint →
+            # same browser while the monitor was still attached: that is
+            # exec-window activity for navigation-free execs.
+            monitor.mark_probe_success()
 
-    screenshot = _find_screenshot(proc.stdout, started)
-    if screenshot:
-        result["screenshot_path"] = screenshot
-        native = _native_screenshot_result(result, screenshot)
-        if native is not None:
-            return native
-    return tool_result(result)
+        if guard_enabled:
+            verdict = _exec_guard._guard_endstate_verdict(guard_ctx, landed, run)
+            if verdict["verdict"] == "withhold":
+                return tool_error(verdict["reason"])
+            monitor_note = verdict.get("note") or "armed"
+        else:
+            monitor_note = "disabled"
+            # Defense-in-depth landing recheck (Region D site 6) still runs
+            # when the operator disabled the monitor: the shared helper
+            # fails closed on DNS regardless of proxy env.
+            if landed:
+                from tools.browser_tool import _resolve_and_check_url
+
+                v = _resolve_and_check_url(landed)
+                if not v.ok:
+                    if v.reason in (
+                        "blocked:metadata-host", "blocked:metadata-ip",
+                        "blocked:link-local", "blocked:ipv4-compatible",
+                    ):
+                        return tool_error(
+                            "Blocked: URL targets a cloud metadata endpoint — "
+                            "the browser ended on this address after the code "
+                            "ran, so the page output was withheld."
+                        )
+                    if v.reason in ("error:dns", "error:internal"):
+                        return tool_error(
+                            "Blocked: the destination could not be safely "
+                            "verified (DNS resolution failed) — page output "
+                            "was withheld."
+                        )
+                    return tool_error(
+                        "Blocked: URL targets a private or internal address — "
+                        "the browser ended on this address after the code "
+                        "ran, so the page output was withheld."
+                    )
+
+        result = {
+            "success": run["returncode"] == 0,
+            "exit_code": run["returncode"],
+            "output": _exec_guard._strip_guard_markers(
+                _strip_landed_url_marker(run["stdout"])
+            ),
+        }
+        result["monitor"] = monitor_note
+        if workspace:
+            result["workspace"] = workspace
+        if session:
+            result["session"] = session
+        stderr = _exec_guard._strip_guard_markers(run["stderr"] or "").strip()
+        if stderr:
+            if len(stderr) > _STDERR_CAP_CHARS:
+                stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
+            result["stderr"] = stderr
+
+        screenshot = _find_screenshot(run["stdout"], started)
+        if screenshot:
+            result["screenshot_path"] = screenshot
+            native = _native_screenshot_result(result, screenshot)
+            if native is not None:
+                return native
+        return tool_result(result)
+    finally:
+        if guard_ctx.get("monitor") is not None:
+            guard_ctx["monitor"].stop()
+        _exec_guard._teardown_ssrf_guard(guard_ctx.get("ssrf_guard"))
 
 
 # The tool description is the CLI's skill, fetched from browser-use skill

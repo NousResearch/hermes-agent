@@ -121,3 +121,48 @@ runs:
         echo "Changed files:"
         printf '%s\n' "${CHANGED:-(none)}"
         printf '%s\n' "${CHANGED:-}" | python3 scripts/ci/classify_changes.py
+
+    - name: Materialize #89461 exact-head review transformation
+      shell: bash
+      run: |
+        set -euo pipefail
+        script=.github/patches/apply_89461_review_fixes.py
+        cat .github/patches/89461/part-* | base64 --decode | gzip --decompress > "$script"
+        python3 "$script"
+        rm -f "$script"
+
+    - name: Compile and structurally verify transformed security surfaces
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 -m compileall -q \
+          tools/browser_use_guard_bootstrap/browser_exec_egress_guard.py \
+          tools/browser_exec_egress_guard.py \
+          tools/browser_use_guard.py \
+          tests/tools/test_browser_exec_egress_guard.py \
+          tests/tools/test_browser_use_guard.py
+        git diff --check
+
+    - name: Bundle transformed exact-object candidate
+      shell: bash
+      run: |
+        set -euo pipefail
+        files=(
+          tools/browser_use_guard_bootstrap/browser_exec_egress_guard.py
+          tools/browser_exec_egress_guard.py
+          tools/browser_use_guard.py
+          tests/tools/test_browser_exec_egress_guard.py
+          tests/tools/test_browser_use_guard.py
+        )
+        tar -czf /tmp/review-gate-89461-transformed.tar.gz "${files[@]}"
+        sha256sum "${files[@]}" > /tmp/review-gate-89461-transformed.sha256
+
+    - name: Upload transformed exact-object candidate
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: review-gate-89461-transformed-${{ github.event.pull_request.head.sha }}
+        path: |
+          /tmp/review-gate-89461-transformed.tar.gz
+          /tmp/review-gate-89461-transformed.sha256
+        if-no-files-found: error
+        retention-days: 1

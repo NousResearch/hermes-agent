@@ -147,18 +147,37 @@ try:
 except Exception:
     check_website_access = lambda url: None  # noqa: E731 — fail-open if policy module unavailable
 
+class _URLSafetyVerdictFallback:
+    """Minimal fail-closed verdict used when tools.url_safety is unavailable."""
+
+    ok = False
+    reason = "error:internal"
+    detail = "safety module unavailable"
+    scheme = ""
+    hostname = ""
+    resolved_ips: tuple = ()
+    checked_at = 0.0
+
+
 try:
     from tools.url_safety import (
         is_safe_url as _is_safe_url,
         is_always_blocked_url as _is_always_blocked_url,
         normalize_url_for_request as _normalize_url_for_request,
         sensitive_query_param_name as _sensitive_query_param_name,
+        resolve_and_check_url as _resolve_and_check_url,
+        url_block_reason as _url_block_reason,
+        _classify_ip as _classify_ip,
+        _PRIVATE_ROUTING_REASONS as _PRIVATE_ROUTING_REASONS,
     )
 except Exception:
     _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
     _is_always_blocked_url = lambda url: True  # noqa: E731 — fail-closed on the floor too
     _normalize_url_for_request = lambda url: url  # noqa: E731 — best-effort fallback
     _sensitive_query_param_name = lambda url: None  # noqa: E731 — best-effort fallback
+    _resolve_and_check_url = lambda url, **kw: _URLSafetyVerdictFallback()  # noqa: E731 — fail-closed verdict
+    _url_block_reason = lambda url, **kw: "error:internal"  # noqa: E731 — fail-closed
+    _classify_ip = lambda ip: (True, "blocked:parse")  # noqa: E731 — fail-closed
 # Browser-provider ABC + registry — PR #25214 moved the per-vendor providers
 # (Browserbase / Browser Use / Firecrawl) out of ``tools/browser_providers/``
 # and into ``plugins/browser/<vendor>/``. The dispatcher consults the
@@ -1400,60 +1419,41 @@ def _auto_local_for_private_urls() -> bool:
 def _url_is_private(url: str) -> bool:
     """Return True when the URL's host resolves to a private/LAN/loopback address.
 
-    Reuses ``tools.url_safety.is_safe_url`` as the oracle — if the SSRF check
-    would reject the URL, we treat it as "private" for routing purposes.  DNS
-    resolution failures are treated as NOT private (fall through to whatever
-    backend is configured, which will surface the DNS error naturally).
+    Reuses ``tools.url_safety``'s shared classification core so routing and
+    enforcement always agree on IP classes (Region D). Hybrid-routing
+    semantics are preserved: bare ``localhost`` / ``.localhost`` /
+    ``.local`` / ``.lan`` / ``.internal`` names route to the local sidecar
+    WITHOUT DNS, and DNS-resolution failures / parse errors are treated as
+    NOT private (fall through to whatever backend is configured, which
+    surfaces the DNS error naturally).
     """
     try:
-        # is_safe_url returns False for private/loopback/link-local/CGNAT AND
-        # for DNS failures.  We only want the private-network case here, so
-        # we parse + check the host shape as a DNS-failure sieve first.
-        from urllib.parse import urlparse
         import ipaddress
-        import socket
+        from urllib.parse import urlparse
         parsed = urlparse(url)
         hostname = (parsed.hostname or "").strip().lower().rstrip(".")
         if not hostname:
             return False
-        # Literal IP → check directly
-        try:
-            ip = ipaddress.ip_address(hostname)
-            return (
-                ip.is_private
-                or ip.is_loopback
-                or ip.is_link_local
-                # 172.16.0.0/12: only covered by ip.is_private on Python
-                # ≥3.11 (bpo-40791).  Explicit check keeps 3.10 runtimes
-                # routing these to the local sidecar correctly.
-                or ip in ipaddress.ip_network("172.16.0.0/12")
-                or ip in ipaddress.ip_network("100.64.0.0/10")
-            )
-        except ValueError:
-            pass
-        # Hostname — must resolve to confirm it's private (bare "localhost"
-        # resolves to 127.0.0.1 via /etc/hosts).  Short-circuit on obvious
-        # names to avoid a DNS hop.
+        # Routing-only pre-screen: obvious local names short-circuit without
+        # a DNS hop (unchanged from the pre-Region-D behavior).
         if hostname in {"localhost",} or hostname.endswith(".localhost"):
             return True
         if hostname.endswith(".local") or hostname.endswith(".lan") or hostname.endswith(".internal"):
             return True
+        # Literal IP → shared classification core (mapped-CGNAT / mapped
+        # Alibaba / ::/96 divergences closed).
         try:
-            addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-        except socket.gaierror:
-            return False  # DNS fail → not private, let the normal path fail
-        for _, _, _, _, sockaddr in addr_info:
-            try:
-                ip = ipaddress.ip_address(sockaddr[0])
-            except ValueError:
-                continue
-            if (
-                ip.is_private
-                or ip.is_loopback
-                or ip.is_link_local
-                or ip in ipaddress.ip_network("100.64.0.0/10")
-            ):
-                return True
+            ip = ipaddress.ip_address(hostname)
+        except ValueError:
+            ip = None
+        if ip is not None:
+            return _classify_ip(ip)[0]
+        # Hostname → resolve via the shared helper. Pinned exclusions:
+        # error:dns / error:internal / blocked:parse are NOT private (routing
+        # falls through to the configured backend, as before).
+        v = _resolve_and_check_url(url)
+        if not v.ok:
+            return v.reason in _PRIVATE_ROUTING_REASONS
         return False
     except Exception as exc:
         logger.debug("URL-privacy check failed for %s: %s", url, exc)
@@ -3283,8 +3283,15 @@ def _redact_browser_output(value: Any) -> Any:
 # Browser Tool Functions
 # ============================================================================
 
-def evaluate_url_safety(url: str) -> Optional[dict]:
-    """Run URL safety checks; None if safe, else an error dict"""
+def evaluate_url_safety(url: str, strict: bool = False) -> Optional[dict]:
+    """Run URL safety checks; None if safe, else an error dict.
+
+    ``strict=True`` (browser_exec pre-check): the private-address gate is
+    unconditional w.r.t. the local-backend posture and fails closed on DNS
+    errors — it uses ``url_block_reason`` directly, never ``is_safe_url``'s
+    proxy-delegation branch. Non-strict callers (browser_navigate's own
+    pre-check and anything else) are byte-for-byte unchanged.
+    """
     import urllib.parse
     from agent.redact import _PREFIX_RE
 
@@ -3305,8 +3312,20 @@ def evaluate_url_safety(url: str) -> Optional[dict]:
             "query parameter before navigating.")}
     if _is_always_blocked_url(url):
         return {"success": False, "error": "Blocked: URL targets a cloud metadata endpoint"}
-    if not local and not _allow_private_urls() and not _is_safe_url(url):
-        return {"success": False, "error": "Blocked: URL targets a private or internal address"}
+    if strict:
+        reason = _url_block_reason(url)
+        if reason is not None:
+            if reason in ("blocked:metadata-host", "blocked:metadata-ip",
+                          "blocked:link-local", "blocked:ipv4-compatible"):
+                return {"success": False, "error": "Blocked: URL targets a cloud metadata endpoint"}
+            if reason in ("error:dns", "error:internal"):
+                return {"success": False, "error": (
+                    "Blocked: the destination could not be safely verified "
+                    "(DNS resolution failed) — page output was withheld.")}
+            return {"success": False, "error": "Blocked: URL targets a private or internal address"}
+    else:
+        if not local and not _allow_private_urls() and not _is_safe_url(url):
+            return {"success": False, "error": "Blocked: URL targets a private or internal address"}
     blocked = check_website_access(url)
     if blocked:
         return {"success": False, "error": blocked["message"],

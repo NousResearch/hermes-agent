@@ -433,6 +433,9 @@ export interface ModelCapabilities {
   can_disable_reasoning?: boolean
   fast: boolean
   reasoning: boolean
+  /** Exact reasoning levels from the serving provider catalog. Absent when
+   * the catalog is unavailable or does not publish a valid vocabulary. */
+  supported_efforts?: string[]
 }
 
 export interface ModelOptionsResponse {

@@ -259,6 +259,50 @@ class TestWebServerEndpoints:
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
+    def test_model_info_exposes_route_reasoning_capabilities(self, monkeypatch):
+        """Dashboard model info carries the same exact effort metadata as Desktop."""
+        from hermes_cli import web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {
+                "model": {
+                    "default": "deepseek/deepseek-v4-pro",
+                    "provider": "openrouter",
+                }
+            },
+        )
+        monkeypatch.setattr(
+            "agent.model_metadata.get_model_context_length",
+            lambda **_kwargs: 0,
+        )
+        monkeypatch.setattr(
+            "agent.models_dev.get_model_capabilities",
+            lambda **_kwargs: SimpleNamespace(
+                supports_tools=True,
+                supports_vision=False,
+                supports_reasoning=True,
+                context_window=128000,
+                max_output_tokens=8192,
+                model_family="deepseek",
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.inventory._reasoning_catalog_reader",
+            lambda _provider: lambda _model: {
+                "supports_reasoning": True,
+                "supported_efforts": ["high", "low"],
+                "mandatory": True,
+            },
+        )
+
+        response = self.client.get("/api/model/info")
+
+        assert response.status_code == 200
+        assert response.json()["capabilities"]["supported_efforts"] == ["low", "high"]
+        assert response.json()["capabilities"]["can_disable_reasoning"] is False
+
     @pytest.mark.requires_wal
     def test_get_sessions_poll_preserves_pending_wal(self):
         """Repeated GET-only polls must not checkpoint another writer's WAL."""

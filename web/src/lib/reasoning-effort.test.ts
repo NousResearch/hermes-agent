@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   EFFORT_OPTIONS,
+  effortOptionsForModel,
   VALID_EFFORTS,
   normalizeEffort,
 } from "./reasoning-effort";
@@ -43,5 +44,18 @@ describe("EFFORT_OPTIONS", () => {
     for (const level of ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]) {
       expect(values.has(level)).toBe(true);
     }
+  });
+});
+
+describe("effortOptionsForModel", () => {
+  it("filters exact efforts and keeps Off separate", () => {
+    expect(effortOptionsForModel(["max", "low", "high"], true).map((option) => option.value))
+      .toEqual(["none", "low", "high", "max"]);
+    expect(effortOptionsForModel(["low", "high"], false).map((option) => option.value))
+      .toEqual(["low", "high"]);
+  });
+
+  it("preserves the full ladder when capability metadata is unknown", () => {
+    expect(effortOptionsForModel(undefined, undefined)).toBe(EFFORT_OPTIONS);
   });
 });

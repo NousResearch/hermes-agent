@@ -25,7 +25,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
 import {
-  EFFORT_OPTIONS,
+  effortOptionsForModel,
   normalizeEffort,
   VALID_EFFORTS,
 } from "@/lib/reasoning-effort";
@@ -41,6 +41,8 @@ interface ReasoningPickerProps {
   /** Called after a successful change so the sidebar can show an "apply on
    *  /new or reload" notice, matching the model-switch UX. */
   onChanged?: (effort: string) => void;
+  reasoningEfforts?: string[] | null;
+  canDisableReasoning?: boolean | null;
 }
 
 export function ReasoningPicker({
@@ -48,11 +50,20 @@ export function ReasoningPicker({
   profile,
   refreshKey = 0,
   onChanged,
+  reasoningEfforts,
+  canDisableReasoning,
 }: ReasoningPickerProps) {
   const [effort, setEffort] = useState("medium");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const lastFetchKeyRef = useRef("");
+  const options = effortOptionsForModel(
+    reasoningEfforts ?? undefined,
+    canDisableReasoning ?? undefined,
+  );
+  const selectedEffort = options.some((option) => option.value === effort)
+    ? effort
+    : options.find((option) => option.value !== "none")?.value ?? options[0]?.value ?? effort;
 
   useEffect(() => {
     const fetchKey = `${profile ?? ""}:${currentModel}:${refreshKey}`;
@@ -112,9 +123,9 @@ export function ReasoningPicker({
         className="ml-auto min-w-0"
         disabled={!loaded || saving}
         onValueChange={onSelect}
-        value={effort}
+        value={selectedEffort}
       >
-        {EFFORT_OPTIONS.map((opt) => (
+        {options.map((opt) => (
           <SelectOption key={opt.value} value={opt.value}>
             {opt.label}
           </SelectOption>

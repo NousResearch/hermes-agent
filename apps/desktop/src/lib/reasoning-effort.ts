@@ -14,6 +14,26 @@ export const REASONING_EFFORT_VALUES = ['none', ...REASONING_EFFORTS] as const
  *  specifies one (mirrors the backend's own fallback). */
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'medium'
 
+/** Return exact model-supported levels in Hermes' canonical order.
+ * Missing, empty, or malformed metadata deliberately falls back to the full
+ * ladder so an older backend or an unknown catalog shape never blanks the UI. */
+export function reasoningEffortsForModel(supportedEfforts?: readonly string[]): ReasoningEffort[] {
+  if (!supportedEfforts?.length) {
+    return [...REASONING_EFFORTS]
+  }
+
+  const normalized = supportedEfforts.map(value => normalize(value))
+
+  if (normalized.some(value => !isReasoningEffort(value))) {
+    return [...REASONING_EFFORTS]
+  }
+
+  const supported = new Set(normalized)
+  const filtered = REASONING_EFFORTS.filter(value => supported.has(value))
+
+  return filtered.length > 0 ? filtered : [...REASONING_EFFORTS]
+}
+
 /** Compact labels for chrome where space is tight (pill, picker rows). Menus
  *  and settings use the translated `shell.modelOptions` strings instead. */
 const SHORT_LABELS: Record<string, string> = {
@@ -43,12 +63,43 @@ export const isThinkingEnabled = (effort: string, fallback: string = DEFAULT_REA
 
 /** The level a scale control should show. Empty inherits `fallback`; `none`
  *  (thinking off) selects nothing; anything unrecognized clamps to the default. */
-export function resolveReasoningEffort(effort: string, fallback: string = DEFAULT_REASONING_EFFORT): string {
+export function resolveSupportedReasoningEffort(
+  effort: string,
+  fallback: string = DEFAULT_REASONING_EFFORT,
+  supportedEfforts?: readonly string[],
+  canDisableReasoning = true
+): string {
+  const levels = reasoningEffortsForModel(supportedEfforts)
   const value = normalize(effort || fallback)
 
-  if (value === 'none') {
-    return ''
+  if (value === 'none' && canDisableReasoning) {
+    return 'none'
   }
 
-  return isReasoningEffort(value) ? value : DEFAULT_REASONING_EFFORT
+  if (isReasoningEffort(value) && levels.includes(value)) {
+    return value
+  }
+
+  const fallbackValue = normalize(fallback)
+
+  if (fallbackValue === 'none' && canDisableReasoning) {
+    return 'none'
+  }
+
+  if (isReasoningEffort(fallbackValue) && levels.includes(fallbackValue)) {
+    return fallbackValue
+  }
+
+  return levels[0] ?? DEFAULT_REASONING_EFFORT
+}
+
+export function resolveReasoningEffort(
+  effort: string,
+  fallback: string = DEFAULT_REASONING_EFFORT,
+  supportedEfforts?: readonly string[],
+  canDisableReasoning = true
+): string {
+  const resolved = resolveSupportedReasoningEffort(effort, fallback, supportedEfforts, canDisableReasoning)
+
+  return resolved === 'none' ? '' : resolved
 }

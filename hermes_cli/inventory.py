@@ -37,6 +37,18 @@ from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 
+_REASONING_EFFORTS = (
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+)
+_REASONING_EFFORT_SET = frozenset(_REASONING_EFFORTS)
+
+
 # ─── Public types ───────────────────────────────────────────────────────
 
 
@@ -150,9 +162,11 @@ def build_models_payload(
       mirroring the ``hermes model`` CLI picker. Adds network calls
       (pricing fetch + Nous tier check); only set for interactive pickers.
     - ``capabilities``: add a per-row ``capabilities`` map
-      ``{model: {fast, reasoning}}`` so pickers can gate the model-options
-      controls (fast toggle / reasoning) to what each model actually
-      supports, instead of offering knobs the backend would reject.
+      ``{model: {fast, reasoning, supported_efforts}}`` so pickers can gate
+      model-options controls to what each model actually supports, instead of
+      offering knobs the backend would reject. Exact effort lists are omitted
+      when the catalog is absent or malformed, preserving the full-ladder
+      compatibility fallback.
     - ``featured``: add a per-row ``featured_models`` list — the newest few
       models per lab (by models.dev release_date, ranked within the row's own
       models; see ``_FEATURED_PER_LAB``) for aggregator providers that serve
@@ -445,11 +459,9 @@ def _apply_capabilities(rows: list[dict]) -> None:
     parameter — a definitive negative from the provider actually serving the
     model outranks the models.dev inference.
 
-    The catalog's `supported_efforts` list is deliberately NOT forwarded: it
-    under-reports. The Portal accepts and honors levels a route doesn't
-    advertise (``z-ai/glm-5.3`` publishes ``max, high, low`` yet serves
-    ``minimal`` at its lowest thinking), so filtering the picker by that list
-    would hide levels that demonstrably work.
+    A non-empty, fully recognized `supported_efforts` list is forwarded in
+    canonical Hermes order. Missing or malformed metadata is omitted so older
+    backends and unknown catalog shapes retain the full-ladder fallback.
     """
     from hermes_cli.models import model_supports_fast_mode
 
@@ -490,6 +502,17 @@ def _apply_capabilities(rows: list[dict]) -> None:
                     entry["reasoning"] = False
                 elif detail:
                     entry["can_disable_reasoning"] = not detail.get("mandatory")
+                    raw_efforts = detail.get("supported_efforts")
+                    if isinstance(raw_efforts, list) and raw_efforts:
+                        normalized = [str(value).strip().lower() for value in raw_efforts]
+                        if all(value in _REASONING_EFFORT_SET for value in normalized):
+                            supported = [
+                                value
+                                for value in _REASONING_EFFORTS
+                                if value in normalized
+                            ]
+                            if supported:
+                                entry["supported_efforts"] = supported
 
             caps[model] = entry
 

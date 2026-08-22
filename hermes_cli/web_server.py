@@ -6952,6 +6952,26 @@ def get_model_info(profile: Optional[str] = None):
                     "max_output_tokens": mc.max_output_tokens,
                     "model_family": mc.model_family,
                 }
+
+            # Aggregator catalogs can publish an exact per-route effort
+            # vocabulary that models.dev does not carry. Reuse the same
+            # cache-only reader as the Desktop model-options payload.
+            from hermes_cli.inventory import _REASONING_EFFORTS, _reasoning_catalog_reader
+
+            read_reasoning_catalog = _reasoning_catalog_reader(str(provider).lower())
+            if read_reasoning_catalog is not None:
+                detail = read_reasoning_catalog(model_name)
+                if detail and not detail.get("supports_reasoning"):
+                    caps["supports_reasoning"] = False
+                elif detail:
+                    caps["can_disable_reasoning"] = not bool(detail.get("mandatory"))
+                    supported_efforts = detail.get("supported_efforts")
+                    if isinstance(supported_efforts, list) and supported_efforts:
+                        normalized = [str(value).strip().lower() for value in supported_efforts]
+                        if all(value in _REASONING_EFFORTS for value in normalized):
+                            caps["supported_efforts"] = [
+                                value for value in _REASONING_EFFORTS if value in normalized
+                            ]
         except Exception:
             pass
 

@@ -4,9 +4,9 @@ picker payload. The desktop model picker hides its Thinking toggle from this,
 so a route that can't disable reasoning must be describable here — otherwise
 the UI offers an off switch whose setting the upstream rejects.
 
-The catalog's `supported_efforts` is intentionally absent from the payload:
-the Portal honors levels a route doesn't advertise, so publishing it would
-invite a picker filter that hides working levels.
+The catalog's `supported_efforts` is forwarded only when it is a non-empty,
+fully recognized list. The picker can then show the exact route vocabulary;
+missing or malformed metadata keeps the existing full-ladder fallback.
 """
 
 import hermes_cli.inventory as inv
@@ -40,16 +40,30 @@ def test_optional_reasoning_route_can_disable(monkeypatch):
     assert rows[0]["capabilities"]["deepseek/deepseek-v4-pro"]["can_disable_reasoning"] is True
 
 
-def test_advertised_efforts_never_reach_the_picker(monkeypatch):
-    """The catalog's level list stays off the wire even when it is published.
-
-    It under-reports what the Portal serves, so forwarding it would let the
-    picker hide levels that work. Only the disable verdict crosses.
-    """
+def test_advertised_efforts_reach_the_picker_in_canonical_order(monkeypatch):
+    """A valid catalog list is forwarded in Hermes' canonical order."""
     _patch_catalog(monkeypatch, {
         "deepseek/deepseek-v4-pro": {
             "supports_reasoning": True,
             "supported_efforts": ["xhigh", "high"],
+            "mandatory": False,
+        },
+    })
+    rows = [{"slug": "nous", "models": ["deepseek/deepseek-v4-pro"]}]
+    inv._apply_capabilities(rows)
+
+    assert rows[0]["capabilities"]["deepseek/deepseek-v4-pro"]["supported_efforts"] == [
+        "high",
+        "xhigh",
+    ]
+
+
+def test_invalid_efforts_preserve_full_ladder_fallback(monkeypatch):
+    """Malformed or empty metadata is omitted so the UI keeps all levels."""
+    _patch_catalog(monkeypatch, {
+        "deepseek/deepseek-v4-pro": {
+            "supports_reasoning": True,
+            "supported_efforts": ["high", "not-a-hermes-level"],
             "mandatory": False,
         },
     })

@@ -31,6 +31,7 @@ function renderSubmenu(opts: {
   onSelectModel?: (model: string) => void
   onSetOptions: (patch: { effort?: string; fast?: boolean }) => void
   reasoning: boolean
+  supportedEfforts?: readonly string[]
 }) {
   return render(
     <DropdownMenu open>
@@ -47,6 +48,7 @@ function renderSubmenu(opts: {
             onSetOptions={opts.onSetOptions}
             provider="p1"
             reasoning={opts.reasoning}
+            supportedEfforts={opts.supportedEfforts}
           />
         </DropdownMenuSub>
       </DropdownMenuContent>
@@ -92,6 +94,43 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
     fireEvent.click(screen.getByRole('switch'))
 
     expect(onSetOptions).toHaveBeenCalledWith({ effort: 'high' })
+  })
+
+  it('shows only exact supported efforts and selects a supported fallback', () => {
+    const onSetOptions = vi.fn()
+    renderSubmenu({
+      defaultEffort: 'ultra',
+      effort: 'ultra',
+      fastControl: { kind: 'none' },
+      onSetOptions,
+      reasoning: true,
+      supportedEfforts: ['low', 'high']
+    })
+
+    expect(screen.getByRole('menuitemradio', { name: 'Low' })).toBeTruthy()
+    expect(screen.getByRole('menuitemradio', { name: 'High' })).toBeTruthy()
+    expect(screen.queryByRole('menuitemradio', { name: 'Medium' })).toBeNull()
+    expect(screen.queryByRole('menuitemradio', { name: 'Ultra' })).toBeNull()
+    expect(screen.getByRole('menuitemradio', { name: 'Low' }).getAttribute('aria-checked')).toBe('true')
+
+    fireEvent.click(screen.getByRole('switch'))
+    expect(onSetOptions).toHaveBeenCalledWith({ effort: 'none' })
+  })
+
+  it('restores an enabled level when the model default is thinking off', () => {
+    const onSetOptions = vi.fn()
+    renderSubmenu({
+      defaultEffort: 'none',
+      effort: 'none',
+      fastControl: { kind: 'none' },
+      onSetOptions,
+      reasoning: true,
+      supportedEfforts: ['low', 'high']
+    })
+
+    fireEvent.click(screen.getByRole('switch'))
+
+    expect(onSetOptions).toHaveBeenCalledWith({ effort: 'low' })
   })
 
   it('variant fast: swaps the model only when the row is active', () => {

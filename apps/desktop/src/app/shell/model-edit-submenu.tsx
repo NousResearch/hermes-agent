@@ -10,7 +10,11 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
-import { isThinkingEnabled, REASONING_EFFORTS, resolveReasoningEffort } from '@/lib/reasoning-effort'
+import {
+  reasoningEffortsForModel,
+  resolveReasoningEffort,
+  resolveSupportedReasoningEffort
+} from '@/lib/reasoning-effort'
 
 // Hermes' real reasoning levels live in lib/reasoning-effort; `none` is owned
 // by the Thinking toggle, not the radio.
@@ -86,6 +90,8 @@ interface ModelEditSubmenuProps {
   provider: string
   /** Whether this model supports reasoning effort. */
   reasoning: boolean
+  /** Exact catalog vocabulary, absent when the backend cannot determine it. */
+  supportedEfforts?: readonly string[]
 }
 
 export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
@@ -109,14 +115,30 @@ function ModelEditSubmenuBody({
   isActive,
   onSelectModel,
   onSetOptions,
-  reasoning
+  reasoning,
+  supportedEfforts
 }: ModelEditSubmenuProps) {
   const { t } = useI18n()
   const copy = t.shell.modelOptions
 
-  const effortValue = resolveReasoningEffort(effort, defaultEffort)
-  const thinkingOn = isThinkingEnabled(effort, defaultEffort)
   const showThinkingToggle = reasoning && canDisableReasoning !== false
+
+  const selectedEffort = resolveSupportedReasoningEffort(
+    effort,
+    defaultEffort,
+    supportedEfforts,
+    canDisableReasoning !== false
+  )
+
+  const effortValue = resolveReasoningEffort(
+    effort,
+    defaultEffort,
+    supportedEfforts,
+    canDisableReasoning !== false
+  )
+
+  const thinkingOn = selectedEffort !== 'none'
+  const effortLevels = reasoningEffortsForModel(supportedEfforts)
 
   const setFast = (enabled: boolean) => {
     if (fastControl.kind === 'variant') {
@@ -151,7 +173,20 @@ function ModelEditSubmenuBody({
           <Switch
             checked={thinkingOn}
             className="ml-auto"
-            onCheckedChange={checked => onSetOptions({ effort: checked ? effortValue || defaultEffort : 'none' })}
+            onCheckedChange={checked =>
+              onSetOptions({
+                effort: checked
+                  ? selectedEffort === 'none'
+                    ? resolveSupportedReasoningEffort(
+                        defaultEffort === 'none' ? 'medium' : '',
+                        defaultEffort,
+                        supportedEfforts,
+                        false
+                      )
+                    : selectedEffort
+                  : 'none'
+              })
+            }
             size="xs"
           />
         </DropdownMenuItem>
@@ -167,7 +202,7 @@ function ModelEditSubmenuBody({
           <DropdownMenuSeparator className="mx-0" />
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
           <DropdownMenuRadioGroup onValueChange={value => onSetOptions({ effort: value })} value={effortValue}>
-            {REASONING_EFFORTS.map(value => (
+            {effortLevels.map(value => (
               <DropdownMenuRadioItem
                 className={dropdownMenuRow}
                 key={value}

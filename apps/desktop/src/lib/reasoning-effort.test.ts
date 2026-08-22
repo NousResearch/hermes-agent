@@ -7,7 +7,9 @@ import {
   REASONING_EFFORT_VALUES,
   REASONING_EFFORTS,
   reasoningEffortLabel,
-  resolveReasoningEffort
+  reasoningEffortsForModel,
+  resolveReasoningEffort,
+  resolveSupportedReasoningEffort
 } from './reasoning-effort'
 
 describe('reasoning-effort', () => {
@@ -49,5 +51,19 @@ describe('reasoning-effort', () => {
     // Off selects nothing on the scale.
     expect(resolveReasoningEffort('none')).toBe('')
     expect(resolveReasoningEffort('bogus')).toBe(DEFAULT_REASONING_EFFORT)
+  })
+
+  it('filters exact model efforts in canonical order and falls back when unknown', () => {
+    expect(reasoningEffortsForModel(['xhigh', 'high'])).toEqual(['high', 'xhigh'])
+    expect(reasoningEffortsForModel(undefined)).toEqual([...REASONING_EFFORTS])
+    expect(reasoningEffortsForModel(['high', 'vendor-specific'])).toEqual([...REASONING_EFFORTS])
+  })
+
+  it('keeps thinking-off separate and resolves stale defaults deterministically', () => {
+    expect(resolveSupportedReasoningEffort('none', 'high', ['low', 'high'])).toBe('none')
+    expect(resolveSupportedReasoningEffort('ultra', 'medium', ['low', 'high'])).toBe('low')
+    expect(resolveSupportedReasoningEffort('', 'ultra', ['low', 'high'])).toBe('low')
+    expect(resolveReasoningEffort('ultra', 'medium', ['low', 'high'])).toBe('low')
+    expect(resolveReasoningEffort('none', 'high', ['low', 'high'], false)).toBe('high')
   })
 })

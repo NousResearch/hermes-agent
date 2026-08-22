@@ -396,6 +396,7 @@ class TestSkillManageDispatcher:
         record_created.assert_called_once_with(
             "test-skill",
             agent_created=False,
+            provenance="agent",
             task_id="task-mutation",
             session_id="session-mutation",
         )

@@ -644,6 +644,7 @@ def adopt_skill(skill_name: str) -> Tuple[bool, str]:
 def _empty_record() -> Dict[str, Any]:
     return {
         "created_by": None,
+        "provenance": None,
         "use_count": 0,
         "view_count": 0,
         "last_used_at": None,
@@ -942,10 +943,20 @@ def record_created(
     skill_name: str,
     *,
     agent_created: bool,
+    provenance: Optional[str] = None,
     task_id: Optional[str] = None,
     session_id: Optional[str] = None,
 ) -> None:
-    """Persist explicit creation provenance and emit a successful create fact."""
+    """Persist explicit creation provenance and emit a successful create fact.
+
+    ``agent_created`` controls the curator-management opt-in policy flag
+    (``created_by = "agent"``).  ``provenance`` is a separate field that records
+    who authored the skill file — set to ``"agent"`` for *every*
+    ``skill_manage(create)`` call regardless of whether it came from the
+    background review fork or a foreground user-directed session, so the
+    learning graph can identify agent-created skills without conflating them
+    with the curator policy.
+    """
     def _apply(rec: Dict[str, Any]) -> Dict[str, Any]:
         # A successful create is a new logical skill even if stale sidecar
         # state survived an earlier deletion or manual filesystem change.
@@ -953,7 +964,9 @@ def record_created(
         rec.update(_empty_record())
         if agent_created:
             rec["created_by"] = "agent"
-        return {"created_by": rec["created_by"]}
+        if provenance:
+            rec["provenance"] = provenance
+        return {"created_by": rec["created_by"], "provenance": rec["provenance"]}
 
     facts = _mutate(skill_name, _apply)
     if isinstance(facts, dict):

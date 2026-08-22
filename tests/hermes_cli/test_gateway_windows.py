@@ -1,7 +1,9 @@
 """Tests for hermes_cli.gateway_windows."""
 
+import io
 import logging
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,9 +12,6 @@ import pytest
 import hermes_cli.gateway as gateway
 import hermes_cli.gateway_windows as gateway_windows
 import hermes_cli.setup as setup
-
-
-_BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
 
 
 
@@ -80,15 +79,15 @@ def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, t
 
 
 @pytest.mark.windows_only
-def test_spawn_detached_marks_primary_breakaway_success(monkeypatch, tmp_path, caplog):
-    """A successful breakaway spawn reports true without a warning."""
+def test_spawn_detached_spawns_via_trampoline(monkeypatch, tmp_path, caplog):
+    """A successful detach spawns the trampoline and returns the gateway PID."""
     argv = ["python.exe", "-m", "hermes_cli.main", "gateway", "run"]
     cwd = str(tmp_path)
     calls = []
 
     def fake_popen(call_argv, **kwargs):
         calls.append((call_argv, kwargs))
-        return SimpleNamespace(pid=12345)
+        return SimpleNamespace(stdout=io.BytesIO(b"12345\n"))
 
     monkeypatch.setattr(
         gateway_windows,
@@ -102,20 +101,22 @@ def test_spawn_detached_marks_primary_breakaway_success(monkeypatch, tmp_path, c
     assert gateway_windows._spawn_detached() == 12345
     assert len(calls) == 1
     actual_argv, kwargs = calls[0]
-    assert actual_argv == argv
+    assert actual_argv[0] == sys.executable
+    assert actual_argv[2] == gateway_windows._GATEWAY_DETACHED_SPAWN_TRAMPOLINE
+    assert actual_argv[3] == str(tmp_path / "logs" / "gateway-stdio.log")
+    assert actual_argv[4:] == argv
     assert kwargs["cwd"] == cwd
     assert kwargs["creationflags"] == gateway_windows.windows_detach_flags()
-    assert kwargs["env"][_BREAKAWAY_MARKER] == "1"
+    assert kwargs["env"]["HERMES_GATEWAY_DETACHED"] == "1"
     assert kwargs["stdin"] is subprocess.DEVNULL
-    assert kwargs["stdout"] is kwargs["stderr"]
+    assert kwargs["stdout"] is subprocess.PIPE
+    assert kwargs["close_fds"] is True
     assert not caplog.records
 
 
 @pytest.mark.windows_only
-def test_spawn_detached_warns_and_marks_no_breakaway_fallback(
-    monkeypatch, tmp_path, caplog
-):
-    """A denied breakaway retries once with private false metadata."""
+def test_spawn_detached_breakaway_fallback_retries(monkeypatch, tmp_path, caplog):
+    """A denied breakaway retries the spawn without the breakaway flag."""
     argv = ["python.exe", "-m", "hermes_cli.main", "gateway", "run"]
     cwd = str(tmp_path)
     calls = []
@@ -126,7 +127,7 @@ def test_spawn_detached_warns_and_marks_no_breakaway_fallback(
             error = OSError(13, "Access is denied")
             error.winerror = 5
             raise error
-        return SimpleNamespace(pid=23456)
+        return SimpleNamespace(stdout=io.BytesIO(b"23456\n"))
 
     monkeypatch.setattr(
         gateway_windows,
@@ -144,7 +145,7 @@ def test_spawn_detached_warns_and_marks_no_breakaway_fallback(
     assert gateway_windows._spawn_detached() == 23456
     assert len(calls) == 2
     (argv_primary, primary), (argv_fallback, fallback) = calls
-    assert argv_primary == argv_fallback == argv
+    assert argv_primary == argv_fallback
     assert primary["cwd"] == fallback["cwd"] == cwd
     assert primary["creationflags"] == gateway_windows.windows_detach_flags()
     assert (
@@ -152,26 +153,11 @@ def test_spawn_detached_warns_and_marks_no_breakaway_fallback(
         == gateway_windows.windows_detach_flags_without_breakaway()
     )
     assert primary["stdin"] is fallback["stdin"] is subprocess.DEVNULL
-    assert primary["stdout"] is primary["stderr"]
-    assert fallback["stdout"] is fallback["stderr"]
-    assert Path(primary["stdout"].name) == Path(fallback["stdout"].name)
+    assert primary["stdout"] is fallback["stdout"] is subprocess.PIPE
     assert primary["close_fds"] is fallback["close_fds"] is True
-    assert primary["env"] is not fallback["env"]
-    assert primary["env"][_BREAKAWAY_MARKER] == "1"
-    assert fallback["env"][_BREAKAWAY_MARKER] == "0"
-    assert {
-        key: value for key, value in primary["env"].items() if key != _BREAKAWAY_MARKER
-    } == {
-        key: value for key, value in fallback["env"].items() if key != _BREAKAWAY_MARKER
-    }
-
-    warnings = [
-        record for record in caplog.records if record.levelno == logging.WARNING
-    ]
-    assert len(warnings) == 1
-    assert "5" in warnings[0].getMessage()
-    assert "do-not-log" not in warnings[0].getMessage()
-    assert str(tmp_path) not in warnings[0].getMessage()
+    # The same env is reused for both spawn attempts — no marker flip.
+    assert primary["env"] is fallback["env"]
+    assert primary["env"]["SECRET_SENTINEL"] == "do-not-log"
 
 
 class TestStableWindowsGatewayWorkingDir:

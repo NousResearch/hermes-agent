@@ -392,18 +392,13 @@ async def _lifespan(app: "FastAPI"):
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
     if os.getenv("HERMES_DESKTOP") == "1":
-        # Before forking a fresh gateway, reap any orphan left by a previous
-        # serve session. Graceful shutdown reaps the managed child, but an
-        # abnormal exit (crash, SIGKILL, power loss, forced update) reparents
-        # the old gateway to launchd (PPID=1). It keeps holding the QQ
-        # WebSocket, and a newly forked gateway then races the same credential,
-        # splitting messages across parallel session trees (#77276).
-        try:
-            from hermes_cli.gateway import _reap_unsupervised_gateway_orphans
-
-            _reap_unsupervised_gateway_orphans()
-        except Exception:
-            _log.exception("Desktop startup: orphan gateway reap failed")
+        # The messaging gateway is an independent service, not a child of the
+        # desktop. A gateway that survived the previous session (or runs
+        # independently) must be KEPT — reaping it would silently kill the
+        # user's messaging on every desktop reopen (#84311). Only when nothing
+        # is live do we sweep stale-port orphans (the #77276 duplicate guard)
+        # and auto-start a gateway the user's persisted intent says should run.
+        _manage_desktop_gateway_at_boot()
 
         cron_stop = threading.Event()
         cron_thread = threading.Thread(
@@ -4412,16 +4407,117 @@ _ACTION_RESULTS: Dict[str, Dict[str, Any]] = {}
 
 
 def _terminate_desktop_managed_gateway() -> None:
-    """Stop a live gateway restart child when its Desktop backend shuts down."""
-    proc = _ACTION_PROCS.get("gateway-restart")
-    if proc is None:
-        return
+    """Stop a live gateway action child when its Desktop backend shuts down.
+
+    Covers both the dashboard-triggered restart and the boot auto-start action
+    so a lingering management child can't keep a gateway spawn half-done
+    across a desktop close.
+    """
+    for name in ("gateway-restart", "gateway-start"):
+        proc = _ACTION_PROCS.get(name)
+        if proc is None:
+            continue
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+        except OSError:
+            # The child may have exited between poll() and terminate().
+            pass
+
+
+def _manage_desktop_gateway_at_boot() -> None:
+    """Desktop-boot messaging-gateway lifecycle (#84311).
+
+    The messaging gateway is an independent long-running service — closing the
+    desktop must not kill it, and reopening must not leave it dead. A gateway
+    that is still live (survived the close, or runs independently) is kept
+    as-is: reaping it would break messaging for nothing, and a fresh spawn
+    would race its platform credential (#77276). Only when nothing is live do
+    we sweep stale-port orphans and consider recreating a gateway the user
+    last had running.
+    """
     try:
-        if proc.poll() is None:
-            proc.terminate()
-    except OSError:
-        # The child may have exited between poll() and terminate().
-        pass
+        from hermes_cli.gateway import find_gateway_pids
+
+        live_gateways = find_gateway_pids(exclude_pids={os.getpid()})
+    except Exception:
+        live_gateways = []
+        _log.exception("Desktop startup: gateway liveness scan failed")
+
+    if live_gateways:
+        _log.info(
+            "Desktop startup: messaging gateway already running (pids %s); keeping it",
+            ",".join(str(int(pid)) for pid in live_gateways if pid),
+        )
+        return
+
+    # Nothing is live: reap stale-port orphans (the #77276 duplicate guard) so
+    # a recreated gateway binds cleanly, then auto-start on persisted intent.
+    try:
+        from hermes_cli.gateway import _reap_unsupervised_gateway_orphans
+
+        _reap_unsupervised_gateway_orphans()
+    except Exception:
+        _log.exception("Desktop startup: orphan gateway reap failed")
+
+    asyncio.create_task(_maybe_auto_start_gateway())
+
+
+def _gateway_auto_start_reason() -> str | None:
+    """Return a reason string when the messaging gateway should be auto-started.
+
+    The desktop only recreates the gateway when the user's persisted intent
+    says it should be running and no process is live: the last
+    ``gateway_state.json`` transition was a run state (``running`` /
+    ``draining`` — never ``stopped``, ``startup_failed``, or a missing record)
+    AND messaging platforms are configured. This mirrors the running-predicate
+    in ``gateway.status.get_runtime_status_running_pid``.
+
+    Runs off the event loop: loading gateway config performs platform
+    discovery, which can exceed the desktop handshake timeout on a cold
+    Windows boot (#73083).
+    """
+    try:
+        runtime = read_runtime_status()
+    except Exception:
+        runtime = None
+    state = runtime.get("gateway_state") if isinstance(runtime, dict) else None
+    if state in {None, "stopped", "startup_failed"}:
+        return None
+    try:
+        platforms = _load_configured_gateway_platforms()
+    except Exception:
+        _log.exception("Desktop startup: configured-platform scan failed")
+        return None
+    if not platforms:
+        return None
+    return f"last gateway state {state!r} with {len(platforms)} configured platform(s)"
+
+
+async def _maybe_auto_start_gateway() -> None:
+    """Auto-start the messaging gateway when the user's intent says it should run.
+
+    Scheduled from the Desktop boot path (``_manage_desktop_gateway_at_boot``)
+    as a background task so the intent check (gateway config / platform
+    discovery) never delays the server's ready handshake. The spawn goes
+    through the shared ``hermes gateway start`` action, which is already
+    idempotent against a concurrently starting gateway.
+    """
+    try:
+        reason = await asyncio.to_thread(_gateway_auto_start_reason)
+        if reason is None:
+            _log.info("Desktop startup: not auto-starting messaging gateway (no running intent)")
+            return
+        # One start per boot: a user-initiated "restart gateway" click while
+        # auto-start is in flight must not stack a second spawn.
+        existing = _ACTION_PROCS.get("gateway-start")
+        if existing is not None and existing.poll() is None:
+            _log.info("Desktop startup: gateway start already in flight; skipping auto-start")
+            return
+        proc = _spawn_hermes_action(_gateway_subcommand(None, "start"), "gateway-start")
+        _log.info("Desktop startup: auto-starting messaging gateway (%s; pid %s)", reason, proc.pid)
+    except Exception:
+        _log.exception("Desktop startup: gateway auto-start failed")
 
 
 def _record_completed_action(name: str, message: str, exit_code: int = 1) -> None:

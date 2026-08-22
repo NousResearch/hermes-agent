@@ -36,6 +36,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import textwrap
 import time
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -892,6 +893,130 @@ def windowless_gateway_restart_spec(
     return new_argv, working_dir, env_overlay
 
 
+# Gateway detached-spawn trampoline. ``_spawn_detached`` launches this tiny
+# intermediate with the gateway argv on its command line; it immediately
+# spawns the real gateway with the same detach flags and exits. The gateway's
+# parent is therefore dead within ~100ms of its birth, so no ancestor's
+# ``taskkill /T /F`` — the Desktop app's backend tree-kill on close — can ever
+# reach it: a live intermediate is exactly what makes a grandchild reachable
+# by tree-kill (#84311). The trampoline prints the gateway PID on its stdout
+# so the parent keeps the ``PID <n>`` spawn contract.
+_GATEWAY_DETACHED_SPAWN_TRAMPOLINE = textwrap.dedent(
+    r"""
+    import subprocess
+    import sys
+
+    from hermes_cli._subprocess_compat import (
+        windows_detach_flags,
+        windows_detach_flags_without_breakaway,
+    )
+
+    log_path = sys.argv[1]
+    cmd = sys.argv[2:]
+
+    try:
+        log_fh = open(log_path, "ab", buffering=0)
+    except OSError:
+        log_fh = None
+
+    kwargs = {
+        "creationflags": windows_detach_flags(),
+        "close_fds": True,
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_fh or subprocess.DEVNULL,
+        "stderr": log_fh or subprocess.DEVNULL,
+    }
+    try:
+        proc = subprocess.Popen(cmd, **kwargs)
+    except OSError:
+        # CREATE_BREAKAWAY_FROM_JOB can be rejected with ERROR_ACCESS_DENIED
+        # when the parent's job object refuses breakaway. Retry without it —
+        # mirrors the canonical fallback in gateway_windows._spawn_detached.
+        kwargs["creationflags"] = windows_detach_flags_without_breakaway()
+        try:
+            proc = subprocess.Popen(cmd, **kwargs)
+        except OSError as exc:
+            print(f"ERROR: {exc}", flush=True)
+            sys.exit(1)
+    finally:
+        if log_fh is not None:
+            log_fh.close()
+
+    # Report the gateway PID before exiting. CreateProcess returns before the
+    # gateway's own (slow) Python import, so this line lands fast.
+    print(proc.pid, flush=True)
+    """
+).strip()
+
+
+def _spawn_gateway_via_trampoline(
+    argv: list[str],
+    working_dir: str,
+    env_overlay: dict[str, str],
+    stray_log: Path,
+) -> int:
+    """Spawn ``argv`` via a short-lived trampoline so it is tree-detached.
+
+    The real gateway is spawned by a tiny intermediate process that exits
+    immediately after spawning, so the gateway's parent is dead within ~100ms
+    and no ancestor's ``taskkill /T /F`` (the Desktop app's backend tree-kill
+    on close) can reach it (#84311). The trampoline inherits the caller's cwd
+    and env and reports the gateway PID on its stdout; this returns that PID
+    so callers keep the ``PID <n>`` contract.
+
+    CREATE_NO_WINDOW / CREATE_BREAKAWAY_FROM_JOB detach semantics apply to
+    both the trampoline spawn and the gateway spawn, with the
+    breakaway-denied OSError fallback on each.
+    """
+    env = {**os.environ, **env_overlay}
+    payload = [str(stray_log), *argv]
+
+    try:
+        log_fh = open(stray_log, "ab", buffering=0)
+    except OSError:
+        log_fh = None
+
+    def _popen(creationflags: int) -> subprocess.Popen:
+        return subprocess.Popen(
+            [sys.executable, "-c", _GATEWAY_DETACHED_SPAWN_TRAMPOLINE, *payload],
+            cwd=working_dir,
+            env=env,
+            creationflags=creationflags,
+            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=log_fh or subprocess.DEVNULL,
+        )
+
+    try:
+        proc = _popen(windows_detach_flags())
+    except OSError:
+        # CREATE_BREAKAWAY_FROM_JOB can fail with "access denied" when the
+        # parent's job object doesn't permit breakaway (some Windows Terminal
+        # configs). Retry without the breakaway flag — in most setups the
+        # hidden-console CREATE_NO_WINDOW spawn is enough on its own.
+        proc = _popen(windows_detach_flags_without_breakaway())
+    finally:
+        if log_fh is not None:
+            log_fh.close()
+
+    # The trampoline prints the gateway PID immediately after CreateProcess
+    # returns and then exits; read it back to honor the PID contract. A blank
+    # or non-numeric line means the trampoline itself failed (broken
+    # interpreter / import) — surface that instead of returning a dead PID.
+    stdout = proc.stdout
+    try:
+        pid_line = stdout.readline() if stdout is not None else b""
+    except OSError:
+        pid_line = b""
+    text = pid_line.decode("utf-8", "replace").strip()
+    if text.isdigit():
+        return int(text)
+    raise RuntimeError(
+        f"Failed to spawn detached gateway: {text or 'trampoline produced no PID'}"
+    )
+
+
 def _spawn_detached(script_path: Path | None = None) -> int:
     """Launch the gateway as a fully detached background process.
 
@@ -906,31 +1031,21 @@ def _spawn_detached(script_path: Path | None = None) -> int:
     CREATE_NEW_PROCESS_GROUP + DEVNULL stdin + a fresh env, the resulting
     process is independent of whichever shell started it.
 
+    The gateway is spawned through a short-lived trampoline (see
+    ``_spawn_gateway_via_trampoline``) so its parent is dead within ~100ms of
+    its birth: a live intermediate is exactly what makes a grandchild
+    reachable by an ancestor's ``taskkill /T /F``, which is how the messaging
+    gateway used to die together with the Desktop backend on close (#84311).
+
     Arg ``script_path`` is accepted for API symmetry with older callers
     but ignored — we don't need it now that we go direct.
 
-    Returns the spawned PID so callers can verify the process actually
+    Returns the spawned gateway PID so callers can verify the process actually
     came up.
     """
     _assert_windows()
     argv, working_dir, env_overlay = _build_gateway_argv()
 
-    # Inherit PATH etc. from the current env, overlay our required vars.
-    env = {**os.environ, **env_overlay}
-    primary_env = {**env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: "1"}
-
-    # CREATE_NEW_PROCESS_GROUP 0x00000200 — child gets its own group, won't
-    #                                       receive Ctrl+C from our group
-    # CREATE_NO_WINDOW         0x08000000 — child owns a hidden console:
-    #                                       detached from our console's
-    #                                       lifetime AND inheritable by its
-    #                                       descendants (no conhost flashes)
-    # CREATE_BREAKAWAY_FROM_JOB 0x01000000 — escape any job object the
-    #                                       parent is in (prevents parent-
-    #                                       job teardown from reaping us;
-    #                                       some Windows Terminal versions
-    #                                       wrap their children in a job).
-    flags = windows_detach_flags()
 
     # Redirect any stray stdout/stderr output to a sidecar log. Python's
     # logging module writes to gateway.log through a FileHandler, so the
@@ -942,46 +1057,7 @@ def _spawn_detached(script_path: Path | None = None) -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     stray_log = log_dir / "gateway-stdio.log"
 
-    try:
-        with open(stray_log, "ab", buffering=0) as log_fh:
-            proc = subprocess.Popen(
-                argv,
-                cwd=working_dir,
-                env=primary_env,
-                creationflags=flags,
-                close_fds=True,
-                stdin=subprocess.DEVNULL,
-                stdout=log_fh,
-                stderr=log_fh,
-            )
-    except OSError as exc:
-        # CREATE_BREAKAWAY_FROM_JOB can fail with "access denied" when the
-        # parent's job object doesn't permit breakaway (some Windows
-        # Terminal configs). Retry without the breakaway flag — in most
-        # setups the hidden-console CREATE_NO_WINDOW spawn is enough on
-        # its own.
-        error_code = getattr(exc, "winerror", None)
-        if error_code is None:
-            error_code = exc.errno
-        logger.warning(
-            "Gateway breakaway spawn failed (error=%s); retrying without "
-            "CREATE_BREAKAWAY_FROM_JOB",
-            error_code,
-        )
-        flags_no_breakaway = windows_detach_flags_without_breakaway()
-        fallback_env = {**env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: "0"}
-        with open(stray_log, "ab", buffering=0) as log_fh:
-            proc = subprocess.Popen(
-                argv,
-                cwd=working_dir,
-                env=fallback_env,
-                creationflags=flags_no_breakaway,
-                close_fds=True,
-                stdin=subprocess.DEVNULL,
-                stdout=log_fh,
-                stderr=log_fh,
-            )
-    return proc.pid
+    return _spawn_gateway_via_trampoline(argv, working_dir, env_overlay, stray_log)
 
 
 def _install_choice_from_env(name: str) -> bool | None:

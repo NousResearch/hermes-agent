@@ -1006,13 +1006,14 @@ def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path
 def test_desktop_lifespan_reaps_orphan_gateways_on_startup(
     monkeypatch, _isolate_hermes_home
 ):
-    """Starting a Desktop serve backend should reap orphan gateways left by a
-    previous serve session before forking a fresh one (#77276).
+    """Starting a Desktop serve backend reaps stale orphan gateways (#77276).
 
-    Graceful shutdown reaps the managed child, but an abnormal exit reparents
-    the old gateway to launchd (PPID=1) where it keeps holding the QQ
-    WebSocket. The lifespan calls _reap_unsupervised_gateway_orphans() once at
-    startup under HERMES_DESKTOP=1 so the stale orphan is cleared first.
+    The Desktop backend keeps a gateway that is still live (it is an
+    independent service — reaping it would silently kill the user's messaging,
+    #84311) and only sweeps stale-port orphans when nothing is live, before a
+    fresh gateway may be auto-started. This test pins the reap leg of that
+    decision; the keep-live leg is covered by
+    ``test_desktop_gateway_autostart.py``.
     """
     import hermes_cli.web_server as ws
 
@@ -1027,11 +1028,14 @@ def test_desktop_lifespan_reaps_orphan_gateways_on_startup(
     # real cron scheduler thread.
     monkeypatch.setattr(ws, "_warm_gateway_module", lambda: None)
     monkeypatch.setattr(ws, "_start_desktop_cron_ticker", lambda *_args: None)
-    # web_server imports the reaper lazily from hermes_cli.gateway, so patch it
-    # on that module.
+    # web_server imports the reaper and the liveness scan lazily from
+    # hermes_cli.gateway, so patch them on that module. Pinning the scan to
+    # "nothing live" keeps the reap leg deterministic on machines that happen
+    # to run a real gateway.
     import hermes_cli.gateway as g
 
     monkeypatch.setattr(g, "_reap_unsupervised_gateway_orphans", _fake_reap)
+    monkeypatch.setattr(g, "find_gateway_pids", lambda exclude_pids=None: [])
 
     client, _header = _client()
     with client:

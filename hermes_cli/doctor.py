@@ -241,6 +241,19 @@ def _safe_which(cmd: str) -> str | None:
         return None
 
 
+def _npm_audit_omit_args(audit_extra: list[str]) -> list[str]:
+    """Return omit flags for doctor npm audits.
+
+    Workspace audits report runtime/browser-impacting dependencies. Dev-only
+    lint/build-tool advisories are noisy in this monorepo and can require major
+    upgrades unrelated to Hermes runtime health, so doctor omits them while
+    leaving explicit remediation work to npm audit.
+    """
+    if audit_extra and audit_extra[0] == "--workspace":
+        return ["--omit=dev", "--omit=optional"]
+    return ["--omit=optional"]
+
+
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
     steps: list[str] = []
     step = 1
@@ -2382,7 +2395,7 @@ def run_doctor(args):
                 # Use resolved absolute path so Windows can execute
                 # npm.cmd (CreateProcessW can't run bare .cmd names).
                 audit_result = subprocess.run(
-                    [_npm_bin, "audit", "--json", *audit_extra],
+                    [_npm_bin, "audit", "--json", *audit_extra, *_npm_audit_omit_args(audit_extra)],
                     cwd=str(npm_dir),
                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
                 )
@@ -2393,16 +2406,14 @@ def run_doctor(args):
                 high = vuln_count.get("high", 0)
                 moderate = vuln_count.get("moderate", 0)
                 total = critical + high + moderate
-                # Determine a scoped fix command for the remediation hint.
-                if audit_extra and audit_extra[0] == "--workspace":
-                    # Detection (`npm audit --workspace <name>`) is read-only and
-                    # safe, but `npm audit fix --workspace <name>` crashes on
-                    # current npm with "Cannot read properties of null (reading
-                    # 'edgesOut')" — an arborist bug with workspace-filtered
-                    # audit fix. The root-level `npm audit fix` can crash on the
-                    # same tree with "isDescendantOf", so do not hand the user a
-                    # manual fix command for these build-tool advisories.
-                    fix_cmd = None
+                # Determine a scoped check/remediation command for the hint.
+                workspace_audit = audit_extra and audit_extra[0] == "--workspace"
+                if workspace_audit:
+                    workspace_name = audit_extra[1] if len(audit_extra) > 1 else "<workspace>"
+                    fix_cmd = (
+                        f"cd {PROJECT_ROOT} && npm audit --workspace {workspace_name} "
+                        "--omit=dev --omit=optional"
+                    )
                 elif audit_extra == ["--workspaces=false"]:
                     fix_cmd = f"cd {npm_dir} && npm audit fix --workspaces=false"
                 else:
@@ -2417,22 +2428,16 @@ def run_doctor(args):
                     else:
                         vuln_detail = (
                             f"{critical} critical, {high} high, {moderate} moderate — "
-                            "build-tool advisory; clears via lockfile bump"
+                            f"review runtime advisory: {fix_cmd}"
                         )
                     check_warn(
                         f"{label} deps",
                         f"({vuln_detail})"
                     )
-                    if audit_extra and audit_extra[0] == "--workspace":
-                        # The web/ui-tui workspace advisories are in build-time
-                        # tooling (esbuild/vite, etc.), not runtime code that ships
-                        # to users. Manual npm remediation may error with a known
-                        # arborist crash (edgesOut / isDescendantOf) on this monorepo
-                        # tree — in that case it is an npm bug, not a Hermes one.
+                    if workspace_audit:
                         check_info(
-                            "  ^ build-time tooling (not runtime); if manual npm remediation "
-                            "errors with an arborist crash it's a known npm bug — clears "
-                            "via a lockfile bump"
+                            "  ^ dev-only lint/build tooling is omitted here; doctor reports "
+                            "runtime workspace advisories only"
                         )
                     issues.append(
                         f"{label} has {total} npm "

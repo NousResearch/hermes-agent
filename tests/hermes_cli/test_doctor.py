@@ -1517,3 +1517,13 @@ class TestDoctorDeprecatedConfigAndEnv:
         assert "Deprecated: delegation.max_async_children" in out
         assert "Deprecated: HERMES_TOOL_PROGRESS_MODE" in out
         assert "⚠" in out or "Deprecated" in out
+
+
+def test_workspace_npm_audit_omits_dev_and_optional_deps():
+    assert doctor_mod._npm_audit_omit_args(["--workspace", "web"]) == [
+        "--omit=dev",
+        "--omit=optional",
+    ]
+    assert doctor_mod._npm_audit_omit_args(["--workspaces=false"]) == [
+        "--omit=optional"
+    ]

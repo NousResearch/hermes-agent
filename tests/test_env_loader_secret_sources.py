@@ -213,6 +213,63 @@ def test_cold_profile_hydration_seeds_op_env_bootstrap(tmp_path, monkeypatch):
     assert os.environ.get("OP_SERVICE_ACCOUNT_TOKEN") is None
 
 
+def test_cold_profile_hydration_reports_returned_source_outcomes_once(
+    tmp_path, monkeypatch, capsys
+):
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n  external:\n    enabled: true\n", encoding="utf-8"
+    )
+
+    from agent.secret_sources.base import ErrorKind, FetchResult
+    from agent.secret_sources.registry import ApplyReport, SourceReport
+    from agent.secret_sources import registry as reg_module
+
+    secret_value = "arbitrary-sentinel-secret"
+    remediation_calls = []
+
+    def _remediation_hint(name, error_kind, _cfg, *, scope=None):
+        remediation_calls.append((name, error_kind, scope))
+        return "check the source credentials"
+
+    monkeypatch.setattr(env_loader, "_remediation_hint", _remediation_hint)
+
+    def _fake_apply_all(_cfg, _home, environ=None):
+        return ApplyReport(
+            sources=[
+                SourceReport(
+                    name="external",
+                    label="External Source",
+                    result=FetchResult(
+                        secrets={"UNSAFE_API_KEY": secret_value},
+                        error=f"source unavailable: {secret_value}",
+                        error_kind=ErrorKind.NETWORK,
+                        warnings=[f"retry later: {secret_value}"],
+                    ),
+                    applied=["UNSAFE_API_KEY"],
+                )
+            ],
+            provenance={},
+            conflicts=["UNSAFE_API_KEY: conflict"],
+        )
+
+    monkeypatch.setattr(reg_module, "apply_all", _fake_apply_all)
+
+    assert env_loader.hydrate_profile_secret_sources(tmp_path) == {}
+    output = capsys.readouterr().err
+    assert "External Source: applied 1 secret" in output
+    assert "External Source: source failed (error_kind=network)" in output
+    assert "check the source credentials" in output
+    assert "External Source: 1 warning" in output
+    assert "UNSAFE_API_KEY: conflict" in output
+    assert secret_value not in output
+    assert remediation_calls == [
+        ("external", ErrorKind.NETWORK, str(tmp_path.resolve()))
+    ]
+
+    assert env_loader.hydrate_profile_secret_sources(tmp_path) == {}
+    assert capsys.readouterr().err == ""
+
+
 def test_cold_profile_hydration_dotenv_wins_over_op_env(tmp_path, monkeypatch):
     """.env takes precedence over .op.env for the same key (setdefault)."""
     monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)

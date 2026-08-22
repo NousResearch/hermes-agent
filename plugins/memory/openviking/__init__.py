@@ -7,13 +7,15 @@ automatic memory extraction, and session management.
 Original PR #3369 by Mibayy, rewritten to use the full OpenViking session
 lifecycle instead of read-only search endpoints.
 
-Config via environment variables (profile-scoped via each profile's .env)
-or a linked OpenViking CLI config:
+Connection settings prefer ``memory.openviking`` in the active profile's
+config.yaml, with ``OPENVIKING_API_KEY`` in its .env, or a linked OpenViking
+CLI config. Legacy ``OPENVIKING_*`` environment overrides remain supported:
   OPENVIKING_ENDPOINT  — Server URL (default: http://127.0.0.1:1933)
   OPENVIKING_API_KEY   — API key (required for authenticated servers)
   OPENVIKING_ACCOUNT   — Tenant account for local/trusted mode (default: default)
   OPENVIKING_USER      — Tenant user for local/trusted mode (default: default)
-  OPENVIKING_AGENT     — Hermes peer ID in OpenViking (default: hermes)
+  OPENVIKING_AGENT     — peer identity sent through X-OpenViking-Actor-Peer
+                         (default: hermes)
 
 Capabilities:
   - Automatic memory extraction on session commit (6 categories)
@@ -65,7 +67,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_ENDPOINT = "http://127.0.0.1:1933"
 _OPENVIKING_SERVICE_ENDPOINT = "https://api.vikingdb.cn-beijing.volces.com/openviking"
 _DEFAULT_AGENT = "hermes"
-_AGENT_PROMPT_LABEL = "Hermes peer ID in OpenViking"
+_AGENT_PROMPT_LABEL = "Peer identity sent through X-OpenViking-Actor-Peer"
 _OVCLI_CONFIG_ENV = "OPENVIKING_CLI_CONFIG_FILE"
 _OVCLI_DEFAULT_RELATIVE_PATH = ".openviking/ovcli.conf"
 _OVCLI_SAVED_PREFIX = "ovcli.conf."
@@ -102,6 +104,7 @@ _SESSION_START_LIST_PARAMS = {
     "abs_limit": 512,
     "node_limit": 512,
 }
+_IDENTITY_UNSET = object()
 
 # Maps the viking_remember `category` enum to a viking:// subdirectory.
 # Keep in sync with REMEMBER_SCHEMA.parameters.properties.category.enum.
@@ -287,17 +290,34 @@ def _get_httpx():
 class _VikingClient:
     """Thin HTTP client for the OpenViking REST API."""
 
-    def __init__(self, endpoint: str, api_key: str = "",
-                 account: Optional[str] = None, user: Optional[str] = None,
-                 agent: Optional[str] = None):
+    def __init__(
+        self,
+        endpoint: str,
+        api_key: str = "",
+        account: Optional[str] | object = _IDENTITY_UNSET,
+        user: Optional[str] | object = _IDENTITY_UNSET,
+        agent: Optional[str] | object = _IDENTITY_UNSET,
+    ):
         self._endpoint = endpoint.rstrip("/")
         self._api_key = api_key
         # Account/user are local/trusted-mode tenant identity. API-key requests
         # omit these headers by default; trusted-mode retry may send them only
         # after OpenViking explicitly asks for asserted tenant identity.
-        self._account = account or os.environ.get("OPENVIKING_ACCOUNT", "default")
-        self._user = user or os.environ.get("OPENVIKING_USER", "default")
-        self._agent = agent if agent is not None else os.environ.get("OPENVIKING_AGENT", _DEFAULT_AGENT)
+        self._account = (
+            os.environ.get("OPENVIKING_ACCOUNT", "default")
+            if account is _IDENTITY_UNSET or account is None
+            else account
+        )
+        self._user = (
+            os.environ.get("OPENVIKING_USER", "default")
+            if user is _IDENTITY_UNSET or user is None
+            else user
+        )
+        self._agent = (
+            os.environ.get("OPENVIKING_AGENT", _DEFAULT_AGENT)
+            if agent is _IDENTITY_UNSET or agent is None
+            else agent
+        )
         self._httpx = _get_httpx()
         if self._httpx is None:
             raise ImportError("httpx is required for OpenViking: pip install httpx")
@@ -810,8 +830,11 @@ def _default_ovcli_config_path() -> Path:
     return Path.home() / _OVCLI_DEFAULT_RELATIVE_PATH
 
 
-def _resolve_ovcli_config_path(config_path: str = "") -> Path:
-    env_path = os.environ.get(_OVCLI_CONFIG_ENV, "").strip()
+def _resolve_ovcli_config_path(
+    config_path: str = "", *, env: Optional[dict] = None
+) -> Path:
+    env_path = _env_value(_OVCLI_CONFIG_ENV, env)
+    env_path = env_path.strip() if env_path else ""
     if env_path:
         return Path(env_path).expanduser()
     if config_path:
@@ -1094,11 +1117,33 @@ def _is_local_openviking_url(value: str) -> bool:
     return scheme == "http" and (parsed.hostname or "").lower() in _LOCAL_OPENVIKING_HOSTS
 
 
-def _load_hermes_openviking_config() -> dict:
+def _load_hermes_openviking_config(
+    hermes_home: Optional[str] = None, *, env: Optional[dict] = None
+) -> dict:
     try:
         from hermes_cli.config import load_config_readonly
 
-        config = load_config_readonly()
+        if hermes_home:
+            from hermes_constants import (
+                reset_hermes_home_override,
+                set_hermes_home_override,
+            )
+
+            home_token = set_hermes_home_override(hermes_home)
+            try:
+                config = (
+                    load_config_readonly(env=env)
+                    if env is not None
+                    else load_config_readonly()
+                )
+            finally:
+                reset_hermes_home_override(home_token)
+        else:
+            config = (
+                load_config_readonly(env=env)
+                if env is not None
+                else load_config_readonly()
+            )
         memory_config = config.get("memory", {}) if isinstance(config, dict) else {}
         provider_config = memory_config.get("openviking", {}) if isinstance(memory_config, dict) else {}
         return dict(provider_config) if isinstance(provider_config, dict) else {}
@@ -1106,8 +1151,34 @@ def _load_hermes_openviking_config() -> dict:
         return {}
 
 
-def _env_value(name: str) -> Optional[str]:
-    return os.environ[name].strip() if name in os.environ else None
+def _env_value(name: str, env: Optional[dict] = None) -> Optional[str]:
+    source = os.environ if env is None else env
+    if name in source:
+        return source[name].strip()
+    return None
+
+
+def _profile_openviking_env(hermes_home: Optional[str]) -> Optional[dict]:
+    if not hermes_home:
+        return None
+    home = Path(hermes_home)
+    try:
+        from hermes_cli.env_loader import hydrate_profile_secret_sources
+        from agent.secret_scope import build_profile_secret_scope
+
+        # The shared hydrator is cached once per profile home. Calling it here
+        # is safe for reloads and covers provider initialization paths that do
+        # not enter the gateway's broader profile runtime scope.
+        hydrate_profile_secret_sources(home)
+        return build_profile_secret_scope(home)
+    except Exception as exc:
+        logger.warning(
+            "OpenViking profile secret-source hydration failed for %s (%s); "
+            "continuing without profile secrets.",
+            home,
+            type(exc).__name__,
+        )
+        return {}
 
 
 def _first_nonempty(*values: Optional[str], default: str = "") -> str:
@@ -1117,38 +1188,57 @@ def _first_nonempty(*values: Optional[str], default: str = "") -> str:
     return default
 
 
-def _resolve_connection_settings(provider_config: Optional[dict] = None) -> dict:
+def _resolve_connection_settings(
+    provider_config: Optional[dict] = None, *, env: Optional[dict] = None
+) -> dict:
     provider_config = dict(provider_config or {})
     ovcli_values: dict = {}
     if provider_config.get("use_ovcli_config"):
-        ovcli_path = _resolve_ovcli_config_path(str(provider_config.get("ovcli_config_path") or ""))
+        ovcli_path = _resolve_ovcli_config_path(
+            str(provider_config.get("ovcli_config_path") or ""), env=env
+        )
         ovcli_values = _connection_values_from_ovcli(_load_ovcli_config(ovcli_path))
 
-    endpoint_env = _env_value("OPENVIKING_ENDPOINT")
-    api_key_env = _env_value("OPENVIKING_API_KEY")
-    account_env = _env_value("OPENVIKING_ACCOUNT")
-    user_env = _env_value("OPENVIKING_USER")
-    agent_env = _env_value("OPENVIKING_AGENT")
+    endpoint_env = _env_value("OPENVIKING_ENDPOINT", env)
+    process_endpoint = None
+    if env is not None and "OPENVIKING_ENDPOINT" not in env:
+        process_endpoint = _env_value("OPENVIKING_ENDPOINT")
+    api_key_env = _env_value("OPENVIKING_API_KEY", env)
+    account_env = _env_value("OPENVIKING_ACCOUNT", env)
+    user_env = _env_value("OPENVIKING_USER", env)
+    agent_env = _env_value("OPENVIKING_AGENT", env)
 
     # Non-secret fields fall back to config.yaml (e.g. the Dashboard writes
-    # ``memory.openviking.endpoint`` there) before the built-in default, so the
-    # full chain is env -> ovcli -> config.yaml -> default. The secret api_key is
+    # ``memory.openviking.endpoint`` there) before the built-in default. Bound
+    # profiles add the legacy process endpoint only after profile-owned config;
+    # credentials never use that process fallback. The secret api_key is
     # sourced from the environment (synced from .env), never from config.yaml.
     endpoint = _first_nonempty(
         endpoint_env,
         ovcli_values.get("endpoint"),
         _clean_config_value(provider_config.get("endpoint")),
+        process_endpoint,
         default=_DEFAULT_ENDPOINT,
     )
+    api_key = api_key_env if api_key_env is not None else ovcli_values.get("api_key", "")
+    account = account_env if account_env is not None else _first_nonempty(
+        ovcli_values.get("account"), _clean_config_value(provider_config.get("account"))
+    )
+    user = user_env if user_env is not None else _first_nonempty(
+        ovcli_values.get("user"), _clean_config_value(provider_config.get("user"))
+    )
+    if not api_key:
+        # Intentional local/trusted-mode normalization at this settings boundary.
+        # _VikingClient preserves an explicit "" for the separate purpose of
+        # preventing ambient-process fallback when callers bypass this resolver.
+        account = account or "default"
+        user = user or "default"
+
     return {
         "endpoint": _normalize_openviking_url(endpoint),
-        "api_key": api_key_env if api_key_env is not None else ovcli_values.get("api_key", ""),
-        "account": account_env if account_env is not None else _first_nonempty(
-            ovcli_values.get("account"), _clean_config_value(provider_config.get("account"))
-        ),
-        "user": user_env if user_env is not None else _first_nonempty(
-            ovcli_values.get("user"), _clean_config_value(provider_config.get("user"))
-        ),
+        "api_key": api_key,
+        "account": account,
+        "user": user,
         "agent": _first_nonempty(
             agent_env,
             ovcli_values.get("agent"),
@@ -1308,47 +1398,6 @@ def _validate_openviking_reachability(endpoint: str) -> tuple[bool, str]:
     return False, f"OpenViking server is not reachable at {endpoint}."
 
 
-def _validate_openviking_auth(values: dict) -> tuple[bool, str]:
-    try:
-        endpoint = _normalize_openviking_url(values.get("endpoint"))
-        client = _VikingClient(
-            endpoint,
-            _clean_config_value(values.get("api_key")),
-            account=_clean_config_value(values.get("account")),
-            user=_clean_config_value(values.get("user")),
-            agent=_clean_config_value(values.get("agent")) or _DEFAULT_AGENT,
-        )
-        client.validate_auth()
-    except Exception as e:
-        return False, f"OpenViking authentication validation failed: {_format_openviking_exception(e)}"
-    return True, ""
-
-
-def _validate_openviking_root_access(values: dict) -> tuple[bool, str]:
-    try:
-        endpoint = _normalize_openviking_url(values.get("endpoint"))
-        client = _VikingClient(
-            endpoint,
-            _clean_config_value(values.get("api_key")),
-            agent=_clean_config_value(values.get("agent")) or _DEFAULT_AGENT,
-        )
-        client.validate_root_access()
-    except Exception as e:
-        return False, f"OpenViking root API key validation failed: {_format_openviking_exception(e)}"
-    return True, ""
-
-
-def _validate_openviking_user_key_scope(values: dict) -> tuple[bool, str]:
-    root_ok, _message = _validate_openviking_root_access(values)
-    if not root_ok:
-        return True, ""
-    return (
-        False,
-        "That key has ROOT access. Choose Root API key and provide account/user, "
-        "or enter a user API key.",
-    )
-
-
 def _status_code_from_error(error: Exception) -> Optional[int]:
     if isinstance(error, _OpenVikingHTTPError):
         return error.status_code
@@ -1383,13 +1432,18 @@ def _validate_openviking_setup_values(
     api_key = _clean_config_value(values.get("api_key"))
     if require_api_key and not api_key:
         return False, "Remote OpenViking configs require an API key.", None
+    account = _clean_config_value(values.get("account"))
+    user = _clean_config_value(values.get("user"))
+    if not api_key:
+        account = account or "default"
+        user = user or "default"
 
     try:
         client = _VikingClient(
             endpoint,
             api_key,
-            account=_clean_config_value(values.get("account")),
-            user=_clean_config_value(values.get("user")),
+            account=account,
+            user=user,
             agent=_clean_config_value(values.get("agent")) or _DEFAULT_AGENT,
         )
         identity, health = _probe_openviking_identity(client)
@@ -2238,6 +2292,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._session_id = ""
         self._turn_count = 0
         self._hermes_home = ""
+        self._hermes_home_bound = False
         self._run_id = uuid.uuid4().hex
         self._run_lock_file: Optional[Any] = None
         self._run_lock_path: Optional[Path] = None
@@ -2292,7 +2347,44 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return "openviking"
 
     def is_available(self) -> bool:
-        """Check if OpenViking endpoint is configured. No network calls."""
+        """Check if OpenViking is configured without probing the server."""
+        try:
+            from hermes_constants import get_hermes_home_override
+
+            active_home = get_hermes_home_override()
+        except Exception:
+            active_home = None
+        if active_home:
+            from agent.secret_scope import load_env_file
+
+            profile_env = load_env_file(Path(active_home) / ".env")
+            provider_config = _load_hermes_openviking_config(
+                active_home, env=profile_env
+            )
+            if profile_env and profile_env.get("OPENVIKING_ENDPOINT", "").strip():
+                return True
+            if (
+                profile_env is not None
+                and "OPENVIKING_ENDPOINT" not in profile_env
+                and os.environ.get("OPENVIKING_ENDPOINT", "").strip()
+            ):
+                return True
+            if _clean_config_value(provider_config.get("endpoint")):
+                return True
+            if not provider_config.get("use_ovcli_config"):
+                return False
+            try:
+                ovcli_path = _resolve_ovcli_config_path(
+                    str(provider_config.get("ovcli_config_path") or ""),
+                    env=profile_env,
+                )
+                return bool(
+                    _connection_values_from_ovcli(_load_ovcli_config(ovcli_path)).get(
+                        "endpoint"
+                    )
+                )
+            except Exception:
+                return False
         if os.environ.get("OPENVIKING_ENDPOINT"):
             return True
         provider_config = _load_hermes_openviking_config()
@@ -2339,8 +2431,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
             {
                 "key": "agent",
                 "description": (
-                    "Hermes peer ID in OpenViking, sent as the actor peer and "
-                    "used for peer-scoped memories"
+                    "Peer identity sent through X-OpenViking-Actor-Peer; OpenViking "
+                    "applies its account namespace policy"
                 ),
                 "default": "hermes",
                 "env_var": "OPENVIKING_AGENT",
@@ -2723,9 +2815,19 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if kwargs.get("platform") == "cli"
             else None
         )
+        requested_home = str(kwargs.get("hermes_home") or "").strip()
+        hermes_home = requested_home
+        if not hermes_home:
+            try:
+                from hermes_constants import get_hermes_home
+                hermes_home = str(get_hermes_home())
+            except Exception:
+                hermes_home = str(Path.home() / ".hermes")
+        self._hermes_home = hermes_home
+        self._hermes_home_bound = bool(requested_home)
         connection_error = ""
         try:
-            settings = _resolve_connection_settings(_load_hermes_openviking_config())
+            settings = self._resolve_bound_connection_settings()
         except _OpenVikingEndpointError as exc:
             connection_error = str(exc)
             settings = {
@@ -2747,14 +2849,6 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._env_refresh_enabled = True
         self._session_id = session_id
         self._turn_count = 0
-        hermes_home = str(kwargs.get("hermes_home") or "").strip()
-        if not hermes_home:
-            try:
-                from hermes_constants import get_hermes_home
-                hermes_home = str(get_hermes_home())
-            except Exception:
-                hermes_home = str(Path.home() / ".hermes")
-        self._hermes_home = hermes_home
         self._acquire_run_lock()
         self._profile_prefetched_sessions.clear()
 
@@ -2826,6 +2920,20 @@ class OpenVikingMemoryProvider(MemoryProvider):
         with self._client_refresh_lock:
             return self._ensure_client_locked()
 
+    def _resolve_bound_connection_settings(self) -> dict:
+        provider_config, profile_env = self._profile_config_and_env()
+        return _resolve_connection_settings(provider_config, env=profile_env)
+
+    def _profile_config_and_env(self) -> tuple[dict, Optional[dict]]:
+        home = self._hermes_home if self._hermes_home_bound else None
+        profile_env = _profile_openviking_env(home)
+        provider_config = (
+            _load_hermes_openviking_config(home, env=profile_env)
+            if home
+            else _load_hermes_openviking_config()
+        )
+        return provider_config, profile_env
+
     def _ensure_client_locked(self) -> Optional["_VikingClient"]:
         """Resolve and publish one client/config state under the refresh lock."""
         if self._shutting_down:
@@ -2833,7 +2941,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return None
 
         try:
-            settings = _resolve_connection_settings(_load_hermes_openviking_config())
+            settings = self._resolve_bound_connection_settings()
         except _OpenVikingEndpointError as exc:
             failed_key = ("invalid-endpoint", str(exc))
             failed = self._failed_refresh
@@ -3638,8 +3746,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
         logger.warning("Invalid %s value %r; using default %r.", source, value, default)
 
     @staticmethod
-    def _setting_value(env_name: str, config_value: Any) -> tuple[Any, str]:
-        env_value = os.environ.get(env_name)
+    def _setting_value(
+        env_name: str,
+        config_value: Any,
+        *,
+        env: Optional[dict] = None,
+    ) -> tuple[Any, str]:
+        env_value = _env_value(env_name, env)
         if env_value is not None and env_value.strip():
             return env_value, env_name
         config_key = env_name.removeprefix("OPENVIKING_").lower()
@@ -3652,8 +3765,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         config_value: Any,
         *,
         default: bool,
+        env: Optional[dict] = None,
     ) -> bool:
-        value, source = cls._setting_value(env_name, config_value)
+        value, source = cls._setting_value(env_name, config_value, env=env)
         if isinstance(value, bool):
             return value
         if isinstance(value, str):
@@ -3674,8 +3788,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         default: int,
         minimum: int,
         maximum: int,
+        env: Optional[dict] = None,
     ) -> int:
-        value, source = cls._setting_value(env_name, config_value)
+        value, source = cls._setting_value(env_name, config_value, env=env)
         try:
             if isinstance(value, bool):
                 raise ValueError
@@ -3697,8 +3812,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         default: float,
         minimum: float,
         maximum: float,
+        env: Optional[dict] = None,
     ) -> float:
-        value, source = cls._setting_value(env_name, config_value)
+        value, source = cls._setting_value(env_name, config_value, env=env)
         try:
             if isinstance(value, bool):
                 raise ValueError
@@ -3713,7 +3829,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def _recall_config(self) -> Dict[str, Any]:
         # Read from config.yaml → memory.openviking as primary source, env vars
         # as override. Behavioural settings belong in config.yaml (AGENTS.md).
-        provider_config = _load_hermes_openviking_config()
+        provider_config, profile_env = self._profile_config_and_env()
         cfg = provider_config
 
         return {
@@ -3722,57 +3838,66 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 cfg.get("recall_limit", _DEFAULT_RECALL_LIMIT),
                 default=_DEFAULT_RECALL_LIMIT,
                 minimum=1, maximum=100,
+                env=profile_env,
             ),
             "score_threshold": self._setting_float(
                 "OPENVIKING_RECALL_SCORE_THRESHOLD",
                 cfg.get("recall_score_threshold", _DEFAULT_RECALL_SCORE_THRESHOLD),
                 default=_DEFAULT_RECALL_SCORE_THRESHOLD,
                 minimum=0.0, maximum=1.0,
+                env=profile_env,
             ),
             "max_injected_chars": self._setting_int(
                 "OPENVIKING_RECALL_MAX_INJECTED_CHARS",
                 cfg.get("recall_max_injected_chars", _DEFAULT_RECALL_MAX_INJECTED_CHARS),
                 default=_DEFAULT_RECALL_MAX_INJECTED_CHARS,
                 minimum=100, maximum=50000,
+                env=profile_env,
             ),
             "timeout_seconds": self._setting_float(
                 "OPENVIKING_RECALL_TIMEOUT_SECONDS",
                 cfg.get("recall_timeout_seconds", _DEFAULT_RECALL_TIMEOUT_SECONDS),
                 default=_DEFAULT_RECALL_TIMEOUT_SECONDS,
                 minimum=0.25, maximum=60.0,
+                env=profile_env,
             ),
             "request_timeout_seconds": self._setting_float(
                 "OPENVIKING_RECALL_REQUEST_TIMEOUT_SECONDS",
                 cfg.get("recall_request_timeout_seconds", _DEFAULT_RECALL_REQUEST_TIMEOUT_SECONDS),
                 default=_DEFAULT_RECALL_REQUEST_TIMEOUT_SECONDS,
                 minimum=0.25, maximum=60.0,
+                env=profile_env,
             ),
             "full_read_limit": self._setting_int(
                 "OPENVIKING_RECALL_FULL_READ_LIMIT",
                 cfg.get("recall_full_read_limit", _DEFAULT_RECALL_FULL_READ_LIMIT),
                 default=_DEFAULT_RECALL_FULL_READ_LIMIT,
                 minimum=0, maximum=100,
+                env=profile_env,
             ),
             "prefer_abstract": self._setting_bool(
                 "OPENVIKING_RECALL_PREFER_ABSTRACT",
                 cfg.get("recall_prefer_abstract", False),
                 default=False,
+                env=profile_env,
             ),
             "resources": self._setting_bool(
                 "OPENVIKING_RECALL_RESOURCES",
                 cfg.get("recall_resources", False),
                 default=False,
+                env=profile_env,
             ),
         }
 
     def _profile_token_budget(self) -> int:
-        cfg = _load_hermes_openviking_config()
+        cfg, profile_env = self._profile_config_and_env()
         return self._setting_int(
             "OPENVIKING_PROFILE_TOKEN_BUDGET",
             cfg.get("profile_token_budget", _DEFAULT_PROFILE_TOKEN_BUDGET),
             default=_DEFAULT_PROFILE_TOKEN_BUDGET,
             minimum=500,
             maximum=50000,
+            env=profile_env,
         )
 
     @staticmethod
@@ -4777,9 +4902,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         )
 
     def _build_memory_uri(self, subdir: str) -> str:
-        """Build a viking:// memory URI under the configured peer namespace."""
+        """Build a current-user shorthand memory URI."""
         slug = uuid.uuid4().hex[:12]
-        return f"viking://user/peers/{self._agent}/memories/{subdir}/mem_{slug}.md"
+        return f"viking://user/memories/{subdir}/mem_{slug}.md"
 
     def on_memory_write(
         self,
@@ -4982,7 +5107,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
     ) -> Dict[str, Any]:
         summary_level = level in {"abstract", "overview"}
         # OpenViking expects directory URIs for pseudo summary files
-        # (e.g. viking://user/hermes/.overview.md).
+        # (e.g. viking://user/memories/preferences/.overview.md).
         resolved_uri = self._normalize_summary_uri(uri) if summary_level else uri
         used_fallback = False
 

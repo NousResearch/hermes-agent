@@ -145,8 +145,9 @@ def test_env_loader_prints_remediation_hint(tmp_path, monkeypatch, capsys):
         env_loader.reset_secret_source_cache()
 
     err = capsys.readouterr().err
-    assert "rejected the machine-account access token" in err
+    assert "Bitwarden Secrets Manager: source failed (error_kind=auth_failed)" in err
     assert "hermes secrets bitwarden token" in err
+    assert "invalid_client" not in err
 
 
 def test_remediation_hint_uses_explicit_profile_scope(tmp_path, monkeypatch):

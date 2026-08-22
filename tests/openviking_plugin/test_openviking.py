@@ -8,6 +8,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+
 import plugins.memory.openviking as openviking_plugin
 from plugins.memory.openviking import OpenVikingMemoryProvider
 
@@ -339,6 +341,43 @@ memory:
         assert cfg["prefer_abstract"] is True
         assert cfg["resources"] is True
         assert provider._profile_token_budget() == 7000
+
+    def test_bound_recall_config_uses_initialized_home_outside_active_context(
+        self, monkeypatch, tmp_path
+    ):
+        hermes_home = tmp_path / "profile"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            """\
+memory:
+  openviking:
+    recall_limit: 11
+    profile_token_budget: 7100
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("OPENVIKING_RECALL_LIMIT", "99")
+        monkeypatch.setenv("OPENVIKING_PROFILE_TOKEN_BUDGET", "9000")
+
+        provider = OpenVikingMemoryProvider()
+        provider._hermes_home = str(hermes_home)
+        provider._hermes_home_bound = True
+
+        assert provider._recall_config()["limit"] == 11
+        assert provider._profile_token_budget() == 7100
+
+        (hermes_home / "config.yaml").write_text(
+            """\
+memory:
+  openviking:
+    recall_limit: 12
+    profile_token_budget: 7200
+""",
+            encoding="utf-8",
+        )
+
+        assert provider._recall_config()["limit"] == 12
+        assert provider._profile_token_budget() == 7200
 
     def test_recall_config_env_overrides_config_yaml(self, monkeypatch, tmp_path):
         """Env vars OPENVIKING_RECALL_* take precedence over config.yaml values
@@ -778,6 +817,7 @@ class TestOpenVikingAutoRecallPrefetch:
             for headers in records["headers"]
         ]
         assert all(headers.get("x-openviking-actor-peer") == "hermes" for headers in normalized_headers)
+        assert all("x-openviking-agent" not in headers for headers in normalized_headers)
         assert all(headers.get("x-openviking-account") == "acct" for headers in normalized_headers)
         assert all(headers.get("x-openviking-user") == "user" for headers in normalized_headers)
 
@@ -815,11 +855,7 @@ class TestOpenVikingBrowse:
 
 
 class TestOpenVikingMemoryUriBuilder:
-    """Regression tests for _build_memory_uri — fixes #36969.
-
-    OpenViking's current memory layout stores peer-scoped memories under
-    viking://user/peers/{peer_id}/...
-    """
+    """Regression tests for current-user shorthand explicit memory writes."""
 
     def _make_provider(self, user="alice", agent="coder"):
         p = OpenVikingMemoryProvider.__new__(OpenVikingMemoryProvider)
@@ -827,13 +863,14 @@ class TestOpenVikingMemoryUriBuilder:
         p._agent = agent
         return p
 
-    def test_uri_layout_includes_peer_segment(self):
-        """URI must contain /peers/{peer_id}/ between user and memories."""
+    def test_uri_layout_uses_current_user_shorthand(self):
+        """URI must leave user and agent resolution to OpenViking."""
         p = self._make_provider(user="alice", agent="coder")
         uri = p._build_memory_uri("preferences")
-        assert uri.startswith("viking://user/peers/coder/memories/preferences/mem_")
+        assert uri.startswith("viking://user/memories/preferences/mem_")
+        assert "/alice/" not in uri
+        assert "/coder/" not in uri
         assert uri.endswith(".md")
-
 
 # ===================================================================
 # Issue #21130 — OPENVIKING_* not reloaded after /reload
@@ -842,6 +879,199 @@ class TestOpenVikingMemoryUriBuilder:
 
 class TestEnsureClientReloadsEnv:
     """Verify /reload picks up new OPENVIKING_* values without a restart (#21130)."""
+
+    def test_bound_profiles_keep_write_identity_when_global_env_interleaves(
+        self, monkeypatch, tmp_path
+    ):
+        instances = []
+
+        class _RecordingClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent="hermes"):
+                self.endpoint = endpoint
+                self.api_key = api_key
+                self.account = account
+                self.user = user
+                self.agent = agent
+                self.posts = []
+                instances.append(self)
+
+            def health(self):
+                return True
+
+            def post(self, path, payload=None, **kwargs):
+                self.posts.append((path, payload or {}))
+                return {"result": {"written_bytes": 7}}
+
+        def write_profile(home, endpoint, key, account, user, agent):
+            home.mkdir(exist_ok=True)
+            (home / ".env").write_text(
+                f"OPENVIKING_API_KEY={key}\n"
+                f"OPENVIKING_ACCOUNT={account}\n"
+                f"OPENVIKING_USER={user}\n"
+                f"OPENVIKING_AGENT={agent}\n",
+                encoding="utf-8",
+            )
+            (home / "config.yaml").write_text(
+                f"memory:\n  openviking:\n    endpoint: {endpoint}\n",
+                encoding="utf-8",
+            )
+
+        home_a = tmp_path / "profile-a"
+        home_b = tmp_path / "profile-b"
+        write_profile(home_a, "https://a.example", "key-a", "acct-a", "user-a", "agent-a")
+        write_profile(home_b, "https://b.example", "key-b", "acct-b", "user-b", "agent-b")
+
+        monkeypatch.setattr(openviking_plugin, "_VikingClient", _RecordingClient)
+        monkeypatch.setenv("HERMES_HOME", str(home_b))
+        for key, value in {
+            "OPENVIKING_ENDPOINT": "https://global.example",
+            "OPENVIKING_API_KEY": "key-global",
+            "OPENVIKING_ACCOUNT": "acct-global",
+            "OPENVIKING_USER": "user-global",
+            "OPENVIKING_AGENT": "agent-global",
+        }.items():
+            monkeypatch.setenv(key, value)
+
+        provider_a = OpenVikingMemoryProvider()
+        provider_b = OpenVikingMemoryProvider()
+        provider_a.initialize("session-a", hermes_home=str(home_a))
+        provider_b.initialize("session-b", hermes_home=str(home_b))
+
+        for key, value in {
+            "OPENVIKING_ENDPOINT": "https://interleaved.example",
+            "OPENVIKING_API_KEY": "key-interleaved",
+            "OPENVIKING_ACCOUNT": "acct-interleaved",
+            "OPENVIKING_USER": "user-interleaved",
+            "OPENVIKING_AGENT": "agent-interleaved",
+        }.items():
+            monkeypatch.setenv(key, value)
+
+        for provider, expected, content in (
+            (provider_a, ("https://a.example", "key-a", "acct-a", "user-a", "agent-a"), "fact-a"),
+            (provider_b, ("https://b.example", "key-b", "acct-b", "user-b", "agent-b"), "fact-b"),
+        ):
+            result = json.loads(provider.handle_tool_call(
+                "viking_remember", {"content": content, "category": "preference"}
+            ))
+            assert result["status"] == "stored"
+            client = provider._client
+            assert (client.endpoint, client.api_key, client.account, client.user, client.agent) == expected
+            assert client.posts[-1][0] == "/api/v1/content/write"
+            assert client.posts[-1][1]["uri"].startswith(
+                "viking://user/memories/preferences/mem_"
+            )
+
+        assert len(instances) == 2
+
+        write_profile(home_a, "https://a-reloaded.example", "key-a2", "acct-a2", "user-a2", "agent-a2")
+        result = json.loads(provider_a.handle_tool_call(
+            "viking_remember", {"content": "fact-a2", "category": "entity"}
+        ))
+        assert result["status"] == "stored"
+        assert len(instances) == 3
+        assert provider_a._client.endpoint == "https://a-reloaded.example"
+        assert provider_a._client.api_key == "key-a2"
+        assert provider_a._client.posts[-1][1]["uri"].startswith(
+            "viking://user/memories/entities/mem_"
+        )
+        assert provider_b._ensure_client() is instances[1]
+        assert len(instances) == 3
+
+        provider_a.shutdown()
+        provider_b.shutdown()
+
+    @pytest.mark.parametrize(
+        ("profile_env", "expected_api_key", "expected_account", "expected_user"),
+        [
+            ("", "", "default", "default"),
+            ("OPENVIKING_API_KEY=profile-key\n", "profile-key", "", ""),
+        ],
+    )
+    def test_bound_profile_identity_does_not_use_ambient_values(
+        self,
+        monkeypatch,
+        tmp_path,
+        profile_env,
+        expected_api_key,
+        expected_account,
+        expected_user,
+    ):
+        class _RecordingClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent="hermes"):
+                self.endpoint = endpoint
+                self.api_key = api_key
+                self.account = account
+                self.user = user
+                self.agent = agent
+
+            def health(self):
+                return True
+
+        home = tmp_path / "profile"
+        home.mkdir()
+        if profile_env:
+            (home / ".env").write_text(profile_env, encoding="utf-8")
+        (home / "config.yaml").write_text(
+            "memory:\n  openviking:\n    endpoint: https://profile.example\n",
+            encoding="utf-8",
+        )
+        client_class = openviking_plugin._VikingClient
+        monkeypatch.setattr(openviking_plugin, "_VikingClient", _RecordingClient)
+        for key, value in {
+            "OPENVIKING_ENDPOINT": "https://ambient.example",
+            "OPENVIKING_API_KEY": "ambient-key",
+            "OPENVIKING_ACCOUNT": "ambient-account",
+            "OPENVIKING_USER": "ambient-user",
+            "OPENVIKING_AGENT": "ambient-agent",
+        }.items():
+            monkeypatch.setenv(key, value)
+
+        provider = OpenVikingMemoryProvider()
+        provider.initialize("session", hermes_home=str(home))
+
+        assert provider._client.endpoint == "https://profile.example"
+        assert provider._client.api_key == expected_api_key
+        assert provider._client.account == expected_account
+        assert provider._client.user == expected_user
+        assert provider._client.agent == "hermes"
+        headers = client_class(
+            provider._endpoint,
+            provider._api_key,
+            account=provider._account,
+            user=provider._user,
+            agent=provider._agent,
+        )._headers()
+        if expected_api_key:
+            assert "X-OpenViking-Account" not in headers
+            assert "X-OpenViking-User" not in headers
+        else:
+            assert headers["X-OpenViking-Account"] == "default"
+            assert headers["X-OpenViking-User"] == "default"
+        provider.shutdown()
+
+    def test_explicit_empty_identity_does_not_fall_back_to_process_env(self, monkeypatch):
+        for key, value in {
+            "OPENVIKING_ACCOUNT": "ambient-account",
+            "OPENVIKING_USER": "ambient-user",
+            "OPENVIKING_AGENT": "ambient-agent",
+        }.items():
+            monkeypatch.setenv(key, value)
+
+        client = openviking_plugin._VikingClient(
+            "https://openviking.example",
+            account="",
+            user="",
+            agent="",
+        )
+
+        assert client._account == ""
+        assert client._user == ""
+        assert client._agent == ""
+
+        legacy = openviking_plugin._VikingClient("https://openviking.example")
+        assert legacy._account == "ambient-account"
+        assert legacy._user == "ambient-user"
+        assert legacy._agent == "ambient-agent"
 
     def test_ensure_client_rebuilds_when_api_key_changes(self, monkeypatch):
         constructions = []
@@ -904,6 +1134,8 @@ class TestEnsureClientReloadsEnv:
         monkeypatch.setattr("plugins.memory.openviking._VikingClient", _StubClient)
         monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://openviking.example")
         monkeypatch.setenv("OPENVIKING_API_KEY", "sk-test")
+        monkeypatch.setenv("OPENVIKING_USER", "justin")
+        monkeypatch.setenv("OPENVIKING_AGENT", "hermes")
 
         provider = OpenVikingMemoryProvider()
         provider.initialize("session-1")
@@ -921,7 +1153,7 @@ class TestEnsureClientReloadsEnv:
         assert instances[1].posts[0][1]["content"] == "stable fact"
         assert instances[1].posts[0][1]["mode"] == "create"
         assert instances[1].posts[0][1]["uri"].startswith(
-            "viking://user/peers/hermes/memories/"
+            "viking://user/memories/"
         )
 
     def test_concurrent_refresh_does_not_return_stale_client(self, monkeypatch):

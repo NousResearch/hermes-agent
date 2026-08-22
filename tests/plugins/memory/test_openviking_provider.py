@@ -5,6 +5,7 @@ import stat
 import threading
 import time
 import zipfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -16,11 +17,6 @@ from plugins.memory.openviking import (
     _DEFERRED_COMMIT_TIMEOUT,
     _VikingClient,
 )
-
-
-def _clear_openviking_tenant_env(monkeypatch):
-    for name in ("OPENVIKING_ACCOUNT", "OPENVIKING_USER", "OPENVIKING_AGENT"):
-        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -42,79 +38,196 @@ def _clear_openviking_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
-def _prompt_from_values(values: dict[str, str], *, forbidden: set[str] | None = None):
-    forbidden = forbidden or set()
-
-    def _prompt(label, default=None, secret=False):
-        if label in forbidden:
-            raise AssertionError(f"{label} should not be prompted")
-        return values.get(label, default or "")
-
-    return _prompt
-
-
-def _allow_setup_validation(monkeypatch, *, root_access: bool = False):
-    monkeypatch.setattr(
-        openviking_module,
-        "_validate_openviking_reachability",
-        lambda endpoint: (True, ""),
-        raising=False,
+def test_openviking_provider_config_loader_keeps_full_home_semantics(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    ambient_home = tmp_path / "ambient"
+    ambient_home.mkdir()
+    managed_home = tmp_path / "managed"
+    managed_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        """\
+memory:
+  openviking:
+    endpoint: ${OPENVIKING_TEST_ENDPOINT}
+    recall_limit: 3
+""",
+        encoding="utf-8",
     )
-    monkeypatch.setattr(
-        openviking_module,
-        "_validate_openviking_auth",
-        lambda values: (True, ""),
-        raising=False,
+    (managed_home / "config.yaml").write_text(
+        """\
+memory:
+  openviking:
+    recall_limit: 9
+""",
+        encoding="utf-8",
     )
-    monkeypatch.setattr(
-        openviking_module,
-        "_validate_openviking_root_access",
-        lambda values: (root_access, "" if root_access else "Requires role: root"),
-        raising=False,
+    (ambient_home / "config.yaml").write_text(
+        "memory:\n  openviking:\n    endpoint: https://ambient.test\n",
+        encoding="utf-8",
     )
-    monkeypatch.setattr(
-        openviking_module,
-        "_validate_openviking_setup_values",
-        lambda values, *, require_api_key=False: (
-            True,
-            "",
-            "root" if root_access else ("user" if values.get("api_key") else None),
-        ),
-        raising=False,
+    monkeypatch.setenv("OPENVIKING_TEST_ENDPOINT", "https://expanded.test")
+    monkeypatch.setenv("HERMES_HOME", str(ambient_home))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_home))
+
+    config = openviking_module._load_hermes_openviking_config(str(hermes_home))
+
+    assert config["endpoint"] == "https://expanded.test"
+    assert config["recall_limit"] == 9
+
+    (hermes_home / "config.yaml").write_text(
+        """\
+memory:
+  openviking:
+    endpoint: https://reloaded.test
+    recall_limit: 4
+""",
+        encoding="utf-8",
+    )
+    reloaded = openviking_module._load_hermes_openviking_config(str(hermes_home))
+
+    assert reloaded["endpoint"] == "https://reloaded.test"
+    assert reloaded["recall_limit"] == 9
+
+
+def test_profile_openviking_env_hydrates_external_secrets_once(tmp_path, monkeypatch):
+    from hermes_cli import env_loader
+
+    import agent.secret_sources.bitwarden as bitwarden_module
+    from agent.secret_sources import registry as registry_module
+
+    monkeypatch.delenv("BWS_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENVIKING_API_KEY", raising=False)
+    (tmp_path / ".env").write_text("BWS_ACCESS_TOKEN=profile-bootstrap\n", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text(
+        "memory:\n"
+        "  openviking:\n"
+        "    endpoint: https://profile.test\n"
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: test-project\n"
+        "    access_token_env: BWS_ACCESS_TOKEN\n",
+        encoding="utf-8",
     )
 
+    fetches = []
+    monkeypatch.setattr(bitwarden_module, "find_bws", lambda **_kwargs: Path("/fake/bws"))
 
-def test_openviking_provider_config_loader_uses_readonly_config(monkeypatch):
-    import hermes_cli.config as config_mod
+    def _fake_fetch(**kwargs):
+        fetches.append(kwargs)
+        return {"OPENVIKING_API_KEY": "profile-provider-key"}, []
 
-    calls = []
-    backing_config = {
-        "memory": {
-            "openviking": {
-                "endpoint": "http://127.0.0.1:19472",
-                "api_key": "test-key",
-            }
-        }
-    }
+    monkeypatch.setattr(bitwarden_module, "fetch_bitwarden_secrets", _fake_fetch)
+    registry_module._reset_registry_for_tests()
+    env_loader.reset_secret_source_cache()
 
-    def load_config_readonly():
-        calls.append("readonly")
-        return backing_config
+    class _HealthyClient:
+        def __init__(self, endpoint, api_key="", **_kwargs):
+            self.endpoint = endpoint
+            self.api_key = api_key
 
-    def load_config():
-        raise AssertionError("OpenViking config loader should use readonly config")
+        def health(self):
+            return True
 
-    monkeypatch.setattr(config_mod, "load_config_readonly", load_config_readonly)
-    monkeypatch.setattr(config_mod, "load_config", load_config)
+    monkeypatch.setattr(openviking_module, "_VikingClient", _HealthyClient)
+    provider = OpenVikingMemoryProvider()
+    try:
+        provider.initialize("session", hermes_home=str(tmp_path))
+        assert provider._endpoint == "https://profile.test"
+        assert provider._api_key == "profile-provider-key"
+        assert openviking_module._profile_openviking_env(str(tmp_path))["OPENVIKING_API_KEY"] == (
+            "profile-provider-key"
+        )
+        assert len(fetches) == 1
+    finally:
+        provider.shutdown()
+        env_loader.reset_secret_source_cache()
+        registry_module._reset_registry_for_tests()
 
-    config = openviking_module._load_hermes_openviking_config()
 
-    assert calls == ["readonly"]
-    assert config == {
-        "endpoint": "http://127.0.0.1:19472",
-        "api_key": "test-key",
-    }
-    assert config is not backing_config["memory"]["openviking"]
+def test_profile_openviking_env_warns_without_secret_values(tmp_path, monkeypatch, caplog):
+    from hermes_cli import env_loader
+
+    secret_value = "do-not-log-this"
+
+    def _fail(_home):
+        raise RuntimeError(secret_value)
+
+    monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources", _fail)
+
+    with caplog.at_level("WARNING", logger=openviking_module.__name__):
+        assert openviking_module._profile_openviking_env(str(tmp_path)) == {}
+
+    assert str(tmp_path) in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert secret_value not in caplog.text
+
+
+def test_bound_profile_config_expands_against_its_profile_env(tmp_path, monkeypatch):
+    home = tmp_path / "profile-a"
+    home.mkdir()
+    (home / ".env").write_text(
+        "OPENVIKING_PROFILE_ENDPOINT=https://profile-a.example\n"
+        "OPENVIKING_PROFILE_AGENT=agent-a\n",
+        encoding="utf-8",
+    )
+    (home / "config.yaml").write_text(
+        "memory:\n"
+        "  openviking:\n"
+        "    endpoint: ${env:OPENVIKING_PROFILE_ENDPOINT}\n"
+        "    agent: ${OPENVIKING_PROFILE_AGENT}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENVIKING_PROFILE_ENDPOINT", "https://process-b.example")
+    monkeypatch.setenv("OPENVIKING_PROFILE_AGENT", "agent-b")
+
+    class _HealthyClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            self.endpoint = endpoint
+            self.agent = agent
+
+        def health(self):
+            return True
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", _HealthyClient)
+    provider = OpenVikingMemoryProvider()
+    provider.initialize("session", hermes_home=str(home))
+    try:
+        assert provider._endpoint == "https://profile-a.example"
+        assert provider._agent == "agent-a"
+    finally:
+        provider.shutdown()
+
+
+def test_bound_profile_config_does_not_fall_back_to_process_env(tmp_path, monkeypatch):
+    home = tmp_path / "profile-a"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "memory:\n"
+        "  openviking:\n"
+        "    endpoint: https://profile-a.example\n"
+        "    agent: ${env:OPENVIKING_MISSING_REF}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENVIKING_MISSING_REF", "agent-b")
+
+    class _HealthyClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            self.agent = agent
+
+        def health(self):
+            return True
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", _HealthyClient)
+    provider = OpenVikingMemoryProvider()
+    provider.initialize("session", hermes_home=str(home))
+    try:
+        assert provider._agent == "${env:OPENVIKING_MISSING_REF}"
+    finally:
+        provider.shutdown()
 
 
 def test_connection_settings_read_dashboard_config_file(tmp_path, monkeypatch):
@@ -144,6 +257,20 @@ memory:
     assert settings["user"] == "saved-user"
     assert settings["agent"] == "saved-agent"
     assert settings["api_key"] == ""
+
+
+def test_unbound_no_key_settings_keep_trusted_identity_defaults(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+
+    settings = openviking_module._resolve_connection_settings(
+        {"endpoint": "http://127.0.0.1:1933"}
+    )
+    headers = _VikingClient(**settings)._headers()
+
+    assert settings["account"] == "default"
+    assert settings["user"] == "default"
+    assert headers["X-OpenViking-Account"] == "default"
+    assert headers["X-OpenViking-User"] == "default"
 
 
 def test_linked_ovcli_config_is_read_at_runtime(tmp_path, monkeypatch):
@@ -767,6 +894,7 @@ def test_viking_client_delete_uses_identity_headers(monkeypatch):
     assert captured["kwargs"]["params"] == {"uri": "viking://user/memories/x.md"}
     assert captured["kwargs"]["headers"]["Authorization"] == "Bearer test-key"
     assert captured["kwargs"]["headers"]["X-OpenViking-Actor-Peer"] == "hermes"
+    assert "X-OpenViking-Agent" not in captured["kwargs"]["headers"]
 
 
 def test_openviking_identity_probes_are_anonymous_before_authenticated_requests(monkeypatch):
@@ -813,6 +941,47 @@ def test_openviking_identity_probes_are_anonymous_before_authenticated_requests(
     for _url, headers in calls[2:]:
         assert headers["X-API-Key"] == "secret-key"
         assert headers["Authorization"] == "Bearer secret-key"
+        assert "X-OpenViking-Account" not in headers
+        assert "X-OpenViking-User" not in headers
+
+
+def test_openviking_setup_validation_defaults_trusted_identity(monkeypatch):
+    captured = {}
+
+    class RecordingVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            captured.update(
+                endpoint=endpoint,
+                api_key=api_key,
+                account=account,
+                user=user,
+                agent=agent,
+            )
+
+        def health_payload(self):
+            return {"status": "ok", "healthy": True, "version": "0.2.10"}
+
+        def validate_auth(self):
+            return {}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", RecordingVikingClient)
+
+    valid, message, role = openviking_module._validate_openviking_setup_values({
+        "endpoint": "https://openviking.example",
+        "api_key": "",
+        "account": "",
+        "user": "",
+        "agent": "hermes",
+    })
+
+    assert (valid, message, role) == (True, "", None)
+    assert captured == {
+        "endpoint": "https://openviking.example",
+        "api_key": "",
+        "account": "default",
+        "user": "default",
+        "agent": "hermes",
+    }
 
 
 def test_repeated_openviking_health_probes_never_send_identity_headers(monkeypatch):
@@ -1119,16 +1288,6 @@ def test_sync_turn_captures_session_id_before_worker_runs():
             {"role": "assistant", "parts": [{"type": "text", "text": "a"}], "peer_id": "hermes"},
         ]
     }]
-
-
-def _long_structured_turn(assistant_count=204):
-    return [
-        {"role": "user", "content": "u"},
-        *[
-            {"role": "assistant", "content": f"assistant-{index}"}
-            for index in range(assistant_count)
-        ],
-    ]
 
 
 def test_end_then_switch_does_not_double_commit():
@@ -1660,6 +1819,26 @@ def test_blocked_endpoint_does_not_fall_back_or_construct_client(monkeypatch, tm
     assert openviking_module._DEFAULT_ENDPOINT not in warnings[0]
 
 
+def test_bound_profile_keeps_safe_process_endpoint_fallback(monkeypatch, tmp_path):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://legacy-endpoint.example")
+
+    class _HealthyClient:
+        def __init__(self, endpoint, *args, **kwargs):
+            self.endpoint = endpoint
+
+        def health(self):
+            return True
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", _HealthyClient)
+    provider = OpenVikingMemoryProvider()
+
+    provider.initialize("session-1", hermes_home=str(tmp_path))
+
+    assert provider._endpoint == "https://legacy-endpoint.example"
+    provider.shutdown()
+
+
 @pytest.mark.parametrize(
     "health_payload",
     [
@@ -1721,6 +1900,33 @@ def test_is_available_true_for_config_yaml_endpoint(monkeypatch):
         lambda: {"endpoint": "http://saved.test:1933"},
     )
     assert OpenVikingMemoryProvider().is_available() is True
+
+
+def test_is_available_reads_active_profile_env_without_global_mutation(
+    monkeypatch, tmp_path
+):
+    _clear_openviking_env(monkeypatch)
+    from hermes_cli import env_loader
+
+    hydrate_calls = []
+    monkeypatch.setattr(
+        env_loader,
+        "hydrate_profile_secret_sources",
+        lambda home: hydrate_calls.append(home),
+    )
+    (tmp_path / ".env").write_text(
+        "OPENVIKING_ENDPOINT=https://profile.test\n", encoding="utf-8"
+    )
+
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home_token = set_hermes_home_override(tmp_path)
+    try:
+        assert OpenVikingMemoryProvider().is_available() is True
+    finally:
+        reset_hermes_home_override(home_token)
+    assert os.environ.get("OPENVIKING_ENDPOINT") is None
+    assert hydrate_calls == []
 
 
 def test_is_available_false_without_any_endpoint(monkeypatch):

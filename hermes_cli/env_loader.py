@@ -235,6 +235,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         values[name] = value
     if values:
         _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+    _report_secret_source_outcomes(report, cfg, scope=home_key)
     return dict(values)
 
 
@@ -614,6 +615,47 @@ def _apply_managed_env() -> None:
     _load_dotenv_with_fallback(managed_env, override=True)
 
 
+def _report_secret_source_outcomes(
+    report, secrets_cfg: dict, *, scope: str | None = None
+) -> None:
+    """Print source outcomes without exposing any applied secret values."""
+    for src in report.sources:
+        if src.applied:
+            print(
+                f"  {src.label}: applied {len(src.applied)} "
+                f"secret{'s' if len(src.applied) != 1 else ''}",
+                file=sys.stderr,
+            )
+        if src.result.error:
+            try:
+                from agent.secret_sources.base import ErrorKind
+
+                error_kind = (
+                    ErrorKind(src.result.error_kind).value
+                    if src.result.error_kind is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                error_kind = None
+            summary = "source failed"
+            if error_kind:
+                summary += f" (error_kind={error_kind})"
+            print(f"  {src.label}: {summary}", file=sys.stderr)
+            hint = _remediation_hint(
+                src.name, src.result.error_kind, secrets_cfg, scope=scope
+            )
+            if hint:
+                print(f"  {src.label}: → {hint}", file=sys.stderr)
+        if src.result.warnings:
+            count = len(src.result.warnings)
+            print(
+                f"  {src.label}: {count} warning{'s' if count != 1 else ''}",
+                file=sys.stderr,
+            )
+    for conflict in report.conflicts:
+        print(f"  Secret sources: {conflict}", file=sys.stderr)
+
+
 def _apply_external_secret_sources(home_path: Path) -> None:
     """Pull secrets from every enabled external source into env.
 
@@ -711,24 +753,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
                 values[name] = os.environ[name]
         _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
 
-    for src in report.sources:
-        if src.applied:
-            print(
-                f"  {src.label}: applied {len(src.applied)} "
-                f"secret{'s' if len(src.applied) != 1 else ''}",
-                file=sys.stderr,
-            )
-        if src.result.error:
-            print(f"  {src.label}: {src.result.error}", file=sys.stderr)
-            hint = _remediation_hint(
-                src.name, src.result.error_kind, cfg, scope=home_key
-            )
-            if hint:
-                print(f"  {src.label}: → {hint}", file=sys.stderr)
-        for warn in src.result.warnings:
-            print(f"  {src.label}: {warn}", file=sys.stderr)
-    for conflict in report.conflicts:
-        print(f"  Secret sources: {conflict}", file=sys.stderr)
+    _report_secret_source_outcomes(report, cfg, scope=home_key)
 
 
 def _remediation_hint(

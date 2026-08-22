@@ -31,7 +31,7 @@ import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, Set
+from typing import Dict, Any, Optional, List, Tuple, Set, Mapping
 
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.secret_prompt import masked_secret_prompt
@@ -235,6 +235,18 @@ def _reject_denylisted_env_var(key: str) -> None:
         )
 
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
+# Explicit env snapshots are profile-scoped and must not share the process-wide
+# last-known-good value. Keep only referenced values for the latest load per
+# config path; a different mapping falls back safely instead of serving another
+# profile's data.
+_LAST_EXPANDED_CONFIG_BY_EXPLICIT_ENV: Dict[
+    str,
+    Tuple[
+        Dict[str, Optional[str]],
+        Dict[str, Optional[str]],
+        Dict[str, Any],
+    ],
+] = {}
 # (path, mtime_ns, size) -> cached expanded config dict.
 # load_config() returns a deepcopy of the cached value when the file
 # hasn't changed since the last load, skipping yaml.safe_load +
@@ -2628,7 +2640,7 @@ def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
     return cfg, stripped
 
 
-def _env_expand_match(m: re.Match) -> str:
+def _env_expand_match(m: re.Match, *, env: Optional[Mapping[str, str]] = None) -> str:
     """Expand one ``${...}`` config reference.
 
     Two accepted shapes, matching what MCP server config already resolves
@@ -2646,13 +2658,14 @@ def _env_expand_match(m: re.Match) -> str:
     ref only ever needs the env shape.  Unknown prefixes warn once and stay
     verbatim so callers can detect them.
     """
+    source = os.environ if env is None else env
     raw = m.group(0)
     inner = m.group(1).strip()
     if inner.startswith("env:"):
         name = inner[len("env:"):].strip()
         if not name:
             return raw
-        val = os.environ.get(name)
+        val = source.get(name)
         if val is not None:
             return val
         logger.warning(
@@ -2673,7 +2686,7 @@ def _env_expand_match(m: re.Match) -> str:
         )
         return raw
     # Legacy ``${VAR}`` — bare name.
-    return os.environ.get(inner, raw)
+    return source.get(inner, raw)
 
 
 def _env_ref_var_name(ref: str) -> Optional[str]:
@@ -2688,24 +2701,30 @@ def _env_ref_var_name(ref: str) -> Optional[str]:
     return ref
 
 
-def _expand_env_vars(obj):
+def _expand_env_vars(obj, *, env: Optional[Mapping[str, str]] = None):
     """Recursively expand ``${VAR}`` / ``${env:VAR}`` references in config
     values.
 
     Only string values are processed; dict keys, numbers, booleans, and
     None are left untouched.  Unresolved references (variable not in
-    ``os.environ``) are kept verbatim so callers can detect them.
+    the selected environment) are kept verbatim so callers can detect them.
     """
     if isinstance(obj, str):
-        return re.sub(r"\${([^}]+)}", _env_expand_match, obj)
+        return re.sub(
+            r"\${([^}]+)}",
+            lambda match: _env_expand_match(match, env=env),
+            obj,
+        )
     if isinstance(obj, dict):
-        return {k: _expand_env_vars(v) for k, v in obj.items()}
+        return {k: _expand_env_vars(v, env=env) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [_expand_env_vars(item) for item in obj]
+        return [_expand_env_vars(item, env=env) for item in obj]
     return obj
 
 
-def _env_ref_snapshot(obj, snapshot=None):
+def _env_ref_snapshot(
+    obj, snapshot=None, *, env: Optional[Mapping[str, str]] = None
+):
     """Map every ``${VAR}`` / ``${env:VAR}`` name referenced in config values
     to its current ``os.environ`` value (``None`` when unset).
 
@@ -2726,13 +2745,14 @@ def _env_ref_snapshot(obj, snapshot=None):
         for raw in re.findall(r"\${([^}]+)}", obj):
             name = _env_ref_var_name(raw)
             if name is not None:
-                snapshot[name] = os.environ.get(name)
+                source = os.environ if env is None else env
+                snapshot[name] = source.get(name)
     elif isinstance(obj, dict):
         for value in obj.values():
-            _env_ref_snapshot(value, snapshot)
+            _env_ref_snapshot(value, snapshot, env=env)
     elif isinstance(obj, list):
         for item in obj:
-            _env_ref_snapshot(item, snapshot)
+            _env_ref_snapshot(item, snapshot, env=env)
     return snapshot
 
 
@@ -3419,7 +3439,7 @@ def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
     atomic_yaml_write(config_path, data, **kwargs)
 
 
-def load_config() -> Dict[str, Any]:
+def load_config(*, env: Optional[Mapping[str, str]] = None) -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml.
 
     Cached on the config file's (mtime_ns, size). Returns a deepcopy of
@@ -3429,14 +3449,19 @@ def load_config() -> Dict[str, Any]:
     (which change ``HERMES_HOME`` and therefore ``get_config_path()``)
     don't collide.
 
+    ``env=`` supplies user-config expansion values and bypasses the shared
+    process expansion cache; managed refs remain process-global.
+
     Read-only callers should use ``load_config_readonly()`` to skip the
     defensive deepcopy — that path matters in agent-loop hot spots like
     ``get_provider_request_timeout`` which is called once per API turn.
     """
-    return _load_config_impl(want_deepcopy=True)
+    return _load_config_impl(want_deepcopy=True, env=env)
 
 
-def load_config_readonly() -> Dict[str, Any]:
+def load_config_readonly(
+    *, env: Optional[Mapping[str, str]] = None
+) -> Dict[str, Any]:
     """Fast-path variant of ``load_config()`` for callers that ONLY READ.
 
     Returns the cached config dict directly without the defensive deepcopy
@@ -3445,6 +3470,9 @@ def load_config_readonly() -> Dict[str, Any]:
     caller** — only use this when you are absolutely sure your code path
     will not write to the result. If you need to mutate or pass to
     ``save_config``, call ``load_config()`` instead.
+
+    ``env=`` supplies user-config expansion values and bypasses the shared
+    process expansion cache; managed refs remain process-global.
 
     Why this exists: ``load_config()`` cache-hit cost is ~265us per call,
     half of which (~135us) is the defensive deepcopy. The agent loop calls
@@ -3456,7 +3484,7 @@ def load_config_readonly() -> Dict[str, Any]:
     existing ``isinstance(x, dict)`` guards downstream keep working. The
     safety guarantee is purely documented, not enforced — be careful.
     """
-    return _load_config_impl(want_deepcopy=False)
+    return _load_config_impl(want_deepcopy=False, env=env)
 
 
 def write_platform_config_field(
@@ -3611,8 +3639,11 @@ def apply_terminal_config_to_env(
     return target
 
 
-def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
+def _load_config_impl(
+    *, want_deepcopy: bool, env: Optional[Mapping[str, str]] = None
+) -> Dict[str, Any]:
     with _CONFIG_LOCK:
+        explicit_env = env is not None
         ensure_hermes_home()
         config_path = get_config_path()
         path_key = str(config_path)
@@ -3650,7 +3681,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         else:
             cache_sig = None
 
-        cached = _LOAD_CONFIG_CACHE.get(path_key)
+        cached = _LOAD_CONFIG_CACHE.get(path_key) if not explicit_env else None
         if cached is not None and cache_sig is not None and cached[:4] == cache_sig:
             # File signatures match, but the cached expansion is only valid if
             # every ${VAR} it was expanded against still has the same value.
@@ -3689,22 +3720,41 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                 # loaded config — keep serving it until the file is fixed.
                 # Fresh processes with no last-known-good keep the existing
                 # DEFAULT_CONFIG fallback.
-                lkg = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
+                if explicit_env:
+                    explicit_lkg = _LAST_EXPANDED_CONFIG_BY_EXPLICIT_ENV.get(path_key)
+                    if explicit_lkg is None:
+                        lkg = None
+                    else:
+                        user_ref_snapshot, managed_ref_snapshot, expanded_lkg = (
+                            explicit_lkg
+                        )
+                        lkg = (
+                            expanded_lkg
+                            if all(
+                                env.get(name) == value
+                                for name, value in user_ref_snapshot.items()
+                            )
+                            and all(
+                                os.environ.get(name) == value
+                                for name, value in managed_ref_snapshot.items()
+                            )
+                            else None
+                        )
+                else:
+                    lkg = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
                 _warn_config_parse_failure(
                     config_path,
                     e,
                     fallback="last-known-good" if lkg is not None else "defaults",
                 )
                 if lkg is not None:
-                    # save_config() stores the pre-expansion normalized dict
-                    # (env-ref templates preserved); the load path stores the
-                    # expanded one. Expand defensively — idempotent when the
-                    # stored value is already expanded.
-                    from typing import cast as _cast
-                    lkg_copy: Dict[str, Any] = _cast(
-                        Dict[str, Any], _expand_env_vars(copy.deepcopy(lkg))
-                    )
-                    if cache_sig is not None:
+                    # Explicit-env LKG values are already fully expanded;
+                    # preserve unresolved managed refs exactly as loaded.
+                    lkg_copy: Dict[str, Any] = copy.deepcopy(lkg)
+                    if not explicit_env:
+                        # Preserve the legacy process-env recovery behavior.
+                        lkg_copy = _expand_env_vars(lkg_copy)
+                    if cache_sig is not None and not explicit_env:
                         # Cache under the corrupt file's signature (empty env
                         # snapshot: always valid) so repeated loads don't
                         # re-parse the broken file; fixing the file changes the
@@ -3718,29 +3768,38 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                     return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
 
         normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
-        expanded = _expand_env_vars(normalized)
+        explicit_env_refs = (
+            _env_ref_snapshot(normalized, env=env) if explicit_env else None
+        )
+        expanded = _expand_env_vars(normalized, env=env)
         # Managed scope wins at the leaf. Applied AFTER user expansion so a user
         # ${VAR} cannot shadow a managed literal: managed values are expanded only
         # against the process environment, never against user-config-defined refs.
         # This deliberately inverts the usual env-over-config precedence for the
         # keys the managed layer pins — see docs/design/managed-scope.md §4.1.
         managed_config = managed_scope.load_managed_config()
+        managed_env_refs = None
         if managed_config:
-            # Normalize the managed overlay through the same canonicalization as
-            # the user config BEFORE merging (parity with
-            # managed_scope.apply_managed_overlay): a dict-valued
-            # ``model.default`` (``{provider: ..., model: ...}``) or a bare
-            # ``model: <string>`` must be flattened to a string ``default``
-            # paired with ``provider`` so the merged result never exposes a
-            # nested dict to status/fallback/runtime readers.
+            # Canonicalize managed model keys before merging; refs expand against
+            # process env because managed config is global, even for profile env.
             managed_normalized = _normalize_root_model_keys(managed_config)
             if isinstance(managed_normalized.get("model"), str):
                 managed_normalized = dict(managed_normalized)
                 managed_normalized["model"] = {"default": managed_normalized["model"]}
+            managed_env_refs = (
+                _env_ref_snapshot(managed_normalized) if explicit_env else None
+            )
             managed_expanded = _expand_env_vars(managed_normalized)
             expanded = _deep_merge(expanded, managed_expanded)
-        _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
-        if cache_sig is not None:
+        if explicit_env:
+            _LAST_EXPANDED_CONFIG_BY_EXPLICIT_ENV[path_key] = (
+                explicit_env_refs or {},
+                managed_env_refs or {},
+                copy.deepcopy(expanded),
+            )
+        else:
+            _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
+        if cache_sig is not None and not explicit_env:
             # Cache stores a separate deepcopy so subsequent ``load_config()``
             # (deepcopy=True) callers can mutate freely without affecting the
             # cached value, and ``load_config_readonly()`` (deepcopy=False)
@@ -3750,7 +3809,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             # this expansion was made against so later loads can detect env
             # drift (late .env load, in-process rotation) — see cache hit above.
             cached_copy = copy.deepcopy(expanded)
-            env_snapshot = _env_ref_snapshot(normalized)
+            env_snapshot = _env_ref_snapshot(normalized, env=env)
             if managed_config:
                 _env_ref_snapshot(managed_config, env_snapshot)
             _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy, env_snapshot)
@@ -3759,7 +3818,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             # object" invariant that callers may rely on for identity checks.
             if not want_deepcopy:
                 return cached_copy
-        else:
+        elif not explicit_env:
             _LOAD_CONFIG_CACHE.pop(path_key, None)
         # First-load result is a fresh dict (not aliased to the cache); safe
         # to return directly. For the deepcopy=True path this is the

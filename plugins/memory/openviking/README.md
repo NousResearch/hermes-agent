@@ -14,6 +14,8 @@ Hermes can identify older servers that expose the legacy status-only health
 response, but only when anonymous OpenAPI metadata also identifies the service
 as OpenViking. OpenViking 0.2.6 and earlier are deprecated for this integration;
 upgrade them to receive the current health contract and compatibility fixes.
+Selecting a peer with `X-OpenViking-Actor-Peer` requires OpenViking 0.4.0 or
+newer; older 0.3.x servers retain their legacy agent-filtering limitation.
 
 ## Setup
 
@@ -31,9 +33,11 @@ Then configure Hermes:
 hermes memory setup    # select "openviking"
 ```
 
-The setup can link to an existing `~/.openviking/ovcli.conf`, copy its current
-connection values into Hermes, or create a minimal `ovcli.conf` when one does
-not exist.
+The setup can link an existing `~/.openviking/ovcli.conf` profile. Linking is
+an explicit shared-file choice: the selected external file is read at runtime
+and its values are not copied into `.env`. To isolate credentials, use
+separate saved ovcli profiles or manual split profile configuration. Setup can
+also create a minimal `ovcli.conf` when one does not exist.
 
 Or manually:
 
@@ -41,16 +45,12 @@ Or manually:
 hermes config set memory.provider openviking
 ```
 
-Add the connection settings to the active profile's `.env` file. For the
-default profile that is `~/.hermes/.env`; for a named profile use
-`~/.hermes/profiles/<profile>/.env`.
+If the server requires authentication, add only the API key to the active
+profile's `.env` file. For the default profile that is `~/.hermes/.env`; for a
+named profile use `~/.hermes/profiles/<profile>/.env`.
 
 ```text
-OPENVIKING_ENDPOINT=http://127.0.0.1:1933
-# OPENVIKING_API_KEY=...
-# OPENVIKING_ACCOUNT=default
-# OPENVIKING_USER=default
-# OPENVIKING_AGENT=hermes
+OPENVIKING_API_KEY=...
 ```
 
 ## Config
@@ -64,16 +64,30 @@ OpenViking's server config is separate from Hermes:
   `account`, and `user`. It is read from `OPENVIKING_CLI_CONFIG_FILE` or
   `~/.openviking/ovcli.conf`.
 
-Hermes-side provider config is read from environment variables in the active
-profile's `.env`:
+For manual configuration, store the optional API key in the active profile's
+`.env` and put the endpoint and local/trusted identity settings in that
+profile's `config.yaml`:
 
-| Env Var | Default | Description |
-|---------|---------|-------------|
-| `OPENVIKING_ENDPOINT` | `http://127.0.0.1:1933` | Server URL |
-| `OPENVIKING_API_KEY` | (none) | User/admin API key for authenticated servers |
-| `OPENVIKING_ACCOUNT` | `default` | Tenant account for local/trusted mode |
-| `OPENVIKING_USER` | `default` | Tenant user for local/trusted mode |
-| `OPENVIKING_AGENT` | `hermes` | Hermes peer ID in OpenViking, used for peer-scoped memories |
+```yaml
+memory:
+  provider: openviking
+  openviking:
+    endpoint: http://127.0.0.1:1933
+    account: default
+    user: default
+    agent: hermes
+```
+
+Manual configuration keeps only `OPENVIKING_API_KEY` in the active profile's
+`.env`; put `endpoint`, `account`, `user`, and `agent` under
+`memory.openviking` in the active profile's `config.yaml`. The wizard's legacy
+`Keep in Hermes only` option still stores selected connection values in `.env`;
+users who want non-secrets out of `.env` should use the default `Mirror to
+OpenViking store` option or manual split configuration. Legacy
+`OPENVIKING_*` environment overrides remain supported. Bound
+profiles resolve identity from their own secret scope; the process-level
+`OPENVIKING_ENDPOINT` remains a non-secret fallback when the profile supplies
+none.
 
 When `OPENVIKING_API_KEY` is set, Hermes lets OpenViking derive account/user
 identity from the key. In local or trusted deployments without an API key,
@@ -93,10 +107,12 @@ Hermes sends `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` as identity headers.
 ## Memory Writes And Deletes
 
 `viking_remember` writes directly to OpenViking with `POST /api/v1/content/write`
-and `mode=create`. It creates peer-scoped memory files under
-`viking://user/peers/${OPENVIKING_AGENT}/memories/...`; OpenViking may return a
-canonical user-scoped form such as
-`viking://user/default/peers/${OPENVIKING_AGENT}/memories/...` in API-key mode.
+and `mode=create`, using the current-user shorthand
+`viking://user/memories/...`. Hermes sends `OPENVIKING_AGENT` as the peer
+identity through the `X-OpenViking-Actor-Peer` header. OpenViking applies the
+authenticated account's namespace policy and may return a canonical URI.
+Peer selection requires OpenViking 0.4.0+; 0.3.x servers retain their legacy
+agent-filtering limitation.
 Explicit remembers do not depend on session commit extraction.
 
 Hermes built-in `memory` tool additions are mirrored to OpenViking after the
@@ -104,7 +120,7 @@ local memory operation succeeds:
 
 | Hermes action | OpenViking operation |
 |---------------|----------------------|
-| `add` | `content/write` with `mode=create` under the configured peer memory namespace |
+| `add` | `content/write` with `mode=create` under the current-user shorthand namespace |
 
 Built-in `replace` and `remove` operations are not mirrored because Hermes
 native memory entries do not yet carry stable OpenViking file URIs. Use
@@ -113,10 +129,8 @@ memory URI.
 
 `viking_forget` is intentionally narrow. It only accepts concrete user memory
 file URIs, such as
-`viking://user/peers/hermes/memories/preferences/mem_abc123.md` or the canonical
-`viking://user/default/peers/hermes/memories/preferences/mem_abc123.md`. Files
-directly under `memories/`, such as `viking://user/default/memories/profile.md`,
-are also allowed because OpenViking supports them. The tool rejects directories,
-resources, skills, sessions, generated summary files, and URIs with query
-strings or fragments. Use OpenViking's MCP, CLI, or admin APIs for broader
-resource and directory cleanup.
+`viking://user/memories/preferences/mem_abc123.md` or a canonical URI returned
+by OpenViking. The tool rejects directories, resources, skills, sessions,
+generated summary files, and URIs with query strings or fragments. Use
+OpenViking's MCP, CLI, or admin APIs for broader resource and directory
+cleanup.

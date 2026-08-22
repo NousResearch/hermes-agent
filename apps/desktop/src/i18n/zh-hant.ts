@@ -1126,6 +1126,7 @@ export const zhHant = defineLocale({
     enableAll: '全部啟用',
     disableAll: '全部停用',
     disableUnused: '停用未使用',
+    filterByProvenance: { Learned: '已學習', 'Built-in': '內建', Hub: 'Hub', All: '全部' },
     bulkUpdated: count => `已為新工作階段更新 ${count} 項。`,
     bulkNoChange: '沒有需要變更的內容。',
     usageCount: count => `已使用 ${count} 次`,

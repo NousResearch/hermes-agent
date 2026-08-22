@@ -429,3 +429,93 @@ describe('SkillsView toolset management', () => {
     }
   })
 })
+
+describe('SkillsView provenance filter', () => {
+  // Import the store directly so a previous test's persisted choice can't
+  // leak into these (the atom is module-level and localStorage-backed).
+  const FILTER_KEY = 'hermes.desktop.capabilities.skillsProvenanceFilter'
+
+  const mixedSkills = [
+    { name: 'learned-a', description: 'a learned skill', category: 'general', enabled: true, usage: 5, provenance: 'agent' },
+    { name: 'bundled-b', description: 'a bundled skill', category: 'general', enabled: true, usage: 4, provenance: 'bundled' },
+    { name: 'hub-c', description: 'a hub skill', category: 'general', enabled: true, usage: 3, provenance: 'hub' },
+    { name: 'plain-d', description: 'no provenance', category: 'general', enabled: true, usage: 2 }
+  ]
+
+  async function renderSkillsTab(waitForSkill = 'learned-a') {
+    const { SkillsView } = await import('./index')
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/skills?tab=skills']}>
+            <SkillsView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+    await screen.findByRole('switch', { name: waitForSkill })
+  }
+
+  beforeEach(async () => {
+    getSkills.mockResolvedValue(mixedSkills)
+    window.localStorage.removeItem(FILTER_KEY)
+    const { $skillsProvenanceFilter } = await import('./store')
+    $skillsProvenanceFilter.set('all')
+  })
+
+  it('shows one chip per provenance present and filters to learned rows', async () => {
+    await renderSkillsTab()
+
+    // One chip per provenance that actually has rows, plus All.
+    expect(screen.getByRole('button', { name: 'All' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Learned' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Built-in' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Hub' })).toBeTruthy()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Learned' }))
+    })
+
+    // Only the agent-provenanced row survives…
+    expect(screen.getByRole('switch', { name: 'learned-a' })).toBeTruthy()
+    expect(screen.queryByRole('switch', { name: 'bundled-b' })).toBeNull()
+    expect(screen.queryByRole('switch', { name: 'hub-c' })).toBeNull()
+    expect(screen.queryByRole('switch', { name: 'plain-d' })).toBeNull()
+    // …and the active chip reads as pressed.
+    expect(screen.getByRole('button', { name: 'Learned' }).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('returns every row when All is picked', async () => {
+    await renderSkillsTab()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Built-in' }))
+    })
+    expect(screen.queryByRole('switch', { name: 'learned-a' })).toBeNull()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'All' }))
+    })
+
+    for (const name of ['learned-a', 'bundled-b', 'hub-c', 'plain-d']) {
+      expect(screen.getByRole('switch', { name })).toBeTruthy()
+    }
+  })
+
+  it('keeps the filter across a remount (persisted)', async () => {
+    await renderSkillsTab()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Hub' }))
+    })
+    // Written through to storage (raw string — nullableText codec), not just
+    // component state.
+    expect(window.localStorage.getItem(FILTER_KEY)).toBe('hub')
+
+    cleanup()
+    // The remount must come back already filtered — hub-c visible, learned-a gone.
+    await renderSkillsTab('hub-c')
+
+    expect(screen.queryByRole('switch', { name: 'learned-a' })).toBeNull()
+  })
+})

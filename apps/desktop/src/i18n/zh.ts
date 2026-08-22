@@ -1448,6 +1448,7 @@ export const zh: Translations = {
     enableAll: '全部启用',
     disableAll: '全部停用',
     disableUnused: '禁用未使用',
+    filterByProvenance: { Learned: '已学习', 'Built-in': '内置', Hub: 'Hub', All: '全部' },
     bulkUpdated: count => `已为新会话更新 ${count} 项。`,
     bulkNoChange: '没有需要更改的内容。',
     usageCount: count => `已使用 ${count} 次`,

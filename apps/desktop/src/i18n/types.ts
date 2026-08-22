@@ -1102,6 +1102,8 @@ export interface Translations {
     enableAll: string
     disableAll: string
     disableUnused: string
+    /** Provenance filter chips (Skills tab). Keys are chip labels, not ids. */
+    filterByProvenance: Record<'All' | 'Built-in' | 'Hub' | 'Learned', string>
     bulkUpdated: (count: number) => string
     bulkNoChange: string
     usageCount: (count: number | string) => string

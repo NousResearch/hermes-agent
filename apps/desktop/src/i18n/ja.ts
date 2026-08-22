@@ -1166,6 +1166,7 @@ export const ja = defineLocale({
     enableAll: 'すべて有効化',
     disableAll: 'すべて無効化',
     disableUnused: '未使用を無効化',
+    filterByProvenance: { Learned: '学習済み', 'Built-in': '組み込み', Hub: 'ハブ', All: 'すべて' },
     bulkUpdated: count => `${count} 件を新しいセッション向けに更新しました。`,
     bulkNoChange: '変更するものはありません。',
     usageCount: count => `${count} 回使用`,

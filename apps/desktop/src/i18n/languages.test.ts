@@ -23,14 +23,15 @@ describe('desktop i18n languages', () => {
   it('falls back to English for empty or unsupported values', () => {
     expect(normalizeLocale(null)).toBe(DEFAULT_LOCALE)
     expect(normalizeLocale('')).toBe(DEFAULT_LOCALE)
-    expect(normalizeLocale('de')).toBe(DEFAULT_LOCALE)
+    expect(normalizeLocale('fr')).toBe(DEFAULT_LOCALE)
   })
 
   it('distinguishes exact locale ids from supported config aliases', () => {
     expect(isSupportedLocaleValue('zh-CN')).toBe(true)
     expect(isSupportedLocaleValue('zh-TW')).toBe(true)
     expect(isSupportedLocaleValue('ja-JP')).toBe(true)
-    expect(isSupportedLocaleValue('de')).toBe(false)
+    expect(isSupportedLocaleValue('de-DE')).toBe(true)
+    expect(isSupportedLocaleValue('fr')).toBe(false)
     expect(isLocale('zh-CN')).toBe(false)
     expect(isLocale('zh')).toBe(true)
     expect(isLocale('zh-hant')).toBe(true)

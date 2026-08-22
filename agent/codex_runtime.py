@@ -23,6 +23,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.context_breakdown import context_window_usage
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,7 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                     billing_base_url=agent.base_url,
                     billing_mode="subscription_included",
                     api_call_count=1,
+                    **context_window_usage(agent),
                 )
             except Exception as exc:
                 logger.debug(
@@ -233,6 +235,7 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                 if cost_result.status == "included" else None,
                 model=agent.model,
                 api_call_count=1,
+                **context_window_usage(agent),
             )
         except Exception as exc:
             logger.debug(

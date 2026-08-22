@@ -55,6 +55,29 @@ def test_cwd_only_override_collapses_to_default():
         terminal_tool.clear_task_env_overrides("acp-session-abc")
 
 
+def test_cleanup_vm_pops_the_resolved_default_key():
+    """API sessions store the env under 'default' but close with the UUID."""
+
+    class _Env:
+        def __init__(self):
+            self.cleaned = False
+
+        def cleanup(self):
+            self.cleaned = True
+
+    env = _Env()
+    terminal_tool._active_environments["default"] = env
+    terminal_tool._last_activity["default"] = 0
+    try:
+        terminal_tool.cleanup_vm("api-session-uuid")
+        assert "default" not in terminal_tool._active_environments
+        assert env.cleaned
+    finally:
+        terminal_tool._active_environments.pop("default", None)
+        terminal_tool._last_activity.pop("default", None)
+        terminal_tool._active_environments.pop("api-session-uuid", None)
+
+
 def test_env_type_override_keeps_own_id():
     """env_type is an isolation key — must trigger per-task container."""
     terminal_tool.register_task_env_overrides(

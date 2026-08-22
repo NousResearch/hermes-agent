@@ -37,6 +37,8 @@ Discovery only *enumerates* — it never imports a provider. Nothing runs until
 
 ### Directory Provider
 
+Standalone memory providers should ship as their own plugin repositories. Installing one with `hermes plugins install owner/repo` places it under the profile-aware `$HERMES_HOME/plugins/<name>/` user location. For a complete example, see [`longman391/hermes-openbrain-memory-provider`](https://github.com/longman391/hermes-openbrain-memory-provider), an OpenBrain (OB1) provider over MCP Streamable HTTP.
+
 A directory provider lives in `plugins/memory/<name>/` when bundled with
 Hermes, in `$HERMES_HOME/plugins/<name>/` when installed by a user, or in
 `./.hermes/plugins/<name>/` for a project-local one:

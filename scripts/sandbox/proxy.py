@@ -41,6 +41,23 @@ def read_request(conn):
         if not part:
             return b""
         data += part
+    # Read the request body when a Content-Length is present, so a keep-alive
+    # loop can start cleanly at the next request rather than re-reading body
+    # bytes as a bogus request head.
+    headers, sep, body = data.partition(b"\r\n\r\n")
+    for header in headers.split(b"\r\n"):
+        if header.lower().startswith(b"content-length:"):
+            try:
+                length = int(header.split(b":", 1)[1].strip())
+            except ValueError:
+                break
+            while len(body) < length and len(data) < MAX_REQUEST_BYTES:
+                part = conn.recv(4096)
+                if not part:
+                    break
+                body += part
+                data += part
+            break
     return data
 
 
@@ -169,7 +186,12 @@ def forward_http(conn, host, port, request, target):
 
 
 def handle_connect(conn, target):
-    """Intercept a CONNECT tunnel, terminating TLS with a minted cert."""
+    """Intercept a CONNECT tunnel, terminating TLS with a minted cert.
+
+    Serves multiple nested requests on the same client connection
+    (HTTP keep-alive) so clients that reuse connections — npm in
+    particular — don't hit an EOF on their second request.
+    """
     host, _, port_text = target.rpartition(':')
     port = int(port_text or '443')
     conn.sendall(b'HTTP/1.1 200 Connection Established\r\n\r\n')
@@ -177,16 +199,17 @@ def handle_connect(conn, target):
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(cert, key)
     with context.wrap_socket(conn, server_side=True) as tls:
-        nested = read_request(tls)
-        if not nested:
-            return
-        line = nested.split(b'\r\n', 1)[0].decode('iso-8859-1')
-        nested_target = line.split(' ', 2)[1]
-        found = file_for(host, nested_target)
-        if found is not None:
-            respond_fixture(tls, found)
-        else:
-            forward_https(tls, host, port, nested)
+        while True:
+            nested = read_request(tls)
+            if not nested:
+                return
+            line = nested.split(b'\r\n', 1)[0].decode('iso-8859-1')
+            nested_target = line.split(' ', 2)[1]
+            found = file_for(host, nested_target)
+            if found is not None:
+                respond_fixture(tls, found)
+            else:
+                forward_https(tls, host, port, nested)
 
 
 def host_from_headers(request):

@@ -1380,7 +1380,7 @@ class GatewayNotificationsMixin:
                             _pr.completion_queue.put(evt)
                         else:
                             idle_events.append(evt)
-                # Format and deliver after releasing the short queue reservation.
+                # Group, format and deliver outside the queue reservation; never mix sessions/routes.
                 groups: dict[tuple[str, ...], list[dict]] = {}
                 for evt in idle_events:
                     groups.setdefault(self._event_route_key(evt, self._ASYNC_GROUP_KEY_FIELDS), []).append(evt)

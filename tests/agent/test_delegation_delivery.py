@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 from copy import deepcopy
 import io
+import re
 from pathlib import Path
 from types import SimpleNamespace
 import threading
@@ -312,29 +313,26 @@ def test_large_tool_boundary_inject_uses_canonical_spill_budget():
         turn_budget=20_000,
         preview_size=512,
     )
-    # Force the in-sandbox stdin-write path: upstream tool_result_storage
-    # prefers the host-side spillover dir and, for remote backends, a
-    # bind-mount probe — neither routes the payload through env.execute
-    # stdin. This test pins the carrier contract on the stdin write.
-    with patch(
-        "tools.tool_result_storage._is_host_side_env", return_value=False
-    ), patch(
-        "tools.tool_result_storage._sandbox_visible_spillover_path",
-        return_value=None,
-    ):
-        assert attach_ready_injects_to_tool_results(
-            agent,
-            messages,
-            num_tool_msgs=1,
-            storage_env=env,
-            budget_config=budget,
-        ) == 1
+
+    assert attach_ready_injects_to_tool_results(
+        agent,
+        messages,
+        num_tool_msgs=1,
+        storage_env=env,
+        budget_config=budget,
+    ) == 1
 
     assert len(messages[0]["content"]) <= budget.default_result_size
     assert PERSISTED_OUTPUT_TAG in messages[0]["content"]
     assert delegation_id in messages[0]["content"]
     assert env.execute.call_count == 1
-    persisted_report = env.execute.call_args.kwargs["stdin_data"]
+    # Canonical spill home: the full report is written host-side by
+    # maybe_persist_tool_result ($HERMES_HOME/cache/spillover); env.execute
+    # only probes sandbox visibility, so the payload rides on disk, not stdin.
+    saved_path = re.search(
+        r"Full output saved to: (.+)", messages[0]["content"]
+    ).group(1)
+    persisted_report = Path(saved_path).read_text()
     assert "HUGE_CHILD_REPORT:" in persisted_report
     assert persisted_report.endswith("x" * 1_000)
     assert len(persisted_report) > len(huge_summary)
@@ -984,27 +982,30 @@ def test_persisted_bounded_carrier_survives_production_compressor_payload(
         turn_budget=20_000,
         preview_size=512,
     )
-    # Force the in-sandbox stdin-write path (see the carrier-budget test
-    # above): host-side spillover and the bind-mount probe bypass stdin.
-    with patch(
-        "tools.tool_result_storage._is_host_side_env", return_value=False
-    ), patch(
-        "tools.tool_result_storage._sandbox_visible_spillover_path",
-        return_value=None,
-    ):
-        assert _flush_session_db_after_tool_progress(
-            agent,
-            messages,
-            stage="persist bounded carrier before compression",
-            storage_env=env,
-            budget_config=budget,
-        )
+
+    assert _flush_session_db_after_tool_progress(
+        agent,
+        messages,
+        stage="persist bounded carrier before compression",
+        storage_env=env,
+        budget_config=budget,
+    )
     assert _event_state(delegation_id, "task:0") == ("delivered", 1)
 
     durable = agent._session_db.get_messages_as_conversation(agent.session_id)
-    assert PERSISTED_OUTPUT_TAG in str(durable)
-    assert delegation_id in str(durable)
-    assert "COMPRESSOR_CARRIER_EVIDENCE:" in env.execute.call_args.kwargs["stdin_data"]
+    durable_str = str(durable)
+    assert PERSISTED_OUTPUT_TAG in durable_str
+    assert delegation_id in durable_str
+    # Carrier evidence survives in the canonical host-side spillover file.
+    carrier_content = next(
+        message.get("content", "")
+        for message in durable
+        if isinstance(message, dict)
+        and isinstance(message.get("content"), str)
+        and PERSISTED_OUTPUT_TAG in message["content"]
+    )
+    saved_path = re.search(r"Full output saved to: (.+)", carrier_content).group(1)
+    assert "COMPRESSOR_CARRIER_EVIDENCE:" in Path(saved_path).read_text()
 
     compressor = ContextCompressor(
         model="test/model",

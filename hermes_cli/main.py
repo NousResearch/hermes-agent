@@ -1973,16 +1973,18 @@ def _print_tui_exit_summary(
     )
 
 
-_NPM_LOCK_RUNTIME_KEYS = frozenset({"ideallyInert", "peer"})
+_NPM_LOCK_RUNTIME_KEYS = frozenset({"ideallyInert", "peer", "extraneous"})
 """Lockfile fields npm writes non-deterministically at install time.
 
 ``ideallyInert`` is npm's runtime annotation for packages it skipped installing
 (per-platform opt-outs).  ``peer`` is dropped from the hidden ``.package-lock.json``
 on dev-dependencies that are *also* declared as peers — the canonical
 ``package-lock.json`` records the dual role, but npm 9's actualized tree strips
-it.  Neither key represents a real skew between what was declared and what was
-installed, so we exclude them from the comparison in :func:`_tui_need_npm_install`
-to avoid false-positive reinstalls on every launch.
+it.  ``extraneous`` is written by npm >= 10/11 into the hidden lockfile but not
+the canonical one, so it always differs.  Neither key represents a real skew
+between what was declared and what was installed, so we exclude them from the
+comparison in :func:`_tui_need_npm_install` to avoid false-positive reinstalls
+on every launch.
 """
 
 
@@ -2098,7 +2100,18 @@ def _tui_need_npm_install(root: Path) -> bool:
         return lock.stat().st_mtime > marker.stat().st_mtime
 
     def comparable(pkg: dict) -> dict:
-        return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
+        # npm >= 10/11 writes a reduced hidden lockfile that omits declarative
+        # fields (`version`, `dependencies`, `dev`, `engines`, `bin`, ...) or
+        # stores them as null.  Comparing every key field-by-field then flags
+        # nearly every installed package as "changed".  Compare only the keys
+        # both sides actually record with a non-null value (`resolved`,
+        # `integrity`, ...): a genuinely stale install (root lockfile bumped
+        # while node_modules is behind) still differs on those keys, while the
+        # reduced-lockfile field omissions no longer false-positive.
+        a = {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
+        b = {k: v for k, v in installed_pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
+        common = a.keys() & b.keys()
+        return {k: a[k] for k in common if a[k] is not None and b[k] is not None}
 
     for name, pkg in wanted.items():
         if not name:
@@ -2108,12 +2121,20 @@ def _tui_need_npm_install(root: Path) -> bool:
             continue
 
         if name not in installed:
-            if pkg.get("optional") or pkg.get("peer"):
+            # Workspace link entries (`"link": true`, paths outside
+            # node_modules/ like `apps/desktop`, `node_modules/web`) are never
+            # materialized by a partial `npm install --workspace ui-tui` —
+            # they're deliberately skipped (see #38772) and would otherwise
+            # force a reinstall on every launch.
+            if pkg.get("optional") or pkg.get("peer") or pkg.get("link"):
+                continue
+            if not name.startswith("node_modules/"):
                 continue
             return True
 
-        if isinstance(installed[name], dict) and comparable(pkg) != comparable(
-            installed[name]
+        installed_pkg = installed[name]
+        if isinstance(installed_pkg, dict) and comparable(pkg) != comparable(
+            installed_pkg
         ):
             return True
 

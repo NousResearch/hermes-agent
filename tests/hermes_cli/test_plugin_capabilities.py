@@ -16,6 +16,8 @@ import yaml
 from hermes_cli.plugin_capabilities import (
     CAPABILITY_REGISTRY,
     VALID_CAPABILITY_IDS,
+    CapabilitySpec,
+    _legacy_gate_set,
     capability_set_hash,
     consent_hash,
     declared_set_changed,
@@ -346,6 +348,65 @@ class TestLegacyGateCompat:
         manifest = PluginManifest(name="oldplug", source="user", key="oldplug")
         ctx = PluginContext(manifest, PluginManager())
         assert ctx._tool_override_allowed("write_file") is True
+
+    def test_empty_legacy_path_has_no_legacy_gate(self):
+        """A capability with no deprecated predecessor never opens this way.
+
+        The walk over an empty ``legacy_path`` leaves ``node`` pointing at the
+        plugin's whole config entry, so the truthiness check at the end would
+        grant on any non-empty entry.
+        """
+        spec = CapabilitySpec(
+            id="llm.no_predecessor",
+            legacy_path=(),
+            description="A capability with no deprecated allow_* key",
+        )
+        assert _legacy_gate_set({"enabled": True}, spec) is False
+
+    def test_capability_without_legacy_path_stays_denied(
+        self, hermes_home, monkeypatch
+    ):
+        """End to end: a config block alone must not grant the capability."""
+        spec = CapabilitySpec(
+            id="llm.no_predecessor",
+            legacy_path=(),
+            description="A capability with no deprecated allow_* key",
+        )
+        monkeypatch.setitem(CAPABILITY_REGISTRY, spec.id, spec)
+        (hermes_home / "config.yaml").write_text(
+            "plugins:\n  entries:\n    newplug:\n      enabled: true\n",
+            encoding="utf-8",
+        )
+        assert plugin_capability_granted("newplug", spec.id) is False
+
+    def test_consent_records_a_capability_without_a_legacy_path(
+        self, hermes_home, monkeypatch
+    ):
+        """Consent must still be recordable with no allow_* key to mirror into.
+
+        The bridge writes ``legacy_path[-1]`` for every granted capability;
+        an empty path made that an IndexError, so consenting to such a
+        capability failed outright. The grant itself is the enforcing state.
+        """
+        import hermes_cli.plugin_capabilities as pc
+
+        spec = CapabilitySpec(
+            id="llm.no_predecessor",
+            legacy_path=(),
+            description="A capability with no deprecated allow_* key",
+        )
+        monkeypatch.setitem(CAPABILITY_REGISTRY, spec.id, spec)
+        monkeypatch.setattr(
+            pc, "VALID_CAPABILITY_IDS", frozenset(CAPABILITY_REGISTRY)
+        )
+
+        record_consent("newplug", [spec.id], [spec.id])
+
+        entry = _read_cfg(hermes_home)["plugins"]["entries"]["newplug"]
+        assert entry["granted_capabilities"] == [spec.id]
+        # Nothing invented in place of the absent legacy key.
+        assert set(entry) == {"granted_capabilities", "capabilities_consent"}
+        assert plugin_capability_granted("newplug", spec.id) is True
 
     def test_bundled_plugin_trusted(self, hermes_home):
         from hermes_cli.plugins import PluginContext, PluginManifest, PluginManager

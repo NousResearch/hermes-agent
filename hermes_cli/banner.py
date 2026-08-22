@@ -37,17 +37,59 @@ _RST = "\033[0m"
 
 
 def cprint(text: str):
-    """Print ANSI-colored text through prompt_toolkit's renderer."""
-    from prompt_toolkit import print_formatted_text as _pt_print
-    from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
-    try:
-        _pt_print(_PT_ANSI(text))
-    except Exception:
-        # prompt_toolkit needs a real console. On Windows, a redirected or
-        # absent stdout (pythonw.exe, CI, `hermes ... > file`) raises
-        # NoConsoleScreenBufferError from its Win32Output — display helpers
-        # must never crash the caller over that, so degrade to plain print.
-        print(text)
+    """Print ANSI-colored text safely from any thread.
+
+    Compatibility wrapper around ``hermes_cli._pt_print.cprint`` — the
+    real routing logic (which checks ``get_app_or_none()`` and falls back
+    to ``run_in_terminal`` for cross-thread background emissions) lives
+    there. See that module's docstring for the rationale behind why a
+    direct ``print_formatted_text`` call from a background thread races
+    the prompt redraw and visually buries the line — that race is the
+    "third form" of issue #83969.
+    """
+    from hermes_cli._pt_print import cprint as _shared_cprint
+
+    _shared_cprint(text)
+
+
+
+def render_markup_to_ansi(text: str) -> str:
+    """Render Rich markup to an ANSI escape string (no side effects).
+
+    Used by deferred background-thread prints (``_defer_update_notice`` and
+    friends) where we can't call ``Console.print`` directly because:
+
+    1. The interactive CLI installs ``patch_stdout`` once it enters the
+       prompt_toolkit session. ``patch_stdout`` wraps ``sys.stdout`` in a
+       ``StdoutProxy`` whose ``write()`` strips ESC bytes from any output,
+       so anything we write with raw ANSI escapes comes out as the literal
+       string ``[1;33m...[0m`` (issue #83969).
+    2. By the time the deferred thread runs, the banner frame has already
+       been painted, so a fresh ``Console.print`` would interleave its
+       output at the wrong cursor position and overwrite the "Available
+       Skills" heading.
+
+    Calling this helper converts Rich markup to a complete ANSI sequence
+    (foreground/background/bold/dim as configured by the skin), so the
+    caller can route the bytes through ``cprint`` (which goes via
+    prompt_toolkit's ``print_formatted_text``) or write them straight to
+    ``sys.__stdout__`` when ``patch_stdout`` is not active (e.g. the rare
+    non-interactive CLI path where the Ink TUI never installs it).
+    """
+    import io as _io
+
+    from rich.console import Console as _Console
+
+    sink = _io.StringIO()
+    capture = _Console(
+        file=sink,
+        force_terminal=True,
+        color_system="truecolor",
+        width=10_000,
+        no_color=False,
+    )
+    capture.print(text, end="")
+    return sink.getvalue()
 
 
 # =========================================================================
@@ -718,6 +760,15 @@ def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
 
     Used when the banner rendered before the update prefetch finished so
     startup never blocks on git/network. Prints at most once per process.
+
+    The output is rendered through ``render_markup_to_ansi`` + ``cprint``
+    rather than ``console.print`` because the Ink/TUI prompt_toolkit session
+    installs ``patch_stdout`` between the banner render and this background
+    thread's wake. ``patch_stdout``'s ``StdoutProxy`` strips ESC bytes from
+    any raw ANSI output, so a plain ``console.print(_format_update_notice(...))``
+    leaks the markup text as visible ``[1;33m...[0m`` artifacts (issue
+    #83969). Routing through ``cprint`` keeps the bytes intact and lands
+    them at the right cursor position via ``print_formatted_text``.
     """
     global _deferred_update_notice_started
     if _deferred_update_notice_started:
@@ -731,7 +782,9 @@ def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
             behind = _update_result
             if behind is None or behind == 0:
                 return
-            console.print(_format_update_notice(behind))
+            ansi = render_markup_to_ansi(_format_update_notice(behind))
+            if ansi:
+                cprint(ansi)
         except Exception:
             pass  # never break the session over an update notice
 

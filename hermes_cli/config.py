@@ -2243,27 +2243,79 @@ def warn_deprecated_cwd_env_vars() -> None:
     lines: list[str] = []
     if messaging_cwd:
         lines.append(
-            f"  \033[33m⚠\033[0m MESSAGING_CWD={messaging_cwd} found in .env — "
+            f"  ⚠ MESSAGING_CWD={messaging_cwd} found in .env — "
             f"this is deprecated."
         )
     if terminal_cwd_env:
         lines.append(
-            f"  \033[33m⚠\033[0m TERMINAL_CWD={terminal_cwd_env} found in .env — "
+            f"  ⚠ TERMINAL_CWD={terminal_cwd_env} found in .env — "
             f"this is deprecated."
         )
     if lines:
         from hermes_constants import display_hermes_home
 
         hint_path = display_hermes_home()
-        lines.insert(0, "\033[33m⚠ Deprecated .env settings detected:\033[0m")
-        lines.append(
-            "  \033[2mMove to config.yaml instead:  "
-            "terminal:\\n    cwd: /your/project/path\033[0m"
+        # Render via Rich Console and write to the real stderr file descriptor
+        # — ``patch_stdout`` (active during the interactive CLI session)
+        # wraps ``sys.stderr`` in a ``StdoutProxy`` whose ``write()`` strips
+        # ESC bytes, so raw ANSI escapes here would render as visible
+        # ``[33m...[0m`` artifacts (same class of bug as #83969's banner
+        # deferred update notice). Using markup + capture + writing to the
+        # unwrapped stderr fd keeps the colors intact AND the cursor in the
+        # right place, without depending on prompt_toolkit being installed.
+        from io import StringIO
+
+        from rich.console import Console
+
+        sink = StringIO()
+        capture = Console(
+            file=sink,
+            force_terminal=True,
+            color_system="truecolor",
+            width=10_000,
+            no_color=False,
         )
-        lines.append(
-            f"  \033[2mThen remove the old entries from {hint_path}/.env\033[0m"
+        # Yellow bold for the heading, yellow for the body bullets,
+        # dim for the migration hint + cleanup line.
+        capture.print("[bold yellow]⚠ Deprecated .env settings detected:[/bold yellow]")
+        for line in lines:
+            capture.print(f"[yellow]{line}[/yellow]")
+        capture.print(
+            f"  [dim]Move to config.yaml instead:  "
+            f"terminal:\n    cwd: /your/project/path[/dim]"
         )
-        sys.stderr.write("\n".join(lines) + "\n\n")
+        capture.print(
+            f"  [dim]Then remove the old entries from {hint_path}/.env[/dim]"
+        )
+        # ``sys.stderr`` may be wrapped by prompt_toolkit's StdoutProxy; use
+        # the wrapper's own ``write`` so it can route the ANSI bytes through
+        # whatever renderer is currently active (VT100-aware in the Ink/TUI
+        # session, plain file write otherwise) without us reaching past it
+        # to a raw file descriptor.
+        stderr = sys.stderr
+        write = getattr(stderr, "write", None)
+        if write is None:
+            return
+        try:
+            write(sink.getvalue())
+            # Best-effort newline flush — StdoutProxy.write doesn't append.
+            write("\n\n")
+        except Exception:
+            # StdoutProxy may forward to prompt_toolkit's renderer which
+            # expects FormattedText; in that case fall back to plain text
+            # to avoid a stack trace — losing colors is preferable to
+            # breaking the session over a deprecation warning.
+            plain = (
+                "⚠ Deprecated .env settings detected:\n"
+                + "\n".join(lines)
+                + "\n  Move to config.yaml instead:  "
+                  "terminal:\n    cwd: /your/project/path\n"
+                f"  Then remove the old entries from {hint_path}/.env\n\n"
+            )
+            try:
+                write(plain)
+            except Exception:
+                pass
 
 
 def _persist_migration(config: Dict[str, Any]) -> None:

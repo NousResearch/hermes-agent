@@ -215,9 +215,16 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
                 f"`hermes cron edit {job_id} --provider <provider> "
                 "--model <model>`."
             )
+        # The chat line is the surface an operator actually reads; the log and
+        # the alert blob are where they look only after this line sent them
+        # there. Naming just the per-job pin here is why a fleet-wide switch
+        # reads as N separate incidents needing N separate edits (#59031).
+        # Terse on purpose -- this stays one line.
         return (
             f"⚠️ Cron '{job_name}' skipped before inference to prevent "
-            f"unintended spend. {remediation}"
+            f"unintended spend. {remediation} For the whole unpinned fleet at "
+            "once, set a cron default instead: `hermes config set cron.model "
+            "<model>`."
         )
 
     # A no_agent job IS its script — run_job short-circuits it before any model
@@ -5922,11 +5929,26 @@ def run_job(
                     and job["schedule"].get("kind") == "once"
                     and _repeat.get("times") == 1
                 )
+                # Name the fleet-wide remedy alongside the per-job one. A
+                # global model change drifts EVERY unpinned job at once
+                # (#59031: 34 of them), so per-job pinning is the O(n) answer
+                # to an O(1) problem -- and `cron.model` is the one the docs
+                # already call "the deliberate way to route cron spend", with
+                # the guard exempting any axis it covers
+                # (_cron_fleet_default_covers_axis). An operator reading only
+                # this line had no way to learn that existed.
+                _fleet_default_hint = (
+                    " If you want every unpinned cron job on a fixed model "
+                    "regardless of your chat model, set the cron-fleet default "
+                    "once instead: `hermes config set cron.model <model>` "
+                    "(and `cron.model_provider` if the provider also differs) "
+                    "-- the guard does not engage for an axis it covers."
+                )
                 if _finite_oneshot:
                     _remediation = (
                         "This finite one-shot job is consumed by this attempted run; "
                         "create a new one-shot job at a future time with an explicit "
-                        "provider and model."
+                        "provider and model." + _fleet_default_hint
                     )
                 else:
                     _remediation = (
@@ -5934,7 +5956,7 @@ def run_job(
                         "pin it explicitly: "
                         f"`hermes cron edit {job_id} --provider <provider> "
                         "--model <model>` (or pin the original values to keep "
-                        "them)."
+                        "them)." + _fleet_default_hint
                     )
                 logger.warning(
                     "Job '%s': SKIPPED — global inference config drifted since "

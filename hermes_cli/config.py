@@ -5115,13 +5115,21 @@ def warn_unpinned_cron_jobs_after_model_config_change(
     snapshot_field = f"{axis}_snapshot"
     noun = "job" if affected == 1 else "jobs"
     verb = "has" if affected == 1 else "have"
+    # Two remedies, and for a fleet the second is almost always the right
+    # one: pinning is per job, so a single global switch turns into N edits
+    # (#59031 broke 34 jobs at once), while `cron.model` decouples the whole
+    # unpinned fleet from the chat model in one command and leaves the guard
+    # armed for everything it does not cover. The docs have said this since
+    # #73532; this warning did not.
     print(
         f"⚠️  {affected} enabled unpinned cron {noun} {verb} stored "
         f"{snapshot_field} values that differ from the new global {axis}. "
         "They will fail closed on their next run instead of silently using the "
-        "changed model/provider. Inspect with `hermes cron list`, then pin the "
-        "intended values with `hermes cron edit <job_id> --provider <provider> "
-        "--model <model>`."
+        "changed model/provider. Inspect with `hermes cron list`, then either "
+        "pin them individually (`hermes cron edit <job_id> --provider "
+        "<provider> --model <model>`) or give the whole unpinned fleet a "
+        f"default that your chat model no longer touches (`hermes config set "
+        f"cron.{axis if axis == 'model' else 'model_provider'} <{axis}>`)."
     )
 
 

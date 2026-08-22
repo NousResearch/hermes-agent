@@ -452,6 +452,35 @@ def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) 
     return None
 
 
+def codex_quota_identity_for_entry(entry: Any) -> Optional[Tuple[str, ...]]:
+    """Return the non-secret identity that owns a Codex quota window.
+
+    ``chatgpt_account_id`` names a workspace, while JWT ``sub`` distinguishes
+    members that can have independent usage windows. Keep both when present;
+    fall back to either stable claim rather than grouping unrelated entries.
+    """
+    claims = _decode_jwt_claims(str(getattr(entry, "access_token", "") or ""))
+    auth_claims = claims.get("https://api.openai.com/auth")
+    account_id = None
+    if isinstance(auth_claims, dict):
+        raw_account_id = auth_claims.get("chatgpt_account_id")
+        if isinstance(raw_account_id, str) and raw_account_id.strip():
+            account_id = raw_account_id.strip()
+    raw_subject = claims.get("sub")
+    subject = (
+        raw_subject.strip()
+        if isinstance(raw_subject, str) and raw_subject.strip()
+        else None
+    )
+    if account_id and subject:
+        return ("account-subject", account_id, subject)
+    if account_id:
+        return ("account", account_id)
+    if subject:
+        return ("subject", subject)
+    return None
+
+
 def _normalize_custom_pool_name(name: str) -> str:
     """Normalize a custom provider name for use as a pool key suffix."""
     return name.strip().lower().replace(" ", "-")
@@ -848,6 +877,34 @@ class CredentialPool:
             extra=updated_extra,
         )
         self._replace_entry(entry, updated)
+        if (
+            self.provider == "openai-codex"
+            and terminal_status == STATUS_EXHAUSTED
+            and auth_mod._is_codex_rate_limit_shaped(
+                status_code,
+                normalized_error.get("reason"),
+                normalized_error.get("message"),
+            )
+        ):
+            quota_identity = codex_quota_identity_for_entry(updated)
+            if quota_identity is not None:
+                for sibling in list(self._entries):
+                    if sibling.id == updated.id:
+                        continue
+                    if codex_quota_identity_for_entry(sibling) != quota_identity:
+                        continue
+                    self._replace_entry(
+                        sibling,
+                        replace(
+                            sibling,
+                            last_status=terminal_status,
+                            last_status_at=updated.last_status_at,
+                            last_error_code=status_code,
+                            last_error_reason=normalized_error.get("reason"),
+                            last_error_message=normalized_error.get("message"),
+                            last_error_reset_at=normalized_error.get("reset_at"),
+                        ),
+                    )
         if persist:
             self._persist()
         return updated

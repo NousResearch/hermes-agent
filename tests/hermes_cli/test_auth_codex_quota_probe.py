@@ -123,6 +123,22 @@ def test_probe_sends_chatgpt_account_id_from_jwt(monkeypatch):
     assert calls[0]["headers"].get("ChatGPT-Account-Id") == "acct-123"
 
 
+def test_probe_uses_fixed_short_timeout_and_explicit_allowed(monkeypatch):
+    """Pool recovery is a hot path: keep its network bound internal and short."""
+    calls = []
+
+    def _client_factory(**kwargs):
+        calls.append(kwargs)
+        return _StubClient([], _StubResponse(200, {"rate_limit": {"allowed": True}}))
+
+    monkeypatch.setattr(auth_mod.httpx, "Client", _client_factory)
+    token = _jwt({"exp": time.time() + 3600})
+
+    assert _probe_codex_quota_restored(token) is True
+    assert calls == [{"timeout": auth_mod.CODEX_QUOTA_PROBE_TIMEOUT_SECONDS}]
+    assert auth_mod.CODEX_QUOTA_PROBE_TIMEOUT_SECONDS == 2.0
+
+
 # ---------------------------------------------------------------------------
 # clear_codex_pool_quota_cooldowns
 # ---------------------------------------------------------------------------

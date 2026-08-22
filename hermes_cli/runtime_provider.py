@@ -22,6 +22,7 @@ from agent.secret_scope import get_secret as _get_secret
 from hermes_cli.auth import (
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER,
     AuthError,
+    CODEX_RATE_LIMITED_CODE,
     DEFAULT_CODEX_BASE_URL,
     DEFAULT_QWEN_BASE_URL,
     DEFAULT_XAI_OAUTH_BASE_URL,
@@ -613,6 +614,39 @@ def _resolve_runtime_from_pool_entry(
         "credential_pool": pool,
         "requested_provider": requested_provider,
     }
+
+
+def _credential_pool_exhausted_error(provider: str, pool: CredentialPool) -> AuthError:
+    """Return a typed pool-exhaustion error without leaking credentials."""
+    try:
+        entries = list(pool.entries())
+    except Exception:
+        entries = []
+    reasons = []
+    for entry in entries:
+        reason = str(
+            getattr(entry, "last_error_reason", None)
+            or getattr(entry, "last_error_message", None)
+            or ""
+        ).strip()
+        if reason and reason not in reasons:
+            reasons.append(reason)
+        if len(reasons) == 2:
+            break
+    detail = f" Last pool errors: {'; '.join(reasons)}." if reasons else ""
+    return AuthError(
+        f"The {provider} credential pool has no usable entries; "
+        f"same-provider rotation is exhausted.{detail} "
+        f"Run `hermes auth list {provider}` to inspect it, or configure "
+        "`fallback_providers` for cross-provider fallback.",
+        provider=provider,
+        code=(
+            CODEX_RATE_LIMITED_CODE
+            if provider == "openai-codex"
+            else "credential_pool_exhausted"
+        ),
+        relogin_required=False,
+    )
 
 
 def resolve_requested_provider(requested: Optional[str] = None) -> str:
@@ -1986,6 +2020,7 @@ def resolve_runtime_provider(
             and not has_runtime_override
         )
 
+    pool_unavailable = False
     try:
         pool = load_pool(provider) if should_use_pool else None
     except Exception:
@@ -1993,7 +2028,17 @@ def resolve_runtime_provider(
     if pool and pool.has_credentials():
         entry = pool.select()
         pool_api_key = ""
-        if entry is not None:
+        if entry is None:
+            pool_error = _credential_pool_exhausted_error(provider, pool)
+            if requested_provider != "auto":
+                raise pool_error
+            logger.info(
+                "Auto-detected %s credential pool is exhausted; falling "
+                "through to another provider.",
+                provider,
+            )
+            pool_unavailable = True
+        else:
             pool_api_key = (
                 getattr(entry, "runtime_api_key", None)
                 or getattr(entry, "access_token", "")
@@ -2054,7 +2099,7 @@ def resolve_runtime_provider(
                 target_model=target_model,
             )
 
-    if provider == "nous":
+    if provider == "nous" and not pool_unavailable:
         try:
             from hermes_cli.providers import nous_api_mode
 
@@ -2078,7 +2123,7 @@ def resolve_runtime_provider(
             logger.info("Auto-detected Nous provider but credentials failed; "
                         "falling through to next provider.")
 
-    if provider == "openai-codex":
+    if provider == "openai-codex" and not pool_unavailable:
         try:
             creds = resolve_codex_runtime_credentials()
             return {
@@ -2098,7 +2143,7 @@ def resolve_runtime_provider(
             logger.info("Auto-detected Codex provider but credentials failed; "
                         "falling through to next provider.")
 
-    if provider == "xai-oauth":
+    if provider == "xai-oauth" and not pool_unavailable:
         try:
             creds = resolve_xai_oauth_runtime_credentials()
             return {
@@ -2116,7 +2161,7 @@ def resolve_runtime_provider(
             logger.info("Auto-detected xAI OAuth provider but credentials failed; "
                         "falling through to next provider.")
 
-    if provider == "qwen-oauth":
+    if provider == "qwen-oauth" and not pool_unavailable:
         try:
             creds = resolve_qwen_runtime_credentials()
             return {
@@ -2134,7 +2179,7 @@ def resolve_runtime_provider(
             logger.info("Qwen OAuth credentials failed; "
                         "falling through to next provider.")
 
-    if provider == "minimax-oauth":
+    if provider == "minimax-oauth" and not pool_unavailable:
         pconfig = PROVIDER_REGISTRY.get(provider)
         if pconfig and pconfig.auth_type == "oauth_minimax":
             from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials

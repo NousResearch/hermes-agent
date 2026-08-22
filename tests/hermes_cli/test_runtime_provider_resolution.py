@@ -86,6 +86,37 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     assert resolved["source"] == "manual"
 
 
+def test_exhausted_explicit_codex_pool_does_not_fall_through_to_singleton(
+    monkeypatch,
+):
+    """An exhausted pool must not silently reuse its singleton OAuth token."""
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return None
+
+        def entries(self):
+            return [SimpleNamespace(label="weekly", last_error_reason="usage_limit_reached")]
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    singleton_calls = []
+    monkeypatch.setattr(
+        rp,
+        "resolve_codex_runtime_credentials",
+        lambda: singleton_calls.append(True) or {"api_key": "stale-singleton"},
+    )
+
+    with pytest.raises(rp.AuthError, match="credential pool") as exc_info:
+        rp.resolve_runtime_provider(requested="openai-codex")
+
+    assert singleton_calls == []
+    assert exc_info.value.code == rp.CODEX_RATE_LIMITED_CODE
+
+
 class TestCustomProviderPoolLoopbackNoKeyExemption:
     """Regression for issue #86864: legacy custom_providers configs often
     used short/placeholder api_keys ('123', 'm') for local no-auth

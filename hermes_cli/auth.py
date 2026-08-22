@@ -4263,6 +4263,10 @@ def _is_codex_rate_limit_shaped(
 # credential-selection path while the pool is exhausted, so without a floor a
 # busy gateway would hammer the usage endpoint on every model/auxiliary call.
 CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS = 300  # 5 minutes
+# Fixed internal bound: this probe runs during credential selection, so it must
+# not inherit an undocumented behavioral environment override or the general
+# Codex refresh timeout.
+CODEX_QUOTA_PROBE_TIMEOUT_SECONDS = 2.0
 _codex_quota_probe_cache: Dict[str, Tuple[float, Optional[bool]]] = {}
 _codex_quota_probe_lock = threading.Lock()
 
@@ -4350,17 +4354,22 @@ def _probe_codex_quota_restored(
         )
         if isinstance(account_id, str) and account_id.strip():
             headers["ChatGPT-Account-Id"] = account_id.strip()
-        with httpx.Client(timeout=10.0) as client:
+        with httpx.Client(timeout=CODEX_QUOTA_PROBE_TIMEOUT_SECONDS) as client:
             response = client.get(_codex_usage_probe_url(base_url), headers=headers)
         if response.status_code == 200:
             payload = response.json() or {}
             rate_limit = payload.get("rate_limit") or {}
+            allowed = rate_limit.get("allowed")
+            if allowed is True:
+                result = True
+            elif allowed is False or rate_limit.get("limit_reached") is True:
+                result = False
             worst_used: Optional[float] = None
             for key in ("primary_window", "secondary_window"):
                 used = (rate_limit.get(key) or {}).get("used_percent")
                 if isinstance(used, (int, float)):
                     worst_used = max(worst_used or 0.0, float(used))
-            if worst_used is not None:
+            if result is None and worst_used is not None:
                 result = worst_used < 100.0
         elif response.status_code == 429:
             result = False

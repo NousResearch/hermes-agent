@@ -446,6 +446,62 @@ def test_429_rate_limit_still_uses_exhausted_not_dead(tmp_path, monkeypatch):
     assert persisted["last_error_code"] == 429
 
 
+def test_codex_rate_limit_exhausts_only_matching_quota_identity(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    account_claim = "https://api.openai.com/auth"
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "same-a",
+                        "label": "same-a",
+                        "auth_type": "oauth",
+                        "source": "manual:device_code",
+                        "access_token": _jwt_with_claims(
+                            {"sub": "user-a", account_claim: {"chatgpt_account_id": "acct-1"}}
+                        ),
+                    },
+                    {
+                        "id": "same-b",
+                        "label": "same-b",
+                        "auth_type": "oauth",
+                        "source": "manual:device_code",
+                        "access_token": _jwt_with_claims(
+                            {"sub": "user-a", account_claim: {"chatgpt_account_id": "acct-1"}}
+                        ),
+                    },
+                    {
+                        "id": "other-user",
+                        "label": "other-user",
+                        "auth_type": "oauth",
+                        "source": "manual:device_code",
+                        "access_token": _jwt_with_claims(
+                            {"sub": "user-b", account_claim: {"chatgpt_account_id": "acct-1"}}
+                        ),
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import STATUS_EXHAUSTED, load_pool
+
+    pool = load_pool("openai-codex")
+    pool.mark_exhausted_and_rotate(
+        status_code=429,
+        error_context={"reason": "usage_limit_reached", "message": "usage limit"},
+        credential_id="same-a",
+    )
+
+    states = {entry.id: entry.last_status for entry in pool.entries()}
+    assert states["same-a"] == STATUS_EXHAUSTED
+    assert states["same-b"] == STATUS_EXHAUSTED
+    assert states["other-user"] is None
+
+
 def test_generic_401_without_terminal_reason_still_uses_exhausted(tmp_path, monkeypatch):
     """A 401 with no specific code/reason should keep TTL semantics.
 

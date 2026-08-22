@@ -1763,6 +1763,131 @@ def _notify_context_engine_turn_complete(
         )
 
 
+# Bound on how many enforce_response regenerate rounds the host will attempt
+# before it forces the engine to make a terminal accept/replace decision. Kept
+# small: the point is to give the engine one or two corrective passes, not to
+# loop indefinitely on a stubborn model. The last allowed attempt is made with
+# ``final=True`` so the engine refuses (accept/replace) rather than asking again.
+_ENFORCE_RESPONSE_MAX_REGENERATE = 2
+
+
+def _maybe_enforce_response(
+    agent: Any,
+    final_response: str,
+    messages: List[Dict[str, Any]],
+    *,
+    logger: Any,
+) -> str:
+    """Run the optional post-generation ``ContextEngine.enforce_response()`` hook.
+
+    Fired once per turn on the finalized TEXT-final assistant answer, after the
+    tool loop has produced ``final_response`` but before it is returned /
+    persisted. Complements ``select_context()`` (pre-request selection) and
+    ``on_turn_complete()`` (post-turn observation): this is the enforcement
+    lifecycle point where an engine can audit the reply against its verbatim
+    record and accept it, swap in a safe replacement, or (if it advertises the
+    capability) ask for a bounded number of regenerations.
+
+    Returns the (possibly replaced) response text. Honored actions:
+      * ``{"action": "accept"}``           — ship ``final_response`` unchanged.
+      * ``{"action": "replace", "text": X}`` — ship ``X`` in place of the answer.
+      * ``{"action": "regenerate", ...}``  — gated by ``capabilities()``; see the
+        deferral note below.
+
+    Regenerate is intentionally implemented as a *documented no-op-accepted*
+    branch: wiring a genuine re-prompt loop here would have to re-enter the
+    provider call path (streaming, tool re-exposure, budget/iteration
+    accounting, interrupt handling) from the finalizer, which is far more
+    invasive than an additive hook should be. Instead the host still honors the
+    ``final=True`` refusal semantics by making its LAST allowed enforcement call
+    with ``final=True``, so an engine that would otherwise loop is told to make a
+    terminal accept/replace decision. If the engine keeps returning
+    ``regenerate`` even under ``final=True``, the host accepts the current text
+    (never loops, never breaks the turn).
+
+    Fail-open by design: a missing hook, the base no-op, any exception, or an
+    unrecognized return value yields the unmodified ``final_response``.
+    """
+    if not isinstance(final_response, str) or not final_response:
+        return final_response
+
+    engine = getattr(agent, "context_compressor", None)
+    hook = getattr(engine, "enforce_response", None)
+    if engine is None or not callable(hook):
+        return final_response
+
+    # Skip the no-op base implementation so non-implementing engines (incl. the
+    # built-in compressor) pay nothing per turn. ``getattr(..., "__func__")``
+    # identity-check mirrors ``_notify_context_engine_turn_complete``. Lazy
+    # import avoids any import cycle with agent.context_engine.
+    try:
+        from agent.context_engine import ContextEngine as _CE
+        if getattr(hook, "__func__", None) is _CE.enforce_response:
+            return final_response
+    except Exception:
+        pass
+
+    session_label = getattr(agent, "session_id", None) or "-"
+
+    # Does the engine opt into the regenerate branch? accept/replace never
+    # require the capability; only regenerate is gated (per capabilities()).
+    _can_regenerate = False
+    try:
+        caps = engine.capabilities()
+        _can_regenerate = bool(isinstance(caps, dict) and caps.get("enforce_response"))
+    except Exception:
+        _can_regenerate = False
+
+    answer = final_response
+    # Attempts are bounded. The final permitted attempt passes ``final=True`` so
+    # the engine refuses (accept/replace) instead of looping. When the engine
+    # cannot regenerate, a single attempt is made and it is the final one.
+    max_attempts = (_ENFORCE_RESPONSE_MAX_REGENERATE + 1) if _can_regenerate else 1
+    for attempt in range(max_attempts):
+        is_final = attempt == max_attempts - 1
+        try:
+            verdict = hook(
+                answer,
+                # Structural clones: the hook receives the PERSISTED history; a
+                # shallow dict(m) would let it write through nested containers
+                # into the transcript (#80498 aliasing class).
+                [_clone_message_for_send(m) for m in messages],
+                model=getattr(agent, "model", "") or "",
+                final=is_final,
+            )
+        except Exception:
+            logger.warning(
+                "Context engine enforce_response hook failed; shipping the "
+                "unmodified response (session=%s)",
+                session_label,
+                exc_info=True,
+            )
+            return final_response
+
+        if not isinstance(verdict, dict):
+            return answer
+
+        action = verdict.get("action")
+        if action == "replace":
+            text = verdict.get("text")
+            if isinstance(text, str) and text:
+                return text
+            # Malformed replace: fall open to the current answer.
+            return answer
+        if action == "regenerate" and _can_regenerate and not is_final:
+            # Documented no-op-accepted branch (see docstring): we cannot safely
+            # re-drive the provider from the finalizer, so we do not produce a
+            # new candidate. Advance the bounded loop — the next call is made
+            # with ``final=True`` on the last iteration, forcing the engine to a
+            # terminal accept/replace instead of an infinite regenerate loop.
+            continue
+        # action == "accept", an unknown action, or a regenerate we cannot honor
+        # (not capable, or already final): ship the current text as-is.
+        return answer
+
+    return answer
+
+
 def run_conversation(
     agent,
     user_message: Any,

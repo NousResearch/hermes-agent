@@ -488,26 +488,23 @@ class ContextEngine(ABC):
         self.threshold_percent = self._base_threshold_percent
         self.threshold_tokens = int(context_length * self.threshold_percent)
 
-    # -- Optional: H2 grounding hooks (additive; default no-ops) ------------
+    # -- Optional: post-generation enforcement hook (additive; default no-op) --
     #
-    # These let a retrieval-first engine (e.g. a retrieval-first engine) (a) inject verbatim
-    # evidence just before the request is sent, and (b) audit/enforce the model's
-    # reply (citation check, verification, regenerate, refuse) *after* it returns.
-    # Built-in ContextCompressor and LCM do not override them, so behaviour is
-    # unchanged for existing engines. The host calls them only when
-    # ``capabilities()`` advertises support.
+    # This lets a retrieval-first engine audit/enforce the model's reply
+    # (citation check, verification, regenerate, refuse) *after* it returns.
+    # Pre-request context injection is handled separately by ``select_context()``.
+    # Built-in ContextCompressor and LCM do not override this, so behaviour is
+    # unchanged for existing engines. The host calls it only when the engine
+    # actually overrides it (the base no-op is short-circuited).
 
     def capabilities(self) -> Dict[str, bool]:
         """Advertise optional host-integration features this engine supports.
 
-        Keys the host understands: ``pre_send``, ``enforce_response``. Default:
-        none (host skips the H2 hooks entirely)."""
+        The only key the host understands is ``enforce_response``: set it to
+        ``True`` to opt into the regenerate branch of the post-generation
+        enforcement hook (accept/replace never require the flag). Default:
+        none (the host honors only accept/replace from ``enforce_response``)."""
         return {}
-
-    def pre_send(self, messages: List[Dict[str, Any]], model: str = "") -> List[Dict[str, Any]]:
-        """Last-mile transform of the outgoing message list (e.g. inject verbatim
-        evidence). Default: return unchanged."""
-        return messages
 
     def enforce_response(self, answer: str, messages: List[Dict[str, Any]],
                          model: str = "", **kwargs) -> Dict[str, Any]:

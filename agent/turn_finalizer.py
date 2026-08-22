@@ -690,6 +690,21 @@ def finalize_turn(
     if isinstance(final_response, str):
         final_response = _sanitize_surrogates(final_response)
 
+    # Context engine post-generation enforcement hook: give the active engine a
+    # chance to audit/enforce this TEXT-final answer against its verbatim record
+    # before it is returned/persisted. No-op default, fail-open (never breaks a
+    # turn). Runs after the plugin transform hooks and the surrogate scrub so the
+    # engine sees exactly the text that would ship. accept -> unchanged;
+    # replace -> swapped text; regenerate -> bounded, final=True on the last try.
+    if final_response and not interrupted:
+        try:
+            from agent.conversation_loop import _maybe_enforce_response
+            final_response = _maybe_enforce_response(
+                agent, final_response, messages, logger=logger,
+            )
+        except Exception as exc:
+            logger.warning("enforce_response hook failed: %s", exc)
+
     # Build result with interrupt info if applicable
     result = {
         "final_response": final_response,

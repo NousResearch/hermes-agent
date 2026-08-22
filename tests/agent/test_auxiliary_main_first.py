@@ -417,6 +417,9 @@ class TestResolveVisionMainFirst:
         ), patch(
             "hermes_cli.copilot_auth.copilot_request_headers",
             side_effect=fake_headers,
+        ), patch(
+            "hermes_cli.models.fetch_github_model_catalog",
+            return_value=[],
         ):
             mock_client = MagicMock()
             mock_openai.return_value = mock_client
@@ -454,6 +457,9 @@ class TestResolveVisionMainFirst:
         ), patch(
             "hermes_cli.copilot_auth.copilot_request_headers",
             side_effect=fake_headers,
+        ), patch(
+            "hermes_cli.models.fetch_github_model_catalog",
+            return_value=[],
         ):
             mock_client = MagicMock()
             mock_openai.return_value = mock_client
@@ -466,7 +472,6 @@ class TestResolveVisionMainFirst:
         assert model == "gpt-5-mini"
         assert captured == {"is_agent_turn": True, "is_vision": False}
         assert "default_headers" not in mock_openai.call_args.kwargs
-
 
     def test_responses_only_copilot_model_uses_responses_wrapper(self, monkeypatch):
         """Auxiliary Copilot calls must honour catalog endpoint metadata."""

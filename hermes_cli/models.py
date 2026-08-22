@@ -2256,8 +2256,10 @@ def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
 
 
 def _should_use_copilot_responses_api(model_id: str) -> bool:
-    """opencode's ``shouldUseCopilotResponsesApi``: GPT-5+ uses the Responses API except
-    ``gpt-5-mini``; non-GPT models (Claude, Gemini, ...) use Chat Completions."""
+    """opencode's id heuristic: GPT-5+ uses Responses except ``gpt-5-mini``.
+
+    Other models may require Responses based on catalog metadata.
+    """
     match = re.match(r"^gpt-(\d+)", model_id)
     return bool(match) and int(match.group(1)) >= 5 and not model_id.startswith("gpt-5-mini")
 
@@ -2269,22 +2271,25 @@ def copilot_model_api_mode(
     go through its OpenAI-compatible chat endpoint, not the native Anthropic adapter: the catalog may
     advertise /v1/messages but the Copilot token/header scheme lives in the OpenAI client path."""
     if catalog is None and api_key:  # fetch once so normalize + endpoint check share it
-        catalog = fetch_github_model_catalog(api_key=api_key)
+        catalog = fetch_github_model_catalog(api_key=api_key) or []
     normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
     if normalized and _should_use_copilot_responses_api(normalized):
         return "codex_responses"
 
     # Copilot Claude uses the provider's OpenAI-compatible chat transport,
-    # never Hermes' native Anthropic or Responses adapters. Keep that invariant
-    # ahead of generic catalog endpoint handling.
+    # never Hermes' native Anthropic or Responses adapters. The live catalog
+    # may advertise /v1/messages, but the Copilot token/header scheme is
+    # handled by the OpenAI client path; selecting anthropic_messages would
+    # send the wrong auth/wire shape. Keep that invariant ahead of generic
+    # catalog endpoint handling.
     if normalized.lower().startswith(("claude-", "anthropic/claude-")):
         return "chat_completions"
 
     # Catalog-driven fallback for models the pattern check does not cover.
     # Copilot advertises the accepted wire endpoint per model and rejects a
     # mismatch with ``unsupported_api_for_model``. Only upgrade a non-GPT
-    # model when it is explicitly Responses-only; Claude models remain on
-    # Copilot's OpenAI-compatible chat path even when /v1/messages is listed.
+    # model when it is explicitly Responses-only; dual-endpoint models stay
+    # on the existing chat_completions path.
     catalog_entry = next(
         (
             item

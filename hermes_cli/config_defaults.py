@@ -1644,6 +1644,11 @@ DEFAULT_CONFIG = {
         # Set explicitly to pin a backend:
         # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "provider": "edge",
+        # Directory where generated TTS audio files are written. Empty (default)
+        # falls back to the runtime default (~/.hermes/audio_cache). ``~`` is
+        # expanded. Set to an absolute path to redirect (e.g. a persistent dir
+        # used by an audio-cleanup job).
+        "output_path": "",
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural

@@ -267,6 +267,16 @@ def _get_default_output_dir() -> str:
 
 DEFAULT_OUTPUT_DIR = _get_default_output_dir()
 
+
+def _resolve_tts_output_dir(tts_config: Optional[Dict[str, Any]] = None) -> Path:
+    """Resolve the directory where generated TTS audio files are written.
+
+    Honors ``tts.output_path`` from config.yaml when set (with ``~`` expanded),
+    falling back to the default cache directory.
+    """
+    configured = (tts_config or {}).get("output_path") or DEFAULT_OUTPUT_DIR
+    return Path(configured).expanduser()
+
 # ---------------------------------------------------------------------------
 # Per-provider input-character limits (from official provider docs).
 # A single global cap was wrong: OpenAI is 4096, xAI is 15k, MiniMax is 10k,
@@ -3243,7 +3253,7 @@ def _text_to_speech_single(
             }, ensure_ascii=False)
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        out_dir = Path(DEFAULT_OUTPUT_DIR)
+        out_dir = _resolve_tts_output_dir(tts_config)
         out_dir.mkdir(parents=True, exist_ok=True)
         if command_provider_config is not None:
             fmt = _get_command_tts_output_format(command_provider_config)
@@ -3601,7 +3611,7 @@ def text_to_speech_tool(
             }, ensure_ascii=False)
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        out_dir = Path(DEFAULT_OUTPUT_DIR)
+        out_dir = _resolve_tts_output_dir(tts_config)
         out_dir.mkdir(parents=True, exist_ok=True)
         if command_provider_config is not None:
             fmt = _get_command_tts_output_format(command_provider_config)

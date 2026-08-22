@@ -1321,6 +1321,7 @@ platform_toolsets:
 # tts:
 #   provider: "gemini"
 #   speed: 1.0              # global speed multiplier (provider-specific overrides this)
+#   output_path: "~/.hermes/audio_cache"  # directory where generated audio files are written (default ~/.hermes/audio_cache; ~ is expanded)
 #   gemini:
 #     model: "gemini-3.1-flash-tts-preview"
 #     voice: "Kore"

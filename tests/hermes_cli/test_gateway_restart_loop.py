@@ -676,6 +676,584 @@ class TestLifecycleGuardModule:
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("clean prompt", str(script))
 
+    def test_python_heredoc_absolute_path_is_not_shell_walked(self):
+        """Python heredoc source is data for python, not outer shell syntax."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command,
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        command = """python3 - <<'PYCODE'
+from pathlib import Path
+root=Path('/home/design-director/.hermes/skills/creative/expert-product-design')
+print(root)
+PYCODE
+"""
+        assert contains_gateway_lifecycle_command(command) is False
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd="/tmp"
+        ) is False
+
+    def test_python_heredoc_existing_directory_is_not_script_candidate(self, tmp_path):
+        """Regression: a real directory in Python source must not fail closed."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        directory = tmp_path / "skills"
+        directory.mkdir()
+        command = (
+            "python3 - <<'PY'\n"
+            "from pathlib import Path\n"
+            f"root=Path({str(directory)!r})\n"
+            "print(root)\n"
+            "PY\n"
+        )
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is False
+
+    def test_python_heredoc_pathlib_division_is_not_shell_walked(self):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        command = """python3 - <<'PY'
+from pathlib import Path
+root = Path.home() / ".hermes" / "skills"
+print(root)
+PY
+"""
+        assert contains_gateway_lifecycle_command_or_referenced_script(command) is False
+
+    @pytest.mark.parametrize("operator", ["<<'PY'", '<<"PY"'])
+    def test_python_heredoc_quoted_delimiters_are_not_shell_walked(
+        self, operator, tmp_path
+    ):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        directory = tmp_path / "quoted"
+        directory.mkdir()
+        command = (
+            f"python3 - {operator}\n"
+            "from pathlib import Path\n"
+            f"root=Path({str(directory)!r})\n"
+            "PY\n"
+        )
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is False
+
+    def test_python_heredoc_strip_tabs_is_not_shell_walked(self, tmp_path):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        directory = tmp_path / "tabbed"
+        directory.mkdir()
+        command = (
+            "python3 - <<-'PY'\n"
+            "\tfrom pathlib import Path\n"
+            f"\troot=Path({str(directory)!r})\n"
+            "\tPY\n"
+        )
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is False
+
+    def test_node_heredoc_is_not_shell_walked(self, tmp_path):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        directory = tmp_path / "assets"
+        directory.mkdir()
+        command = f"""node <<'JS'
+const root = {str(directory)!r};
+const url = "https://example.com/a/b";
+const regex = /\/tmp\/assets/;
+const ratio = 10 / 2;
+console.log(root, url, regex, ratio);
+JS
+"""
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is False
+
+    def test_python_heredoc_literal_lifecycle_command_still_blocks(self):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        command = """python3 - <<'PY'
+import os
+os.system("hermes gateway restart")
+PY
+"""
+        assert contains_gateway_lifecycle_command_or_referenced_script(command) is True
+
+    def test_shell_heredoc_lifecycle_command_still_blocks(self):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        command = """bash <<'SH'
+hermes gateway restart
+SH
+"""
+        assert contains_gateway_lifecycle_command_or_referenced_script(command) is True
+
+    def test_unquoted_python_heredoc_shell_expansion_still_blocks(
+        self, tmp_path
+    ):
+        """Unquoted heredocs perform shell expansion before Python sees stdin."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        command = f"""python3 - <<PY
+$(sh {script})
+PY
+"""
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is True
+
+    def test_unquoted_python_heredoc_backtick_expansion_still_blocks(
+        self, tmp_path
+    ):
+        """Legacy backtick substitution is executable in unquoted heredocs."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        command = f"""python3 - <<PY
+`sh {script}`
+PY
+"""
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is True
+
+    def test_function_override_of_non_shell_receiver_still_blocks(self, tmp_path):
+        """A shell function can spoof an interpreter basename."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        fifo = tmp_path / "not-a-script"
+        os.mkfifo(fifo)
+        command = f"""function python3 {{ sh; }}
+python3 <<'PY'
+{fifo}
+PY
+"""
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is True
+
+    def test_subshell_function_override_of_non_shell_receiver_still_blocks(
+        self, tmp_path
+    ):
+        """A function may use a subshell compound command instead of braces."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        command = f"""python3() ( sh )
+python3 <<'PY'
+sh {script}
+PY
+"""
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is True
+
+    @pytest.mark.parametrize(
+        "prefix",
+        [
+            "runner 'python3() ( sh )\ninert data'\n",
+            "# python3() ( sh )\n",
+        ],
+    )
+    def test_inert_function_lookalike_does_not_override_receiver(
+        self, prefix, tmp_path
+    ):
+        """Quoted text and comments cannot redefine a heredoc receiver."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        fifo = tmp_path / "python-data"
+        os.mkfifo(fifo)
+        command = f"""{prefix}python3 <<'PY'
+{fifo}
+PY
+"""
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is False
+
+    def test_escaped_whitespace_keeps_hash_inside_word_for_override_detection(
+        self, tmp_path
+    ):
+        """Escaped whitespace joins the following hash to the current word."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        for escaped_whitespace in ("\\ ", "\\\t"):
+            command = f""": prefix{escaped_whitespace}#literal; python3() {{ sh; }}
+python3 <<'PY'
+sh {script}
+PY
+"""
+            assert contains_gateway_lifecycle_command_or_referenced_script(
+                command, cwd=str(tmp_path)
+            ) is True
+
+    def test_spoofed_receiver_direct_script_still_blocks(self, tmp_path):
+        """Restricted body scanning retains obvious direct script execution."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        definitions = tmp_path / "definitions.sh"
+        definitions.write_text("python3() { sh; }\n", encoding="utf-8")
+        command = f""". {definitions}
+python3 <<'PY'
+{script}
+PY
+"""
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is True
+
+    def test_restricted_heredoc_scan_does_not_hide_later_full_scan(self, tmp_path):
+        """A restricted body walk must not poison the outer visited set."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        payload = tmp_path / "restart.sh"
+        payload.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        wrapper = tmp_path / "wrapper.sh"
+        wrapper.write_text(f"#!/bin/sh\n{payload}\n", encoding="utf-8")
+        command = f"""python3 <<'PY'
+sh {wrapper}
+PY
+sh {wrapper}
+"""
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is True
+
+    def test_restricted_heredoc_scan_keeps_standalone_script_path(self, tmp_path):
+        """A command-shaped path stays guarded if the receiver is PATH-shadowed."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        script.chmod(0o700)
+        command = f"""python3 <<'PY'
+{script}
+PY
+"""
+
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is True
+
+    def test_path_named_like_non_shell_receiver_still_blocks(self, tmp_path):
+        """An arbitrary executable path named ``python3`` is not trusted."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        receiver = tmp_path / "python3"
+        receiver.write_text("#!/bin/sh\nsh\n", encoding="utf-8")
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        command = f"""{receiver} <<'PY'
+sh {script}
+PY
+"""
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is True
+
+    def test_path_override_of_non_shell_receiver_still_blocks(self, tmp_path):
+        """An inline PATH override can spoof a plain interpreter name."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        receiver = tmp_path / "python3"
+        receiver.write_text("#!/bin/sh\nsh\n", encoding="utf-8")
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        command = f"""PATH={tmp_path}:$PATH python3 <<'PY'
+sh {script}
+PY
+"""
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is True
+
+    def test_shell_heredoc_referenced_script_still_blocks(self, tmp_path):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        command = f"""sh <<'SH'
+sh {script}
+SH
+"""
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is True
+
+    def test_shell_heredoc_nested_referenced_scripts_still_block(self, tmp_path):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        inner = tmp_path / "inner.sh"
+        outer = tmp_path / "outer.sh"
+        inner.write_text("#!/bin/sh\nhermes gateway stop\n", encoding="utf-8")
+        outer.write_text(f"#!/bin/sh\nsh {inner.name}\n", encoding="utf-8")
+        command = f"""bash <<SH
+bash {outer}
+SH
+"""
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is True
+
+    def test_explicit_nonregular_shell_inputs_still_fail_closed(self, tmp_path):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        directory = tmp_path / "not-a-script"
+        directory.mkdir()
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            f"bash {directory}", cwd=str(tmp_path)
+        ) is False
+
+        if hasattr(os, "mkfifo"):
+            fifo = tmp_path / "script.fifo"
+            os.mkfifo(fifo)
+            assert contains_gateway_lifecycle_command_or_referenced_script(
+                f"bash {fifo}", cwd=str(tmp_path)
+            ) is True
+
+    def test_multiple_heredocs_keep_receiver_association(self, tmp_path):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        directory = tmp_path / "python-data"
+        directory.mkdir()
+        script = tmp_path / "restart.sh"
+        script.write_text("hermes gateway restart\n", encoding="utf-8")
+        command = f"""python3 - <<'PY' | bash <<'SH'
+from pathlib import Path
+root=Path({str(directory)!r})
+PY
+bash {script}
+SH
+"""
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is True
+
+    def test_other_heredoc_delimiter_does_not_end_current_body(self, tmp_path):
+        from cron.lifecycle_guard import (
+            _split_outer_shell_and_heredocs,
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        directory = tmp_path / "source-data"
+        directory.mkdir()
+        command = f"""python3 - <<'PY' | bash <<'SH'
+from pathlib import Path
+SH
+root=Path({str(directory)!r})
+PY
+echo safe
+SH
+"""
+        outer, heredocs = _split_outer_shell_and_heredocs(command)
+        assert len(heredocs) == 2
+        assert "root=Path" in heredocs[0][1]
+        assert "echo safe" in heredocs[1][1]
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is False
+
+    def test_heredoc_operator_inside_quoted_text_does_not_hide_command(
+        self, tmp_path
+    ):
+        """A quoted ``<<WORD`` is text, not a heredoc declaration."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        command = f"printf '%s\\n' 'see <<EOF docs'\nsh {script}\n"
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is True
+
+    def test_partially_quoted_delimiter_is_nonexpanding_python_data(self, tmp_path):
+        """Shell quote removal turns ``P\"Y\"`` into quoted delimiter ``PY``."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        directory = tmp_path / "source-data"
+        directory.mkdir()
+        command = f"""python3 <<P\"Y\"
+from pathlib import Path
+root=Path({str(directory)!r})
+PY
+"""
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is False
+
+    def test_continued_delimiter_does_not_hide_following_command(self, tmp_path):
+        """Backslash-newline removal joins ``P\\`` + ``Y`` into ``PY``."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        command = f"""python3 <<P\\
+Y
+print('safe')
+PY
+sh {script}
+"""
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is True
+
+    @pytest.mark.parametrize("operator", ["$'PY'", '$"PY"', "P$'Y'"])
+    def test_dollar_quoted_delimiter_does_not_hide_following_command(
+        self, operator, tmp_path
+    ):
+        """Bash dollar-quoted delimiter words undergo quote removal."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        command = f"python3 <<{operator}\nprint('safe')\nPY\nsh {script}\n"
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "python3 - <<'PY'\n/tmp/\n",
+            "python3 - <<'PY\n/tmp/\n",
+            "bash <<\nhermes gateway restart\n",
+        ],
+    )
+    def test_malformed_or_unterminated_heredoc_is_total(self, command):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        verdict = contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd="/tmp"
+        )
+        assert isinstance(verdict, bool)
+
+    def test_multiline_single_quoted_data_path_is_not_script_walked(
+        self, tmp_path
+    ):
+        """A path inside one single-quoted argument remains inert data.
+
+        Line-by-line tokenization used to lose the opening quote, promote the
+        path to command position, and parse JavaScript bit shifts as nested
+        heredocs until the guard failed closed.
+        """
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        bundle = tmp_path / "public" / "app.js"
+        bundle.parent.mkdir()
+        bundle.write_text(
+            "\n".join(f"lane{i} <<= 1;" for i in range(10)),
+            encoding="utf-8",
+        )
+        command = (
+            "codex-fallback 'Implement the approved scope:\n"
+            f"{bundle}\n"
+            "Keep acceptance unchanged.'"
+        )
+
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is False
+
+    def test_double_quoted_multiline_substitution_still_blocks(self, tmp_path):
+        """Double-quoted command substitutions remain executable shell input."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        command = f'runner "note\n$(sh {script})\nend"'
+
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is True
+
+    def test_hash_inside_word_does_not_break_multiline_single_quote(self, tmp_path):
+        """An unquoted hash inside a shell word is literal, not a comment."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        fifo = tmp_path / "public" / "app.js"
+        fifo.parent.mkdir()
+        os.mkfifo(fifo)
+        command = f"runner tag#literal 'first line\n{fifo}\nlast line'"
+
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is False
+
+    def test_single_quoted_multiline_argument_does_not_hide_following_command(
+        self, tmp_path
+    ):
+        """A real command after the quoted data remains a guarded segment."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        command = f"runner 'safe data\npublic/app.js\n'; sh {script}"
+
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is True
+
+    def test_unquoted_multiline_script_path_still_blocks(self, tmp_path):
+        """Newline command boundaries must remain visible to the guard."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        command = f"printf '%s\\n' safe\n{script}\n"
+
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is True
+
     def test_absolute_path_binary_does_not_crash_guard(self):
         """#76762: a terminal command invoking a binary by absolute path
         (e.g. /usr/bin/python3) must not crash the guard with

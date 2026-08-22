@@ -193,6 +193,30 @@ def test_sync_back_refuses_link_members(tmp_path, caplog, member_type):
     assert any("link" in record.message.lower() for record in caplog.records)
 
 
+@pytest.mark.parametrize("member_type", [tarfile.FIFOTYPE, tarfile.CHRTYPE, tarfile.BLKTYPE])
+def test_sync_back_refuses_special_members(tmp_path, caplog, member_type):
+    host_file = tmp_path / "host_skill.md"
+    host_file.write_bytes(b"original")
+    regular_member = tarfile.TarInfo("root/.hermes/skill.md")
+    regular_payload = b"remote_version"
+    regular_member.size = len(regular_payload)
+    special_member = tarfile.TarInfo("root/.hermes/special")
+    special_member.type = member_type
+    manager = FileSyncManager(
+        get_files_fn=lambda: [(str(host_file), "/root/.hermes/skill.md")],
+        upload_fn=MagicMock(),
+        delete_fn=MagicMock(),
+        bulk_download_fn=_download_members(
+            [(regular_member, regular_payload), (special_member, None)]
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
+        _assert_rejected(manager, host_file, tmp_path / "special-member.tar")
+
+    assert any("unsupported member type" in record.message.lower() for record in caplog.records)
+
+
 def test_safe_archive_extracts_regular_files_and_directories(tmp_path):
     archive_path = tmp_path / "valid.tar"
     directory = tarfile.TarInfo("root/.hermes")

@@ -618,6 +618,17 @@ def _run_agent_tool_execution_middleware(
 
         block_message = scope_block
         block_error_type = "tool_scope_block"
+        tool_allowlist = getattr(agent, "_tool_allowlist", None)
+        if (
+            block_message is None
+            and tool_allowlist is not None
+            and function_name not in tool_allowlist
+        ):
+            block_message = (
+                f"Tool '{function_name}' is not permitted by this delegated "
+                "agent's runtime tool_allowlist."
+            )
+            block_error_type = "tool_allowlist_block"
         if block_message is None:
             block_error_type = "plugin_block"
 
@@ -662,7 +673,12 @@ def _run_agent_tool_execution_middleware(
             _advance_start_order()
             state["blocked"] = True
             if block_message is not None:
-                result = json.dumps({"error": block_message}, ensure_ascii=False)
+                error_payload = {"error": block_message}
+                if block_error_type == "tool_allowlist_block":
+                    error_payload.update(
+                        {"error_type": block_error_type, "tool": function_name}
+                    )
+                result = json.dumps(error_payload, ensure_ascii=False)
                 error_type = block_error_type
                 error_message = block_message
             else:

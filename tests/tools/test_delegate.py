@@ -70,6 +70,10 @@ class TestDelegateRequirements(unittest.TestCase):
         # capability-selection surface the model should not control.
         self.assertNotIn("toolsets", props)
         self.assertNotIn("toolsets", props["tasks"]["items"]["properties"])
+        self.assertIn("tool_allowlist", props)
+        self.assertIn(
+            "tool_allowlist", props["tasks"]["items"]["properties"]
+        )
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -249,6 +253,80 @@ class TestStripBlockedTools(unittest.TestCase):
         self.assertTrue(
             (DELEGATE_BLOCKED_TOOLS - {"delegate_task"}).isdisjoint(names)
         )
+
+
+class TestChildToolAllowlist(unittest.TestCase):
+    @staticmethod
+    def _tool(name):
+        return {
+            "type": "function",
+            "function": {"name": name, "description": "", "parameters": {}},
+        }
+
+    def _build(self, tool_allowlist):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["file", "terminal", "mcp-roshhome"]
+        child = MagicMock()
+        child.tools = [
+            self._tool("read_file"),
+            self._tool("write_file"),
+            self._tool("terminal"),
+            self._tool("mcp__roshhome__update_request"),
+        ]
+        child.valid_tool_names = {
+            "read_file",
+            "write_file",
+            "terminal",
+            "mcp__roshhome__update_request",
+        }
+        child._context_engine_tool_names = set()
+
+        with patch("run_agent.AIAgent", return_value=child):
+            result = _build_child_agent(
+                task_index=0,
+                goal="Inspect safely",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                task_count=1,
+                parent_agent=parent,
+                tool_allowlist=tool_allowlist,
+            )
+        return result
+
+    def test_allowlist_intersects_final_builtin_and_mcp_snapshot(self):
+        child = self._build(["read_file", "search_files", "grep"])
+
+        self.assertEqual(child.valid_tool_names, {"read_file"})
+        self.assertEqual(
+            [tool["function"]["name"] for tool in child.tools], ["read_file"]
+        )
+        self.assertEqual(
+            child._tool_allowlist,
+            frozenset({"read_file", "search_files", "grep"}),
+        )
+
+    def test_empty_allowlist_is_deny_all(self):
+        child = self._build([])
+
+        self.assertEqual(child.tools, [])
+        self.assertEqual(child.valid_tool_names, set())
+        self.assertEqual(child._tool_allowlist, frozenset())
+
+    def test_absent_allowlist_preserves_current_snapshot(self):
+        child = self._build(None)
+
+        self.assertEqual(
+            child.valid_tool_names,
+            {
+                "read_file",
+                "write_file",
+                "terminal",
+                "mcp__roshhome__update_request",
+            },
+        )
+        self.assertIsNone(child._tool_allowlist)
 
 
 class TestDelegateTask(unittest.TestCase):
@@ -1366,11 +1444,13 @@ class TestDispatchDelegateTask(unittest.TestCase):
                 parent,
                 {
                     "goal": "test",
+                    "tool_allowlist": ["read_file", "search_files"],
                     "acp_command": "claude",
                     "acp_args": ["--acp", "--stdio"],
                     "tasks": [
                         {
                             "goal": "nested",
+                            "tool_allowlist": [],
                             "acp_command": "codex",
                             "acp_args": ["--acp"],
                         },
@@ -1381,6 +1461,8 @@ class TestDispatchDelegateTask(unittest.TestCase):
         self.assertNotIn("acp_command", captured)
         self.assertNotIn("acp_args", captured)
         self.assertEqual(captured["goal"], "test")
+        self.assertEqual(captured["tool_allowlist"], ["read_file", "search_files"])
+        self.assertEqual(captured["tasks"][0]["tool_allowlist"], [])
         self.assertNotIn("acp_command", captured["tasks"][0])
         self.assertNotIn("acp_args", captured["tasks"][0])
 
@@ -1619,6 +1701,77 @@ class TestOrchestratorRoleBehavior(unittest.TestCase):
             kwargs = MockAgent.call_args[1]
             self.assertIn("delegation", kwargs["enabled_toolsets"])
             self.assertEqual(mock_child._delegate_role, "orchestrator")
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config", return_value={"max_spawn_depth": 2})
+    def test_top_level_tool_allowlist_reaches_child_runtime(
+        self, mock_cfg, mock_creds
+    ):
+        mock_creds.return_value = {
+            "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "model": None,
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["terminal", "file"]
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = _make_role_mock_child()
+            mock_child.tools = []
+            mock_child.valid_tool_names = set()
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                goal="Inspect safely",
+                tool_allowlist=["read_file", "search_files", "grep"],
+                parent_agent=parent,
+            )
+
+        self.assertEqual(
+            mock_child._tool_allowlist,
+            frozenset({"read_file", "search_files", "grep"}),
+        )
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config", return_value={"max_spawn_depth": 2})
+    def test_per_task_tool_allowlist_overrides_top_level(
+        self, mock_cfg, mock_creds
+    ):
+        mock_creds.return_value = {
+            "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "model": None,
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["terminal", "file"]
+        children = [_make_role_mock_child(), _make_role_mock_child()]
+        for child in children:
+            child.tools = []
+            child.valid_tool_names = set()
+
+        with patch("run_agent.AIAgent", side_effect=children):
+            delegate_task(
+                tasks=[
+                    {"goal": "Inspect the first component thoroughly"},
+                    {
+                        "goal": "Inspect the second component thoroughly",
+                        "tool_allowlist": [],
+                    },
+                ],
+                tool_allowlist=["read_file"],
+                parent_agent=parent,
+            )
+
+        self.assertEqual(children[0]._tool_allowlist, frozenset({"read_file"}))
+        self.assertEqual(children[1]._tool_allowlist, frozenset())
+
+    def test_invalid_tool_allowlist_fails_before_spawn(self):
+        parent = _make_mock_parent(depth=0)
+        result = json.loads(
+            delegate_task(
+                goal="Inspect safely",
+                tool_allowlist="read_file",
+                parent_agent=parent,
+            )
+        )
+        self.assertIn("tool_allowlist must be an array", result["error"])
 
     @patch("tools.delegate_tool._resolve_delegation_credentials")
     @patch("tools.delegate_tool._load_config",

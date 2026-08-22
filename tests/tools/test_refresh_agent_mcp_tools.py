@@ -44,6 +44,28 @@ def test_refresh_adds_late_landing_tools(monkeypatch):
     assert len(agent.tools) == 3
 
 
+def test_refresh_intersects_late_mcp_tools_with_agent_allowlist(monkeypatch):
+    """A late MCP refresh must not reopen a delegated child's hard boundary."""
+    agent = _agent(["read_file"])
+    agent._tool_allowlist = frozenset({"read_file", "search_files", "grep"})
+
+    import model_tools
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **kw: [
+            _tool("read_file"),
+            _tool("mcp__roshhome__update_request"),
+        ],
+    )
+
+    added = mcp_tool.refresh_agent_mcp_tools(agent)
+
+    assert added == set()
+    assert agent.valid_tool_names == {"read_file"}
+    assert [tool["function"]["name"] for tool in agent.tools] == ["read_file"]
+
+
 def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch):
     """B1 regression: a rebuild must NOT drop post-build-injected tools.
 

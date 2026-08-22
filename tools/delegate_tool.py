@@ -1296,6 +1296,49 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
+def _normalize_tool_allowlist(
+    value: Any, *, field: str = "tool_allowlist"
+) -> tuple[Optional[List[str]], Optional[str]]:
+    """Validate and de-duplicate an optional per-child tool-name allowlist."""
+    if value is None:
+        return None, None
+    if not isinstance(value, list):
+        return None, f"{field} must be an array of non-empty tool names."
+
+    normalized: List[str] = []
+    seen = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            return None, f"{field}[{index}] must be a non-empty string tool name."
+        name = item.strip()
+        if name not in seen:
+            normalized.append(name)
+            seen.add(name)
+    return normalized, None
+
+
+def _apply_child_tool_allowlist(child: Any, tool_allowlist: Optional[List[str]]) -> None:
+    """Publish a deny-all, exact-name tool boundary on a delegated child."""
+    allowset = None if tool_allowlist is None else frozenset(tool_allowlist)
+    child._tool_allowlist = allowset
+    if allowset is None:
+        return
+
+    child.tools = [
+        tool
+        for tool in (getattr(child, "tools", None) or [])
+        if tool.get("function", {}).get("name") in allowset
+    ]
+    child.valid_tool_names = {
+        tool["function"]["name"] for tool in child.tools
+    }
+    engine_names = getattr(child, "_context_engine_tool_names", None)
+    if isinstance(engine_names, set):
+        engine_names.intersection_update(allowset)
+    # A precomputed deferred-tool scope must never outlive the narrowed surface.
+    child._tool_search_scope_cache = None
+
+
 def _blocked_toolsets_for_role(role: str) -> List[str]:
     """Return one-tool deny toolsets for a delegated child role.
 
@@ -1598,6 +1641,9 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Exact tool-name capability boundary. None preserves legacy behavior;
+    # an empty list is intentional deny-all.
+    tool_allowlist: Optional[List[str]] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1985,6 +2031,10 @@ def _build_child_agent(
                 except Exception:
                     pass
             raise
+    # Apply the exact-name boundary only after AIAgent has materialized its
+    # complete builtin + MCP + post-build tool snapshot. This is a runtime
+    # capability restriction, not a prompt instruction.
+    _apply_child_tool_allowlist(child, tool_allowlist)
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Ownership transfer for the dedicated handle: the child's close() must
     # release it (nothing else holds a reference), and no parent teardown can
@@ -3602,6 +3652,7 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None,
+    tool_allowlist: Optional[List[str]] = None,
     action: Optional[str] = None,
     subagent_id: Optional[str] = None,
     message: Optional[str] = None,
@@ -3733,6 +3784,8 @@ def delegate_task(
         single_task: Dict[str, Any] = {"goal": goal, "context": context, "role": top_role}
         if output_schema is not None:
             single_task["output_schema"] = output_schema
+        if tool_allowlist is not None:
+            single_task["tool_allowlist"] = tool_allowlist
         task_list = [single_task]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -3748,6 +3801,25 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+    normalized_top_allowlist, allowlist_error = _normalize_tool_allowlist(
+        tool_allowlist
+    )
+    if allowlist_error:
+        return tool_error(allowlist_error)
+    task_tool_allowlists: List[Optional[List[str]]] = []
+    for i, task in enumerate(task_list):
+        raw_allowlist = (
+            task["tool_allowlist"]
+            if "tool_allowlist" in task
+            else normalized_top_allowlist
+        )
+        normalized_allowlist, allowlist_error = _normalize_tool_allowlist(
+            raw_allowlist, field=f"tasks[{i}].tool_allowlist"
+        )
+        if allowlist_error:
+            return tool_error(allowlist_error)
+        task_tool_allowlists.append(normalized_allowlist)
 
     # Batch-only quality gate: catch malformed fan-outs (placeholder goals,
     # unexpanded multi-word template markers, 1-task batches) before any
@@ -3858,6 +3930,7 @@ def delegate_task(
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
                 role=effective_role,
+                tool_allowlist=task_tool_allowlists[i],
             )
         except ValueError as exc:
             # Explicit-pin preflight failures (e.g. pinned delegation.command
@@ -4776,6 +4849,17 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "tool_allowlist": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Optional exact tool-name allowlist for this child. "
+                                "When present, the runtime exposes and executes only "
+                                "the intersection of the inherited final builtin/MCP "
+                                "surface with these names. An empty list denies all "
+                                "tools. Per-task value overrides the top-level value."
+                            ),
+                        },
                         "output_schema": {
                             "type": "object",
                             "description": (
@@ -4801,6 +4885,16 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "tool_allowlist": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional exact tool-name allowlist for spawned children. "
+                    "When present, deny all tools except names in this list after "
+                    "inheritance, blocked-tool removal, and MCP resolution. "
+                    "An empty list denies every tool."
+                ),
             },
             "output_schema": {
                 "type": "object",
@@ -4915,6 +5009,7 @@ registry.register(
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
         output_schema=args.get("output_schema"),
+        tool_allowlist=args.get("tool_allowlist"),
         action=args.get("action"),
         subagent_id=args.get("subagent_id"),
         message=args.get("message"),

@@ -136,6 +136,53 @@ def test_config_enabled_hard_stop_blocks_repeated_exact_failure_before_execution
     assert "repeated_exact_failure_block" in messages[0]["content"]
 
 
+def test_tool_allowlist_blocks_disallowed_sequential_call_before_dispatch():
+    agent = _make_agent("read_file", "write_file", "patch", "terminal")
+    agent._tool_allowlist = frozenset({"read_file", "search_files", "grep"})
+    tc = _mock_tool_call(
+        "write_file",
+        json.dumps({"path": "/tmp/must-not-exist", "content": "blocked"}),
+        "c-allowlist-sequential",
+    )
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc:
+        agent._execute_tool_calls_sequential(msg, messages, "task-allowlist")
+
+    mock_hfc.assert_not_called()
+    result = json.loads(messages[0]["content"])
+    assert result["error_type"] == "tool_allowlist_block"
+    assert result["tool"] == "write_file"
+
+
+def test_tool_allowlist_blocks_disallowed_concurrent_calls_before_dispatch():
+    agent = _make_agent(
+        "read_file", "write_file", "patch", "terminal", "mcp__roshhome__update_request"
+    )
+    agent._tool_allowlist = frozenset({"read_file", "search_files", "grep"})
+    calls = [
+        _mock_tool_call("patch", "{}", "c-allowlist-patch"),
+        _mock_tool_call("terminal", "{}", "c-allowlist-terminal"),
+        _mock_tool_call("mcp__roshhome__update_request", "{}", "c-allowlist-mcp"),
+    ]
+    msg = SimpleNamespace(content="", tool_calls=calls)
+    messages = []
+
+    with patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc:
+        agent._execute_tool_calls_concurrent(msg, messages, "task-allowlist")
+
+    mock_hfc.assert_not_called()
+    contents = [message["content"] for message in messages]
+    assert all('"error_type": "tool_allowlist_block"' in item for item in contents)
+    assert all(
+        f'"tool": "{tool_name}"' in content
+        for tool_name, content in zip(
+            ["patch", "terminal", "mcp__roshhome__update_request"], contents
+        )
+    )
+
+
 def test_sequential_after_call_appends_guidance_to_tool_result_without_extra_messages():
     agent = _make_agent("web_search")
     args = {"query": "same"}

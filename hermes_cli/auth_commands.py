@@ -106,6 +106,20 @@ def _oauth_default_label(provider: str, count: int) -> str:
     return f"{provider}-oauth-{count}"
 
 
+def _xai_dedicated_lane_label(fallback: str) -> str:
+    """Return Fleet's agent-specific xAI lane label when identity is known."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        profile_name = get_active_profile_name()
+    except Exception:
+        return fallback
+    if profile_name in {"default", "custom"}:
+        return fallback
+    agent_name = profile_name.replace("-", " ").replace("_", " ").title()
+    return f"{agent_name} Grok Sub"
+
+
 def _api_key_default_label(count: int) -> str:
     return f"api-key-{count}"
 
@@ -355,6 +369,7 @@ def auth_add_command(args) -> None:
             creds["tokens"]["access_token"],
             _oauth_default_label(provider, len(pool.entries()) + 1),
         )
+        label = _xai_dedicated_lane_label(label)
         # Add a distinct, self-contained pool entry per account (matching the
         # openai-codex / qwen-oauth / minimax-oauth patterns) instead of
         # routing through the singleton ``_save_xai_oauth_tokens`` save path.
@@ -378,7 +393,7 @@ def auth_add_command(args) -> None:
             last_refresh=creds.get("last_refresh"),
         )
         first_credential = not pool.entries()
-        pool.add_entry(entry)
+        pool.add_entry(entry, oauth_token_write_authority="interactive-login")
         # Adding the first xAI credential should make it the active provider
         # (the old singleton save path did this implicitly via
         # _save_provider_state). Subsequent adds leave the active provider as-is.

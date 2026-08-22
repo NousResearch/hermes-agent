@@ -34,6 +34,8 @@ import time
 import uuid
 import webbrowser
 
+import yaml
+
 # httpx is imported lazily: it costs ~30ms at import time and hermes_cli.auth
 # is on the interactive-CLI startup path via credential_pool → auxiliary_client
 # → cli_commands_mixin, where no HTTP request is ever made before first use.
@@ -108,6 +110,100 @@ except Exception:
 
 AUTH_STORE_VERSION = 1
 AUTH_LOCK_TIMEOUT_SECONDS = 15.0
+
+
+def runtime_owns_oauth_refresh(provider: str) -> bool:
+    """Return whether this runtime may spend ``provider`` refresh tokens.
+
+    Standalone xAI behavior remains runtime-owned when no ownership setting is
+    present. Once the setting exists, malformed or unknown values fail closed
+    so a typo cannot create a second refresh-token writer.
+    """
+    if provider != "xai-oauth":
+        return True
+    config_path = get_config_path()
+    if not config_path.exists():
+        return True
+    try:
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("OAuth refresh ownership unreadable; refusing runtime writes")
+        return False
+    if config is None:
+        return True
+    if not isinstance(config, dict):
+        logger.warning("OAuth refresh ownership is invalid; refusing runtime writes")
+        return False
+    if "oauth" not in config:
+        return True
+    oauth_config = config.get("oauth")
+    if not isinstance(oauth_config, dict):
+        logger.warning("OAuth refresh ownership is invalid; refusing runtime writes")
+        return False
+    refresh_owner = oauth_config.get("refresh_owner")
+    if refresh_owner == "runtime":
+        return True
+    if refresh_owner == "external":
+        return False
+    logger.warning("OAuth refresh owner must be runtime or external; refusing runtime writes")
+    return False
+
+
+def _parse_persisted_timestamp(value: Any) -> Optional[float]:
+    """Normalize persisted epoch seconds, milliseconds, or ISO timestamps."""
+    if isinstance(value, (int, float)):
+        numeric_value = float(value)
+        return numeric_value / 1000.0 if numeric_value > 1_000_000_000_000 else numeric_value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        numeric_value = float(value)
+    except ValueError:
+        try:
+            return datetime.fromisoformat(value.strip().replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return numeric_value / 1000.0 if numeric_value > 1_000_000_000_000 else numeric_value
+
+
+def _persisted_oauth_pool_entry_is_usable(entry: Dict[str, Any]) -> bool:
+    """Return whether scheduler-owned status permits use of a pool row."""
+    status = entry.get("last_status")
+    if status == "dead":
+        return False
+    if status != "exhausted":
+        return True
+    reset_at = _parse_persisted_timestamp(entry.get("last_error_reset_at"))
+    if reset_at is not None:
+        return time.time() >= reset_at
+    status_at = _parse_persisted_timestamp(entry.get("last_status_at"))
+    if status_at is None:
+        return True
+    cooldown_seconds = 300 if entry.get("last_error_code") == 401 else 3600
+    return time.time() >= status_at + cooldown_seconds
+
+
+def _selected_usable_oauth_pool_entry(provider_id: str) -> Optional[Dict[str, Any]]:
+    """Read the lowest-priority usable OAuth row from the persisted pool."""
+    entries = read_credential_pool(provider_id)
+    candidates = [
+        (index, entry)
+        for index, entry in enumerate(entries if isinstance(entries, list) else [])
+        if isinstance(entry, dict)
+        and entry.get("auth_type") == "oauth"
+        and isinstance(entry.get("access_token"), str)
+        and entry.get("access_token")
+        and _persisted_oauth_pool_entry_is_usable(entry)
+    ]
+    if not candidates:
+        return None
+
+    def selection_key(candidate: Tuple[int, Dict[str, Any]]) -> Tuple[int, int]:
+        index, entry = candidate
+        priority = entry.get("priority", 0)
+        return (priority if isinstance(priority, int) else 0, index)
+
+    return min(candidates, key=selection_key)[1]
 
 # Nous Portal defaults
 DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com"
@@ -1727,6 +1823,7 @@ def write_credential_pool(
     entries: List[Dict[str, Any]],
     *,
     removed_ids: Optional[Iterable[str]] = None,
+    oauth_token_write_authority: Optional[str] = None,
 ) -> Path:
     """Persist one provider's credential pool under auth.json.
 
@@ -1745,6 +1842,11 @@ def write_credential_pool(
 
     Pass ``removed_ids`` for entries the caller intentionally removed, so the
     merge does not resurrect them from the on-disk copy.
+
+    Under external xAI ownership, only the exact ``external-scheduler``
+    authority may mutate existing OAuth rows. A genuine interactive login may
+    append a new row, but cannot overwrite or remove scheduler-owned rows.
+    Other writers preserve the OAuth material already on disk.
     """
     removed = {rid for rid in (removed_ids or ()) if rid}
     with _auth_store_lock():
@@ -1760,6 +1862,48 @@ def write_credential_pool(
         ]
         existing = pool.get(provider_id)
         existing_list = existing if isinstance(existing, list) else []
+        if (
+            oauth_token_write_authority != "external-scheduler"
+            and not runtime_owns_oauth_refresh(provider_id)
+        ):
+            existing_by_id_for_protection = {
+                entry.get("id"): entry
+                for entry in existing_list
+                if isinstance(entry, dict) and entry.get("id")
+            }
+            protected_oauth_ids = {
+                entry_id
+                for entry_id, entry in existing_by_id_for_protection.items()
+                if entry.get("auth_type") == "oauth" or entry.get("refresh_token")
+            }
+            allow_new_interactive = (
+                oauth_token_write_authority == "interactive-login"
+            )
+            protected_entries: List[Dict[str, Any]] = []
+            for incoming in sanitized_entries:
+                if not isinstance(incoming, dict):
+                    protected_entries.append(incoming)
+                    continue
+                incoming_id = incoming.get("id")
+                disk_entry = existing_by_id_for_protection.get(incoming_id)
+                incoming_is_oauth = (
+                    incoming.get("auth_type") == "oauth"
+                    or bool(incoming.get("refresh_token"))
+                )
+                if incoming_id in protected_oauth_ids:
+                    protected_entries.append(
+                        sanitize_borrowed_credential_payload(disk_entry, provider_id)
+                    )
+                elif incoming_is_oauth and not allow_new_interactive:
+                    continue
+                else:
+                    protected_entries.append(incoming)
+            sanitized_entries = protected_entries
+            removed = {
+                entry_id
+                for entry_id in removed
+                if entry_id not in protected_oauth_ids
+            }
         existing_by_id = {
             entry.get("id"): entry
             for entry in existing_list
@@ -5060,6 +5204,13 @@ def _refresh_xai_oauth_tokens(
     redirect_uri: str = "",
     timeout_seconds: float,
 ) -> Dict[str, Any]:
+    if not runtime_owns_oauth_refresh("xai-oauth"):
+        raise AuthError(
+            "xAI OAuth refresh is owned externally; this runtime must not spend the refresh token.",
+            provider="xai-oauth",
+            code="xai_external_refresh_forbidden",
+            relogin_required=False,
+        )
     # Re-persist whatever auth_mode is already stored (legacy pre-device-code
     # logins may still carry ``oauth_pkce``): the refresh hot path must not
     # relabel how the grant was originally obtained.
@@ -5102,8 +5253,27 @@ def resolve_xai_oauth_runtime_credentials(
     refresh_if_expiring: bool = True,
     refresh_skew_seconds: Optional[int] = None,
 ) -> Dict[str, Any]:
-    data = _read_xai_oauth_tokens()
-    tokens = dict(data["tokens"])
+    runtime_refresh_allowed = runtime_owns_oauth_refresh("xai-oauth")
+    if runtime_refresh_allowed:
+        data = _read_xai_oauth_tokens()
+        tokens = dict(data["tokens"])
+    else:
+        scheduler_entry = _selected_usable_oauth_pool_entry("xai-oauth")
+        if scheduler_entry is None:
+            raise AuthError(
+                "xAI has no usable scheduler-owned OAuth credential.",
+                provider="xai-oauth",
+                code="xai_external_pool_unavailable",
+                relogin_required=False,
+            )
+        tokens = {
+            "access_token": scheduler_entry["access_token"],
+            "refresh_token": scheduler_entry.get("refresh_token", ""),
+        }
+        data = {
+            "tokens": tokens,
+            "last_refresh": scheduler_entry.get("last_refresh"),
+        }
     access_token = str(tokens.get("access_token", "") or "").strip()
     refresh_timeout_seconds = env_float("HERMES_XAI_REFRESH_TIMEOUT_SECONDS", 20)
     discovery = dict(data.get("discovery") or {})
@@ -5118,7 +5288,7 @@ def resolve_xai_oauth_runtime_credentials(
     should_refresh = bool(force_refresh)
     if (not should_refresh) and refresh_if_expiring:
         should_refresh = _xai_access_token_is_expiring(access_token, effective_skew)
-    if should_refresh:
+    if should_refresh and runtime_refresh_allowed:
         with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
             data = _read_xai_oauth_tokens(_lock=False)
             tokens = dict(data["tokens"])

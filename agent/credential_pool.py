@@ -774,7 +774,12 @@ class CredentialPool:
                     self._entries[idx] = new
                     return
 
-    def _persist(self, *, removed_ids: Optional[List[str]] = None) -> None:
+    def _persist(
+        self,
+        *,
+        removed_ids: Optional[List[str]] = None,
+        oauth_token_write_authority: Optional[str] = None,
+    ) -> None:
         # Self-locking (RLock): snapshotting self._entries must not race a
         # concurrent rotation when called from the deferred refresh path.
         with self._lock:
@@ -782,6 +787,7 @@ class CredentialPool:
                 self.provider,
                 [entry.to_dict() for entry in self._entries],
                 removed_ids=removed_ids,
+                oauth_token_write_authority=oauth_token_write_authority,
             )
 
     def _is_terminal_auth_failure(
@@ -1305,6 +1311,16 @@ class CredentialPool:
             logger.debug("Failed to sync %s pool entry back to auth store: %s", self.provider, exc)
 
     def _refresh_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
+        if self.provider == "xai-oauth" and not auth_mod.runtime_owns_oauth_refresh(
+            self.provider
+        ):
+            synced = self._sync_xai_oauth_entry_from_pool_store(entry)
+            if synced is not entry:
+                return synced
+            logger.warning(
+                "credential pool: refusing xAI OAuth refresh because ownership is external"
+            )
+            return None
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
             if force:
                 self._mark_exhausted(entry, None)
@@ -1761,6 +1777,10 @@ class CredentialPool:
 
     def _entry_needs_refresh(self, entry: PooledCredential) -> bool:
         if entry.auth_type != AUTH_TYPE_OAUTH:
+            return False
+        if self.provider == "xai-oauth" and not auth_mod.runtime_owns_oauth_refresh(
+            self.provider
+        ):
             return False
         if self.provider == "anthropic":
             if entry.expires_at_ms is None:
@@ -2397,11 +2417,16 @@ class CredentialPool:
                 return None, None, f"No credential #{index}."
             return None, None, f'No credential matching "{raw}".'
 
-    def add_entry(self, entry: PooledCredential) -> PooledCredential:
+    def add_entry(
+        self,
+        entry: PooledCredential,
+        *,
+        oauth_token_write_authority: Optional[str] = None,
+    ) -> PooledCredential:
         with self._lock:
             entry = replace(entry, priority=_next_priority(self._entries))
             self._entries.append(entry)
-            self._persist()
+            self._persist(oauth_token_write_authority=oauth_token_write_authority)
             return entry
 
 

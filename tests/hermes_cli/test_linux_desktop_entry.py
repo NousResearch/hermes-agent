@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import linux_desktop_entry as lde
 
+# Original subprocess.run, captured so tests can selectively stub the
+# hermes_cli import-probe without disturbing other subprocess calls.
+_orig_run = subprocess.run
+
+
+class _FakeReturn:
+    def __init__(self, returncode: int) -> None:
+        self.returncode = returncode
 
 @pytest.fixture
 def xdg_home(tmp_path, monkeypatch) -> Path:
@@ -264,3 +273,67 @@ def test_exec_arg_quoting_handles_spaces(tmp_path, xdg_home, monkeypatch):
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
     assert exec_line == f'"{spaced}" desktop'
+
+
+def test_exec_prefers_venv_wrapper_over_resolved_bin(tmp_path, xdg_home, monkeypatch):
+    root = _make_project(tmp_path)
+    # The bare launcher from the checkout: a python shebang whose interpreter
+    # is not the one that can import hermes_cli. resolve_hermes_bin() may still
+    # return it (e.g. when Hermes was launched via a uv/system python shim),
+    # but the generated entry must NOT exec it directly.
+    bare = tmp_path / "checkout" / "hermes"
+    bare.parent.mkdir(parents=True)
+    bare.write_text("#!/usr/bin/env python3\nfrom hermes_cli.main import main\n", encoding="utf-8")
+    # Installed venv-backed wrapper on PATH (e.g. ~/.local/bin/hermes).
+    wrapper = tmp_path / "bin" / "hermes"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text("#!/usr/bin/env bash\nexec venv/bin/python hermes \"$@\"\n", encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: str(bare))
+    monkeypatch.setattr(lde.shutil, "which", lambda name: str(wrapper) if name == "hermes" else None)
+    # Simulate sys.executable not being able to import hermes_cli (uv/system
+    # shim), so the resolver must fall through to the PATH wrapper.
+    monkeypatch.setattr(
+        lde.subprocess, "run",
+        lambda *a, **k: _FakeReturn(1) if "import hermes_cli" in str(a) else _orig_run(*a, **k),
+    )
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    # The venv wrapper must win over the bare launcher, otherwise the entry
+    # fails silently (ModuleNotFoundError: hermes_cli) under Terminal=false.
+    assert exec_line == f"{wrapper} desktop"
+
+
+def test_exec_falls_back_to_module_when_no_wrapper(tmp_path, xdg_home, monkeypatch):
+    root = _make_project(tmp_path)
+    bare = tmp_path / "checkout" / "hermes"
+    bare.parent.mkdir(parents=True)
+    bare.write_text("#!/usr/bin/env python3\nfrom hermes_cli.main import main\n", encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: str(bare))
+    monkeypatch.setattr(lde.shutil, "which", lambda name: None)
+    # No working interpreter on the system path: fall back to -m.
+    monkeypatch.setattr(
+        lde.subprocess, "run",
+        lambda *a, **k: _FakeReturn(1) if "import hermes_cli" in str(a) else _orig_run(*a, **k),
+    )
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    # Run via sys.executable -m as the last resort.
+    assert exec_line.endswith("-m hermes_cli.main desktop")
+    assert Path(exec_line.split(" ")[0]).is_absolute()
+
+
+def test_rendered_entry_disables_startup_notify(tmp_path, monkeypatch):
+    # StartupNotify must be false: the Electron startup token never reaches
+    # the desktop environment through the wrapper, so a true value leaves a
+    # pinned launcher spinning forever even when the app starts.
+    monkeypatch.setattr(lde.sys, "platform", "linux")
+    text = lde.render_desktop_entry("/opt/hermes desktop", "/opt/icon.png")
+    values = _parse(text)
+    assert values["StartupNotify"] == "false"
+    assert values["StartupWMClass"] == "Hermes"

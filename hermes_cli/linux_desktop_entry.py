@@ -70,20 +70,58 @@ def resolve_exec_command() -> str:
     if bin_path:
         resolved = Path(bin_path).resolve()
         if _needs_interpreter(resolved):
-            # The resolved launcher is a Python script whose shebang points at
-            # a NON-venv interpreter (e.g. the repo's `hermes` script with
+            # The resolved launcher is a Python script whose shebang points
+            # at a NON-venv interpreter (e.g. the repo's `hermes` script with
             # `#!/usr/bin/env python3` when argv[0] came from the shell
             # installer's bash wrapper). Launched from the .desktop entry that
-            # shebang resolves to the SYSTEM python and dies on the first
-            # third-party import (#90292) — silently, since Terminal=false.
-            # sys.executable is the interpreter actually running Hermes (the
-            # venv one), so prefix it explicitly.
-            argv = [str(Path(sys.executable).resolve()), str(resolved), "desktop"]
+            # shebang resolves to an interpreter that may NOT have hermes_cli
+            # importable — silently failing under Terminal=false. Prefix it
+            # with an interpreter that can actually run Hermes: prefer
+            # sys.executable only when it can import hermes_cli, otherwise
+            # the installed venv-backed wrapper on PATH, otherwise run as a
+            # module under sys.executable.
+            argv = _interpreter_for(resolved)
         else:
             argv = [str(resolved), "desktop"]
     else:
         argv = [str(Path(sys.executable).resolve()), "-m", "hermes_cli.main", "desktop"]
     return " ".join(_quote_exec_arg(a) for a in argv)
+
+
+def _interpreter_for(script: Path) -> "list[str]":
+    """Build an argv prefix that runs *script* under a Hermes-capable python.
+
+    Resolution order, first match wins:
+      1. ``sys.executable`` — but only when it can import ``hermes_cli``.
+         Depending on how Hermes was launched (uv shim, system python, a
+         non-venv interpreter), ``sys.executable`` itself may lack
+         hermes_cli, in which case prefixing it would reproduce the same
+         silent failure the .desktop is trying to avoid.
+      2. The installed ``hermes`` wrapper on PATH (e.g. ~/.local/bin/hermes),
+         which exec's the project venv python.
+      3. Fall back to ``sys.executable -m hermes_cli.main``.
+    """
+    if _can_import_hermes_cli(Path(sys.executable).resolve()):
+        return [str(Path(sys.executable).resolve()), str(script), "desktop"]
+    wrapper = shutil.which("hermes")
+    if wrapper:
+        return [str(Path(wrapper).resolve()), "desktop"]
+    return [str(Path(sys.executable).resolve()), "-m", "hermes_cli.main", "desktop"]
+
+
+def _can_import_hermes_cli(interpreter: Path) -> bool:
+    """Whether *interpreter* can import ``hermes_cli`` (the venv gate)."""
+    try:
+        result = subprocess.run(
+            [str(interpreter), "-c", "import hermes_cli"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
 
 
 def _needs_interpreter(bin_path: Path) -> bool:
@@ -133,7 +171,7 @@ def render_desktop_entry(exec_command: str, icon: str) -> str:
         f"Icon={icon}\n"
         "Terminal=false\n"
         "Categories=Utility;\n"
-        "StartupNotify=true\n"
+        "StartupNotify=false\n"
         "StartupWMClass=Hermes\n"
     )
 

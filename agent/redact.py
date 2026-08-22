@@ -1416,12 +1416,45 @@ def _has_http_method_substring(text: str) -> bool:
     return any(method in upper for method in _HTTP_METHOD_SUBSTRINGS)
 
 
+# Pre-compiled: captures both the field name and the conversion type, so we
+# don't recompile the regex on every format() call.
+_PERCENT_FIELD_RE = re.compile(r"%\((\w+)\)([a-zA-Z])")
+
+
 class RedactingFormatter(logging.Formatter):
     """Log formatter that redacts secrets from all log messages."""
 
     def __init__(self, fmt=None, datefmt=None, style='%', **kwargs):
         super().__init__(fmt, datefmt, style, **kwargs)
+        # Parse the format string once here, yielding [(field, conv), ...].
+        # It's fixed for the formatter's lifetime, so don't re-run the regex
+        # on every record in the hot path. Only PercentStyle (the default
+        # style='%') uses %(name)X syntax; other styles get an empty list.
+        if isinstance(getattr(self, "_style", None), logging.PercentStyle):
+            self._hermes_optional_fields = _PERCENT_FIELD_RE.findall(self._fmt or "")
+        else:
+            self._hermes_optional_fields = []
 
     def format(self, record: logging.LogRecord) -> str:
+        """Format and redact a log record.
+
+        Hermes injects optional fields such as ``session_tag`` through a
+        process-global LogRecord factory (``hermes_logging``'s
+        ``_install_session_record_factory``). Third-party code can replace
+        that factory via ``logging.setLogRecordFactory`` (e.g. a plugin
+        capturing the factory at its own module import time), after which
+        records lack those fields and ``logging.Formatter.format`` raises
+        ``ValueError: Formatting field not found in record`` -- silently
+        killing file logging. A missing optional field must never take
+        logging down.
+
+        Missing fields are defaulted based on the conversion type:
+        - numeric conversions (d i o u x X e E f F g G) -> 0
+        - others (s r c and friends) -> ""
+        """
+        for field, conv in self._hermes_optional_fields:
+            if not hasattr(record, field):
+                # Numeric conversions default to 0; string/other types to "".
+                setattr(record, field, 0 if conv in "diouxXeEfFgG" else "")
         original = super().format(record)
         return redact_sensitive_text(original)

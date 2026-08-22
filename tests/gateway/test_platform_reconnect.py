@@ -998,3 +998,192 @@ class TestRequeueHealsDeadReconnectWatcher:
                 await live
             except asyncio.CancelledError:
                 pass
+
+
+class TestSupervisionExhaustionHasAnOwner:
+    """The witness @andrexibiza asked for on #90448: recovery with NO new event.
+
+    The predecessor architecture (#72366, salvage of #71867 by @ygd58)
+    established that a reconnect watcher which dies while work is queued must
+    be respawned by something *autonomous*, because the only other trigger --
+    a fresh fatal error from another platform -- may never arrive. Supervised
+    restart closed that, but supervision is finite: after
+    ``_MAX_SUPERVISED_RESTARTS`` rapid crashes it logs "giving up restarts" and
+    stops.
+
+    Past that point the system is back in exactly the state #72366 described.
+    And #81036 (salvage of #80700, preserving @HexLab98) makes the missing
+    event less likely rather than more: it publishes the queue *before*
+    disconnect and drops the failed adapter from the live map, so there may be
+    no adapter left to emit the callback recovery was waiting on.
+
+    These tests exercise that state directly. They queue a platform, let the
+    watcher burn its whole budget, and then emit **no further fatal
+    callbacks at all** -- the thing the branch-level regression tests below
+    cannot prove, because they manufacture the event.
+    """
+
+    @staticmethod
+    def _runner(monkeypatch, *, crashes):
+        """A runner whose reconnect watcher crashes `crashes` times, then lives."""
+        runner = _make_runner()
+        runner._background_tasks = set()
+        runner._reconnect_watcher_task = None
+        runner.state = {"live": 0, "spawns": 0}
+
+        # Collapse every real-time delay: the point is the ORDER of events, not
+        # their spacing. Left as class attributes in production precisely so a
+        # test can do this without sleeping for half an hour.
+        monkeypatch.setattr(GatewayRunner, "_MAX_SUPERVISED_RESTARTS", 2)
+        monkeypatch.setattr(GatewayRunner, "_SUPERVISED_HEALTHY_SECS", 3600)
+        monkeypatch.setattr(GatewayRunner, "_RECONNECT_WATCHER_SLOW_RETRY_SECS", 0)
+        monkeypatch.setattr(GatewayRunner, "_supervised_backoff", staticmethod(lambda _a: 0))
+
+        remaining = {"n": crashes}
+
+        async def _watcher():
+            runner.state["spawns"] += 1
+            if remaining["n"] > 0:
+                remaining["n"] -= 1
+                raise RuntimeError("watcher crashed on contact")
+            # Healthy: stay alive so `task.done()` is False.
+            runner.state["live"] += 1
+            await asyncio.Event().wait()
+
+        runner._platform_reconnect_watcher = _watcher
+        return runner
+
+    @staticmethod
+    def _queue_telegram(runner):
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": runner.config.platforms[Platform.TELEGRAM],
+            "attempts": 9,
+            "next_retry": time.monotonic() + 300,
+            "queued_at": time.monotonic() - 7200,
+            "credential_claim": None,
+            "listener_claim": None,
+        }
+
+    @staticmethod
+    async def _settle(times=40):
+        """Let the supervisor's done-callbacks and respawn tasks drain."""
+        for _ in range(times):
+            await asyncio.sleep(0)
+
+    @pytest.mark.asyncio
+    async def test_watcher_recovers_after_budget_exhaustion_with_no_new_event(
+        self, monkeypatch
+    ):
+        """The whole review gate in one test.
+
+        Queue a platform, crash the watcher past its supervised budget, then do
+        nothing at all -- no fatal callback, no enqueue, no external poke. The
+        watcher must come back on its own once it stops crashing.
+        """
+        # One crash more than supervision will tolerate, so the give-up branch
+        # is genuinely reached and the slow tier is what recovers it.
+        runner = self._runner(monkeypatch, crashes=3)
+        self._queue_telegram(runner)
+
+        runner._spawn_reconnect_watcher()
+        await self._settle(300)
+
+        assert runner.state["live"] == 1, (
+            "with no new fatal event, only the slow tier can have brought the "
+            "watcher back after supervision gave up"
+        )
+        assert runner._reconnect_watcher_task is not None
+        assert not runner._reconnect_watcher_task.done()
+
+        runner._running = False
+        for task in list(runner._background_tasks):
+            task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_the_slow_tier_is_bounded_not_a_restart_loop(self, monkeypatch):
+        """A watcher that never recovers must stop being respawned, and say so."""
+        runner = self._runner(monkeypatch, crashes=10_000)
+        self._queue_telegram(runner)
+        monkeypatch.setattr(GatewayRunner, "_MAX_SLOW_WATCHER_RESPAWNS", 3)
+
+        runner._spawn_reconnect_watcher()
+        await self._settle(400)
+
+        assert runner.state["live"] == 0
+        # Bounded, and the arithmetic is worth stating because it is the
+        # whole safety argument. Each slow-tier attempt hands the watcher a
+        # FRESH supervised budget -- that is deliberate, since a slow retry is
+        # a new bet that conditions have changed -- so the ceiling is
+        # (1 + _MAX_SUPERVISED_RESTARTS) x (1 + _MAX_SLOW_WATCHER_RESPAWNS):
+        # here (1+2) x (1+3) = 12. With production values that is 6 x 7 = 42
+        # spawns spread across at least half an hour, which is a ladder, not
+        # a restart loop. A tight loop here would be worse than the outage it
+        # is healing.
+        assert runner.state["spawns"] == 12, (
+            f"expected a finite spawn ladder, got {runner.state['spawns']}"
+        )
+        assert runner._reconnect_watcher_task.done()
+
+        # And it stays stopped: no further spawns once the ladder is spent.
+        await self._settle(400)
+        assert runner.state["spawns"] == 12
+
+        runner._running = False
+        for task in list(runner._background_tasks):
+            task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_an_empty_queue_leaves_the_watcher_down(self, monkeypatch):
+        """No queued work, no invariant to own.
+
+        Respawning a crash-looping watcher that nothing depends on would burn
+        the process for no one. The enqueue path spawns a fresh one the moment
+        a platform is actually queued.
+        """
+        runner = self._runner(monkeypatch, crashes=10_000)
+        assert not runner._failed_platforms
+
+        runner._spawn_reconnect_watcher()
+        await self._settle(200)
+
+        assert runner.state["live"] == 0
+        assert runner._reconnect_watcher_task.done()
+
+        runner._running = False
+        for task in list(runner._background_tasks):
+            task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_the_slow_tier_stands_down_when_the_queue_drains(self, monkeypatch):
+        """Something else healed the platform -- stop respawning for it."""
+        runner = self._runner(monkeypatch, crashes=10_000)
+        self._queue_telegram(runner)
+
+        runner._spawn_reconnect_watcher()
+        # Let supervision give up, then drain the queue before the slow tier
+        # gets its turn.
+        await self._settle(6)
+        runner._failed_platforms.clear()
+        await self._settle(200)
+
+        assert runner.state["live"] == 0, (
+            "with nothing queued, the slow tier has no invariant left to own"
+        )
+
+        runner._running = False
+        for task in list(runner._background_tasks):
+            task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_give_up_does_nothing_once_the_gateway_is_shutting_down(
+        self, monkeypatch
+    ):
+        runner = self._runner(monkeypatch, crashes=10_000)
+        self._queue_telegram(runner)
+        runner._running = False
+
+        runner._on_reconnect_watcher_gave_up("platform_reconnect_watcher")
+        await self._settle()
+
+        assert runner.state["live"] == 0
+        assert not runner._background_tasks

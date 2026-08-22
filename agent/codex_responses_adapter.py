@@ -317,11 +317,18 @@ def _message_item(
     return item
 
 
-def _assistant_message_item(raw: Dict[str, Any], content: List[Dict[str, Any]], *, is_github_responses: bool) -> Dict[str, Any]:
+def _assistant_message_item(
+    raw: Dict[str, Any], content: List[Dict[str, Any]], *, is_github_responses: bool,
+    current_issuer_kind: Optional[str] = None,
+) -> Dict[str, Any]:
     """Replayable assistant ``message`` item from a stored one. ``id`` is kept only when short enough and never for
-    GitHub Copilot (ids bind to a backend connection; stale → 401); ``phase`` is preserved per OpenAI's cache guidance."""
+    GitHub Copilot (ids bind to a backend connection; stale → 401); ``phase`` is preserved per OpenAI's cache guidance.
+    The ChatGPT Codex backend additionally rejects ids that do not begin with ``msg`` (foreign Responses issuers
+    mint short UUIDs), so those are dropped there while other issuers' policies are unchanged."""
     item_id, phase = raw.get("id"), raw.get("phase")
     keep_id = not is_github_responses and _nonblank(item_id) and len(item_id.strip()) <= _MAX_RESPONSES_ITEM_ID_LENGTH
+    if keep_id and current_issuer_kind == "codex_backend" and not item_id.strip().startswith("msg"):
+        keep_id = False
     return _message_item(
         content, status=_normalize_responses_message_status(raw.get("status")),
         item_id=item_id.strip() if keep_id else None, phase=phase.strip() if _nonblank(phase) else None,
@@ -360,7 +367,9 @@ def _replay_reasoning_items(
     return replayed
 
 
-def _replay_message_items(msg: Dict[str, Any], *, is_github_responses: bool) -> List[Dict[str, Any]]:
+def _replay_message_items(
+    msg: Dict[str, Any], *, is_github_responses: bool, current_issuer_kind: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """Replay exact assistant message items (id/phase) for prefix-cache hits."""
     replayed: List[Dict[str, Any]] = []
     for raw_item in _as_list(msg.get("codex_message_items")):
@@ -372,7 +381,9 @@ def _replay_message_items(msg: Dict[str, Any], *, is_github_responses: bool) -> 
             if isinstance(part, dict) and str(part.get("type") or "").strip() in _OUTPUT_TEXT_TYPES
         ]
         if content:
-            replayed.append(_assistant_message_item(raw_item, content, is_github_responses=is_github_responses))
+            replayed.append(_assistant_message_item(
+                raw_item, content, is_github_responses=is_github_responses, current_issuer_kind=current_issuer_kind,
+            ))
     return replayed
 
 
@@ -490,7 +501,9 @@ def _chat_messages_to_responses_input(
             native_compaction_eligible=native_compaction_eligible,
         )
         emit(reasoning_items, msg)
-        message_items = _replay_message_items(msg, is_github_responses=is_github_responses)
+        message_items = _replay_message_items(
+            msg, is_github_responses=is_github_responses, current_issuer_kind=current_issuer_kind,
+        )
         emit(message_items, msg)
         if not message_items:
             # Every reasoning item needs a following item (else missing_following_item), hence the "" fallback.

@@ -21,6 +21,11 @@ def _make_httpx_mock():
 
     class MockResp:
         status_code = 200
+        # The v2 send path reads resp.text/resp.content for error normalization
+        # (see _post in tools/send_message_tool.py); a real httpx.Response has
+        # both, so the mock must too.
+        text = '{"timestamp": 1234567890}'
+        content = b'{"timestamp": 1234567890}'
         def json(self):
             return {"timestamp": 1234567890}
         def raise_for_status(self):
@@ -38,6 +43,9 @@ def _make_httpx_mock():
     httpx_mock.AsyncClient = lambda timeout=None: MockClient()
     httpx_mock.AsyncBaseTransport = AsyncBaseTransport  # Needed by Telegram adapter
     httpx_mock.Proxy = Proxy  # Needed by telegram-bot library
+    # gateway/platforms/signal.py annotates _response_succeeded(resp: httpx.Response);
+    # annotations are evaluated at class-def time, so the mock must expose Response.
+    httpx_mock.Response = MockResp
     return httpx_mock
 
 

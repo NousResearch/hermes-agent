@@ -120,7 +120,12 @@ NOUS_DEVICE_CODE_SOURCE = "device_code"
 NOUS_AUTH_PATH_INVOKE_JWT = "invoke_jwt"
 ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
 NOUS_INVOKE_JWT_MIN_TTL_SECONDS = ACCESS_TOKEN_REFRESH_SKEW_SECONDS
-DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
+# RFC 8628 §3.3: the token poll must never run faster than the
+# server-directed `interval` — and no faster than 5s when the server omits
+# one. The old hard 1s "cap" clamped the portal's own interval down to 1s,
+# which the portal's rate limiter answers with 429s that aborted the flow
+# mid-approval and orphaned the server-side device approval (#87432).
+DEVICE_AUTH_POLL_MIN_INTERVAL_SECONDS = 5
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 DEFAULT_XAI_OAUTH_BASE_URL = "https://api.x.ai/v1"
 MINIMAX_OAUTH_CLIENT_ID = "78257093-7e40-4613-99e0-527b14b39113"
@@ -5298,6 +5303,21 @@ def _nous_device_auth_timeout_message(portal_base_url: str) -> str:
     )
 
 
+def _effective_device_poll_interval(poll_interval) -> int:
+    """RFC 8628 §3.3 poll cadence: honor the server-directed interval,
+    floored at 5s (the portal rate-limits faster polling) and capped at 30s.
+
+    The interval comes from the device-authorization response and is only
+    checked for presence, not type — a non-numeric payload must never crash
+    the login flow, so fall back to the RFC 8628 default cadence (5s).
+    """
+    try:
+        interval = int(poll_interval)
+    except (ValueError, TypeError):
+        interval = DEVICE_AUTH_POLL_MIN_INTERVAL_SECONDS
+    return min(30, max(DEVICE_AUTH_POLL_MIN_INTERVAL_SECONDS, interval))
+
+
 def _poll_for_token(
     client: httpx.Client,
     portal_base_url: str,
@@ -5308,7 +5328,7 @@ def _poll_for_token(
 ) -> Dict[str, Any]:
     """Poll the token endpoint until the user approves or the code expires."""
     deadline = time.monotonic() + max(1, expires_in)
-    current_interval = max(1, min(poll_interval, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS))
+    current_interval = _effective_device_poll_interval(poll_interval)
 
     while time.monotonic() < deadline:
         response = client.post(
@@ -5325,6 +5345,16 @@ def _poll_for_token(
             if "access_token" not in payload:
                 raise ValueError("Token response did not include access_token")
             return payload
+
+        if response.status_code == 429:
+            # Rate-limited mid-approval: treat as slow_down (RFC 8628 §3.5)
+            # and keep polling within the deadline. Aborting here used to
+            # crash the flow while the approval was already registered
+            # server-side, orphaning it and wedging the next device code
+            # with a misleading "device code was not recognized" (#87432).
+            current_interval = min(current_interval + 5, 30)
+            time.sleep(current_interval)
+            continue
 
         try:
             error_payload = response.json()
@@ -9023,7 +9053,7 @@ def _nous_device_code_login(
             except Exception:
                 pass
 
-        effective_interval = max(1, min(interval, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS))
+        effective_interval = _effective_device_poll_interval(interval)
         print(f"Waiting for approval (polling every {effective_interval}s)...")
 
         token_data = _poll_for_token(

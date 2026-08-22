@@ -744,8 +744,14 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4018, str(exc))
             try:
                 _active, durable_live_view, _rewound_count = (
-                    _rewind_active_session_history(session, len(user_indices) - 1)
+                    _rewind_active_session_history(
+                        session,
+                        len(user_indices) - 1,
+                        require_retryable=True,
+                    )
                 )
+            except ValueError as exc:
+                return _err(rid, 4018, str(exc))
             except Exception as exc:
                 return _err(rid, 5008, f"retry: failed to persist history: {exc}")
             content = retryable_user_text(durable_live_view.get("content"))

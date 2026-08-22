@@ -2681,11 +2681,14 @@ class GatewaySlashCommandsMixin:
             # archive that row/tail and insert its pure scaffold atomically.
             # Plain turns keep the existing rewrite path below; #84078 owns
             # its separate archive_dropped/prefix-CAS semantics.
-            rewind_result = await self.async_session_store.rewind_session(
-                session_entry.session_id,
-                1,
-                require_retryable_composite=True,
-            )
+            try:
+                rewind_result = await self.async_session_store.rewind_session(
+                    session_entry.session_id,
+                    1,
+                    require_retryable_composite=True,
+                )
+            except ValueError as exc:
+                return f"Cannot retry that message safely: {exc}"
             if rewind_result is None:
                 return "Retry failed; transcript was not changed."
             # The store reselects and validates the latest carrier on the same

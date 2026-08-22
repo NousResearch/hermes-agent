@@ -110,6 +110,32 @@ def test_rewind_session_keeps_pending_recovery_state_when_lease_rejects(
     assert session_id not in store._transcript_append_failures
 
 
+def test_rewind_session_surfaces_unretryable_media_before_mutation(
+    tmp_path, monkeypatch
+):
+    import hermes_state
+
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+    session_id = "rewind-composite-media"
+    store._db.create_session(session_id=session_id, source="test")
+    store._db.append_message(
+        session_id,
+        "user",
+        [
+            {"type": "text", "text": _composite_carrier()["content"]},
+            {"type": "image_url", "image_url": {"url": "image"}},
+        ],
+    )
+    store._db.append_message(session_id, "assistant", "old answer")
+    before = store._db.get_messages(session_id, include_inactive=True)
+
+    with pytest.raises(ValueError, match="media or unknown content"):
+        store.rewind_session(session_id, require_retryable_composite=True)
+
+    assert store._db.get_messages(session_id, include_inactive=True) == before
+
+
 @pytest.mark.parametrize("operation", ["rewrite", "rewind"])
 def test_transcript_mutation_serializes_pending_queue_drain(
     operation, tmp_path, monkeypatch
@@ -381,6 +407,39 @@ async def test_gateway_retry_rejects_media_before_redispatch_or_token_reset():
     assert session_entry.last_prompt_tokens == 123
     gw._handle_message.assert_not_awaited()
     facade.rewrite_transcript.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_gateway_retry_preserves_composite_media_diagnostic_from_store():
+    gw = GatewayRunner.__new__(GatewayRunner)
+    backing_store = MagicMock()
+    gw.session_store = backing_store
+    session_entry = SimpleNamespace(session_id="sid", last_prompt_tokens=123)
+    facade = SimpleNamespace(
+        _store=backing_store,
+        get_or_create_session=AsyncMock(return_value=session_entry),
+        load_transcript=AsyncMock(
+            return_value=[
+                _composite_carrier(),
+                {"role": "assistant", "content": "old answer"},
+            ]
+        ),
+        rewind_session=AsyncMock(
+            side_effect=ValueError("retry does not support media content")
+        ),
+    )
+    gw._async_session_store = facade
+    gw._handle_message = AsyncMock()
+
+    result = await gw._handle_retry_command(
+        MessageEvent(text="/retry", message_type=MessageType.TEXT, source=MagicMock())
+    )
+
+    assert result == (
+        "Cannot retry that message safely: retry does not support media content"
+    )
+    assert session_entry.last_prompt_tokens == 123
+    gw._handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

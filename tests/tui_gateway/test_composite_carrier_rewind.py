@@ -403,6 +403,36 @@ def test_retry_preserves_literal_media_like_text(carrier_session):
     _assert_scaffold_preserved(db, session_key, session)
 
 
+def test_retry_rejects_durable_media_before_rewind_when_warm_view_is_text(
+    carrier_session,
+):
+    db, install = carrier_session
+    carrier = _composite_carrier()
+    handoff = carrier["content"].rsplit("\n\nREAL ASK", 1)[0]
+    durable_carrier = carrier.copy()
+    durable_carrier["content"] = [
+        {"type": "text", "text": handoff},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
+    ]
+    sid, session_key, session = install(
+        [durable_carrier, {"role": "assistant", "content": "failed"}]
+    )
+    # The warm projection can be a degraded text-only view that compares equal
+    # to the durable media payload. Durable retryability must still be checked
+    # before the physical carrier and tail are archived.
+    warm_carrier = carrier.copy()
+    warm_carrier["content"] = handoff + "\n\n[screenshot]"
+    session["history"][0] = warm_carrier
+    session["agent"]._session_messages = list(session["history"])
+    before_history = [message.copy() for message in session["history"]]
+
+    response = _dispatch(sid, "retry")
+
+    assert response["error"]["code"] == 4018
+    assert session["history"] == before_history
+    assert len(db.get_messages_as_conversation(session_key)) == 2
+
+
 def test_retry_rejects_pending_attachments_before_mutating_history(carrier_session):
     db, install = carrier_session
     sid, session_key, session = install(

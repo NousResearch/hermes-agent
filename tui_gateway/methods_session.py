@@ -2694,7 +2694,7 @@ def _(rid, params: dict) -> dict:
         # (async_delegation_complete, model_switch, …) or compaction
         # handoffs as the undo target — so session.undo removed
         # bookkeeping instead of the last exchange (#80622).
-        # Match list_recent_user_messages / CLI turn counting.
+        # Match user_originated_turn_view / CLI turn counting.
         from agent.context_compressor import user_originated_turn_view
 
         user_indices = [

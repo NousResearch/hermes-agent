@@ -2048,6 +2048,8 @@ class TestWebServerEndpoints:
         from agent.context_compressor import (
             HISTORICAL_TASK_HEADING,
             SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
             _SUMMARY_END_MARKER,
         )
         from hermes_state import SessionDB
@@ -2057,6 +2059,11 @@ class TestWebServerEndpoints:
             f"{_SUMMARY_END_MARKER}"
         )
         carrier = f"{handoff}\n\nREAL ASK"
+        assistant_carrier = (
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
+            "real completed answer\n\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n\n{handoff}"
+        )
         db = SessionDB()
         try:
             db.create_session(session_id="compacted-carrier-display", source="desktop")
@@ -2076,6 +2083,12 @@ class TestWebServerEndpoints:
                 handoff,
                 timestamp=124.0,
             )
+            db.append_message(
+                "compacted-carrier-display",
+                "assistant",
+                assistant_carrier,
+                timestamp=125.0,
+            )
             active_id = db.get_messages("compacted-carrier-display")[0]["id"]
         finally:
             db.close()
@@ -2086,13 +2099,15 @@ class TestWebServerEndpoints:
         )
         assert resp.status_code == 200
         messages = resp.json()["messages"]
-        assert len(messages) == 2
+        assert len(messages) == 3
         assert messages[0]["id"] == active_id
         assert messages[0]["content"] == carrier
         assert messages[0]["display_content"] == "REAL ASK"
         assert not messages[0].get("display_kind")
         assert messages[1]["content"] == handoff
         assert messages[1]["display_kind"] == "hidden"
+        assert messages[2]["content"] == assistant_carrier
+        assert messages[2]["display_content"] == "real completed answer"
 
     def test_get_session_messages_latest_page_with_compacted_rows(self):
         """The desktop's real read path (getLatestSessionMessages: limit +

@@ -11745,6 +11745,22 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # Rewind (soft-delete) — see /rewind slash command + issue #21910
     # =========================================================================
 
+    def get_active_message_ids(self, session_id: str) -> List[int]:
+        """Return the ordered physical ids pinned by rewind CAS checks.
+
+        Conversation projections intentionally omit legacy background-review
+        harness rows.  Destructive rewinds must nevertheless pin every active
+        physical row so the caller snapshot matches the transaction-local
+        comparison in :meth:`rewind_to_message`.
+        """
+        with self._read_ctx() as conn:
+            rows = conn.execute(
+                "SELECT id FROM messages "
+                "WHERE session_id = ? AND active = 1 ORDER BY id",
+                (session_id,),
+            ).fetchall()
+        return [int(row[0]) for row in rows]
+
     @staticmethod
     def _active_transcript_counts(conn, session_id: str) -> tuple[int, int]:
         """Return active message/tool-call counts inside the caller's txn."""

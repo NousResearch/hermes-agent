@@ -3155,7 +3155,10 @@ def _session_db(session: dict):
 
 
 def _rewind_active_session_history(
-    session: dict, user_ordinal: int
+    session: dict,
+    user_ordinal: int,
+    *,
+    require_retryable: bool = False,
 ) -> tuple[list[dict], dict, int]:
     """Rewind one canonical user turn while retaining carrier scaffolding.
 
@@ -3167,6 +3170,7 @@ def _rewind_active_session_history(
     """
     from agent.context_compressor import (
         history_before_user_originated_turn,
+        retryable_user_text,
         split_user_originated_turn,
         user_originated_turn_view,
     )
@@ -3213,6 +3217,7 @@ def _rewind_active_session_history(
         with _session_db(session) as db:
             if db is None:
                 raise RuntimeError("session database is unavailable")
+            expected_active_ids = db.get_active_message_ids(session_key)
             durable = db.get_messages_as_conversation(
                 session_key,
                 include_row_ids=True,
@@ -3238,11 +3243,8 @@ def _rewind_active_session_history(
             target_row_id = durable_target.get("_row_id")
             if not isinstance(target_row_id, int):
                 raise RuntimeError("rewind target has no durable row identity")
-            expected_active_ids = [
-                int(message["_row_id"])
-                for message in durable
-                if isinstance(message.get("_row_id"), int)
-            ]
+            if require_retryable:
+                retryable_user_text(durable_live_view.get("content"))
             scaffold, _ = split_user_originated_turn(durable_target)
             result = db.rewind_to_message(
                 session_key,
@@ -3278,6 +3280,8 @@ def _rewind_active_session_history(
             live_view = durable_live_view
             rewound_count = int(result.get("rewound_count", 0))
             persisted = True
+    elif require_retryable:
+        retryable_user_text(live_view.get("content"))
 
     installed = [message.copy() for message in installed]
     session["history"] = installed
@@ -7854,20 +7858,6 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         role = m.get("role")
         if role not in {"user", "assistant", "tool", "system"}:
             continue
-        if role == "user":
-            from agent.context_compressor import (
-                is_compaction_summary_message,
-                user_originated_turn_view,
-            )
-
-            if is_compaction_summary_message(m):
-                carrier_row_id = m.get("_row_id")
-                live_view = user_originated_turn_view(m)
-                if live_view is None:
-                    continue
-                if carrier_row_id is not None:
-                    live_view["_row_id"] = carrier_row_id
-                m = live_view
         # An explicit display_kind="hidden" row is model-facing scaffolding
         # (compaction references, interrupted-turn checkpoints). The string
         # sniff below only catches the "[System:" convention; honor the

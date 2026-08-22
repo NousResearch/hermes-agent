@@ -642,23 +642,24 @@ async def get_session_messages(
     if result is None:
         raise HTTPException(status_code=404, detail="Session not found")
     sid, _limit, messages = result
-    from agent.context_compressor import split_user_originated_turn
+    from agent.compaction_display import project_compaction_message_for_display
+    from agent.context_compressor import is_compaction_summary_message
 
     projected_messages = []
     for message in messages:
-        handoff, live_view = split_user_originated_turn(message)
-        if handoff is None:
+        if not is_compaction_summary_message(message):
             projected_messages.append(message)
             continue
+        display_view = project_compaction_message_for_display(message)
         projected = message.copy()
-        if live_view is None:
+        if display_view is None:
             if not projected.get("display_kind"):
                 projected["display_kind"] = "hidden"
         else:
             # Keep the physical content for inspection/export compatibility;
             # Desktop consumes this display-only projection. A legacy hidden
             # wrapper must not hide a successfully recovered live ask.
-            projected["display_content"] = live_view.get("content")
+            projected["display_content"] = display_view.get("content")
             projected.pop("display_kind", None)
         projected_messages.append(projected)
     return {

@@ -4065,15 +4065,11 @@ class SessionStore:
             )
 
             try:
+                expected_active_ids = self._db.get_active_message_ids(session_id)
                 durable = self._db.get_messages_as_conversation(
                     session_id,
                     include_row_ids=True,
                 )
-                expected_active_ids = [
-                    int(message["_row_id"])
-                    for message in durable
-                    if isinstance(message.get("_row_id"), int)
-                ]
                 user_indices = [
                     index
                     for index, message in enumerate(durable)
@@ -4089,13 +4085,15 @@ class SessionStore:
                 handoff, target_view = split_user_originated_turn(target)
                 if target_view is None:
                     return None
-                if require_retryable_composite:
-                    if handoff is None:
-                        return None
-                    target_text = retryable_user_text(target_view.get("content"))
+                if require_retryable_composite and handoff is None:
+                    return None
             except Exception as e:
                 logger.debug("rewind_session: failed to resolve canonical target: %s", e)
                 return None
+            if require_retryable_composite:
+                # Keep replay-policy failures distinct from persistence errors
+                # so /retry can explain why the selected carrier is unsafe.
+                target_text = retryable_user_text(target_view.get("content"))
             try:
                 result = self._db.rewind_to_message(
                     session_id,

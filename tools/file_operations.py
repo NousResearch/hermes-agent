@@ -2779,6 +2779,21 @@ class ShellFileOperations(FileOperations):
         Returns:
             SearchResult with matches or file list
         """
+        # Reject unknown targets instead of falling through to a content
+        # search.  'files_only' is an easy mistake here because output_mode
+        # really does accept it, and the silent fallback returns a clean
+        # empty result that gives the caller no way to spot the error.
+        if target not in ("content", "files"):
+            return SearchResult(
+                error=(
+                    f"Invalid target: {target!r}. Use 'content' to search inside "
+                    "files, or 'files' to find files by name. To list only the "
+                    "paths of files whose contents match, use target='content' "
+                    "with output_mode='files_only'."
+                ),
+                total_count=0
+            )
+
         offset, limit = normalize_search_pagination(offset, limit)
 
         # Expand ~ and other shell paths

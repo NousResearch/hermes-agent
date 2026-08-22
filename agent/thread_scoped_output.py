@@ -80,23 +80,13 @@ class _ThreadRoutingStream:
 
     # --- file-like surface ------------------------------------------------
     def write(self, data):  # type: ignore[no-untyped-def]
-        try:
-            return self._target().write(data)
-        except Exception:
-            return len(data) if isinstance(data, str) else 0
+        return self._target().write(data)
 
     def flush(self):  # type: ignore[no-untyped-def]
-        try:
-            return self._target().flush()
-        except Exception:
-            return None
+        return self._target().flush()
 
     def writelines(self, lines):  # type: ignore[no-untyped-def]
-        target = self._target()
-        try:
-            return target.writelines(lines)
-        except Exception:
-            return None
+        return self._target().writelines(lines)
 
     def isatty(self) -> bool:
         try:

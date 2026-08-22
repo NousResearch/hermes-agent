@@ -13,8 +13,50 @@ import sys
 import threading
 import time
 
+import pytest
+
 import agent.thread_scoped_output as thread_output
-from agent.thread_scoped_output import thread_scoped_silence
+from agent.thread_scoped_output import _RoutingState, _ThreadRoutingStream, thread_scoped_silence
+
+
+class _WriteFailingStream(io.StringIO):
+    def write(self, data):
+        raise OSError("stream is closed")
+
+
+class _FlushFailingStream(io.StringIO):
+    def flush(self):
+        raise OSError("stream is closed")
+
+
+class _WritelinesFailingStream(io.StringIO):
+    def writelines(self, lines):
+        raise OSError("stream is closed")
+
+
+def _routing_stream(passthrough):
+    return _ThreadRoutingStream(passthrough, _RoutingState(io.StringIO()))
+
+
+def test_write_propagates_passthrough_stream_failure():
+    stream = _routing_stream(_WriteFailingStream())
+
+    with pytest.raises(OSError, match="stream is closed"):
+        stream.write("response")
+
+
+def test_flush_propagates_passthrough_stream_failure():
+    stream = _routing_stream(_FlushFailingStream())
+
+    with pytest.raises(OSError, match="stream is closed"):
+        stream.flush()
+
+
+def test_writelines_propagates_passthrough_stream_failure():
+    stream = _routing_stream(_WritelinesFailingStream())
+
+    with pytest.raises(OSError, match="stream is closed"):
+        stream.writelines(["response", "\n"])
 
 
 def _run_with_real_stream(fn):

@@ -182,6 +182,11 @@ def _bearer_auth_headers(name: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer ${{{env_key}}}"}
 
 
+def _bearer_auth_token_ref(name: str) -> str:
+    """Return the profile-scoped environment reference for a URL token."""
+    return f"${{{_env_key_for_server(name)}}}"
+
+
 def _save_bearer_auth_token(name: str, token: str) -> Dict[str, str]:
     """Persist a Bearer token in the active profile and return safe headers.
 
@@ -540,7 +545,10 @@ def cmd_mcp_add(args):
         _info(f"Connecting to {url}")
         needs_auth = _confirm("Does this server require authentication?", default=True)
         if needs_auth:
-            if auth_type == "header" or not auth_type:
+            if auth_type in {"header", "query"} or not auth_type:
+                if auth_type == "query":
+                    server_config["auth"] = "query"
+                    server_config["token"] = _bearer_auth_token_ref(name)
                 env_key = _env_key_for_server(name)
                 existing_key = get_env_value(env_key)
                 if existing_key:
@@ -548,13 +556,16 @@ def cmd_mcp_add(args):
                 else:
                     api_key = _prompt("API key / Bearer token", password=True)
                     if api_key:
-                        server_config["headers"] = _save_bearer_auth_token(
-                            name, api_key
-                        )
+                        saved_headers = _save_bearer_auth_token(name, api_key)
+                        if auth_type == "query":
+                            server_config["auth"] = "query"
+                            server_config["token"] = _bearer_auth_token_ref(name)
+                        else:
+                            server_config["headers"] = saved_headers
                         _success(f"Saved to {display_hermes_home()}/.env as {env_key}")
 
                 # Set header with env var interpolation
-                if existing_key:
+                if existing_key and (auth_type == "header" or not auth_type):
                     server_config["headers"] = _bearer_auth_headers(name)
 
     # ── Discovery: connect and list tools ─────────────────────────────

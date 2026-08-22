@@ -99,7 +99,9 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
                         status_code=409, detail=f"Server '{name}' already exists"
                     )
                 if bearer_token is not None:
-                    server_config["headers"] = _save_bearer_auth_token(name, bearer_token)
+                    saved_headers = _save_bearer_auth_token(name, bearer_token)
+                    if server_config.get("auth") != "query":
+                        server_config["headers"] = saved_headers
                 if not _save_mcp_server(name, server_config):
                     raise HTTPException(
                         status_code=400,

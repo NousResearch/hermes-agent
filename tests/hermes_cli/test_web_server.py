@@ -2410,6 +2410,7 @@ class TestNewEndpoints:
         monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
 
         secret = "profile-builder-secret"
+        query_secret = "profile-builder-query-secret"
         resp = self.client.post(
             "/api/profiles",
             json={
@@ -2425,6 +2426,12 @@ class TestNewEndpoints:
                         "name": "oauth-server",
                         "url": "https://example.com/oauth-mcp",
                         "auth": "oauth",
+                    },
+                    {
+                        "name": "Query Server",
+                        "url": "https://example.com/query-mcp",
+                        "auth": "query",
+                        "bearer_token": query_secret,
                     },
                     {
                         "name": "local-server",
@@ -2447,7 +2454,7 @@ class TestNewEndpoints:
         )
 
         assert resp.status_code == 200
-        assert resp.json()["mcp_written"] == 3
+        assert resp.json()["mcp_written"] == 4
 
         root = get_hermes_home()
         profile_dir = root / "profiles" / "builder-auth"
@@ -2457,6 +2464,7 @@ class TestNewEndpoints:
 
         assert sorted(servers) == [
             "Bearer Server",
+            "Query Server",
             "local-server",
             "oauth-server",
         ]
@@ -2470,6 +2478,11 @@ class TestNewEndpoints:
             "url": "https://example.com/oauth-mcp",
             "auth": "oauth",
         }
+        assert servers["Query Server"] == {
+            "url": "https://example.com/query-mcp",
+            "auth": "query",
+            "token": "${MCP_QUERY_SERVER_API_KEY}",
+        }
         assert servers["local-server"] == {
             "command": "uvx",
             "args": ["mcp-server", "--debug"],
@@ -2477,8 +2490,10 @@ class TestNewEndpoints:
         }
 
         assert secret not in config_text
+        assert query_secret not in config_text
         profile_env = (profile_dir / ".env").read_text(encoding="utf-8")
         assert f"MCP_BEARER_SERVER_API_KEY={secret}" in profile_env
+        assert f"MCP_QUERY_SERVER_API_KEY={query_secret}" in profile_env
         assert "Bearer Bearer" not in profile_env
         assert not (root / ".env").exists()
 

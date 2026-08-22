@@ -368,7 +368,7 @@ describe('profile-aware plugin session opens', () => {
 
     // The old pre-open "already selected" precondition skipped this request,
     // stranding the pane blank until timeout. It must fire now.
-    expect(requestSessionResume).toHaveBeenCalledWith('cold-bot-chat')
+    expect(requestSessionResume).toHaveBeenCalledWith('cold-bot-chat', 'hyoseob')
 
     setMockAtom($selectedStoredSessionId, 'cold-bot-chat')
     setMockAtom($activeSessionId, 'runtime-cold')
@@ -392,7 +392,7 @@ describe('profile-aware plugin session opens', () => {
     })
 
     await Promise.resolve()
-    expect(requestSessionResume).toHaveBeenCalledWith('bot-chat')
+    expect(requestSessionResume).toHaveBeenCalledWith('bot-chat', 'hyoseob')
 
     setMockAtom($activeSessionId, 'runtime-refreshed')
     setMockAtom($messages, [{ id: 'history-restored', parts: [], role: 'assistant' }] as never)

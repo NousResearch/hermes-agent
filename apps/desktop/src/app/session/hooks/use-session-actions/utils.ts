@@ -1303,10 +1303,48 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   ])
 }
 
-export async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
-  const cached = [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()].find(session =>
-    sessionMatchesStoredId(session, storedSessionId)
-  )
+export async function resolveStoredSession(
+  storedSessionId: string,
+  ownerProfileHint?: string | null
+): Promise<SessionInfo | undefined> {
+  const allCached = [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()]
+  const hintedProfile = (ownerProfileHint ?? '').trim()
+
+  // An explicit profile-scoped open already knows where this session lives.
+  // Treat that ownership as authoritative instead of probing every installed
+  // profile after a miss. With large profile rosters, a blind fallback scan
+  // starts one backend per profile and turns one stale/missing id into a
+  // machine-wide spawn storm plus a wall of false "Session not found" 404s.
+  if (hintedProfile) {
+    const key = normalizeProfileKey(hintedProfile)
+
+    const hintedCached = allCached.find(
+      session => sessionMatchesStoredId(session, storedSessionId) && normalizeProfileKey(session.profile) === key
+    )
+
+    if (hintedCached) {
+      return hintedCached
+    }
+
+    try {
+      const session = await getSession(storedSessionId, key)
+      session.profile = key
+      upsertResolvedSession(session, storedSessionId)
+
+      return session
+    } catch (error) {
+      // A genuine missing session ends the authoritative lookup here. A
+      // transport/gateway failure is inconclusive: preserve the owner and
+      // let the caller arm its bounded retry instead of treating it as 404.
+      if (isSessionGoneError(error)) {
+        return undefined
+      }
+
+      throw error
+    }
+  }
+
+  const cached = allCached.find(session => sessionMatchesStoredId(session, storedSessionId))
 
   // A row with no owning profile can't route a resume when more than one
   // profile exists — a resume without a profile lands on whichever gateway is

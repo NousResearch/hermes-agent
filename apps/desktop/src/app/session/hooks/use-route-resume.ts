@@ -12,7 +12,7 @@ interface RouteResumeOptions {
   freshDraftReady: boolean
   gatewayState: string | undefined
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
+  resumeSession: (sessionId: string, focus: boolean, ownerProfileHint?: string) => Promise<unknown>
   // Stored-session id whose most recent resume failed terminally (set by
   // useSessionActions, mirrored from $resumeFailedSessionId). While this equals
   // routedSessionId the window would otherwise latch on the loader forever, so
@@ -177,7 +177,13 @@ export function useRouteResume({
         }
 
         bootResumeRef.current = false
-        void resumeSession(routedSessionId, true)
+        const requestedOwner = explicitlyRequested ? sessionResumeRequest?.profile : undefined
+
+        if (requestedOwner) {
+          void resumeSession(routedSessionId, true, requestedOwner)
+        } else {
+          void resumeSession(routedSessionId, true)
+        }
       }
 
       return

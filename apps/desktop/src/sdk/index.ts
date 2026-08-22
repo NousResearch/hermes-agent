@@ -625,10 +625,19 @@ export const host = {
         throw new Error('Session open was superseded by a newer selection.')
       }
 
+      let hydrationResumeRequested = false
+
       if (options.awaitHydration) {
         // Keep the target-specific overlay visible through transcript hydration,
         // not merely through the gateway/profile activation that precedes it.
         $gatewaySwapTarget.set(targetProfile)
+
+        // A profile-scoped open already knows the owner. Publish that request
+        // before navigation so route-resume cannot race ahead and lose it.
+        if (profile) {
+          requestSessionResume(storedSessionId, profile)
+          hydrationResumeRequested = true
+        }
       }
 
       // Only the HYDRATION half retries. Activation already failed its own
@@ -665,8 +674,8 @@ export const host = {
             Boolean($activeSessionId.get()) &&
             (!expectHistory || $messages.get().length > 0)
 
-          if (options.awaitHydration && !surfaceHealthy) {
-            requestSessionResume(storedSessionId)
+          if (options.awaitHydration && !surfaceHealthy && !hydrationResumeRequested) {
+            requestSessionResume(storedSessionId, profile || undefined)
           }
 
           if (options.awaitHydration) {

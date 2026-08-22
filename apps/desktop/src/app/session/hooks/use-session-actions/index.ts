@@ -85,7 +85,7 @@ import { forgetSessionUnread } from '@/store/session-unread'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { dropTranscriptTail, loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
-import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
+import type { SessionCreateResponse, SessionInfo, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
 import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
@@ -642,7 +642,7 @@ export function useSessionActions({
   }, [navigate, selectedStoredSessionId])
 
   const resumeSession = useCallback(
-    async (storedSessionId: string, replaceRoute = false) => {
+    async (storedSessionId: string, replaceRoute = false, ownerProfileHint?: string) => {
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
@@ -733,7 +733,23 @@ export function useSessionActions({
       // gateway call (no-op when it's already on that profile / single-profile).
       // resolveStoredSession finds the row by id (cheap), so an uncached pasted
       // id loads as fast as a sidebar click instead of hanging on a list scan.
-      const storedForProfile = await resolveStoredSession(storedSessionId)
+      let storedForProfile: SessionInfo | undefined
+
+      try {
+        storedForProfile = await resolveStoredSession(storedSessionId, ownerProfileHint)
+      } catch {
+        if (resumeRequestRef.current !== requestId) {
+          return
+        }
+
+        // A non-404 owner lookup failure is transient/inconclusive. Keep the
+        // authoritative owner scoped to this request and arm the existing
+        // bounded route-resume retry instead of probing unrelated profiles.
+        setResumeFailedSessionId(storedSessionId)
+
+        return
+      }
+
       const sessionProfile = storedForProfile?.profile
 
       if (resumeRequestRef.current !== requestId) {

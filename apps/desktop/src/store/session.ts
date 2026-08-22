@@ -601,6 +601,8 @@ export const $resumeFailedSessionId = atom<string | null>(null)
 export interface SessionResumeRequest {
   sequence: number
   sessionId: string
+  /** Authoritative owner supplied by an explicit profile-scoped open. */
+  profile?: string
 }
 let sessionResumeRequestSequence = 0
 export const $sessionResumeRequest = atom<SessionResumeRequest | null>(null)
@@ -778,14 +780,19 @@ export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($message
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
 
-export const requestSessionResume = (sessionId: string) => {
+export const requestSessionResume = (sessionId: string, profile?: string | null) => {
   const id = sessionId.trim()
 
   if (!id) {
     return
   }
 
-  $sessionResumeRequest.set({ sequence: ++sessionResumeRequestSequence, sessionId: id })
+  const owner = (profile ?? '').trim()
+  $sessionResumeRequest.set({
+    sequence: ++sessionResumeRequestSequence,
+    sessionId: id,
+    ...(owner ? { profile: owner } : {})
+  })
 }
 
 export const setResumeExhaustedSessionId = (next: Updater<string | null>) => updateAtom($resumeExhaustedSessionId, next)

@@ -60,6 +60,7 @@ import {
   setFreshDraftReady,
   setIntroSeed,
   setMessages,
+  setMessagingSessions,
   setNewChatWorkspaceTarget,
   setResumeExhaustedSessionId,
   setResumeFailedSessionId,
@@ -98,6 +99,7 @@ import {
   type BranchMessage,
   chatMessageArraysEquivalent,
   dedupeInflightUserAgainstTranscript,
+  findSidebarSession,
   goneSessionVerdict,
   isSessionGoneError,
   overlayConcurrentMessageChanges,
@@ -108,6 +110,7 @@ import {
   resolveResumedBusy,
   resolveSessionProfile,
   resolveStoredSession,
+  restoreSidebarSession,
   selectBranchMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
@@ -1724,14 +1727,23 @@ export function useSessionActions({
     async (storedSessionId: string) => {
       clearNotifications()
 
-      // The row may live in the main list OR the archived view's own store
-      // (archived rows are excluded from $sessions by design). Resolve from
-      // both so deleting from the Archived filter evicts the row instead of
-      // leaving a ghost that resumes into a dead id (infinite spinner).
-      const removedFromMain = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      // The row may live in the recents list, the messaging list, or the
+      // archived view's own store -- three disjoint atoms, none of which is a
+      // superset of another. `findSidebarSession` covers the two live ones
+      // (messaging rows are never in $sessions); archived rows are excluded
+      // from both by design. Resolve from all three so deleting from any
+      // filter evicts the row instead of leaving a ghost that resumes into a
+      // dead id (infinite spinner), and so the profile that routes the RPC and
+      // the _lineage_root_id the tombstone matches on are actually found.
+      //
+      // Kept separate from `removed` because only a LIVE row is restored by
+      // `restoreSidebarSession` on rollback -- the archived case is covered by
+      // the `$archivedSessions.set(previousArchived)` snapshot restore below,
+      // and running both would put an archived row back into recents.
+      const removedFromLive = findSidebarSession(storedSessionId)
 
       const removed =
-        removedFromMain ?? $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+        removedFromLive ?? $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
 
       const wasSelected = selectedStoredSessionId === storedSessionId
       const closingRuntimeId = wasSelected ? activeSessionId : null
@@ -1744,6 +1756,7 @@ export function useSessionActions({
       const removedIds = [storedSessionId, removed?.id, removed?._lineage_root_id]
 
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+      setMessagingSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
       $archivedSessions.set(previousArchived.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
       // Evict from the project tree's optimistic layer too (the backend snapshot
       // still lists it until its next refresh), so grouped + flat views drop the
@@ -1788,8 +1801,8 @@ export function useSessionActions({
           dropSessionState(tiledRuntimeId)
         }
       } catch (err) {
-        if (removedFromMain) {
-          setSessions(prev => [removedFromMain, ...prev])
+        if (removedFromLive) {
+          restoreSidebarSession(removedFromLive)
         }
 
         // Restore the archived-view row too (no-op when it wasn't archived).
@@ -1802,7 +1815,7 @@ export function useSessionActions({
           setFreshDraftReady(false)
           setSelectedStoredSessionId(storedSessionId)
           selectedStoredSessionIdRef.current = storedSessionId
-          const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+          const stored = findSidebarSession(storedSessionId)
 
           if (stored) {
             applyStoredUsage(stored)
@@ -1843,7 +1856,7 @@ export function useSessionActions({
     async (storedSessionId: string) => {
       clearNotifications()
 
-      const archived = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const archived = findSidebarSession(storedSessionId)
       const wasSelected = selectedStoredSessionId === storedSessionId
       const previousPinned = $pinnedSessionIds.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
@@ -1853,6 +1866,7 @@ export function useSessionActions({
 
       // Soft-hide: drop from the sidebar immediately, keep the data.
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+      setMessagingSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
       tombstoneSessions(archivedIds)
       beginSessionMutation(archivedIds)
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
@@ -1879,7 +1893,7 @@ export function useSessionActions({
         notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
       } catch (err) {
         if (archived) {
-          setSessions(prev => [archived, ...prev.filter(session => !sessionMatchesStoredId(session, storedSessionId))])
+          restoreSidebarSession(archived)
         }
 
         untombstoneSessions(archivedIds)

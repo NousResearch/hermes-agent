@@ -7,11 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
 import {
+  deleteSession,
   getAllSessionMessages,
   getLatestSessionMessages,
   getSession,
   type SessionInfo,
-  type SessionResumeResponse
+  type SessionResumeResponse,
+  setSessionArchived
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
@@ -26,9 +28,11 @@ import {
   $currentProvider,
   $currentReasoningEffort,
   $messages,
+  $messagingSessions,
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
+  $sessions,
   $turnStartedAt,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
@@ -40,6 +44,7 @@ import {
   setCurrentProvider,
   setCurrentReasoningEffort,
   setMessages,
+  setMessagingSessions,
   setNewChatWorkspaceTarget,
   setResumeFailedSessionId,
   setSelectedStoredSessionId,
@@ -47,6 +52,7 @@ import {
   setTurnStartedAt
 } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
+import { $archivedSessions } from '@/store/sidebar-archive'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
 import { deferred } from '../../../test/deferred'
@@ -82,7 +88,7 @@ const RUNTIME_SESSION_ID = 'rt-new-001'
 
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
-  'createBackendSessionForSend' | 'selectSidebarItem' | 'startFreshSessionDraft'
+  'archiveSession' | 'createBackendSessionForSend' | 'removeSession' | 'selectSidebarItem' | 'startFreshSessionDraft'
 >
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -2539,5 +2545,187 @@ describe('selectSidebarItem', () => {
     expect(navigate).toHaveBeenCalledWith('/skills', undefined)
     expect(noteActiveTreeGroup).toHaveBeenCalledWith(null)
     expect(revealTreePane).toHaveBeenCalledWith('workspace')
+  })
+})
+
+describe('archive/delete of a messaging-platform row (issue #87716)', () => {
+  // The sidebar is two disjoint atoms: recents are fetched with
+  // SIDEBAR_EXCLUDED_SOURCES (every messaging source spread in) and the messaging
+  // sections are fetched into $messagingSessions. So a Feishu row is never in
+  // $sessions, and a $sessions-only lookup does not miss it by accident — it
+  // misses it every time.
+  function feishuRow(): SessionInfo {
+    return storedSession({
+      _lineage_root_id: 'root-feishu-1',
+      id: 'stored-feishu-1',
+      profile: 'work',
+      source: 'feishu',
+      title: 'Feishu thread'
+    })
+  }
+
+  function idsIn(rows: SessionInfo[]): string[] {
+    return rows.map(row => row.id)
+  }
+
+  async function mountSidebarActions(): Promise<HarnessHandle> {
+    const held: { current: HarnessHandle | null } = { current: null }
+
+    render(
+      <Harness
+        onReady={value => {
+          held.current = value
+        }}
+        requestGateway={vi.fn(async () => ({}) as never)}
+      />
+    )
+    await waitFor(() => expect(held.current).not.toBeNull())
+
+    return held.current as HarnessHandle
+  }
+
+  beforeEach(() => {
+    setSessions([])
+    setMessagingSessions([])
+    $archivedSessions.set([])
+  })
+
+  afterEach(() => {
+    cleanup()
+    setSessions([])
+    setMessagingSessions([])
+    $archivedSessions.set([])
+    vi.mocked(deleteSession).mockReset()
+    vi.mocked(setSessionArchived).mockReset()
+  })
+
+  it('archiving drops the row from the messaging slice, not only from recents', async () => {
+    const row = feishuRow()
+
+    setMessagingSessions([row])
+    vi.mocked(setSessionArchived).mockResolvedValue(undefined as never)
+
+    const actions = await mountSidebarActions()
+
+    await act(async () => {
+      await actions.archiveSession(row.id)
+    })
+
+    // Filtering $sessions alone leaves the row on screen until the next
+    // refresh lands, which is the reported 2-4s of stale sidebar.
+    expect(idsIn($messagingSessions.get())).toEqual([])
+  })
+
+  it('deleting routes the RPC through the profile of the row being deleted', async () => {
+    const row = feishuRow()
+
+    setMessagingSessions([row])
+    vi.mocked(deleteSession).mockResolvedValue(undefined as never)
+
+    const actions = await mountSidebarActions()
+
+    await act(async () => {
+      await actions.removeSession(row.id)
+    })
+
+    expect(idsIn($messagingSessions.get())).toEqual([])
+    // The lookup does more than find the row to hide: the caller reads its
+    // profile to pick the gateway. A $sessions-only lookup sends undefined here
+    // and the delete goes to whichever profile happens to be active.
+    expect(deleteSession).toHaveBeenCalledWith(row.id, 'work')
+  })
+
+  it('rolls a failed archive back into the messaging slice, not into recents', async () => {
+    const row = feishuRow()
+
+    setMessagingSessions([row])
+    vi.mocked(setSessionArchived).mockRejectedValue(new Error('gateway unreachable'))
+
+    const actions = await mountSidebarActions()
+
+    await act(async () => {
+      await actions.archiveSession(row.id)
+    })
+
+    expect(idsIn($messagingSessions.get())).toEqual([row.id])
+    // Restoring into recents would look like a working rollback and then lose
+    // the row a second time, silently, on the next refreshSessions.
+    expect(idsIn($sessions.get())).toEqual([])
+  })
+
+  it('still rolls a failed archive of a local row back into recents', async () => {
+    const row = storedSession({ id: 'stored-desktop-1', source: 'desktop' })
+
+    setSessions([row])
+    vi.mocked(setSessionArchived).mockRejectedValue(new Error('gateway unreachable'))
+
+    const actions = await mountSidebarActions()
+
+    await act(async () => {
+      await actions.archiveSession(row.id)
+    })
+
+    expect(idsIn($sessions.get())).toEqual([row.id])
+    expect(idsIn($messagingSessions.get())).toEqual([])
+  })
+
+  it('rolls a failed delete back into the messaging slice, not into recents', async () => {
+    // Delete rolls back through the same helper as archive but from a
+    // different catch, so the routing has to be pinned separately: an archive
+    // that restores correctly proves nothing about the delete path.
+    const row = feishuRow()
+
+    setMessagingSessions([row])
+    vi.mocked(deleteSession).mockRejectedValue(new Error('gateway unreachable'))
+
+    const actions = await mountSidebarActions()
+
+    await act(async () => {
+      await actions.removeSession(row.id)
+    })
+
+    expect(idsIn($messagingSessions.get())).toEqual([row.id])
+    // Into recents it would be filtered out by SIDEBAR_EXCLUDED_SOURCES on the
+    // next refresh, so the row that survived the failed delete disappears anyway.
+    expect(idsIn($sessions.get())).toEqual([])
+  })
+
+  it('still rolls a failed delete of a local row back into recents', async () => {
+    const row = storedSession({ id: 'stored-desktop-2', source: 'desktop' })
+
+    setSessions([row])
+    vi.mocked(deleteSession).mockRejectedValue(new Error('gateway unreachable'))
+
+    const actions = await mountSidebarActions()
+
+    await act(async () => {
+      await actions.removeSession(row.id)
+    })
+
+    expect(idsIn($sessions.get())).toEqual([row.id])
+    expect(idsIn($messagingSessions.get())).toEqual([])
+  })
+
+  it('rolls a failed delete of an archived row back into the archived view only', async () => {
+    // The third slice. `restoreSidebarSession` routes between the two LIVE
+    // slices and knows nothing about the archived store, which is restored
+    // from its own `previousArchived` snapshot instead. Running both would put
+    // the row back in recents as well, so the row would appear twice until the
+    // next refresh and then vanish from the Archived filter it was deleted
+    // from. Pin that the archived case restores in exactly one place.
+    const row = storedSession({ id: 'stored-archived-1', source: 'desktop', title: 'Archived thread' })
+
+    $archivedSessions.set([row])
+    vi.mocked(deleteSession).mockRejectedValue(new Error('gateway unreachable'))
+
+    const actions = await mountSidebarActions()
+
+    await act(async () => {
+      await actions.removeSession(row.id)
+    })
+
+    expect(idsIn($archivedSessions.get())).toEqual([row.id])
+    expect(idsIn($sessions.get())).toEqual([])
+    expect(idsIn($messagingSessions.get())).toEqual([])
   })
 })

@@ -640,6 +640,218 @@ def _validate_post_login_target(raw: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Auth-required: browser-session → Android native-app PKCE handoff
+# ---------------------------------------------------------------------------
+
+
+_ANDROID_MOBILE_REDIRECT_URI = (
+    "com.nousresearch.hermes.android://oauth/callback"
+)
+_MOBILE_HANDOFF_STATE_MAX_LENGTH = 512
+_PKCE_UNRESERVED = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    "0123456789-._~"
+)
+
+# Per-IP throttle on code minting. Unlike the desktop native flow — where an
+# ``_issued`` entry costs a full interactive upstream IDP login and is thus
+# naturally rate-limited — an authenticated browser can mint a code here with a
+# single cheap GET (no IDP round trip). ``native_flow``'s per-IP cap only
+# throttles *pending* entries, and this handler pops its pending immediately
+# (register→complete in one request), so without this budget one authenticated
+# caller could keep the shared, capacity-bounded ``_issued`` store full and 503
+# every other user's native login (desktop and mobile). Mirrors the
+# ``/auth/password-login`` limiter's sliding window.
+_MOBILE_HANDOFF_RATE_MAX = 10
+_MOBILE_HANDOFF_RATE_WINDOW_SEC = 60.0
+_mobile_handoff_attempts: Dict[str, Deque[float]] = defaultdict(deque)
+_mobile_handoff_attempts_lock = threading.Lock()
+
+
+def _mobile_handoff_rate_limited(ip: str) -> bool:
+    """True if ``ip`` has exceeded the mobile-handoff mint budget.
+
+    Sliding window identical to :func:`_password_rate_limited`: prune stale
+    attempts, then check the count. Records the timestamp only when allowed, so
+    a rejected (429) caller does not extend its own lockout. An empty IP shares
+    a single bucket — fail-safe toward throttling unattributable traffic.
+    """
+    now = time.monotonic()
+    cutoff = now - _MOBILE_HANDOFF_RATE_WINDOW_SEC
+    key = ip or "_unknown_"
+    with _mobile_handoff_attempts_lock:
+        bucket = _mobile_handoff_attempts[key]
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= _MOBILE_HANDOFF_RATE_MAX:
+            return True
+        bucket.append(now)
+        return False
+
+
+def _reset_mobile_handoff_rate_limit() -> None:
+    """Test-only: clear all mobile-handoff rate-limit buckets."""
+    with _mobile_handoff_attempts_lock:
+        _mobile_handoff_attempts.clear()
+
+
+def _validate_mobile_handoff_challenge(
+    code_challenge: str,
+    code_challenge_method: str,
+) -> str:
+    """Validate an RFC 7636 S256 challenge supplied by the Android app."""
+    if code_challenge_method.upper() != "S256":
+        raise HTTPException(
+            status_code=400,
+            detail="code_challenge_method must be S256",
+        )
+    if not (
+        43 <= len(code_challenge) <= 128
+        and all(ch in _PKCE_UNRESERVED for ch in code_challenge)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid mobile code challenge",
+        )
+    return code_challenge
+
+
+def _validate_mobile_handoff_state(state: str) -> str:
+    """Require a bounded client state value for response correlation."""
+    if not state or len(state) > _MOBILE_HANDOFF_STATE_MAX_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail="Mobile state is required and must be at most 512 characters",
+        )
+    return state
+
+
+def _mobile_handoff_base_url(request: Request) -> str:
+    """Return the public gateway base URL the Android client should retain."""
+    from hermes_cli.dashboard_auth.prefix import (
+        prefix_from_request,
+        resolve_public_url,
+    )
+
+    public_url = resolve_public_url()
+    if public_url:
+        return public_url
+    return (
+        f"{str(request.base_url).rstrip('/')}"
+        f"{prefix_from_request(request)}"
+    )
+
+
+@router.get("/mobile-handoff/start", name="auth_mobile_handoff_start")
+async def auth_mobile_handoff_start(
+    request: Request,
+    redirect_uri: str,
+    code_challenge: str,
+    code_challenge_method: str = "S256",
+    state: str = "",
+):
+    """Transfer an authenticated browser session to the Android app.
+
+    This route is intentionally absent from the gate's public allowlist. An
+    unauthenticated system-browser navigation therefore enters the normal
+    dashboard login (including one-provider auto-SSO) and returns here through
+    its validated ``next=`` target. Once authenticated, the gateway binds the
+    verified session to the Android app's PKCE challenge and redirects only to
+    the exact registered app scheme. The app redeems the one-time code at the
+    existing ``/auth/native/token`` endpoint and uses bearer auth thereafter;
+    no session token is exposed in the deep link and no mobile cookie is set.
+
+    The minted mobile session is access-token-only: the browser's rotating,
+    reuse-detected refresh token is never shared with the app (see the SECURITY
+    note below). Minting is rate-limited per IP so one authenticated caller
+    cannot exhaust the shared native-flow code store.
+    """
+    if redirect_uri != _ANDROID_MOBILE_REDIRECT_URI:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported mobile redirect URI",
+        )
+    challenge = _validate_mobile_handoff_challenge(
+        code_challenge,
+        code_challenge_method,
+    )
+    client_state = _validate_mobile_handoff_state(state)
+
+    session = getattr(request.state, "session", None)
+    if session is None:
+        # The gate should have rejected this already. Keep the handler
+        # fail-closed if it is ever mounted without that middleware.
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    if _mobile_handoff_rate_limited(_client_ip(request)):
+        audit_log(
+            AuditEvent.MOBILE_HANDOFF_RATE_LIMITED,
+            provider=session.provider,
+            user_id=session.user_id,
+            ip=_client_ip(request),
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="Too many mobile handoff requests. Try again shortly.",
+        )
+
+    # SECURITY: the mobile session is access-token-only — we deliberately do
+    # NOT hand the browser's refresh token to the app. The dashboard refresh
+    # token is rotating + reuse-detected (see cookies.py): the browser rotates
+    # it transparently on access-token expiry, and the app would rotate the
+    # SAME value via /auth/native/refresh. Two independent clients sharing one
+    # rotating token means whichever refreshes first invalidates the other's
+    # copy, and reuse detection can revoke the whole token family — silently
+    # logging the user out of the browser too. When the app's bearer lapses it
+    # restarts this (cheap) handoff while the browser session is still live,
+    # rather than holding a rotating token it must not share.
+    from dataclasses import replace
+    from hermes_cli.dashboard_auth import native_flow
+
+    native_session = replace(session, refresh_token="")
+
+    try:
+        broker_state = native_flow.register_pending(
+            code_challenge=challenge,
+            redirect_uri=redirect_uri,
+            client_state=client_state,
+            client_ip=_client_ip(request),
+        )
+        code = native_flow.complete_pending(
+            broker_state,
+            session=native_session,
+        )
+    except native_flow.NativeFlowError as exc:
+        _log.warning("mobile auth handoff unavailable: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Mobile authorization handoff temporarily unavailable",
+        )
+
+    from urllib.parse import urlencode
+
+    target_params = {
+        "base_url": _mobile_handoff_base_url(request),
+        "code": code,
+        "state": client_state,
+    }
+    target = f"{redirect_uri}?{urlencode(target_params)}"
+    audit_log(
+        AuditEvent.NATIVE_CODE_ISSUED,
+        provider=session.provider,
+        user_id=session.user_id,
+        reason="mobile_handoff",
+        ip=_client_ip(request),
+    )
+    return RedirectResponse(
+        url=target,
+        status_code=302,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public: password (non-redirect) login
 # ---------------------------------------------------------------------------
 #

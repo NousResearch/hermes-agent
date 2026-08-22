@@ -12,6 +12,8 @@ On a fresh install, all three are no-ops — fall through to first-time setup.
 
 from argparse import Namespace
 from contextlib import ExitStack
+import stat
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -157,6 +159,32 @@ class TestQuickFlag:
         m["agent"].assert_not_called()
         m["gateway"].assert_not_called()
         m["tools"].assert_not_called()
+
+    @pytest.mark.skipif(
+        sys.platform.startswith("win"),
+        reason="POSIX mode bits are not enforced on Windows",
+    )
+    @pytest.mark.parametrize("source_mode", [0o600, 0o644])
+    def test_existing_config_backup_is_owner_only(self, existing_install, source_mode):
+        config_path = existing_install / "config.yaml"
+        config_path.write_text("model: test/original\n", encoding="utf-8")
+        config_path.chmod(source_mode)
+        args = _make_setup_args(quick=True)
+
+        with ExitStack() as stack:
+            _enter_existing_install_patches(
+                stack,
+                quick="hermes_cli.setup._run_quick_setup",
+            )
+            stack.enter_context(
+                patch("hermes_cli.config._is_container", return_value=False)
+            )
+            from hermes_cli.setup import run_setup_wizard
+            run_setup_wizard(args)
+
+        backups = list(existing_install.glob("config.yaml.bak.*"))
+        assert len(backups) == 1
+        assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
 
 
 class TestFreshInstall:

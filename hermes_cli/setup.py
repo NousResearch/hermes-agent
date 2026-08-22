@@ -2856,7 +2856,7 @@ def run_setup_wizard(args):
       hermes setup telemetry — just local shared metrics
       hermes setup agent     — just agent settings
     """
-    from hermes_cli.config import is_managed, managed_error
+    from hermes_cli.config import copy_config_backup, is_managed, managed_error
     if is_managed():
         managed_error("run setup wizard")
         return
@@ -2881,8 +2881,7 @@ def run_setup_wizard(args):
             f".yaml.bak.{_dt.now().strftime('%Y%m%d_%H%M%S')}"
         )
         try:
-            import shutil
-            shutil.copy2(config_path, _backup_path)
+            copy_config_backup(config_path, _backup_path)
         except Exception:
             _backup_path = None
     else:

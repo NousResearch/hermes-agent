@@ -139,7 +139,6 @@ def format_issue(issue: RetirementIssue) -> str:
 import datetime as _dt
 import io
 from pathlib import Path
-import shutil
 
 
 @dataclass(frozen=True)
@@ -236,12 +235,14 @@ def apply_migration(
         )
 
     backup_path: Optional[Path] = None
+    from hermes_cli.config import copy_config_backup
+
     if backup:
         ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
         backup_path = config_path.with_name(
             f"{config_path.name}.bak-pre-migrate-xai-{ts}"
         )
-        shutil.copy2(config_path, backup_path)
+        copy_config_backup(config_path, backup_path)
 
     from hermes_cli.config import require_readable_config_before_write
     from utils import atomic_write_text

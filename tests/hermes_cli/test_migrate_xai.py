@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -151,10 +152,12 @@ class TestBackup:
     def test_backup_is_written_by_default(self, trap_config: Path):
         issues = find_retired_xai_refs(_parse(trap_config))
         original = trap_config.read_text(encoding="utf-8")
-        result = apply_migration(trap_config, issues)
+        with patch("hermes_cli.config._is_container", return_value=False):
+            result = apply_migration(trap_config, issues)
         assert result.backup_path is not None
         assert result.backup_path.exists()
         assert result.backup_path.read_text(encoding="utf-8") == original
+        assert result.backup_path.stat().st_mode & 0o777 == 0o600
 
 
     def test_no_backup_when_disabled(self, trap_config: Path):

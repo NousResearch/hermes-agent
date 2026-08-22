@@ -65,6 +65,92 @@ class TestEnsureHermesHome:
 
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not enforced on Windows")
+class TestCopyConfigBackup:
+    def test_secure_temp_is_hidden_until_atomic_replace(self, tmp_path):
+        from hermes_cli import config as cfg_mod
+
+        source = tmp_path / "config.yaml"
+        destination = tmp_path / "config.yaml.bak"
+        source.write_text("secret: placeholder\n", encoding="utf-8")
+        source.chmod(0o644)
+        real_copyfileobj = cfg_mod.shutil.copyfileobj
+
+        def inspect_copy(src, temp_file):
+            assert not destination.exists()
+            assert os.fstat(temp_file.fileno()).st_mode & 0o777 == 0o600
+            return real_copyfileobj(src, temp_file)
+
+        old_umask = os.umask(0)
+        try:
+            with patch.object(cfg_mod, "is_managed", return_value=False), patch.object(
+                cfg_mod, "_is_container", return_value=False
+            ), patch.object(cfg_mod.shutil, "copyfileobj", side_effect=inspect_copy):
+                cfg_mod.copy_config_backup(source, destination)
+        finally:
+            os.umask(old_umask)
+
+        assert destination.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
+        assert destination.stat().st_mode & 0o777 == 0o600
+
+    def test_replaces_destination_symlink_without_following_it(self, tmp_path):
+        from hermes_cli import config as cfg_mod
+
+        source = tmp_path / "config.yaml"
+        destination = tmp_path / "config.yaml.bak"
+        victim = tmp_path / "unrelated.yaml"
+        source.write_text("model: test/backup\n", encoding="utf-8")
+        victim.write_text("keep: unchanged\n", encoding="utf-8")
+        destination.symlink_to(victim)
+
+        with patch.object(cfg_mod, "is_managed", return_value=False), patch.object(
+            cfg_mod, "_is_container", return_value=False
+        ):
+            cfg_mod.copy_config_backup(source, destination)
+
+        assert not destination.is_symlink()
+        assert destination.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
+        assert destination.stat().st_mode & 0o777 == 0o600
+        assert victim.read_text(encoding="utf-8") == "keep: unchanged\n"
+
+    @pytest.mark.parametrize("managed,container", [(True, False), (False, True)])
+    def test_preserves_shared_mode_when_hardening_is_disabled(
+        self, tmp_path, managed, container
+    ):
+        from hermes_cli import config as cfg_mod
+
+        source = tmp_path / "config.yaml"
+        destination = tmp_path / "config.yaml.bak"
+        source.write_text("model: test/shared\n", encoding="utf-8")
+        source.chmod(0o640)
+
+        with patch.object(cfg_mod, "is_managed", return_value=managed), patch.object(
+            cfg_mod, "_is_container", return_value=container
+        ):
+            cfg_mod.copy_config_backup(source, destination)
+
+        assert destination.stat().st_mode & 0o777 == 0o640
+
+    def test_removes_partial_temp_on_copy_error(self, tmp_path):
+        from hermes_cli import config as cfg_mod
+
+        source = tmp_path / "config.yaml"
+        destination = tmp_path / "config.yaml.bak"
+        source.write_text("model: test/original\n", encoding="utf-8")
+        destination.write_text("model: test/existing-backup\n", encoding="utf-8")
+
+        with patch.object(cfg_mod, "is_managed", return_value=False), patch.object(
+            cfg_mod, "_is_container", return_value=False
+        ), patch.object(
+            cfg_mod.shutil, "copyfileobj", side_effect=OSError("disk full")
+        ):
+            with pytest.raises(OSError, match="disk full"):
+                cfg_mod.copy_config_backup(source, destination)
+
+        assert destination.read_text(encoding="utf-8") == "model: test/existing-backup\n"
+        assert not list(tmp_path.glob(f".{destination.name}.*.tmp"))
+
+
 class TestLoadConfigDefaults:
     def test_returns_defaults_when_no_file(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -112,7 +198,9 @@ class TestLoadConfigParseFailure:
         from hermes_cli import config as cfg_mod
         cfg_mod._CONFIG_PARSE_WARNED.clear()
 
-        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), patch.object(
+            cfg_mod, "_is_container", return_value=False
+        ):
             broken = "\tmodel: test/custom\nbroken indent:\n"
             (tmp_path / "config.yaml").write_text(broken)
 
@@ -123,6 +211,7 @@ class TestLoadConfigParseFailure:
             assert len(baks) == 1, f"expected one backup, got {baks}"
             # Backup preserves the original broken content verbatim
             assert baks[0].read_text() == broken
+            assert baks[0].stat().st_mode & 0o777 == 0o600
             # Original config.yaml is left untouched (not reset to clean state)
             assert (tmp_path / "config.yaml").read_text() == broken
             # User is told where the backup landed

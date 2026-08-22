@@ -10,6 +10,7 @@ from typing import Iterable
 
 from hermes_cli.config import (
     check_config_version,
+    copy_config_backup,
     get_config_path,
     get_env_path,
     migrate_config,
@@ -39,7 +40,7 @@ def _backup_existing(paths: Iterable[Path]) -> dict[Path, Path]:
         if not path.is_file():
             continue
         dest = _backup_path(path, stamp)
-        shutil.copy2(path, dest)
+        copy_config_backup(path, dest)
         backups[path] = dest
     return backups
 

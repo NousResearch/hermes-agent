@@ -92,7 +92,7 @@ def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
                 continue
         if backup_path.exists():
             return None
-        shutil.copy2(config_path, backup_path)
+        copy_config_backup(config_path, backup_path)
         return backup_path
     except Exception:
         return None
@@ -867,6 +867,33 @@ def _secure_file(path):
             os.chmod(path, 0o600)
     except (OSError, NotImplementedError):
         pass
+
+
+def copy_config_backup(source: Path, destination: Path) -> Path:
+    """Copy a config backup without briefly exposing secrets on POSIX hosts."""
+    if os.name == "nt" or is_managed() or _is_container():
+        shutil.copy2(source, destination)
+        return destination
+
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(destination.parent),
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        # Keep using mkstemp's already-open descriptor: closing and reopening
+        # the name would create a symlink-swap window before secret bytes land.
+        with os.fdopen(fd, "wb") as tmp_file:
+            with source.open("rb") as source_file:
+                shutil.copyfileobj(source_file, tmp_file)
+        # Backup names are generated files, not managed config symlinks. Replace
+        # the directory entry itself so a pre-created symlink cannot redirect
+        # secret-bearing backup contents to another path.
+        os.replace(tmp_path, destination)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    return destination
 
 
 def _ensure_default_soul_md(home: Path) -> None:

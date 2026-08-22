@@ -3193,6 +3193,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 action=next_args.get("action"),
                 target=target,
                 content=next_args.get("content"),
+                new_text=next_args.get("new_text"),
                 old_text=next_args.get("old_text"),
                 operations=operations,
                 store=agent._memory_store,

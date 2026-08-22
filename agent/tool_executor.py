@@ -2132,6 +2132,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     action=next_args.get("action"),
                     target=target,
                     content=next_args.get("content"),
+                    new_text=next_args.get("new_text"),
                     old_text=next_args.get("old_text"),
                     operations=operations,
                     store=agent._memory_store,

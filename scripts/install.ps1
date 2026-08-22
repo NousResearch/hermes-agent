@@ -3741,6 +3741,118 @@ function Test-ElectronDist {
     return (Test-Path -LiteralPath $distExe)
 }
 
+# ---------------------------------------------------------------------------
+# Electron mirror supply-chain hardening (#47266 follow-up).
+#
+# When the GitHub download is blocked and we fall back to a third-party
+# mirror (npmmirror.com by default), @electron/get fetches the SHASUMS256.txt
+# checksum file from the SAME mirror - the supply of bytes and the proof of
+# their integrity come from the same party, so a compromised mirror could
+# ship a tampered binary and "verify" it with a matching checksum. This is
+# the same trust-boundary collapse the #81883 cua-driver review flagged for
+# install scripts: executable content must never be judged by its supplier.
+#
+# The helpers below break that link: the checksum file is fetched from the
+# OFFICIAL GitHub release (a ~10KB file that succeeds on blocked networks far
+# more often than the ~150MB binary), and the mirror-downloaded zip is then
+# verified against it independently. If the official checksum is unreachable
+# we degrade transparently (warn) instead of failing the install.
+# ---------------------------------------------------------------------------
+
+# Fetch the OFFICIAL SHASUMS256.txt for the Electron version pinned by
+# $ElectronDir\package.json. Returns a temp-file path on success, $null on
+# failure (callers degrade transparently).
+function Get-OfficialElectronChecksums {
+    param([string]$ElectronDir)
+    $pkg = Join-Path $ElectronDir 'package.json'
+    if (-not (Test-Path -LiteralPath $pkg)) { return $null }
+    try {
+        $ver = (Get-Content -Raw -LiteralPath $pkg | ConvertFrom-Json).version
+    } catch { return $null }
+    if (-not $ver) { return $null }
+    $url = "https://github.com/electron/electron/releases/download/v${ver}/SHASUMS256.txt"
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("electron-shasums-{0}.txt" -f [guid]::NewGuid().ToString('N'))
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $tmp -TimeoutSec 30 -ErrorAction Stop
+        return $tmp
+    } catch {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        return $null
+    }
+}
+
+# Resolve the @electron/get zip filename (electron-v<ver>-win32-<arch>.zip).
+function Get-ElectronZipName {
+    param([string]$ElectronDir)
+    $pkg = Join-Path $ElectronDir 'package.json'
+    if (-not (Test-Path -LiteralPath $pkg)) { return $null }
+    try {
+        $ver = (Get-Content -Raw -LiteralPath $pkg | ConvertFrom-Json).version
+    } catch { return $null }
+    if (-not $ver) { return $null }
+    $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
+        'AMD64' { 'x64' }
+        'ARM64' { 'arm64' }
+        'x86'   { 'ia32' }
+        default { return $null }
+    }
+    return "electron-v${ver}-win32-${arch}.zip"
+}
+
+# Locate the zip @electron/get cached during the mirror download.
+# Honors the SAME cache-root overrides @electron/get respects as
+# Clear-ElectronBuildCache above (electron_config_cache / ELECTRON_CACHE /
+# HOME fallback), then the Windows default - otherwise a custom cache setting
+# would let the mirror artifact evade verification entirely.
+function Get-ElectronCachedZip {
+    param([string]$ElectronDir)
+    $zipName = Get-ElectronZipName -ElectronDir $ElectronDir
+    if (-not $zipName) { return $null }
+    $cacheRoots = @()
+    if ($env:electron_config_cache) { $cacheRoots += $env:electron_config_cache }
+    if ($env:ELECTRON_CACHE)        { $cacheRoots += $env:ELECTRON_CACHE }
+    if ($env:LOCALAPPDATA)          { $cacheRoots += (Join-Path $env:LOCALAPPDATA 'electron\Cache') }
+    $cacheRoots += (Join-Path $HOME 'AppData\Local\electron\Cache')
+    foreach ($root in $cacheRoots) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        $hit = Get-ChildItem -LiteralPath $root -Recurse -Filter $zipName -File -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($hit) { return $hit.FullName }
+    }
+    return $null
+}
+
+# Independently verify a cached Electron zip against the OFFICIAL checksums.
+# Returns: 0 = verified; 1 = FAILED (mismatch, cache purged); 2 = could not
+# verify (no official checksums / no cached zip / no matching entry) - callers
+# treat 2 as a transparent degradation, never as proof of integrity.
+function Test-ElectronZipOfficial {
+    param([string]$ElectronDir, [string]$ChecksumsFile)
+    if (-not $ChecksumsFile -or -not (Test-Path -LiteralPath $ChecksumsFile)) { return 2 }
+    $zipName = Get-ElectronZipName -ElectronDir $ElectronDir
+    if (-not $zipName) { return 2 }
+    $zipPath = Get-ElectronCachedZip -ElectronDir $ElectronDir
+    if (-not $zipPath) { return 2 }
+    $expected = $null
+    foreach ($line in (Get-Content -LiteralPath $ChecksumsFile)) {
+        if ($line.EndsWith("  *$zipName") -or $line.EndsWith(" *$zipName") -or $line.EndsWith("  $zipName") -or $line.EndsWith(" $zipName")) {
+            $candidate = ($line -split '\s+')[0]
+            # Keep only a well-formed 64-hex digest so a malformed line can
+            # never be mistaken for a match (digest-first AND filename-first
+            # forms both put the digest in column 1).
+            if ($candidate -match '^[0-9a-fA-F]{64}$') {
+                $expected = $candidate
+                break
+            }
+        }
+    }
+    if (-not $expected) { return 2 }
+    $actual = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -eq $expected.ToLowerInvariant()) { return 0 }
+    # Tampered/corrupt mirror artifact: purge it so it can't be reused.
+    Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+    return 1
+}
+
 # Best-effort: run electron/install.js to populate dist/ (optional mirror).
 function Restore-ElectronDist {
     param([string]$InstallDir, [string]$Mirror)
@@ -3752,6 +3864,24 @@ function Restore-ElectronDist {
     if (-not (Test-Path -LiteralPath $installer)) { return $false }
     $node = Get-Command node -ErrorAction SilentlyContinue
     if (-not $node) { return $false }
+
+    $checksumsFile = $null
+    if ($Mirror) {
+        # Supply-chain hardening (#47266 follow-up): when the GitHub download
+        # is blocked and we fall back to a third-party mirror, @electron/get
+        # fetches SHASUMS256.txt from the SAME mirror - the supplier of the
+        # bytes is also the issuer of the proof, so a compromised mirror could
+        # ship a tampered binary and "verify" it. Fetch the OFFICIAL checksums
+        # first (a ~10KB file that succeeds on blocked networks far more often
+        # than the ~150MB binary) so the mirror download can be verified
+        # independently afterwards.
+        $checksumsFile = Get-OfficialElectronChecksums -ElectronDir $electronDir
+        if ($checksumsFile) {
+            Write-Host "    (fetched official Electron checksums for independent mirror verification)" -ForegroundColor Cyan
+        } else {
+            Write-Warn "    (cannot fetch official Electron checksums - mirror verification degraded; set ELECTRON_MIRROR to a trusted source if this worries you)"
+        }
+    }
 
     $distDir = Join-Path $electronDir 'dist'
     if (Test-Path -LiteralPath $distDir) {
@@ -3770,6 +3900,33 @@ function Restore-ElectronDist {
     } catch {
     } finally {
         $env:ELECTRON_MIRROR = $prevMirror
+    }
+
+    if ($Mirror -and $checksumsFile) {
+        $verify = Test-ElectronZipOfficial -ElectronDir $electronDir -ChecksumsFile $checksumsFile
+        if ($verify -eq 0) {
+            Write-Host "    (mirror Electron binary verified against official checksums)" -ForegroundColor Green
+        } else {
+            Write-Warn "    (mirror Electron binary FAILED official checksum verification - treating as failed)"
+            Remove-Item -LiteralPath $distDir -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $checksumsFile -Force -ErrorAction SilentlyContinue
+            return $false
+        }
+    } elseif ($Mirror) {
+        # Official checksums unreachable. Fail closed: never accept a
+        # mirror-sourced artifact with no independent integrity proof,
+        # unless the user explicitly opted into unverified mirror builds.
+        if ($env:ELECTRON_MIRROR_UNVERIFIED) {
+            Write-Warn "    (ELECTRON_MIRROR_UNVERIFIED set - accepting unverified mirror Electron build)"
+        } else {
+            Write-Warn "    (cannot fetch official Electron checksums - refusing unverified mirror build; set ELECTRON_MIRROR_UNVERIFIED=1 to accept)"
+            Remove-Item -LiteralPath $distDir -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $checksumsFile -Force -ErrorAction SilentlyContinue
+            return $false
+        }
+    }
+    if ($checksumsFile) {
+        Remove-Item -LiteralPath $checksumsFile -Force -ErrorAction SilentlyContinue
     }
     return (Test-Path -LiteralPath $distExe)
 }
@@ -4023,6 +4180,15 @@ function Install-Desktop {
             Write-Warn "Desktop build still failing - the Electron download from GitHub looks blocked."
             Write-Warn "Re-downloading Electron via a public mirror ($mirror), then rebuilding:"
             Write-Info "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
+            # Independent verification: fetch the OFFICIAL checksums before the
+            # mirror supplies the binary, then verify the cached zip afterwards.
+            $electronDirVerify = Get-ElectronDir -InstallDir $InstallDir
+            $officialCs = Get-OfficialElectronChecksums -ElectronDir $electronDirVerify
+            if ($officialCs) {
+                Write-Host "  (official Electron checksums fetched for independent mirror verification)" -ForegroundColor Cyan
+            } else {
+                Write-Warn "  (cannot fetch official Electron checksums - mirror verification degraded)"
+            }
             if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
                 Restore-ElectronDist -InstallDir $InstallDir -Mirror $mirror | Out-Null
             }
@@ -4033,6 +4199,29 @@ function Install-Desktop {
                 $code = $LASTEXITCODE
             } finally {
                 $env:ELECTRON_MIRROR = $prevMirror
+            }
+            if ($officialCs) {
+                $verify = Test-ElectronZipOfficial -ElectronDir $electronDirVerify -ChecksumsFile $officialCs
+                if ($verify -eq 0) {
+                    Write-Host "  (mirror Electron binary verified against official checksums)" -ForegroundColor Green
+                } elseif ($verify -eq 1) {
+                    Write-Warn "  (mirror Electron binary FAILED official checksum verification - not accepting the build)"
+                    $code = 1
+                } else {
+                    Write-Warn "  (mirror Electron binary could not be verified against official checksums - not accepting the build)"
+                    $code = 1
+                }
+            } elseif (-not $env:ELECTRON_MIRROR_UNVERIFIED) {
+                # Official checksums unreachable. Fail closed: never accept a
+                # mirror-sourced artifact with no independent integrity proof
+                # without an explicit opt-in.
+                Write-Warn "  (official Electron checksums unreachable - refusing unverified mirror build; set ELECTRON_MIRROR_UNVERIFIED=1 to accept)"
+                $code = 1
+            } else {
+                Write-Warn "  (official Electron checksums unreachable; ELECTRON_MIRROR_UNVERIFIED set - accepting unverified mirror build)"
+            }
+            if ($officialCs) {
+                Remove-Item -LiteralPath $officialCs -Force -ErrorAction SilentlyContinue
             }
         }
         $ErrorActionPreference = $prevEAP

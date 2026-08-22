@@ -3043,6 +3043,124 @@ _electron_dist_ok() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Electron mirror supply-chain hardening (#47266 follow-up).
+#
+# When the GitHub download is blocked and we fall back to a third-party
+# mirror (npmmirror.com by default), @electron/get fetches the SHASUMS256.txt
+# checksum file from the SAME mirror — the supply of bytes and the proof of
+# their integrity come from the same party, so a compromised mirror could
+# ship a tampered binary and "verify" it with a matching checksum. This is
+# the same trust-boundary collapse the #81883 cua-driver review flagged for
+# install scripts: executable content must never be judged by its supplier.
+#
+# The helpers below break that link: the checksum file is fetched from the
+# OFFICIAL GitHub release (a ~10KB file that succeeds on blocked networks far
+# more often than the ~150MB binary), and the mirror-downloaded zip is then
+# verified against it independently. If the official checksum is unreachable
+# we degrade transparently (warn) instead of failing the install.
+# ---------------------------------------------------------------------------
+
+# Fetch the OFFICIAL SHASUMS256.txt for the Electron version pinned by
+# $electron_dir/package.json. Prints a temp-file path on success, nothing on
+# failure (callers degrade transparently).
+_official_electron_checksums() {
+    local electron_dir="$1"
+    local ver
+    ver="$(node -p "require('$electron_dir/package.json').version" 2>/dev/null)"
+    [ -n "$ver" ] || return 1
+    local tmp
+    tmp="$(mktemp)"
+    if ! curl -fsSL --connect-timeout 10 --max-time 30 \
+        "https://github.com/electron/electron/releases/download/v${ver}/SHASUMS256.txt" \
+        -o "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        return 1
+    fi
+    printf '%s\n' "$tmp"
+}
+
+# Resolve the @electron/get zip filename (electron-v<ver>-<plat>-<arch>.zip).
+_electron_zip_name() {
+    local electron_dir="$1"
+    local ver plat arch
+    ver="$(node -p "require('$electron_dir/package.json').version" 2>/dev/null)"
+    [ -n "$ver" ] || return 1
+    case "$OS" in
+        macos) plat="darwin" ;;
+        linux) plat="linux" ;;
+        *) return 1 ;;
+    esac
+    case "$(uname -m)" in
+        x86_64) arch="x64" ;;
+        aarch64|arm64) arch="arm64" ;;
+        *) return 1 ;;
+    esac
+    printf 'electron-v%s-%s-%s.zip\n' "$ver" "$plat" "$arch"
+}
+
+# Locate the zip @electron/get cached during the mirror download.
+# Honors the SAME cache-root overrides @electron/get respects as
+# clear_electron_build_cache() above (electron_config_cache / ELECTRON_CACHE
+# / XDG_CACHE_HOME), then the platform defaults — otherwise a custom cache
+# setting would let the mirror artifact evade verification entirely.
+_electron_cached_zip() {
+    local electron_dir="$1"
+    local zip_name
+    zip_name="$(_electron_zip_name "$electron_dir")" || return 1
+    local roots=()
+    [ -n "${electron_config_cache:-}" ] && roots+=("$electron_config_cache")
+    [ -n "${ELECTRON_CACHE:-}" ] && roots+=("$ELECTRON_CACHE")
+    if [ "$OS" = "macos" ]; then
+        roots+=("$HOME/Library/Caches/electron")
+    else
+        [ -n "${XDG_CACHE_HOME:-}" ] && roots+=("$XDG_CACHE_HOME/electron")
+        roots+=("$HOME/.cache/electron")
+    fi
+    local root zip_path=""
+    for root in "${roots[@]}"; do
+        [ -d "$root" ] || continue
+        zip_path="$(find "$root" -maxdepth 4 -name "$zip_name" -type f 2>/dev/null | head -1)"
+        [ -n "$zip_path" ] && break
+    done
+    [ -n "$zip_path" ] && printf '%s\n' "$zip_path"
+}
+
+# Independently verify a cached Electron zip against the OFFICIAL checksums.
+# Returns: 0 = verified; 1 = FAILED (mismatch, cache purged); 2 = could not
+# verify (no official checksums / no cached zip / no matching entry) — callers
+# treat 2 as a transparent degradation, never as proof of integrity.
+_verify_electron_zip_official() {
+    local electron_dir="$1"
+    local checksums_file="${2:-}"
+    local zip_name zip_path expected actual
+    [ -n "$checksums_file" ] && [ -f "$checksums_file" ] || return 2
+    zip_name="$(_electron_zip_name "$electron_dir")" || return 2
+    zip_path="$(_electron_cached_zip "$electron_dir")" || return 2
+    # SHASUMS256.txt ships the standard digest-first form
+    # "<sha256>  electron-v<ver>-<plat>-<arch>.zip" (two spaces), and some
+    # mirrors emit a star-prefixed filename ("*electron-...") or a
+    # filename-first line. Match all three forms and keep only a 64-hex
+    # digest so a malformed line can never be mistaken for a match.
+    # In digest-first lines the digest is column 1; in filename-first lines
+    # it is column 2.
+    expected="$(awk -v n="$zip_name" '
+        $1==n || $2==n || $2=="*"n {
+            d = ($1==n) ? $2 : $1
+            if (d ~ /^[0-9a-fA-F]{64}$/) { print d; exit }
+        }
+    ' "$checksums_file" | head -1)"
+    [ -n "$expected" ] || return 2
+    actual="$(shasum -a 256 "$zip_path" | awk '{print $1}')"
+    [ -n "$actual" ] || return 2
+    if [ "$actual" = "$expected" ]; then
+        return 0
+    fi
+    # Tampered/corrupt mirror artifact: purge it so it can't be reused.
+    rm -f "$zip_path" 2>/dev/null || true
+    return 1
+}
+
 # Best-effort: run electron/install.js to populate dist/ (optional mirror).
 _restore_electron_dist() {
     local install_dir="$1"
@@ -3054,6 +3172,25 @@ _restore_electron_dist() {
     [ -f "$electron_dir/install.js" ] || return 1
     command -v node >/dev/null 2>&1 || return 1
 
+    local checksums_file=""
+    if [ -n "$mirror" ]; then
+        # Supply-chain hardening (#47266 follow-up): when the GitHub download
+        # is blocked and we fall back to a third-party mirror, @electron/get
+        # fetches SHASUMS256.txt from the SAME mirror — the supplier of the
+        # bytes is also the issuer of the proof, so a compromised mirror could
+        # ship a tampered binary and "verify" it. Fetch the OFFICIAL checksums
+        # first (a ~10KB file that succeeds on blocked networks far more often
+        # than the ~150MB binary) so the mirror download can be verified
+        # independently afterwards. Unreachable official checksums degrade
+        # transparently (warn) instead of failing the install.
+        checksums_file="$(_official_electron_checksums "$electron_dir")"
+        if [ -n "$checksums_file" ]; then
+            log_info "    (fetched official Electron checksums for independent mirror verification)"
+        else
+            log_warn "    (cannot fetch official Electron checksums — mirror verification degraded; set ELECTRON_MIRROR to a trusted source if this worries you)"
+        fi
+    fi
+
     rm -rf "$electron_dir/dist" 2>/dev/null || true
     rm -f "$electron_dir/path.txt" 2>/dev/null || true
 
@@ -3062,6 +3199,31 @@ _restore_electron_dist() {
     else
         ( cd "$electron_dir" && node install.js ) || true
     fi
+
+    if [ -n "$mirror" ] && [ -n "$checksums_file" ]; then
+        if _verify_electron_zip_official "$electron_dir" "$checksums_file"; then
+            log_info "    (mirror Electron binary verified against official checksums)"
+        else
+            log_warn "    (mirror Electron binary FAILED official checksum verification — treating as failed)"
+            rm -rf "$electron_dir/dist" 2>/dev/null || true
+            rm -f "$checksums_file" 2>/dev/null || true
+            return 1
+        fi
+    elif [ -n "$mirror" ]; then
+        # Official checksums unreachable. Fail closed: never accept a
+        # mirror-sourced artifact with no independent integrity proof,
+        # unless the user explicitly opted into unverified mirror builds.
+        if [ -n "${ELECTRON_MIRROR_UNVERIFIED:-}" ]; then
+            log_warn "    (ELECTRON_MIRROR_UNVERIFIED set — accepting unverified mirror Electron build)"
+        else
+            log_warn "    (cannot fetch official Electron checksums — mirror verification unavailable; refusing unverified mirror build)"
+            log_warn "    (set ELECTRON_MIRROR_UNVERIFIED=1 to explicitly accept an unverified mirror build)"
+            rm -rf "$electron_dir/dist" 2>/dev/null || true
+            rm -f "$checksums_file" 2>/dev/null || true
+            return 1
+        fi
+    fi
+    rm -f "$checksums_file" 2>/dev/null || true
     _electron_dist_ok "$install_dir"
 }
 
@@ -3221,10 +3383,38 @@ install_desktop() {
         log_warn "Desktop build still failing — the Electron download from GitHub looks blocked."
         log_warn "Re-downloading Electron via a public mirror ($DESKTOP_ELECTRON_FALLBACK_MIRROR), then rebuilding..."
         log_warn "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
+        local electron_dir_verify official_cs=""
+        electron_dir_verify="$(_electron_dir "$INSTALL_DIR")"
+        # Independent verification: fetch the OFFICIAL checksums before the
+        # mirror supplies the binary, then verify the cached zip afterwards.
+        official_cs="$(_official_electron_checksums "$electron_dir_verify")"
+        if [ -n "$official_cs" ]; then
+            log_info "  (official Electron checksums fetched for independent mirror verification)"
+        else
+            log_warn "  (cannot fetch official Electron checksums — mirror verification degraded)"
+        fi
         _electron_dist_ok "$INSTALL_DIR" || _restore_electron_dist "$INSTALL_DIR" "$DESKTOP_ELECTRON_FALLBACK_MIRROR" || true
         if run_with_timeout "$DESKTOP_BUILD_TIMEOUT" _desktop_pack "$desktop_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
-            pack_ok=true
+            if [ -n "$official_cs" ] && _verify_electron_zip_official "$electron_dir_verify" "$official_cs"; then
+                log_info "  (mirror Electron binary verified against official checksums)"
+                pack_ok=true
+            elif [ -n "$official_cs" ]; then
+                log_warn "  (mirror Electron binary FAILED official checksum verification — not accepting the build)"
+                pack_ok=false
+            elif [ -n "${ELECTRON_MIRROR_UNVERIFIED:-}" ]; then
+                # Official checksums unreachable but the user explicitly
+                # opted into unverified mirror builds.
+                log_warn "  (official Electron checksums unreachable; ELECTRON_MIRROR_UNVERIFIED set — accepting unverified mirror build)"
+                pack_ok=true
+            else
+                # Official checksums unreachable: fail closed. Never accept a
+                # mirror-sourced artifact with no independent integrity proof
+                # without an explicit opt-in.
+                log_warn "  (official Electron checksums unreachable — refusing unverified mirror build; set ELECTRON_MIRROR_UNVERIFIED=1 to accept)"
+                pack_ok=false
+            fi
         fi
+        rm -f "$official_cs" 2>/dev/null || true
     fi
 
     if [ "$pack_ok" = false ]; then

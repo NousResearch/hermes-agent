@@ -5,6 +5,7 @@ import {
   applyVoiceRecordResponse,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
+  isRawCtrlC,
   resolveCtrlCComposerAction,
   shouldAllowIdleHotkeyExit,
   shouldFallThroughForScroll
@@ -79,6 +80,32 @@ describe('resolveCtrlCComposerAction — draft wins over interrupt', () => {
 
   it('does not interrupt a busy session that has no sid yet', () => {
     expect(resolveCtrlCComposerAction({ busy: true, hasDraft: false, hasSession: false })).toBe('exit')
+  })
+})
+
+describe('isRawCtrlC — busy interrupt must exclude forwarded Cmd+C copy', () => {
+  it('matches a genuine raw Ctrl+C (no action modifier)', () => {
+    expect(isRawCtrlC({ ctrl: true, meta: false, super: false }, 'c')).toBe(true)
+    expect(isRawCtrlC({ ctrl: true, meta: false, super: false }, 'C')).toBe(true)
+  })
+
+  it('rejects the VS Code/Cursor forwarded Cmd+C copy shape (super+ctrl)', () => {
+    // This is the shape isCopyShortcut() accepts as copy; the busy interrupt
+    // must NOT claim it, or Cmd+C copy during a running turn becomes an interrupt.
+    expect(isRawCtrlC({ ctrl: true, meta: false, super: true }, 'c')).toBe(false)
+  })
+
+  it('rejects the legacy meta-forwarded Cmd+C shape (meta+ctrl)', () => {
+    expect(isRawCtrlC({ ctrl: true, meta: true, super: false }, 'c')).toBe(false)
+  })
+
+  it('rejects a bare Cmd+C with no ctrl bit (pure super/meta copy)', () => {
+    expect(isRawCtrlC({ ctrl: false, meta: false, super: true }, 'c')).toBe(false)
+    expect(isRawCtrlC({ ctrl: false, meta: true, super: false }, 'c')).toBe(false)
+  })
+
+  it('rejects other Ctrl chords (only c interrupts)', () => {
+    expect(isRawCtrlC({ ctrl: true, meta: false, super: false }, 'x')).toBe(false)
   })
 })
 

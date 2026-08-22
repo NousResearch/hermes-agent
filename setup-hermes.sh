@@ -191,8 +191,34 @@ SETUP_PYTHON="$SCRIPT_DIR/venv/bin/python"
 echo -e "${CYAN}→${NC} Installing dependencies..."
 
 if is_termux; then
-    export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk 2>/dev/null || printf '%s' "${ANDROID_API_LEVEL:-}")"
-    echo -e "${CYAN}→${NC} Termux detected — installing the tested Android bundle"
+    # Termux: recreate the venv with --system-site-packages so we can pull in
+    # Termux's prebuilt `python-cryptography` (and `python-psutil`) package(s)
+    # via `pkg`. The pip/maturin-built `cryptography` wheel ships with a
+    # `_rust.abi3.so` that fails at import time with
+    #   ImportError: dlopen failed: cannot locate symbol "PyExc_Warning"
+    # because the Termux Python binary doesn't export the PyO3-binding
+    # symbols `_rust.abi3.so` expects. A shallow `import cryptography`
+    # smoke-test does NOT catch this — only `from cryptography.hazmat
+    # .primitives import hashes` triggers the dlopen of the binding.
+    # Using Termux's prebuilt package avoids the dlopen issue entirely.
+    export ANDROID_API_LEVEL
+    ANDROID_API_LEVEL="$(getprop ro.build.version.sdk 2>/dev/null || printf '%s' "${ANDROID_API_LEVEL:-}")"
+    export ANDROID_API_LEVEL
+    echo -e "${CYAN}→${NC} ANDROID_API_LEVEL=${ANDROID_API_LEVEL:-<unset>}"
+    # Make ANDROID_API_LEVEL persist across subsequent manual pip calls in
+    # this shell session, and emit a one-line breadcrumb the user can
+    # copy if they ever re-open a fresh shell.
+    echo "ANDROID_API_LEVEL=${ANDROID_API_LEVEL:-}" >> "${HERMES_HOME:-$HOME/.hermes}/.env-hermes-shell" 2>/dev/null || true
+    if command -v pkg >/dev/null 2>&1; then
+        echo -e "${CYAN}→${NC} Termux detected — installing system-site-packages prebuilts"
+        pkg install -y python-cryptography python-psutil >/dev/null 2>&1 || {
+            echo -e "${YELLOW}⚠${NC} pkg install python-cryptography/python-psutil failed; falling back to pip-only"
+        }
+    fi
+    rm -rf venv
+    "$PYTHON_PATH" -m venv venv --system-site-packages
+    echo -e "${GREEN}✓${NC} venv recreated with --system-site-packages"
+    echo -e "${CYAN}→${NC} Installing Hermes (Termux bundle)"
     "$SETUP_PYTHON" -m pip install --upgrade pip setuptools wheel
     if [ -f "constraints-termux.txt" ]; then
         "$SETUP_PYTHON" -m pip install -e ".[termux]" -c constraints-termux.txt || {
@@ -201,6 +227,21 @@ if is_termux; then
         }
     else
         "$SETUP_PYTHON" -m pip install -e ".[termux]" || "$SETUP_PYTHON" -m pip install -e "."
+    fi
+    # Post-install smoke test. The shallow `import cryptography` test in
+    # `python -c "import cryptography"` does NOT load `_rust.abi3.so`; only
+    # the hazmat submodule triggers the dlopen. We exercise the failing
+    # path directly so a broken build fails HERE, immediately, instead of
+    # surfacing as a cryptic traceback deep inside `hermes update` /
+    # `agent/secret_sources/bitwarden.py`.
+    echo -e "${CYAN}→${NC} Verifying cryptography runtime load (Termux dlopen check)"
+    if "$SETUP_PYTHON" -c "from cryptography.hazmat.primitives import hashes; print('cryptography hazmat OK')" 2>/dev/null; then
+        echo -e "${GREEN}✓${NC} cryptography runtime smoke test passed"
+    else
+        echo -e "${YELLOW}⚠${NC} cryptography hazmat import failed. Reinstall via:"
+        echo "    pkg install python-cryptography"
+        echo "    python -m venv venv --system-site-packages  # recreate venv"
+        echo "  Then rerun setup-hermes.sh."
     fi
     echo -e "${GREEN}✓${NC} Dependencies installed"
 else

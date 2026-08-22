@@ -309,7 +309,7 @@ Review versions of supplementary material must follow the same anonymity guideli
 
 This document has been adapted from the instructions for earlier ACL and NAACL proceedings, including those for
 ACL 2020 by Steven Bethard, Ryan Cotterell and Rui Yan,
-ACL 2019 by Douwe Kiela and Ivan Ivan Vulić,
+ACL 2019 by Douwe Kiela and Ivan Vulić,
 NAACL 2019 by Stephanie Lukin and Alla Roskovskaya,
 ACL 2018 by Shay Cohen, Kevin Gimpel, and Wei Lu,
 NAACL 2018 by Margaret Mitchell and Stephanie Lukin,

@@ -286,6 +286,37 @@ class TestShellFileOpsHelpers:
         assert file_ops._escape_shell_arg("hello") == "'hello'"
 
 
+    def test_escape_shell_pattern_never_translates_backslashes(self, file_ops):
+        """Patterns are not paths: no _bash_safe_path translation, ever.
+
+        On Windows the path translator rewrites every backslash to ``/``,
+        corrupting regex escapes before they reach rg/grep (#92260:
+        ``\\(`` → ``/(`` → "unclosed group"; ``\\.`` → ``/.`` → silent
+        zero-match). The pattern escaper must round-trip the backslashes
+        and only apply shell quoting — on every host, not just Windows,
+        so the invariant is pinned where CI can see it.
+        """
+        assert file_ops._escape_shell_pattern("syncBalance\\(") == "'syncBalance\\('"
+        assert file_ops._escape_shell_pattern("currency\\.") == "'currency\\.'"
+        # Single quotes still get shell-escaped.
+        assert file_ops._escape_shell_pattern("it's") == "'it'\"'\"'s'"
+
+
+    def test_escape_shell_pattern_ignores_path_translation(self, file_ops, monkeypatch):
+        """Even if _bash_safe_path WOULD rewrite the string (drive-path shape),
+        the pattern escaper must not call it."""
+        import tools.environments.local as local_mod
+
+        def _hostile_translate(path):
+            raise AssertionError(
+                "_bash_safe_path must never be called on a pattern argument"
+            )
+
+        monkeypatch.setattr(local_mod, "_bash_safe_path", _hostile_translate)
+        assert file_ops._escape_shell_pattern("C:\\dots\\d+") == "'C:\\dots\\d+'"
+
+
+
     @pytest.mark.windows_only
     def test_escape_shell_arg_rewrites_forward_slash_native_paths(self, file_ops):
         """Windows-only: ``_bash_safe_path`` only rewrites drive paths to the

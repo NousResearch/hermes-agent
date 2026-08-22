@@ -2437,6 +2437,7 @@ export interface Translations {
         empty: string
         loading: string
         percentFull: (percent: number) => string
+        staleDuringTurn: string
         title: string
         tokenSummary: (used: string, max: string) => string
       }

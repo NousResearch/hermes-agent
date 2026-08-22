@@ -50,6 +50,64 @@ def test_breakdown_includes_major_categories():
     assert data["estimated_total"] > 0
 
 
+def test_conversation_is_reported_at_zero_on_an_empty_transcript():
+    """An empty conversation must read as zero, not as a missing category.
+
+    Dropping the row makes "nothing said yet" indistinguishable from "the
+    breakdown never measured the conversation", which is what #87903 reports
+    on a fresh session.
+    """
+    agent, parts = _make_agent()
+
+    with patch("agent.system_prompt.build_system_prompt_parts", return_value=parts):
+        data = compute_session_context_breakdown(agent, [])
+
+    conversation = [item for item in data["categories"] if item["id"] == "conversation"]
+    assert len(conversation) == 1
+    assert conversation[0]["tokens"] == 0
+    assert conversation[0]["label"] == "Conversation"
+
+
+def test_conversation_is_reported_at_zero_when_history_is_none():
+    """``messages=None`` is the same empty conversation, not a missing one."""
+    agent, parts = _make_agent()
+
+    with patch("agent.system_prompt.build_system_prompt_parts", return_value=parts):
+        data = compute_session_context_breakdown(agent, None)
+
+    assert [item["id"] for item in data["categories"]].count("conversation") == 1
+
+
+def test_structurally_absent_categories_are_still_dropped():
+    """Only the conversation is exempt: an unconfigured category stays hidden.
+
+    Otherwise the panel grows permanent zero rows for every feature the
+    operator has not turned on.
+    """
+    agent, parts = _make_agent(
+        stable="base guidance",  # no <available_skills> block
+        context="",  # no rules
+        tools=[{"type": "function", "function": {"name": "terminal"}}],
+    )
+
+    with patch("agent.system_prompt.build_system_prompt_parts", return_value=parts):
+        data = compute_session_context_breakdown(agent, [])
+
+    ids = {item["id"] for item in data["categories"]}
+    assert "conversation" in ids
+    assert {"skills", "mcp", "subagent_definitions", "rules", "memory"} & ids == set()
+
+
+def test_zero_conversation_does_not_inflate_the_estimated_total():
+    agent, parts = _make_agent()
+    history = [{"role": "user", "content": "hello there"}]
+
+    with patch("agent.system_prompt.build_system_prompt_parts", return_value=parts):
+        empty = compute_session_context_breakdown(agent, [])
+        spoken = compute_session_context_breakdown(agent, history)
+
+    assert empty["estimated_total"] < spoken["estimated_total"]
+
 
 # ── /context renderers (pure functions over the payload) ────────────────────
 

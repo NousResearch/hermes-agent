@@ -2519,6 +2519,7 @@ export const ja = defineLocale({
         empty: 'コンテキストデータはまだありません',
         loading: '内訳を読み込み中…',
         percentFull: percent => `${percent}% 使用中`,
+        staleDuringTurn: 'このターン開始前の推定値',
         title: 'コンテキスト使用状況',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`
       },

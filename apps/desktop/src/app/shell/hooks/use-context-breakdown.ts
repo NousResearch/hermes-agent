@@ -56,8 +56,17 @@ export function useContextBreakdown({ busy, enabled, requestGateway, sessionId }
     }
   }, [busy, enabled, requestGateway, sessionId])
 
+  const forSession = fetched && fetched.sessionId === sessionId ? fetched.breakdown : null
+
   return {
-    breakdown: fetched && fetched.sessionId === sessionId ? fetched.breakdown : null,
-    loading
+    breakdown: forSession,
+    loading,
+    // The numbers on hand predate a running turn: the estimate is deliberately
+    // not refreshed mid-turn, and the gateway snapshots `session["history"]` at
+    // turn start and only writes the turn back once the agent returns, so a
+    // refetch could not see the in-flight turn either. Surfaced so the panel
+    // can say the figures are pre-turn instead of implying they are current
+    // (#87903).
+    stale: busy && forSession !== null
   }
 }

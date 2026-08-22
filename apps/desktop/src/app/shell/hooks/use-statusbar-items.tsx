@@ -237,7 +237,11 @@ export function useStatusbarItems({
   // toggled off, so this covers the rest.
   const contextItemHidden = useStore($statusbarHiddenIds).includes('context-usage')
 
-  const { breakdown: contextBreakdown, loading: contextBreakdownLoading } = useContextBreakdown({
+  const {
+    breakdown: contextBreakdown,
+    loading: contextBreakdownLoading,
+    stale: contextBreakdownStale
+  } = useContextBreakdown({
     busy,
     enabled: !contextItemHidden,
     requestGateway,
@@ -550,7 +554,12 @@ export function useStatusbarItems({
         menuAlign: 'end',
         menuClassName: 'w-auto border-(--ui-stroke-secondary) p-0',
         menuContent: (
-          <ContextUsagePanel breakdown={contextBreakdown} loading={contextBreakdownLoading} usage={gaugeUsage} />
+          <ContextUsagePanel
+            breakdown={contextBreakdown}
+            loading={contextBreakdownLoading}
+            stale={contextBreakdownStale}
+            usage={gaugeUsage}
+          />
         ),
         toggleLabel: copy.toggleContextUsage,
         variant: 'menu'
@@ -591,6 +600,7 @@ export function useStatusbarItems({
       contextBar,
       contextBreakdown,
       contextBreakdownLoading,
+      contextBreakdownStale,
       contextUsage,
       copy,
       gaugeUsage,

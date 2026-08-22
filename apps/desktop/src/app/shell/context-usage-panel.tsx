@@ -8,6 +8,7 @@ import type { ContextBreakdown, ContextUsageCategory, UsageStats } from '@/types
 interface ContextUsagePanelProps {
   breakdown: ContextBreakdown | null
   loading: boolean
+  stale?: boolean
   usage: UsageStats
 }
 
@@ -16,7 +17,7 @@ interface ContextUsagePanelProps {
  *  popover opens with its numbers already in hand. `usage` is the gauge's
  *  merged figure — measured occupancy when the backend has it, the estimate
  *  otherwise — so the header and the bar can never disagree. */
-export function ContextUsagePanel({ breakdown, loading, usage }: ContextUsagePanelProps) {
+export function ContextUsagePanel({ breakdown, loading, stale = false, usage }: ContextUsagePanelProps) {
   const { t } = useI18n()
   const copy = t.shell.statusbar.contextUsagePanel
   const contextMax = usage.context_max ?? 0
@@ -62,6 +63,10 @@ export function ContextUsagePanel({ breakdown, loading, usage }: ContextUsagePan
         ))}
       </ul>
 
+      {stale && categories.length > 0 && (
+        <p className="text-[0.6875rem] text-muted-foreground">{copy.staleDuringTurn}</p>
+      )}
+
       {loading && !categories.length && <p className="text-[0.6875rem] text-muted-foreground">{copy.loading}</p>}
 
       {!loading && !categories.length && <p className="text-[0.6875rem] text-muted-foreground">{copy.empty}</p>}
@@ -84,16 +89,21 @@ function ContextUsageBar({
       )}
       data-slot="context-usage-bar"
     >
-      {categories.map(category => (
-        <span
-          className="h-full min-w-px"
-          key={category.id}
-          style={{
-            background: category.color,
-            width: `${(category.tokens / segmentTotal) * 100}%`
-          }}
-        />
-      ))}
+      {/* `min-w-px` guarantees a sliver for a category too small to round to a
+          visible width, so a zero-token category has to be dropped here rather
+          than painted: the list below still names it (#87903). */}
+      {categories
+        .filter(category => category.tokens > 0)
+        .map(category => (
+          <span
+            className="h-full min-w-px"
+            key={category.id}
+            style={{
+              background: category.color,
+              width: `${(category.tokens / segmentTotal) * 100}%`
+            }}
+          />
+        ))}
     </div>
   )
 }

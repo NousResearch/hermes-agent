@@ -85,6 +85,43 @@ describe('useContextBreakdown', () => {
     expect(requestGateway).toHaveBeenLastCalledWith('session.context_breakdown', { session_id: 'runtime-2' })
   })
 
+  it('flags the numbers it keeps across a turn as pre-turn rather than current', async () => {
+    // The estimate is deliberately not refreshed mid-turn, and the gateway
+    // snapshots session history at turn start, so a refetch could not see the
+    // in-flight turn either. The panel has to say so (#87903).
+    const requestGateway = vi.fn().mockResolvedValue(breakdown)
+
+    const { rerender, result } = renderHook(
+      ({ busy }) => useContextBreakdown({ busy, enabled: true, requestGateway, sessionId: 'runtime-1' }),
+      { initialProps: { busy: false } }
+    )
+
+    await waitFor(() => expect(result.current.breakdown).toEqual(breakdown))
+    expect(result.current.stale).toBe(false)
+
+    rerender({ busy: true })
+
+    expect(result.current.breakdown).toEqual(breakdown)
+    expect(result.current.stale).toBe(true)
+
+    rerender({ busy: false })
+
+    await waitFor(() => expect(result.current.stale).toBe(false))
+  })
+
+  it('does not call numbers it never had pre-turn', async () => {
+    // Busy from the start means nothing was ever fetched, and `stale` on an
+    // empty panel would label the loading state as out of date.
+    const requestGateway = vi.fn().mockResolvedValue(breakdown)
+
+    const { result } = renderHook(() =>
+      useContextBreakdown({ busy: true, enabled: true, requestGateway, sessionId: 'runtime-1' })
+    )
+
+    expect(result.current.breakdown).toBeNull()
+    expect(result.current.stale).toBe(false)
+  })
+
   it('reports the measured occupancy the backend sends, not just the estimate', async () => {
     // `context_used` on the payload is already the measured figure once a turn
     // has run — the estimate is the backend's own fallback, not a second value
@@ -106,6 +143,35 @@ describe('ContextUsagePanel', () => {
 
     expect(screen.getByText('47% Full')).toBeTruthy()
     expect(screen.getByText('Conversation')).toBeTruthy()
+  })
+
+  it('says the estimate is pre-turn while a turn is running', () => {
+    render(<ContextUsagePanel breakdown={breakdown} loading={false} stale usage={usage} />)
+
+    expect(screen.getByText('Estimated before this turn')).toBeTruthy()
+  })
+
+  it('does not label the estimate pre-turn when it is current', () => {
+    render(<ContextUsagePanel breakdown={breakdown} loading={false} usage={usage} />)
+
+    expect(screen.queryByText('Estimated before this turn')).toBeNull()
+  })
+
+  it('renders a conversation category the backend reports as empty', () => {
+    // A fresh session sends `conversation` at zero rather than omitting it, so
+    // the row must survive the panel's own rendering (#87903).
+    const fresh: ContextBreakdown = {
+      ...breakdown,
+      categories: [
+        { color: 'blue', id: 'system_prompt', label: 'System prompt', tokens: 4_200 },
+        { color: 'teal', id: 'conversation', label: 'Conversation', tokens: 0 }
+      ]
+    }
+
+    render(<ContextUsagePanel breakdown={fresh} loading={false} usage={usage} />)
+
+    expect(screen.getByText('Conversation')).toBeTruthy()
+    expect(screen.queryByText('No context data yet')).toBeNull()
   })
 
   it('says so when there is no breakdown rather than painting an empty bar', () => {

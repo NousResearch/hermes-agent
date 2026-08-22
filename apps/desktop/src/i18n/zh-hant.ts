@@ -2433,6 +2433,7 @@ export const zhHant = defineLocale({
         empty: '尚無上下文資料',
         loading: '正在載入明細…',
         percentFull: percent => `已用 ${percent}%`,
+        staleDuringTurn: '本輪開始前的估算',
         title: '上下文使用量',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`
       },

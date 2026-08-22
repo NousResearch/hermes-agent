@@ -743,6 +743,72 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Permanently delete already-archived task ids from the board",
     )
 
+    # --- archive-graph (admin) ---
+    # Admin archive of a whole dominated closure. This is a destructive,
+    # allowlist-gated operation with a persisted reason (comments/events).
+    p_ag = sub.add_parser(
+        "archive-graph",
+        help="Admin-archive a task and its dominated closure with a reason",
+    )
+    p_ag.add_argument(
+        "task_ids",
+        nargs="+",
+        metavar="<task_id>",
+        help="Root task ids whose dominated closure to archive",
+    )
+    p_ag.add_argument(
+        "--reason",
+        required=True,
+        help=(
+            "Reason for the archive. PERSISTED as comments/events on the "
+            "archived tasks. NEVER include secrets, tokens, or credentials."
+        ),
+    )
+    p_ag.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Plan only: print the deterministic JSON plan to stdout and "
+             "write nothing (no mutation, no archive group).",
+    )
+    p_ag.add_argument(
+        "--allow-promotions",
+        action="store_true",
+        help=(
+            "Permit recompute_ready after archiving. WARNING: recompute_ready "
+            "is global and may also promote unrelated already-eligible tasks "
+            "on the board, not just this graph's boundary."
+        ),
+    )
+    p_ag.add_argument(
+        "--force-running",
+        action="store_true",
+        help="Terminate and archive closure tasks that have active runs/claims.",
+    )
+
+    # --- unarchive (admin) ---
+    p_un = sub.add_parser(
+        "unarchive",
+        help="Restore tasks previously archived via `hermes kanban archive-graph`",
+    )
+    p_un.add_argument(
+        "task_ids",
+        nargs="*",
+        metavar="<task_id>",
+        help=(
+            "Task ids to restore (direct mode, all-or-nothing). "
+            "Mutually exclusive with --group."
+        ),
+    )
+    p_un.add_argument(
+        "--group",
+        default=None,
+        metavar="<ag_...>",
+        help=(
+            "Restore every task in this admin archive group (e.g. ag_<hex>). "
+            "Mutually exclusive with task ids. Exactly one mode is required."
+        ),
+    )
+
     # --- tail ---
     p_tail = sub.add_parser("tail", help="Follow a task's event stream")
     p_tail.add_argument("task_id")
@@ -1135,6 +1201,8 @@ def kanban_command(args: argparse.Namespace) -> int:
             "reopen-review":  _cmd_reopen_review,
             "promote":  _cmd_promote,
             "archive":  _cmd_archive,
+            "archive-graph": _cmd_archive_graph,
+            "unarchive": _cmd_unarchive,
             "tail":     _cmd_tail,
             "dispatch": _cmd_dispatch,
             "daemon":   _cmd_daemon,
@@ -1200,6 +1268,8 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "unblock",
     "promote",
     "archive",
+    "archive-graph",
+    "unarchive",
     "dispatch",
     "daemon",
     "repair",
@@ -2596,6 +2666,111 @@ def _cmd_archive(args: argparse.Namespace) -> int:
             else:
                 print(f"Archived {tid}")
     return 0 if not failed else 1
+
+
+def _report_admin_archive_warnings(result: dict) -> None:
+    """Report I1 (live_external_parent) warnings to stderr without refusing."""
+    for warning in result.get("warnings") or []:
+        code = warning.get("code", "unknown")
+        print(
+            f"kanban: warning ({code}): root id {warning.get('root_id')} "
+            f"has live external parent {warning.get('parent_id')} "
+            "outside the archived closure",
+            file=sys.stderr,
+        )
+
+
+def _cmd_archive_graph(args: argparse.Namespace) -> int:
+    ids = list(getattr(args, "task_ids", None) or [])
+    reason = (getattr(args, "reason", None) or "").strip()
+    if not ids:
+        print("kanban: archive-graph requires at least one task id", file=sys.stderr)
+        return 1
+    if not reason:
+        print("kanban: archive-graph requires --reason <text>", file=sys.stderr)
+        return 1
+    actor = _profile_author()
+    dry_run = bool(getattr(args, "dry_run", False))
+    allow_promotions = bool(getattr(args, "allow_promotions", False))
+    force_running = bool(getattr(args, "force_running", False))
+    with kb.connect_closing() as conn:
+        try:
+            result = kb.admin_archive_graph(
+                conn,
+                ids,
+                reason=reason,
+                actor=actor,
+                dry_run=dry_run,
+                allow_promotions=allow_promotions,
+                force_running=force_running,
+            )
+        except ValueError as exc:
+            print(f"kanban: archive-graph refused: {exc}", file=sys.stderr)
+            return 1
+    _report_admin_archive_warnings(result)
+    if result.get("error"):
+        print(f"kanban: archive-graph refused: {result['error']}", file=sys.stderr)
+        return 1
+    if dry_run:
+        # Exactly one deterministic JSON object on stdout; human summary
+        # goes to stderr so machine consumers can parse stdout verbatim.
+        print(json.dumps(result, sort_keys=True))
+        print(
+            "dry run: "
+            f"{len(result['root_ids'])} root id(s), "
+            f"{len(result['archived_ids'])} to archive, "
+            f"{len(result['skipped_archived'])} already archived",
+            file=sys.stderr,
+        )
+        return 0
+    print(
+        f"Archive group {result['archive_group_id']}: "
+        f"{len(result['archived_ids'])} transitioned, "
+        f"{len(result['skipped_archived'])} skipped"
+    )
+    return 0
+
+
+def _cmd_unarchive(args: argparse.Namespace) -> int:
+    ids = list(getattr(args, "task_ids", None) or [])
+    group = (getattr(args, "group", None) or "").strip() or None
+    if ids and group:
+        print(
+            "kanban: unarchive takes exactly one mode: task_ids OR --group",
+            file=sys.stderr,
+        )
+        return 2
+    if not ids and not group:
+        print(
+            "kanban: unarchive requires task_ids or --group <ag_...>",
+            file=sys.stderr,
+        )
+        return 2
+    actor = _profile_author()
+    with kb.connect_closing() as conn:
+        try:
+            result = kb.admin_unarchive(
+                conn,
+                task_ids=ids if ids else None,
+                group_id=group,
+                actor=actor,
+            )
+        except ValueError as exc:
+            print(f"kanban: unarchive refused: {exc}", file=sys.stderr)
+            return 1
+    group_label = result["group_id"] or (group or "direct")
+    print(
+        f"Unarchive group {group_label}: "
+        f"{len(result['restored_ids'])} restored, "
+        f"{len(result['skipped_ids'])} skipped"
+    )
+    if result["missing_workspaces"]:
+        print(
+            "kanban: missing workspace(s) reported without recreation: "
+            + ", ".join(result["missing_workspaces"]),
+            file=sys.stderr,
+        )
+    return 0
 
 
 def _cmd_tail(args: argparse.Namespace) -> int:

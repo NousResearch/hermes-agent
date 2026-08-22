@@ -135,6 +135,77 @@ def _check_kanban_orchestrator_mode() -> bool:
     return _profile_has_kanban_toolset()
 
 
+def _normalize_admin_profile(value: Any) -> str:
+    """Normalize a kanban.admin_profiles entry / active profile for comparison.
+
+    Allowlist matching is case-insensitive and whitespace-stripped in both
+    directions so a config entry like ``" Apoc "`` matches an active profile
+    ``"apoc"``. Returns ``""`` for empty/None so an empty entry can never
+    accidentally authorize somebody.
+    """
+    if value is None:
+        return ""
+    return str(value).strip().lower()
+
+
+def _admin_actor() -> str:
+    """The active profile identity used for admin authorization + attribution.
+
+    Mirrors the tool surface's existing author derivation
+    (``HERMES_PROFILE`` env, which the dispatcher sets for workers and the
+    profile machinery sets for ``hermes -p <name>``), falling back to the
+    HERMES_HOME-derived active profile name. Never accepts a caller-supplied
+    arg — the actor is the runtime profile, not something the model can forge.
+    """
+    profile = (os.environ.get("HERMES_PROFILE") or "").strip()
+    if profile:
+        return profile
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        return get_active_profile_name() or "default"
+    except Exception:
+        return "default"
+
+
+def _admin_allowlist() -> set:
+    """Normalized set of profiles allowed to run destructive admin tools."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    allowlist = (cfg.get("kanban") or {}).get("admin_profiles") or []
+    return {
+        _normalize_admin_profile(v)
+        for v in allowlist
+        if _normalize_admin_profile(v)
+    }
+
+
+def _admin_actor_authorized() -> bool:
+    """True when the active profile is allowlisted in ``kanban.admin_profiles``."""
+    return _normalize_admin_profile(_admin_actor()) in _admin_allowlist()
+
+
+def _check_kanban_admin_archive() -> bool:
+    """Destructive admin archive tool is exposed only to allowlisted, normal
+    Kanban orchestrator contexts.
+
+    Absent (returns False) for: delegate_task children, dispatcher task
+    workers, profiles without the kanban toolset, and — critically — any
+    profile not explicitly allowlisted in ``kanban.admin_profiles``. An
+    empty/default allowlist exposes it to nobody, and ``HERMES_KANBAN_TASK``
+    alone never grants it.
+    """
+    if _is_delegated_child_context():
+        return False
+    if os.environ.get("HERMES_KANBAN_TASK") and _is_dispatcher_owned_worker():
+        return False
+    if not _profile_has_kanban_toolset():
+        return False
+    return _admin_actor_authorized()
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -2348,6 +2419,134 @@ KANBAN_LINK_SCHEMA = {
     },
 }
 
+KANBAN_ADMIN_ARCHIVE_SCHEMA = {
+    "name": "kanban_admin_archive",
+    "description": (
+        "DESTRUCTIVE admin archive of a task and its dominated closure "
+        "(verified parent→child ancestors plus descendants) with a persisted "
+        "reason comment. Available ONLY to orchestrator profiles allowlisted "
+        "in `kanban.admin_profiles` (the response denial names that key). "
+        "Refuses when the closure would promote detached boundary tasks "
+        "unless allow_promotions, or contains active runs unless "
+        "force_running. Archive-only by design — there is NO unarchive agent "
+        "tool; restores happen via `hermes kanban unarchive`. dry_run=true "
+        "returns the deterministic plan without writing anything."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "root_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Root task ids whose dominated closure to archive. "
+                    "Must be a non-empty string array."
+                ),
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Reason for the archive. PERSISTED as comments/events on "
+                    "every archived task. NEVER include secrets, tokens, or "
+                    "credentials."
+                ),
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": (
+                    "Plan only: return the deterministic JSON plan and write "
+                    "nothing (no mutation, no archive group)."
+                ),
+                "default": False,
+            },
+            "allow_promotions": {
+                "type": "boolean",
+                "description": (
+                    "Permit recompute_ready after archiving. WARNING: "
+                    "recompute_ready is global and may also promote unrelated "
+                    "already-eligible tasks on the board, not just this "
+                    "graph's boundary."
+                ),
+                "default": False,
+            },
+            "force_running": {
+                "type": "boolean",
+                "description": (
+                    "Terminate and archive closure tasks that have active "
+                    "runs/claims."
+                ),
+                "default": False,
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["root_ids", "reason"],
+    },
+}
+
+
+def _handle_admin_archive(args: dict, **kw) -> str:
+    """Handler for the destructive ``kanban_admin_archive`` tool.
+
+    Authorization is rechecked here (never trusted from the schema alone):
+    the active profile must be allowlisted in ``kanban.admin_profiles``, and
+    delegated children are explicitly refused. The actor is derived from the
+    runtime profile, never from caller-supplied args.
+    """
+    delegated_err = _reject_delegated_child_mutation("kanban_admin_archive")
+    if delegated_err:
+        return delegated_err
+    actor = _admin_actor()
+    if not _admin_actor_authorized():
+        return tool_error(
+            f"kanban_admin_archive refused for profile {actor!r}: not "
+            "allowlisted in `kanban.admin_profiles`. Add this profile to that "
+            "config list to enable destructive admin archiving; an empty list "
+            "exposes nobody."
+        )
+    board = args.get("board")
+    root_ids = args.get("root_ids") or []
+    if (
+        not isinstance(root_ids, list)
+        or not root_ids
+        or not all(isinstance(r, str) and r.strip() for r in root_ids)
+    ):
+        return tool_error("root_ids must be a non-empty string array")
+    reason = str(args.get("reason") or "").strip()
+    if not reason:
+        return tool_error("reason is required")
+    dry_run, e1 = _parse_bool_arg(args, "dry_run")
+    if e1:
+        return tool_error(e1)
+    allow_promotions, e2 = _parse_bool_arg(args, "allow_promotions")
+    if e2:
+        return tool_error(e2)
+    force_running, e3 = _parse_bool_arg(args, "force_running")
+    if e3:
+        return tool_error(e3)
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            try:
+                result = kb.admin_archive_graph(
+                    conn,
+                    root_ids,
+                    reason=reason,
+                    actor=actor,
+                    dry_run=dry_run,
+                    allow_promotions=allow_promotions,
+                    force_running=force_running,
+                )
+            except ValueError as exc:
+                return tool_error(f"kanban_admin_archive refused: {exc}")
+            if result.get("error"):
+                return tool_error(f"kanban_admin_archive refused: {result['error']}")
+            return json.dumps(result, sort_keys=True)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.exception("kanban_admin_archive failed")
+        return tool_error(f"kanban_admin_archive: {e}")
+
 
 # ---------------------------------------------------------------------------
 # Registration
@@ -2477,4 +2676,13 @@ registry.register(
     handler=_handle_link,
     check_fn=_check_kanban_mode,
     emoji="🔗",
+)
+
+registry.register(
+    name="kanban_admin_archive",
+    toolset="kanban",
+    schema=KANBAN_ADMIN_ARCHIVE_SCHEMA,
+    handler=_handle_admin_archive,
+    check_fn=_check_kanban_admin_archive,
+    emoji="🗄️",
 )

@@ -132,6 +132,26 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # spirit (default 2) but counts a different signal: manual unblock recurrences,
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
+
+# Event-derived predicate for a block-loop escalation that has not been
+# explicitly acknowledged. Mutable task columns are insufficient: reassignment
+# and restarts must not erase the human gate.
+_BLOCK_LOOP_ESCALATED_SQL = """
+    EXISTS (
+        SELECT 1
+        FROM task_events AS escalated
+        WHERE escalated.task_id = tasks.id
+          AND escalated.kind = 'block_loop_detected'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM task_events AS recovered
+              WHERE recovered.task_id = escalated.task_id
+                AND recovered.kind = 'triage_escalation_recovered'
+                AND recovered.id > escalated.id
+          )
+    )
+"""
+
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 
@@ -4297,6 +4317,60 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
     return out
 
 
+def is_block_loop_escalated(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return whether the task has an unacknowledged block-loop escalation."""
+    row = conn.execute(
+        f"SELECT {_BLOCK_LOOP_ESCALATED_SQL} AS escalated "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    return bool(row and row["escalated"])
+
+
+def list_decomposable_triage_task_ids(
+    conn: sqlite3.Connection,
+    *,
+    tenant: Optional[str] = None,
+    limit: int = 50,
+) -> list[str]:
+    """Return triage ids that are not waiting on explicit human recovery."""
+    where = ["tasks.status = 'triage'", f"NOT {_BLOCK_LOOP_ESCALATED_SQL}"]
+    params: list[Any] = []
+    if tenant:
+        where.append("tasks.tenant = ?")
+        params.append(tenant)
+    params.append(max(1, min(int(limit), 1000)))
+    rows = conn.execute(
+        "SELECT tasks.id FROM tasks WHERE "
+        + " AND ".join(where)
+        + " ORDER BY tasks.priority DESC, tasks.created_at ASC LIMIT ?",
+        tuple(params),
+    ).fetchall()
+    return [str(row["id"]) for row in rows]
+
+
+def _recover_triage_escalation(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    author: Optional[str],
+) -> bool:
+    """Acknowledge an escalation inside the caller's existing write txn."""
+    if not is_block_loop_escalated(conn, task_id):
+        return False
+    conn.execute(
+        "UPDATE tasks SET block_kind = NULL, block_recurrences = 0 WHERE id = ?",
+        (task_id,),
+    )
+    _append_event(
+        conn,
+        task_id,
+        "triage_escalation_recovered",
+        {"author": author} if author else None,
+    )
+    return True
+
+
 def _append_event(
     conn: sqlite3.Connection,
     task_id: str,
@@ -7268,6 +7342,7 @@ def specify_triage_task(
             "specified",
             {"changed_fields": changed_fields} if changed_fields else None,
         )
+        _recover_triage_escalation(conn, task_id, author=author)
     # Outside the write_txn above, so we don't nest BEGIN IMMEDIATE — the
     # ready-promotion pass opens its own IMMEDIATE txn. This runs the same
     # logic the dispatcher would on its next tick, so a specified task
@@ -7499,6 +7574,7 @@ def decompose_triage_task(
                 "root_assignee": root_assignee,
             },
         )
+        _recover_triage_escalation(conn, task_id, author=author)
 
     # Outside the write_txn: promote parent-free children to 'ready'
     # so the dispatcher picks them up on its next tick. Same pattern

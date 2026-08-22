@@ -1662,7 +1662,7 @@ class GatewayKanbanWatchersMixin:
                         attempted += 1
                         try:
                             outcome = _decomp.decompose_task(
-                                tid, author="auto-decomposer",
+                                tid, author=_decomp.AUTO_DECOMPOSER_AUTHOR,
                             )
                         except Exception:
                             logger.exception(

@@ -48,6 +48,8 @@ from hermes_cli import profiles as profiles_mod
 
 logger = logging.getLogger(__name__)
 
+AUTO_DECOMPOSER_AUTHOR = "auto-decomposer"
+
 
 _SYSTEM_PROMPT = """You are the Kanban decomposer for the Hermes Agent board.
 
@@ -283,11 +285,18 @@ def decompose_task(
     """
     with kb.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
+        escalated = bool(task and kb.is_block_loop_escalated(conn, task_id))
     if task is None:
         return DecomposeOutcome(task_id, False, "unknown task id")
     if task.status != "triage":
         return DecomposeOutcome(
             task_id, False, f"task is not in triage (status={task.status!r})"
+        )
+    if escalated and author == AUTO_DECOMPOSER_AUTHOR:
+        return DecomposeOutcome(
+            task_id,
+            False,
+            "task is waiting for explicit human recovery after a block loop",
         )
 
     cfg = _load_config()
@@ -457,12 +466,10 @@ def decompose_task(
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column."""
+    """Return triage ids that may be decomposed without human recovery."""
     with kb.connect_closing() as conn:
-        rows = kb.list_tasks(
+        return kb.list_decomposable_triage_task_ids(
             conn,
-            status="triage",
             tenant=tenant,
             limit=1000,
         )
-    return [row.id for row in rows]

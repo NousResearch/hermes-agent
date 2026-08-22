@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -386,6 +387,87 @@ def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
     assert not dm_file.exists()
 
 
+@pytest.mark.parametrize("args", [[], ["--run-delivery"], ["--run-delivery", "bad", "x"]])
+def test_delivery_main_rejects_invalid_cli(args):
+    assert bot_mode_dm._delivery_main(args) == 2
+
+
+@pytest.mark.parametrize("mode", ["stdin", "query-file"])
+def test_delivery_main_runs_valid_cli_and_unlinks(tmp_path, mode):
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+    observed = tmp_path / "observed.txt"
+    child = tmp_path / "child.py"
+    child.write_text(
+        "import pathlib, sys\n"
+        "source = sys.stdin if sys.argv[1] == '-' else open(sys.argv[1], encoding='utf-8')\n"
+        "with source:\n"
+        "    pathlib.Path(sys.argv[2]).write_text(source.read(), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    source_arg = "-" if mode == "stdin" else str(dm_file)
+
+    returncode = bot_mode_dm._delivery_main(
+        [
+            "--run-delivery",
+            mode,
+            str(dm_file),
+            sys.executable,
+            str(child),
+            source_arg,
+            str(observed),
+        ]
+    )
+
+    assert returncode == 0
+    assert observed.read_text(encoding="utf-8") == "secret"
+    assert not dm_file.exists()
+
+
+def test_delivery_main_maps_launch_exception_to_one_and_unlinks(tmp_path, monkeypatch):
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("child launch failed")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert (
+        bot_mode_dm._delivery_main(
+            ["--run-delivery", "query-file", str(dm_file), "missing-transport"]
+        )
+        == 1
+    )
+    assert not dm_file.exists()
+
+
+@pytest.mark.parametrize("stdin_file", [False, True])
+def test_real_delivery_command_round_trip(tmp_path, stdin_file):
+    dm_file = tmp_path / "message with spaces.txt"
+    dm_file.write_text("secret λ\nsecond line", encoding="utf-8")
+    observed = tmp_path / "observed with spaces.txt"
+    child = tmp_path / "child with spaces.py"
+    child.write_text(
+        "import pathlib, sys\n"
+        "source = sys.stdin if sys.argv[1] == '-' else open(sys.argv[1], encoding='utf-8')\n"
+        "with source:\n"
+        "    pathlib.Path(sys.argv[2]).write_text(source.read(), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    source_arg = "-" if stdin_file else str(dm_file)
+    command = bot_mode_dm._delivery_command(
+        [sys.executable, str(child), source_arg, str(observed)],
+        str(dm_file),
+        stdin_file=stdin_file,
+    )
+
+    result = subprocess.run(shlex.split(command), check=False)
+
+    assert result.returncode == 0
+    assert observed.read_text(encoding="utf-8") == "secret λ\nsecond line"
+    assert not dm_file.exists()
+
+
 @pytest.mark.parametrize(
     ("terminal_result", "raises"),
     [
@@ -445,7 +527,8 @@ def test_write_dm_file_unlinks_partial_file_on_write_exception(tmp_path, monkeyp
     real_mkstemp = bot_mode_dm.tempfile.mkstemp
 
     def fixed_mkstemp(**kwargs):
-        return real_mkstemp(dir=tmp_path, **kwargs)
+        kwargs["dir"] = tmp_path
+        return real_mkstemp(**kwargs)
 
     class BrokenWriter:
         def __enter__(self):
@@ -462,4 +545,29 @@ def test_write_dm_file_unlinks_partial_file_on_write_exception(tmp_path, monkeyp
 
     with pytest.raises(OSError, match="disk full"):
         bot_mode_dm._write_dm_file("secret")
-    assert list(tmp_path.glob("hermes-dm-*.txt")) == []
+    assert list(tmp_path.glob("dm-*.txt")) == []
+
+
+def test_sweeper_removes_only_stale_dm_files(tmp_path, monkeypatch):
+    dm_dir = tmp_path / bot_mode_dm._DM_DIR_NAME
+    dm_dir.mkdir()
+    legacy_stale = tmp_path / "hermes-dm-stale.txt"
+    stale = dm_dir / "dm-stale.txt"
+    fresh = dm_dir / "dm-fresh.txt"
+    unrelated = tmp_path / "other.txt"
+    for path in (legacy_stale, stale, fresh, unrelated):
+        path.write_text("secret", encoding="utf-8")
+    now = time.time()
+    old = now - bot_mode_dm._DM_STALE_SECONDS - 1
+    import os
+
+    os.utime(legacy_stale, (old, old))
+    os.utime(stale, (old, old))
+    monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
+
+    bot_mode_dm._sweep_stale_dm_files(now=now)
+
+    assert not legacy_stale.exists()
+    assert not stale.exists()
+    assert fresh.exists()
+    assert unrelated.exists()

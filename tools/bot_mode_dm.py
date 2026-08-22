@@ -60,6 +60,12 @@ MESSAGE_AGENT_TOOL_NAME = "message_agent"
 # runaway paste can't turn one DM into a context bomb on the recipient.
 MESSAGE_MAX_CHARS = 16000
 
+# A runner normally owns and removes each file. This bounds the residual
+# plaintext lifetime if the machine dies after background-spawn acknowledgement
+# but before the runner reaches its ``finally`` block.
+_DM_DIR_NAME = "hermes-dm"
+_DM_STALE_SECONDS = 24 * 60 * 60
+
 _PEER_TARGET_RE = re.compile(r"^([a-z0-9][a-z0-9_-]{0,63})/([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})$")
 _LOCAL_TARGET_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
@@ -413,9 +419,34 @@ def _try_relay_delivery(
         return None
 
 
+def _dm_dir() -> Path:
+    path = Path(tempfile.gettempdir()) / _DM_DIR_NAME
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return path
+
+
+def _sweep_stale_dm_files(*, now: float | None = None) -> None:
+    """Best-effort cleanup for files orphaned before their runner started."""
+    cutoff = (time.time() if now is None else now) - _DM_STALE_SECONDS
+    # Include the legacy temp-root location so upgrades clean files created by
+    # versions predating the dedicated directory.
+    locations = ((Path(tempfile.gettempdir()), "hermes-dm-*.txt"), (_dm_dir(), "*.txt"))
+    for directory, pattern in locations:
+        try:
+            for candidate in directory.glob(pattern):
+                try:
+                    if candidate.is_file() and candidate.stat().st_mtime < cutoff:
+                        candidate.unlink()
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+
 def _write_dm_file(content: str) -> str:
     """The message rides a temp file — never inline shell text."""
-    fd, path = tempfile.mkstemp(prefix="hermes-dm-", suffix=".txt", text=True)
+    _sweep_stale_dm_files()
+    fd, path = tempfile.mkstemp(prefix="dm-", suffix=".txt", dir=_dm_dir(), text=True)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
@@ -442,6 +473,8 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
     """Run one DM transport and remove its plaintext file after consumption."""
     try:
         if stdin_file:
+            # Keep the file open until the transport exits; cleanup occurs
+            # after subprocess.run returns, not merely after stdin reaches EOF.
             with open(dm_file, "r", encoding="utf-8") as stream:
                 return subprocess.run(argv, stdin=stream, check=False).returncode
         return subprocess.run(
@@ -494,11 +527,16 @@ def _spawn_delivery(
     command: str,
     label: str,
     *,
-    dm_file: str,
+    dm_file: Optional[str] = None,
     task_id: Optional[str],
     agent: Any,
 ) -> str:
-    """Launch the cleanup-owning runner and transfer file ownership on ack."""
+    """Launch the cleanup-owning runner and transfer file ownership on ack.
+
+    ``dm_file`` is None for relay deliveries: the waiter command watches a
+    reply file, and the envelope artifacts are owned and swept by
+    ``tools/bot_relay.py`` — there is no plaintext DM tempfile to reclaim.
+    """
     transferred = False
     try:
         from tools.terminal_tool import terminal_tool
@@ -539,7 +577,7 @@ def _spawn_delivery(
         logger.error("message_agent delivery spawn failed: %s", exc, exc_info=True)
         return _err(f"Delivery to {label} could not be started: {exc}")
     finally:
-        if not transferred:
+        if dm_file and not transferred:
             _unlink_dm_file(dm_file)
 
 

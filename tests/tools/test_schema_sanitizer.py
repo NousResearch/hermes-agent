@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from tools.schema_sanitizer import (
+    collapse_const_unions,
     sanitize_tool_schemas,
     strip_pattern_and_format,
     strip_slash_enum,
@@ -329,6 +332,24 @@ def test_dependent_required_does_not_mutate_original_input():
     assert schema["dependentRequired"] == original_dep
 
 
+def test_dependent_required_tracks_sanitized_property_names():
+    """Both dependency sources and targets must follow property-key renames."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "owner~id": {"type": "string"},
+            "repo[id]": {"type": "string"},
+        },
+        "dependentRequired": {"owner~id": ["repo[id]"]},
+    }
+
+    out = sanitize_tool_schemas([_tool("t", schema)])
+    params = out[0]["function"]["parameters"]
+
+    assert set(params["properties"]) == {"owner_id", "repo_id_"}
+    assert params["dependentRequired"] == {"owner_id": ["repo_id_"]}
+
+
 def test_dependent_schemas_still_recursively_sanitized():
     """dependentSchemas (real schemas, not literal lists) must still be sanitized."""
     schema = {
@@ -348,13 +369,44 @@ def test_dependent_schemas_still_recursively_sanitized():
     )
 
 
+def test_legacy_property_dependencies_stay_literal_and_follow_property_renames():
+    """Draft-07 dependency arrays contain property names, not nested schemas."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "card~id": {"type": "string"},
+            "billing[id]": {"type": "string"},
+        },
+        "dependencies": {"card~id": ["billing[id]"]},
+    }
+
+    out = sanitize_tool_schemas([_tool("t", schema)])
+    params = out[0]["function"]["parameters"]
+
+    assert set(params["properties"]) == {"card_id", "billing_id_"}
+    assert params["dependencies"] == {"card_id": ["billing_id_"]}
+
+
+def test_legacy_schema_dependencies_are_sanitized_and_follow_property_renames():
+    """Draft-07 also permits a real schema as each dependency-map value."""
+    schema = {
+        "type": "object",
+        "properties": {"owner~id": {"type": "string"}},
+        "dependencies": {"owner~id": {"type": "object"}},
+    }
+
+    out = sanitize_tool_schemas([_tool("t", schema)])
+    params = out[0]["function"]["parameters"]
+
+    assert params["dependencies"] == {
+        "owner_id": {"type": "object", "properties": {}},
+    }
+
+
 # ---------------------------------------------------------------------------
 # collapse_const_unions — anyOf/oneOf of same-typed const branches -> enum
 # Ported from: block/goose tool_schema_normalize.rs (Apache-2.0)
 # ---------------------------------------------------------------------------
-
-from tools.schema_sanitizer import collapse_const_unions
-
 
 def test_pure_const_union_collapses_to_enum():
     schema = {
@@ -517,3 +569,193 @@ def test_collapse_is_deterministic():
     first = collapse_const_unions(copy.deepcopy(schema))
     second = collapse_const_unions(copy.deepcopy(schema))
     assert first == second == {"type": "string", "enum": ["b", "a"]}
+
+
+_OPAQUE_LITERAL_CASES = (
+    ("const", False),
+    ("default", False),
+    ("enum", True),
+    ("examples", True),
+    ("x-provider-metadata", False),
+)
+
+
+@pytest.mark.parametrize(("keyword", "wrap_in_list"), _OPAQUE_LITERAL_CASES)
+def test_literal_keywords_are_opaque_to_sanitizer_passes(keyword, wrap_in_list):
+    """Schema-looking data in annotation/literal positions stays byte-for-byte data."""
+    literal = {
+        "$ref": "#/literal-data",
+        "default": 7,
+        "nested": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+        },
+    }
+    value = [literal] if wrap_in_list else literal
+    schema = {
+        "type": "object",
+        "properties": {
+            "payload": {"type": "string", keyword: value},
+        },
+    }
+
+    out = sanitize_tool_schemas([_tool("t", schema)])
+    actual = out[0]["function"]["parameters"]["properties"]["payload"][keyword]
+
+    assert actual == value
+
+
+@pytest.mark.parametrize(("keyword", "wrap_in_list"), _OPAQUE_LITERAL_CASES)
+def test_literal_keywords_are_opaque_to_const_union_collapse(keyword, wrap_in_list):
+    """MCP const-union normalization must not enter literal values either."""
+    literal = {"anyOf": [{"const": "red"}, {"const": "green"}]}
+    value = [literal] if wrap_in_list else literal
+    schema = {"type": "string", keyword: value}
+
+    assert collapse_const_unions(schema)[keyword] == value
+
+
+def test_reactive_schema_strippers_do_not_enter_literal_values():
+    """Recovery-only passes obey the same literal boundary as normal sanitization."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "pattern_data": {
+                "type": "object",
+                "const": {"type": "string", "pattern": "^literal$"},
+            },
+            "enum_data": {
+                "type": "object",
+                "default": {"enum": ["owner/model"]},
+            },
+        },
+    }
+
+    pattern_tools, pattern_count = strip_pattern_and_format(
+        [_tool("t", copy.deepcopy(schema))]
+    )
+    slash_tools, slash_count = strip_slash_enum([_tool("t", copy.deepcopy(schema))])
+
+    pattern_props = pattern_tools[0]["function"]["parameters"]["properties"]
+    slash_props = slash_tools[0]["function"]["parameters"]["properties"]
+    assert pattern_count == 0
+    assert pattern_props["pattern_data"]["const"] == {
+        "type": "string",
+        "pattern": "^literal$",
+    }
+    assert slash_count == 0
+    assert slash_props["enum_data"]["default"] == {"enum": ["owner/model"]}
+
+
+def test_property_names_that_match_literal_keywords_still_hold_schemas():
+    """Opaque keyword rules apply to schema keys, not names in a properties map."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "const": {
+                "anyOf": [{"const": "red"}, {"const": "green"}],
+            },
+            "x-metadata": {
+                "anyOf": [{"const": 1}, {"const": 2}],
+            },
+        },
+    }
+
+    out = collapse_const_unions(schema)
+
+    assert out["properties"]["const"] == {
+        "type": "string",
+        "enum": ["red", "green"],
+    }
+    assert out["properties"]["x-metadata"] == {
+        "type": "integer",
+        "enum": [1, 2],
+    }
+
+
+def test_unknown_object_annotation_is_opaque_across_all_walkers():
+    """Unknown JSON-Schema keywords are annotations, not schema positions."""
+    annotation = {
+        "$ref": "#/annotation",
+        "default": 7,
+        "anyOf": [{"const": "red"}, {"const": "green"}],
+        "pattern": "^literal$",
+        "enum": ["owner/model"],
+        "child": {"type": "object"},
+    }
+    schema = {
+        "type": "object",
+        "properties": {
+            "payload": {"type": "string", "vendorMetadata": annotation},
+        },
+    }
+
+    sanitized = sanitize_tool_schemas([_tool("t", copy.deepcopy(schema))])
+    params = sanitized[0]["function"]["parameters"]
+    assert params["properties"]["payload"]["vendorMetadata"] == annotation
+
+    collapsed = collapse_const_unions(copy.deepcopy(schema))
+    assert collapsed["properties"]["payload"]["vendorMetadata"] == annotation
+
+    pattern_tools, pattern_count = strip_pattern_and_format(
+        [_tool("t", copy.deepcopy(schema))]
+    )
+    slash_tools, slash_count = strip_slash_enum(
+        [_tool("t", copy.deepcopy(schema))]
+    )
+    assert pattern_count == 0
+    assert slash_count == 0
+    assert (
+        pattern_tools[0]["function"]["parameters"]["properties"]["payload"]
+        ["vendorMetadata"]
+        == annotation
+    )
+    assert (
+        slash_tools[0]["function"]["parameters"]["properties"]["payload"]
+        ["vendorMetadata"]
+        == annotation
+    )
+
+
+@pytest.mark.parametrize(
+    "keyword",
+    [
+        "additionalItems",
+        "additionalProperties",
+        "contains",
+        "contentSchema",
+        "else",
+        "if",
+        "items",
+        "not",
+        "propertyNames",
+        "then",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+    ],
+)
+def test_single_schema_keywords_are_still_recursively_sanitized(keyword):
+    collapsed = collapse_const_unions(
+        {
+            "type": "object",
+            keyword: {"anyOf": [{"const": "a"}, {"const": "b"}]},
+        }
+    )
+    assert collapsed[keyword] == {"type": "string", "enum": ["a", "b"]}
+
+    schema = {"type": "array", keyword: {"type": "object"}}
+    sanitized = sanitize_tool_schemas(
+        [_tool("t", {"type": "object", "properties": {"value": schema}})]
+    )
+    nested = sanitized[0]["function"]["parameters"]["properties"]["value"]
+    assert nested[keyword] == {"type": "object", "properties": {}}
+
+
+@pytest.mark.parametrize("keyword", ["allOf", "anyOf", "oneOf", "prefixItems"])
+def test_schema_array_keywords_are_still_recursively_sanitized(keyword):
+    schema = {"type": "array", keyword: [{"type": "object"}]}
+
+    sanitized = sanitize_tool_schemas(
+        [_tool("t", {"type": "object", "properties": {"value": schema}})]
+    )
+    nested = sanitized[0]["function"]["parameters"]["properties"]["value"]
+    assert nested[keyword] == [{"type": "object", "properties": {}}]

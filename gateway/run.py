@@ -3039,6 +3039,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             metadata={"becky_dashboard_reply": True},
             internal=True,
         )
+        source = event.source
         session_store = getattr(self, "session_store", None)
         lookup = getattr(session_store, "lookup_by_session_id", None)
         session_entry = lookup(session_id) if callable(lookup) else None

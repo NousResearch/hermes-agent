@@ -136,6 +136,54 @@ async def test_runner_dispatches_dashboard_reply_into_telegram_agent_pipeline() 
 
 
 @pytest.mark.asyncio
+async def test_runner_binds_dashboard_reply_to_existing_session_before_dispatch() -> None:
+    class FakeTelegramAdapter:
+        async def handle_message(self, event) -> None:
+            self.event = event
+
+    class FakeSessionStore:
+        def lookup_by_session_id(self, session_id):
+            assert session_id == "session-1"
+            return SimpleNamespace(
+                session_key="agent:main:telegram:group:-1004476874933:3964",
+                session_id=session_id,
+            )
+
+    class FakeSessionDB:
+        def __init__(self) -> None:
+            self.bindings = []
+
+        def bind_telegram_topic(self, **kwargs) -> None:
+            self.bindings.append(kwargs)
+
+    adapter = FakeTelegramAdapter()
+    session_db = FakeSessionDB()
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.session_store = FakeSessionStore()
+    runner._session_db = SimpleNamespace(_db=session_db)
+
+    await runner._dispatch_becky_agent_reply(
+        chat_id="-1004476874933",
+        thread_id="3964",
+        session_id="session-1",
+        text="Please turn on the porch light.",
+        reply_to_message_id="101",
+    )
+
+    assert session_db.bindings == [
+        {
+            "chat_id": "-1004476874933",
+            "thread_id": "3964",
+            "user_id": "",
+            "session_key": "agent:main:telegram:group:-1004476874933:3964",
+            "session_id": "session-1",
+        }
+    ]
+    assert adapter.event.text == "Please turn on the porch light."
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("topic_reply", "adapter_present", "expect_sender"),
     [

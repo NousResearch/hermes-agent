@@ -3580,7 +3580,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     // ── Pre-flight state.db integrity guard (#68474) ─────────────────
     // Emergency backup and header verification before the update touches
     // anything.  Runs while the backend is still alive.
-    preflightStateDb(HERMES_HOME, rememberLog)
+    preflightStateDb(HERMES_HOME, rememberLog, updateRoot)
 
     // Stop our own backend(s) and wait for the venv shim to unlock BEFORE we
     // spawn the updater. Without this the updater races a still-locked
@@ -3920,7 +3920,7 @@ function runningAppBundle() {
 // desktop Electron process itself, before the backend is killed and
 // before the updater is spawned — a separate safety net from the
 // Python-level pre-update snapshot inside `hermes update`.
-function preflightStateDb(hermesHome, rememberLog) {
+function preflightStateDb(hermesHome, rememberLog, updateRoot) {
   const stateDbPath = path.join(hermesHome, 'state.db')
 
   if (!fileExists(stateDbPath)) {
@@ -3947,6 +3947,65 @@ function preflightStateDb(hermesHome, rememberLog) {
           `headerOk=${headerOk}, headerHex=${header.toString('hex')}`
       )
 
+      // Full integrity probe, not just the header (#68474 follow-up):
+      // a valid header can sit on top of corrupt B-tree/FTS pages — the
+      // "database disk image is malformed" class that slipped past this
+      // pre-flight on 2026-08-21. PRAGMA integrity_check on a ~65MB DB
+      // returns in <1s (measured 0.4s on Apple Silicon), so the cost of
+      // catching corruption before mutation is negligible. Run it through
+      // the repo's Python (stdlib sqlite3; venv may not ship a sqlite3
+      // binary), never blocking the update if the probe itself fails.
+      // Three states, deliberately: "could not check" must never look like
+      // "checked, and found damaged".  Both are non-ok, but only a probe that
+      // actually RAN and returned non-ok earns the .CORRUPT tag below.  A
+      // missing interpreter would otherwise brand a perfectly healthy backup
+      // as damaged — and that filename outlives the log line explaining it.
+      let integrityVerdict: 'ok' | 'corrupt' | 'unverified' = 'unverified'
+      let integrityProblem = 'not-run'
+      try {
+        const pythonBin = findPythonForRoot(updateRoot)
+        if (pythonBin) {
+          const code = [
+            'import sqlite3, sys, pathlib',
+            'p = pathlib.Path(sys.argv[1])',
+            'try:',
+            // Read-only open: this runs while the backend is still alive, so
+            // adding a second READ-WRITE connection to a database another
+            // process is writing is exactly the shape behind the 2026-08-21
+            // corruption.  as_uri() escapes spaces and unicode in the path.
+            '    c = sqlite3.connect(p.as_uri() + "?mode=ro", uri=True, timeout=5)',
+            'except sqlite3.OperationalError:',
+            // A read-only WAL open needs an existing -shm, which disappears
+            // once no process holds the database.  Fall back rather than
+            // report a healthy database as unverified.
+            '    c = sqlite3.connect(str(p), timeout=5)',
+            'print("\\n".join(r[0] for r in c.execute("PRAGMA integrity_check")))',
+          ].join('\n')
+          const probe = execFileSync(pythonBin, ['-c', code, stateDbPath], {
+            encoding: 'utf8',
+            timeout: 30_000, // 30s cap; 65MB DB takes ~0.4s
+          })
+          const lines = (probe || '').trim().split('\n').filter(Boolean)
+          if (lines.length === 1 && lines[0] === 'ok') {
+            integrityVerdict = 'ok'
+            integrityProblem = ''
+          } else {
+            integrityVerdict = 'corrupt'
+            integrityProblem = (lines[0] || 'non-ok').slice(0, 300)
+          }
+        } else {
+          integrityProblem = 'no-python-found'
+        }
+      } catch (integrityErr) {
+        // A probe malfunction (spawn failure, timeout, unreadable path) says
+        // nothing about the database — the verdict stays 'unverified'.
+        integrityProblem = String(integrityErr && integrityErr.message ? integrityErr.message : integrityErr)
+      }
+      rememberLog(
+        `[updates] state.db pre-flight integrity: verdict=${integrityVerdict}` +
+          (integrityProblem ? `, problem=${integrityProblem}` : '')
+      )
+
       if (!headerOk) {
         rememberLog(
           '[updates] state.db header is INVALID before update — ' +
@@ -3954,10 +4013,31 @@ function preflightStateDb(hermesHome, rememberLog) {
         )
       }
 
+      if (integrityVerdict === 'corrupt') {
+        rememberLog(
+          '[updates] state.db INTEGRITY FAILED before update — ' +
+            'pre-existing corruption detected; emergency backup will be tagged .CORRUPT'
+        )
+      } else if (integrityVerdict === 'unverified') {
+        rememberLog(
+          '[updates] state.db integrity COULD NOT BE CHECKED — backup will be ' +
+            'tagged .UNVERIFIED; this is not evidence that the database is damaged'
+        )
+      }
+
       // Emergency timestamped backup, separate from the Python-level snapshot.
       const ts = new Date().toISOString().replace(/[:.]/g, '-')
 
-      const emergencyPath = path.join(hermesHome, `state.db.pre-update-emergency-${ts}.bak`)
+      const integritySuffix =
+        integrityVerdict === 'ok'
+          ? ''
+          : integrityVerdict === 'corrupt'
+            ? '.CORRUPT'
+            : '.UNVERIFIED'
+      const emergencyPath = path.join(
+        hermesHome,
+        `state.db.pre-update-emergency-${ts}${integritySuffix}.bak`
+      )
 
       try {
         fs.copyFileSync(stateDbPath, emergencyPath)
@@ -4028,7 +4108,7 @@ async function applyUpdatesPosixHandoff(opts: any) {
   }
 
   // ── Pre-flight state.db integrity guard (#68474) ──
-  preflightStateDb(HERMES_HOME, rememberLog)
+  preflightStateDb(HERMES_HOME, rememberLog, updateRoot)
 
   // Branch-pin so a non-main checkout doesn't get switched to main (and
   // self-heal to main when the pinned branch no longer exists on origin).

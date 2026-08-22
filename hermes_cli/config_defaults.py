@@ -593,14 +593,15 @@ DEFAULT_CONFIG = {
     # Opt in via ``hermes chat --checkpoints`` or set enabled=True here.
     "checkpoints": {
         "enabled": False,
-        # Max checkpoints to keep per working directory.  Pre-v2 this only
-        # limited the `/rollback` listing; v2 actually rewrites the ref and
-        # garbage-collects older commits.
+        # Max checkpoints to keep per working directory. The active ref is
+        # rewritten inline; unreachable objects are reclaimed by startup or
+        # explicit checkpoint maintenance.
         "max_snapshots": 20,
-        # Hard ceiling on total ``~/.hermes/checkpoints/`` size (MB).  When
-        # exceeded, the oldest checkpoint per project is dropped in a
-        # round-robin pass until total size falls under the cap.
-        # 0 disables the size cap.
+        # Soft ceiling on total ``~/.hermes/checkpoints/`` size (MB).
+        # Interactive writes only record pending maintenance; startup/manual
+        # maintenance trims old history in bounded passes and runs GC. Every
+        # project keeps its newest checkpoint, so the store may remain above
+        # the cap when no older history is reclaimable. 0 disables the cap.
         "max_total_size_mb": 500,
         # Skip any single file larger than this when staging a checkpoint.
         # Prevents accidental snapshotting of datasets, model weights, and

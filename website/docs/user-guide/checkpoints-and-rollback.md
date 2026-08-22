@@ -90,8 +90,8 @@ Configure in `~/.hermes/config.yaml`:
 ```yaml
 checkpoints:
   enabled: false              # master switch (default: false — opt-in)
-  max_snapshots: 20           # max checkpoints per project (enforced via ref rewrite + gc)
-  max_total_size_mb: 500      # hard cap on total store size; oldest commits dropped
+  max_snapshots: 20           # max checkpoints per project (ref rewrite; GC deferred)
+  max_total_size_mb: 500      # soft cap enforced by startup/manual maintenance
   max_file_size_mb: 10        # skip any single file larger than this
 
   # Auto-maintenance (on by default): sweep ~/.hermes/checkpoints/ at startup
@@ -235,8 +235,8 @@ Restore just one file from a checkpoint without affecting the rest of the direct
 - **Directory scope** — Hermes skips overly broad directories (root `/`, home `$HOME`).
 - **Repository size** — directories with more than 50,000 files are skipped.
 - **Per-file size cap** — files larger than `max_file_size_mb` (default 10 MB) are excluded from the snapshot. Prevents accidentally swallowing datasets, model weights, or generated media.
-- **Total store size cap** — when the store exceeds `max_total_size_mb` (default 500 MB), the oldest commit per project is dropped round-robin until under the cap.
-- **Real pruning** — `max_snapshots` is enforced by rewriting the per-project ref and running `git gc --prune=now` afterwards, so loose objects don't accumulate.
+- **Total store size cap** — `max_total_size_mb` (default 500 MB) is a soft cap. Interactive snapshots only record pending maintenance; once that request is at least one hour old, it may bypass the normal 24-hour startup interval, or `hermes checkpoints prune` can service it immediately. Maintenance trims old history in bounded passes, runs GC, and re-measures the store. Each project keeps its newest checkpoint even if that means the store cannot reach the cap.
+- **Deferred reclamation** — `max_snapshots` is enforced by rewriting only the active project's ref. Unreachable objects are reclaimed by startup/manual maintenance, so normal file mutations never wait for shared-store GC.
 - **No-change snapshots** — if there are no changes since the last snapshot, the checkpoint is skipped.
 - **Non-fatal errors** — all errors inside the Checkpoint Manager are logged at debug level; your tools continue to run.
 

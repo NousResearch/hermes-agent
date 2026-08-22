@@ -20,8 +20,12 @@ from tools.checkpoint_manager import (
     _project_hash,
     _store_path,
     _ref_name,
+    _migrate_legacy_store,
     _project_meta_path,
     _touch_project,
+    _size_cap_trim_pass,
+    _SIZE_CAP_MAX_PASSES,
+    _SIZE_CAP_MAX_REWRITES,
     prune_checkpoints,
     maybe_auto_prune_checkpoints,
     store_status,
@@ -910,6 +914,61 @@ class TestMaybeAutoPruneCheckpoints:
         assert second["skipped"] is True
         assert (base / ("2222" * 4)).exists()
 
+    def test_pending_maintenance_bypasses_recent_interval(self, tmp_path):
+        base = tmp_path / "checkpoints"
+        store = base / "store"
+        base.mkdir()
+        assert _init_store(store, str(tmp_path)) is None
+        (base / ".last_prune").write_text(str(time.time()))
+        pending = base / ".maintenance_pending"
+        pending.write_text(str(time.time() - 2 * 3600))
+
+        out = maybe_auto_prune_checkpoints(
+            checkpoint_base=base,
+            min_interval_hours=24,
+            delete_orphans=False,
+        )
+
+        assert out["skipped"] is False
+        assert not pending.exists()
+
+    def test_fresh_pending_marker_respects_one_hour_bypass_floor(self, tmp_path):
+        base = tmp_path / "checkpoints"
+        base.mkdir()
+        (base / ".last_prune").write_text(str(time.time()))
+        pending = base / ".maintenance_pending"
+        pending.write_text(str(time.time()))
+
+        out = maybe_auto_prune_checkpoints(
+            checkpoint_base=base,
+            retention_days=0,
+            min_interval_hours=24,
+            delete_orphans=False,
+            max_total_size_mb=1,
+        )
+
+        assert out["skipped"] is True
+        assert pending.exists()
+
+    def test_missing_store_does_not_leave_pending_marker_forever(self, tmp_path):
+        base = tmp_path / "checkpoints"
+        base.mkdir()
+        pending = base / ".maintenance_pending"
+        pending.write_text("pending")
+
+        prune_checkpoints(checkpoint_base=base, retention_days=0)
+
+        assert not pending.exists()
+
+    def test_pending_marker_is_reserved_during_legacy_migration(self, tmp_path):
+        base = tmp_path / "checkpoints"
+        base.mkdir()
+        pending = base / ".maintenance_pending"
+        pending.write_text("pending")
+
+        assert _migrate_legacy_store(base) is None
+        assert pending.read_text() == "pending"
+
 
 # =========================================================================
 # store_status / clear_all / clear_legacy
@@ -1148,3 +1207,401 @@ class TestSessionDiff:
         assert result["success"] is True
         assert "feature.py" in result["diff"]
         assert "+x = 1" in result["diff"]
+
+
+# =========================================================================
+# Size-cap enforcement — must not re-sweep every ref before reclamation
+#
+# The store's measured size cannot drop until ``git gc`` reclaims the objects
+# a rewrite made unreachable.  An enforcement that re-measures between
+# rewrites therefore reads the same over-cap number every round and
+# re-rewrites every project's whole retained chain, once per round: a single
+# file edit turning into thousands of git subprocesses (observed: 374-487s
+# per patch on a 574 MiB store with ~200 project refs).
+# =========================================================================
+
+
+class FakeGitStore:
+    """In-memory stand-in for ``_run_git`` modelling the store's commit graph.
+
+    It answers the commands the size-cap path issues so a test can observe
+    exactly what an enforcement costs: how often the store is measured, how
+    many commit objects get rewritten, how often gc runs.
+    """
+
+    def __init__(self, refs):
+        # refs: {ref_name: number_of_commits}
+        self.commits = {}          # sha -> (tree, subject, parent)
+        self.refs = {}             # ref -> tip sha
+        self.calls = []
+        self._counter = 0
+        for ref, depth in refs.items():
+            parent = None
+            for i in range(depth):
+                parent = self._commit("tree-%s-%d" % (ref, i), "%s#%d" % (ref, i), parent)
+            self.refs[ref] = parent
+
+    # -- model ---------------------------------------------------------
+    def _commit(self, tree, subject, parent):
+        self._counter += 1
+        sha = "%040x" % self._counter
+        self.commits[sha] = (tree, subject, parent)
+        return sha
+
+    def chain(self, ref):
+        """Commit shas on ``ref``, oldest -> newest."""
+        out = []
+        sha = self.refs.get(ref)
+        while sha:
+            out.append(sha)
+            sha = self.commits[sha][2]
+        return list(reversed(out))
+
+    def subjects(self, ref):
+        return [self.commits[s][1] for s in self.chain(ref)]
+
+    def trees(self, ref):
+        return [self.commits[s][0] for s in self.chain(ref)]
+
+    # -- observation ---------------------------------------------------
+    def count(self, verb):
+        return sum(1 for c in self.calls if c[:1] == [verb])
+
+    def reset_calls(self):
+        self.calls = []
+
+    # -- the _run_git surface ------------------------------------------
+    def __call__(self, args, store, working_dir, **kwargs):
+        args = list(args)
+        self.calls.append(args)
+        cmd = args[0]
+
+        if cmd == "for-each-ref":
+            return True, "\n".join(sorted(self.refs)), ""
+
+        if cmd == "log" and "--reverse" in args:
+            # log --reverse --format=%H%x00%T%x00%s <ref>
+            ref = args[-1]
+            lines = [
+                "\x00".join((sha, self.commits[sha][0], self.commits[sha][1]))
+                for sha in self.chain(ref)
+            ]
+            return bool(lines), "\n".join(lines), ""
+
+        if cmd == "commit-tree":
+            tree = args[1]
+            parent = args[args.index("-p") + 1] if "-p" in args else None
+            subject = args[args.index("-m") + 1] if "-m" in args else ""
+            return True, self._commit(tree, subject, parent), ""
+
+        if cmd == "update-ref":
+            ref, new = args[1], args[2]
+            if len(args) > 3 and self.refs.get(ref) != args[3]:
+                return False, "", "stale ref"   # compare-and-swap lost
+            self.refs[ref] = new
+            return True, "", ""
+
+        return True, "", ""
+
+
+@pytest.fixture()
+def fake_git(monkeypatch):
+    """Install a FakeGitStore over the module's ``_run_git``."""
+    def install(refs):
+        fake = FakeGitStore(refs)
+        monkeypatch.setattr("tools.checkpoint_manager._run_git", fake)
+        return fake
+    return install
+
+
+@pytest.fixture()
+def over_cap_size(monkeypatch):
+    """Make the store measure permanently over any cap; record measurements."""
+    calls = []
+
+    def _measure(path):
+        calls.append(path)
+        return 900 * 1024 * 1024
+
+    monkeypatch.setattr("tools.checkpoint_manager._dir_size_bytes", _measure)
+    return calls
+
+
+def _hermes_ref(index):
+    return _ref_name("%016x" % index)
+
+
+class TestSizeCapEnforcementIsBounded:
+    def test_over_cap_marks_pending_without_git_work(
+        self, tmp_path, fake_git, over_cap_size,
+    ):
+        refs = {_hermes_ref(i): 8 for i in range(4)}
+        fake = fake_git(dict(refs))
+        mgr = CheckpointManager(enabled=True, max_snapshots=20, max_total_size_mb=100)
+
+        mgr._enforce_size_cap(tmp_path / "store")
+
+        assert len(over_cap_size) == 1
+        assert fake.calls == []
+        assert (tmp_path / ".maintenance_pending").exists()
+
+    def test_pending_marker_coalesces_without_rescan(
+        self, tmp_path, fake_git, over_cap_size,
+    ):
+        fake = fake_git({_hermes_ref(1): 8})
+        mgr = CheckpointManager(enabled=True, max_snapshots=20, max_total_size_mb=100)
+
+        mgr._enforce_size_cap(tmp_path / "store")
+        mgr._enforce_size_cap(tmp_path / "store")
+
+        assert len(over_cap_size) == 1
+        assert fake.calls == []
+
+    def test_max_snapshot_rewrite_defers_gc(self, tmp_path, fake_git):
+        ref = _hermes_ref(3)
+        fake = fake_git({ref: 8})
+        mgr = CheckpointManager(enabled=True, max_snapshots=4)
+
+        mgr._prune(tmp_path / "store", str(tmp_path), ref)
+
+        assert len(fake.chain(ref)) == 4
+        assert fake.count("gc") == 0
+        assert (tmp_path / ".maintenance_pending").exists()
+
+    def test_trim_pass_honours_rewrite_and_ref_budgets(
+        self, tmp_path, fake_git,
+    ):
+        refs = {_hermes_ref(i): 10 for i in range(200)}
+        fake = fake_git(dict(refs))
+
+        trimmed = _size_cap_trim_pass(
+            tmp_path / "store", str(tmp_path),
+            max_rewrites=25, max_refs=7,
+        )
+
+        assert trimmed == 5
+        assert fake.count("commit-tree") == 25
+        assert fake.count("log") <= 7
+        assert all(len(fake.chain(r)) >= 1 for r in refs)
+
+    def test_oversize_ref_does_not_starve_later_small_ref(self, tmp_path, fake_git):
+        huge = _hermes_ref(1)
+        small = _hermes_ref(2)
+        fake = fake_git({huge: 1024, small: 4})
+
+        trimmed = _size_cap_trim_pass(
+            tmp_path / "store", str(tmp_path), max_rewrites=5, max_refs=2,
+        )
+
+        assert trimmed == 1
+        assert len(fake.chain(huge)) == 1024
+        assert len(fake.chain(small)) == 2
+        assert fake.count("commit-tree") == 2
+
+    def test_commit_failure_is_charged_to_rewrite_budget(
+        self, tmp_path, fake_git, monkeypatch,
+    ):
+        refs = {_hermes_ref(i): 10 for i in range(4)}
+        fake = fake_git(dict(refs))
+        plain_call = fake.__call__
+        attempts = 0
+
+        def failing(args, store, working_dir, **kwargs):
+            nonlocal attempts
+            if list(args)[0] == "commit-tree":
+                attempts += 1
+                if attempts == 3:
+                    return False, "", "injected failure"
+            return plain_call(args, store, working_dir, **kwargs)
+
+        monkeypatch.setattr("tools.checkpoint_manager._run_git", failing)
+        trimmed = _size_cap_trim_pass(
+            tmp_path / "store", str(tmp_path), max_rewrites=5,
+        )
+
+        assert trimmed == 0
+        assert attempts == 3
+        assert fake.count("update-ref") == 0
+
+    def test_dormant_projects_give_up_history_before_active_ones(
+        self, tmp_path, fake_git,
+    ):
+        """Under budget pressure, least-recently-touched projects trim first."""
+        store = tmp_path / "store"
+        (store / "projects").mkdir(parents=True)
+        active = _project_hash(str(tmp_path / "active"))
+        dormant = _project_hash(str(tmp_path / "dormant"))
+        now = time.time()
+        for dir_hash, touch in ((active, now), (dormant, now - 30 * 86400)):
+            (store / "projects" / (dir_hash + ".json")).write_text(json.dumps({
+                "workdir": str(tmp_path / dir_hash),
+                "created_at": touch,
+                "last_touch": touch,
+            }))
+        fake = fake_git({_ref_name(active): 8, _ref_name(dormant): 8})
+
+        # Budget for exactly one ref's retained half.
+        trimmed = _size_cap_trim_pass(store, str(tmp_path), max_rewrites=4)
+
+        assert trimmed == 1
+        assert len(fake.chain(_ref_name(dormant))) == 4
+        assert len(fake.chain(_ref_name(active))) == 8
+
+    def test_missing_metadata_sorts_after_verified_projects(
+        self, tmp_path, fake_git,
+    ):
+        store = tmp_path / "store"
+        (store / "projects").mkdir(parents=True)
+        known_hash = _project_hash(str(tmp_path / "known"))
+        known_ref = _ref_name(known_hash)
+        unknown_ref = _hermes_ref(99)
+        (store / "projects" / (known_hash + ".json")).write_text(json.dumps({
+            "workdir": str(tmp_path / "known"),
+            "created_at": 1,
+            "last_touch": 1,
+        }))
+        fake = fake_git({known_ref: 8, unknown_ref: 8})
+
+        trimmed = _size_cap_trim_pass(
+            store, str(tmp_path), max_rewrites=4,
+        )
+
+        assert trimmed == 1
+        assert len(fake.chain(known_ref)) == 4
+        assert len(fake.chain(unknown_ref)) == 8
+
+    def test_concurrent_checkpoint_wins_the_ref_race(
+        self, tmp_path, fake_git, monkeypatch,
+    ):
+        """A ref that moved mid-rewrite is left alone, not clobbered."""
+        ref = _hermes_ref(1)
+        fake = fake_git({ref: 8})
+        plain_call = fake.__call__
+
+        def racing(args, store, working_dir, **kwargs):
+            if list(args)[0] == "update-ref":
+                # A concurrent checkpoint lands just before our update.
+                fake.refs[ref] = fake._commit(
+                    "tree-newer", "concurrent", fake.refs[ref],
+                )
+            return plain_call(args, store, working_dir, **kwargs)
+
+        monkeypatch.setattr("tools.checkpoint_manager._run_git", racing)
+        trimmed = _size_cap_trim_pass(
+            tmp_path / "store", str(tmp_path), max_rewrites=4,
+        )
+
+        # The concurrent checkpoint survived; the stale rewrite was dropped.
+        assert trimmed == 0
+        assert fake.subjects(ref)[-1] == "concurrent"
+        assert len(fake.chain(ref)) == 9
+        assert fake.count("commit-tree") == 4
+
+    def test_under_cap_store_does_no_git_work(self, tmp_path, fake_git, monkeypatch):
+        fake = fake_git({_hermes_ref(2): 8})
+        monkeypatch.setattr(
+            "tools.checkpoint_manager._dir_size_bytes", lambda p: 1024,
+        )
+        mgr = CheckpointManager(enabled=True, max_total_size_mb=100)
+
+        mgr._enforce_size_cap(tmp_path / "store")
+
+        assert fake.calls == []
+
+
+class TestPruneCheckpointsSizeCapIsBounded:
+    def test_offline_size_cap_pass_is_capped_and_keeps_latest(
+        self, tmp_path, fake_git, over_cap_size,
+    ):
+        """``prune_checkpoints`` reclaims between rounds and caps the rounds."""
+        base = tmp_path / "checkpoints"
+        store = base / "store"
+        (store / "projects").mkdir(parents=True)
+        (store / "HEAD").write_text("ref: refs/heads/main\n")
+
+        refs = {}
+        for i in range(6):
+            workdir = tmp_path / ("proj-%d" % i)
+            workdir.mkdir()
+            dir_hash = _project_hash(str(workdir))
+            (store / "projects" / (dir_hash + ".json")).write_text(json.dumps({
+                "workdir": str(workdir),
+                "created_at": time.time(),
+                "last_touch": time.time(),
+            }))
+            refs[_ref_name(dir_hash)] = 16
+        fake = fake_git(dict(refs))
+
+        prune_checkpoints(
+            retention_days=0,
+            delete_orphans=False,
+            checkpoint_base=base,
+            max_total_size_mb=100,
+        )
+
+        # One reclamation for the orphan/stale sweep, plus at most one per
+        # size-cap round.
+        assert fake.count("gc") <= _SIZE_CAP_MAX_PASSES + 1
+        # 16 -> 8 -> 4 -> 2 across the capped rounds; the pre-fix loop
+        # re-rewrote all six chains on each of its 20 rounds.
+        assert fake.count("commit-tree") <= _SIZE_CAP_MAX_PASSES * sum(refs.values())
+        for ref in refs:
+            assert fake.subjects(ref)[-1] == "%s#15" % ref
+
+
+class TestSizeCapWithRealGit:
+    def test_over_cap_take_defers_gc_and_old_target_remains_restorable(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        """Real git: over-cap writes stay cheap and rollback remains safe."""
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        mgr = CheckpointManager(enabled=True, max_snapshots=50, max_total_size_mb=1)
+
+        projects = []
+        for name in ("alpha", "beta"):
+            wd = tmp_path / name
+            wd.mkdir()
+            projects.append(wd)
+        for step in range(6):
+            for wd in projects:
+                (wd / "main.py").write_text("# %s v%d\n" % (wd.name, step))
+                mgr.new_turn()
+                assert mgr.ensure_checkpoint(str(wd), "%s-%d" % (wd.name, step)) is True
+
+        # Force "over cap" without fabricating a 1 MB+ store.
+        monkeypatch.setattr(
+            "tools.checkpoint_manager._dir_size_bytes", lambda p: 8 * 1024 * 1024,
+        )
+
+        real_run_git = _run_git
+        calls = []
+
+        def counting(args, *a, **kw):
+            calls.append(list(args))
+            return real_run_git(args, *a, **kw)
+
+        monkeypatch.setattr("tools.checkpoint_manager._run_git", counting)
+
+        target = projects[0]
+        oldest = mgr.list_checkpoints(str(target))[-1]["hash"]
+        (target / "main.py").write_text("# alpha final\n")
+        mgr.new_turn()
+        assert mgr.ensure_checkpoint(str(target), "alpha-final") is True
+
+        assert len(calls) < 30, "unbounded git work: %d calls" % len(calls)
+        assert not any(c[0] in {"gc", "reflog"} for c in calls)
+        assert (checkpoint_base / ".maintenance_pending").exists()
+
+        # Both projects keep a usable, newest-first history...
+        for wd in projects:
+            assert mgr.list_checkpoints(str(wd)), "%s lost all checkpoints" % wd.name
+        assert mgr.list_checkpoints(str(target))[0]["reason"] == "alpha-final"
+
+        # Restore an old checkpoint while the store is still over cap. The
+        # pre-rollback snapshot must not trigger maintenance that can make the
+        # requested target unreachable immediately before restore.
+        calls.clear()
+        (target / "main.py").write_text("# clobbered\n")
+        assert mgr.restore(str(target), oldest)["success"] is True
+        assert (target / "main.py").read_text() == "# alpha v0\n"
+        assert not any(c[0] in {"gc", "reflog"} for c in calls)

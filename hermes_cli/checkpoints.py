@@ -256,8 +256,9 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     p_prune.add_argument("--retention-days", type=int, default=7,
                          help="Drop projects whose last_touch is older than N days (default 7)")
     p_prune.add_argument("--max-size-mb", type=int, default=500,
-                         help="After orphan/stale prune, drop oldest commits "
-                              "per project until total size <= this (default 500)")
+                         help="Best-effort soft target: halve old histories in bounded "
+                              "passes, preserving each project's newest checkpoint "
+                              "(default 500)")
     p_prune.add_argument("--keep-orphans", action="store_true",
                          help="Skip deleting projects whose workdir no longer exists")
     p_prune.add_argument("-f", "--force", action="store_true",

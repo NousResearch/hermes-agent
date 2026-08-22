@@ -44,8 +44,11 @@ Auto-maintenance
 Shadow state accumulates over time.  ``prune_checkpoints`` deletes refs whose
 recorded working directory no longer exists (orphan) or whose last touch is
 older than ``retention_days`` (stale), then runs ``git gc --prune=now`` to
-reclaim object storage.  A size-cap pass drops the oldest checkpoints per
-project until total store size is under ``max_total_size_mb``.
+reclaim object storage.  A size-cap pass then halves retained histories in
+bounded batches, never below each project's newest checkpoint, reclaiming and
+re-measuring between batches.  Interactive checkpoint commits never perform
+shared-store trim or GC: they coalesce a maintenance request that the next
+startup sweep or manual ``hermes checkpoints prune`` services.
 """
 
 import hashlib
@@ -150,6 +153,30 @@ _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
 
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
+
+# Size-cap enforcement budget.
+#
+# Trimming a project's history means re-creating the retained commits (git
+# has no way to drop a commit's ancestor in place), which costs one
+# ``commit-tree`` subprocess per retained commit.  ``_SIZE_CAP_MAX_REWRITES``
+# bounds how many of those a single enforcement pass may spend, so the
+# synchronous cost of a checkpoint stays bounded no matter how many projects
+# share the store.  Refs the budget doesn't reach are trimmed by the next
+# enforcement — the store converges across calls instead of inside one.
+_SIZE_CAP_MAX_REWRITES = 512
+
+# Reading every ref is itself synchronous Git work. Bound that separately
+# from commit rewrites so repeated CAS failures cannot bypass the budget.
+_SIZE_CAP_MAX_REFS = 64
+
+# Offline maintenance (``prune_checkpoints``) may run more than one
+# trim → reclaim → re-measure round, since it isn't on the interactive path.
+# Each round costs a ``git gc``, so the count stays small.
+_SIZE_CAP_MAX_PASSES = 4
+
+# Interactive checkpoint creation records pending maintenance and returns;
+# shared-store GC is reserved for startup/manual maintenance.
+_MAINTENANCE_PENDING_NAME = ".maintenance_pending"
 
 # Valid git commit hash pattern: 4–40 hex chars (short or full SHA-1/SHA-256).
 _COMMIT_HASH_RE = re.compile(r'^[0-9a-fA-F]{4,64}$')
@@ -441,7 +468,7 @@ def _migrate_legacy_store(base: Path) -> Optional[Path]:
     store = _store_path(base)
     legacy_root: Optional[Path] = None
     # Reserved top-level entries managed by v2.
-    reserved = {_STORE_DIRNAME, _PRUNE_MARKER_NAME}
+    reserved = {_STORE_DIRNAME, _PRUNE_MARKER_NAME, _MAINTENANCE_PENDING_NAME}
     for child in list(base.iterdir()):
         name = child.name
         if name in reserved or name.startswith(_LEGACY_PREFIX):
@@ -720,6 +747,188 @@ def _dir_size_bytes(path: Path) -> int:
     return total
 
 
+# ---------------------------------------------------------------------------
+# Ref-chain rewriting (shared by max_snapshots pruning and the size cap)
+# ---------------------------------------------------------------------------
+
+def _ref_commits(store: Path, working_dir: str, ref: str) -> List[Tuple[str, str, str]]:
+    """Return ``[(sha, tree_sha, subject), ...]`` oldest → newest for ``ref``.
+
+    One git call for the whole chain — the per-commit ``rev-parse``/``log``
+    pair this replaces cost three subprocesses per commit.  Subjects (``%s``)
+    are single-line by construction, so NUL-separated fields on one line per
+    commit parse unambiguously.  Returns ``[]`` for a missing ref.
+    """
+    ok, stdout, _ = _run_git(
+        ["log", "--reverse", "--format=%H%x00%T%x00%s", ref],
+        store, working_dir,
+        allowed_returncodes={128},
+    )
+    if not ok or not stdout:
+        return []
+    commits: List[Tuple[str, str, str]] = []
+    for line in stdout.split("\n"):
+        parts = line.split("\x00")
+        if len(parts) < 3:
+            continue
+        sha, tree_sha, subject = parts[0].strip(), parts[1].strip(), parts[2]
+        if not sha or not tree_sha:
+            continue
+        commits.append((sha, tree_sha, subject or "checkpoint"))
+    return commits
+
+
+def _rewrite_ref_chain(
+    store: Path,
+    working_dir: str,
+    ref: str,
+    commits: List[Tuple[str, str, str]],
+    expected_tip: Optional[str] = None,
+) -> Tuple[int, bool]:
+    """Re-create ``commits`` as a fresh linear chain and repoint ``ref`` at it.
+
+    ``commits`` is oldest → newest (the retained tail of the old chain); the
+    first entry becomes a parentless root.  ``expected_tip``, when given, is
+    passed to ``update-ref`` as the old value so a concurrent checkpoint that
+    advanced the ref while we were rewriting wins instead of being clobbered.
+
+    Returns ``(attempted_writes, ref_updated)``. Attempted work is reported
+    even when a later ``commit-tree`` fails or the compare-and-swap update
+    loses a race, so callers can enforce a real worst-case budget.
+    """
+    new_parent: Optional[str] = None
+    attempted = 0
+    for _sha, tree_sha, subject in commits:
+        args = ["commit-tree", tree_sha, "-m", subject, "--no-gpg-sign"]
+        if new_parent is not None:
+            args = ["commit-tree", tree_sha, "-p", new_parent,
+                    "-m", subject, "--no-gpg-sign"]
+        attempted += 1
+        ok, new_sha, _ = _run_git(args, store, working_dir)
+        if not ok or not new_sha:
+            return attempted, False
+        new_parent = new_sha
+    if new_parent is None:
+        return attempted, False
+    update_args = ["update-ref", ref, new_parent]
+    if expected_tip:
+        update_args.append(expected_tip)
+    ok_update, _, _ = _run_git(update_args, store, working_dir,
+                               allowed_returncodes={128})
+    return attempted, ok_update
+
+
+def _maintenance_marker(store: Path) -> Path:
+    return store.parent / _MAINTENANCE_PENDING_NAME
+
+
+def _mark_maintenance_pending(store: Path) -> None:
+    """Request offline maintenance without blocking the mutating tool call."""
+    marker = _maintenance_marker(store)
+    if marker.exists():
+        return
+    try:
+        marker.write_text(str(time.time()), encoding="utf-8")
+    except OSError as exc:
+        logger.debug("Could not mark checkpoint maintenance pending: %s", exc)
+
+
+def _clear_maintenance_pending(store: Path) -> None:
+    try:
+        _maintenance_marker(store).unlink(missing_ok=True)
+    except OSError as exc:
+        logger.debug("Could not clear checkpoint maintenance marker: %s", exc)
+
+
+def _reclaim_store(store: Path, working_dir: str) -> None:
+    """Expire reflogs and gc so unreachable objects actually leave the disk.
+
+    Nothing a rewrite drops shrinks the store until this runs — commits that
+    are no longer reachable stay physically present.  That is why callers must
+    reclaim before re-measuring the store, never between rewrites.
+    """
+    _run_git(
+        ["reflog", "expire", "--expire=now", "--all"],
+        store, working_dir,
+    )
+    _run_git(
+        ["gc", "--prune=now", "--quiet"],
+        store, working_dir, timeout=_GIT_TIMEOUT * 3,
+    )
+    _repair_bare_repo_dirs(store)
+
+
+def _size_cap_ref_order(store: Path, refs: List[str]) -> List[str]:
+    """Order refs least-recently-touched first, so dormant projects give first.
+
+    Refs with no readable metadata sort last: missing evidence is not proof
+    that a project is dormant.
+    """
+    last_touch: Dict[str, float] = {}
+    for meta in _list_projects(store):
+        dir_hash = meta.get("_hash") or ""
+        if not dir_hash:
+            continue
+        try:
+            last_touch[_ref_name(dir_hash)] = float(meta.get("last_touch", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+    return sorted(
+        refs,
+        key=lambda r: (r not in last_touch, last_touch.get(r, float("inf")), r),
+    )
+
+
+def _size_cap_trim_pass(
+    store: Path,
+    working_dir: str,
+    max_rewrites: int = _SIZE_CAP_MAX_REWRITES,
+    max_refs: int = _SIZE_CAP_MAX_REFS,
+) -> int:
+    """Halve retained histories in one bounded offline maintenance pass.
+
+    The store's measured size cannot drop until unreachable objects are
+    reclaimed, so the caller measures only after this complete pass and GC.
+    Every visited ref keeps its newest half and never fewer than one restore
+    point. Commit attempts and refs examined have separate hard budgets.
+
+    Returns the number of refs successfully rewritten.
+    """
+    ok, stdout, _ = _run_git(
+        ["for-each-ref", "--format=%(refname)", _REFS_PREFIX],
+        store, working_dir,
+        allowed_returncodes={128},
+    )
+    if not ok or not stdout:
+        return 0
+    refs = [r.strip() for r in stdout.splitlines() if r.strip()]
+    if not refs:
+        return 0
+
+    budget = max(1, int(max_rewrites))
+    ref_budget = max(1, int(max_refs))
+    trimmed = 0
+    for ref in _size_cap_ref_order(store, refs):
+        if budget <= 0 or ref_budget <= 0:
+            break
+        ref_budget -= 1
+        commits = _ref_commits(store, working_dir, ref)
+        if len(commits) <= 1:
+            continue
+        keep = max(1, (len(commits) + 1) // 2)
+        if keep > budget:
+            # A large old ref must not starve smaller refs that still fit the
+            # remaining budget. Preserve this chain and keep scanning.
+            continue
+        attempted, updated = _rewrite_ref_chain(
+            store, working_dir, ref, commits[-keep:], expected_tip=commits[-1][0],
+        )
+        budget -= attempted
+        if updated:
+            trimmed += 1
+    return trimmed
+
+
 # Backwards-compatibility shim — some tests import ``_init_shadow_repo`` and
 # look for ``HEAD``/``info/exclude``/``HERMES_WORKDIR``.  In v2 we also write
 # those markers, but inside the shared store + under ``projects/<hash>.json``.
@@ -767,8 +976,9 @@ class CheckpointManager:
     max_snapshots : int
         Keep at most this many checkpoints per directory.
     max_total_size_mb : int
-        Hard ceiling on total store size.  Oldest checkpoints per project
-        are dropped when the store exceeds this after a commit.
+        Soft maintenance target for total store size. Interactive commits only
+        mark an over-cap store as pending; startup or manual maintenance trims
+        dormant histories in bounded batches and reclaims unreachable objects.
     max_file_size_mb : int
         Skip adding any single file larger than this to a checkpoint.
         (Implemented via ``.gitignore`` excludes + a post-stage size check.)
@@ -1147,7 +1357,14 @@ class CheckpointManager:
                     }
 
         # Take a pre-rollback snapshot so you can undo the undo.
-        self._take(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})")
+        # Preserve the undo snapshot without running retention/size
+        # maintenance: pruning here could make the requested old target
+        # unreachable immediately before we restore it.
+        self._take(
+            abs_dir,
+            f"pre-rollback snapshot (restoring to {commit_hash[:8]})",
+            run_maintenance=False,
+        )
 
         dir_hash = _project_hash(abs_dir)
         index_file = _index_path(store, dir_hash)
@@ -1229,7 +1446,12 @@ class CheckpointManager:
     # Internal
     # ------------------------------------------------------------------
 
-    def _take(self, working_dir: str, reason: str) -> bool:
+    def _take(
+        self,
+        working_dir: str,
+        reason: str,
+        run_maintenance: bool = True,
+    ) -> bool:
         """Take a snapshot.  Returns True on success."""
         store = _store_path(CHECKPOINT_BASE)
 
@@ -1355,11 +1577,12 @@ class CheckpointManager:
 
         logger.debug("Checkpoint taken in %s: %s (%s)", working_dir, reason, new_sha[:8])
 
-        # Real pruning — drop old commits beyond max_snapshots.
-        self._prune(store, working_dir, ref)
-
-        # Enforce global size cap.
-        self._enforce_size_cap(store)
+        if run_maintenance:
+            # Retention rewrites only this project's ref and defers shared
+            # object reclamation. The size cap is also scheduled for
+            # startup/manual maintenance, never enforced synchronously here.
+            self._prune(store, working_dir, ref)
+            self._enforce_size_cap(store)
 
         return True
 
@@ -1414,155 +1637,49 @@ class CheckpointManager:
 
         v1's ``_prune`` was documented as a no-op (``git``'s pack mechanism
         was supposed to handle it, but only the log view was limited — loose
-        objects accumulated forever).  v2 actually rewrites the ref to drop
-        commits older than ``max_snapshots`` and then runs ``git gc`` on the
-        store so unreachable objects are reclaimed.
+        objects accumulated forever).  v2 rewrites the ref to drop commits
+        older than ``max_snapshots`` and marks shared-store GC as pending so
+        the interactive mutation never blocks on global reclamation.
         """
-        ok, stdout, _ = _run_git(
-            ["rev-list", "--count", ref], store, working_dir,
-            allowed_returncodes={128},
-        )
-        if not ok:
-            return
-        try:
-            count = int(stdout)
-        except ValueError:
-            return
-        if count <= self.max_snapshots:
+        commits = _ref_commits(store, working_dir, ref)
+        if len(commits) <= self.max_snapshots:
             return
 
-        # Collect commits oldest → newest, take last N.
-        ok_list, list_out, _ = _run_git(
-            ["rev-list", "--reverse", ref], store, working_dir,
-        )
-        if not ok_list or not list_out:
-            return
-        commits = list_out.splitlines()
+        # Rebuild a linear chain from the newest max_snapshots commits.
         keep = commits[-self.max_snapshots:]
-
-        # Rebuild a linear chain off keep[0]'s tree.
-        new_parent: Optional[str] = None
-        for sha in keep:
-            ok_tree, tree_sha, _ = _run_git(
-                ["rev-parse", f"{sha}^{{tree}}"], store, working_dir,
-            )
-            if not ok_tree or not tree_sha:
-                return
-            ok_msg, msg, _ = _run_git(
-                ["log", "--format=%s", "-1", sha], store, working_dir,
-            )
-            commit_msg = msg if ok_msg and msg else "checkpoint"
-            args = ["commit-tree", tree_sha, "-m", commit_msg, "--no-gpg-sign"]
-            if new_parent is not None:
-                args = ["commit-tree", tree_sha, "-p", new_parent,
-                        "-m", commit_msg, "--no-gpg-sign"]
-            ok_commit, new_sha, _ = _run_git(args, store, working_dir)
-            if not ok_commit or not new_sha:
-                return
-            new_parent = new_sha
-
-        if new_parent is None:
+        _attempted, updated = _rewrite_ref_chain(
+            store, working_dir, ref, keep, expected_tip=commits[-1][0],
+        )
+        if not updated:
             return
-        _run_git(["update-ref", ref, new_parent], store, working_dir)
 
-        # Reclaim objects from the dropped commits.
-        _run_git(
-            ["reflog", "expire", "--expire=now", "--all"],
-            store, working_dir,
-        )
-        _run_git(
-            ["gc", "--prune=now", "--quiet"],
-            store, working_dir, timeout=_GIT_TIMEOUT * 3,
-        )
-        _repair_bare_repo_dirs(store)
+        # The ref is bounded now; reclaim unreachable objects later so an
+        # ordinary file mutation never pays for shared-store GC.
+        _mark_maintenance_pending(store)
 
     def _enforce_size_cap(self, store: Path) -> None:
-        """If total store size exceeds ``max_total_size_mb``, drop oldest
-        checkpoints across ALL projects until under the cap.
+        """Defer over-cap trimming to startup/manual maintenance.
+
+        Ref rewriting does not reduce physical size until Git GC runs. Doing
+        trim + GC in this interactive path made a single ``patch`` or
+        ``write_file`` wait on the whole shared store. A persistent marker
+        coalesces repeated requests; later checkpoints return without even
+        rescanning the store until maintenance clears it.
         """
         if self.max_total_size_mb <= 0:
+            return
+        if _maintenance_marker(store).exists():
             return
         cap_bytes = self.max_total_size_mb * 1024 * 1024
         size = _dir_size_bytes(store)
         if size <= cap_bytes:
             return
         logger.info(
-            "Checkpoint store exceeded %d MB (actual %d MB) — pruning oldest",
+            "Checkpoint store exceeded %d MB (actual %d MB) — "
+            "deferring trim and GC to checkpoint maintenance",
             self.max_total_size_mb, size // (1024 * 1024),
         )
-
-        # Collect (commit_time, ref, sha) across all per-project refs.
-        ok, stdout, _ = _run_git(
-            ["for-each-ref", "--format=%(refname)", _REFS_PREFIX],
-            store, str(store.parent),
-            allowed_returncodes={128},
-        )
-        if not ok or not stdout:
-            return
-        refs = [r for r in stdout.splitlines() if r.strip()]
-
-        any_dropped = False
-        # Round-robin-drop oldest commit per ref until under cap.
-        for _ in range(20):  # hard upper bound to avoid pathological loops
-            size = _dir_size_bytes(store)
-            if size <= cap_bytes:
-                break
-            for ref in refs:
-                ok_count, count_out, _ = _run_git(
-                    ["rev-list", "--count", ref], store, str(store.parent),
-                    allowed_returncodes={128},
-                )
-                try:
-                    count = int(count_out) if ok_count else 0
-                except ValueError:
-                    count = 0
-                if count <= 1:
-                    continue  # keep at least one snapshot per project
-                ok_list, list_out, _ = _run_git(
-                    ["rev-list", "--reverse", ref], store, str(store.parent),
-                )
-                if not ok_list or not list_out:
-                    continue
-                commits = list_out.splitlines()
-                keep = commits[1:]  # drop oldest
-                new_parent: Optional[str] = None
-                fail = False
-                for sha in keep:
-                    ok_tree, tree_sha, _ = _run_git(
-                        ["rev-parse", f"{sha}^{{tree}}"], store, str(store.parent),
-                    )
-                    if not ok_tree or not tree_sha:
-                        fail = True
-                        break
-                    ok_msg, msg, _ = _run_git(
-                        ["log", "--format=%s", "-1", sha], store, str(store.parent),
-                    )
-                    commit_msg = msg if ok_msg and msg else "checkpoint"
-                    args = ["commit-tree", tree_sha, "-m", commit_msg, "--no-gpg-sign"]
-                    if new_parent is not None:
-                        args = ["commit-tree", tree_sha, "-p", new_parent,
-                                "-m", commit_msg, "--no-gpg-sign"]
-                    ok_commit, new_sha, _ = _run_git(args, store, str(store.parent))
-                    if not ok_commit or not new_sha:
-                        fail = True
-                        break
-                    new_parent = new_sha
-                if fail or new_parent is None:
-                    continue
-                _run_git(["update-ref", ref, new_parent], store, str(store.parent))
-                any_dropped = True
-            if not any_dropped:
-                break
-
-        _run_git(
-            ["reflog", "expire", "--expire=now", "--all"],
-            store, str(store.parent),
-        )
-        _run_git(
-            ["gc", "--prune=now", "--quiet"],
-            store, str(store.parent), timeout=_GIT_TIMEOUT * 3,
-        )
-        _repair_bare_repo_dirs(store)
+        _mark_maintenance_pending(store)
 
 
 def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
@@ -1750,8 +1867,8 @@ def prune_checkpoints(
     that never show a preview.
 
     Additionally, if ``max_total_size_mb > 0`` and the store exceeds that
-    after orphan/stale pruning, the oldest commit per remaining project is
-    dropped until the store is under the cap.
+    after orphan/stale pruning, bounded passes halve the least-recently-touched
+    retained histories (never below one checkpoint), reclaim, and re-measure.
 
     Legacy-archive dirs (``legacy-*``) older than ``retention_days`` are
     also deleted.
@@ -1911,91 +2028,30 @@ def prune_checkpoints(
                 result["deleted_stale"] += 1
 
         # GC the store to reclaim unreachable objects from dropped refs.
-        _run_git(
-            ["reflog", "expire", "--expire=now", "--all"],
-            store, str(base),
-        )
-        _run_git(
-            ["gc", "--prune=now", "--quiet"],
-            store, str(base), timeout=_GIT_TIMEOUT * 3,
-        )
-        _repair_bare_repo_dirs(store)
+        _reclaim_store(store, str(base))
 
-        # Size-cap pass across remaining projects.
+        # Size-cap pass across remaining projects.  Offline maintenance may
+        # run several rounds, but each one must reclaim before re-measuring —
+        # the store cannot shrink while the objects a rewrite dropped are
+        # still physically present — and rounds are capped so a maintenance
+        # sweep can never turn into an unbounded rewrite storm.
         if max_total_size_mb > 0:
             cap_bytes = max_total_size_mb * 1024 * 1024
-            for _i in range(20):
-                size = _dir_size_bytes(store)
-                if size <= cap_bytes:
+            for _pass in range(_SIZE_CAP_MAX_PASSES):
+                if _dir_size_bytes(store) <= cap_bytes:
                     break
-                ok, stdout, _ = _run_git(
-                    ["for-each-ref", "--format=%(refname)", _REFS_PREFIX],
-                    store, str(base),
-                    allowed_returncodes={128},
-                )
-                refs = [r for r in stdout.splitlines() if r.strip()] if ok else []
-                if not refs:
-                    break
-                any_drop = False
-                for ref in refs:
-                    ok_c, count_out, _ = _run_git(
-                        ["rev-list", "--count", ref], store, str(base),
-                        allowed_returncodes={128},
-                    )
-                    try:
-                        count = int(count_out) if ok_c else 0
-                    except ValueError:
-                        count = 0
-                    if count <= 1:
-                        continue
-                    ok_l, lo, _ = _run_git(
-                        ["rev-list", "--reverse", ref], store, str(base),
-                    )
-                    if not ok_l or not lo:
-                        continue
-                    commits = lo.splitlines()
-                    keep = commits[1:]
-                    new_parent: Optional[str] = None
-                    fail = False
-                    for sha in keep:
-                        ok_t, tsha, _ = _run_git(
-                            ["rev-parse", f"{sha}^{{tree}}"], store, str(base),
-                        )
-                        if not ok_t or not tsha:
-                            fail = True
-                            break
-                        ok_m, m, _ = _run_git(
-                            ["log", "--format=%s", "-1", sha], store, str(base),
-                        )
-                        msg = m if ok_m and m else "checkpoint"
-                        args = ["commit-tree", tsha, "-m", msg, "--no-gpg-sign"]
-                        if new_parent is not None:
-                            args = ["commit-tree", tsha, "-p", new_parent,
-                                    "-m", msg, "--no-gpg-sign"]
-                        ok_cm, new_sha, _ = _run_git(args, store, str(base))
-                        if not ok_cm or not new_sha:
-                            fail = True
-                            break
-                        new_parent = new_sha
-                    if fail or new_parent is None:
-                        continue
-                    _run_git(["update-ref", ref, new_parent], store, str(base))
-                    any_drop = True
-                if not any_drop:
-                    break
-            _run_git(
-                ["reflog", "expire", "--expire=now", "--all"],
-                store, str(base),
-            )
-            _run_git(
-                ["gc", "--prune=now", "--quiet"],
-                store, str(base), timeout=_GIT_TIMEOUT * 3,
-            )
-            _repair_bare_repo_dirs(store)
+                if not _size_cap_trim_pass(store, str(base)):
+                    break  # nothing left to trim — only newest checkpoints remain
+                _reclaim_store(store, str(base))
 
     size_after = _dir_size_bytes(base)
     delta = size_before - size_after
     result["bytes_freed"] = max(result["bytes_freed"], delta)
+
+    # Whether the store was reclaimed, already absent, or had no more
+    # trimmable history, this request has been serviced. If it remains over
+    # cap, the next interactive size check recreates the marker.
+    _clear_maintenance_pending(store)
 
     return result
 
@@ -2009,8 +2065,11 @@ def maybe_auto_prune_checkpoints(
 ) -> Dict[str, object]:
     """Idempotent wrapper around ``prune_checkpoints`` for startup hooks.
 
-    Writes ``CHECKPOINT_BASE/.last_prune`` on completion so subsequent
-    calls within ``min_interval_hours`` short-circuit.
+    Writes ``CHECKPOINT_BASE/.last_prune`` on completion so subsequent calls
+    within ``min_interval_hours`` short-circuit. A pending maintenance marker
+    may bypass that interval once it is at least one hour old, ensuring
+    deferred work is serviced without forcing shared-store GC on every
+    short-lived CLI or gateway restart.
 
     Returns ``{"skipped": bool, "result": prune_checkpoints-dict,
     "error": optional str}``.
@@ -2027,8 +2086,18 @@ def maybe_auto_prune_checkpoints(
             return out
 
         marker = base / _PRUNE_MARKER_NAME
+        pending_marker = base / _MAINTENANCE_PENDING_NAME
         now = time.time()
-        if marker.exists():
+        pending_old_enough = False
+        if pending_marker.exists():
+            try:
+                pending_ts = float(pending_marker.read_text(encoding="utf-8").strip())
+                bypass_floor_hours = min(max(min_interval_hours, 0), 1)
+                pending_old_enough = now - pending_ts >= bypass_floor_hours * 3600
+            except (OSError, ValueError):
+                # An unreadable marker must not strand maintenance forever.
+                pending_old_enough = True
+        if marker.exists() and not pending_old_enough:
             try:
                 last_ts = float(marker.read_text(encoding="utf-8").strip())
                 if now - last_ts < min_interval_hours * 3600:

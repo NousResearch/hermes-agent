@@ -50,6 +50,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import concurrent.futures
+import functools
 import hashlib
 import hmac
 import itertools
@@ -1343,6 +1344,14 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         except Exception:
             logger.debug("[Feishu] Failed to apply websocket runtime overrides", exc_info=True)
 
+    # functools.wraps keeps the original websockets.connect signature visible
+    # through __wrapped__: lark-oapi's _ws_connect_kwargs() probes
+    # inspect.signature(websockets.connect).parameters for a "proxy" parameter
+    # to pass proxy=None and opt out of websockets 15 environment proxy
+    # discovery. A bare *args/**kwargs wrapper hides every named parameter,
+    # so the probe fails, proxy discovery runs, and a system SOCKS proxy
+    # kills the Feishu WS loop with "python_socks is required" (#88545).
+    @functools.wraps(original_connect)
     def _connect_with_overrides(*args: Any, **kwargs: Any) -> Any:
         if adapter._ws_ping_interval is not None and "ping_interval" not in kwargs:
             kwargs["ping_interval"] = adapter._ws_ping_interval

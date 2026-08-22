@@ -356,6 +356,69 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(fake_client._reconnect_interval, 3)
         self.assertEqual(fake_client._ping_interval, 4)
 
+    def test_ws_connect_override_keeps_proxy_visible_to_lark_probe(self):
+        """The patched websockets.connect must keep its named parameters
+        visible: lark-oapi's _ws_connect_kwargs() probes
+        inspect.signature(websockets.connect).parameters for ``proxy`` to
+        pass proxy=None and opt out of websockets 15 environment proxy
+        discovery. A bare *args/**kwargs wrapper hides every named parameter,
+        so the probe fails and a system SOCKS proxy kills the Feishu WS loop
+        with "python_socks is required" (#88545)."""
+        import inspect
+        import sys
+        from types import ModuleType
+
+        captured = {}
+
+        def _stub_connect(*args, proxy=None, **kwargs):
+            captured["call_args"] = args
+            captured["call_kwargs"] = {"proxy": proxy, **kwargs}
+            return "STUB_SENTINEL"
+
+        class _ProbeWSClient:
+            def start(self):
+                patched = sys.modules["lark_oapi.ws.client"].websockets.connect
+                captured["params"] = set(inspect.signature(patched).parameters)
+                captured["return"] = patched("wss://example.invalid", proxy=None)
+                raise RuntimeError("stop test client")
+
+        fake_adapter = SimpleNamespace(
+            _ws_thread_loop=None,
+            _ws_reconnect_nonce=2,
+            _ws_reconnect_interval=3,
+            _ws_ping_interval=4,
+            _ws_ping_timeout=5,
+        )
+        fake_client = _ProbeWSClient()
+        fake_client_module = ModuleType("lark_oapi.ws.client")
+        fake_client_module.loop = None
+        fake_client_module.websockets = SimpleNamespace(connect=_stub_connect)
+        fake_ws_module = ModuleType("lark_oapi.ws")
+        fake_ws_module.client = fake_client_module
+        fake_root_module = ModuleType("lark_oapi")
+        fake_root_module.ws = fake_ws_module
+
+        original_modules = sys.modules.copy()
+        sys.modules["lark_oapi"] = fake_root_module
+        sys.modules["lark_oapi.ws"] = fake_ws_module
+        sys.modules["lark_oapi.ws.client"] = fake_client_module
+        try:
+            from plugins.platforms.feishu.adapter import _run_official_feishu_ws_client
+
+            _run_official_feishu_ws_client(fake_client, fake_adapter)
+        finally:
+            sys.modules.clear()
+            sys.modules.update(original_modules)
+
+        # The lark-oapi signature probe sees the original named parameter.
+        self.assertIn("proxy", captured["params"])
+        # Forwarding is unchanged: ping overrides injected, proxy forwarded,
+        # and the wrapped callable's return value passes through untouched.
+        self.assertEqual(captured["return"], "STUB_SENTINEL")
+        self.assertEqual(captured["call_kwargs"]["proxy"], None)
+        self.assertEqual(captured["call_kwargs"]["ping_interval"], 4)
+        self.assertEqual(captured["call_kwargs"]["ping_timeout"], 5)
+
 
 def _admits_group(adapter, message, sender_id, chat_id=""):
     """Group-path shim: run a message through ``_admit`` and return a bool."""

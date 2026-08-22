@@ -633,6 +633,14 @@ class AIAgent:
             logger.debug("SessionDB unavailable for recall", exc_info=True)
             return None
 
+    def session_search_scope_context(self) -> Dict[str, Optional[str]]:
+        """Public provenance contract for conversation-scoped history tools."""
+        return {
+            "current_session_id": self.session_id,
+            "current_platform": self.platform,
+            "current_session_key": self._gateway_session_key,
+        }
+
     def _ensure_db_session(self) -> None:
         """Create session DB row on first use. Disables _session_db on failure."""
         if getattr(self, "_persist_disabled", False):

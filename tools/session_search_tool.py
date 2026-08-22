@@ -60,6 +60,8 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # interactive matches buried under a wall of cron hits, so this is well above
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
+_TELEGRAM_SCOPE_MAX_SCAN_ROWS = 30_000
+_TELEGRAM_SCOPE_PAGE_LIMIT = 5_000
 
 # Raw FTS rows are only a discovery-plan input. The final response hydrates
 # its own anchored message window and bookends after lineage deduplication.
@@ -167,6 +169,97 @@ def _resolve_to_parent(db, session_id: str) -> tuple[str, bool]:
 def _resolve_lineage(db, session_id: str) -> str:
     """Convenience: return only the lineage root (ignores compression hop)."""
     return _resolve_to_parent(db, session_id)[0]
+
+
+def _normalize_scope_value(value: Any) -> Optional[str]:
+    if value is None or not str(value).strip():
+        return "current"
+    normalized = str(value).strip().lower()
+    return normalized if normalized in ("current", "all") else None
+
+
+def _resolve_telegram_scope(
+    db,
+    *,
+    scope: Any,
+    current_platform: Optional[str],
+    current_session_id: Optional[str],
+    current_session_key: Optional[str],
+) -> tuple[Optional[set[str]], Optional[str]]:
+    """Resolve one fail-closed Telegram conversation scope per tool call.
+
+    The recursive CTE resolves the current ancestor chain plus descendants of
+    the current session once, without admitting siblings from other legacy
+    conversations. Sessions sharing the stable gateway session key are unioned
+    in the same query. A legacy Telegram session without a key therefore falls
+    back to that provably safe branch only; it never falls back to global
+    history.
+    """
+    scope_value = _normalize_scope_value(scope)
+    if scope_value is None:
+        return None, "scope must be 'current' or 'all'"
+    if scope_value == "all" or str(current_platform or "").strip().lower() != "telegram":
+        return None, None
+    if not current_session_id:
+        return None, "Telegram session scope unavailable: current session is missing"
+
+    try:
+        current = db.get_session(current_session_id)
+    except Exception:
+        current = None
+    if not current:
+        return None, "Telegram session scope unavailable: current session was not found"
+
+    durable_key = str(current.get("session_key") or "").strip() or None
+    supplied_key = str(current_session_key or "").strip() or None
+    if supplied_key and durable_key and supplied_key != durable_key:
+        return None, "Telegram session scope unavailable: session key does not match"
+    session_key = supplied_key or durable_key
+
+    try:
+        with db._lock:
+            rows = db._conn.execute(
+                """
+                WITH RECURSIVE
+                ancestors(id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT s.parent_session_id
+                    FROM sessions s
+                    JOIN ancestors a ON s.id = a.id
+                    WHERE s.parent_session_id IS NOT NULL
+                ),
+                descendants(id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT s.id
+                    FROM sessions s
+                    JOIN descendants d ON s.parent_session_id = d.id
+                )
+                SELECT id FROM ancestors
+                UNION
+                SELECT id FROM descendants
+                UNION
+                SELECT id FROM sessions
+                WHERE ? IS NOT NULL AND session_key = ?
+                """,
+                (current_session_id, current_session_id, session_key, session_key),
+            ).fetchall()
+    except Exception as exc:
+        logging.error("Telegram session scope resolution failed: %s", exc, exc_info=True)
+        return None, "Telegram session scope unavailable: lineage resolution failed"
+
+    allowed = {str(row[0]) for row in rows if row[0]}
+    if current_session_id not in allowed:
+        return None, "Telegram session scope unavailable: current lineage is unresolved"
+    return allowed, None
+
+
+def _is_session_in_telegram_scope(
+    session_id: str,
+    telegram_scope: Optional[set[str]],
+) -> bool:
+    return telegram_scope is None or bool(session_id and session_id in telegram_scope)
 
 
 def _session_end_reason(db, session_id: str) -> Optional[str]:
@@ -482,50 +575,61 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
     return json.dumps(response, ensure_ascii=False)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:
+def _list_recent_sessions(
+    db,
+    limit: int,
+    current_session_id: str = None,
+    link_profile: str = None,
+    telegram_scope: Optional[set[str]] = None,
+) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
-        # list_sessions_rich (include_children=False) already applies the
-        # canonical child classifier (_LISTABLE_CHILD_SQL): roots, /branch
-        # children, and /new-reset children are admitted (stable markers plus
-        # the legacy same-key heuristic), while delegation/compression
-        # children are hidden. Re-classifying rows here in Python duplicated
-        # that predicate and re-hid legacy pre-marker reset children the SQL
-        # deliberately admits — trust the query instead (#85756).
-        sessions = db.list_sessions_rich(
-            limit=limit + 15,
-            exclude_sources=list(_HIDDEN_SESSION_SOURCES),
-            order_by_last_active=True,
-        )  # fetch extra so we can skip current / compression roots
-
         current_root, has_compression_hop = (
             _resolve_to_parent(db, current_session_id)
             if current_session_id else (None, False)
         )
-
         results = []
-        for s in sessions:
-            sid = s.get("id", "")
-            if sid == current_session_id:
-                continue
-            # Compression continuation: the root's original turns were
-            # summarised into the live child, so hide the root. /new-reset
-            # children share a lineage root but carry no transcript — keep
-            # that root browsable.
-            if has_compression_hop and current_root and sid == current_root:
-                continue
-            results.append({
-                "session_id": sid,
-                "link": _session_link(sid, link_profile),
-                "title": s.get("title") or None,
-                "source": s.get("source", ""),
-                "started_at": s.get("started_at", ""),
-                "last_active": s.get("last_active", ""),
-                "message_count": s.get("message_count", 0),
-                "preview": s.get("preview", ""),
-            })
-            if len(results) >= limit:
+        offset = 0
+        page_limit = (
+            _TELEGRAM_SCOPE_PAGE_LIMIT if telegram_scope is not None else limit + 15
+        )
+        max_scan = _TELEGRAM_SCOPE_MAX_SCAN_ROWS if telegram_scope is not None else page_limit
+
+        while len(results) < limit and offset < max_scan:
+            # list_sessions_rich applies the canonical child classifier: roots,
+            # /branch children and /new-reset children remain listable while
+            # delegation/compression implementation children stay hidden.
+            sessions = db.list_sessions_rich(
+                limit=page_limit,
+                offset=offset,
+                exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+                order_by_last_active=True,
+            )
+            if not sessions:
                 break
+            for s in sessions:
+                sid = s.get("id", "")
+                if sid == current_session_id:
+                    continue
+                if has_compression_hop and current_root and sid == current_root:
+                    continue
+                if not _is_session_in_telegram_scope(sid, telegram_scope):
+                    continue
+                results.append({
+                    "session_id": sid,
+                    "link": _session_link(sid, link_profile),
+                    "title": s.get("title") or None,
+                    "source": s.get("source", ""),
+                    "started_at": s.get("started_at", ""),
+                    "last_active": s.get("last_active", ""),
+                    "message_count": s.get("message_count", 0),
+                    "preview": s.get("preview", ""),
+                })
+                if len(results) >= limit:
+                    break
+            if len(sessions) < page_limit:
+                break
+            offset += len(sessions)
 
         return json.dumps({
             "success": True,
@@ -545,6 +649,7 @@ def _scroll(
     around_message_id: int,
     window: int = 5,
     current_session_id: str = None,
+    telegram_scope: Optional[set[str]] = None,
 ) -> str:
     """Scroll shape: return a window of messages centered on an anchor.
 
@@ -555,6 +660,11 @@ def _scroll(
     if not isinstance(session_id, str) or not session_id.strip():
         return tool_error("scroll requires session_id", success=False)
     session_id = session_id.strip()
+    if not _is_session_in_telegram_scope(session_id, telegram_scope):
+        return tool_error(
+            "session is outside the current Telegram conversation scope",
+            success=False,
+        )
 
     try:
         around_message_id = int(around_message_id)
@@ -685,6 +795,7 @@ def _title_match_result(
     db,
     query: str,
     current_lineage_root: Optional[str],
+    telegram_scope: Optional[set[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Return a discovery-shaped result when the query matches a session title."""
     title_query = _normalize_title_query(query)
@@ -692,9 +803,34 @@ def _title_match_result(
         return None
 
     try:
-        session_id = db.resolve_session_by_title(title_query)
+        if telegram_scope is None:
+            session_id = db.resolve_session_by_title(title_query)
+        else:
+            escaped_title = (
+                title_query.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
+            with db._lock:
+                candidates = db._conn.execute(
+                    """
+                    SELECT id FROM sessions
+                    WHERE title = ? OR title LIKE ? ESCAPE '\\'
+                    ORDER BY CASE WHEN title = ? THEN 1 ELSE 0 END,
+                             started_at DESC
+                    """,
+                    (title_query, f"{escaped_title} #%", title_query),
+                ).fetchall()
+            session_id = next(
+                (
+                    str(row[0])
+                    for row in candidates
+                    if _is_session_in_telegram_scope(str(row[0]), telegram_scope)
+                ),
+                None,
+            )
     except Exception:
-        logging.debug("resolve_session_by_title failed for %r", title_query, exc_info=True)
+        logging.debug("session title lookup failed for %r", title_query, exc_info=True)
         return None
     if not session_id:
         return None
@@ -761,24 +897,54 @@ def _discover(
     detail: str,
     current_session_id: str = None,
     link_profile: str = None,
+    telegram_scope: Optional[set[str]] = None,
 ) -> str:
     """Discovery shape: FTS5 plus adaptive or full result hydration."""
     role_list = role_filter if role_filter else ["user", "assistant"]
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
-    title_result = _title_match_result(db, query, current_lineage_root)
+    title_result = _title_match_result(
+        db,
+        query,
+        current_lineage_root,
+        telegram_scope=telegram_scope,
+    )
 
     try:
-        raw_results = db.search_messages(
-            query=query,
-            role_filter=role_list,
-            exclude_sources=list(_HIDDEN_SESSION_SOURCES),
-            limit=_DISCOVER_SCAN_LIMIT,  # widen so dedup-by-lineage can find
-            # distinct sessions AND so interactive matches buried under a wall
-            # of cron rows are still in hand for the demotion pass below.
-            offset=0,
-            sort=sort,
-            fields=_DISCOVER_SEARCH_FIELDS,
+        raw_results = []
+        offset = 0
+        max_scan = (
+            _TELEGRAM_SCOPE_MAX_SCAN_ROWS
+            if telegram_scope is not None
+            else _DISCOVER_SCAN_LIMIT
         )
+        page_limit = (
+            _TELEGRAM_SCOPE_PAGE_LIMIT
+            if telegram_scope is not None
+            else _DISCOVER_SCAN_LIMIT
+        )
+        while len(raw_results) < _DISCOVER_SCAN_LIMIT and offset < max_scan:
+            page = db.search_messages(
+                query=query,
+                role_filter=role_list,
+                exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+                limit=page_limit,
+                offset=offset,
+                sort=sort,
+                fields=_DISCOVER_SEARCH_FIELDS,
+            )
+            if not page:
+                break
+            raw_results.extend(
+                row
+                for row in page
+                if _is_session_in_telegram_scope(
+                    row.get("session_id", ""), telegram_scope
+                )
+            )
+            if telegram_scope is None or len(page) < page_limit:
+                break
+            offset += len(page)
+        raw_results = raw_results[:_DISCOVER_SCAN_LIMIT]
     except Exception as e:
         logging.error("FTS5 search failed: %s", e, exc_info=True)
         return tool_error(f"Search failed: {e}", success=False)
@@ -818,6 +984,8 @@ def _discover(
         if len(seen_sessions) >= limit:
             break
         raw_sid = r["session_id"]
+        if not _is_session_in_telegram_scope(raw_sid, telegram_scope):
+            continue
         resolved_sid, _ = _resolve_to_parent(db, raw_sid)
         # Skip the current session lineage — UNLESS the hit's transcript has
         # left live context. Three sub-cases:
@@ -949,6 +1117,10 @@ def _session_search_impl(
     profile: str = None,
     # Discovery result shaping (appended to preserve positional compatibility)
     detail: str = "adaptive",
+    # Conversation scope (Telegram defaults to current session key + lineage)
+    scope: str = None,
+    current_platform: str = None,
+    current_session_key: str = None,
     *,
     _owned_dbs: Optional[List[Any]] = None,
 ) -> str:
@@ -975,6 +1147,21 @@ def _session_search_impl(
             if emb_profile and (profile is None or not str(profile).strip()):
                 profile = emb_profile
 
+    telegram_scope, scope_error = _resolve_telegram_scope(
+        db,
+        scope=scope,
+        current_platform=current_platform,
+        current_session_id=current_session_id,
+        current_session_key=current_session_key,
+    )
+    if scope_error:
+        return tool_error(scope_error, success=False)
+    if telegram_scope is not None and profile is not None and str(profile).strip():
+        return tool_error(
+            "cross-profile session access requires explicit scope='all' from Telegram",
+            success=False,
+        )
+
     # Cross-profile read: swap in the named profile's DB (read-only) for every
     # shape below. The current-session-lineage guards no longer apply across
     # profiles, but they key off ids that won't collide, so they stay inert.
@@ -997,11 +1184,17 @@ def _session_search_impl(
             around_message_id=around_message_id,
             window=window,
             current_session_id=current_session_id,
+            telegram_scope=telegram_scope,
         )
 
     # Read shape: a session_id with no anchor → dump the whole session.
     if isinstance(session_id, str) and session_id.strip():
         sid = session_id.strip()
+        if not _is_session_in_telegram_scope(sid, telegram_scope):
+            return tool_error(
+                "session is outside the current Telegram conversation scope",
+                success=False,
+            )
         result = _read_session(db, sid, link_profile=profile)
         if json.loads(result).get("success"):
             return result
@@ -1030,7 +1223,13 @@ def _session_search_impl(
 
     # Browse shape: no query → recent sessions.
     if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
+        return _list_recent_sessions(
+            db,
+            limit,
+            current_session_id,
+            link_profile=profile,
+            telegram_scope=telegram_scope,
+        )
 
     # Parse role_filter
     role_list: Optional[List[str]] = None
@@ -1059,6 +1258,7 @@ def _session_search_impl(
         detail=detail_norm,
         current_session_id=current_session_id,
         link_profile=profile,
+        telegram_scope=telegram_scope,
     )
 
 
@@ -1078,6 +1278,9 @@ def session_search(
     profile: str = None,
     # Discovery result shaping (appended to preserve positional compatibility)
     detail: str = "adaptive",
+    scope: str = None,
+    current_platform: str = None,
+    current_session_key: str = None,
 ) -> str:
     """Run session search and close databases opened by this invocation."""
     owned_dbs: List[Any] = []
@@ -1106,6 +1309,9 @@ def session_search(
             sort=sort,
             profile=profile,
             detail=detail,
+            scope=scope,
+            current_platform=current_platform,
+            current_session_key=current_session_key,
             _owned_dbs=owned_dbs,
         )
     finally:
@@ -1130,7 +1336,8 @@ SESSION_SEARCH_SCHEMA = {
     "description": (
         "Search past sessions stored in the local session DB, or scroll inside one. "
         "FTS5-backed retrieval over the SQLite message store. No LLM calls — every "
-        "shape returns actual messages from the DB.\n\n"
+        "shape returns actual messages from the DB. Telegram calls default to the "
+        "current conversation; pass `scope=all` explicitly for global history.\n\n"
         "SOURCE-FIRST LIMIT\n\n"
         "  This tool searches Hermes conversation history only. It is not evidence "
         "about the current contents of external sources. If the user provided a "
@@ -1281,6 +1488,16 @@ SESSION_SEARCH_SCHEMA = {
                     "behaviour) or 'tool' to search tool output only."
                 ),
             },
+            "scope": {
+                "type": "string",
+                "enum": ["current", "all"],
+                "description": (
+                    "Optional. Telegram defaults to 'current': only the current "
+                    "gateway conversation key and its session lineage are visible. "
+                    "Use 'all' explicitly for global history. Non-Telegram calls "
+                    "retain their existing global behavior."
+                ),
+            },
             "profile": {
                 "type": "string",
                 "description": (
@@ -1313,8 +1530,11 @@ registry.register(
         sort=args.get("sort"),
         detail=args.get("detail", "adaptive"),
         profile=args.get("profile"),
+        scope=args.get("scope"),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),
+        current_platform=kw.get("current_platform"),
+        current_session_key=kw.get("current_session_key"),
     ),
     check_fn=check_session_search_requirements,
     emoji="🔍",

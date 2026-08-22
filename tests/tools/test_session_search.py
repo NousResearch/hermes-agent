@@ -63,6 +63,42 @@ def _seed_modpack_sessions(db):
     db._conn.commit()
 
 
+def _tag_telegram_session(db, session_id, chat_id, thread_id):
+    db.record_gateway_session_peer(
+        session_id,
+        source="telegram",
+        user_id="user-1",
+        session_key=f"telegram:{chat_id}:{thread_id or 'root'}",
+        chat_id=str(chat_id),
+        chat_type="group",
+        thread_id=None if thread_id is None else str(thread_id),
+        display_name="Scoped chat",
+        origin_json="{}",
+    )
+
+
+def _seed_telegram_scope_sessions(db):
+    for sid in ("s_current", "s_same", "s_other_thread", "s_other_chat"):
+        db.create_session(sid, source="telegram")
+    _tag_telegram_session(db, "s_current", "chat-1", "topic-7")
+    _tag_telegram_session(db, "s_same", "chat-1", "topic-7")
+    _tag_telegram_session(db, "s_other_thread", "chat-1", "topic-8")
+    _tag_telegram_session(db, "s_other_chat", "chat-2", "topic-7")
+    db.create_session("s_child", source="subagent", parent_session_id="s_current")
+    for sid in ("s_current", "s_same", "s_other_thread", "s_other_chat", "s_child"):
+        db.append_message(sid, role="user", content=f"telegram scopeprobe {sid}")
+        db.append_message(sid, role="assistant", content=f"scope answer {sid}")
+    db._conn.commit()
+
+
+def _telegram_scope_kwargs():
+    return {
+        "current_session_id": "s_current",
+        "current_platform": "telegram",
+        "current_session_key": "telegram:chat-1:topic-7",
+    }
+
+
 # =========================================================================
 # Schema invariants
 # =========================================================================
@@ -82,6 +118,7 @@ class TestSchema:
         assert "window" in params
         # Shared
         assert "role_filter" in params
+        assert params["scope"]["enum"] == ["current", "all"]
         # Mode is inferred from which args are set — no explicit mode param
         assert "mode" not in params
 
@@ -99,7 +136,13 @@ class TestSchema:
             "sort",
             "profile",
         ]
-        assert parameters == [*historical_prefix, "detail"]
+        assert parameters[: len(historical_prefix)] == historical_prefix
+        assert parameters[len(historical_prefix):] == [
+            "detail",
+            "scope",
+            "current_platform",
+            "current_session_key",
+        ]
 
 
 class TestFormatTimestamp:
@@ -453,6 +496,227 @@ class TestReadShape:
         assert result["message_count"] == 50
         assert result["truncated"] is True
         assert len(result["messages"]) == 30  # head 20 + tail 10
+
+
+# =========================================================================
+# Telegram conversation scope
+# =========================================================================
+
+class TestTelegramConversationScope:
+    def test_discovery_and_browse_stay_in_current_topic(self, db):
+        _seed_telegram_scope_sessions(db)
+        kwargs = _telegram_scope_kwargs()
+
+        discovered = json.loads(session_search(query="scopeprobe", db=db, **kwargs))
+        assert [r["session_id"] for r in discovered["results"]] == ["s_same"]
+
+        browsed = json.loads(session_search(db=db, **kwargs))
+        assert [r["session_id"] for r in browsed["results"]] == ["s_same"]
+
+    def test_large_history_has_bounded_query_budget_and_no_cross_topic_leak(self, db):
+        _seed_telegram_scope_sessions(db)
+        for index in range(1_200):
+            sid = f"noise_{index}"
+            db.create_session(sid, source="telegram")
+            _tag_telegram_session(db, sid, "chat-1", "topic-8")
+            db.append_message(sid, role="user", content="scopeprobe noisy history")
+        db._conn.commit()
+
+        statements = []
+        db._conn.set_trace_callback(statements.append)
+        try:
+            result = json.loads(
+                session_search(query="scopeprobe", db=db, **_telegram_scope_kwargs())
+            )
+        finally:
+            db._conn.set_trace_callback(None)
+
+        assert [row["session_id"] for row in result["results"]] == ["s_same"]
+        selects = [
+            sql
+            for sql in statements
+            if sql.lstrip().upper().startswith(("SELECT", "WITH"))
+        ]
+        assert len(selects) <= 20
+
+    def test_title_collision_falls_back_to_in_topic_session(self, db, monkeypatch):
+        _seed_telegram_scope_sessions(db)
+        db.set_session_title("s_same", "shared-title")
+        monkeypatch.setattr(
+            db, "resolve_session_by_title", lambda _title: "s_other_thread"
+        )
+
+        result = json.loads(
+            session_search(query="shared-title", db=db, **_telegram_scope_kwargs())
+        )
+        assert result["results"][0]["session_id"] == "s_same"
+
+    def test_scoped_title_match_preserves_latest_numbered_continuation(self, db):
+        _seed_telegram_scope_sessions(db)
+        db.set_session_title("s_same", "shared-title")
+        db.create_session("s_same_2", source="telegram")
+        _tag_telegram_session(db, "s_same_2", "chat-1", "topic-7")
+        db.set_session_title("s_same_2", "shared-title #2")
+        db.append_message("s_same_2", role="user", content="numbered continuation")
+
+        result = json.loads(
+            session_search(query="shared-title", db=db, **_telegram_scope_kwargs())
+        )
+
+        assert result["results"][0]["session_id"] == "s_same_2"
+        assert result["results"][0]["matched_role"] == "session_title"
+
+    def test_read_and_scroll_reject_other_topic(self, db):
+        _seed_telegram_scope_sessions(db)
+        kwargs = _telegram_scope_kwargs()
+        anchor = db.get_messages("s_other_thread")[0]["id"]
+
+        read_result = json.loads(
+            session_search(session_id="s_other_thread", db=db, **kwargs)
+        )
+        scroll_result = json.loads(
+            session_search(
+                session_id="s_other_thread",
+                around_message_id=anchor,
+                db=db,
+                **kwargs,
+            )
+        )
+        assert read_result["success"] is False
+        assert scroll_result["success"] is False
+        assert "scope" in read_result["error"].lower()
+        assert "scope" in scroll_result["error"].lower()
+
+    def test_parent_child_lineage_is_allowed(self, db):
+        _seed_telegram_scope_sessions(db)
+        result = json.loads(
+            session_search(session_id="s_child", db=db, **_telegram_scope_kwargs())
+        )
+        assert result["success"] is True
+        assert result["session_id"] == "s_child"
+
+    def test_scope_all_explicitly_restores_global_access(self, db):
+        _seed_telegram_scope_sessions(db)
+        kwargs = _telegram_scope_kwargs()
+        kwargs["scope"] = "all"
+        result = json.loads(
+            session_search(session_id="s_other_chat", db=db, **kwargs)
+        )
+        assert result["success"] is True
+
+    def test_compression_parent_remains_discoverable_in_topic_lineage(self, db):
+        db.create_session("s_parent", source="telegram")
+        _tag_telegram_session(db, "s_parent", "chat-1", "topic-7")
+        db.append_message(
+            "s_parent", role="user", content="telegram compressed phoenix detail"
+        )
+        db.end_session("s_parent", "compression")
+        db.create_session(
+            "s_current", source="telegram", parent_session_id="s_parent"
+        )
+        _tag_telegram_session(db, "s_current", "chat-1", "topic-7")
+
+        result = json.loads(
+            session_search(
+                query="compressed phoenix",
+                db=db,
+                **_telegram_scope_kwargs(),
+            )
+        )
+        assert result["success"] is True
+        assert [r["session_id"] for r in result["results"]] == ["s_parent"]
+
+    def test_legacy_telegram_without_peer_provenance_falls_back_to_lineage_only(self, db):
+        db.create_session("legacy_parent", source="telegram")
+        db.append_message(
+            "legacy_parent", role="user", content="legacy lineage-only phoenix"
+        )
+        db.end_session("legacy_parent", "session_reset")
+        db.create_session(
+            "legacy_current",
+            source="telegram",
+            parent_session_id="legacy_parent",
+        )
+        db.create_session(
+            "legacy_sibling",
+            source="telegram",
+            parent_session_id="legacy_parent",
+        )
+        db.append_message(
+            "legacy_sibling", role="user", content="legacy lineage-only phoenix"
+        )
+        db.create_session("other_topic", source="telegram")
+        _tag_telegram_session(db, "other_topic", "chat-2", "topic-9")
+        db.append_message(
+            "other_topic", role="user", content="legacy lineage-only phoenix"
+        )
+        db._conn.commit()
+
+        result = json.loads(
+            session_search(
+                query="lineage-only phoenix",
+                db=db,
+                current_session_id="legacy_current",
+                current_platform="telegram",
+                current_session_key=None,
+            )
+        )
+
+        assert result["success"] is True
+        assert [row["session_id"] for row in result["results"]] == ["legacy_parent"]
+
+        sibling_read = json.loads(
+            session_search(
+                session_id="legacy_sibling",
+                db=db,
+                current_session_id="legacy_current",
+                current_platform="telegram",
+                current_session_key=None,
+            )
+        )
+        assert sibling_read["success"] is False
+        assert "outside" in sibling_read["error"].lower()
+
+    def test_missing_current_session_fails_closed(self, db):
+        result = json.loads(
+            session_search(
+                db=db,
+                current_session_id="missing",
+                current_platform="telegram",
+                current_session_key=None,
+            )
+        )
+        assert result["success"] is False
+        assert "current session" in result["error"].lower()
+
+    def test_non_telegram_default_remains_global(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(
+            session_search(
+                query="modpack",
+                db=db,
+                current_session_id="s_newest",
+                current_platform="cli",
+            )
+        )
+        assert result["success"] is True
+        assert result["count"] >= 1
+
+    def test_cli_resume_of_telegram_session_is_not_implicitly_scoped(self, db):
+        _seed_telegram_scope_sessions(db)
+        result = json.loads(
+            session_search(
+                query="scopeprobe",
+                db=db,
+                current_session_id="s_current",
+                current_platform="cli",
+                current_session_key="telegram:chat-1:topic-7",
+                limit=10,
+            )
+        )
+        returned = {row["session_id"] for row in result["results"]}
+        assert "s_other_thread" in returned
+        assert "s_other_chat" in returned
 
 
 # =========================================================================

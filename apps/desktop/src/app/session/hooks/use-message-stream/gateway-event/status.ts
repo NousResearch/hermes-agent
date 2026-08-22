@@ -175,9 +175,11 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     // the failed turn (same intent as the message.complete clear).
     if (sessionId) {
       clearAllPrompts(sessionId)
+
       if (!clarifyStillBlocking(sessionClarifyRequest(sessionId).get())) {
         clearClarifyRequest(undefined, sessionId)
       }
+
       clearActiveSessionTodos(sessionId)
       reconcileSessionCompacting(sessionId, 'terminal')
       compactedTurnRef.current.delete(sessionId)

@@ -157,9 +157,11 @@ export const clarifyStillBlocking = (request: ClarifyRequest | null, now: number
   if (!request) {
     return false
   }
+
   if (request.timeoutSeconds == null || request.receivedAt == null) {
     return true
   }
+
   return now - request.receivedAt < request.timeoutSeconds
 }
 

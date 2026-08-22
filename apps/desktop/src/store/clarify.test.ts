@@ -9,9 +9,9 @@ import {
   hasClarifyRequest,
   normalizeChoices,
   normalizeQuestions,
+  sessionClarifyRequest,
   setClarifyRequest,
-  skipClarifyRequest,
-  sessionClarifyRequest
+  skipClarifyRequest
 } from './clarify'
 import { $gateway } from './gateway'
 import { $activeSessionId } from './session'

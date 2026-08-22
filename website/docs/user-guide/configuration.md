@@ -648,6 +648,19 @@ hermes config set skills.config.myplugin.path ~/myplugin-data
 
 For details on declaring config settings in your own skills, see [Creating Skills — Config Settings](/developer-guide/creating-skills#config-settings-configyaml).
 
+### Auto-loading skills every session
+
+Pin skills so they are fully loaded at the start of **every** new session — like a mode the agent is always in:
+
+```yaml
+skills:
+  auto_load:
+    - my-workflow
+    - github-pr-workflow
+```
+
+Each entry is loaded once when a session's system prompt is first built (CLI, TUI, gateway, cron, and API sessions all included) and the rendered bytes are reused for the life of the conversation, so prompt caching stays intact. Missing or disabled skills log a warning and are skipped. `--ignore-rules` (or `HERMES_IGNORE_RULES=1`) suppresses auto-load along with the other auto-injected context. The setting is profile-scoped; see [CLI — persistent skill auto-load](/user-guide/cli) for details.
+
 ### Guard on agent-created skill writes
 
 When the agent uses `skill_manage` to create, edit, patch, or delete a skill, Hermes can optionally scan the new/updated content for dangerous keyword patterns (credential harvesting, obvious prompt injection, exfil instructions). The scanner is **off by default** — real agent workflows that legitimately touch `~/.ssh/` or mention `$OPENAI_API_KEY` were tripping the heuristic too often. Turn it back on if you want the scanner to prompt you before the agent's skill writes land:

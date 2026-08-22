@@ -1703,8 +1703,13 @@ def init_agent(
     # Cross-session-stable prefix of the cached prompt. It remains separate
     # from the persisted string and is used only to place an early cache marker.
     agent._cached_system_prompt_static: Optional[str] = None
-    
-    # Filesystem checkpoint manager (transparent — not a tool)
+    # Auto-loaded skill content is resolved exactly once for this AIAgent.
+    # Cache invalidation/reconstruction must reuse these exact bytes rather
+    # than reread profile config or skill files.
+    agent._auto_load_skills_resolved = False
+    agent._auto_load_skills_result = ("", [], [])
+
+    # Filesystem checkpoint manager
     from tools.checkpoint_manager import CheckpointManager
     agent._checkpoint_mgr = CheckpointManager(
         enabled=checkpoints_enabled,

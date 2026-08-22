@@ -262,6 +262,30 @@ hermes chat -s github-pr-workflow -s github-auth
 
 Hermes loads each named skill into the session prompt before the first turn. The same flag works in interactive mode and single-query mode.
 
+### Persistent auto-load via config
+
+If you want the same set of skills loaded automatically at the start of **every** new session, set `skills.auto_load` in `config.yaml`:
+
+```yaml
+skills:
+  auto_load:
+    - hermes-agent-dev
+    - github-pr-workflow
+```
+
+Each entry is a skill name or glob pattern. At session build time Hermes resolves the list, deduplicates it against the session's existing skill set, and injects each matching skill as a fully-loaded skill message in the system prompt. This is the persistent equivalent of the `-s` launch flag, useful for workflows where you always need the same context.
+
+Auto-load injection can be skipped for a troubleshooting run with the `--ignore-rules` flag:
+
+```bash
+hermes chat --ignore-rules
+hermes chat -s my-skill --ignore-rules   # explicit -s still loads, but auto-load is skipped
+```
+
+`--ignore-rules` disables auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded (auto-load) skills. It works by setting the `HERMES_IGNORE_RULES` environment variable to `1`, so setting that variable directly has the same effect without a flag. For a fully isolated run, combine it with `--ignore-user-config`, or use `--safe-mode` which implies both.
+
+The `skills.auto_load` setting is **profile-scoped**. Each profile's `config.yaml` controls its own auto-load list, so you can have different preloaded skills per profile. Because `--ignore-rules` acts at the session level, it overrides auto-load for any profile when present.
+
 ## Skill Slash Commands
 
 Every installed skill in `~/.hermes/skills/` is automatically registered as a slash command. The skill name becomes the command:

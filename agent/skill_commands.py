@@ -839,6 +839,7 @@ def build_stacked_skill_invocation_message(
 def build_preloaded_skills_prompt(
     skill_identifiers: list[str],
     task_id: str | None = None,
+    excluded_loaded_names: set[str] | None = None,
 ) -> tuple[str, list[str], list[str]]:
     """Load one or more skills for session-wide CLI/TUI preloading.
 
@@ -861,12 +862,14 @@ def build_preloaded_skills_prompt(
     except Exception:
         disabled_names = set()
 
-    seen: set[str] = set()
+    seen_identifiers: set[str] = set()
+    seen_loaded_names = set(excluded_loaded_names or ())
+    resolved_names: set[str] = set()
     for raw_identifier in skill_identifiers:
         identifier = (raw_identifier or "").strip()
-        if not identifier or identifier in seen:
+        if not identifier or identifier in seen_identifiers:
             continue
-        seen.add(identifier)
+        seen_identifiers.add(identifier)
 
         loaded = _load_skill_payload(identifier, task_id=task_id)
         if not loaded:
@@ -879,6 +882,18 @@ def build_preloaded_skills_prompt(
             missing.append(identifier)
             continue
 
+        # Deduplicate prompt injection only after a successful, enabled load.
+        # The canonical name returned by skill_view() is shared by aliases and
+        # path forms. Already auto-loaded skills still count as successfully
+        # resolved explicit requests so a separate typo can degrade gracefully.
+        if skill_name in seen_loaded_names:
+            if skill_name not in resolved_names:
+                loaded_names.append(skill_name)
+                resolved_names.add(skill_name)
+            continue
+        seen_loaded_names.add(skill_name)
+        resolved_names.add(skill_name)
+
         # Track active usage for Curator lifecycle management (#17782)
         try:
             from tools.skill_usage import bump_use
@@ -890,6 +905,118 @@ def build_preloaded_skills_prompt(
             f'[IMPORTANT: The user launched this CLI session with the "{skill_name}" skill '
             "preloaded. Treat its instructions as active guidance for the duration of this "
             "session unless the user overrides them.]"
+        )
+        prompt_parts.append(
+            _build_skill_message(
+                loaded_skill,
+                skill_dir,
+                activation_note,
+                session_id=task_id,
+            )
+        )
+        loaded_names.append(skill_name)
+
+    return "\n\n".join(prompt_parts), loaded_names, missing
+
+def resolve_auto_load_skills(user_config: dict | None = None) -> list[str]:
+    """Read skills.auto_load from user config and return the deduplicated list.
+
+    If user_config is None, reads from the active config file.
+    Returns an empty list if the key is missing or empty.
+    """
+    if user_config is None:
+        try:
+            from hermes_cli.config import load_config as _load_hermes_config
+            user_config = _load_hermes_config()
+        except Exception:
+            return []
+
+    skills_block = user_config.get("skills", {})
+    if not isinstance(skills_block, dict):
+        return []
+    auto_load = skills_block.get("auto_load")
+    if not auto_load or not isinstance(auto_load, list):
+        return []
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for entry in auto_load:
+        if not isinstance(entry, str):
+            continue
+        name = entry.strip()
+        if name and name not in seen:
+            seen.add(name)
+            result.append(name)
+    return result
+
+
+def build_auto_load_prompt(
+    task_id: str | None = None,
+    user_config: dict | None = None,
+) -> tuple[str, list[str], list[str]]:
+    """Load auto_load skills and build their prompt block.
+
+    Reads skills.auto_load from config, loads each skill, and returns
+    (prompt_text, loaded_names, missing_names).  Missing skills are
+    listed in ``missing_names`` rather than raising an error — callers
+    should log a warning for them.
+
+    Uses ``_load_skill_payload`` + the disabled-skill gate directly
+    (same primitives as ``build_preloaded_skills_prompt``) with a
+    purpose-built activation note, rather than reusing
+    ``build_preloaded_skills_prompt`` and string-replacing the note.
+    A string replace is fragile: if the upstream note wording changes,
+    the replace silently breaks and the CLI-specific note leaks into
+    all sessions.
+    """
+    auto_skills = resolve_auto_load_skills(user_config)
+    if not auto_skills:
+        return "", [], []
+
+    # Same disabled-skill gate as build_preloaded_skills_prompt (#59156).
+    try:
+        from agent.skill_utils import get_disabled_skill_names
+        disabled_names = get_disabled_skill_names()
+    except Exception:
+        disabled_names = set()
+
+    prompt_parts: list[str] = []
+    loaded_names: list[str] = []
+    missing: list[str] = []
+    seen_identifiers: set[str] = set()
+    seen_loaded_names: set[str] = set()
+
+    for identifier in auto_skills:
+        if identifier in seen_identifiers:
+            continue
+        seen_identifiers.add(identifier)
+
+        loaded = _load_skill_payload(identifier, task_id=task_id)
+        if not loaded:
+            missing.append(identifier)
+            continue
+
+        loaded_skill, skill_dir, skill_name = loaded
+
+        if skill_name in disabled_names or identifier in disabled_names:
+            missing.append(identifier)
+            continue
+
+        if skill_name in seen_loaded_names:
+            continue
+        seen_loaded_names.add(skill_name)
+
+        # Track active usage for Curator lifecycle management (#17782)
+        try:
+            from tools.skill_usage import bump_use
+            bump_use(skill_name)
+        except Exception:
+            pass  # Non-critical
+
+        activation_note = (
+            f'[IMPORTANT: The "{skill_name}" skill is auto-loaded via config '
+            "(skills.auto_load). Treat its instructions as active guidance "
+            "for the duration of this session unless the user overrides them.]"
         )
         prompt_parts.append(
             _build_skill_message(

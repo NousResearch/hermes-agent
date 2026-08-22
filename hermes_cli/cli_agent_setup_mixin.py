@@ -542,6 +542,13 @@ class CLIAgentSetupMixin:
                 notice_clear_callback=self._on_notice_clear,
                 reaction_callback=self._on_reaction,
             )
+            # main() may pre-resolve auto-load skills to deduplicate them
+            # against explicit --skills. Seed this AIAgent's lifecycle cache so
+            # the shared prompt path does not reread config or skill files.
+            _auto_load_result = getattr(self, "_auto_load_skills_result", None)
+            if _auto_load_result is not None:
+                self.agent._auto_load_skills_result = _auto_load_result
+                self.agent._auto_load_skills_resolved = True
             # Store reference for atexit memory provider shutdown.
             # NOTE: this MUST write to the ``cli`` module's global, not a
             # local module global. ``_run_cleanup`` (in cli.py) reads

@@ -86,6 +86,33 @@ def test_home_relative_cwd_collapse_is_case_insensitive_on_windows(
     assert account.lower() not in result.lower()
 
 
+def test_home_relative_cwd_collapses_home_with_redundant_components(
+    tmp_path, monkeypatch
+):
+    r"""The home collapse must survive a HOME value with redundant components.
+
+    ``expanduser("~")`` returns whatever HOME/USERPROFILE literally contains
+    -- unlike ``cwd``, it is never passed through ``abspath``. A home of
+    ``.../decoy/..`` names the same directory as a plain path once resolved,
+    but the un-normalized string never prefix-matches a normalized
+    descendant cwd, so the redaction no-ops and the footer publishes the
+    absolute path -- including the OS account name -- regardless of the
+    case fix this file already applies.
+    """
+    redundant_home = tmp_path / "decoy" / ".."
+    _set_home(monkeypatch, redundant_home)
+    sub = tmp_path / "projects" / "hermes"
+    sub.mkdir(parents=True)
+
+    result = _home_relative_cwd(str(sub))
+
+    assert result.startswith("~"), (
+        f"home collapse no-opped for a home with redundant components: {result!r}"
+    )
+    account = os.path.basename(str(tmp_path))
+    assert account not in result
+
+
 # ---------------------------------------------------------------------------
 # format_runtime_footer
 # ---------------------------------------------------------------------------

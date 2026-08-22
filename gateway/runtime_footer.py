@@ -58,13 +58,22 @@ def _home_relative_cwd(cwd: str) -> str:
     publishes the absolute path, including the OS account name, to whatever
     chat surface the reply is delivered to.
 
+    ``expanduser("~")`` has the same gap one level up: it returns whatever
+    ``HOME``/``USERPROFILE`` literally contains, without collapsing redundant
+    ``..``/``.`` components — unlike ``cwd``, which always goes through
+    ``abspath`` here. A home value like ``C:\Users\decoy\..\me`` and a cwd of
+    ``C:\Users\me\src`` name the same directory, but the un-normalized home
+    string never prefix-matches the normalized cwd, so the redaction no-ops
+    for that account regardless of the case fix above. Normalizing home
+    through the same ``abspath`` call closes this the same way.
+
     Only the comparison is normalized; the tail is sliced from the original
     ``p`` so the displayed path keeps its real casing.
     """
     if not cwd:
         return ""
     try:
-        home = os.path.expanduser("~")
+        home = os.path.abspath(os.path.expanduser("~"))
         p = os.path.abspath(cwd)
         # normcase folds case on Windows only; it is identity on POSIX
         # (including macOS), so behaviour there is unchanged.

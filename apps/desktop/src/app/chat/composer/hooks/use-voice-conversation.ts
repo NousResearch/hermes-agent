@@ -13,6 +13,7 @@ import {
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
+import { $voiceSilenceMs } from '@/store/voice-prefs'
 
 import { useMicRecorder } from './use-mic-recorder'
 
@@ -234,9 +235,11 @@ export function useVoiceConversation({
 
     try {
       // VAD tuning mirrors `tools.voice_mode` defaults so the browser loop matches the CLI.
+      // silenceMs honors `voice.silence_duration` from config.yaml (default 3s) —
+      // see $voiceSilenceMs — instead of a fixed pause threshold.
       await handle.start({
         silenceLevel: 0.075,
-        silenceMs: 1_250,
+        silenceMs: $voiceSilenceMs.get(),
         idleSilenceMs: 12_000,
         onError: error => {
           notifyError(error, voiceCopy.microphoneFailed)

@@ -5,7 +5,7 @@ vi.mock('@/hermes', () => ({
   saveHermesConfig: vi.fn(async () => undefined)
 }))
 
-import { $voiceStopPhrase, applyVoiceStopPhraseFromConfig } from './voice-prefs'
+import { $voiceSilenceMs, $voiceStopPhrase, applyVoiceSilenceMsFromConfig, applyVoiceStopPhraseFromConfig } from './voice-prefs'
 
 describe('applyVoiceStopPhraseFromConfig', () => {
   it('defaults to "stop" when the key is absent (backend default applies)', () => {
@@ -34,5 +34,34 @@ describe('applyVoiceStopPhraseFromConfig', () => {
   it('malformed entries are skipped; all-blank list disables', () => {
     applyVoiceStopPhraseFromConfig({ voice: { stop_phrases: ['  ', ''] } })
     expect($voiceStopPhrase.get()).toBeNull()
+  })
+})
+
+describe('applyVoiceSilenceMsFromConfig', () => {
+  it('converts a configured silence_duration from seconds to milliseconds', () => {
+    applyVoiceSilenceMsFromConfig({ voice: { silence_duration: 10 } })
+    expect($voiceSilenceMs.get()).toBe(10_000)
+  })
+
+  it('falls back to the documented 3s default when the key is absent', () => {
+    applyVoiceSilenceMsFromConfig({ voice: {} })
+    expect($voiceSilenceMs.get()).toBe(3_000)
+
+    applyVoiceSilenceMsFromConfig(null)
+    expect($voiceSilenceMs.get()).toBe(3_000)
+  })
+
+  it('falls back to the default for non-numeric or non-positive values (hand-edited config.yaml)', () => {
+    applyVoiceSilenceMsFromConfig({ voice: { silence_duration: true } })
+    expect($voiceSilenceMs.get()).toBe(3_000)
+
+    applyVoiceSilenceMsFromConfig({ voice: { silence_duration: '5' } })
+    expect($voiceSilenceMs.get()).toBe(3_000)
+
+    applyVoiceSilenceMsFromConfig({ voice: { silence_duration: 0 } })
+    expect($voiceSilenceMs.get()).toBe(3_000)
+
+    applyVoiceSilenceMsFromConfig({ voice: { silence_duration: -1 } })
+    expect($voiceSilenceMs.get()).toBe(3_000)
   })
 })

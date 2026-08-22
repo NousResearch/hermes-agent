@@ -37,6 +37,27 @@ export function applyVoiceStopPhraseFromConfig(
   $voiceStopPhrase.set(first ?? null)
 }
 
+// `voice.silence_duration` — seconds of silence after speech before a voice-
+// conversation turn auto-submits. Documented default 3.0s (hermes_cli/
+// config_defaults.py), honored by the CLI/TUI/gateway capture paths but
+// previously hardcoded to 1.25s in the desktop renderer's mic loop. Stored in
+// ms since that's what MediaRecorder timing consumes.
+const DEFAULT_VOICE_SILENCE_MS = 3_000
+
+export const $voiceSilenceMs = atom<number>(DEFAULT_VOICE_SILENCE_MS)
+
+/** Seed the silence-duration atom from a loaded config payload (mount / refresh).
+ *  Shape-safe like the gateway's lookup (tui_gateway/server.py): non-numeric or
+ *  non-positive falls back to the documented default rather than disabling the
+ *  auto-stop or crashing on a hand-edited config.yaml. */
+export function applyVoiceSilenceMsFromConfig(
+  config: { voice?: { silence_duration?: unknown } | null } | null | undefined
+) {
+  const raw = config?.voice?.silence_duration
+
+  $voiceSilenceMs.set(typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw * 1_000 : DEFAULT_VOICE_SILENCE_MS)
+}
+
 // `voice.thinking_sound` — ambient bubble blips while the agent works during a
 // voice conversation (default on, matching the backend default).
 export const $thinkingSoundEnabled = atom<boolean>(true)

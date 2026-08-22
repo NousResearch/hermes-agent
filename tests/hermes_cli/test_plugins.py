@@ -1737,6 +1737,139 @@ class TestPluginCommands:
         assert len(mgr._plugin_commands) == 0
         assert "empty name" in caplog.text
 
+    def test_register_command_builtin_collision_rejected_without_override(self, caplog):
+        """A plugin command colliding with a built-in is skipped (unchanged)."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="collide-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            ctx.register_command("model", lambda a: "shadow")
+        assert "model" not in mgr._plugin_commands
+        assert "conflicts with a built-in" in caplog.text
+
+    def test_register_command_override_blocked_without_operator_opt_in(
+        self, tmp_path, monkeypatch
+    ):
+        """override=True must be rejected when the operator hasn't opted in.
+
+        Mirrors the register_tool override gate: a third-party plugin cannot
+        silently shadow a built-in command (e.g. /model, /config) without the
+        operator's explicit, fail-closed consent.
+        """
+        from hermes_cli.plugins import PluginCommandOverrideError
+
+        hermes_home = tmp_path / "hermes_test"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        # Plugin enabled but NO allow_command_override / granted capability.
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["evil-cmd-plugin"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mgr = PluginManager()
+        manifest = PluginManifest(name="evil-cmd-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        with pytest.raises(PluginCommandOverrideError) as excinfo:
+            ctx.register_command("model", lambda a: "hijacked", override=True)
+        assert "allow_command_override" in str(excinfo.value)
+        assert "evil-cmd-plugin" in str(excinfo.value)
+        # Nothing registered — the built-in is untouched.
+        assert "model" not in mgr._plugin_commands
+
+    def test_register_command_override_allowed_with_legacy_optin(
+        self, tmp_path, monkeypatch
+    ):
+        """override=True succeeds when the operator sets allow_command_override."""
+        hermes_home = tmp_path / "hermes_test"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "plugins": {
+                        "enabled": ["good-cmd-plugin"],
+                        "entries": {
+                            "good-cmd-plugin": {"allow_command_override": True}
+                        },
+                    }
+                }
+            )
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mgr = PluginManager()
+        manifest = PluginManifest(
+            name="good-cmd-plugin", key="good-cmd-plugin", source="user"
+        )
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command("model", lambda a: "wrapped", override=True)
+        assert "model" in mgr._plugin_commands
+        assert mgr._plugin_commands["model"]["override_builtin"] is True
+
+    def test_register_command_override_allowed_for_bundled_plugin(self):
+        """Bundled plugins are trusted for command override (no config needed)."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="core-cmd", source="bundled")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command("new", lambda a: "bundled-new", override=True)
+        assert "new" in mgr._plugin_commands
+        assert mgr._plugin_commands["new"]["override_builtin"] is True
+
+    def test_override_handler_resolver_only_returns_authorized_overrides(self):
+        """get_plugin_command_override_handler returns handlers ONLY for entries
+        flagged as authorized built-in overrides — the shared cross-surface
+        precedence primitive used by CLI, gateway and TUI.
+        """
+        from hermes_cli.plugins import get_plugin_command_override_handler
+
+        mgr = PluginManager()
+        # A bundled plugin authorized to override /new.
+        manifest = PluginManifest(name="core-cmd", source="bundled")
+        ctx = PluginContext(manifest, mgr)
+        ctx.register_command("new", lambda a: "bundled-new", override=True)
+        # A normal (non-override) plugin command that does not collide.
+        manifest2 = PluginManifest(name="plain-cmd", source="user")
+        ctx2 = PluginContext(manifest2, mgr)
+        ctx2.register_command("mycmd", lambda a: "plain")
+
+        import hermes_cli.plugins as plugins_mod
+
+        with patch.object(plugins_mod, "_ensure_plugins_discovered", return_value=mgr):
+            # /new is an authorized override → resolver returns the handler.
+            handler = get_plugin_command_override_handler("new")
+            assert handler is not None
+            assert handler("") == "bundled-new"
+            # /mycmd is a plain plugin command (no built-in) → NOT an override.
+            assert get_plugin_command_override_handler("mycmd") is None
+            # Unknown command → None.
+            assert get_plugin_command_override_handler("nope") is None
+
+    def test_command_override_precedence_consistent_across_surfaces(self):
+        """The SAME resolver gates override precedence on all three surfaces.
+
+        CLI (cli.process_command), gateway (gateway/run.py) and TUI
+        (tui_gateway/methods_tools.py slash.exec) each short-circuit to
+        get_plugin_command_override_handler() BEFORE built-in dispatch, so an
+        authorized override wins identically everywhere. This test asserts the
+        three call sites exist and consult the shared primitive.
+        """
+        import inspect
+        import cli as cli_mod
+        import gateway.run as gw_mod
+        import tui_gateway.methods_tools as tui_mod
+
+        cli_src = inspect.getsource(cli_mod.HermesCLI.process_command)
+        assert "get_plugin_command_override_handler" in cli_src
+
+        gw_src = inspect.getsource(gw_mod)
+        assert "get_plugin_command_override_handler" in gw_src
+
+        tui_src = inspect.getsource(tui_mod)
+        assert "get_plugin_command_override_handler" in tui_src
+
 
 
 

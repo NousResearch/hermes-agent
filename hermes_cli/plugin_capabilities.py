@@ -128,6 +128,14 @@ CAPABILITY_REGISTRY: Dict[str, CapabilitySpec] = {
                 "(add reactions, rename threads) via ctx.platform_actions"
             ),
         ),
+        CapabilitySpec(
+            id="commands.override",
+            legacy_path=("allow_command_override",),
+            description=(
+                "Shadow a built-in slash command (e.g. /new, /model) — an "
+                "override intercepts what users invoke through that command"
+            ),
+        ),
     )
 }
 

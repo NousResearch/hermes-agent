@@ -245,9 +245,10 @@ def register(ctx):
         ctx.register_tool(...)   # register under a non-conflicting name
 ```
 
-Known capability ids: `tools.override`, `llm.provider_override`,
-`llm.model_override`, `llm.agent_id_override`, `llm.profile_override`,
-`llm.task_override` (see `hermes_cli/plugin_capabilities.py` for the
+Known capability ids: `tools.override`, `commands.override`,
+`llm.provider_override`, `llm.model_override`, `llm.agent_id_override`,
+`llm.profile_override`, `llm.task_override`, `gateway.platform_actions`
+(see `hermes_cli/plugin_capabilities.py` for the
 canonical registry). Unknown ids are ignored. The older per-capability
 config keys (`plugins.entries.<id>.allow_tool_override`, …) still work but
 are deprecated — declare capabilities instead so users get a single,
@@ -1157,13 +1158,14 @@ def register(ctx):
 
 After registration, users can type `/mystatus` in any session. The command appears in autocomplete, `/help` output, and the Telegram bot menu.
 
-**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "")`
+**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "", override: bool = False)`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `name` | `str` | Command name without the leading slash (e.g. `"lcm"`, `"mystatus"`) |
 | `handler` | `Callable[[str], str \| None]` | Called with the raw argument string. May also be `async`. |
 | `description` | `str` | Shown in `/help`, autocomplete, and Telegram bot menu |
+| `override` | `bool` | When `True`, shadow a built-in command of the same name (requires operator opt-in, see below). Default `False`. |
 
 **Key differences from `register_cli_command()`:**
 
@@ -1174,7 +1176,20 @@ After registration, users can type `/mystatus` in any session. The command appea
 | Handler receives | Raw args string | argparse `Namespace` |
 | Use case | Diagnostics, status, quick actions | Complex subcommand trees, setup wizards |
 
-**Conflict protection:** If a plugin tries to register a name that conflicts with a built-in command (`help`, `model`, `new`, etc.), the registration is silently rejected with a log warning. Built-in commands always take precedence.
+**Conflict protection:** If a plugin tries to register a name that conflicts with a built-in command (`help`, `model`, `new`, etc.) **without** `override=True`, the registration is silently rejected with a log warning and the built-in takes precedence (unchanged behavior).
+
+**Overriding a built-in command (`override=True`):** Pass `override=True` to intentionally shadow a built-in — for example to wrap `/new` and add lineage metadata. When authorized, the plugin command wins **consistently on every surface** (CLI, gateway, and TUI): each dispatch surface consults the same authorized-override resolver *before* built-in dispatch, so the override never behaves differently depending on where it's invoked.
+
+Overriding a built-in command requires the operator to opt in per-plugin, mirroring the fail-closed gate that `register_tool(override=True)` already enforces. Set `plugins.entries.<plugin_id>.allow_command_override: true` in `config.yaml` (or grant the `commands.override` capability). Without that gate, `register_command(override=True)` raises `PluginCommandOverrideError` and the built-in is left untouched. Bundled plugins shipped with Hermes core are trusted by default. The override is logged so it's auditable in `~/.hermes/logs/agent.log`.
+
+```python
+def register(ctx):
+    if ctx.has_capability("commands.override"):
+        ctx.register_command("new", handler=_wrapped_new, override=True)
+    else:
+        ctx.register_command("mynew", handler=_wrapped_new)  # non-conflicting name
+```
+
 
 **Async handlers:** The gateway dispatch automatically detects and awaits async handlers, so you can use either sync or async functions:
 

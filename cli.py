@@ -11805,6 +11805,33 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 platform="cli",
             )
 
+        # Authorized built-in override (register_command(override=True)):
+        # a plugin command that the operator opted in to shadow the built-in
+        # wins BEFORE the built-in dispatch below. This keeps override
+        # precedence identical across CLI, gateway and TUI. Unauthorized or
+        # non-override plugin commands are NOT returned here, so built-ins keep
+        # their normal precedence and reach the post-built-in plugin fallback.
+        try:
+            from hermes_cli.plugins import (
+                get_plugin_command_override_handler,
+                resolve_plugin_command_result,
+            )
+            _override_handler = get_plugin_command_override_handler(canonical)
+            if _override_handler is None and _base_word != canonical:
+                _override_handler = get_plugin_command_override_handler(_base_word)
+        except Exception:
+            _override_handler = None
+        if _override_handler is not None:
+            _ov_parts = cmd_original.split(None, 1)
+            _ov_args = _ov_parts[1].strip() if len(_ov_parts) > 1 else ""
+            try:
+                result = resolve_plugin_command_result(_override_handler(_ov_args))
+                if result:
+                    _cprint(str(result))
+            except Exception as e:
+                _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")
+            return True
+
         # A bare `/resume` prompt is one-shot: any command other than the
         # resume/sessions handlers (which manage the pending state themselves)
         # disarms it so a later number isn't swallowed as a stale selection.

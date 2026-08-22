@@ -1142,6 +1142,29 @@ def _(rid, params: dict) -> dict:
     _cmd_base = (_cmd_parts[0] if _cmd_parts else "").lower()
     _cmd_arg = _cmd_parts[1] if len(_cmd_parts) > 1 else ""
 
+    # Authorized built-in override (register_command(override=True)):
+    # an operator-approved plugin command that shadows a built-in wins BEFORE
+    # any built-in fast-path (live output, pending-input routing, worker), so
+    # override precedence is identical to CLI and gateway. Non-override /
+    # unauthorized plugin commands are not returned here and keep reaching the
+    # normal plugin fallback below, so built-ins keep their usual precedence.
+    if _cmd_base:
+        try:
+            from hermes_cli.plugins import (
+                get_plugin_command_override_handler,
+                resolve_plugin_command_result,
+            )
+
+            _override_handler = get_plugin_command_override_handler(_cmd_base)
+        except Exception:
+            _override_handler = None
+        if _override_handler is not None:
+            try:
+                result = resolve_plugin_command_result(_override_handler(_cmd_arg))
+                return _ok(rid, {"output": str(result or "(no output)")})
+            except Exception as e:
+                return _ok(rid, {"output": f"Plugin command error: {e}"})
+
     live_output = _live_slash_command_output(
         params.get("session_id", ""), session, _cmd_base, _cmd_arg
     )

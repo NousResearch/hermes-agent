@@ -7229,6 +7229,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
+        # Explicit Discord live-VC bindings are separate from messaging voice
+        # mode.  A persisted ``all`` mode does not imply that Discord is still
+        # connected after a gateway restart.
+        self._discord_voice_sessions: Dict[str, Dict[str, Any]] = (
+            self._load_discord_voice_sessions()
+        )
         # Recent voice transcripts per (guild,user) for duplicate suppression.
         # Protects against the same utterance being emitted twice by the voice
         # capture / STT pipeline, which otherwise produces a second delayed reply.
@@ -7422,6 +7428,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # -- Voice mode persistence ------------------------------------------
 
     _VOICE_MODE_PATH = _hermes_home / "gateway_voice_mode.json"
+    _DISCORD_VOICE_SESSION_PATH = _hermes_home / "gateway_discord_voice_sessions.json"
 
     def _voice_key(self, platform: Platform, chat_id: str) -> str:
         """Return a platform-namespaced key for voice mode state."""
@@ -7461,6 +7468,159 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         except OSError as e:
             logger.warning("Failed to save voice modes: %s", e)
+
+    def _load_discord_voice_sessions(self) -> Dict[str, Dict[str, Any]]:
+        """Load validated explicit Discord VC auto-rejoin targets."""
+        try:
+            data = json.loads(
+                self._DISCORD_VOICE_SESSION_PATH.read_text(encoding="utf-8")
+            )
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        result: Dict[str, Dict[str, Any]] = {}
+        for guild_key, target in data.items():
+            if not isinstance(target, dict):
+                continue
+            try:
+                guild_id = int(guild_key)
+                voice_channel_id = int(target["voice_channel_id"])
+                text_channel_id = int(target["text_channel_id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            source = target.get("source")
+            if not isinstance(source, dict):
+                continue
+            result[str(guild_id)] = {
+                "voice_channel_id": voice_channel_id,
+                "text_channel_id": text_channel_id,
+                "source": source,
+            }
+        return result
+
+    def _save_discord_voice_sessions(self) -> None:
+        try:
+            path = self._DISCORD_VOICE_SESSION_PATH
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(getattr(self, "_discord_voice_sessions", {}), indent=2),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            logger.warning("Failed to save Discord voice-channel sessions: %s", e)
+
+    def _discord_voice_session_profile(self) -> str:
+        """Return the profile owning this runner's persistence file."""
+        home = self._DISCORD_VOICE_SESSION_PATH.parent
+        if home.parent.name == "profiles":
+            return home.name
+        return "default"
+
+    def _remember_discord_voice_session(
+        self,
+        *,
+        guild_id: int,
+        voice_channel_id: int,
+        text_channel_id: int,
+        source: Dict[str, Any],
+    ) -> None:
+        source_profile = str(source.get("profile") or "default")
+        owner_profile = self._discord_voice_session_profile()
+        if source_profile != owner_profile:
+            # Multiplexed secondary adapters need profile-scoped restore state;
+            # never let their guild/channel IDs be replayed by the primary bot.
+            logger.warning(
+                "Skipping Discord VC persistence for secondary profile %s "
+                "(primary persistence owner is %s)",
+                source_profile,
+                owner_profile,
+            )
+            return
+        sessions = getattr(self, "_discord_voice_sessions", None)
+        if not isinstance(sessions, dict):
+            sessions = {}
+            self._discord_voice_sessions = sessions
+        sessions[str(int(guild_id))] = {
+            "voice_channel_id": int(voice_channel_id),
+            "text_channel_id": int(text_channel_id),
+            "source": dict(source),
+        }
+        self._save_discord_voice_sessions()
+
+    def _forget_discord_voice_session(self, guild_id: int) -> None:
+        sessions = getattr(self, "_discord_voice_sessions", None)
+        if isinstance(sessions, dict) and sessions.pop(str(int(guild_id)), None) is not None:
+            self._save_discord_voice_sessions()
+
+    async def _restore_discord_voice_sessions(self, adapter) -> None:
+        """Best-effort restore of explicit VC joins after Discord is ready."""
+        sessions = getattr(self, "_discord_voice_sessions", None)
+        client = getattr(adapter, "_client", None)
+        if not isinstance(sessions, dict) or not sessions or client is None:
+            return
+        adapter._voice_input_callback = self._handle_voice_channel_input
+        adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup
+        adapter._voice_mode_getter = lambda chat_id: self._voice_mode.get(
+            self._voice_key(Platform.DISCORD, str(chat_id)), "off"
+        )
+        for guild_key, target in list(sessions.items()):
+            try:
+                guild_id = int(guild_key)
+                channel = client.get_channel(int(target["voice_channel_id"]))
+                source = SessionSource.from_dict(target["source"])
+                source_profile = str(source.profile or "default")
+                if source_profile != self._discord_voice_session_profile():
+                    raise PermissionError("saved source belongs to another profile")
+                source_guild_id = int(getattr(getattr(channel, "guild", None), "id", 0))
+                if channel is None or source_guild_id != guild_id:
+                    raise ValueError("saved voice channel is no longer resolvable")
+                if source.platform != Platform.DISCORD or not self._is_user_authorized(source):
+                    raise PermissionError("saved source is no longer authorized")
+                try:
+                    initiating_user_id = int(source.user_id)
+                except (TypeError, ValueError):
+                    raise PermissionError("saved source has no valid Discord user")
+                member_ids = {
+                    int(member.id)
+                    for member in (getattr(channel, "members", None) or [])
+                    if getattr(member, "id", None) is not None
+                }
+                if initiating_user_id not in member_ids:
+                    raise ValueError("initiating user is no longer in the saved voice channel")
+                restored = await asyncio.wait_for(
+                    adapter.join_voice_channel(
+                        channel,
+                        text_channel_id=int(target["text_channel_id"]),
+                        source=target["source"],
+                    ),
+                    timeout=30,
+                )
+                if not restored:
+                    raise RuntimeError("adapter declined the saved voice channel")
+                logger.info(
+                    "Restored Discord voice channel %s for guild %s",
+                    getattr(channel, "name", target["voice_channel_id"]),
+                    guild_id,
+                )
+            except Exception as e:
+                if isinstance(e, PermissionError):
+                    # A saved target must never outlive its authorization.
+                    self._forget_discord_voice_session(int(guild_key))
+                # Keep transient resolution/connect failures for the next
+                # reconnect. Authorization failures are cleared above.
+                logger.warning(
+                    "Could not restore saved Discord voice channel for guild %s: %s",
+                    guild_key,
+                    e,
+                )
+
+    def _discord_voice_session_target(self, guild_id: int) -> Optional[Dict[str, Any]]:
+        sessions = getattr(self, "_discord_voice_sessions", None)
+        if not isinstance(sessions, dict):
+            return None
+        target = sessions.get(str(int(guild_id)))
+        return target if isinstance(target, dict) else None
 
     def _set_adapter_auto_tts_disabled(self, adapter, chat_id: str, disabled: bool) -> None:
         """Update an adapter's in-memory auto-TTS suppression set if present."""
@@ -13017,6 +13177,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # transcription is forwarded without requiring /voice join.
                 if hasattr(adapter, "_voice_input_callback"):
                     adapter._voice_input_callback = self._handle_voice_channel_input
+                if platform == Platform.DISCORD:
+                    await self._restore_discord_voice_sessions(adapter)
                 connected_count += 1
                 self._update_platform_runtime_status(
                     platform.value, platform_state="connected", error_code=None, error_message=None,
@@ -14530,6 +14692,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # Wire voice input callback on reconnect as well (#60623).
                         if hasattr(adapter, "_voice_input_callback"):
                             adapter._voice_input_callback = self._handle_voice_channel_input
+                        if platform == Platform.DISCORD:
+                            await self._restore_discord_voice_sessions(adapter)
                         self.delivery_router.adapters = self.adapters
                         del self._failed_platforms[platform]
                         self._update_platform_runtime_status(
@@ -22027,6 +22191,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "all"
             self._save_voice_modes()
             self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
+            self._remember_discord_voice_session(
+                guild_id=guild_id,
+                voice_channel_id=int(voice_channel.id),
+                text_channel_id=int(event.source.chat_id),
+                source=event.source.to_dict(),
+            )
             return (
                 f"Joined voice channel **{voice_channel.name}**.\n"
                 f"I'll speak my replies and listen to you. Use /voice leave to disconnect."
@@ -22044,6 +22214,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "Not in a voice channel."
 
         if not hasattr(adapter, "is_in_voice_channel") or not adapter.is_in_voice_channel(guild_id):
+            # A failed auto-rejoin still needs an operator escape hatch. Treat
+            # explicit leave as cancellation of the saved target even when no
+            # live VoiceClient exists.
+            if self._discord_voice_session_target(guild_id):
+                self._forget_discord_voice_session(guild_id)
+                self._voice_mode[
+                    self._voice_key(event.source.platform, event.source.chat_id)
+                ] = "off"
+                self._save_voice_modes()
+                self._set_adapter_auto_tts_disabled(
+                    adapter, event.source.chat_id, disabled=True
+                )
+                return "Cancelled saved voice-channel auto-rejoin target."
             return "Not in a voice channel."
 
         try:
@@ -22054,11 +22237,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "off"
         self._save_voice_modes()
         self._set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=True)
+        self._forget_discord_voice_session(guild_id)
         if hasattr(adapter, "_voice_input_callback"):
             adapter._voice_input_callback = None
         return "Left voice channel."
 
-    def _handle_voice_timeout_cleanup(self, chat_id: str) -> None:
+    def _handle_voice_timeout_cleanup(self, chat_id: str, guild_id: Optional[int] = None) -> None:
         """Called by the adapter when a voice channel times out.
 
         Cleans up runner-side voice_mode state that the adapter cannot reach.
@@ -22067,6 +22251,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._save_voice_modes()
         adapter = self.adapters.get(Platform.DISCORD)
         self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
+        if guild_id is not None:
+            self._forget_discord_voice_session(guild_id)
 
     def _is_duplicate_voice_transcript(self, guild_id: int, user_id: int, transcript: str) -> bool:
         """Suppress repeated STT outputs for the same recent utterance.
@@ -22275,7 +22461,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
-            tts_text = _strip_markdown_for_tts(text)
+            adapter = self._adapter_for_source(event.source)
+            prepare_auto_tts = getattr(adapter, "prepare_auto_tts_text", None)
+            tts_text = (
+                prepare_auto_tts(event, text)
+                if callable(prepare_auto_tts)
+                else _strip_markdown_for_tts(text)
+            )
             if not tts_text:
                 return
 
@@ -22309,13 +22501,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
                 return
 
-            adapter = self._adapter_for_source(event.source)
-
             # If connected to a voice channel, play there instead of sending a file
             guild_id = self._get_guild_id(event)
             play_in_voice_channel = getattr(adapter, "play_in_voice_channel", None)
             is_in_voice_channel = getattr(adapter, "is_in_voice_channel", None)
             send_voice = getattr(adapter, "send_voice", None)
+            play_tts = getattr(adapter, "play_tts", None)
             in_voice_channel = bool(
                 guild_id
                 and callable(play_in_voice_channel)
@@ -22339,8 +22530,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     thread_meta = {"notify": True}
             for actual_path in actual_paths:
                 if in_voice_channel:
-                    play_voice = cast(Callable[..., Awaitable[Any]], play_in_voice_channel)
-                    await play_voice(guild_id, actual_path)
+                    if callable(play_tts):
+                        play_tts_call = cast(Callable[..., Awaitable[Any]], play_tts)
+                        await play_tts_call(
+                            chat_id=event.source.chat_id,
+                            audio_path=actual_path,
+                        )
+                    else:
+                        play_voice = cast(Callable[..., Awaitable[Any]], play_in_voice_channel)
+                        await play_voice(guild_id, actual_path)
                 elif callable(send_voice):
                     send_voice_call = cast(Callable[..., Awaitable[Any]], send_voice)
                     send_kwargs: Dict[str, Any] = {

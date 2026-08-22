@@ -79,6 +79,8 @@ def _make_runner(tmp_path):
     runner.adapters = {}
     runner._voice_mode = {}
     runner._VOICE_MODE_PATH = tmp_path / "gateway_voice_mode.json"
+    runner._discord_voice_sessions = {}
+    runner._DISCORD_VOICE_SESSION_PATH = tmp_path / "gateway_discord_voice_sessions.json"
     runner._session_db = None
     runner.session_store = MagicMock()
     runner._is_user_authorized = lambda source: True
@@ -182,6 +184,162 @@ class TestHandleVoiceCommand:
 
         assert runner._voice_mode["telegram:999"] == "voice_only"
         assert runner._voice_mode["slack:999"] == "off"
+
+
+class TestDiscordVoiceSessionPersistence:
+
+    @pytest.fixture
+    def runner(self, tmp_path):
+        return _make_runner(tmp_path)
+
+    def test_remember_load_and_forget(self, runner):
+        source = {
+            "platform": "discord",
+            "chat_id": "123",
+            "user_id": "456",
+        }
+        runner._remember_discord_voice_session(
+            guild_id=11,
+            voice_channel_id=22,
+            text_channel_id=123,
+            source=source,
+        )
+
+        loaded = runner._load_discord_voice_sessions()
+        assert loaded["11"]["voice_channel_id"] == 22
+        assert loaded["11"]["text_channel_id"] == 123
+        assert loaded["11"]["source"] == source
+
+        runner._forget_discord_voice_session(11)
+        assert runner._load_discord_voice_sessions() == {}
+
+    @pytest.mark.asyncio
+    async def test_restore_rejoins_resolved_authorized_channel(self, runner):
+        from gateway.config import Platform
+
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="123",
+            user_id="456",
+            chat_type="channel",
+        )
+        runner._discord_voice_sessions = {
+            "11": {
+                "voice_channel_id": 22,
+                "text_channel_id": 123,
+                "source": source.to_dict(),
+            }
+        }
+        channel = SimpleNamespace(
+            id=22,
+            name="Hayes VC",
+            guild=SimpleNamespace(id=11),
+            members=[SimpleNamespace(id=456)],
+        )
+        adapter = SimpleNamespace(
+            _client=SimpleNamespace(get_channel=lambda channel_id: channel),
+            join_voice_channel=AsyncMock(return_value=True),
+            _voice_input_callback=None,
+            _on_voice_disconnect=None,
+            _voice_mode_getter=None,
+        )
+
+        await runner._restore_discord_voice_sessions(adapter)
+
+        adapter.join_voice_channel.assert_awaited_once_with(
+            channel,
+            text_channel_id=123,
+            source=source.to_dict(),
+        )
+        assert adapter._voice_input_callback == runner._handle_voice_channel_input
+
+
+class TestDiscordVoiceChannelReplyPolicy:
+
+    def _adapter(self, *, max_chars=500):
+        from gateway.config import Platform, PlatformConfig
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        adapter = object.__new__(DiscordAdapter)
+        adapter.platform = Platform.DISCORD
+        adapter.config = PlatformConfig(
+            enabled=True,
+            extra={"voice_channel_spoken_reply_max_chars": max_chars},
+        )
+        adapter._voice_text_channels = {11: 123}
+        vc = MagicMock()
+        vc.is_connected.return_value = True
+        adapter._voice_clients = {11: vc}
+        return adapter
+
+    def test_live_vc_tts_uses_sentence_bounded_limit(self):
+        from gateway.config import Platform
+
+        adapter = self._adapter(max_chars=45)
+        event = MessageEvent(
+            source=SessionSource(
+                platform=Platform.DISCORD,
+                chat_id="123",
+                user_id="456",
+            ),
+            text="question",
+        )
+        full = "This is the short spoken summary. Here is much more detailed text that should stay in Discord."
+
+        spoken = adapter.prepare_auto_tts_text(event, full)
+
+        assert spoken == "This is the short spoken summary.…"
+        assert len(spoken) <= 45
+        assert full.endswith("stay in Discord.")
+
+    @pytest.mark.asyncio
+    async def test_vc_play_tts_returns_before_playback_finishes(self, tmp_path):
+        adapter = self._adapter()
+        audio_path = tmp_path / "reply.mp3"
+        audio_path.write_bytes(b"audio")
+        release = asyncio.Event()
+
+        async def slow_play(_guild_id, _queued_path):
+            await release.wait()
+            return True
+
+        adapter.play_in_voice_channel = slow_play
+
+        result = await adapter.play_tts("123", str(audio_path))
+
+        assert result.success is True
+        assert adapter._voice_playback_tasks
+        release.set()
+        await asyncio.gather(*list(adapter._voice_playback_tasks))
+
+    @pytest.mark.asyncio
+    async def test_vc_playback_queue_serializes_clips(self, tmp_path):
+        adapter = self._adapter()
+        first = tmp_path / "first.mp3"
+        second = tmp_path / "second.mp3"
+        first.write_bytes(b"first")
+        second.write_bytes(b"second")
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        started = []
+
+        async def serial_play(_guild_id, queued_path):
+            started.append(queued_path)
+            if len(started) == 1:
+                first_started.set()
+                await release_first.wait()
+            return True
+
+        adapter.play_in_voice_channel = serial_play
+        await adapter.play_tts("123", str(first))
+        await first_started.wait()
+        await adapter.play_tts("123", str(second))
+        await asyncio.sleep(0)
+        assert len(started) == 1
+
+        release_first.set()
+        await asyncio.gather(*list(adapter._voice_playback_tasks))
+        assert len(started) == 2
 
 
 # =====================================================================
@@ -383,7 +541,7 @@ class TestDiscordPlayTtsSkip:
         return adapter
 
     @pytest.mark.asyncio
-    async def test_play_tts_plays_in_vc_when_connected(self):
+    async def test_play_tts_plays_in_vc_when_connected(self, tmp_path):
         adapter = self._make_discord_adapter()
         # Simulate bot in voice channel for guild 111, text channel 123
         mock_vc = MagicMock()
@@ -397,7 +555,10 @@ class TestDiscordPlayTtsSkip:
             return True
         adapter.play_in_voice_channel = fake_play
 
-        result = await adapter.play_tts(chat_id="123", audio_path="/tmp/test.ogg")
+        audio_path = tmp_path / "test.ogg"
+        audio_path.write_bytes(b"audio")
+        result = await adapter.play_tts(chat_id="123", audio_path=str(audio_path))
+        await asyncio.gather(*list(adapter._voice_playback_tasks))
         # play_tts now plays in VC instead of being a no-op
         assert result.success is True
 
@@ -1284,9 +1445,11 @@ class TestVoiceTimeoutCleansRunnerState:
 
     @pytest.mark.asyncio
     async def test_timeout_calls_disconnect_callback(self, adapter):
-        """_voice_timeout_handler calls _on_voice_disconnect with chat_id."""
+        """Timeout cleanup identifies both the bound chat and guild."""
         callback_calls = []
-        adapter._on_voice_disconnect = lambda chat_id: callback_calls.append(chat_id)
+        adapter._on_voice_disconnect = (
+            lambda chat_id, guild_id: callback_calls.append((chat_id, guild_id))
+        )
 
         # Set up state as if we're in a voice channel
         mock_vc = MagicMock()
@@ -1302,8 +1465,7 @@ class TestVoiceTimeoutCleansRunnerState:
         with patch("asyncio.sleep", new_callable=AsyncMock):
             await adapter._voice_timeout_handler(111)
 
-        assert "999" in callback_calls, \
-            "_on_voice_disconnect must be called with chat_id on timeout"
+        assert ("999", 111) in callback_calls
 
 
 # =====================================================================
@@ -1724,7 +1886,7 @@ class TestVoiceTTSPlayback:
     # -- play_tts behavior --
 
     @pytest.mark.asyncio
-    async def test_play_tts_plays_in_vc(self):
+    async def test_play_tts_plays_in_vc(self, tmp_path):
         """play_tts calls play_in_voice_channel when bot is in VC."""
         adapter = self._make_discord_adapter()
         mock_vc = MagicMock()
@@ -1738,9 +1900,13 @@ class TestVoiceTTSPlayback:
             return True
         adapter.play_in_voice_channel = fake_play
 
-        result = await adapter.play_tts(chat_id="123", audio_path="/tmp/tts.ogg")
+        audio_path = tmp_path / "tts.ogg"
+        audio_path.write_bytes(b"audio")
+        result = await adapter.play_tts(chat_id="123", audio_path=str(audio_path))
+        await asyncio.gather(*list(adapter._voice_playback_tasks))
         assert result.success is True
-        assert played == [(111, "/tmp/tts.ogg")]
+        assert played[0][0] == 111
+        assert played[0][1] != str(audio_path)
 
 
     # -- Runner dedup --

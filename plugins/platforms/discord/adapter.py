@@ -1100,6 +1100,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # Phase 2: voice listening
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
+        self._voice_playback_tasks: set[asyncio.Task] = set()
+        self._voice_playback_tasks_by_guild: Dict[int, set[asyncio.Task]] = {}
+        self._voice_playback_tail: Dict[int, asyncio.Task] = {}
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
         # Resolves the current voice-reply mode ("off"|"voice_only"|"all") for a
@@ -2160,6 +2163,14 @@ class DiscordAdapter(BasePlatformAdapter):
         # Cancel the liveness probe first so it can't fire a spurious fatal
         # error / reconnect while we're intentionally tearing the adapter down.
         await self._cancel_liveness_task()
+        playback_tasks = list(getattr(self, "_voice_playback_tasks", set()))
+        for task in playback_tasks:
+            task.cancel()
+        if playback_tasks:
+            await asyncio.gather(*playback_tasks, return_exceptions=True)
+        getattr(self, "_voice_playback_tasks", set()).clear()
+        getattr(self, "_voice_playback_tasks_by_guild", {}).clear()
+        getattr(self, "_voice_playback_tail", {}).clear()
         # Clean up all active voice connections *before* cancelling the bot task.
         # leave_voice_channel() ends in `await vc.disconnect()`, and discord.py's
         # VoiceClient.disconnect() sends a voice state update over the main
@@ -4175,9 +4186,97 @@ class DiscordAdapter(BasePlatformAdapter):
         for gid, text_ch_id in self._voice_text_channels.items():
             if str(text_ch_id) == str(chat_id) and self.is_in_voice_channel(gid):
                 logger.info("[%s] Playing TTS in voice channel (guild=%d)", self.name, gid)
-                success = await self.play_in_voice_channel(gid, audio_path)
-                return SendResult(success=success)
+                # BasePlatformAdapter sends detailed text after play_tts()
+                # returns. Waiting for ffmpeg here made that text lag behind a
+                # long clip. Copy the file (the caller deletes its path), queue
+                # playback, and return so text delivery can proceed at once.
+                import shutil
+                import uuid
+
+                suffix = os.path.splitext(audio_path)[1] or ".mp3"
+                queued_path = os.path.join(
+                    tempfile.gettempdir(), "hermes_voice",
+                    f"discord_vc_{uuid.uuid4().hex}{suffix}",
+                )
+                os.makedirs(os.path.dirname(queued_path), exist_ok=True)
+                await asyncio.to_thread(shutil.copyfile, audio_path, queued_path)
+
+                tails = getattr(self, "_voice_playback_tail", None)
+                if not isinstance(tails, dict):
+                    tails = {}
+                    self._voice_playback_tail = tails
+                previous = tails.get(gid)
+
+                async def _play_queued() -> None:
+                    try:
+                        if previous is not None:
+                            try:
+                                await asyncio.shield(previous)
+                            except Exception:
+                                # A failed prior clip must not strand this one.
+                                pass
+                        await self.play_in_voice_channel(gid, queued_path)
+                    except Exception:
+                        logger.warning(
+                            "[%s] Queued VC playback failed (guild=%d)",
+                            self.name, gid, exc_info=True,
+                        )
+                    finally:
+                        try:
+                            os.unlink(queued_path)
+                        except OSError:
+                            pass
+
+                task = asyncio.create_task(_play_queued())
+                tasks = getattr(self, "_voice_playback_tasks", None)
+                if not isinstance(tasks, set):
+                    tasks = set()
+                    self._voice_playback_tasks = tasks
+                tasks.add(task)
+                by_guild = getattr(self, "_voice_playback_tasks_by_guild", None)
+                if not isinstance(by_guild, dict):
+                    by_guild = {}
+                    self._voice_playback_tasks_by_guild = by_guild
+                guild_tasks = by_guild.setdefault(gid, set())
+                guild_tasks.add(task)
+                tails[gid] = task
+
+                def _discard(done_task: asyncio.Task) -> None:
+                    tasks.discard(done_task)
+                    guild_tasks.discard(done_task)
+                    if tails.get(gid) is done_task:
+                        tails.pop(gid, None)
+                    if not guild_tasks:
+                        by_guild.pop(gid, None)
+
+                task.add_done_callback(_discard)
+                return SendResult(success=True)
         return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
+
+    def prepare_auto_tts_text(self, event: MessageEvent, text: str) -> str:
+        """Keep live-VC speech brief while preserving the full text reply."""
+        speech = super().prepare_auto_tts_text(event, text)
+        chat_id = str(event.source.chat_id)
+        in_live_vc = any(
+            str(text_ch_id) == chat_id and self.is_in_voice_channel(guild_id)
+            for guild_id, text_ch_id in self._voice_text_channels.items()
+        )
+        if not in_live_vc:
+            return speech
+        raw_limit = self.config.extra.get("voice_channel_spoken_reply_max_chars", 500)
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            limit = 500
+        if limit <= 0 or len(speech) <= limit:
+            return speech
+
+        budget = max(1, limit - 1)  # reserve one character for the ellipsis
+        sentence_breaks = list(re.finditer(r"(?<=[.!?])\s+", speech[: budget + 1]))
+        cut = sentence_breaks[-1].start() if sentence_breaks else speech.rfind(" ", 0, budget)
+        if cut < max(1, budget // 3):
+            cut = budget
+        return speech[:cut].rstrip(" ,;:-") + "…"
 
     async def send_voice(
         self,
@@ -4611,6 +4710,14 @@ class DiscordAdapter(BasePlatformAdapter):
     async def leave_voice_channel(self, guild_id: int) -> None:
         """Disconnect from the voice channel in a guild."""
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
+            playback_tasks = list(
+                getattr(self, "_voice_playback_tasks_by_guild", {}).pop(guild_id, set())
+            )
+            for task in playback_tasks:
+                task.cancel()
+            if playback_tasks:
+                await asyncio.gather(*playback_tasks, return_exceptions=True)
+            getattr(self, "_voice_playback_tail", {}).pop(guild_id, None)
             # Stop voice receiver first
             receiver = self._voice_receivers.pop(guild_id, None)
             pending_inputs = []
@@ -4796,7 +4903,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Notify the runner so it can clean up voice_mode state
         if self._on_voice_disconnect and text_ch_id:
             try:
-                self._on_voice_disconnect(str(text_ch_id))
+                self._on_voice_disconnect(str(text_ch_id), guild_id)
             except Exception:
                 pass
         if text_ch_id and self._client:

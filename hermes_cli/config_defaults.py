@@ -2254,6 +2254,9 @@ DEFAULT_CONFIG = {
         # Discord voice-channel inactivity timeout, in seconds. Set to 0 to
         # keep the bot in VC until an explicit `/voice leave` / disconnect.
         "voice_channel_inactivity_timeout_seconds": 300,
+        # Limit only live-VC speech; full detailed text still goes to Discord.
+        # Set 0 to disable the spoken-reply limit.
+        "voice_channel_spoken_reply_max_chars": 500,
         # Minimum seconds to wait for a VC playback before force-stopping it.
         # The adapter also probes clip duration and extends this floor by a
         # padding window, so long TTS readbacks are not cut at exactly 120s.

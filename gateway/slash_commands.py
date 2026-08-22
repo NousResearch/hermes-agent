@@ -3279,14 +3279,19 @@ class GatewaySlashCommandsMixin:
                 "voice_only": t("gateway.voice.label_voice_only"),
                 "all": t("gateway.voice.label_all"),
             }
-            # Append voice channel info if connected
+            # Messaging TTS mode and actual VC health are separate: a
+            # persisted mode=all does not prove Discord is connected.
             adapter = self.adapters.get(event.source.platform)
             guild_id = self._get_guild_id(event)
+            mode_line = t(
+                "gateway.voice.status_messaging", label=labels.get(mode, mode)
+            )
             if guild_id and hasattr(adapter, "get_voice_channel_info"):
                 info = adapter.get_voice_channel_info(guild_id)
                 if info:
                     lines = [
-                        t("gateway.voice.status_mode", label=labels.get(mode, mode)),
+                        mode_line,
+                        t("gateway.voice.status_vc_connected"),
                         t("gateway.voice.status_channel", channel=info['channel_name']),
                         t("gateway.voice.status_participants", count=info['member_count']),
                     ]
@@ -3294,7 +3299,23 @@ class GatewaySlashCommandsMixin:
                         status = t("gateway.voice.speaking") if m.get("is_speaking") else ""
                         lines.append(t("gateway.voice.status_member", name=m['display_name'], status=status))
                     return "\n".join(lines)
-            return t("gateway.voice.status_mode", label=labels.get(mode, mode))
+            if guild_id:
+                saved = self._discord_voice_session_target(guild_id)
+                if saved:
+                    return "\n".join([
+                        mode_line,
+                        t("gateway.voice.status_vc_disconnected"),
+                        t(
+                            "gateway.voice.status_rejoin_pending",
+                            channel_id=saved["voice_channel_id"],
+                        ),
+                    ])
+                return "\n".join([
+                    mode_line,
+                    t("gateway.voice.status_vc_disconnected"),
+                    t("gateway.voice.status_rejoin_none"),
+                ])
+            return mode_line
         else:
             # Toggle: off → on, on/all → off
             current = self._voice_mode.get(voice_key, "off")

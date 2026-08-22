@@ -4596,6 +4596,10 @@ class BasePlatformAdapter(ABC):
             text = re.sub(r'<think[\s>].*?</think>', ' ', text, flags=re.DOTALL)
             return re.sub(r'[*_`#\[\]()]', '', text).strip()
 
+    def prepare_auto_tts_text(self, event: MessageEvent, text: str) -> str:
+        """Prepare whole-reply auto-TTS text, with an adapter override seam."""
+        return self.prepare_tts_text(text)
+
     async def play_tts(
         self,
         chat_id: str,
@@ -6478,7 +6482,7 @@ class BasePlatformAdapter(ABC):
                         from tools.tts_tool import text_to_speech_tool, check_tts_requirements
                         if check_tts_requirements():
                             import json as _json
-                            speech_text = self.prepare_tts_text(text_content)
+                            speech_text = self.prepare_auto_tts_text(event, text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
                             # Pass an explicit platform-aware output path: the

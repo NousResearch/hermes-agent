@@ -349,6 +349,7 @@ discord:
     max_dispatches: 10            # Recovery dispatch cap per reconnect
   channel_prompts: {}             # Per-channel ephemeral system prompts
   voice_channel_inactivity_timeout_seconds: 300  # Set 0 to stay in VC until explicit /voice leave
+  voice_channel_spoken_reply_max_chars: 500      # Short live speech; full text is still sent (0 disables)
   voice_playback_timeout_seconds: 120             # Minimum playback watchdog; long clips get duration+padding
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
@@ -774,7 +775,9 @@ discord:
 ```
 
 Notes:
-- Set `voice_channel_inactivity_timeout_seconds: 0` if you want the bot to remain in the voice channel until an explicit `/voice leave` or manual disconnect. The default preserves the historical 300-second idle auto-leave.
+- Set `voice_channel_inactivity_timeout_seconds: 0` if you want the bot to remain in the voice channel until an explicit `/voice leave` or manual disconnect. The default preserves the historical 300-second idle auto-leave; use a larger value (for example `1800`) when a call-like session should tolerate longer quiet periods.
+- An explicit `/voice join` saves the guild, voice channel, and bound text channel for safe auto-rejoin after a gateway restart. Hermes only restores when the initiating authorized user is still in that channel. `/voice leave` and inactivity timeout clear the saved target; `/voice status` reports messaging TTS mode, live connection health, and saved-target state separately.
+- `voice_channel_spoken_reply_max_chars` limits only what Hermes speaks in a live Discord VC. The complete formatted reply is sent promptly to the bound text channel while playback continues. Set it to `0` to speak the full reply.
 - `voice_playback_timeout_seconds` is a floor, not a hard cap for long TTS. Hermes probes the generated audio duration and waits for `duration + 30s` when that is longer than the configured floor.
 - The acknowledgement fires at most once per turn, only when the bot is in a voice channel and the mixer is active. It uses your configured TTS provider.
 - `ambient_path` accepts any file `ffmpeg` can decode; it's looped seamlessly. Leave it empty to use the built-in synthesised pad (no asset needed).

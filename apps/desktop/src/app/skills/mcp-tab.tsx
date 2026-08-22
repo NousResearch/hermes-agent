@@ -1640,12 +1640,16 @@ function McpCatalog({
                         </span>
                         <Input
                           className="h-7 text-xs"
-                          onChange={event =>
+                          onChange={event => {
+                            // Read synchronously: currentTarget is null once the
+                            // updater runs after event dispatch.
+                            const value = event.currentTarget.value
+
                             setEnvDrafts(prev => ({
                               ...prev,
-                              [entry.name]: { ...prev[entry.name], [env.name]: event.currentTarget.value }
+                              [entry.name]: { ...prev[entry.name], [env.name]: value }
                             }))
-                          }
+                          }}
                           type="password"
                           value={draft[env.name] ?? ''}
                         />

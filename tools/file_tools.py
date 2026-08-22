@@ -2532,6 +2532,41 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         return tool_error(str(e))
 
 
+_SEARCH_RESULT_JSON_CHAR_CAP = 63_500
+
+
+def _cap_search_result_dict(result_dict: dict) -> dict:
+    """Keep serialized search output below 64K while preserving valid JSON."""
+    if len(json.dumps(result_dict, ensure_ascii=False)) <= _SEARCH_RESULT_JSON_CHAR_CAP:
+        return result_dict
+
+    result_dict["truncated"] = True
+    result_dict["limit_reason"] = "output_size"
+    marker = "\n[Search output truncated at the 64K result cap.]"
+
+    dense = result_dict.get("matches_text")
+    if isinstance(dense, str):
+        low, high = 0, len(dense)
+        while low < high:
+            mid = (low + high + 1) // 2
+            result_dict["matches_text"] = dense[:mid] + marker
+            if len(json.dumps(result_dict, ensure_ascii=False)) <= _SEARCH_RESULT_JSON_CHAR_CAP:
+                low = mid
+            else:
+                high = mid - 1
+        result_dict["matches_text"] = dense[:low] + marker
+        return result_dict
+
+    for key in ("matches", "files"):
+        values = result_dict.get(key)
+        while isinstance(values, list) and values and len(json.dumps(result_dict, ensure_ascii=False)) > _SEARCH_RESULT_JSON_CHAR_CAP:
+            values.pop()
+    counts = result_dict.get("counts")
+    while isinstance(counts, dict) and counts and len(json.dumps(result_dict, ensure_ascii=False)) > _SEARCH_RESULT_JSON_CHAR_CAP:
+        counts.pop(next(reversed(counts)))
+    return result_dict
+
+
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
@@ -2625,6 +2660,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 "The results have not changed. Use the information you already have."
             )
 
+        result_dict = _cap_search_result_dict(result_dict)
         result_json = json.dumps(result_dict, ensure_ascii=False)
         # Hint when results were truncated — explicit next offset is clearer
         # than relying on the model to infer it from total_count vs match count.

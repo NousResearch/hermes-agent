@@ -45,7 +45,7 @@ from collections import OrderedDict
 from contextvars import Context, copy_context
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from typing import Awaitable, Callable, Dict, Optional, Any, List, Tuple, Union, cast
+from typing import Awaitable, Callable, Dict, Literal, Optional, Any, List, Tuple, Union, cast
 
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
 from agent.conversation_compression import (
@@ -6726,6 +6726,16 @@ class TurnRunner:
 _SESSION_DB_UNPINNED = object()
 
 
+class InjectInternalMessageError(ValueError):
+    """Structured error raised when inject_internal_message cannot deliver."""
+
+    def __init__(self, code: str, chat_id: str, detail: str) -> None:
+        self.code = code
+        self.chat_id = chat_id
+        self.detail = detail
+        super().__init__(f'[{code}] chat={chat_id}: {detail}')
+
+
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
@@ -13235,6 +13245,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.info("%s hook(s) loaded", hook_count)
         await self.hooks.emit("gateway:startup", {
             "platforms": [p.value for p in self.adapters.keys()],
+            "gateway_runner": self,
         })
         
         if connected_count > 0:
@@ -16120,6 +16131,188 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return YuanbaoAdapter(config)
 
         return None
+
+    # ------------------------------------------------------------------
+    # Public injection API — exposed to plugins via gateway:startup hook
+    # ------------------------------------------------------------------
+
+    async def inject_internal_message(
+        self,
+        *,
+        profile: str,
+        platform: Platform,
+        chat_id: str,
+        text: str,
+        notice_text: Optional[str] = None,
+        mode: Literal["queue", "steer"] = "queue",
+    ) -> None:
+        """Route an internal message through a platform adapter to the agent.
+
+        Used by plugins (e.g., the ATM graft bridge) to inject synthetic
+        host-originated messages that enter the agent loop via the normal
+        adapter→gateway dispatch path, but with ``internal=True`` so they
+        bypass user authorization, startup restore, and other user-facing
+        guards.
+
+        The adapter is selected from ``self._profile_adapters[profile]``
+        when ``profile`` names a secondary profile, or from
+        ``self.adapters`` when ``profile`` matches the active profile.
+        Unknown profiles are rejected (fail closed).
+
+        **Delivery modes** (``mode`` parameter):
+
+        - ``"queue"`` (default): Fire-and-forget queuing through
+          ``adapter.handle_message()``. The message enters the normal
+          gateway dispatch path and is processed on the agent's next turn.
+          Safe for both idle and busy agents.
+
+        - ``"steer"``: Attempt to inject the text directly into the
+          **currently running** agent's turn via ``agent.steer()`` — the
+          message appears as part of the next tool result without
+          interrupting or restarting the loop. If no agent is currently
+          running for the session, falls back to ``"queue"`` mode.
+
+        .. note::
+
+           ``"queue"`` mode is **fire-and-forget** — it awaits
+           ``adapter.handle_message(event)`` which spawns a background
+           task and returns quickly. ``"steer"`` mode returns immediately
+           after calling ``agent.steer()`` (a synchronous, thread-safe
+           enqueue) and does **not** spawn a background task.
+
+        Args:
+            profile:     Profile name to route through (required,
+                         keyword-only). Must be the active profile or a
+                         registered secondary profile — unknown profiles
+                         are rejected (fail closed).
+            platform:    Platform enum (e.g. ``Platform.TELEGRAM``).
+            chat_id:     Target chat ID for the platform.
+            text:        Message text to inject.
+            notice_text: Optional visible notice to send to the chat
+                         before routing the event (observability surface).
+            mode:        Delivery mode: ``"queue"`` (default) or
+                         ``"steer"``.
+
+        Returns:
+            ``None`` — the method returns after queuing or steering the
+            event.
+        """
+        # --- Mode validation (fail-closed for unknown modes) ---
+        _VALID_MODES = {"queue", "steer"}
+        if mode not in _VALID_MODES:
+            raise InjectInternalMessageError(
+                code='invalid_mode',
+                chat_id=chat_id,
+                detail=(
+                    f'Invalid mode: {mode!r}. '
+                    f'Must be one of: {", ".join(sorted(_VALID_MODES))}'
+                ),
+            )
+
+        # Resolve the adapter for the requested profile.
+        adapter = None
+        active = self._active_profile_name()
+        if profile == active:
+            adapter = self.adapters.get(platform)
+        elif self._profile_adapters and profile in self._profile_adapters:
+            adapter = self._profile_adapters[profile].get(platform)
+        elif not self._profile_adapters:
+            raise InjectInternalMessageError(
+                code='profile_map_empty',
+                chat_id=chat_id,
+                detail=f'No profile adapters registered (profile={profile})',
+            )
+        else:
+            raise InjectInternalMessageError(
+                code='unknown_profile',
+                chat_id=chat_id,
+                detail=f'Unknown profile: {profile}',
+            )
+
+        if adapter is None:
+            raise InjectInternalMessageError(
+                code='adapter_not_found',
+                chat_id=chat_id,
+                detail=f'No adapter for profile={profile} platform={platform}',
+            )
+
+        # Optional visible notice (observability, not a duplicate message).
+        if notice_text:
+            try:
+                notice_result = await adapter.send(
+                    chat_id,
+                    notice_text,
+                    metadata={"notify": True},
+                )
+                if not getattr(notice_result, "success", False):
+                    logger.warning(
+                        "inject_internal_message: visible notice was not delivered: %s",
+                        getattr(notice_result, "error", "unknown adapter failure"),
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "inject_internal_message: visible notice send raised: %s",
+                    exc,
+                )
+
+        # Construct SessionSource with user_id=chat_id so session
+        # resolution keys on the real Telegram session identity.
+        source = SessionSource(
+            platform=platform,
+            chat_id=chat_id,
+            chat_type="dm",
+            user_id=chat_id,
+            profile=profile or None,
+        )
+
+        # --- Steer mode: inject directly into running agent's turn ---
+        if mode == "steer":
+            # Resolve the session key for the source so we can look up
+            # whether an agent is currently running for this session.
+            try:
+                session_key = self._session_key_for_source(source)
+            except Exception:
+                session_key = None
+
+            if session_key:
+                running_state = self._running_agents.get(session_key)
+                if running_state is not None:
+                    running_agent = running_state[0] if isinstance(running_state, tuple) else None
+                    if (
+                        running_agent is not None
+                        and hasattr(running_agent, "steer")
+                    ):
+                        try:
+                            steered = running_agent.steer(text)
+                            if steered:
+                                logger.debug(
+                                    "inject_internal_message: steered into session %s",
+                                    session_key,
+                                )
+                                return
+                        except Exception as exc:
+                            logger.warning(
+                                "inject_internal_message: steer failed for session %s: %s",
+                                session_key, exc,
+                            )
+                            # Fall through to queue mode below.
+
+        # --- Queue mode (default, or steer fallback) ---
+        # Construct MessageEvent with internal=True so the gateway skips
+        # authorization, startup-restore queueing, and scale-to-zero
+        # clocks — this is a host-originated event, not user traffic.
+        event = MessageEvent(
+            text=text,
+            source=source,
+            internal=True,
+        )
+
+        # Route through the adapter's handle_message. This spawns a
+        # background task that calls _handle_message → the full agent
+        # pipeline. We await so the caller knows the event was accepted
+        # for dispatch; the response is delivered asynchronously.
+        await adapter.handle_message(event)
+        return
 
     def _make_adapter_auth_check(
         self,

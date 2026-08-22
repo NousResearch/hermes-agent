@@ -2773,6 +2773,62 @@ class PluginContext:
         )
         return handle
 
+    # -- terminal backend registration ---------------------------------------
+
+    @_serialized_replacement
+    def register_terminal_backend(self, definition) -> PluginRegistration:
+        """Register a terminal backend definition without creating resources.
+
+        Third-party plugins should construct
+        :class:`tools.environments.BackendDefinition` and register it from
+        their module-level ``register(ctx)`` function. Environment instances
+        remain owned by the host's EnvironmentManager.
+        """
+        from dataclasses import replace
+
+        from tools.environments import registry as registry_module
+        from tools.environments.builtin_backends import (
+            RESERVED_BUILTIN_BACKEND_NAMES,
+        )
+        from tools.environments.definitions import BackendDefinition
+        from tools.environments.registry import BackendAlreadyRegisteredError
+
+        if not isinstance(definition, BackendDefinition):
+            raise TypeError(
+                "register_terminal_backend() requires a BackendDefinition"
+            )
+        if definition.name in RESERVED_BUILTIN_BACKEND_NAMES:
+            raise BackendAlreadyRegisteredError(
+                f"Terminal backend {definition.name!r} is reserved for a built-in backend"
+            )
+
+        plugin_id = self.manifest.key or self.manifest.name
+        registered = replace(
+            definition,
+            source=self.manifest.source,
+            plugin_name=plugin_id,
+        )
+        registry = registry_module.current_terminal_backend_registry()
+        registered_name = registered.name
+        registered_snapshot = registry.register(registered)
+        self._manager._plugin_terminal_backend_names.add(registered_name)
+
+        def _release_terminal_backend() -> None:
+            registry.unregister_if_same(registered_name, registered_snapshot)
+            self._manager._plugin_terminal_backend_names.discard(registered_name)
+
+        handle = self._track(
+            "terminal_backend",
+            registered_name,
+            _release_terminal_backend,
+        )
+        logger.debug(
+            "Plugin %s registered terminal backend: %s",
+            self.manifest.name,
+            registered_name,
+        )
+        return handle
+
     # -- platform adapter registration ---------------------------------------
 
     @_serialized_replacement
@@ -3405,6 +3461,7 @@ class PluginManager:
         self._middleware: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._plugin_platform_names: Set[str] = set()
+        self._plugin_terminal_backend_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
@@ -3722,6 +3779,7 @@ class PluginManager:
             self._middleware.clear()
             self._plugin_tool_names.clear()
             self._plugin_platform_names.clear()
+            self._plugin_terminal_backend_names.clear()
             self._cli_commands.clear()
             self._plugin_commands.clear()
             self._plugin_skills.clear()
@@ -3794,6 +3852,7 @@ class PluginManager:
             # registry" — callers swallow the exception and would otherwise be
             # permanently stranded on the early-return above (the "No web provider
             # configured" class of failures).
+            registrations_before = {id(item) for item in self._registration_order}
             self._discovered = True
             try:
                 self._discover_and_load_inner()
@@ -3809,6 +3868,14 @@ class PluginManager:
                     # tracking #64178 — salvaged from PR #64188).
                     self._re_register_shell_hooks_after_force()
             except BaseException:
+                registrations = [
+                    registration
+                    for registration in self._registration_order
+                    if registration.active
+                    and id(registration) not in registrations_before
+                ]
+                self._dispose_registrations(registrations)
+                self._forget_registrations(registrations)
                 self._discovered = False
                 raise
 

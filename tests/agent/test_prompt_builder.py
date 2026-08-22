@@ -817,7 +817,6 @@ class TestEnvironmentHints:
         _pb._clear_backend_probe_cache()
         assert f"Current working directory: {tmp_path}" in _pb.build_environment_hints()
 
-
     def test_probe_remote_backend_imports_real_factory(self, monkeypatch):
         """Regression for #53667: the probe imported a nonexistent
         ``get_environment`` from ``tools.environments`` and always died with
@@ -842,18 +841,32 @@ class TestEnvironmentHints:
                 }
 
         created = {}
+        backend_config = {"workspace_name": "prompt-probe-workspace"}
 
         def _fake_create_environment(*, env_type, **kwargs):
             created["env_type"] = env_type
+            created["backend_config"] = kwargs.get("backend_config")
             return _FakeEnv()
 
         # Patch the REAL factory in tools.terminal_tool — the probe imports it
         # locally, so the import itself must succeed (the bug was here).
         import tools.terminal_tool as _tt
         monkeypatch.setattr(_tt, "_create_environment", _fake_create_environment)
+        monkeypatch.setattr(
+            _tt,
+            "_get_env_config",
+            lambda: {
+                "env_type": "docker",
+                "cwd": "/workspace",
+                "timeout": 180,
+                "host_cwd": None,
+                "backend_config": backend_config,
+            },
+        )
 
         line = _pb._probe_remote_backend("docker")
         assert created.get("env_type") == "docker"
+        assert created.get("backend_config") == backend_config
         assert line is not None
         assert "Linux 6.8.0" in line
         assert "root" in line
@@ -872,15 +885,6 @@ class TestEnvironmentHints:
         assert result.index("Host:") < result.index("OpenShell")
 
 
-
-    def test_remote_backend_list_covers_known_sandboxes(self):
-        """Regression guard: if someone adds a remote backend, they must list it here."""
-        import agent.prompt_builder as _pb
-        for backend in ("docker", "singularity", "modal", "daytona", "ssh", "vercel_sandbox"):
-            assert backend in _pb._REMOTE_TERMINAL_BACKENDS, (
-                f"{backend!r} must be in _REMOTE_TERMINAL_BACKENDS so its host "
-                f"info is suppressed in the system prompt"
-            )
 
 
 # =========================================================================

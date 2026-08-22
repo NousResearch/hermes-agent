@@ -39,6 +39,10 @@ describe('settings helpers', () => {
     expect(enumOptionsFor('memory.provider', 'honcho', {})).toBeUndefined()
   })
 
+  it('does not shadow discovery-driven terminal backend options', () => {
+    expect(enumOptionsFor('terminal.backend', 'coder', {})).toBeUndefined()
+  })
+
   describe('isExternalMemoryProvider', () => {
     it('treats only real plugin names as external providers', () => {
       expect(isExternalMemoryProvider('honcho')).toBe(true)
@@ -205,11 +209,6 @@ describe('settings helpers', () => {
       expect(enumOptionsFor('tts.neutts.device', 'cpu', config)).toEqual(['cpu', 'cuda', 'mps'])
     })
 
-    it('renders a dropdown for the terminal execution backend', () => {
-      const opts = enumOptionsFor('terminal.backend', 'local', config)
-      expect(opts).toEqual(['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'])
-    })
-
     it('narrows OpenAI TTS voice suggestions to what the selected model supports', () => {
       // gpt-4o-mini-tts (and unset/unknown models): full 13-voice set.
       const full = enumOptionsFor('tts.openai.voice', 'alloy', { tts: { openai: { model: 'gpt-4o-mini-tts' } } })
@@ -331,6 +330,30 @@ describe('settings helpers', () => {
   })
 
   describe('sectionFieldEntries', () => {
+    it('shows config fields declared by the selected terminal backend', () => {
+      const schema = {
+        'terminal.backend': { type: 'select' as const, options: ['local', 'coder', 'modal'] },
+        'terminal.backends.coder.workspace': {
+          type: 'string' as const,
+          terminal_backend: 'coder'
+        },
+        'terminal.modal_mode': {
+          type: 'select' as const,
+          options: ['auto', 'direct', 'managed'],
+          terminal_backend: 'modal'
+        }
+      }
+
+      const config: HermesConfigRecord = {
+        terminal: { backend: 'coder', backends: { coder: { workspace: 'development' } } }
+      }
+
+      const advancedKeys = (sectionFieldEntries(schema, config).get('advanced') ?? []).map(([key]) => key)
+
+      expect(advancedKeys).toContain('terminal.backends.coder.workspace')
+      expect(advancedKeys).not.toContain('terminal.modal_mode')
+    })
+
     it('renders memory.provider from config even when the backend schema omits it', () => {
       const schema = { 'memory.memory_enabled': { type: 'boolean' as const } }
       const config: HermesConfigRecord = { memory: { memory_enabled: true, provider: '' } }

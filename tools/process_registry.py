@@ -1261,6 +1261,7 @@ class ProcessRegistry:
             result = env.execute(
                 bg_command,
                 timeout=timeout,
+                cwd=cwd,
                 rewrite_compound_background=False,
             )
             output = result.get("output", "").strip()
@@ -1455,7 +1456,11 @@ class ProcessRegistry:
             time.sleep(2)  # Poll every 2 seconds
             try:
                 # Read new output from the log file
-                result = env.execute(f"cat {quoted_log_path} 2>/dev/null", timeout=10)
+                result = env.execute(
+                    f"cat {quoted_log_path} 2>/dev/null",
+                    timeout=10,
+                    cwd=session.cwd,
+                )
                 new_output = result.get("output", "")
                 if new_output:
                     # Compute delta for watch pattern scanning
@@ -1473,6 +1478,7 @@ class ProcessRegistry:
                 check = env.execute(
                     f"kill -0 \"$(cat {quoted_pid_path} 2>/dev/null)\" 2>/dev/null; echo $?",
                     timeout=5,
+                    cwd=session.cwd,
                 )
                 check_output = check.get("output", "").strip()
                 if check_output and check_output.splitlines()[-1].strip() != "0":
@@ -1480,6 +1486,7 @@ class ProcessRegistry:
                     exit_result = env.execute(
                         f"cat {quoted_exit_path} 2>/dev/null",
                         timeout=5,
+                        cwd=session.cwd,
                     )
                     exit_str = exit_result.get("output", "").strip()
                     try:
@@ -2124,7 +2131,11 @@ class ProcessRegistry:
                 self._terminate_host_pid(session.process.pid, session.host_start_time)
             elif session.env_ref and session.pid:
                 # Non-local -- kill inside sandbox
-                session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
+                session.env_ref.execute(
+                    f"kill {session.pid} 2>/dev/null",
+                    timeout=5,
+                    cwd=session.cwd,
+                )
             elif session.detached and session.pid_scope == "host" and session.pid:
                 # Identity check, not bare liveness: if the PID is gone OR was
                 # recycled onto an unrelated process, treat our process as

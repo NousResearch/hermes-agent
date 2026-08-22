@@ -135,7 +135,7 @@ Before that stash step, Hermes also restores tracked `package-lock.json` diffs l
 
 ## Terminal Backend Configuration
 
-Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
+Hermes ships seven terminal backends and can discover additional backends from enabled plugins. The selected backend determines where the agent's shell commands actually execute — your local machine, a container, a remote host, a cloud sandbox, or a plugin-provided environment such as a remote workspace.
 
 ```yaml
 terminal:
@@ -154,6 +154,44 @@ terminal:
 
 For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
 
+### Plugin-provided backends
+
+Enabled plugins can add terminal backends to the backend selector in Dashboard and Desktop.
+
+Install and enable the plugin, then select its registered backend name:
+
+```bash
+hermes plugins install owner/hermes-plugin-remote-workspace --enable
+hermes config set terminal.backend remote_workspace
+hermes config set terminal.backends.remote_workspace.workspace development
+```
+
+The equivalent profile configuration is:
+
+```yaml
+terminal:
+  backend: remote_workspace
+  backends:
+    remote_workspace:
+      workspace: development
+      url: https://workspace.example.com
+```
+
+Plugin configuration is profile-local. Enabling or configuring `remote_workspace` in one profile does not make it available in another profile; install and configure it in each profile that should use it.
+
+:::warning Keep credentials out of `config.yaml`
+Follow the plugin's setup instructions for tokens and passwords. When it documents an environment variable, store the credential in the current profile's `.env` with the documented uppercase key, for example `hermes config set REMOTE_WORKSPACE_TOKEN <token>`. Store non-secret settings under `terminal.backends.<backend>` in `config.yaml`.
+:::
+
+| Backend type | Configuration namespace | Compatibility rule |
+|---|---|---|
+| Built-in (`local`, `docker`, `ssh`, `modal`, `daytona`, `vercel_sandbox`, `singularity`) | Existing `terminal.<field>` keys | Keep using the documented built-in fields. |
+| Plugin backend | `terminal.backends.<backend>.<field>` | Use the fields documented by the plugin. |
+
+Keep built-in settings such as `terminal.docker_image` and `terminal.modal_mode` at their documented `terminal.*` paths. Use `terminal.backend` as the selector in new configuration; `terminal.env_type` and `TERMINAL_ENV` are retained only for compatibility with older CLI configuration.
+
+To develop a backend plugin, see [Terminal Backend Plugins](/developer-guide/plugins/terminal-backend).
+
 ### Backend Overview
 
 | Backend | Where commands run | Isolation | Best for |
@@ -165,6 +203,7 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
 | **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
+| **Plugin-defined** | Backend-specific | Declared by the plugin | Custom remote workspace and sandbox environments |
 
 ### Local Backend
 
@@ -2303,7 +2342,7 @@ web:
 
 **SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` requires a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](/user-guide/features/web-search) for Docker setup instructions.
 
-**Self-hosted Firecrawl:** Set `FIRECRAWL_API_URL` to point at your own instance. When a custom URL is set, the API key becomes optional (set `USE_DB_AUTHENTICATION=*** on the server to disable auth).
+**Self-hosted Firecrawl:** Set `FIRECRAWL_API_URL` to point at your own instance. When a custom URL is set, the API key becomes optional (set `USE_DB_AUTHENTICATION=false` on the server to disable auth).
 
 **Parallel search modes:** Set `PARALLEL_SEARCH_MODE` to control search behavior — `fast`, `one-shot`, or `agentic` (default: `agentic`).
 

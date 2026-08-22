@@ -1,13 +1,11 @@
 """Toolset / terminal-backend dashboard routes (extracted verbatim from
 web_server.py).
 
-Handler bodies are byte-identical.  The toolset/terminal catalogs
-(``_MODEL_CATALOG_TOOLSETS``, ``_TERMINAL_BACKENDS``,
-``_TERMINAL_BACKEND_NAMES`` - some defined *after* this router's mount point
-in web_server's body) and all helpers stay in web_server - reached via the
-late-binding seam in :mod:`hermes_cli.web_deps` (``late`` for callables,
-``LateState`` for the catalog constants) so monkeypatching on web_server
-stays authoritative.
+Handler bodies are byte-identical.  The toolset catalog and all helpers stay in
+web_server and are reached via the late-binding seam in
+:mod:`hermes_cli.web_deps` (``late`` for callables, ``LateState`` for module
+state) so monkeypatching on web_server stays authoritative. Terminal backend
+rows and names are resolved dynamically from the runtime registry.
 """
 
 import asyncio
@@ -36,6 +34,8 @@ router = APIRouter()
 # monkeypatch-transparent).
 _find_toolset_provider_row = late("_find_toolset_provider_row")
 _probe_terminal_backend = late("_probe_terminal_backend")
+_terminal_backend_names = late("_terminal_backend_names")
+_terminal_backend_rows = late("_terminal_backend_rows")
 _profile_cli_args = late("_profile_cli_args")
 _profile_scope = late("_profile_scope")
 _resolve_toolset_model_plugin = late("_resolve_toolset_model_plugin")
@@ -47,8 +47,7 @@ save_config = late("save_config")
 # Live proxies for web_server-owned module state (mutations/monkeypatches
 # on web_server remain authoritative; resolved at operation time).
 _MODEL_CATALOG_TOOLSETS = LateState("_MODEL_CATALOG_TOOLSETS")
-_TERMINAL_BACKENDS = LateState("_TERMINAL_BACKENDS")
-_TERMINAL_BACKEND_NAMES = LateState("_TERMINAL_BACKEND_NAMES")
+
 # Config read-modify-write serialization for off-loop handlers (defined in
 # web_server.py; LateState supports ``with``-blocks, so this is the live lock).
 _CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
@@ -726,11 +725,13 @@ async def get_terminal_backends(profile: Optional[str] = None):
             if not isinstance(terminal_cfg, dict):
                 terminal_cfg = {}
             active = str(terminal_cfg.get("backend") or "local").strip().lower()
-            if active not in _TERMINAL_BACKEND_NAMES:
+            backend_rows = _terminal_backend_rows()
+            backend_names = {row["name"] for row in backend_rows}
+            if active not in backend_names:
                 active = "local"
 
             backends = []
-            for row in _TERMINAL_BACKENDS:
+            for row in backend_rows:
                 status, detail = _probe_terminal_backend(row["name"], terminal_cfg)
                 backends.append({
                     "name": row["name"],
@@ -756,15 +757,16 @@ async def select_terminal_backend(
     allowed — the picker shows guidance instead of blocking, matching the CLI.
     """
     backend = (body.backend or "").strip().lower()
-    if backend not in _TERMINAL_BACKEND_NAMES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown terminal backend: {body.backend!r}. "
-            f"Use one of: {', '.join(sorted(_TERMINAL_BACKEND_NAMES))}",
-        )
 
     def _run():
         with _profile_scope(body.profile or profile):
+            backend_names = _terminal_backend_names()
+            if backend not in backend_names:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown terminal backend: {body.backend!r}. "
+                    f"Use one of: {', '.join(sorted(backend_names))}",
+                )
             with _CONFIG_MUTATION_LOCK:
                 config = load_config()
                 terminal_cfg = config.setdefault("terminal", {})

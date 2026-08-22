@@ -161,16 +161,31 @@ export function sectionFieldEntries(
   schema: Record<string, ConfigFieldSchema>,
   config: HermesConfigRecord
 ): Map<string, [string, ConfigFieldSchema][]> {
-  return new Map(
-    SECTIONS.map(s => [
-      s.id,
-      s.keys.flatMap(k => {
-        const value = getNested(config, k)
-        const field = schema[k] ?? (value === undefined ? undefined : inferFieldSchema(value))
+  const selectedTerminalBackend = asText(getNested(config, 'terminal.backend'))
 
-        return field ? [[k, field] as [string, ConfigFieldSchema]] : []
-      })
-    ])
+  return new Map(
+    SECTIONS.map(s => {
+      const keys =
+        s.id === 'advanced'
+          ? [
+              ...s.keys,
+              ...Object.entries(schema)
+                .filter(([, field]) => field.terminal_backend === selectedTerminalBackend)
+                .map(([key]) => key)
+                .filter(key => !s.keys.includes(key))
+            ]
+          : s.keys
+
+      return [
+        s.id,
+        keys.flatMap(k => {
+          const value = getNested(config, k)
+          const field = schema[k] ?? (value === undefined ? undefined : inferFieldSchema(value))
+
+          return field ? [[k, field] as [string, ConfigFieldSchema]] : []
+        })
+      ]
+    })
   )
 }
 

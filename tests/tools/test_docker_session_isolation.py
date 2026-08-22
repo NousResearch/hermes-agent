@@ -31,6 +31,7 @@ import os
 import pytest
 
 from tools import terminal_tool
+from tools.environments.base import BaseEnvironment
 
 
 @pytest.fixture(autouse=True)
@@ -292,11 +293,16 @@ class TestSessionScopedContainerLifecycle:
         _enable_isolation(monkeypatch)
         captured = {}
 
-        class _FakeDockerEnv:
+        class _FakeDockerEnv(BaseEnvironment):
             def __init__(self, **kwargs):
                 captured.update(kwargs)
 
-        monkeypatch.setattr(terminal_tool, "_DockerEnvironment", _FakeDockerEnv)
+            def cleanup(self):
+                pass
+
+        monkeypatch.setattr(
+            "tools.environments.docker.DockerEnvironment", _FakeDockerEnv
+        )
         monkeypatch.setattr(terminal_tool, "_maybe_reap_docker_orphans", lambda cc: None)
 
         env = terminal_tool._create_environment(
@@ -311,11 +317,16 @@ class TestSessionScopedContainerLifecycle:
         _enable_isolation(monkeypatch)
         captured = {}
 
-        class _FakeDockerEnv:
+        class _FakeDockerEnv(BaseEnvironment):
             def __init__(self, **kwargs):
                 captured.update(kwargs)
 
-        monkeypatch.setattr(terminal_tool, "_DockerEnvironment", _FakeDockerEnv)
+            def cleanup(self):
+                pass
+
+        monkeypatch.setattr(
+            "tools.environments.docker.DockerEnvironment", _FakeDockerEnv
+        )
         monkeypatch.setattr(terminal_tool, "_maybe_reap_docker_orphans", lambda cc: None)
 
         env = terminal_tool._create_environment(

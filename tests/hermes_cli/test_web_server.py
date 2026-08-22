@@ -352,6 +352,38 @@ class TestWebServerEndpoints:
 
         assert seen["thread"] != event_loop_thread
 
+    def test_get_schema_builds_dynamic_fields_off_event_loop(self, monkeypatch):
+        import asyncio
+        import threading
+
+        from hermes_cli import profiles as profiles_mod
+        from hermes_cli import web_server
+        from hermes_constants import get_hermes_home
+
+        seen = {}
+        profile_dir = profiles_mod.get_profile_dir("schema-thread")
+        profile_dir.mkdir(parents=True)
+
+        def build_schema():
+            seen["thread"] = threading.get_ident()
+            seen["home"] = get_hermes_home().resolve()
+            return {}
+
+        monkeypatch.setattr(
+            web_server, "_schema_with_dynamic_provider_options", build_schema
+        )
+
+        async def run():
+            event_loop_thread = threading.get_ident()
+            result = await web_server.get_schema(profile="schema-thread")
+            return event_loop_thread, result
+
+        event_loop_thread, result = asyncio.run(run())
+
+        assert seen["thread"] != event_loop_thread
+        assert seen["home"] == profile_dir.resolve()
+        assert result == {"fields": {}, "category_order": web_server._CATEGORY_ORDER}
+
     def test_get_sessions_auto_archive_uses_maintenance_writer(self):
         from hermes_cli import web_server
         from hermes_cli.config import load_config, save_config
@@ -2180,20 +2212,21 @@ class TestWebServerEndpoints:
 class TestBuildSchemaFromConfig:
 
 
-    def test_overrides_applied(self):
-        from hermes_cli.web_server import CONFIG_SCHEMA
-        # terminal.backend should be a select with options
-        if "terminal.backend" in CONFIG_SCHEMA:
-            entry = CONFIG_SCHEMA["terminal.backend"]
-            assert entry["type"] == "select"
-            assert "options" in entry
-            assert "local" in entry["options"]
-            assert "vercel_sandbox" in entry["options"]
-        runtime_entry = CONFIG_SCHEMA["terminal.vercel_runtime"]
-        assert runtime_entry["type"] == "select"
-        assert "node24" in runtime_entry["options"]
-        assert "python3.13" in runtime_entry["options"]
-        assert len(runtime_entry["options"]) >= 3
+
+    def test_dynamic_terminal_schema_survives_config_load_error(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: (_ for _ in ()).throw(ValueError("broken config")),
+        )
+
+        schema = web_server._schema_with_dynamic_provider_options()
+
+        assert schema["terminal.backend"]["type"] == "select"
+        assert "local" in schema["terminal.backend"]["options"]
+        assert schema["terminal.modal_mode"]["type"] == "select"
 
 
 
@@ -2726,6 +2759,453 @@ class TestNewEndpoints:
 
     # -- Terminal execution backend picker ---------------------------------
 
+
+    def test_terminal_config_schema_comes_from_registered_backend_definitions(
+        self, monkeypatch
+    ):
+        from tools.environments import BackendDefinition
+        from tools.environments import registry as registry_module
+
+        registry = registry_module.TerminalBackendRegistry()
+        registry.register(
+            BackendDefinition(
+                name="coder",
+                label="Coder",
+                description="Run commands in a Coder workspace.",
+                factory=lambda request: object(),
+                config_schema={
+                    "workspace": {
+                        "type": "string",
+                        "description": "Coder workspace name",
+                    }
+                },
+            )
+        )
+        monkeypatch.setattr(registry_module, "terminal_backend_registry", registry)
+
+        response = self.client.get("/api/config/schema")
+
+        assert response.status_code == 200
+        fields = response.json()["fields"]
+
+        assert "coder" in fields["terminal.backend"]["options"]
+        assert fields["terminal.backends.coder.workspace"] == {
+            "type": "string",
+            "description": "Coder workspace name",
+            "category": "terminal",
+            "terminal_backend": "coder",
+        }
+
+    def test_builtin_terminal_config_schema_preserves_dashboard_keys(self):
+        import hermes_cli.web_server as web_server
+
+        fields = web_server._schema_with_dynamic_provider_options()
+
+        assert fields["terminal.backend"]["type"] == "select"
+        assert "local" in fields["terminal.backend"]["options"]
+        assert "vercel_sandbox" in fields["terminal.backend"]["options"]
+        assert fields["terminal.modal_mode"]["options"] == ["sandbox", "function"]
+        assert fields["terminal.modal_mode"]["terminal_backend"] == "modal"
+        assert fields["terminal.vercel_runtime"]["options"] == [
+            "node24",
+            "node22",
+            "python3.13",
+        ]
+        assert fields["terminal.vercel_runtime"]["terminal_backend"] == "vercel_sandbox"
+
+    def test_terminal_config_schema_rejects_cross_namespace_key(
+        self, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+        from tools.environments import BackendDefinition
+        from tools.environments import registry as registry_module
+
+        registry = registry_module.TerminalBackendRegistry()
+        registry.register(
+            BackendDefinition(
+                name="coder",
+                factory=lambda request: object(),
+                config_schema={
+                    "mode": {
+                        "type": "string",
+                        "config_key": "model",
+                    }
+                },
+            )
+        )
+        monkeypatch.setattr(registry_module, "terminal_backend_registry", registry)
+
+        with pytest.raises(ValueError, match="must stay under"):
+            web_server._schema_with_dynamic_provider_options()
+
+    def test_terminal_config_schema_rejects_conflicting_dashboard_key(
+        self, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+        from tools.environments import BackendDefinition
+        from tools.environments import registry as registry_module
+
+        registry = registry_module.TerminalBackendRegistry()
+        registry.register(
+            BackendDefinition(
+                name="coder",
+                factory=lambda request: object(),
+                config_schema={
+                    "first": {
+                        "type": "string",
+                        "config_key": "terminal.backends.coder.shared",
+                    },
+                    "second": {
+                        "type": "string",
+                        "config_key": "terminal.backends.coder.shared",
+                    },
+                },
+            )
+        )
+        monkeypatch.setattr(registry_module, "terminal_backend_registry", registry)
+
+        with pytest.raises(
+            ValueError,
+            match=(
+                "config schema key 'terminal.backends.coder.shared' conflicts with "
+                "'terminal.backends.coder.shared'"
+            ),
+        ):
+            web_server._schema_with_dynamic_provider_options()
+
+    def test_terminal_config_schema_rejects_ancestor_descendant_collision(
+        self, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+        from tools.environments import BackendDefinition
+        from tools.environments import registry as registry_module
+
+        registry = registry_module.TerminalBackendRegistry()
+        registry.register(
+            BackendDefinition(
+                name="coder",
+                factory=lambda request: object(),
+                config_schema={
+                    "workspace": {"type": "string"},
+                    "workspace.name": {"type": "string"},
+                },
+            )
+        )
+        monkeypatch.setattr(registry_module, "terminal_backend_registry", registry)
+
+        with pytest.raises(ValueError, match="workspace.name.*conflicts with.*workspace"):
+            web_server._schema_with_dynamic_provider_options()
+
+    def test_terminal_config_schema_revalidates_mutated_definition(
+        self, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+        from tools.environments import BackendDefinition
+        from tools.environments import registry as registry_module
+
+        registry = registry_module.TerminalBackendRegistry()
+        definition = BackendDefinition(
+            name="coder",
+            factory=lambda request: object(),
+            config_schema={"workspace": {"type": "string"}},
+        )
+        registry.register(definition)
+        definition.config_schema["workspace"]["config_key"] = (
+            "terminal.backends.coder.__proto__.polluted"
+        )
+        monkeypatch.setattr(registry_module, "terminal_backend_registry", registry)
+
+        with pytest.raises(ValueError, match="unsafe path segment"):
+            web_server._schema_with_dynamic_provider_options()
+
+    def test_terminal_config_schema_revalidates_mutated_field_descriptor(
+        self, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+        from tools.environments import BackendDefinition
+        from tools.environments import registry as registry_module
+
+        registry = registry_module.TerminalBackendRegistry()
+        definition = BackendDefinition(
+            name="coder",
+            factory=lambda request: object(),
+            config_schema={
+                "mode": {"type": "select", "options": ["safe"]},
+            },
+        )
+        registry.register(definition)
+        definition.config_schema["mode"]["options"] = "not-a-list"
+        monkeypatch.setattr(registry_module, "terminal_backend_registry", registry)
+
+        with pytest.raises(TypeError, match="options must be a list of strings"):
+            web_server._schema_with_dynamic_provider_options()
+
+    def test_terminal_config_schema_validates_generated_namespace(
+        self, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+        from tools.environments import BackendDefinition
+        from tools.environments import registry as registry_module
+
+        registry = registry_module.TerminalBackendRegistry()
+        registry.register(
+            BackendDefinition(
+                name="constructor",
+                factory=lambda request: object(),
+                config_schema={"workspace": {"type": "string"}},
+            )
+        )
+        monkeypatch.setattr(registry_module, "terminal_backend_registry", registry)
+
+        with pytest.raises(ValueError, match="unsafe path segment"):
+            web_server._schema_with_dynamic_provider_options()
+
+    def test_terminal_backend_picker_uses_registered_definition_metadata(
+        self, monkeypatch
+    ):
+        from tools.environments import BackendDefinition
+        from tools.environments import registry as registry_module
+
+        registry = registry_module.TerminalBackendRegistry()
+        registry.register(
+            BackendDefinition(
+                name="coder",
+                label="Coder Workspace",
+                description="Run commands in Coder.",
+                factory=lambda request: object(),
+            )
+        )
+        monkeypatch.setattr(registry_module, "terminal_backend_registry", registry)
+
+        response = self.client.get("/api/tools/terminal/backends")
+
+        assert response.status_code == 200
+        coder = next(row for row in response.json()["backends"] if row["name"] == "coder")
+        assert coder["label"] == "Coder Workspace"
+        assert coder["description"] == "Run commands in Coder."
+        assert coder["status"] == "ready"
+
+    def test_terminal_backend_picker_accepts_profile_config_when_env_probe_fails(
+        self, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+        from tools.environments import BackendDefinition
+        from tools.environments import registry as registry_module
+
+        registry = registry_module.TerminalBackendRegistry()
+        registry.register(
+            BackendDefinition(
+                name="coder",
+                factory=lambda request: object(),
+                availability_check=lambda: False,
+                config_resolver=lambda raw: {**raw, "api_key": "secret-token"},
+                config_availability_check=lambda config: all(
+                    config.get(key)
+                    for key in ("base_url", "api_key", "workspace_name")
+                ),
+                install_hint="Configure Coder.",
+            )
+        )
+        monkeypatch.setattr(registry_module, "terminal_backend_registry", registry)
+
+        assert web_server._probe_terminal_backend(
+            "coder",
+            {
+                "backends": {
+                    "coder": {
+                        "base_url": "https://coder.example",
+                        "workspace_name": "configured-workspace",
+                    }
+                }
+            },
+        ) == ("ready", "")
+
+    def test_terminal_backend_picker_preserves_needs_setup_for_unresolved_config(
+        self, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+        from tools.environments import BackendDefinition
+        from tools.environments import registry as registry_module
+
+        registry = registry_module.TerminalBackendRegistry()
+        registry.register(
+            BackendDefinition(
+                name="coder",
+                factory=lambda request: object(),
+                availability_check=lambda: False,
+                config_resolver=lambda raw: dict(raw),
+                config_availability_check=lambda config: False,
+                install_hint="Configure Coder.",
+            )
+        )
+        monkeypatch.setattr(registry_module, "terminal_backend_registry", registry)
+
+        assert web_server._probe_terminal_backend("coder", {"backends": {}}) == (
+            "needs_setup",
+            "Configure Coder.",
+        )
+
+    def test_terminal_backend_picker_does_not_expose_resolver_exception_text(
+        self, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+        from tools.environments import BackendDefinition
+        from tools.environments import registry as registry_module
+
+        credential = "synthetic-secret-never-return"
+        registry = registry_module.TerminalBackendRegistry()
+
+        def fail_resolution(_raw):
+            raise ValueError(f"invalid api_key {credential}")
+
+        registry.register(
+            BackendDefinition(
+                name="coder",
+                factory=lambda request: object(),
+                config_resolver=fail_resolution,
+            )
+        )
+        monkeypatch.setattr(registry_module, "terminal_backend_registry", registry)
+
+        status, detail = web_server._probe_terminal_backend("coder", {})
+
+        assert status == "unavailable"
+        assert detail == "Backend probe failed."
+        assert credential not in detail
+
+    def test_terminal_backend_selection_validates_in_requested_profile(
+        self, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+        from hermes_cli import profiles as profiles_mod
+        from hermes_constants import get_hermes_home
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+        seen = []
+
+        def backend_names():
+            seen.append(get_hermes_home().resolve())
+            return {"coder"}
+
+        monkeypatch.setattr(web_server, "_terminal_backend_names", backend_names)
+
+        response = self.client.put(
+            "/api/tools/terminal/backend?profile=worker",
+            json={"backend": "coder"},
+        )
+
+        assert response.status_code == 200
+        assert seen == [worker_home.resolve()]
+
+    def test_terminal_backend_endpoints_isolate_real_profile_registry_views(
+        self, monkeypatch
+    ):
+        from concurrent.futures import ThreadPoolExecutor
+
+        from hermes_cli import profiles as profiles_mod
+        from hermes_constants import get_hermes_home
+        from tools.environments import BackendDefinition
+        from tools.environments import registry as registry_module
+
+        profile_names = ("schema-one", "schema-two", "schema-fresh")
+        for profile_name in profile_names:
+            profiles_mod.get_profile_dir(profile_name).mkdir(parents=True)
+
+        definitions = {
+            "schema-one": (
+                BackendDefinition(
+                    name="coder",
+                    label="Coder One",
+                    factory=lambda request: object(),
+                    config_schema={"workspace_one": {"type": "string"}},
+                ),
+                BackendDefinition(name="alpha", factory=lambda request: object()),
+            ),
+            "schema-two": (
+                BackendDefinition(
+                    name="coder",
+                    label="Coder Two",
+                    factory=lambda request: object(),
+                    config_schema={"workspace_two": {"type": "string"}},
+                ),
+                BackendDefinition(name="beta", factory=lambda request: object()),
+            ),
+            "schema-fresh": (
+                BackendDefinition(name="coder", factory=lambda request: object()),
+            ),
+        }
+
+        def discover_for_active_profile():
+            profile_name = get_hermes_home().name
+            registry = registry_module.current_terminal_backend_registry()
+            for definition in definitions.get(profile_name, ()):
+                registry.register_or_verify(definition)
+            return []
+
+        import hermes_cli.plugins as plugins_module
+
+        monkeypatch.setattr(plugins_module, "discover_plugins", discover_for_active_profile)
+        paths = [
+            "/api/config/schema?profile=schema-one",
+            "/api/tools/terminal/backends?profile=schema-one",
+            "/api/config/schema?profile=schema-two",
+            "/api/tools/terminal/backends?profile=schema-two",
+        ]
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            responses = list(pool.map(self.client.get, paths))
+
+        assert all(response.status_code == 200 for response in responses)
+        one_schema, one_picker, two_schema, two_picker = responses
+        assert "terminal.backends.coder.workspace_one" in one_schema.json()["fields"]
+        assert "terminal.backends.coder.workspace_two" not in one_schema.json()["fields"]
+        assert "terminal.backends.coder.workspace_two" in two_schema.json()["fields"]
+        assert "terminal.backends.coder.workspace_one" not in two_schema.json()["fields"]
+        one_rows = {row["name"]: row for row in one_picker.json()["backends"]}
+        two_rows = {row["name"]: row for row in two_picker.json()["backends"]}
+        assert one_rows["coder"]["label"] == "Coder One"
+        assert two_rows["coder"]["label"] == "Coder Two"
+        assert "alpha" in one_rows and "alpha" not in two_rows
+        assert "beta" in two_rows and "beta" not in one_rows
+
+        selected = self.client.put(
+            "/api/tools/terminal/backend?profile=schema-fresh",
+            json={"backend": "coder"},
+        )
+        assert selected.status_code == 200
+        assert selected.json()["backend"] == "coder"
+
+    def test_terminal_dashboard_fails_closed_on_registered_name_mutation(
+        self, monkeypatch
+    ):
+        import hermes_cli.plugins as plugins_module
+        from tools.environments import BackendDefinition
+        from tools.environments import registry as registry_module
+
+        registry = registry_module.TerminalBackendRegistry()
+        monkeypatch.setattr(registry_module, "terminal_backend_registry", registry)
+        monkeypatch.setattr(plugins_module, "discover_plugins", lambda: [])
+        definition = BackendDefinition(
+            name="coder",
+            factory=lambda request: object(),
+            config_schema={"workspace": {"type": "string"}},
+        )
+        registered = registry.register(definition)
+        definition.name = "renamed"
+
+        requests = (
+            lambda: self.client.get("/api/config/schema"),
+            lambda: self.client.get("/api/tools/terminal/backends"),
+            lambda: self.client.put(
+                "/api/tools/terminal/backend", json={"backend": "renamed"}
+            ),
+            lambda: registry.require("coder"),
+        )
+        for request in requests:
+            with pytest.raises(registry_module.BackendDefinitionMutatedError):
+                request()
+
+        assert registry.unregister_if_same("coder", registered) is definition
 
 
 

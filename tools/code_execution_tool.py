@@ -791,8 +791,9 @@ def _get_or_create_env(task_id: str):
     from tools.terminal_tool import (
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
-        _creation_locks, _creation_locks_lock, _task_env_overrides,
+        _creation_locks, _creation_locks_lock, resolve_task_overrides,
         _resolve_container_task_id, _resolve_task_host_cwd,
+        _sanitize_registered_sandbox_cwd,
     )
 
     effective_task_id = _resolve_container_task_id(task_id)
@@ -817,7 +818,7 @@ def _get_or_create_env(task_id: str):
 
         config = _get_env_config()
         env_type = config["env_type"]
-        overrides = _task_env_overrides.get(effective_task_id, {})
+        overrides = resolve_task_overrides(task_id)
 
         if env_type == "docker":
             image = overrides.get("docker_image") or config["docker_image"]
@@ -831,6 +832,9 @@ def _get_or_create_env(task_id: str):
             image = ""
 
         cwd = overrides.get("cwd") or config["cwd"]
+        cwd = _sanitize_registered_sandbox_cwd(
+            env_type, cwd, config["cwd"]
+        )
 
         container_config = None
         if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
@@ -873,6 +877,7 @@ def _get_or_create_env(task_id: str):
             local_config=local_config,
             task_id=effective_task_id,
             host_cwd=_resolve_task_host_cwd(config, task_id),
+            backend_config=config.get("backend_config", {}),
         )
 
         with _env_lock:
@@ -895,11 +900,14 @@ def _ship_file_to_remote(env, remote_path: str, content: str) -> None:
     """
     encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
     quoted_remote_path = shlex.quote(remote_path)
-    env.execute(
+    result = env.execute(
         f"echo '{encoded}' | base64 -d > {quoted_remote_path}",
         cwd="/",
         timeout=30,
     )
+    exit_code = result.get("returncode", -1)
+    if exit_code != 0:
+        raise RuntimeError(f"Failed to ship file to remote environment: {exit_code}")
 
 
 def _env_temp_dir(env: Any) -> str:

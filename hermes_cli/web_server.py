@@ -1043,21 +1043,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Context window override (0 = auto-detect from model metadata)",
         "category": "general",
     },
-    "terminal.backend": {
-        "type": "select",
-        "description": "Terminal execution backend",
-        "options": ["local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity"],
-    },
-    "terminal.vercel_runtime": {
-        "type": "select",
-        "description": "Vercel Sandbox runtime",
-        "options": ["node24", "node22", "python3.13"],  # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
-    },
-    "terminal.modal_mode": {
-        "type": "select",
-        "description": "Modal sandbox mode",
-        "options": ["sandbox", "function"],
-    },
+
     "proxy.enabled": {
         "type": "boolean",
         "description": (
@@ -1469,7 +1455,7 @@ def _schema_with_dynamic_provider_options() -> Dict[str, Dict[str, Any]]:
     try:
         cfg = load_config()
     except Exception:  # pragma: no cover - schema must survive config errors
-        return CONFIG_SCHEMA
+        cfg = {}
 
     overlay: Dict[str, Dict[str, Any]] = {}
 
@@ -1487,6 +1473,71 @@ def _schema_with_dynamic_provider_options() -> Dict[str, Dict[str, Any]]:
             merge(f"{kind}.provider", _custom_provider_options(kind, list(existing), cfg))
 
     merge("memory.provider", _memory_provider_schema_options(cfg))
+
+    from tools.environments.builtin_backends import (
+        is_canonical_builtin_definition,
+    )
+    from tools.environments.definitions import validate_dashboard_config_path
+
+    definitions = _registered_terminal_backend_definitions()
+    overlay["terminal.backend"] = {
+        "type": "select",
+        "description": "Terminal execution backend",
+        "options": [definition.name for definition in definitions],
+    }
+    for definition in definitions:
+        for field_name, field_schema in definition.validated_config_schema().items():
+            entry = dict(field_schema)
+            namespace = f"terminal.backends.{definition.name}."
+            config_key = entry.pop("config_key", None)
+            key = config_key or f"{namespace}{field_name}"
+            validate_dashboard_config_path(
+                key,
+                label=f"Terminal backend {definition.name!r} config schema key",
+            )
+            canonical_builtin = is_canonical_builtin_definition(definition)
+            if config_key is not None and not (
+                canonical_builtin or config_key.startswith(namespace)
+            ):
+                raise ValueError(
+                    f"Terminal backend {definition.name!r} config_key must stay "
+                    f"under {namespace!r}"
+                )
+            replaces_builtin_terminal_field = (
+                canonical_builtin
+                and isinstance(key, str)
+                and key.startswith("terminal.")
+            )
+            conflicting_key = next(
+                (
+                    existing
+                    for existing in (*CONFIG_SCHEMA, *overlay)
+                    if (
+                        key == existing
+                        or key.startswith(f"{existing}.")
+                        or existing.startswith(f"{key}.")
+                    )
+                    and not (
+                        replaces_builtin_terminal_field
+                        and key == existing
+                        and existing in CONFIG_SCHEMA
+                        and existing not in overlay
+                    )
+                ),
+                None,
+            )
+            if conflicting_key is not None:
+                raise ValueError(
+                    f"Terminal backend {definition.name!r} config schema key {key!r} "
+                    f"conflicts with {conflicting_key!r}"
+                )
+            entry.setdefault("category", "terminal")
+            # Frontends can distinguish backend-owned fields from the broader
+            # terminal category and show only the selected backend's settings.
+            # This is server-owned metadata: plugin descriptors cannot spoof a
+            # different owner because the registry definition name wins here.
+            entry["terminal_backend"] = definition.name
+            overlay[key] = entry
 
     if not overlay:
         return CONFIG_SCHEMA
@@ -6866,9 +6917,13 @@ async def get_defaults():
 async def get_schema(profile: Optional[str] = None):
     # Discovery-driven provider options (voice command providers + memory
     # provider plugins) are merged per-request so providers added after server
-    # start still show up, scoped to the requested profile's config.
-    with _config_profile_scope(profile):
-        fields = _schema_with_dynamic_provider_options()
+    # start still show up, scoped to the requested profile's config. Discovery
+    # may import plugins or scan the filesystem, so keep it off the event loop.
+    def _run():
+        with _config_profile_scope(profile):
+            return _schema_with_dynamic_provider_options()
+
+    fields = await asyncio.to_thread(_run)
     return {"fields": fields, "category_order": _CATEGORY_ORDER}
 
 
@@ -15066,43 +15121,37 @@ def _find_toolset_provider_row(ts_key: str, config: dict, provider: Optional[str
 # failure renders as a status, not a 500.
 # ---------------------------------------------------------------------------
 
-# Table-driven backend metadata — kept in sync with the dispatch ladder in
-# tools/terminal_tool.py::_create_environment and the terminal.backend enum
-# surfaced in the desktop raw-config settings.
-_TERMINAL_BACKENDS: List[Dict[str, str]] = [
-    {
-        "name": "local",
-        "label": "Local",
-        "description": "Run commands directly on this machine. No isolation.",
-    },
-    {
-        "name": "docker",
-        "label": "Docker",
-        "description": "Run commands in an isolated Docker container with a persistent workspace.",
-    },
-    {
-        "name": "singularity",
-        "label": "Singularity / Apptainer",
-        "description": "Run commands in a Singularity/Apptainer container (HPC-friendly, rootless).",
-    },
-    {
-        "name": "modal",
-        "label": "Modal",
-        "description": "Run commands in a Modal cloud sandbox.",
-    },
-    {
-        "name": "daytona",
-        "label": "Daytona",
-        "description": "Run commands in a Daytona cloud sandbox.",
-    },
-    {
-        "name": "ssh",
-        "label": "SSH",
-        "description": "Run commands on a remote host over SSH.",
-    },
-]
+# Backend metadata comes from the same registry used by the runtime. This keeps
+# the dashboard open to plugin backends and avoids a second hard-coded catalog.
+def _registered_terminal_backend_definitions():
+    from hermes_cli.plugins import discover_plugins
+    from tools.environments.builtin_backends import register_builtin_terminal_backends
+    from tools.environments import registry as registry_module
 
-_TERMINAL_BACKEND_NAMES = {row["name"] for row in _TERMINAL_BACKENDS}
+    discover_plugins()
+    registry = registry_module.current_terminal_backend_registry()
+    register_builtin_terminal_backends(registry)
+    return registry.list_definitions()
+
+
+def _terminal_backend_rows() -> List[Dict[str, str]]:
+    rows = []
+    for definition in _registered_terminal_backend_definitions():
+        metadata = definition.validated_picker_metadata()
+        rows.append(
+            {
+                "name": definition.name,
+                "label": metadata["label"],
+                "description": metadata["description"],
+            }
+        )
+    return rows
+
+
+def _terminal_backend_names() -> set[str]:
+    return {
+        definition.name for definition in _registered_terminal_backend_definitions()
+    }
 
 
 def _terminal_cfg_value(terminal_cfg: dict, key: str, env_var: str) -> str:
@@ -15205,6 +15254,12 @@ def _probe_daytona_backend() -> tuple:
 def _probe_terminal_backend(name: str, terminal_cfg: dict) -> tuple:
     """Return ``(status, detail)`` for one backend. Never raises."""
     try:
+        from tools.environments import registry as registry_module
+
+        definition = registry_module.current_terminal_backend_registry().get(name)
+        if definition is None:
+            return ("unavailable", f"Unknown backend: {name}")
+        metadata = definition.validated_picker_metadata()
         if name == "local":
             return ("ready", "")
         if name == "docker":
@@ -15217,9 +15272,35 @@ def _probe_terminal_backend(name: str, terminal_cfg: dict) -> tuple:
             return _probe_modal_backend()
         if name == "daytona":
             return _probe_daytona_backend()
-        return ("unavailable", f"Unknown backend: {name}")
-    except Exception as exc:  # pragma: no cover — belt-and-braces guard
-        return ("unavailable", f"Probe failed: {exc}")
+        configured_backends = terminal_cfg.get("backends")
+        configured_backend = (
+            configured_backends.get(name)
+            if isinstance(configured_backends, dict)
+            else None
+        )
+        from tools.environments.manager import EnvironmentManager
+        from tools.environments.registry import BackendUnavailableError
+
+        try:
+            EnvironmentManager(
+                registry_module.current_terminal_backend_registry()
+            ).resolve_backend(
+                name,
+                backend_config=(
+                    configured_backend if isinstance(configured_backend, dict) else {}
+                ),
+            )
+        except BackendUnavailableError:
+            return (
+                "needs_setup",
+                metadata["install_hint"] or f"Backend {name!r} is not available.",
+            )
+        return ("ready", "")
+    except Exception:  # pragma: no cover — belt-and-braces guard
+        # Resolver/factory exceptions may embed credentials from resolved config.
+        # Keep this client-visible boundary generic rather than trying to infer
+        # which arbitrary plugin exception fields are safe to serialize.
+        return ("unavailable", "Backend probe failed.")
 
 
 

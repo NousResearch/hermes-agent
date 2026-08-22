@@ -1166,7 +1166,13 @@ function ToolsetDetail({
         </div>
       )}
       {toolset.name === 'computer_use' && <ComputerUsePanel onConfiguredChange={onConfiguredChange} />}
-      {toolset.name === 'terminal' && <TerminalBackendPanel onConfiguredChange={onConfiguredChange} />}
+      {toolset.name === 'terminal' && (
+        <TerminalBackendPanel
+          key={`terminal:${profileScopeKey(profile)}`}
+          onConfiguredChange={onConfiguredChange}
+          profile={profile}
+        />
+      )}
       <ToolsetConfigPanel
         key={`${toolset.name}:${profileScopeKey(profile)}`}
         onConfiguredChange={onConfiguredChange}

@@ -34,6 +34,7 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | **Shell hooks** (run a shell command on events) | [Shell Hooks](/user-guide/features/hooks#shell-hooks) — declare under `hooks:` in `config.yaml` |
 | **Additional skill sources** (custom GitHub repos, private skill indexes) | [Skills](/user-guide/features/skills) — `hermes skills tap add <repo>` · [Publishing a tap](/user-guide/features/skills#publishing-a-custom-skill-tap) |
 | A first-class **core** inference provider (not a plugin) | [Adding Providers](/developer-guide/adding-providers) |
+| A **terminal backend** (remote workspace, custom sandbox, or another execution environment) | [Terminal Backend Plugins](/developer-guide/plugins/terminal-backend) |
 
 See the full [Pluggable interfaces table](/user-guide/features/plugins#pluggable-interfaces--where-to-go-for-each) for a consolidated view of every extension surface including config-driven (TTS, STT, MCP, shell hooks) and drop-in directory (gateway hooks) styles.
 :::
@@ -1287,7 +1288,7 @@ This guide covers **general plugins** (tools, hooks, slash commands, CLI command
 
 ## Specialized plugin types
 
-Hermes has five specialized plugin types beyond the general surface. Each ships as a directory under `plugins/<category>/<name>/` (bundled) or `~/.hermes/plugins/<category>/<name>/` (user). The contract differs by category — pick the one you need, then read its full guide.
+Hermes has several specialized plugin types beyond the general surface. Directory-installed plugins can use `plugins/<category>/<name>/` (bundled) or `~/.hermes/plugins/<category>/<name>/` (user), while pip-distributed plugins use their type-specific entry points. The contract differs by type — pick the one you need, then read its full guide.
 
 ### Model provider plugins — add an LLM backend
 
@@ -1477,6 +1478,65 @@ description: Custom image generation backend
 **Full guide:** [Image Generation Provider Plugins](/developer-guide/image-gen-provider-plugin) — full `ImageGenProvider` ABC, `list_models()` / `get_setup_schema()` metadata, `success_response()`/`error_response()` helpers, base64 vs URL output, user overrides, pip distribution.
 
 **Reference examples:** `plugins/image_gen/openai/` (DALL-E / GPT-Image via OpenAI SDK), `plugins/image_gen/openai-codex/`, `plugins/image_gen/xai/` (Grok image gen).
+
+### Terminal backend plugins — add an execution environment
+
+Terminal backend plugins let the existing terminal, file, and `execute_code` tools run in a custom environment such as a remote workspace or custom sandbox. The plugin registers a declarative `BackendDefinition`; Hermes owns the profile-scoped registry, configuration handoff, environment lifecycle, and frontend picker/schema integration.
+
+```python
+from tools.environments import (
+    BackendCapabilities,
+    BackendDefinition,
+    ExecutionLocation,
+    FilesystemSemantics,
+)
+
+
+def create_environment(request):
+    return RemoteWorkspaceEnvironment(
+        workspace=request.backend_config["workspace"],
+        url=request.backend_config["url"],
+        token=request.backend_config["token"],
+        cwd=request.cwd,
+        timeout=request.timeout,
+    )
+
+
+def register(ctx):
+    ctx.register_terminal_backend(BackendDefinition(
+        name="remote_workspace",
+        label="Remote Workspace",
+        description="Run commands in a remote workspace",
+        factory=create_environment,
+        capabilities=BackendCapabilities(
+            execution_location=ExecutionLocation.REMOTE,
+            filesystem_semantics=FilesystemSemantics.ISOLATED,
+            requires_sandbox_cwd=True,
+        ),
+        config_schema={
+            "workspace": {
+                "type": "string",
+                "description": "Remote workspace name",
+                "required": True,
+            },
+            "url": {
+                "type": "string",
+                "description": "Workspace service URL",
+                "required": True,
+            },
+            "token": {
+                "type": "secret",
+                "description": "Workspace access token",
+                "env": "REMOTE_WORKSPACE_TOKEN",
+                "required": True,
+            },
+        },
+    ))
+```
+
+Backend-specific profile configuration is stored under `terminal.backends.<backend>`. Built-ins keep their existing `terminal.*` keys for backward compatibility; third-party plugins cannot project fields onto those core-owned paths.
+
+**Full guide:** [Terminal Backend Plugins](/developer-guide/plugins/terminal-backend) — `BaseEnvironment`, capabilities, schema fields, config resolution, availability, factory requests, profile isolation, and testing.
 
 ## Non-Python extension surfaces
 

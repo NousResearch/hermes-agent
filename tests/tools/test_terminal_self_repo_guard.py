@@ -7,6 +7,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import tools.self_repo_guard as self_repo_guard
+from tools.environments.definitions import (
+    BackendCapabilities,
+    ExecutionLocation,
+    FilesystemSemantics,
+)
+from tools.environments.registry import terminal_backend_registry
 
 
 def _make_env_config(**overrides):
@@ -77,6 +83,24 @@ class TestSelfRepoGuardWiring:
         result, env = _run(
             "git reset --hard origin/main", config, monkeypatch, repo, force=True
         )
+        assert result["status"] == "blocked"
+        env.execute.assert_not_called()
+
+    def test_plugin_host_backend_cannot_bypass(self, repo, monkeypatch):
+        definition = MagicMock()
+        definition.capabilities = BackendCapabilities(
+            execution_location=ExecutionLocation.LOCAL,
+            filesystem_semantics=FilesystemSemantics.HOST,
+        )
+        monkeypatch.setattr(
+            terminal_backend_registry,
+            "get",
+            lambda name: definition if name == "host_plugin" else None,
+        )
+        config = _make_env_config(env_type="host_plugin", cwd=str(repo))
+
+        result, env = _run("git checkout main", config, monkeypatch, repo)
+
         assert result["status"] == "blocked"
         env.execute.assert_not_called()
 

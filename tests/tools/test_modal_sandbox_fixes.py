@@ -153,13 +153,30 @@ class TestCwdHandling:
     def test_create_environment_passes_docker_host_cwd_and_flag(self, monkeypatch):
         """Docker host cwd and mount flag should reach DockerEnvironment."""
         captured = {}
-        sentinel = object()
 
-        def _fake_docker_environment(**kwargs):
-            captured.update(kwargs)
-            return sentinel
+        from tools.environments.base import BaseEnvironment
 
-        monkeypatch.setattr(_tt_mod, "_DockerEnvironment", _fake_docker_environment)
+        class _FakeDockerEnvironment(BaseEnvironment):
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                super().__init__(cwd=kwargs["cwd"], timeout=kwargs["timeout"])
+
+            def _run_bash(self, *args, **kwargs):
+                raise AssertionError("factory wiring test must not execute commands")
+
+            def cleanup(self):
+                return None
+
+        import tools.environments.docker as docker_backend
+
+        monkeypatch.setattr(
+            docker_backend, "DockerEnvironment", _FakeDockerEnvironment
+        )
+        monkeypatch.setattr(
+            _tt_mod,
+            "_check_terminal_backend_requirements",
+            lambda **_kwargs: True,
+        )
 
         env = _tt_mod._create_environment(
             env_type="docker",
@@ -170,7 +187,7 @@ class TestCwdHandling:
             host_cwd="/home/user/project",
         )
 
-        assert env is sentinel
+        assert isinstance(env, _FakeDockerEnvironment)
         assert captured["cwd"] == "/workspace"
         assert captured["host_cwd"] == "/home/user/project"
         assert captured["auto_mount_cwd"] is True

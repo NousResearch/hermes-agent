@@ -1,5 +1,6 @@
 import importlib
 import logging
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,6 +24,7 @@ def _clear_terminal_env(monkeypatch):
         "TERMINAL_SSH_USER",
         "TERMINAL_TIMEOUT",
         "TERMINAL_VERCEL_RUNTIME",
+
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "VERCEL_OIDC_TOKEN",
@@ -53,6 +55,14 @@ def test_local_terminal_requirements(monkeypatch, caplog):
     assert "Terminal requirements check failed" not in caplog.text
 
 
+
+def test_registry_preserves_builtin_ssh_requirements(monkeypatch):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+
+    assert terminal_tool_module.check_terminal_requirements() is False
+
+
 def test_unknown_terminal_env_logs_error_and_returns_false(monkeypatch, caplog):
     _clear_terminal_env(monkeypatch)
     monkeypatch.setenv("TERMINAL_ENV", "unknown-backend")
@@ -63,6 +73,35 @@ def test_unknown_terminal_env_logs_error_and_returns_false(monkeypatch, caplog):
     assert ok is False
     assert any(
         "Unknown TERMINAL_ENV 'unknown-backend'" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_unknown_terminal_env_lists_registered_backends(monkeypatch, caplog):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "unknown-backend")
+
+    class Registry:
+        def get(self, _name):
+            return None
+
+        def list_definitions(self):
+            return (
+                SimpleNamespace(name="local"),
+                SimpleNamespace(name="third_party_remote"),
+            )
+
+    class Manager:
+        registry = Registry()
+
+    monkeypatch.setattr("tools.environments.manager.EnvironmentManager", Manager)
+
+    with caplog.at_level(logging.ERROR):
+        ok = terminal_tool_module.check_terminal_requirements()
+
+    assert ok is False
+    assert any(
+        "Use one of: local, third_party_remote." in record.getMessage()
         for record in caplog.records
     )
 

@@ -1180,30 +1180,31 @@ WSL_ENVIRONMENT_HINT = (
 )
 
 
-# Non-local terminal backends that run commands (and therefore every file
-# tool: read_file, write_file, patch, search_files) inside a separate
-# container / remote host rather than on the machine where Hermes itself
-# runs. For these backends, host info (Windows/Linux/macOS, $HOME, cwd) is
-# misleading — the agent should only see the machine it can actually touch.
-_REMOTE_TERMINAL_BACKENDS = frozenset({
-    "docker", "singularity", "modal", "daytona", "ssh",
-    "vercel_sandbox", "managed_modal",
-})
+def _backend_definition(backend: str):
+    """Return the host-registered terminal backend definition, if any."""
+    from tools.environments.builtin_backends import register_builtin_terminal_backends
+    from tools.environments.registry import terminal_backend_registry
+
+    register_builtin_terminal_backends(terminal_backend_registry)
+    return terminal_backend_registry.get(backend)
 
 
-# Per-backend fallback descriptions — used when the live probe fails.
-# Only states what we know from the backend choice itself (container type,
-# likely OS family). Does NOT invent cwd, user, or $HOME — the agent is
-# told to probe those directly if it needs them.
-_BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
-    "docker": "a Docker container (Linux)",
-    "singularity": "a Singularity container (Linux)",
-    "modal": "a Modal sandbox (Linux)",
-    "managed_modal": "a managed Modal sandbox (Linux)",
-    "daytona": "a Daytona workspace (Linux)",
-    "vercel_sandbox": "a Vercel sandbox (Linux)",
-    "ssh": "a remote host reached over SSH (likely Linux)",
-}
+def _is_remote_terminal_backend(backend: str) -> bool:
+    definition = _backend_definition(backend)
+    if definition is None:
+        return True
+    from tools.environments.definitions import ExecutionLocation
+
+    return definition.capabilities.execution_location is not ExecutionLocation.LOCAL
+
+
+def _backend_fallback_description(backend: str) -> str:
+    definition = _backend_definition(backend)
+    if definition is not None:
+        description = definition.validated_picker_metadata()["description"].strip()
+        if description:
+            return description
+    return f"a {backend} environment (likely Linux)"
 
 
 # Cache the backend probe result per process so we only pay the probe cost
@@ -1336,6 +1337,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
             container_config=container_config,
             task_id="prompt-backend-probe",
             host_cwd=config.get("host_cwd"),
+            backend_config=config.get("backend_config", {}),
         )
         # Single-line POSIX probe — works on any Unixy backend. Wrapped in
         # `2>/dev/null` so a missing binary doesn't pollute the output.
@@ -1413,7 +1415,7 @@ def build_environment_hints() -> str:
     hints: list[str] = []
 
     backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
-    is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS
+    is_remote_backend = _is_remote_terminal_backend(backend)
 
     if not is_remote_backend:
         # --- Host info block (local backend: host == where tools run) ---
@@ -1460,9 +1462,7 @@ def build_environment_hints() -> str:
                 f"backend state matters:\n{probe}"
             )
         else:
-            description = _BACKEND_FALLBACK_DESCRIPTIONS.get(
-                backend, f"a {backend} environment (likely Linux)"
-            )
+            description = _backend_fallback_description(backend)
             hints.append(
                 f"Terminal backend: {backend}. Your `terminal`, `read_file`, "
                 f"`write_file`, `patch`, and `search_files` tools all operate "

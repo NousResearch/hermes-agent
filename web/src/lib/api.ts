@@ -518,7 +518,10 @@ export const api = {
   getConfig: (profile = getManagementProfile()) =>
     fetchJSON<Record<string, unknown>>(appendProfileParam("/api/config", profile)),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
-  getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
+  getSchema: (profile = getManagementProfile()) =>
+    fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>(
+      appendProfileParam("/api/config/schema", profile),
+    ),
   getModelInfo: (profile = getManagementProfile()) =>
     fetchJSON<ModelInfoResponse>(appendProfileParam("/api/model/info", profile)),
   getModelOptions: (

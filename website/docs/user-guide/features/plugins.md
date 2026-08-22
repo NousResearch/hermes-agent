@@ -7,7 +7,7 @@ description: "Extend Hermes with custom tools, hooks, and integrations via the p
 
 # Plugins
 
-Hermes has a plugin system for adding custom tools, hooks, and integrations without modifying core code.
+Hermes has a plugin system for adding custom tools, hooks, terminal execution backends, and integrations without modifying core code.
 
 If you want to create a custom tool for yourself, your team, or one project,
 this is usually the right path. The developer guide's
@@ -117,6 +117,29 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Run a host-owned LLM call | `ctx.llm.complete(...)` / `ctx.llm.complete_structured(...)` — borrow the user's active model + auth for a one-shot completion with optional JSON schema validation. See [Plugin LLM Access](/developer-guide/plugin-llm-access) |
 | Call an MCP tool (capability-gated) | `ctx.call_mcp(server, tool, arguments, timeout=30)` — see [Calling MCP servers from plugins](#calling-mcp-servers-from-plugins) |
 | Register an inference backend (LLM provider) | `register_provider(ProviderProfile(...))` in `plugins/model-providers/<name>/__init__.py` — see [Model Provider Plugins](/developer-guide/model-provider-plugin) (uses a separate discovery system) |
+| Register a terminal execution backend | `ctx.register_terminal_backend(BackendDefinition(...))` — see [Terminal Backend Plugins](/developer-guide/plugins/terminal-backend) |
+
+### Terminal backend capabilities
+
+A terminal backend plugin does not add another tool schema. It supplies an execution environment for Hermes' existing terminal, file, and `execute_code` tools. The plugin registers a `BackendDefinition` containing:
+
+- a factory that returns a `BaseEnvironment`;
+- a passive availability check and optional config-aware readiness check;
+- Dashboard/Desktop configuration fields;
+- a resolver for profile-local backend configuration; and
+- behavioral capabilities describing execution and filesystem semantics.
+
+Backend capabilities include where commands execute (`local`, `remote`, or unknown), whether the filesystem is host, shared, or isolated, metadata about whether host cwd can be accepted, and support metadata for images, resource limits, PTY, background processes, file transfer, and persistence. Core currently consumes the filesystem and sandbox-cwd declarations for path routing. Execution location is used for prompt classification and a factory integrity check. The host-cwd and support flags describe the backend for diagnostics, compatibility, and future consumers; they do not currently gate tool features. Capabilities are **not** proof of isolation, do not replace host-observed security state, and cannot grant an approval bypass.
+
+The active profile's registry drives both runtime lookup and the backend pickers in Dashboard/Desktop. An enabled plugin backend therefore appears as a new `terminal.backend` option along with the configuration fields it declares. Those fields are stored under:
+
+```text
+terminal.backends.<backend-name>.<field-name>
+```
+
+Built-in backends keep their established `terminal.<field>` keys for backward compatibility. Third-party plugins cannot use schema aliases to claim those core-owned paths or register a reserved built-in backend name.
+
+See [Terminal Backend Plugins](/developer-guide/plugins/terminal-backend) for the complete authoring contract and [Terminal Backend Configuration](/user-guide/configuration#terminal-backend-configuration) for installation and selection.
 
 ## Plugin discovery
 
@@ -142,6 +165,8 @@ Within each source, Hermes also recognizes sub-category directories that route p
 | `plugins/memory/<name>/` | Memory providers (subclass `MemoryProvider`) | **Own loader** in `plugins/memory/__init__.py` (kind: `exclusive` — one active at a time) |
 | `plugins/context_engine/<name>/` | Context-compression engines (`ctx.register_context_engine()`) | **Own loader** in `plugins/context_engine/__init__.py` (one active at a time) |
 | `plugins/model-providers/<name>/` | LLM provider profiles (`register_provider(ProviderProfile(...))`) | **Own loader** in `providers/__init__.py` (lazily scanned on first `get_provider_profile()` call) |
+
+Terminal backend plugins use the normal directory layouts: either `plugins/<name>/` or `plugins/<category>/<name>/`, with `kind: backend`. Their `register(ctx)` method calls `ctx.register_terminal_backend(...)`; no terminal-specific directory name is required.
 
 User plugins at `~/.hermes/plugins/model-providers/<name>/` and `~/.hermes/plugins/memory/<name>/` override bundled plugins of the same name — last-writer-wins in `register_provider()` / `register_memory_provider()`. Drop a directory in, and it replaces the built-in without any repo edits.
 
@@ -271,7 +296,7 @@ Plugins can register the 26 lifecycle events currently accepted by `hermes_cli.p
 These categories describe current behavior rather than defining future naming rules. Plugin middleware remains a separate registry/surface.
 ## Plugin types
 
-Hermes has four kinds of plugins:
+Hermes has five broad kinds of plugins:
 
 | Type | What it does | Selection | Location |
 |------|-------------|-----------|----------|
@@ -279,12 +304,13 @@ Hermes has four kinds of plugins:
 | **Memory providers** | Replace or augment built-in memory | Single-select (one active) | `plugins/memory/` |
 | **Context engines** | Replace the built-in context compressor | Single-select (one active) | `plugins/context_engine/` |
 | **Model providers** | Declare an inference backend (OpenRouter, Anthropic, …) | Multi-register, picked by `--provider` / `config.yaml` | `plugins/model-providers/` |
+| **Terminal backends** | Run terminal, file, and code tools in another environment | Multi-register, one selected by `terminal.backend` | General plugin or pip entry point (`kind: backend`) |
 
-Memory providers and context engines are **provider plugins** — only one of each type can be active at a time. Model providers are also plugins, but many load simultaneously; the user picks one at a time via `--provider` or `config.yaml`. General plugins can be enabled in any combination.
+Memory providers and context engines are **provider plugins** — only one of each type can be active at a time. Model and terminal backend plugins can register several choices; users select a model provider through `--provider` / `config.yaml` and one execution backend through `terminal.backend`. General plugins can be enabled in any combination.
 
 ## Pluggable interfaces — where to go for each
 
-The table above shows the four plugin categories, but within "General plugins" the `PluginContext` exposes several distinct extension points — and Hermes also accepts extensions outside the Python plugin system (config-driven backends, shell-hooked commands, external servers, etc.). Use this table to find the right doc for what you want to build:
+The table above shows the five broad plugin categories, but within "General plugins" the `PluginContext` exposes several distinct extension points — and Hermes also accepts extensions outside the Python plugin system (config-driven backends, shell-hooked commands, external servers, etc.). Use this table to find the right doc for what you want to build:
 
 | Want to add… | How | Authoring guide |
 |---|---|---|
@@ -294,6 +320,7 @@ The table above shows the four plugin categories, but within "General plugins" t
 | A **subcommand** for `hermes <thing>` | Python plugin — `ctx.register_cli_command()` | [Extending the CLI](/developer-guide/extending-the-cli) |
 | A bundled **skill** that your plugin ships | Python plugin — `ctx.register_skill()` | [Creating Skills](/developer-guide/creating-skills) |
 | An **inference backend** (LLM provider: OpenAI-compat, Codex, Anthropic-Messages, Bedrock) | Provider plugin — `register_provider(ProviderProfile(...))` in `plugins/model-providers/<name>/` | **[Model Provider Plugins](/developer-guide/model-provider-plugin)** · [Adding Providers](/developer-guide/adding-providers) |
+| A **terminal execution backend** (remote workspace, custom sandbox, hosted development environment) | Backend plugin — `ctx.register_terminal_backend(BackendDefinition(...))` | **[Terminal Backend Plugins](/developer-guide/plugins/terminal-backend)** · [Terminal configuration](/user-guide/configuration#terminal-backend-configuration) |
 | A **gateway channel** (Discord / Telegram / IRC / Teams / etc.) | Platform plugin — `ctx.register_platform()` in `plugins/platforms/<name>/` | [Adding Platform Adapters](/developer-guide/adding-platform-adapters) |
 | A **memory backend** (Honcho, Mem0, Supermemory, …) | Memory plugin — subclass `MemoryProvider` in `plugins/memory/<name>/` | [Memory Provider Plugins](/developer-guide/memory-provider-plugin) |
 | A **context-compression strategy** | Context-engine plugin — `ctx.register_context_engine()` | [Context Engine Plugins](/developer-guide/context-engine-plugin) |

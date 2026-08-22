@@ -541,6 +541,8 @@ hermes memory setup    # select "byterover"
 hermes config set memory.provider byterover
 ```
 
+**Automatic prefetch deadline:** `min(memory.prefetch_timeout, memory.byterover.timeout_query)`. The defaults are 8 seconds for `memory.prefetch_timeout` and 10 seconds for `memory.byterover.timeout_query`, so automatic prefetch waits for at most 8 seconds. Direct `brv_query` calls use `memory.byterover.timeout_query` only, which defaults to 10 seconds.
+
 **Key features:**
 - Automatic pre-compression extraction (saves insights before context compression discards them)
 - Knowledge tree stored at `$HERMES_HOME/byterover/` (profile-scoped)

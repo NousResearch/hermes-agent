@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import inspect
 import threading
@@ -45,6 +46,37 @@ logger = logging.getLogger(__name__)
 # running past this window dies with the interpreter.
 _SYNC_DRAIN_TIMEOUT_S = 5.0
 _EXTERNAL_PREFETCH_TIMEOUT_S = 8.0
+MIN_CONFIGURABLE_TIMEOUT_S = 0.01
+MAX_CONFIGURABLE_TIMEOUT_S = 3600.0
+
+
+def coerce_timeout_seconds(
+    value: Any,
+    *,
+    default: float,
+    setting_name: str,
+    minimum: float = MIN_CONFIGURABLE_TIMEOUT_S,
+    maximum: float = MAX_CONFIGURABLE_TIMEOUT_S,
+) -> float:
+    """Return a finite timeout within bounds, or a safe default with a warning."""
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        parsed = float(value)
+        if not math.isfinite(parsed) or not minimum <= parsed <= maximum:
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        logger.warning(
+            "Invalid %s value %r; using default %.1f seconds "
+            "(expected a number between %.1f and %.1f seconds)",
+            setting_name,
+            value,
+            default,
+            minimum,
+            maximum,
+        )
+        return float(default)
+    return parsed
 
 
 def normalize_tool_schema(schema: Any) -> Optional[Dict[str, Any]]:
@@ -372,13 +404,13 @@ class MemoryManager:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
         self._has_external: bool = False  # True once a non-builtin provider is added
-        self._external_prefetch_timeout = (
+        self._external_prefetch_timeout = coerce_timeout_seconds(
             _EXTERNAL_PREFETCH_TIMEOUT_S
             if external_prefetch_timeout is None
-            else float(external_prefetch_timeout)
+            else external_prefetch_timeout,
+            default=_EXTERNAL_PREFETCH_TIMEOUT_S,
+            setting_name="memory.prefetch_timeout",
         )
-        if self._external_prefetch_timeout <= 0:
-            raise ValueError("external_prefetch_timeout must be positive")
         self._external_prefetch_threads: Dict[str, threading.Thread] = {}
         self._external_prefetch_lock = threading.Lock()
         # Background executor for end-of-turn sync/prefetch. Lazily created on

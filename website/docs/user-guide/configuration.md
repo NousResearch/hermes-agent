@@ -679,9 +679,12 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # true = require approval before any memory write
+  prefetch_timeout: 8       # seconds; external provider turn-start budget
 ```
 
 With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
+
+`memory.prefetch_timeout` controls how long Hermes waits for any external memory provider before the first model call. The default is 8 seconds; valid values range from 0.01 to 3600 seconds. If your provider has its own request timeout, set the outer `memory.prefetch_timeout` to a larger value so Hermes does not stop waiting first.
 
 ## Context File Truncation
 

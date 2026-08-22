@@ -16,6 +16,7 @@ Config via config.yaml:
   memory:
     byterover:
       auto_extract: false  # disable automatic brv curate hooks
+      timeout_query: 10    # seconds for prefetch and brv_query calls
 
 Working directory: $HERMES_HOME/byterover/ (profile-scoped context tree)
 """
@@ -31,6 +32,11 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent.memory_manager import (
+    MAX_CONFIGURABLE_TIMEOUT_S,
+    MIN_CONFIGURABLE_TIMEOUT_S,
+    coerce_timeout_seconds,
+)
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
@@ -123,7 +129,7 @@ def _resolve_brv_path() -> Optional[str]:
     return found
 
 
-def _run_brv(args: List[str], timeout: int = _QUERY_TIMEOUT,
+def _run_brv(args: List[str], timeout: float = _QUERY_TIMEOUT,
              cwd: str = None) -> dict:
     """Run a brv CLI command. Returns {success, output, error}."""
     brv_path = _resolve_brv_path()
@@ -223,6 +229,11 @@ class ByteRoverMemoryProvider(MemoryProvider):
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self._config = dict(config) if config is not None else _load_plugin_config()
         self._auto_extract = _coerce_bool(self._config.get("auto_extract"), True)
+        self._timeout_query = coerce_timeout_seconds(
+            self._config.get("timeout_query", _QUERY_TIMEOUT),
+            default=_QUERY_TIMEOUT,
+            setting_name="memory.byterover.timeout_query",
+        )
         self._cwd = ""
         self._session_id = ""
         self._turn_count = 0
@@ -251,6 +262,14 @@ class ByteRoverMemoryProvider(MemoryProvider):
                 "default": "true",
                 "choices": ["true", "false"],
             },
+            {
+                "key": "timeout_query",
+                "description": "Max seconds for brv query calls (prefetch + tool); increase if model cold-start exceeds default",
+                "default": _QUERY_TIMEOUT,
+                "type": "number",
+                "minimum": MIN_CONFIGURABLE_TIMEOUT_S,
+                "maximum": MAX_CONFIGURABLE_TIMEOUT_S,
+            },
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:
@@ -272,14 +291,15 @@ class ByteRoverMemoryProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Run brv query synchronously before the agent's first LLM call.
 
-        Blocks until the query completes (up to _QUERY_TIMEOUT seconds), ensuring
-        the result is available as context before the model is called.
+        Blocks until the query completes (up to the configured timeout_query
+        seconds, default 10s), ensuring the result is available as context
+        before the model is called.
         """
         if not query or len(query.strip()) < _MIN_QUERY_LEN:
             return ""
         result = _run_brv(
             ["query", "--", query.strip()[:5000]],
-            timeout=_QUERY_TIMEOUT, cwd=self._cwd,
+            timeout=self._timeout_query, cwd=self._cwd,
         )
         if result["success"] and result.get("output"):
             output = result["output"].strip()
@@ -402,7 +422,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
 
         result = _run_brv(
             ["query", "--", query.strip()[:5000]],
-            timeout=_QUERY_TIMEOUT, cwd=self._cwd,
+            timeout=self._timeout_query, cwd=self._cwd,
         )
 
         if not result["success"]:

@@ -310,6 +310,28 @@ class TestMemoryManager:
         assert external.prefetch_queries == ["query", "query 3"]
         assert external.name not in mgr._external_prefetch_threads
 
+    def test_larger_external_prefetch_budget_allows_controlled_provider(self):
+        mgr = MemoryManager(external_prefetch_timeout=12.0)
+        external = BlockingPrefetchProvider("controlled-slow")
+        external._prefetch_result = "slow memory"
+        mgr.add_provider(external)
+
+        def release_after_prefetch_starts():
+            assert external.started.wait(timeout=5.0)
+            external.release.set()
+
+        releaser = threading.Thread(target=release_after_prefetch_starts, daemon=True)
+        releaser.start()
+
+        try:
+            assert mgr.prefetch_all("query") == "slow memory"
+        finally:
+            external.release.set()
+            releaser.join(timeout=5.0)
+
+        assert not releaser.is_alive()
+        assert mgr._external_prefetch_timeout == 12.0
+
 
 
 class TestPluginMemoryDiscovery:

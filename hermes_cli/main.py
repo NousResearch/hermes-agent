@@ -13307,6 +13307,12 @@ def main():
         "--limit", type=int, default=20, help="Max sessions to show"
     )
     sessions_list.add_argument(
+        "--include-hidden",
+        action="store_true",
+        help="Include sessions with the durable Hidden flag (plugin-owned rows, "
+        "and any conversation wrongly hidden — see `hermes sessions unhide`)",
+    )
+    sessions_list.add_argument(
         "--workspace",
         metavar="NEEDLE",
         help="Only sessions in one workspace: a git repo root or project dir "
@@ -13727,6 +13733,23 @@ def main():
     )
     sessions_unpin.add_argument(
         "session_ids", nargs="+", help="Session ID(s) or unique prefix(es) to unpin"
+    )
+
+    sessions_unhide = sessions_subparsers.add_parser(
+        "unhide",
+        help="Unhide session(s) — clear the durable Hidden flag",
+        description=(
+            "Clear the durable 'hidden' flag so the session appears in the "
+            "global Sessions listing again. A hidden session stays fully "
+            "resumable by the surface that owns it; this restores visibility, "
+            "never content. The whole compression lineage is unhidden as a "
+            "unit, mirroring pin/unpin. Use `hermes sessions list` on a "
+            "backend that knows about hidden rows, or query state.db, to "
+            "discover hidden ids first."
+        ),
+    )
+    sessions_unhide.add_argument(
+        "session_ids", nargs="+", help="Session ID(s) or unique prefix(es) to unhide"
     )
 
     sessions_pinned = sessions_subparsers.add_parser(

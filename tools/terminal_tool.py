@@ -1394,21 +1394,15 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         return task_id
     if task_id and _docker_session_isolation_enabled():
         return _resolve_container_alias(task_id)
-    # Per-session isolation: when a session key is present (the WebUI streaming
-    # layer sets it per-session, the gateway per-message via contextvars), scope
-    # the container to it so switching profiles can't reuse a previous profile's
-    # SSHEnvironment and silently run commands on the wrong remote host. Subagents
-    # inherit the same session key, so they still collapse onto the parent's
-    # container (the #16177 shared-container intent). CLI mode has no session key
-    # and falls through to "default", behaviour unchanged. See commit e00f940a9.
-    #
-    # This runs *after* the isolation-override and docker/container_persistent
-    # branches above: those paths already key containers per task_id, so they
-    # stay authoritative where they apply and this only covers the cases that
-    # would otherwise collapse to the shared "default" key (notably SSH).
-    session_key = _current_session_key()
-    if session_key:
-        return f"session:{session_key}"
+    # Per-session scoping is SSH-only: switching profiles/sessions must not
+    # reuse a prior SSHEnvironment (wrong host risk), but Docker with
+    # container_persistent=true is explicitly documented to share one
+    # long-lived container across surfaces. Keep SSH isolation while preserving
+    # Docker's shared-container contract.
+    if os.getenv("TERMINAL_ENV", "local") == "ssh":
+        session_key = _current_session_key()
+        if session_key:
+            return f"session:{session_key}"
     return "default"
 
 

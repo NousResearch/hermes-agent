@@ -77,12 +77,14 @@ def test_env_type_override_keeps_own_id():
 # the shared "default" slot silently runs commands on the wrong remote host.
 
 
-def test_session_key_scopes_to_its_own_slot(monkeypatch):
+def test_session_key_scopes_to_its_own_slot_for_ssh(monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("HERMES_SESSION_KEY", "sess-A")
     assert terminal_tool._resolve_container_task_id(None) == "session:sess-A"
 
 
-def test_distinct_session_keys_get_distinct_slots(monkeypatch):
+def test_distinct_session_keys_get_distinct_slots_for_ssh(monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("HERMES_SESSION_KEY", "sess-A")
     a = terminal_tool._resolve_container_task_id(None)
     monkeypatch.setenv("HERMES_SESSION_KEY", "sess-B")
@@ -92,9 +94,10 @@ def test_distinct_session_keys_get_distinct_slots(monkeypatch):
     assert a != b
 
 
-def test_subagent_collapses_onto_parent_session(monkeypatch):
+def test_subagent_collapses_onto_parent_session_for_ssh(monkeypatch):
     # Subagents inherit the parent's session key, so they share the parent's
     # container (the #16177 intent) rather than a global "default".
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("HERMES_SESSION_KEY", "sess-A")
     assert (
         terminal_tool._resolve_container_task_id("subagent-3-cafef00d")
@@ -102,7 +105,8 @@ def test_subagent_collapses_onto_parent_session(monkeypatch):
     )
 
 
-def test_rl_override_wins_over_session_key(monkeypatch):
+def test_rl_override_wins_over_session_key_for_ssh(monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("HERMES_SESSION_KEY", "sess-A")
     terminal_tool.register_task_env_overrides("tb2-z", {"docker_image": "z:1"})
     try:
@@ -114,6 +118,16 @@ def test_rl_override_wins_over_session_key(monkeypatch):
 def test_no_session_key_still_defaults(monkeypatch):
     # CLI mode: no session key -> unchanged "default" behaviour.
     monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    assert terminal_tool._resolve_container_task_id(None) == "default"
+
+
+def test_docker_persistent_mode_ignores_session_key(monkeypatch):
+    # Shared-container contract: docker + persistent=true must keep "default"
+    # even when gateway/webhook binds a session key.
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+    monkeypatch.setenv("HERMES_SESSION_KEY", "sess-A")
     assert terminal_tool._resolve_container_task_id(None) == "default"
 
 
@@ -128,11 +142,12 @@ def test_no_session_key_still_defaults(monkeypatch):
 # HERMES_SESSION_KEY absent from os.environ.
 
 
-def test_session_key_from_contextvar_without_environ(monkeypatch):
+def test_session_key_from_contextvar_without_environ_for_ssh(monkeypatch):
     # Prove the fix works on the gateway path: HERMES_SESSION_KEY is NOT in
     # os.environ; the key lives only in the ContextVar bound by the gateway.
     from gateway.session_context import clear_session_vars, set_session_vars
 
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
     tokens = set_session_vars(session_key="sess-ctx")
     try:
@@ -148,18 +163,32 @@ def test_session_key_from_contextvar_without_environ(monkeypatch):
         clear_session_vars(tokens)
 
 
-def test_contextvar_session_key_wins_over_environ(monkeypatch):
+def test_contextvar_session_key_wins_over_environ_for_ssh(monkeypatch):
     # Two concurrent gateway sessions in one process must not cross-contaminate:
     # the ContextVar is authoritative even when a *different* value lingers in
     # os.environ (e.g. a CLI-set or previously-leaked global). The container
     # slot must follow the ContextVar-bound session, not the process global.
     from gateway.session_context import clear_session_vars, set_session_vars
 
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("HERMES_SESSION_KEY", "sess-ENV")
     tokens = set_session_vars(session_key="sess-CTX")
     try:
         assert (
             terminal_tool._resolve_container_task_id(None) == "session:sess-CTX"
         )
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_contextvar_session_key_does_not_scope_docker_persistent(monkeypatch):
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    tokens = set_session_vars(session_key="sess-ctx")
+    try:
+        assert terminal_tool._resolve_container_task_id(None) == "default"
     finally:
         clear_session_vars(tokens)

@@ -976,7 +976,22 @@ DANGEROUS_PATTERNS = [
     # the `hermes gateway stop|restart` pattern above by driving launchd
     # directly against the service label (commonly `ai.hermes.gateway`).
     # Catch the operations that stop, restart, or unload it.
-    (r'\blaunchctl\s+(stop|kickstart|bootout|unload|kill|disable|remove)\b.*\b(hermes|ai\.hermes)\b', "stop/restart hermes launchd service (kills running agents)"),
+    #
+    # Order-independent (2026-08-02 incident): the previous version required
+    # "hermes"/"ai.hermes" to appear AFTER the launchctl verb in the same
+    # string (`.*` only scans forward). A shell for-loop that builds the
+    # label from a list defined earlier in the command — e.g. `for item in
+    # 'ai.hermes.gateway-apollo:...' ...; do label=${item%%:*}; launchctl
+    # bootout "$label"; done` — never has the literal text "hermes" appear
+    # after "bootout" (only the expanded variable does), so it slipped past
+    # undetected and restarted 4 gateways with zero approval. Two
+    # independent lookaheads instead of one sequential match: both
+    # substrings must appear SOMEWHERE in the command, in either order.
+    # This is intentionally broader (a launchctl-verb command anywhere near
+    # an unrelated "hermes" mention now also matches) — for an approval gate
+    # that's the correct direction to err: an extra approval prompt is
+    # cheap, a missed one took down the whole gateway fleet.
+    (r'(?=[\s\S]*\blaunchctl\s+(?:stop|kickstart|bootout|unload|kill|disable|remove)\b)(?=[\s\S]*\b(?:hermes|ai\.hermes)\b)', "stop/restart hermes launchd service (kills running agents)"),
     # File copy/move/edit into sensitive system paths (/etc/ and macOS
     # /private/etc/ mirror).
     (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),

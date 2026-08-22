@@ -2012,6 +2012,30 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     except Exception:
         pass
 
+    # Output-token ceiling: largest cap that still fits the context window
+    # alongside the (roughly estimated) input.  Recomputed per request so it
+    # tracks input growth and compression.  See compute_output_token_ceiling
+    # for why this must happen up front (strict servers like vLLM 400 on
+    # input + max_tokens > window, deterministically).
+    _output_ceiling = None
+    try:
+        from agent.model_metadata import (
+            compute_output_token_ceiling,
+            estimate_request_tokens_rough,
+        )
+        _ctx_len = getattr(
+            getattr(agent, "context_compressor", None), "context_length", None
+        )
+        if _ctx_len:
+            _output_ceiling = compute_output_token_ceiling(
+                _ctx_len,
+                estimate_request_tokens_rough(
+                    api_messages, tools=tools_for_api or None
+                ),
+            )
+    except Exception:
+        _output_ceiling = None
+
     # Qwen session metadata
     _qwen_meta = None
     if _is_qwen:
@@ -2047,6 +2071,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             timeout=agent._resolved_api_call_timeout(),
             max_tokens=agent.max_tokens,
             ephemeral_max_output_tokens=_ephemeral_out,
+            output_token_ceiling=_output_ceiling,
             max_tokens_param_fn=agent._max_tokens_param,
             reasoning_config=agent.reasoning_config,
             request_overrides=agent.request_overrides,
@@ -2080,6 +2105,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         timeout=agent._resolved_api_call_timeout(),
         max_tokens=agent.max_tokens,
         ephemeral_max_output_tokens=_ephemeral_out,
+        output_token_ceiling=_output_ceiling,
         max_tokens_param_fn=agent._max_tokens_param,
         reasoning_config=agent.reasoning_config,
         request_overrides=agent.request_overrides,

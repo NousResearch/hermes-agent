@@ -224,6 +224,30 @@ class TestChatCompletionsBuildKwargs:
 
 
 
+    def test_no_callback_falls_through_to_anthropic_max(self, transport):
+        """Without max_tokens_param_fn, ephemeral/user caps are ignored and
+        the anthropic_max_output fallback is emitted as plain max_tokens —
+        the pre-clamp fallthrough semantics must be preserved."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o",
+            messages=msgs,
+            ephemeral_max_output_tokens=123,
+            max_tokens=456,
+            anthropic_max_output=789,
+        )
+        assert kw["max_tokens"] == 789
+
+    def test_no_callback_anthropic_max_is_still_clamped(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o",
+            messages=msgs,
+            anthropic_max_output=789,
+            output_token_ceiling=100,
+        )
+        assert kw["max_tokens"] == 100
+
     def test_tools_included(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]

@@ -1792,6 +1792,42 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     return None
 
 
+def compute_output_token_ceiling(
+    context_length: Optional[int],
+    estimated_input_tokens: int,
+    *,
+    margin: int = 256,
+) -> Optional[int]:
+    """Return the largest output cap that still fits the context window.
+
+    Strict OpenAI-compatible servers (vLLM among them) reject any request
+    where ``input_tokens + max_tokens > context_window`` — deterministically,
+    on every call carrying the same oversized cap.  A full-window default cap
+    (e.g. CustomProfile's 65536 against a 65536-token vLLM server) therefore
+    fails EVERY request, and a one-shot post-error correction death-loops the
+    turn: each tool-loop call re-fails, re-compresses (1-3 min), and
+    max_compression_attempts kills the session (2026-08-19 vllm-metal outage).
+
+    Clamping at request-build time prevents the 400 up front and recomputes
+    per request, so it adapts as input grows or compression shrinks it, and
+    mutates no session state (fallback switches, /model, continuation boosts,
+    and compressor accounting are untouched).
+
+    Returns None when no clamp should be applied: unknown window, or the
+    estimated input already at/over the window (that is an input-overflow
+    problem — let the provider report it so compression handles it).
+    """
+    if not context_length or context_length <= 0:
+        return None
+    remaining = context_length - max(0, estimated_input_tokens)
+    if remaining < 1:
+        return None
+    # Margin applies only when room allows — a prompt that fits but leaves
+    # less than the margin still needs a clamp (floor 1), otherwise the
+    # unclamped full-window default goes out and deterministically 400s.
+    return max(1, remaining - margin)
+
+
 def is_output_cap_error(error_msg: str) -> bool:
     """Return True if a 400 is about the OUTPUT cap (max_tokens) being too large.
 

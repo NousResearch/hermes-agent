@@ -5921,6 +5921,38 @@ def _resolve_auto_route(
     runtime_api_key = runtime.get("api_key", "")
     runtime_api_mode = str(runtime.get("api_mode") or "")
 
+
+    # ── Fail-closed subscription lane (claude-agent-sdk, #25267) ──
+    # When the MAIN provider is the claude-agent-sdk (subscription OAuth,
+    # never metered), auto-detection must NOT silently re-route auxiliary
+    # tasks (title generation, context compression, ...) onto metered
+    # fallback providers — that would break the provider's billing contract
+    # through the side door. Explicit `auxiliary.<task>.{provider,model}`
+    # config is resolved before this chain and remains the operator's
+    # deliberate opt-in; without it, aux features simply no-op.
+    if runtime_api_mode == "claude_agent_sdk":
+        # Keep auxiliary work on the same subscription-owned SDK route rather
+        # than silently falling through to a metered provider.
+        try:
+            from agent.claude_sdk_aux_client import ClaudeSdkAuxClient
+
+            sdk_aux_model = runtime_model or "claude-sonnet-5"
+            sdk_aux_client = ClaudeSdkAuxClient(default_model=sdk_aux_model)
+            _tag_effective_provider(sdk_aux_client, "claude-agent-sdk")
+            logger.debug(
+                "aux auto-detect: routing to claude-agent-sdk one-shot "
+                "(subscription lane, model=%s)",
+                sdk_aux_model,
+            )
+            return sdk_aux_client, sdk_aux_model, "claude-agent-sdk"
+        except Exception:
+            logger.warning(
+                "aux auto-detect: claude-agent-sdk one-shot client unavailable; "
+                "failing closed rather than routing auxiliary work to a metered provider.",
+                exc_info=True,
+            )
+            return None, None, ""
+
     # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
     #    provider (not 'custom').  This catches the common "env poisoning"
     #    scenario where a user switches providers via `hermes model` but the
@@ -6149,6 +6181,18 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
     if isinstance(sync_client, BedrockAuxiliaryClient):
         return AsyncBedrockAuxiliaryClient(sync_client), model
+    try:
+        from agent.claude_sdk_aux_client import ClaudeSdkAuxClient, AsyncClaudeSdkAuxClient
+
+        if isinstance(sync_client, ClaudeSdkAuxClient):
+            async_client = AsyncClaudeSdkAuxClient(sync_client)
+            _tag_effective_provider(
+                async_client,
+                _effective_provider_for_client(sync_client, ""),
+            )
+            return async_client, model
+    except ImportError:
+        pass
     try:
         from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
 
@@ -6396,6 +6440,19 @@ def resolve_provider_client(
         # chat.completions.create() is translated to /v1/messages.
         return _maybe_wrap_anthropic(
             client_obj, final_model_str, api_key_str, base_url_str, api_mode,
+        )
+
+    if provider == "claude-agent-sdk":
+        from agent.claude_sdk_aux_client import ClaudeSdkAuxClient
+
+        final_model = _normalize_resolved_model(
+            model or "claude-sonnet-5", provider
+        )
+        client = ClaudeSdkAuxClient(default_model=final_model)
+        return (
+            _to_async_client(client, final_model, is_vision=is_vision)
+            if async_mode
+            else (client, final_model)
         )
 
     # ── Auto: try all providers in priority order ────────────────────
@@ -9499,6 +9556,15 @@ def _call_llm_impl(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
+    is_subscription_sdk_route = (
+        _effective_provider_for_client(client, resolved_provider)
+        == "claude-agent-sdk"
+    )
+    if is_subscription_sdk_route:
+        # An auto-resolved SDK client belongs to the user's subscription;
+        # retain that concrete identity so it cannot bridge to a metered route.
+        resolved_provider = "claude-agent-sdk"
+
     effective_timeout = _effective_aux_timeout(task, timeout)
     request_provider = effective_provider or resolved_provider
     _set_relay_auxiliary_route(
@@ -9654,6 +9720,10 @@ def _call_llm_impl(
             # Retries exhausted — fall through to first_err fallback handling.
             raise _last_transient
     except Exception as first_err:
+        # The SDK facade is subscription-scoped. Its errors are terminal for
+        # this auxiliary attempt; no fallback helper may open a metered route.
+        if is_subscription_sdk_route:
+            raise
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
             retry_kwargs.pop("temperature", None)
@@ -10318,6 +10388,15 @@ async def _async_call_llm_impl(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
+    is_subscription_sdk_route = (
+        _effective_provider_for_client(client, resolved_provider)
+        == "claude-agent-sdk"
+    )
+    if is_subscription_sdk_route:
+        # An auto-resolved SDK client belongs to the user's subscription;
+        # retain that concrete identity so it cannot bridge to a metered route.
+        resolved_provider = "claude-agent-sdk"
+
     effective_timeout = _effective_aux_timeout(task, timeout)
     request_provider = effective_provider or resolved_provider
     _set_relay_auxiliary_route(
@@ -10403,6 +10482,10 @@ async def _async_call_llm_impl(
                 ),
                 task)
     except Exception as first_err:
+        # The SDK facade is subscription-scoped. Its errors are terminal for
+        # this auxiliary attempt; no fallback helper may open a metered route.
+        if is_subscription_sdk_route:
+            raise
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
             retry_kwargs.pop("temperature", None)

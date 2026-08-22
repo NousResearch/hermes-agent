@@ -2724,11 +2724,20 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         if base_url:
             agent.base_url = base_url
         elif old_norm_provider != new_norm_provider:
-            raise ValueError(
-                f"switch_model: no base_url resolved for provider "
-                f"'{new_provider}' (switching from '{old_provider}'); "
-                "refusing to keep the previous provider's endpoint"
-            )
+            # The Claude Agent SDK is deliberately transport-owned: it starts
+            # the Claude subprocess using subscription OAuth and never makes an
+            # HTTP request through AIAgent.client.  Its provider profile
+            # therefore resolves to an empty base URL.  Clear the previous
+            # provider's HTTP endpoint instead of rejecting this valid route;
+            # retaining it would pair Claude with the old Codex/OpenAI URL.
+            if api_mode == "claude_agent_sdk":
+                agent.base_url = ""
+            else:
+                raise ValueError(
+                    f"switch_model: no base_url resolved for provider "
+                    f"'{new_provider}' (switching from '{old_provider}'); "
+                    "refusing to keep the previous provider's endpoint"
+                )
         agent.api_mode = api_mode
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(agent, "_transport_cache"):
@@ -2780,6 +2789,15 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent.base_url = "moa://local"
             agent._client_kwargs = {}
             agent.client = build_moa_facade(agent, agent.model)
+        elif api_mode == "claude_agent_sdk":
+            # The official Claude Agent SDK owns both its subscription OAuth
+            # and subprocess transport.  It intentionally has neither an
+            # OpenAI-compatible client nor an HTTP endpoint; mirrors the
+            # initialization branch in agent_init.py.
+            agent.client = None
+            agent._client_kwargs = {}
+            agent.api_key = api_key or "claude-subscription-oauth"
+            agent.base_url = ""
         elif api_mode == "anthropic_messages":
             from agent.anthropic_adapter import (
                 build_anthropic_client,
@@ -3071,6 +3089,18 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     if not isinstance(function_args, dict):
         function_args = {}
 
+    # Snapshot turn/request ids ONCE at entry. invoke_tool is dispatched via
+    # asyncio.to_thread from the claude-agent-sdk hybrid bridge, so it can
+    # be executing concurrently with a Hermes-native turn on the same agent
+    # (the native loop mutates ``_current_turn_id`` / ``_current_api_request_id``
+    # between turns). Reading them per middleware call site would leak the
+    # native turn's ids into this SDK-turn's middleware trace attribution
+    # if the mutation lands mid-invocation. Snapshotting fixes attribution
+    # to the ids observed at dispatch.
+    _snapshot_turn_id = getattr(agent, "_current_turn_id", "") or ""
+    _snapshot_api_request_id = getattr(agent, "_current_api_request_id", "") or ""
+    _snapshot_session_id = getattr(agent, "session_id", "") or ""
+
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
     try:
         from hermes_cli.middleware import apply_tool_request_middleware
@@ -3080,10 +3110,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 function_name,
                 function_args,
                 task_id=effective_task_id or "",
-                session_id=getattr(agent, "session_id", "") or "",
+                session_id=_snapshot_session_id,
                 tool_call_id=tool_call_id or "",
-                turn_id=getattr(agent, "_current_turn_id", "") or "",
-                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                turn_id=_snapshot_turn_id,
+                api_request_id=_snapshot_api_request_id,
             )
             function_args = _tool_request_mw.payload
             _tool_middleware_trace = _tool_request_mw.trace
@@ -3096,11 +3126,13 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         try:
             from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
             block_message, modified_args = _dispatch_pre_tool_call_hooks(
-                function_name, function_args, task_id=effective_task_id or "",
-                session_id=getattr(agent, "session_id", "") or "",
+                function_name,
+                function_args,
+                task_id=effective_task_id or "",
+                session_id=_snapshot_session_id,
                 tool_call_id=tool_call_id or "",
-                turn_id=getattr(agent, "_current_turn_id", "") or "",
-                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                turn_id=_snapshot_turn_id,
+                api_request_id=_snapshot_api_request_id,
                 middleware_trace=list(_tool_middleware_trace),
             )
             if modified_args is not None:
@@ -3116,10 +3148,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 function_args=function_args,
                 result=result,
                 task_id=effective_task_id or "",
-                session_id=getattr(agent, "session_id", "") or "",
+                session_id=_snapshot_session_id,
                 tool_call_id=tool_call_id or "",
-                turn_id=getattr(agent, "_current_turn_id", "") or "",
-                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                turn_id=_snapshot_turn_id,
+                api_request_id=_snapshot_api_request_id,
                 status="blocked",
                 error_type="plugin_block",
                 error_message=block_message,
@@ -3140,10 +3172,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 function_args=hook_args,
                 result=result,
                 task_id=effective_task_id or "",
-                session_id=getattr(agent, "session_id", "") or "",
+                session_id=_snapshot_session_id,
                 tool_call_id=tool_call_id or "",
-                turn_id=getattr(agent, "_current_turn_id", "") or "",
-                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                turn_id=_snapshot_turn_id,
+                api_request_id=_snapshot_api_request_id,
                 duration_ms=int((time.monotonic() - tool_start_time) * 1000),
                 middleware_trace=list(_tool_middleware_trace),
             )
@@ -3180,7 +3212,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     sort=next_args.get("sort"),
                     detail=next_args.get("detail", "adaptive"),
                     db=session_db,
-                    current_session_id=agent.session_id,
+                    current_session_id=_snapshot_session_id,
                 ),
                 next_args,
             )
@@ -3324,9 +3356,9 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         def _execute(next_args: dict) -> Any:
             dispatch_kwargs = dict(
                 tool_call_id=tool_call_id,
-                session_id=agent.session_id or "",
-                turn_id=getattr(agent, "_current_turn_id", "") or "",
-                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                session_id=_snapshot_session_id,
+                turn_id=_snapshot_turn_id,
+                api_request_id=_snapshot_api_request_id,
                 enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                 skip_pre_tool_call_hook=True,
                 skip_tool_request_middleware=True,
@@ -3354,10 +3386,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         lambda next_args: _execute(next_args if isinstance(next_args, dict) else function_args),
         original_args=function_args,
         task_id=effective_task_id or "",
-        session_id=getattr(agent, "session_id", "") or "",
+        session_id=_snapshot_session_id,
         tool_call_id=tool_call_id or "",
-        turn_id=getattr(agent, "_current_turn_id", "") or "",
-        api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+        turn_id=_snapshot_turn_id,
+        api_request_id=_snapshot_api_request_id,
     )
 
 

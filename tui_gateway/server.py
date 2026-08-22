@@ -2011,10 +2011,16 @@ def _status_update(sid: str, kind: str, text: str | None = None):
     if not body:
         return
     out_kind = kind if text is not None else "status"
-    # Auto-compaction reaches us as a generic "lifecycle" status. Re-tag it so
-    # drivers (desktop app) can show an explicit "Summarizing…" indicator —
-    # otherwise a mid-turn compaction looks like the transcript reset itself.
-    if out_kind == "lifecycle":
+    # Newer runtimes give compaction its own status key so chat adapters can
+    # update one isolated progress bubble. Preserve the TUI protocol's
+    # semantic start/done kinds: desktop clients set and clear their
+    # per-session compaction fence from these two edges. Keep accepting the
+    # legacy generic lifecycle shape for older runtime/plugin emitters.
+    if out_kind == "compaction":
+        from agent.conversation_compression import COMPACTION_DONE_STATUS
+
+        out_kind = "compacted" if body == COMPACTION_DONE_STATUS else "compacting"
+    elif out_kind == "lifecycle":
         from agent.conversation_compression import COMPACTION_STATUS_MARKER
 
         if COMPACTION_STATUS_MARKER in body:

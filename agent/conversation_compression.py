@@ -103,14 +103,36 @@ COMPACTION_STATUS = (
 
 COMPACTION_DONE_STATUS = "✓ Context compaction complete — continuing turn..."
 
+# Dedicated status_key for the compaction bubble. The gateway passes an
+# event_type straight through as the Telegram status_key (gateway/run.py
+# ``_send_or_update_status_coro``), and ``send_or_update_status`` edits ONE
+# bubble per key. Compaction used to ride on the generic "lifecycle" key that
+# all 32 ``_emit_status`` call sites share, so any other lifecycle status
+# emitted during a compaction overwrote "Compacting context" in place and the
+# user never saw that a compaction was happening. Its own key isolates it.
+#
+# The start and the done notice deliberately share this key so the completion
+# EDITS the "Compacting…" bubble into "✓ complete" rather than appending a
+# second bubble. Not "fallback", so it is still swept by end-of-turn progress
+# cleanup -- matching Codex and native Hermes, which treat this as ephemeral.
+COMPACTION_STATUS_KEY = "compaction"
+
 
 def _emit_compaction_done(agent: Any) -> None:
-    """Emit the structured terminal edge for a started compaction."""
+    """Emit the structured terminal edge for a started compaction.
+
+    Logged on every path. Chat delivery is otherwise the ONLY witness that this
+    fired -- the gateway logs no outbound sends, and a missing status_callback
+    returns silently -- so without these lines "did the user get the notice?"
+    is unanswerable after the fact and depends on someone watching the screen.
+    """
     status_callback = getattr(agent, "status_callback", None)
     if not status_callback:
+        logger.info("compaction done: no status_callback; completion notice not emitted")
         return
     try:
-        status_callback("compacted", COMPACTION_DONE_STATUS)
+        status_callback(COMPACTION_STATUS_KEY, COMPACTION_DONE_STATUS)
+        logger.info("compaction done: completion notice emitted")
     except Exception:
         logger.debug("status_callback error in compaction completion", exc_info=True)
 
@@ -1674,9 +1696,29 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 )
             agent._compression_warning = msg
             agent._emit_status(msg)
+            # LOCAL DIVERGENCE (2026-08-14): both branches above used to emit
+            # one identical log line ("No auxiliary LLM provider for
+            # compression"), so the persistent log could not distinguish
+            # "nothing configured" from "the configured provider failed to
+            # resolve" — the distinction existed ONLY in the transient
+            # _emit_status message. A real occurrence (4 hits, 2026-08-13
+            # 23:35 -> 2026-08-14 08:03) was therefore undiagnosable after the
+            # fact: auxiliary.compression WAS configured (claude-cli-live /
+            # claude-sonnet-5), so the logged text was actively misleading.
+            # Record the resolved provider, the fallback chain outcome and the
+            # session so the next occurrence can be traced.
             logger.warning(
-                "No auxiliary LLM provider for compression — "
-                "summaries will be unavailable."
+                "Auxiliary compression client unavailable (%s) — summaries "
+                "disabled; compression will DROP middle turns without a "
+                "summary. configured_provider=%r aux_model=%r session=%s",
+                (
+                    "configured provider failed to resolve"
+                    if (_aux_cfg_provider and _aux_cfg_provider != "auto")
+                    else "no provider configured"
+                ),
+                _aux_cfg_provider or "",
+                aux_model or "",
+                getattr(agent, "session_id", None) or "none",
             )
             return
 
@@ -2311,6 +2353,39 @@ def compress_context(
     except Exception:
         pass
 
+    # LOCAL DIVERGENCE (2026-08-14) -- claude-agent-sdk lane, same rationale as
+    # the codex_app_server route directly below: the Claude Code CLI owns the
+    # real conversation and runs its own compaction, so Hermes' summarizer
+    # would only rewrite a local mirror without shrinking the actual context.
+    #
+    # Worse, Hermes' in-memory api_messages list holds FULL, untruncated tool
+    # payloads that are never sent on this lane, so the pre-flight estimate ran
+    # 1.5-2.4M tokens for a session whose entire persisted transcript was ~111k
+    # and whose largest real request was ~90k. Auto-compaction therefore fired
+    # constantly, and each firing cost a summariser call AND rebuilt the system
+    # prompt -- which forces a CLI respawn, killing its child MCP servers and
+    # invalidating the prompt cache (real quota burn).
+    #
+    # Uses the documented abort contract: return the messages unchanged and the
+    # EXISTING cached prompt (never a rebuilt one -- a rebuild is what respawns
+    # the CLI). Session is NOT rotated. `force` (manual /compress) still runs.
+    if not force and getattr(agent, "api_mode", None) == "claude_agent_sdk":
+        _restore_compressor_attempt_state(
+            agent.context_compressor, _compressor_attempt_snapshot
+        )
+        existing_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not existing_prompt:
+            existing_prompt = agent._build_system_prompt(system_message)
+        logger.info(
+            "claude-agent-sdk lane: skipping Hermes auto-compaction "
+            "(CLI owns context; use /compress to force). session=%s "
+            "messages=%d est_tokens=~%s",
+            getattr(agent, "session_id", None) or "none",
+            len(messages),
+            f"{approx_tokens:,}" if approx_tokens else "unknown",
+        )
+        return messages, existing_prompt
+
     # Codex app-server sessions: the codex agent owns the real thread context;
     # Hermes' summarizer would only rewrite a local mirror without shrinking
     # the actual thread (#36801). Route compaction to the app server's own
@@ -2412,7 +2487,17 @@ def compress_context(
         )
     _compaction_status_emitted = bool(_compaction_status)
     if _compaction_status:
-        agent._emit_status(_compaction_status)
+        # Guarded like the other two emit sites in this module. Status
+        # plumbing must never be able to abort a compression: not every
+        # object reaching this path is a full AIAgent (test doubles and
+        # alternative agent shims reach it too), and an unguarded call raises
+        # AttributeError mid-compression for anything lacking the method.
+        _emit = getattr(agent, "_emit_status_event", None)
+        if _emit is not None:
+            try:
+                _emit(COMPACTION_STATUS_KEY, _compaction_status)
+            except Exception:
+                logger.debug("compaction status emit failed", exc_info=True)
     _compaction_done_emitted = False
 
     def _complete_compaction_lifecycle() -> None:
@@ -4050,7 +4135,7 @@ def _compress_context_via_codex_app_server(
         f"{approx_tokens:,}" if approx_tokens else "unknown",
     )
     try:
-        agent._emit_status(COMPACTION_STATUS)
+        agent._emit_status_event(COMPACTION_STATUS_KEY, COMPACTION_STATUS)
     except Exception:
         pass
 

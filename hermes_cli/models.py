@@ -452,6 +452,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "anthropic": [
         "claude-fable-5",
+        "claude-opus-5",
         "claude-sonnet-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
@@ -1219,6 +1220,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (Local desktop app with built-in model server)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models via API key or Claude Code)"),
+    ProviderEntry("claude-agent-sdk", "Claude Agent SDK",       "Claude Agent SDK (Claude Code agent loop, billed to the Claude subscription)"),
     ProviderEntry("openai-codex",   "ChatGPT or Codex Subscription", "ChatGPT or Codex Subscription (Sign in with your ChatGPT account, uses Codex models)"),
     ProviderEntry("openai-api",     "OpenAI API",               "OpenAI API (api.openai.com, API key)"),
     ProviderEntry("alibaba",        "Qwen Cloud",               "Qwen Cloud / DashScope (Qwen + multi-provider)"),
@@ -1420,6 +1422,11 @@ _PROVIDER_ALIASES = {
     "minimax_oauth": "minimax-oauth",
     "claude": "anthropic",
     "claude-code": "anthropic",
+    # claude-agent-sdk: same accepted spellings as the runtime_provider
+    # short-circuit, so provider:model parsing agrees with resolution.
+    "claude-sdk": "claude-agent-sdk",
+    "claude-code-sdk": "claude-agent-sdk",
+    "claude_agent_sdk": "claude-agent-sdk",
     "deep-seek": "deepseek",
     "opencode": "opencode-zen",
     "zen": "opencode-zen",
@@ -3305,9 +3312,24 @@ _PROVIDER_RETIRED_ALIASES: dict[str, tuple[str, ...]] = {
     "deepseek": ("deepseek-chat", "deepseek-reasoner"),
 }
 
+# Subscription providers with no _PROVIDER_MODELS entry of their own that
+# serve another vendor's catalog verbatim (the runtime owns the endpoint and
+# model list). Catalog-membership checks treat the delegate's catalog as
+# theirs, so an explicit model.provider pin survives `-m <claude-id>` /
+# `/model <claude-id>` instead of being rewritten to the API-key provider —
+# which would silently switch billing lanes (PR #65982 F1; mirrors the
+# #48305 custom-endpoint exemption). Membership, not identity: these
+# providers never appear as walk targets in _PROVIDER_MODELS itself, and
+# the delegate also stops detect_provider_for_model's OpenRouter fallback
+# from hijacking the pin (OPENROUTER_MODELS carries anthropic/claude-* slugs).
+_PROVIDER_CATALOG_DELEGATES: dict[str, str] = {
+    "claude-agent-sdk": "anthropic",
+}
+
 
 def _provider_catalog_names(provider: str) -> tuple[str, ...]:
     """Active picker models plus retired aliases recognized for detection."""
+    provider = _PROVIDER_CATALOG_DELEGATES.get(provider, provider)
     active = tuple(_PROVIDER_MODELS.get(provider, []))
     retired = _PROVIDER_RETIRED_ALIASES.get(provider, ())
     return active + retired
@@ -3361,7 +3383,9 @@ def _resolve_static_model_alias(
     family = identity.family
 
     def _match(provider: str) -> Optional[str]:
-        models = _PROVIDER_MODELS.get(provider, [])
+        models = _PROVIDER_MODELS.get(
+            _PROVIDER_CATALOG_DELEGATES.get(provider, provider), []
+        )
         if not models:
             return None
         prefix = (

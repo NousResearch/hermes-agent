@@ -833,6 +833,46 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     (which constructs a fresh ``AIAgent`` per turn and depends on this
     DB roundtrip).
     """
+    # LOCAL DIVERGENCE (2026-08-14) -- claude-agent-sdk lane only.
+    #
+    # On this lane the stored snapshot is NOT Hermes' native composed prompt:
+    # claude_sdk_runtime.py (~line 793) deliberately overwrites it with
+    # "[claude_code preset]\n\n" + the --append-system-prompt blob, so the audit
+    # trail records the EFFECTIVE prompt the CLI actually sends.
+    #
+    # That snapshot can never satisfy _stored_prompt_matches_runtime(): the SDK
+    # composer hardcodes "Provider: claude-agent-sdk (Claude subscription)"
+    # (claude_sdk_runtime.py:180) while system_prompt.py:677 emits the bare
+    # `agent.provider` ("claude-agent-sdk"), and the comparison is exact string
+    # equality. Verified against state.db: every SDK session stores the
+    # decorated label, so the check returned False on EVERY turn, forever.
+    #
+    # Two consequences, both fixed by short-circuiting here:
+    #   1. A WARNING/INFO claiming "prefix cache will miss ... quota drain" fired
+    #      every turn. Misleading on this lane -- the CLI owns the wire prompt
+    #      (preset + append, byte-stable per session), so rebuilding Hermes'
+    #      _cached_system_prompt costs local CPU, not tokens. The noise masked
+    #      genuine cache misses on lanes where reuse DOES matter.
+    #   2. Continuations fell through to the brand-new-session path below,
+    #      re-firing the on_session_start plugin hook and the cold-start credits
+    #      seed on every turn instead of once per session.
+    #
+    # Gated on `conversation_history` so a genuine first turn still takes the
+    # full path (hook + credits seed). Reuse is deliberately NOT attempted: the
+    # sentinel is not a native prompt and must never become
+    # _cached_system_prompt. Equally important, the freshly built native prompt
+    # is NOT written back here: a long-lived SDK session does not re-enter the
+    # runtime's session-creation path, so that write would permanently replace
+    # the effective-prompt audit snapshot after turn one.
+    if conversation_history and getattr(agent, "api_mode", None) == "claude_agent_sdk":
+        logger.debug(
+            "claude-agent-sdk lane: skipping stored-prompt reuse for session %s "
+            "(runtime owns the wire prompt; snapshot is an audit record).",
+            agent.session_id,
+        )
+        agent._cached_system_prompt = agent._build_system_prompt(system_message)
+        return
+
     stored_prompt = None
     stored_state = "missing"
     if conversation_history and agent._session_db:
@@ -1763,6 +1803,32 @@ def _notify_context_engine_turn_complete(
         )
 
 
+def _handle_claude_sdk_turn_with_fallback(
+    agent,
+    *,
+    user_message: Any,
+    original_user_message: Any,
+    messages: List[Dict[str, Any]],
+    effective_task_id: str,
+    should_review_memory: bool,
+) -> Optional[Dict[str, Any]]:
+    """Run the SDK lane and activate normal fallback for a true quota failure."""
+    result = agent._run_claude_agent_sdk_turn(
+        user_message=user_message,
+        original_user_message=original_user_message,
+        messages=messages,
+        effective_task_id=effective_task_id,
+        should_review_memory=should_review_memory,
+    )
+    error = str(result.get("error") or "").lower()
+    if ("http 429" in error or "session limit" in error) and agent._try_activate_fallback(
+        reason=FailoverReason.rate_limit
+    ):
+        agent._buffer_status("⚠️ Claude session limit reached — switching to fallback provider...")
+        return None
+    return result
+
+
 def run_conversation(
     agent,
     user_message: Any,
@@ -1956,6 +2022,21 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
+    # Same shape for the claude-agent-sdk runtime: the official Agent SDK
+    # owns the whole agent loop (tools, permissions, subscription OAuth).
+    # See agent/transports/claude_agent_sdk_session.py.
+    if agent.api_mode == "claude_agent_sdk":
+        _sdk_result = _handle_claude_sdk_turn_with_fallback(
+            agent,
+            user_message=user_message,
+            original_user_message=original_user_message,
+            messages=messages,
+            effective_task_id=effective_task_id,
+            should_review_memory=_should_review_memory,
+        )
+        if _sdk_result is not None:
+            return _sdk_result
+
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         _redirect_text = agent._drain_pending_redirect()
         if _redirect_text:
@@ -2021,10 +2102,9 @@ def run_conversation(
             except Exception as _step_err:
                 logger.debug("step_callback error (iteration %s): %s", api_call_count, _step_err)
 
-        # Track tool-calling iterations for skill nudge.
-        # Counter resets whenever skill_manage is actually used.
-        if (agent._skill_nudge_interval > 0
-                and "skill_manage" in agent.valid_tool_names):
+        # Track tool-calling iterations for review cadence. It is independent
+        # of foreground skill_manage: a routed review runtime owns writes.
+        if agent._skill_nudge_interval > 0:
             agent._iters_since_skill += 1
         
         # ── Pre-API-call /steer drain ──────────────────────────────────

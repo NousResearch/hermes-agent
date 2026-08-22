@@ -967,6 +967,31 @@ class AIAgent:
             and getattr(self, "platform", "") == "cli"
         )
 
+    def _emit_status_event(self, event_type: str, message: str) -> None:
+        """Emit one typed lifecycle event without touching model history.
+
+        Split out of _emit_status so callers can give an event its OWN key
+        instead of sharing the generic "lifecycle" one. Consumers that key
+        status bubbles by event type (the Telegram adapter) can then replace
+        an in-place notice rather than stacking a new bubble per update.
+
+        Never raises: status plumbing must not be able to break the turn it
+        is reporting on.
+        """
+        try:
+            self._vprint(f"{self.log_prefix}{message}", force=True)
+        except Exception:
+            pass
+        status_callback = getattr(self, "status_callback", None)
+        if status_callback:
+            try:
+                status_callback(event_type, message)
+            except Exception:
+                logger.debug(
+                    "status_callback error in _emit_status_event",
+                    exc_info=True,
+                )
+
     def _emit_status(self, message: str) -> None:
         """Emit a lifecycle status message to both CLI and gateway channels.
 
@@ -977,15 +1002,7 @@ class AIAgent:
         This helper never raises — exceptions are swallowed so it cannot
         interrupt the retry/fallback logic.
         """
-        try:
-            self._vprint(f"{self.log_prefix}{message}", force=True)
-        except Exception:
-            pass
-        if self.status_callback:
-            try:
-                self.status_callback("lifecycle", message)
-            except Exception:
-                logger.debug("status_callback error in _emit_status", exc_info=True)
+        self._emit_status_event("lifecycle", message)
 
     def _emit_warning(self, message: str) -> None:
         """Emit a user-visible warning through the same status plumbing.
@@ -3326,6 +3343,15 @@ class AIAgent:
                         exc_info=True,
                     )
 
+        # claude-agent-sdk runtime: the blocking run_turn observes only the
+        # session's own interrupt event — signal it directly (idempotent;
+        # schedules client.interrupt() on the session's loop). (#25267)
+        sdk_session = getattr(self, "_claude_sdk_session", None)
+        if sdk_session is not None:
+            try:
+                sdk_session.request_interrupt()
+            except Exception:
+                logger.debug("claude-sdk interrupt signal failed", exc_info=True)
         # A cron turn performs its API request on the conversation thread to
         # avoid the nested interrupt-worker deadlock.  Unlike the normal worker
         # path, its client is registered here so this cross-thread interrupt can
@@ -3468,6 +3494,27 @@ class AIAgent:
         if not text or not text.strip():
             return False
         cleaned = text.strip()
+        # claude-agent-sdk lane: the SDK owns tool execution, so the tool-batch
+        # drain points below are never reached and the stash would strand (the
+        # turn-finalizer fallback only redelivers when nothing else is queued).
+        # The SDK's streaming-input mode accepts a second query() on the live
+        # session and injects it at the next turn boundary — its own steering
+        # contract. Prefer it; fall through to the stash when there is no live
+        # turn to steer into. Returning early is what makes delivery
+        # exactly-once: an accepted native steer is never also stashed.
+        if getattr(self, "api_mode", None) == "claude_agent_sdk":
+            _sdk_steer = getattr(
+                getattr(self, "_claude_sdk_session", None), "steer", None
+            )
+            if callable(_sdk_steer):
+                try:
+                    if _sdk_steer(cleaned):
+                        return True
+                except Exception:
+                    logger.debug(
+                        "claude-sdk native steer failed; falling back to stash",
+                        exc_info=True,
+                    )
         _lock = getattr(self, "_pending_steer_lock", None)
         if _lock is None:
             # Test stubs that built AIAgent via object.__new__ skip __init__.
@@ -4337,13 +4384,23 @@ class AIAgent:
         provenance = getattr(self, "_last_activity_provenance", None)
         if provenance is None:
             provenance = ActivityProvenance.UNKNOWN
+        sdk_visibility_count = int(getattr(self, "_sdk_visibility_iteration_count", 0) or 0)
+        sdk_visibility_lock = getattr(self, "_sdk_visibility_lock", None)
+        if sdk_visibility_lock is not None:
+            with sdk_visibility_lock:
+                sdk_visibility_count = int(
+                    getattr(self, "_sdk_visibility_iteration_count", 0) or 0
+                )
         return build_activity_snapshot(
             last_activity_at=getattr(self, "_last_activity_ts", None),
             last_activity_description=getattr(self, "_last_activity_desc", None) or "",
             last_activity_provenance=provenance,
             extra={
             "current_tool": self._current_tool,
-            "api_call_count": self._api_call_count,
+            "api_call_count": max(
+                int(getattr(self, "_api_call_count", 0) or 0),
+                sdk_visibility_count,
+            ),
             "max_iterations": self.max_iterations,
             "budget_used": self.iteration_budget.used,
             "budget_max": self.iteration_budget.max_total,
@@ -4533,6 +4590,19 @@ class AIAgent:
         except Exception:
             pass
 
+        # Disconnect the claude-agent-sdk session: it owns a loop thread and
+        # a Claude Code CLI subprocess that would otherwise outlive the
+        # evicted agent forever. Continuity survives eviction regardless —
+        # the rebuilt agent RESUMES via the persisted claude_sdk_session_id
+        # on the session row. (#25267)
+        try:
+            sdk_session = getattr(self, "_claude_sdk_session", None)
+            if sdk_session is not None:
+                self._claude_sdk_session = None
+                sdk_session.close()
+        except Exception:
+            pass
+
     def close(self) -> None:
         """Release all resources held by this agent instance.
 
@@ -4636,6 +4706,17 @@ class AIAgent:
             if codex_session is not None:
                 self._codex_session = None
                 codex_session.close()
+        except Exception:
+            pass
+
+        # 6d. Disconnect the claude-agent-sdk session (subscription runtime).
+        # The SDK client owns a Claude Code CLI subprocess; dropping it to GC
+        # on /new, expiry, or cache eviction leaks that subprocess. (#25267)
+        try:
+            sdk_session = getattr(self, "_claude_sdk_session", None)
+            if sdk_session is not None:
+                self._claude_sdk_session = None
+                sdk_session.close()
         except Exception:
             pass
 
@@ -8986,6 +9067,19 @@ class AIAgent:
         """Forwarder — see ``agent.codex_runtime.run_codex_app_server_turn``."""
         from agent.codex_runtime import run_codex_app_server_turn
         return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
+
+    def _run_claude_agent_sdk_turn(
+        self,
+        *,
+        user_message: str,
+        original_user_message: Any,
+        messages: List[Dict[str, Any]],
+        effective_task_id: str,
+        should_review_memory: bool = False,
+    ) -> Dict[str, Any]:
+        """Forwarder — see ``agent.claude_sdk_runtime.run_claude_agent_sdk_turn``."""
+        from agent.claude_sdk_runtime import run_claude_agent_sdk_turn
+        return run_claude_agent_sdk_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
 
 def main(
     query: str = None,

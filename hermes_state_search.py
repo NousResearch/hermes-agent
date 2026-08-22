@@ -1406,8 +1406,12 @@ class SessionSearchMixin:
         with self._read_ctx() as conn:
             try:
                 tri_cursor = conn.execute(tri_sql, tri_params)
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as exc:
                 # Query failed at runtime — let the caller fall back.
+                # A missing tokenizer is permanent: log it once instead of
+                # silently retrying on every CJK query.
+                if self._is_trigram_unavailable_error(exc):
+                    self._warn_trigram_unavailable(exc)
                 return None
             return [dict(row) for row in tri_cursor.fetchall()]
 

@@ -1461,6 +1461,14 @@ def _build_replay_entry(
             elif not _rval:
                 continue
             entry[_rkey] = _rval
+        # Row-marker carry: a projected background result
+        # (display_kind="sdk_background_result") must stay identifiable
+        # through this rebuild or the continuity digest cannot exclude it —
+        # re-presenting the agent's own delivered answer is the exact
+        # double-presentation pathology the SDK background lane fixes.
+        # Providers never see the field (the api_messages build strips it).
+        if msg.get("display_kind"):
+            entry["display_kind"] = msg["display_kind"]
     if preserve_timestamp:
         ts = msg.get("timestamp")
         if ts:
@@ -3995,7 +4003,7 @@ def _drain_gateway_watch_events(completion_queue) -> "list[dict]":
             "watch_overflow_released",
         }:
             watch_events.append(evt)
-        elif evt_type == "async_delegation":
+        elif evt_type in {"async_delegation", "sdk_background_result"}:
             requeue.append(evt)
         # else: process completion events are handled by the watcher task
     for evt in requeue:
@@ -4460,38 +4468,49 @@ class TurnRunner:
         # at ``tool_preview_length`` (default 40) so a long or multi-line
         # command doesn't render as a huge block — matching the budget the
         # non-terminal preview path already applies (#42634).
+        # The gate is on the CANONICAL name/args, so a child runtime's shell
+        # tool (Claude SDK ``Bash``, Codex ``exec_command``) gets the same
+        # fenced block as native ``terminal`` instead of falling through to
+        # the compact preview line.
         _code_block_full = None
         _code_block_short = None
         try:
             _progress_adapter = self._runner._adapter_for_source(ctx.source)
         except Exception:
             _progress_adapter = None
+        from agent.tool_identity import (
+            canonical_tool_args,
+            canonical_tool_name,
+            display_tool_label,
+        )
+        _canon_name = canonical_tool_name(tool_name)
+        _canon_args = canonical_tool_args(tool_name, args)
         if (
             getattr(_progress_adapter, "supports_code_blocks", False)
-            and tool_name == "terminal"
-            and isinstance(args, dict)
-            and isinstance(args.get("command"), str)
-            and args["command"].strip()
+            and _canon_name == "terminal"
+            and isinstance(_canon_args.get("command"), str)
+            and _canon_args["command"].strip()
         ):
-            from agent.display import get_tool_preview_max_len
-            _cmd_full = args["command"].rstrip()
+            from agent.display import (
+                build_terminal_preview_line,
+                get_tool_preview_max_len,
+            )
+            _cmd_full = _canon_args["command"].rstrip()
             # Consecutive terminal calls: drop the repeated
             # "💻 terminal" header so back-to-back commands render as
             # adjacent code blocks under a single header.
             _block_header = (
-                "" if ctx.last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
+                "" if ctx.last_was_terminal_block[0] else f"{emoji} {_canon_name}\n"
             )
             _code_block_full = f"{_block_header}```\n{_cmd_full}\n```"
-            # Single-line, capped preview for non-verbose modes.
+            # Single-line, capped preview for non-verbose modes.  Built by
+            # the shared display helper so the whole budget goes to content;
+            # this used to take only the FIRST source line, which rendered a
+            # command opening with `set -e`, a `cd`, or a variable
+            # assignment as just those few characters.
             _pl = get_tool_preview_max_len()
             _cap = _pl if _pl > 0 else 40
-            _lines = _cmd_full.splitlines()
-            _cmd_short = _lines[0] if _lines else _cmd_full
-            _multiline = len(_lines) > 1
-            if len(_cmd_short) > _cap:
-                _cmd_short = _cmd_short[:_cap - 3] + "..."
-            elif _multiline:
-                _cmd_short = _cmd_short + " ..."
+            _cmd_short = build_terminal_preview_line(_cmd_full, _cap)
             _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
 
         # Verbose mode: show detailed arguments, respects tool_preview_length
@@ -4558,10 +4577,21 @@ class TurnRunner:
                 else:
                     msg = f"{emoji} {_verb}{tool_verb_connector(tool_name)}{preview}"
             else:
-                msg = f"{emoji} {tool_name}: \"{preview}\""
+                # No curated verb, so the tool's own name is what the user
+                # sees -- the one path where a raw wire name leaks. Strip the
+                # MCP scaffolding; a third-party server stays visible as
+                # "linear · get_issue".
+                _label = display_tool_label(tool_name)
+                # A tool with no preview rule yields no preview, and the
+                # caller's fallback is the tool name itself -- which rendered
+                # as `name: "name"`. Say it once.
+                if preview in (tool_name, _label):
+                    msg = f"{emoji} {_label}"
+                else:
+                    msg = f"{emoji} {_label}: \"{preview}\""
             ctx.last_was_terminal_block[0] = False
         else:
-            msg = f"{emoji} {tool_name}..."
+            msg = f"{emoji} {display_tool_label(tool_name)}..."
             ctx.last_was_terminal_block[0] = False
 
         # Dedup: collapse consecutive identical progress messages.
@@ -5790,8 +5820,24 @@ class TurnRunner:
                 # a single small file, not part of the expensive walk.
                 load_soul_identity=True,
             )
+            _displaced_agent = None
             if _cache_lock and _cache is not None:
                 with _cache_lock:
+                    # A fresh agent may DISPLACE a cached one under the same key
+                    # (signature change, session switch, memory-pressure
+                    # rebuild). The eviction paths release what they pop; a
+                    # plain overwrite released nothing, so the displaced agent's
+                    # provider session — and on the claude-agent-sdk lane its
+                    # Claude Code CLI child — was dropped to GC, which never
+                    # reaps a live subprocess. Capture it, release it below.
+                    _prev_entry = _cache.get(ctx.session_key)
+                    _prev = (
+                        _prev_entry[0]
+                        if isinstance(_prev_entry, tuple) and _prev_entry
+                        else None
+                    )
+                    if _prev is not None and _prev is not agent:
+                        _displaced_agent = _prev
                     # Record the session_id the snapshot was taken for
                     # alongside the message_count, so the cross-process
                     # guard can skip the (meaningless) count comparison
@@ -5801,6 +5847,10 @@ class TurnRunner:
                         agent, _sig, _current_msg_count, ctx.session_id,
                     )
                     self._runner._enforce_agent_cache_cap()
+            if _displaced_agent is not None:
+                self._runner._release_displaced_agent(
+                    _displaced_agent, ctx.session_key
+                )
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, _sig)
 
         # Per-message state — callbacks and reasoning config change every
@@ -6106,6 +6156,7 @@ class TurnRunner:
         # to the user immediately.
         from tools.approval import (
             register_gateway_notify,
+            register_session_notify,
             reset_current_session_key,
             set_current_session_key,
             unregister_gateway_notify,
@@ -6144,6 +6195,22 @@ class TurnRunner:
             # false positives from MagicMock auto-attribute creation in tests.
             if getattr(type(ctx._status_adapter), "send_exec_approval", None) is not None:
                 try:
+                    # P2.a: hand the SDK prompt correlator to adapters that
+                    # can carry it on the card (signature-guarded — only the
+                    # Telegram adapter accepts it today; the other adapters'
+                    # signatures must not break on an unexpected kwarg).
+                    _sea_extra: Dict[str, Any] = {}
+                    _tuid = approval_data.get("tool_use_id") or ""
+                    if _tuid:
+                        try:
+                            import inspect as _inspect
+
+                            if "tool_use_id" in _inspect.signature(
+                                type(ctx._status_adapter).send_exec_approval
+                            ).parameters:
+                                _sea_extra["tool_use_id"] = _tuid
+                        except (TypeError, ValueError):
+                            pass
                     _approval_fut = safe_schedule_threadsafe(
                         ctx._status_adapter.send_exec_approval(
                             chat_id=ctx._status_chat_id,
@@ -6154,6 +6221,7 @@ class TurnRunner:
                             allow_permanent=approval_data.get("allow_permanent", True),
                             allow_session=approval_data.get("allow_session", True),
                             smart_denied=approval_data.get("smart_denied", False),
+                            **_sea_extra,
                         ),
                         ctx._loop_for_step,
                         logger=logger,
@@ -6361,6 +6429,13 @@ class TurnRunner:
         _approval_session_key = ctx.session_key or ""
         _approval_session_token = set_current_session_key(_approval_session_key)
         register_gateway_notify(_approval_session_key, _approval_notify_sync)
+        # Session-scoped refresh: unlike the turn registration above, this
+        # entry SURVIVES the finally-unregister, so a CLI-initiated
+        # background SDK turn between hermes turns can still page the
+        # operator (the closure is session-stable: adapter, chat id and
+        # loop all outlive the turn). Removed at conversation boundaries
+        # (clear_session via the boundary funnel) and gateway shutdown.
+        register_session_notify(_approval_session_key, _approval_notify_sync)
         try:
             # If _prepare_inbound_message_text buffered image paths for native
             # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -15121,6 +15196,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if cancel_completion_batches is not None:
                 await cancel_completion_batches()
 
+            # Session-scoped approval notify callbacks close over adapters
+            # and the loop being torn down below — a retained entry would
+            # page dead sessions on the next start-in-process (restart).
+            try:
+                from tools.approval import clear_all_session_notify
+
+                clear_all_session_notify()
+            except Exception:
+                logger.debug(
+                    "clear_all_session_notify failed during shutdown",
+                    exc_info=True,
+                )
+
             for platform, adapter in list(self.adapters.items()):
                 await self._bounded_adapter_teardown(adapter, platform)
 
@@ -19505,6 +19593,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _hyg_configured_model = _hyg_model
                 _hyg_configured_provider = _hyg_provider
                 _hyg_configured_base_url = _hyg_base_url
+                _hyg_runtime = {}
 
                 try:
                     _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
@@ -19635,6 +19724,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 )
                                 _needs_compress = False
 
+                if _needs_compress and (_hyg_runtime or {}).get(
+                    "api_mode"
+                ) == "claude_agent_sdk":
+                    # compress_context() returns early on this lane: the Claude
+                    # Code CLI owns the real conversation and runs its own
+                    # compaction, so Hermes compaction is a guaranteed no-op.
+                    # Running hygiene anyway still builds a throwaway AIAgent,
+                    # seeds a system prompt and restores the whole transcript --
+                    # real work for a result we already know.
+                    logger.info(
+                        "Session hygiene: skipping compression for %s; the "
+                        "claude-agent-sdk lane compacts inside the CLI, so "
+                        "Hermes compaction cannot shrink it (use /compress to "
+                        "force a local summary)",
+                        session_entry.session_id,
+                    )
+                    _needs_compress = False
+
                 if _needs_compress:
                     logger.info(
                         "Session hygiene: %s messages, ~%s tokens (%s) — auto-compressing "
@@ -19707,6 +19814,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 # deliberately stale for every real gateway surface.
                                 _hyg_agent.platform = _GATEWAY_HYGIENE_PLATFORM
                                 _hyg_cleanup_deferred = False
+                                _hyg_rotated = False
+                                _hyg_in_place = False
                                 try:
                                     # Gateway hygiene runs before the user turn
                                     # starts and already owns the session binding.
@@ -20154,7 +20263,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # Evict the cached agent so the next turn
                                     # rebuilds its system prompt from current
                                     # SOUL.md, memory, and skills.
-                                    self._evict_cached_agent(session_key)
+                                    #
+                                    # ONLY when compression actually changed the
+                                    # transcript. A no-op compression still costs
+                                    # a full eviction: release_clients() drops the
+                                    # agent's provider session, and on the
+                                    # claude-agent-sdk lane that discards the CLI's
+                                    # prompt cache, so the next turn re-writes the
+                                    # entire prefix to rebuild a prompt that did
+                                    # not change. That lane skips Hermes compaction
+                                    # by design (conversation_compression, "CLI
+                                    # owns context"), so hygiene no-ops every cycle
+                                    # and the eviction was pure waste.
+                                    if _hyg_rotated or _hyg_in_place:
+                                        self._evict_cached_agent(session_key)
                                     if not _hyg_cleanup_deferred:
                                         await self._cleanup_agent_resources_off_loop(
                                             _hyg_agent, context="session hygiene"
@@ -25472,6 +25594,94 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "retry"
         return "deliver"
 
+    _SELF_ECHO_TAIL_ROWS = 30
+
+    async def _self_echo_guard_redirect(self, evt: dict) -> bool:
+        """Belt-and-braces for the surviving re-injection lane.
+
+        The direct sdk_background_result lane cannot echo by construction;
+        genuine delegations still deliver by injecting a synthetic turn into
+        the parent session — a payload identical to that session's own
+        recent assistant text would recreate the 2026-08-06 self-echo (the
+        model recognizes its own words and refuses to relay them).
+
+        Returns True when the completion's raw payload matched the parent
+        session's recent assistant tail and was redirected to the direct
+        outbound lane instead — that redirect IS delivery, so the caller's
+        acceptance bookkeeping (durable claim completed, never released)
+        must run exactly as for an accepted injection. Returns False to
+        inject normally; fails OPEN on any read error — this is a guard,
+        not a delivery gate.
+        """
+        if evt.get("type") != "async_delegation":
+            return False
+        summary = evt.get("summary")
+        parent = str(evt.get("parent_session_id") or "").strip()
+        if not isinstance(summary, str) or not summary.strip() or not parent:
+            return False
+        db = getattr(self, "_session_db", None)
+        if db is None:
+            return False
+
+        def _norm(text: str) -> str:
+            return " ".join(text.split())
+
+        try:
+            session = await db.get_session(parent)
+            if not session:
+                return False
+            count = int(session.get("message_count") or 0)
+            rows = await db.get_messages(
+                parent,
+                limit=self._SELF_ECHO_TAIL_ROWS,
+                offset=max(0, count - self._SELF_ECHO_TAIL_ROWS),
+            )
+            target = _norm(summary)
+            matched = any(
+                row.get("role") == "assistant"
+                and isinstance(row.get("content"), str)
+                and _norm(row["content"]) == target
+                for row in rows or []
+            )
+        except Exception:
+            logger.debug(
+                "self-echo guard read failed for session %s — failing open "
+                "to normal injection", parent, exc_info=True,
+            )
+            return False
+        if not matched:
+            return False
+        try:
+            from tools.process_registry import process_registry
+
+            process_registry.completion_queue.put({
+                "type": "sdk_background_result",
+                "payloads": [summary],
+                "session_key": str(evt.get("session_key") or ""),
+                "parent_session_id": parent,
+                "model": evt.get("model"),
+                "dispatched_at": evt.get("dispatched_at"),
+                "completed_at": evt.get("completed_at"),
+                # The payload IS the session's own recent assistant text —
+                # it already lives in the transcript; re-projecting would
+                # write a duplicate row.
+                "_projected": True,
+            })
+        except Exception:
+            logger.warning(
+                "self-echo guard matched delegation %s but redirect enqueue "
+                "failed — falling back to normal injection",
+                evt.get("delegation_id"), exc_info=True,
+            )
+            return False
+        logger.warning(
+            "self-echo guard: delegation %s payload is identical to recent "
+            "assistant text of session %s — injection skipped, payload "
+            "redirected to the direct outbound lane",
+            evt.get("delegation_id"), parent,
+        )
+        return True
+
     async def _deliver_completion_notification(
         self, synth_text: str, evt: dict,
     ) -> Optional[bool]:
@@ -25519,6 +25729,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "delegation records).",
                         durable_delegation_id or "<legacy>", parent_session_id,
                     )
+                    # The drop is deliberate — a rotated-away session can be
+                    # a deliberate user statement (/new), so no auto-send to
+                    # a last-known route — but the PAYLOAD itself must
+                    # survive: for legacy/id-less events the queue copy was
+                    # the ONLY copy. Project it into the transcript when the
+                    # db can take it, else write an orphaned-results file.
+                    _summary = evt.get("summary")
+                    if isinstance(_summary, str) and _summary.strip():
+                        _projected_terminal = False
+                        _db = getattr(self, "_session_db", None)
+                        if _db is not None:
+                            try:
+                                await _db.append_message(
+                                    session_id=parent_session_id,
+                                    role="assistant",
+                                    content=_summary,
+                                    display_kind="sdk_background_result",
+                                    display_metadata={
+                                        "orphaned": "terminal_drop",
+                                        "delegation_id":
+                                            durable_delegation_id or None,
+                                        "completed_at": evt.get("completed_at"),
+                                    },
+                                )
+                                _projected_terminal = True
+                            except Exception:
+                                logger.debug(
+                                    "terminal-drop transcript projection "
+                                    "failed for %s", parent_session_id,
+                                    exc_info=True,
+                                )
+                        if not _projected_terminal:
+                            self._persist_orphaned_result_file(
+                                [_summary],
+                                session_id=parent_session_id,
+                                reason="terminal_drop",
+                            )
                     if durable_claim_id:
                         try:
                             from tools.async_delegation import drop_completion_delivery
@@ -25583,9 +25830,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         accepted = False
         try:
-            injection_result = await self._inject_watch_notification(synth_text, evt)
-            if injection_result is not True:
-                return injection_result
+            if await self._self_echo_guard_redirect(evt):
+                # Redirected to the direct outbound lane — this IS delivery;
+                # flow through the same acceptance tail so the durable claim
+                # is completed, never released as a failure.
+                pass
+            else:
+                injection_result = await self._inject_watch_notification(synth_text, evt)
+                if injection_result is not True:
+                    return injection_result
             accepted = True
 
             if identity is not None:
@@ -25840,6 +26093,287 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if parsed.get("thread_id"):
             evt["thread_id"] = parsed["thread_id"]
 
+    def _persist_orphaned_result_file(
+        self, payloads: list, *, session_id: Optional[str], reason: str,
+    ) -> Optional[str]:
+        """Last-resort durability for a finished background/delegation payload
+        that can reach neither its transcript nor its recipient (terminal
+        parent drop, projection failure). Writes the payload to
+        ``~/.hermes/orphaned-results/`` so a gateway restart or a terminal
+        drop can never erase the only copy — "nothing finished may ever
+        become unrecoverable again". Returns the file path, or None on
+        failure; never raises (persistence trouble must not block the drop
+        disposition or the delivery attempt).
+        """
+        try:
+            import uuid as _uuid
+
+            out_dir = get_hermes_home() / "orphaned-results"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+            safe_session = re.sub(
+                r"[^A-Za-z0-9._-]", "_", str(session_id or "unknown"),
+            )[:80]
+            path = out_dir / (
+                f"{stamp}-{safe_session}-{_uuid.uuid4().hex[:8]}.json"
+            )
+            path.write_text(
+                json.dumps({
+                    "persisted_at": time.time(),
+                    "session_id": session_id,
+                    "reason": reason,
+                    "payloads": [str(p) for p in payloads],
+                }, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            logger.warning(
+                "orphaned result persisted to %s (%s, %d payload(s))",
+                path, reason, len(payloads),
+            )
+            return str(path)
+        except Exception:
+            logger.warning(
+                "orphaned-result file persistence failed (%s) — payload "
+                "remains at risk", reason, exc_info=True,
+            )
+            return None
+
+    async def _deliver_sdk_background_result(self, evt: dict) -> Optional[bool]:
+        """Send a finished claude-agent-sdk background result DIRECTLY on the
+        platform outbound lane — never re-injected into the agent session.
+
+        The old lane wrapped the agent's own answer in a synthetic empty-id
+        delegation and asked the model to relay it; the model recognized its
+        own text, refused, and the answer never left the box (2026-08-06).
+        Each payload goes out as its own agent message, in order.
+
+        ``True`` = every payload sent. ``False`` = retry (caller requeues;
+        already-sent payloads are trimmed off the event first, so the retry
+        delivers only the remainder). ``None`` = empty event, nothing to send.
+        A missing route fails SAFE with ``False`` — the payload is a finished
+        result the user is waiting on; it must never be dropped silently.
+
+        Durability contract: every payload is projected into the hermes
+        transcript BEFORE any routing or send (save the text first — the
+        2026-08-06 report was FTS-invisible and one session retire away from
+        unrecoverable), marked ``display_kind="sdk_background_result"`` so
+        the continuity digest never re-presents the agent's own delivered
+        answer, and each send is registered as a delivery-ledger obligation.
+        Projection and ledger trouble never block the send.
+        """
+        payloads = [
+            p for p in (evt.get("payloads") or [])
+            if isinstance(p, str) and p.strip()
+        ]
+        if not payloads:
+            logger.warning(
+                "sdk_background_result event carried no payloads — dropping",
+            )
+            return None
+        if not evt.get("_projected"):
+            # Once per event lifetime — a requeued retry (trimmed or
+            # unroutable) must not write duplicate transcript rows.
+            evt["_projected"] = True
+            _db = getattr(self, "_session_db", None)
+            _parent = str(evt.get("parent_session_id") or "").strip()
+            if _db is None or not _parent:
+                logger.warning(
+                    "sdk_background_result not projected into transcript "
+                    "(session_db=%s, parent_session_id=%r) — persisting to "
+                    "orphaned-results",
+                    "ok" if _db is not None else None, _parent,
+                )
+                # Queue-only payloads die with a gateway restart — give them
+                # a durable copy before the delivery attempt.
+                self._persist_orphaned_result_file(
+                    payloads,
+                    session_id=_parent or None,
+                    reason="projection_unavailable",
+                )
+            else:
+                _unprojected = []
+                for _payload in payloads:
+                    try:
+                        await _db.append_message(
+                            session_id=_parent,
+                            role="assistant",
+                            content=_payload,
+                            display_kind="sdk_background_result",
+                            display_metadata={
+                                "completed_at": evt.get("completed_at"),
+                            },
+                        )
+                    except Exception:
+                        _unprojected.append(_payload)
+                        logger.warning(
+                            "sdk_background_result transcript projection "
+                            "failed for session %s — continuing with "
+                            "delivery", _parent, exc_info=True,
+                        )
+                if _unprojected:
+                    self._persist_orphaned_result_file(
+                        _unprojected,
+                        session_id=_parent,
+                        reason="projection_failed",
+                    )
+        source = self._build_process_event_source(evt)
+        adapter = None
+        if source is not None:
+            platform_name = (
+                source.platform.value
+                if hasattr(source.platform, "value")
+                else str(source.platform)
+            )
+            for p, a in self.adapters.items():
+                if p.value == platform_name:
+                    adapter = a
+                    break
+        from gateway.wake import adapter_supports_push
+        if source is None or adapter is None or not adapter_supports_push(adapter):
+            # Non-push adapters (api_server) deliver by running a wake turn —
+            # re-injection, the exact mechanism this lane exists to avoid, so
+            # they have no deliverable route here either.
+            if not evt.get("_route_warned"):
+                evt["_route_warned"] = True
+                logger.warning(
+                    "sdk_background_result has no deliverable route "
+                    "(session_key=%r, source=%s, adapter=%s) — requeued",
+                    evt.get("session_key"),
+                    "resolved" if source is not None else None,
+                    type(adapter).__name__ if adapter is not None else None,
+                )
+            else:
+                logger.debug(
+                    "sdk_background_result still unroutable (session_key=%r)",
+                    evt.get("session_key"),
+                )
+            return False
+        metadata = self._thread_metadata_for_source(source)
+        from gateway.platforms.base import (
+            BasePlatformAdapter,
+            should_send_media_as_audio as _should_send_media_as_audio,
+        )
+        from gateway.delivery_ledger import (
+            compute_obligation_id,
+            ledger_enabled,
+            mark_attempting,
+            mark_delivered,
+            mark_failed,
+            record_obligation,
+        )
+        try:
+            _ledger_on = await asyncio.to_thread(ledger_enabled)
+        except Exception:
+            _ledger_on = False
+        _session_key = str(evt.get("session_key") or "")
+        _obligation_ref = f"sdk_bg:{evt.get('completed_at') or ''}"
+        _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+        _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
+        for idx, payload in enumerate(payloads):
+            _obligation_id = None
+            if _ledger_on:
+                try:
+                    _obligation_id = compute_obligation_id(
+                        _session_key, _obligation_ref, payload,
+                    )
+                    await asyncio.to_thread(
+                        record_obligation,
+                        obligation_id=_obligation_id,
+                        session_key=_session_key,
+                        platform=platform_name,
+                        chat_id=source.chat_id,
+                        thread_id=source.thread_id,
+                        content=payload,
+                    )
+                    await asyncio.to_thread(mark_attempting, _obligation_id)
+                except Exception:
+                    logger.debug(
+                        "sdk_background_result ledger record failed",
+                        exc_info=True,
+                    )
+                    _obligation_id = None
+            try:
+                media_files, text_content = adapter.extract_media(payload)
+                media_files = BasePlatformAdapter.filter_media_delivery_paths(
+                    media_files
+                )
+                images, text_content = adapter.extract_images(text_content)
+                if text_content:
+                    await adapter.send(
+                        chat_id=source.chat_id,
+                        content=text_content,
+                        metadata=metadata,
+                    )
+                for image_url, alt_text in (images or []):
+                    await adapter.send_image(
+                        chat_id=source.chat_id,
+                        image_url=image_url,
+                        caption=alt_text,
+                        metadata=metadata,
+                    )
+                for media_path, _is_voice in (media_files or []):
+                    _ext = os.path.splitext(media_path)[1].lower()
+                    if _should_send_media_as_audio(
+                        source.platform, _ext, _is_voice
+                    ):
+                        await adapter.send_voice(
+                            chat_id=source.chat_id,
+                            audio_path=media_path,
+                            metadata=metadata,
+                        )
+                    elif _ext in _VIDEO_EXTS:
+                        await adapter.send_video(
+                            chat_id=source.chat_id,
+                            video_path=media_path,
+                            metadata=metadata,
+                        )
+                    elif _ext in _IMAGE_EXTS:
+                        await adapter.send_image_file(
+                            chat_id=source.chat_id,
+                            image_path=media_path,
+                            metadata=metadata,
+                        )
+                    else:
+                        await adapter.send_document(
+                            chat_id=source.chat_id,
+                            file_path=media_path,
+                            metadata=metadata,
+                        )
+            except Exception as e:
+                if _obligation_id:
+                    try:
+                        await asyncio.to_thread(
+                            mark_failed, _obligation_id, str(e),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "sdk_background_result mark_failed failed",
+                            exc_info=True,
+                        )
+                evt["payloads"] = payloads[idx:]
+                logger.warning(
+                    "sdk_background_result send failed at payload %d/%d "
+                    "(%s) — remainder requeued",
+                    idx + 1, len(payloads), e,
+                )
+                return False
+            if _obligation_id:
+                try:
+                    await asyncio.to_thread(mark_delivered, _obligation_id)
+                except Exception:
+                    logger.debug(
+                        "sdk_background_result mark_delivered failed",
+                        exc_info=True,
+                    )
+        logger.info(
+            "sdk_background_result delivered: %d payload(s) to %s chat=%s",
+            len(payloads),
+            source.platform.value
+            if hasattr(source.platform, "value") else source.platform,
+            source.chat_id,
+        )
+        return True
+
     @staticmethod
     def _async_delegation_group_key(evt: dict) -> tuple[str, ...]:
         """Return the same-session routing key for async completion coalescing.
@@ -25988,6 +26522,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Mirrors the CLI's idle ``process_loop`` drain. Stays silent when the
         queue has nothing for us; ignores non-async event types (those are
         handled by ``_run_process_watcher`` / the post-turn drain).
+
+        Also owns ``sdk_background_result`` events (a finished
+        claude-agent-sdk background task's answer burst): those are sent
+        DIRECTLY on the platform outbound lane via
+        ``_deliver_sdk_background_result`` — never re-injected as a turn.
         """
         await asyncio.sleep(3)  # let platforms finish connecting
         from tools.process_registry import process_registry as _pr
@@ -26003,7 +26542,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         evt = _pr.completion_queue.get_nowait()
                     except Exception:
                         break
-                    if evt.get("type") == "async_delegation":
+                    if evt.get("type") in ("async_delegation", "sdk_background_result"):
                         async_events.append(evt)
                     else:
                         requeue.append(evt)
@@ -26019,6 +26558,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 group_order: list[tuple[str, ...]] = []
                 for evt in async_events:
                     self._enrich_async_delegation_routing(evt)
+                    if evt.get("type") == "sdk_background_result":
+                        # A finished claude-agent-sdk background result is sent
+                        # DIRECTLY on the platform outbound lane — it never
+                        # coalesces with async-delegation turn injections.
+                        try:
+                            delivered = await self._deliver_sdk_background_result(evt)
+                            if delivered is False:
+                                _pr.completion_queue.put(evt)
+                        except Exception as e:
+                            _pr.completion_queue.put(evt)
+                            logger.error(
+                                "SDK background-result delivery error: %s", e,
+                            )
+                        continue
                     key = self._async_delegation_group_key(evt)
                     if key not in groups:
                         groups[key] = []
@@ -27149,6 +27702,65 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             home_display,
         )
         return hashlib.sha256(repr(key_tuple).encode("utf-8")).hexdigest()
+
+    def _release_displaced_agent(self, displaced: Any, session_key: str) -> None:
+        """Release an agent that a rebuild displaced from the cache.
+
+        A fresh agent can overwrite a cached one under the same key (signature
+        change, session switch, memory-pressure rebuild). The eviction paths
+        release whatever they pop; a plain overwrite released nothing, so the
+        displaced agent's provider session — and on the claude-agent-sdk lane
+        its Claude Code CLI child — was dropped to GC, which never reaps a live
+        subprocess.
+
+        Soft release, matching ``_evict_cached_agent``: frees the client pool
+        and provider session but preserves the session's terminal sandbox,
+        browser daemon and tracked bg processes for the agent taking over.
+
+        Never touches an agent that is still serving a turn — that agent's own
+        completion path owns its teardown.
+        """
+        if displaced is None or displaced is _AGENT_PENDING_SENTINEL:
+            return
+        try:
+            running_ids = {
+                id(a)
+                for _, a in self._running_agent_items()
+                if a is not None and a is not _AGENT_PENDING_SENTINEL
+            }
+        except Exception:
+            running_ids = set()
+        if id(displaced) in running_ids:
+            logger.debug(
+                "Displaced agent for %s is mid-turn; leaving it to its own "
+                "completion path", session_key,
+            )
+            return
+        logger.info(
+            "Releasing agent displaced from the cache for session %s", session_key,
+        )
+        # Daemon thread: teardown can block on socket/subprocess shutdown and
+        # must not stall the turn that displaced it.
+        def _release() -> None:
+            # Contain failures here: an exception on a daemon thread reaches
+            # threading.excepthook, which logs a bare traceback with no context
+            # about which session it came from.
+            try:
+                self._release_evicted_agent_soft(displaced)
+            except Exception:
+                logger.debug(
+                    "Soft release of the agent displaced from %s failed",
+                    session_key, exc_info=True,
+                )
+
+        try:
+            threading.Thread(
+                target=_release,
+                daemon=True,
+                name=f"agent-displaced-{str(session_key)[:24]}",
+            ).start()
+        except Exception:
+            _release()
 
     def _evict_cached_agent(self, session_key: str) -> None:
         """Remove a cached agent for a session (called on /new, /model, etc).
@@ -29057,7 +29669,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _parts.append(
                                 f"iteration {_a['api_call_count']}/{_a['max_iterations']}"
                             )
-                        _action = _a.get("current_tool") or _a.get("last_activity_desc")
+                        _action = _a.get("current_tool")
+                        if _action:
+                            # The activity summary deliberately keeps the
+                            # runtime's raw tool name; this is a user-facing
+                            # line, so canonicalize here rather than there --
+                            # otherwise the heartbeat reads "Bash" while the
+                            # progress line above it reads "terminal".
+                            from agent.tool_identity import display_tool_label
+                            _action = display_tool_label(str(_action))
+                        else:
+                            _action = _a.get("last_activity_desc")
                         if _action:
                             _parts.append(str(_action))
                         if _parts:

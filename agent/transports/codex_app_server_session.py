@@ -74,6 +74,10 @@ class TurnResult:
     thread_id: Optional[str] = None
     token_usage_last: Optional[dict[str, Any]] = None
     token_usage_total: Optional[dict[str, Any]] = None
+    # Model id the runtime actually reported for this turn (e.g. from the
+    # SDK's AssistantMessage). Backfills usage attribution when the agent's
+    # configured model is unset and the runtime picked its own default.
+    model_last: Optional[str] = None
     model_context_window: Optional[int] = None
     compacted: bool = False
     # Hint to the caller that the underlying codex subprocess is likely
@@ -83,6 +87,15 @@ class TurnResult:
     # of riding a CPU-spinning or auth-broken process. Mirrors openclaw
     # beta.8's "retire timed-out app-server clients" fix.
     should_retire: bool = False
+    # Non-None marks the turn's error as FATAL to the whole run — a
+    # startup/auth/billing refusal retries cannot fix ("startup", "auth") —
+    # so runtime glue can surface "failed"/"failure_reason" the way the
+    # chat_completions path does and one-shot CLI runs exit nonzero.
+    # Transient turn errors (timeout, in-turn SDK error) leave it None.
+    fatal_reason: Optional[str] = None
+    # ``False`` for transport-local rejections that never reached a model
+    # client; runtime glue must not count or persist them as API calls.
+    api_call_made: bool = True
 
 
 # Markers we accept as terminal even when codex never emits turn/completed.

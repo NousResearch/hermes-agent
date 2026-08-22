@@ -618,18 +618,61 @@ def _append_unconfigured_rows(
             continue
         if entry.slug.lower() == cur:
             cfg = PROVIDER_REGISTRY.get(entry.slug)
-            auth_type = cfg.auth_type if cfg else "api_key"
+            # PROVIDER_REGISTRY only covers providers with a Hermes-managed
+            # credential. Plugin-registered providers (claude-agent-sdk and the
+            # other self-authenticating runtimes) are absent from it, and the
+            # bare "api_key" fallback below then makes the picker hunt for a key
+            # they are designed never to have — so the row renders unauthenticated
+            # with an empty catalog. Fall back to the provider PROFILE, which is
+            # where those runtimes declare auth_type. (#25267)
+            auth_type = cfg.auth_type if cfg else ""
+            if not auth_type:
+                try:
+                    from providers import get_provider_profile
+
+                    _prof = get_provider_profile(entry.slug)
+                    auth_type = getattr(_prof, "auth_type", "") or "api_key"
+                except Exception:
+                    auth_type = "api_key"
             key_env = (
                 cfg.api_key_env_vars[0]
                 if (cfg and cfg.api_key_env_vars)
                 else ""
             )
+            # A self-authenticating runtime ("oauth_external") holds no Hermes
+            # credential by design — the spawned subprocess authenticates itself.
+            # Treating it as unauthenticated hides it from the picker entirely.
+            _self_auth = auth_type == "oauth_external"
+
+            # Catalog: the picker showed only the saved model, because the
+            # _PROVIDER_CATALOG_DELEGATES mapping (claude-agent-sdk -> anthropic)
+            # is applied in _provider_catalog_names() but was never applied here.
+            _catalog: list[str] = []
+            try:
+                from hermes_cli.models import _provider_catalog_names
+
+                _catalog = [m for m in _provider_catalog_names(entry.slug)]
+            except Exception:
+                _catalog = []
+            if not _catalog:
+                _catalog = [cur_model] if cur_model else []
+            elif cur_model:
+                # Keep the saved model first so the picker preselects it. It
+                # may be a valid new/preview model that is not in Hermes'
+                # bundled catalog yet; dropping it would make the current
+                # configuration impossible to re-select in the picker.
+                _catalog = [cur_model] + [m for m in _catalog if m != cur_model]
+
             warning = (
-                f"Configured provider missing usable credentials; paste {key_env} to reactivate. "
-                "Showing the saved model only."
-                if auth_type == "api_key" and key_env
-                else "Configured provider is not authenticated; run `hermes model` to reactivate. "
-                "Showing the saved model only."
+                ""
+                if _self_auth
+                else (
+                    f"Configured provider missing usable credentials; paste {key_env} to reactivate. "
+                    "Showing the saved model only."
+                    if auth_type == "api_key" and key_env
+                    else "Configured provider is not authenticated; run `hermes model` to reactivate. "
+                    "Showing the saved model only."
+                )
             )
             extras.append(
                 {
@@ -637,10 +680,10 @@ def _append_unconfigured_rows(
                     "name": _PROVIDER_LABELS.get(entry.slug, entry.label),
                     "is_current": True,
                     "is_user_defined": False,
-                    "models": [cur_model] if cur_model else [],
-                    "total_models": 1 if cur_model else 0,
+                    "models": _catalog,
+                    "total_models": len(_catalog),
                     "source": "configured-current",
-                    "authenticated": False,
+                    "authenticated": _self_auth,
                     "auth_type": auth_type,
                     "key_env": key_env,
                     "warning": warning,

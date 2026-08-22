@@ -51,6 +51,24 @@ def test_compaction_lifecycle_is_retagged(server, monkeypatch):
     assert events == [{"kind": "compacting", "text": COMPACTION_STATUS}]
 
 
+def test_typed_compaction_start_preserves_desktop_transition(server, monkeypatch):
+    from agent.conversation_compression import COMPACTION_STATUS
+
+    events = _capture(server, monkeypatch)
+    server._status_update("sid", "compaction", COMPACTION_STATUS)
+
+    assert events == [{"kind": "compacting", "text": COMPACTION_STATUS}]
+
+
+def test_typed_compaction_done_clears_desktop_transition(server, monkeypatch):
+    from agent.conversation_compression import COMPACTION_DONE_STATUS
+
+    events = _capture(server, monkeypatch)
+    server._status_update("sid", "compaction", COMPACTION_DONE_STATUS)
+
+    assert events == [{"kind": "compacted", "text": COMPACTION_DONE_STATUS}]
+
+
 def test_other_lifecycle_status_stays_lifecycle(server, monkeypatch):
     events = _capture(server, monkeypatch)
     server._status_update("sid", "lifecycle", "❌ Rate limited after 5 retries")
@@ -63,5 +81,4 @@ def test_manual_compressing_kind_is_preserved(server, monkeypatch):
     server._status_update("sid", "compressing", "⠋ compressing 40 messages…")
 
     assert events[0]["kind"] == "compressing"
-
 

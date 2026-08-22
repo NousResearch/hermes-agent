@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 
 from utils import safe_json_loads
 from agent.redact import redact_sensitive_text
+from agent.tool_identity import canonical_tool_args, canonical_tool_name
 from agent.tool_result_classification import file_mutation_result_landed
 
 # ANSI escape codes for coloring tool failure indicators
@@ -152,7 +153,11 @@ def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
     1. Active skin's ``tool_emojis`` overrides (if a skin is loaded)
     2. Tool registry's per-tool ``emoji`` field
     3. *default* fallback
+
+    The name is canonicalized first, so a foreign runtime's ``Bash`` picks
+    up the same emoji as native ``terminal``.
     """
+    tool_name = canonical_tool_name(tool_name)
     # 1. Skin override
     skin = _get_skin()
     if skin and skin.tool_emojis:
@@ -186,6 +191,24 @@ def _truncate_preview(text: str, max_len: int | None) -> str:
             return "." * max_len
         return text[:max_len - 3] + "..."
     return text
+
+
+def build_terminal_preview_line(command: str, max_len: int | None) -> str:
+    """Render a shell command as one capped line for a progress preview.
+
+    Uses the same ``_oneline`` + ``_truncate_preview`` pair as every other
+    preview, so a command spends its whole budget on content. Taking only
+    the *first* source line instead wastes the budget precisely when the
+    preview matters most: shell commands routinely open with boilerplate
+    (``set -e``, a ``cd``, a variable assignment), so a 120-character budget
+    could render as ``set +e``.
+
+    The result is a label, not a paste-able command — collapsing newlines
+    puts any interior ``#`` comment inline, where it would swallow the rest
+    of the line if it were run. Verbose mode's fenced block stays the
+    copyable form.
+    """
+    return _truncate_preview(_oneline(command), max_len)
 
 
 @dataclass(frozen=True)
@@ -443,16 +466,58 @@ def _browser_exec_step_label(args: dict, max_chars: int = 80) -> str | None:
     return label
 
 
+# Per-task CRUD tools exposed by the Claude Agent SDK harness.
+#
+# Deliberately NOT aliased to native ``todo`` in :mod:`agent.tool_identity`,
+# which maps only tools whose semantics match.  ``todo`` rewrites the whole
+# list from a ``todos`` array; these operate on one task per call and carry no
+# such array, so the alias would route ``TaskCreate`` down the
+# ``todos_arg is None`` branch and render "reading task list" for a call that
+# creates one.  Wrong is worse than absent.
+TASK_TOOLS: frozenset[str] = frozenset({
+    "TaskCreate", "TaskUpdate", "TaskGet", "TaskList",
+})
+
+
+def _task_tool_preview(tool_name: str, args: dict) -> str | None:
+    """Preview for the per-task tools: the task itself, not a count.
+
+    ``todo`` renders "planning 3 task(s)" because one call really does carry
+    three.  These tools take one task per call, so a count would read
+    "1 task(s)" every time -- true, and useless.  The subject is what tells
+    the user which task moved.
+    """
+    subject = _oneline(str(args.get("subject") or "")).strip()
+    task_id = str(args.get("taskId") or "").strip()
+    status = str(args.get("status") or "").strip()
+
+    if tool_name == "TaskCreate":
+        return subject or None
+    if tool_name == "TaskUpdate":
+        head = subject or (f"#{task_id}" if task_id else "")
+        parts = [p for p in (head, f"→ {status}" if status else "") if p]
+        return " ".join(parts) or None
+    if tool_name == "TaskGet":
+        return f"#{task_id}" if task_id else None
+    return None  # TaskList: the returned list is the content; args say nothing
+
+
 def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
     """Build a short preview of a tool call's primary argument for display.
 
     *max_len* controls truncation.  ``None`` (default) defers to the global
     ``_tool_preview_max_len`` set via config; ``0`` means unlimited.
+
+    Name and arguments are canonicalized first (see
+    :mod:`agent.tool_identity`), so a foreign runtime's ``Read``/``file_path``
+    resolves through the same branch as native ``read_file``/``path``.
     """
     if max_len is None:
         max_len = _tool_preview_max_len
     if not args:
         return None
+    args = canonical_tool_args(tool_name, args)
+    tool_name = canonical_tool_name(tool_name)
     args = redact_tool_args_for_display(tool_name, args) or args
     primary_args = {
         "terminal": "command", "web_search": "query", "web_extract": "urls",
@@ -465,6 +530,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         "cronjob": "action",
         "execute_code": "code", "browser_exec": "code", "delegate_task": "goal",
         "clarify": "question", "skill_manage": "name",
+        "ToolSearch": "query",
     }
 
     # browser_exec: prefer the leading `# …` comment as a friendly step label
@@ -520,6 +586,10 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
             return f"updating {len(todos_arg)} task(s)"
         else:
             return f"planning {len(todos_arg)} task(s)"
+
+    if tool_name in TASK_TOOLS:
+        preview = _task_tool_preview(tool_name, args)
+        return _truncate_preview(preview, max_len) if preview else None
 
     if tool_name in {"terminal", "execute_code"}:
         key = "code" if tool_name == "execute_code" else "command"
@@ -661,12 +731,29 @@ _TOOL_VERBS: dict[str, str] = {
     "clarify": "Asking",
     "memory": "Updating memory",
     "todo": "Updating tasks",
+    # The SDK harness splits the native ``todo`` tool into per-task calls, so
+    # each gets its own verb rather than borrowing "Updating tasks" -- reading
+    # the list and adding one are not the same act.
+    "TaskCreate": "Adding task",
+    "TaskUpdate": "Updating task",
+    "TaskGet": "Reading task",
+    "TaskList": "Reading the task list",
+    "update_active_task": "Updating the active task",
+    # Not a Hermes tool and deliberately absent from the identity map -- it
+    # has no native counterpart -- but the user sees it constantly on
+    # runtimes that defer tool schemas, so it still earns a verb.
+    "ToolSearch": "Loading tools",
 }
 
 # Verbs that read better without the raw argument preview appended.
 _TOOL_VERBS_NO_PREVIEW: frozenset[str] = frozenset({
     "skills_list",
     "session_search",
+    # The whole record is the argument; there is no short primary value to
+    # show, and echoing the first line of the document would mislead.
+    "update_active_task",
+    # Takes no meaningful arguments -- the returned list is the content.
+    "TaskList",
 })
 
 # Verbs that take a "for" connector before the preview (search-style phrasing):
@@ -674,6 +761,7 @@ _TOOL_VERBS_NO_PREVIEW: frozenset[str] = frozenset({
 _TOOL_VERBS_FOR_CONNECTOR: frozenset[str] = frozenset({
     "web_search",
     "search_files",
+    "ToolSearch",
 })
 
 _friendly_tool_labels: bool = True
@@ -700,17 +788,17 @@ def get_tool_verb(tool_name: str) -> str | None:
     """
     if not _friendly_tool_labels:
         return None
-    return _TOOL_VERBS.get(tool_name)
+    return _TOOL_VERBS.get(canonical_tool_name(tool_name))
 
 
 def tool_verb_connector(tool_name: str) -> str:
     """Return the connector between a verb and its preview (" for " or " ")."""
-    return " for " if tool_name in _TOOL_VERBS_FOR_CONNECTOR else " "
+    return " for " if canonical_tool_name(tool_name) in _TOOL_VERBS_FOR_CONNECTOR else " "
 
 
 def verb_drops_preview(tool_name: str) -> bool:
     """Whether the verb should render alone, without the argument preview."""
-    return tool_name in _TOOL_VERBS_NO_PREVIEW
+    return canonical_tool_name(tool_name) in _TOOL_VERBS_NO_PREVIEW
 
 
 def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) -> str | None:
@@ -736,6 +824,7 @@ def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) ->
     if not _friendly_tool_labels:
         return None
 
+    tool_name = canonical_tool_name(tool_name)
     verb = _TOOL_VERBS.get(tool_name)
     if verb:
         head = f"is {verb[0].lower()}{verb[1:]}"
@@ -1500,6 +1589,13 @@ def _get_cute_tool_message(
             if total > 0 and done > 0:
                 return _wrap(f"┊ 📋 plan      {done}/{total} task(s)  {dur}")
             return _wrap(f"┊ 📋 plan      {len(todos_arg)} task(s)  {dur}")
+    if tool_name in TASK_TOOLS:
+        if tool_name == "TaskList":
+            return _wrap(f"┊ 📋 task      list  {dur}")
+        verb = {"TaskCreate": "add", "TaskUpdate": "update", "TaskGet": "read"}[tool_name]
+        detail = _trunc(_task_tool_preview(tool_name, args) or "", 38)
+        body = f"{verb} {detail}".rstrip()
+        return _wrap(f"┊ 📋 task      {body}  {dur}")
     if tool_name == "session_search":
         return _wrap(f"┊ 🔍 recall    \"{_trunc(args.get('query', ''), 35)}\"  {dur}")
     if tool_name == "memory":

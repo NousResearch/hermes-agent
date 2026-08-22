@@ -51,6 +51,19 @@ from agent.model_metadata import (
 logger = logging.getLogger(__name__)
 
 
+def provider_owns_context_for_auto_compression(agent: Any) -> bool:
+    """Whether automatic Hermes compression must leave a provider's live context alone."""
+    if getattr(agent, "api_mode", None) == "claude_agent_sdk":
+        return True
+    return (
+        getattr(agent, "api_mode", None) == "codex_app_server"
+        and str(
+            getattr(agent, "codex_app_server_auto_compaction", "native") or "native"
+        ).lower()
+        in {"native", "off"}
+    )
+
+
 def compose_user_api_content(
     content: Any,
     ext_prefetch_cache: str,
@@ -912,20 +925,11 @@ def build_turn_context(
             lambda _tokens: False,
         )
         _preflight_deferred = _defer_preflight(_preflight_tokens)
-        # Codex app-server threads are compacted by the codex agent itself;
-        # Hermes only initiates compaction in "hermes" mode (#36801).
-        _codex_native_auto = (
-            getattr(agent, "api_mode", None) == "codex_app_server"
-            and str(
-                getattr(
-                    agent,
-                    "codex_app_server_auto_compaction",
-                    "native",
-                )
-                or "native"
-            ).lower()
-            in {"native", "off"}
-        )
+        # Persistent provider runtimes own their actual context. Hermes must not
+        # announce preflight compaction from its local mirror: the SDK lane's
+        # mirror includes full tool payloads that never reach the child, and
+        # the child CLI performs its own native compaction.
+        _provider_native_context_auto = provider_owns_context_for_auto_compression(agent)
 
         if not _preflight_deferred:
             _last = _compressor.last_prompt_tokens
@@ -961,11 +965,11 @@ def build_turn_context(
                 # summary-LLM cooldown — surface a warning (see block below).
                 _cooldown_secs = _compression_cooldown.get("remaining_seconds", 0.0)
                 _compress_block_reason = f"cooldown:{_cooldown_secs:.0f}"
-        elif _codex_native_auto:
+        elif _provider_native_context_auto:
             logger.info(
-                "Skipping Hermes preflight compression for codex app-server "
-                "(mode=%s); Hermes will not start thread compaction here.",
-                getattr(agent, "codex_app_server_auto_compaction", "native"),
+                "Skipping Hermes preflight compression for provider-native context "
+                "(api_mode=%s); Hermes will not announce or compact its mirror.",
+                getattr(agent, "api_mode", None),
             )
         else:
             _should_compress_now = _compressor.should_compress(_preflight_tokens)
@@ -1103,10 +1107,14 @@ def build_turn_context(
             if callable(_clear_warn):
                 _clear_warn()
             # Engine maintenance only when NO skip-branch fired: a failure
-            # cooldown, deferred estimate, or codex-native route must keep
+            # cooldown, deferred estimate, or provider-native route must keep
             # the engine hook un-consulted (#20316 contract — the cooldown
             # exists precisely because compression recently failed).
-            if _compression_cooldown or _preflight_deferred or _codex_native_auto:
+            if (
+                _compression_cooldown
+                or _preflight_deferred
+                or _provider_native_context_auto
+            ):
                 _engine_preflight = None
             else:
                 _engine_preflight = getattr(

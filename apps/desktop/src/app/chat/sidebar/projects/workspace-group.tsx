@@ -19,7 +19,7 @@ import { SidebarGroupRow, SidebarRowLead, SidebarRowLink, SidebarRowStack } from
 import { rankSessions } from '../order'
 
 import { PROJECT_PREVIEW_COUNT, SIDEBAR_GROUP_PAGE, useWorkspaceNodeOpen } from './model'
-import type { SidebarSessionGroup } from './workspace-groups'
+import { isBranchTargetLane, type SidebarRepoGitKind, type SidebarSessionGroup } from './workspace-groups'
 import {
   WorkspaceAddButton,
   WorkspaceContextMenu,
@@ -29,6 +29,7 @@ import {
 } from './workspace-header'
 
 interface SidebarWorkspaceGroupProps {
+  gitKind?: SidebarRepoGitKind
   group: SidebarSessionGroup
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
@@ -37,7 +38,13 @@ interface SidebarWorkspaceGroupProps {
   onRemove?: () => void
 }
 
-export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemove }: SidebarWorkspaceGroupProps) {
+export function SidebarWorkspaceGroup({
+  gitKind,
+  group,
+  renderRows,
+  onNewSession,
+  onRemove
+}: SidebarWorkspaceGroupProps) {
   const { t } = useI18n()
   const s = t.sidebar
   const isProfileGroup = group.mode === 'profile'
@@ -90,7 +97,7 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
     // Main-checkout lanes are branch-labeled views over the same repo root path.
     // Clicking "+" on `main` should open on `main`, not whatever branch the root
     // currently sits on (`test0`, etc.), so explicitly switch first.
-    if (group.isMain && group.path && group.label) {
+    if (isBranchTargetLane(group, gitKind) && group.path && group.label) {
       try {
         await switchBranchInRepo(group.path, group.label)
       } catch (err) {

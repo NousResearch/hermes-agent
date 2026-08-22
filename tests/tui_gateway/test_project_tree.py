@@ -96,6 +96,7 @@ def test_main_checkout_groups_by_recorded_branch_with_stable_lane_ids():
     # Trunk sorts ahead of the feature branch; both live in the main checkout.
     assert [g["label"] for repo in project["repos"] for g in repo["groups"]] == ["main", "feature"]
     assert all(g["isMain"] for repo in project["repos"] for g in repo["groups"])
+    assert project["repos"][0]["gitKind"] == "git"
 
 
 def test_linked_worktrees_fold_under_their_common_repo_root():
@@ -280,6 +281,46 @@ def test_persisted_repo_root_used_when_no_live_probe():
     project = next(p for p in tree["projects"] if p["id"] == "/repo")
 
     assert _lane_ids(project) == ["/repo::branch::main"]
+    assert project["repos"][0]["gitKind"] == "git"
+
+
+def test_persisted_git_evidence_promotes_a_repo_without_relabeling_path_fallback_lanes():
+    # Historical rows may disagree: one has only a cwd (path fallback), while a
+    # newer row persisted the common git root. Repo capability becomes Git, but
+    # the old path lane keeps its non-branch identity so the renderer cannot
+    # mistake its directory basename for a branch target.
+    sessions = [
+        _session("/repo"),
+        _session("/repo/src", branch="main", repo_root="/repo"),
+    ]
+
+    tree = pt.build_tree([], sessions, [], resolve=None, hydrate=True)
+    repo = tree["projects"][0]["repos"][0]
+
+    assert repo["gitKind"] == "git"
+    assert {group["id"] for group in repo["groups"]} == {
+        "/repo",
+        "/repo::branch::main",
+    }
+
+
+def test_persisted_git_evidence_promotes_existing_heuristic_lane_without_relabeling():
+    # Both rows collapse to the same kanban lane. The first creates it from a
+    # path-only heuristic; the later persisted root must upgrade that existing
+    # entry's capability without replacing its stable lane identity.
+    sessions = [
+        _session("/repo/.worktrees/t_aaaaaaaa"),
+        _session("/repo/.worktrees/t_bbbbbbbb", repo_root="/repo"),
+    ]
+
+    tree = pt.build_tree([], sessions, [], resolve=None, hydrate=True)
+    repo = tree["projects"][0]["repos"][0]
+
+    assert repo["gitKind"] == "git"
+    assert len(repo["groups"]) == 1
+    assert repo["groups"][0]["id"] == "/repo::kanban"
+    assert repo["groups"][0]["label"] == "kanban"
+    assert len(repo["groups"][0]["sessions"]) == 2
 
 
 def test_non_git_cwd_preserves_legacy_workspace_grouping():
@@ -295,9 +336,8 @@ def test_non_git_cwd_preserves_legacy_workspace_grouping():
     assert project["isAuto"] is True
     assert project["label"] == "notes"
     assert project["sessionCount"] == 1
-    # Branch-style lane id (#53329): keying this lane by the raw path used to
-    # fork a duplicate lane against the live overlay's `::branch::main` id.
-    assert _lane_ids(project) == ["/work/notes::branch::main"]
+    assert _lane_ids(project) == ["/work/notes"]
+    assert project["repos"][0]["gitKind"] == "directory"
     assert tree["scoped_session_ids"] == [legacy["id"]]
 
 
@@ -418,9 +458,36 @@ def test_discovered_repo_with_no_sessions_becomes_zero_session_project():
     fresh = next(p for p in tree["projects"] if p["id"] == "/www/fresh")
     assert fresh["isAuto"] is True
     assert fresh["sessionCount"] == 0
+    assert fresh["repos"][0]["gitKind"] == "git"
     assert fresh["repos"][0]["groups"] == []
 
 
+def test_explicit_project_with_no_sessions_seeds_its_folders_as_repos():
+    # A brand-new (or unloaded) project must still expose its declared folders as
+    # repos so the entered view renders and the desktop's optimistic overlay has a
+    # lane to place a freshly-created session into (otherwise it only shows after a
+    # full tree refresh).
+    project = _project("p_new", "New", ["/work/blank"])
+
+    tree = pt.build_tree([project], [], [], resolve=None, hydrate=True)
+
+    node = next(p for p in tree["projects"] if p["id"] == "p_new")
+    assert node["sessionCount"] == 0
+    assert [r["path"] for r in node["repos"]] == ["/work/blank"]
+    assert node["repos"][0]["groups"] == []
+
+
+def test_seeded_project_folders_report_git_capability_from_the_live_probe():
+    project = _project("p_mixed", "Mixed", ["/work/app", "/work/notes"])
+    resolve = _resolver({"/work/app": ("/work/app", "/work/app")})
+
+    tree = pt.build_tree([project], [], [], resolve, hydrate=True)
+
+    node = next(p for p in tree["projects"] if p["id"] == "p_mixed")
+    assert {repo["path"]: repo["gitKind"] for repo in node["repos"]} == {
+        "/work/app": "git",
+        "/work/notes": "directory",
+    }
 def test_seeded_folder_repo_does_not_duplicate_a_session_derived_repo():
     # When a folder already has sessions (same git root), seeding must not add a
     # second repo for the same path.
@@ -601,36 +668,26 @@ def test_colliding_repo_basenames_disambiguate_labels():
     assert labels == ["x/proj", "y/proj"]
 
 
-def test_non_git_folder_uses_branch_lane_id():
-    """#53329: _place_by_heuristic must use _branch_lane_id for non-git folders.
+def test_non_git_folder_keeps_path_lane_identity():
+    """A plain directory is not a branch target.
 
-    Before the fix, non-git folders got a lane key equal to the raw path,
-    while the desktop overlay expected ::branch::main. This caused duplicate
-    lanes (one from backend, one from overlay).
+    Its stable raw-path lane id lets the Desktop distinguish it from a Git
+    ``::branch::main`` lane and avoid attempting a meaningless branch switch
+    before creating a chat.
     """
     result = pt._place_by_heuristic("/home/user/my-project")
     assert result is not None
-    assert result["lane_key"] == pt._branch_lane_id(
-        "/home/user/my-project", pt.DEFAULT_BRANCH_LABEL
-    ), (
-        f"Expected lane_key to use _branch_lane_id scheme but got "
-        f"{result['lane_key']!r}"
-    )
-    # The label should still be the folder basename
+    assert result["lane_key"] == "/home/user/my-project"
     assert result["lane_label"] == "my-project"
-    # Must be marked as main lane
     assert result["is_main"] is True
+    assert result["git_kind"] == "directory"
 
 
-def test_non_git_folder_lane_matches_overlay_scheme():
-    """#53329: verify the lane key format matches what the overlay expects."""
+def test_non_git_folder_never_claims_a_branch_lane_id():
     result = pt._place_by_heuristic("/data/work/folder-x")
     assert result is not None
-    # Overlay expects: <path>::branch::main
-    expected = "/data/work/folder-x::branch::main"
-    assert result["lane_key"] == expected, (
-        f"Expected lane_key={expected!r} but got {result['lane_key']!r}"
-    )
+    assert result["lane_key"] == "/data/work/folder-x"
+    assert result["lane_key"] != "/data/work/folder-x::branch::main"
 
 
 def test_heuristic_lane_ids_for_kanban_and_wt_suffix_are_unchanged():

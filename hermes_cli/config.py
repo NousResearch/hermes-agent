@@ -1429,6 +1429,24 @@ def _normalize_custom_provider_entry(
             parsed = urlparse(candidate)
             if parsed.scheme and parsed.netloc:
                 base_url = candidate
+                # A scheme+host with no path is a classic silent-404 shape:
+                # transports append their own API path to base_url, so a bare
+                # domain can point the request at a nonexistent path while the
+                # server serves /v1/chat/completions. Surfaced here because
+                # the failing request reports a bare-looking endpoint and
+                # nothing else hints at the path mismatch (#89334). Kept
+                # direction-neutral: some transports strip a trailing /v1
+                # (see #37403), so the warning names both failure shapes
+                # instead of prescribing one fix.
+                if parsed.path in ("", "/") and not re.search(r"\{[^}]+\}", candidate):
+                    _warn_once_per_provider(
+                        provider_key, f"bare-base-url:{candidate}",
+                        "providers.%s: base_url '%s' has no path — transports "
+                        "append their own API path to it, and both a missing "
+                        "and a doubled '/v1' 404; verify the endpoint path "
+                        "against your provider's docs",
+                        provider_key or "?", candidate,
+                    )
                 break
             else:
                 logger.warning(

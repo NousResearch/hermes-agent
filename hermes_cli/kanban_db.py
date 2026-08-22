@@ -7416,6 +7416,19 @@ def decompose_triage_task(
                 child_ws_path = root_ws_path
             else:
                 child_ws_path = None
+            # `workspace_kind='dir'` REQUIRES an explicit path — the
+            # dispatcher refuses to spawn a worker for a dir-mode task
+            # with no path and marks it `spawn_failed`. This happens
+            # whenever the root task itself has kind='dir' with no path
+            # (common for user-created triage cards created via the
+            # dashboard "Add task" button), because the inheritance
+            # branch above then propagates None into every child.
+            # Fall back to 'scratch' rather than writing a row that is
+            # guaranteed to fail on dispatch and trip the circuit
+            # breaker after `failure_threshold` retries.
+            if child_ws_kind == "dir" and not child_ws_path:
+                child_ws_kind = "scratch"
+                child_ws_path = None
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "

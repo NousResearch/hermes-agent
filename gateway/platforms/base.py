@@ -5778,6 +5778,70 @@ class BasePlatformAdapter(ABC):
         state = store.pop(session_key, None)
         if state is None:
             return False
+        # Hand the flushed burst to the runner's FIFO so each follow-up gets
+        # its OWN turn in arrival order. The historical
+        # call below newline-merged it into the single pending slot with no
+        # time bound, so everything sent during a long turn arrived as one
+        # mashed-together turn -- the #43066 sub-bug, fixed for interrupt /
+        # steer-fallback / /queue but never for this path.
+        #
+        # The runner is reachable through the bound busy-session handler it
+        # already installed on this adapter, so no extra wiring is required.
+        # Photo/album merge semantics are preserved inside
+        # _queue_or_replace_pending_event itself.
+        #
+        # ``_queue_or_replace_pending_event`` can DECLINE silently: it returns
+        # without queueing and without raising when the source resolves to no
+        # adapter, or when the per-session pending cap is reached. Treating the
+        # call as success there would DROP the burst, where the historical
+        # merge would still have delivered it (mashed, but delivered) -- and
+        # the cap was effectively unreachable before, since the old merge
+        # collapsed every follow-up into one slot instead of one entry each.
+        # So confirm the queue actually grew, and fall back to the merge when
+        # it did not. Merging is lossy; dropping is worse.
+        _busy_handler = getattr(self, "_busy_session_handler", None)
+        _runner = getattr(_busy_handler, "__self__", None)
+        _enqueue = getattr(_runner, "_queue_or_replace_pending_event", None)
+        _resolve = getattr(_runner, "_adapter_for_source", None)
+        _depth = getattr(_runner, "_queue_depth", None)
+        # A media occupant needs the caption-merge semantics that
+        # ``_queue_or_replace_pending_event`` applies internally, and that
+        # merge succeeds WITHOUT growing the queue -- which the depth check
+        # below would misread as a decline and merge a second time. Keep the
+        # historical path for that case; it is what the FIFO would do anyway.
+        _slot = self._pending_messages.get(session_key)
+        _slot_is_media = _slot is not None and (
+            getattr(_slot, "message_type", None) == MessageType.PHOTO
+            or bool(getattr(_slot, "media_urls", None))
+        )
+        _target = None
+        if callable(_resolve) and not _slot_is_media:
+            try:
+                _target = _resolve(getattr(state.event, "source", None))
+            except Exception:
+                _target = None
+        # Delegate only when the runner routes this source back to THIS
+        # adapter: another adapter owns a different pending slot, and the
+        # drain that delivers this burst runs on ours. Declining to delegate
+        # costs the fix on exotic topologies; delegating blindly would risk
+        # the burst landing where nothing drains it.
+        if callable(_enqueue) and callable(_depth) and _target is self:
+            try:
+                _before = _depth(session_key, adapter=_target)
+                _enqueue(session_key, state.event)
+                if _depth(session_key, adapter=_target) > _before:
+                    return True
+                logger.warning(
+                    "[%s] FIFO declined the debounced burst for %s "
+                    "(pending cap reached?); falling back to pending-slot merge",
+                    self.name, session_key,
+                )
+            except Exception:
+                logger.warning(
+                    "[%s] FIFO enqueue of debounced burst failed for %s; "
+                    "falling back to pending-slot merge",
+                    self.name, session_key, exc_info=True,
+                )
         merge_pending_message_event(
             self._pending_messages,
             session_key,

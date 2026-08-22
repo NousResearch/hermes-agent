@@ -13,7 +13,6 @@ watchdog kills the parent turn at ~1800s.
 import json
 import sys
 import threading
-import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -229,34 +228,40 @@ class TestCronjobRunExecutesImmediately:
         finally:
             set_activity_callback(None)
 
-    def test_heartbeat_stops_at_ceiling_but_job_completes(self):
-        """Past _CRON_RUN_HEARTBEAT_CEILING the heartbeat stops (so the
-        gateway watchdog regains authority over a wedged run) while the job
-        itself keeps running to completion."""
+    def test_heartbeat_continues_while_long_job_is_running(self):
+        """Elapsed time alone must not drop watchdog protection for an active job."""
         touches = []
-        first_beat = threading.Event()
+        second_beat = threading.Event()
+        monotonic_calls = 0
 
         def record(desc):
             touches.append(desc)
-            first_beat.set()
+            if len(touches) >= 2:
+                second_beat.set()
+
+        def long_elapsed():
+            nonlocal monotonic_calls
+            monotonic_calls += 1
+            if monotonic_calls == 1:
+                return 0.0
+            return 6 * 3600.0 + monotonic_calls
 
         set_activity_callback(record)
         try:
             def slow_run(job, **kw):
-                # Ceiling=0 → the very first wake stops the loop without
-                # touching. Give it a couple of cycles to prove silence.
-                time.sleep(0.2)
+                assert second_beat.wait(timeout=5.0), \
+                    "heartbeat stopped while the cron job was still running"
                 return True
 
             with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
                  patch("tools.cronjob_tools._CRON_RUN_HEARTBEAT_INTERVAL", 0.05), \
-                 patch("tools.cronjob_tools._CRON_RUN_HEARTBEAT_CEILING", 0.0), \
+                 patch("tools.cronjob_tools.time.monotonic", side_effect=long_elapsed), \
                  patch("cron.scheduler.run_one_job", side_effect=slow_run), \
                  patch("tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None}):
                 res = _execute_job_now(dict(_JOB))
             assert res["success"] is True, res
-            assert not first_beat.is_set(), touches   # heartbeat never fired
+            assert len(touches) >= 2, touches
         finally:
             set_activity_callback(None)
 

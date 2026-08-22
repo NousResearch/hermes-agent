@@ -188,6 +188,10 @@ def mock_session_db(tmp_path, populated_sessions_dir):
         def __init__(self):
             self._db_path = db_path
 
+        def close(self):
+            """Match SessionDB's lifecycle interface for MCP request tests."""
+            return None
+
         def get_messages(self, session_id):
             conn = sqlite3.connect(str(self._db_path))
             conn.row_factory = sqlite3.Row
@@ -628,6 +632,45 @@ class TestE2EConversationGet:
 
 
 class TestE2EMessagesRead:
+    def test_transcript_tools_close_every_request_session_db(
+        self, populated_sessions_dir, monkeypatch, _event_loop
+    ):
+        """Repeated MCP reads must not accumulate state.db file descriptors."""
+        import mcp_serve
+
+        created = []
+
+        class TrackingDB:
+            def __init__(self):
+                self.closed = False
+
+            def get_messages(self, _session_id):
+                return [
+                    {"id": 1, "role": "user", "content": "hello", "timestamp": "now"},
+                ]
+
+            def close(self):
+                self.closed = True
+
+        def new_db():
+            db = TrackingDB()
+            created.append(db)
+            return db
+
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: populated_sessions_dir)
+        monkeypatch.setattr(mcp_serve, "_get_session_db", new_db)
+        monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+        monkeypatch.setattr(mcp_serve, "MCPServer", _FakeMCPServer)
+        server = mcp_serve.create_mcp_server(event_bridge=mcp_serve.EventBridge())
+        session_key = "agent:main:telegram:dm:123456"
+
+        for _ in range(25):
+            _run_tool(server, "messages_read", {"session_key": session_key})
+            _run_tool(server, "attachments_fetch", {"session_key": session_key, "message_id": "1"})
+
+        assert len(created) >= 50
+        assert all(db.closed for db in created)
+
     def test_read_messages(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
         result = _run_tool(server, "messages_read",
@@ -1085,6 +1128,32 @@ class TestEdgeCases:
         b._running = True
         b.stop()
         assert not b._running
+
+    def test_bridge_stop_closes_its_long_lived_session_db(self, monkeypatch, tmp_path):
+        """The polling connection belongs to EventBridge and must be reaped."""
+        import mcp_serve
+
+        opened = threading.Event()
+        closed = threading.Event()
+
+        class TrackingDB:
+            def get_messages(self, _session_id):
+                return []
+
+            def close(self):
+                closed.set()
+
+        def new_db():
+            opened.set()
+            return TrackingDB()
+
+        monkeypatch.setattr(mcp_serve, "_get_session_db", new_db)
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: tmp_path / "sessions")
+        bridge = mcp_serve.EventBridge()
+        bridge.start()
+        assert opened.wait(timeout=1)
+        bridge.stop()
+        assert closed.wait(timeout=1)
 
     def test_truncation(self):
         assert len(("x" * 5000)[:2000]) == 2000

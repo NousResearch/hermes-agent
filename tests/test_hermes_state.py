@@ -3105,10 +3105,35 @@ class TestFTSExternalContentMigration:
         finally:
             db.close()
 
+    def test_demote_resets_writable_schema_on_delete_error(self, tmp_path):
+        """If the sqlite_master DELETE inside writable_schema=ON raises,
+        the finally block must reset the switch on the long-lived write
+        connection before the exception propagates."""
+        db_path = tmp_path / "v22.db"
+        self._build_v22_db(db_path)
 
+        db = SessionDB(db_path=db_path)
+        try:
+            conn = db._conn
+            orig_execute = conn.execute
 
+            def boom(sql, parameters=()):
+                if sql.strip().startswith("DELETE FROM sqlite_master"):
+                    raise sqlite3.OperationalError("simulated delete failure")
+                return orig_execute(sql, parameters)
 
+            with mock.patch.object(conn, "execute", side_effect=boom):
+                with pytest.raises(sqlite3.OperationalError, match="simulated delete failure"):
+                    db._demote_legacy_fts_to_trash()
 
+            # writable_schema is a connection-level switch that does NOT
+            # roll back with the transaction; the finally must reset it.
+            value = conn.execute("PRAGMA writable_schema").fetchone()[0]
+            assert value in (0, None, False), f"writable_schema should be off after failed demote, got {value!r}"
+            # The failed DELETE must not leave the long-lived write connection unusable.
+            assert conn.execute("SELECT 1").fetchone()[0] == 1
+        finally:
+            db.close()
 
     def _simulate_pre_fix_demote_crash_window(self, db):
         """Replay the pre-fix demote crash window: trash + empty v23 schema,

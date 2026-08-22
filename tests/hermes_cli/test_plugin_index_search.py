@@ -380,7 +380,12 @@ class TestInstallResolution:
         assert "hermes-media-studio" in out
         assert "hermes-telegram-business" in out
 
-    def test_install_unknown_name_exits(self, hermes_home, monkeypatch, capsys):
+    def test_install_unknown_name_seed_source_points_at_owner_repo(
+        self, hermes_home, monkeypatch, capsys
+    ):
+        # source="seed" means the community index was unreachable (unpublished
+        # / offline), so the message must not claim "not found in the index"
+        # and must steer the user to owner/repo instead (#87565).
         from hermes_cli import plugins_cmd
 
         monkeypatch.setattr(
@@ -389,7 +394,26 @@ class TestInstallResolution:
         with pytest.raises(SystemExit) as exc:
             plugins_cmd.cmd_install("totally-unknown", enable=False)
         assert exc.value.code == 1
-        assert "not found" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "owner/repo" in out
+        assert "couldn't be fetched" in out
+
+    def test_install_unknown_name_remote_source_says_not_found(
+        self, hermes_home, monkeypatch, capsys
+    ):
+        # With a populated remote/cache index, an unknown name genuinely was
+        # not found in the index — keep the direct message.
+        from hermes_cli import plugins_cmd
+
+        monkeypatch.setattr(
+            plugin_index, "load_index", lambda **kw: (_parse_entries(SAMPLE), "remote")
+        )
+        with pytest.raises(SystemExit) as exc:
+            plugins_cmd.cmd_install("totally-unknown", enable=False)
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "not found in the" in out
+        assert "community index (remote)" in out
 
     def test_owner_repo_passthrough_skips_index(self, hermes_home, monkeypatch):
         """Explicit owner/repo installs never consult the index."""

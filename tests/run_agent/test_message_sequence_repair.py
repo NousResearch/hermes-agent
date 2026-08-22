@@ -503,6 +503,44 @@ def test_repair_drops_stale_empty_tool_calls_on_merged_assistant():
     assert "second" in assistants[0]["content"]
 
 
+def test_repair_keeps_tool_result_when_tool_calls_are_sdk_objects():
+    """repair_message_sequence must not drop a valid tool result just because
+    the assistant's ``tool_calls`` entries are unserialized SDK objects
+    (e.g. ``ChatCompletionMessageToolCall``) instead of plain dicts.
+
+    Host-fed / pre-serialization histories (gateway multi-queue replay,
+    session resume) can carry SDK tool_call objects into this pass. The
+    dict-only ``tc.get(key)`` lookup previously left ``known_tool_ids``
+    empty for such messages, so the id-matching pass below misclassified
+    the legitimate tool result as an orphan and silently deleted it —
+    corrupting the persisted history and leaving the assistant's
+    tool_calls unanswered (itself a strict-provider HTTP 400 trigger)."""
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    class SDKToolCall:
+        def __init__(self, call_id):
+            self.id = call_id
+            self.call_id = None
+            self.function = type("F", (), {"name": "read_file", "arguments": "{}"})()
+
+    messages = [
+        {"role": "user", "content": "read the file"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [SDKToolCall("call_1")],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "file contents"},
+    ]
+    agent = type("Agent", (), {})()
+    repair_message_sequence(agent, messages)
+
+    roles = [m.get("role") for m in messages]
+    assert "tool" in roles, "legitimate tool result was dropped as a false orphan"
+    tool_msg = next(m for m in messages if m.get("role") == "tool")
+    assert tool_msg["content"] == "file contents"
+
+
 
 
 

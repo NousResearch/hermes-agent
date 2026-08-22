@@ -716,10 +716,16 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
         if role == "assistant":
             known_tool_ids = set()
             for tc in (msg.get("tool_calls") or []):
-                if not isinstance(tc, dict):
-                    continue
+                # Mirror ``_get_tool_call_id_static``'s dict-or-object
+                # tolerance: SDK tool_call objects (e.g. an unserialized
+                # ``ChatCompletionMessageToolCall``) reach this pass on
+                # host-fed / pre-serialization histories just as often as
+                # plain dicts. Skipping non-dict entries left
+                # ``known_tool_ids`` empty for such messages, so the
+                # following legitimate ``tool`` result was misclassified
+                # as orphaned and silently dropped.
                 for key in ("id", "call_id"):
-                    tc_id = tc.get(key)
+                    tc_id = tc.get(key) if isinstance(tc, dict) else getattr(tc, key, None)
                     if tc_id:
                         known_tool_ids.add(tc_id)
             filtered.append(msg)

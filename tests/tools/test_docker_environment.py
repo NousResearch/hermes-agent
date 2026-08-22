@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from io import StringIO
@@ -600,12 +601,13 @@ def test_labels_attribute_populated_after_init(monkeypatch):
 
     env = _make_dummy_env(task_id="abc")
 
-    assert env._labels == {
+    assert {
         "hermes-agent": "1",
         "hermes-task-id": "abc",
         "hermes-profile": "default",
         "hermes-egress": "off",
-    }
+    }.items() <= env._labels.items()
+    assert len(env._labels["hermes-mounts"]) == 24
 
 
 # ── Cross-process container reuse (issue #20561) ──────────────────
@@ -625,6 +627,7 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
     Returns the captured call list so the test can verify which docker
     commands actually ran.
     """
+    docker_env._cgroup_limits_ok = True
     calls = []
 
     def _run(cmd, **kwargs):
@@ -712,6 +715,7 @@ def test_egress_enabled_does_not_reuse_pre_egress_container(monkeypatch):
                 # Simulate an old pre-egress container: without the egress label
                 # filter it would match; with the filter Docker returns no match.
                 assert any(str(part).startswith("label=hermes-egress=") for part in cmd)
+                assert any(str(part).startswith("label=hermes-mounts=") for part in cmd)
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             if sub == "run":
                 return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
@@ -1313,6 +1317,105 @@ def test_credential_mount_skipped_when_source_missing(monkeypatch, tmp_path, cap
         "source not found" in rec.getMessage()
         for rec in caplog.records
     )
+
+
+def test_auto_mounts_use_daemon_visible_source_from_outer_container(monkeypatch, tmp_path):
+    """Docker-socket sandboxes must bind the host path, not ``/opt/data``.
+
+    The files exist at the paths Hermes sees inside its outer container, while
+    the inner sandbox is created by the host daemon. Its ``-v`` sources must
+    therefore use the source from the outer container's own bind mount.
+    """
+    container_data = tmp_path / "container-data"
+    safe_skills_dir = tmp_path / "hermes-skills-safe-abc123"
+    cache_dir = container_data / "cache" / "documents"
+    credential = container_data / "google_token.json"
+    safe_skills_dir.mkdir()
+    cache_dir.mkdir(parents=True)
+    credential.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_env,
+        "_get_current_container_bind_mounts",
+        lambda _docker_exe: [(str(container_data), "/host/hermes-data")],
+    )
+    monkeypatch.setattr(
+        "tools.environments.base.get_sandbox_dir",
+        lambda: container_data / "sandboxes",
+    )
+    calls = _mock_subprocess_run(monkeypatch)
+    monkeypatch.setattr(
+        "tools.credential_files.get_credential_file_mounts",
+        lambda: [{"host_path": str(credential), "container_path": "/root/.hermes/google_token.json"}],
+    )
+    monkeypatch.setattr(
+        "tools.credential_files.get_skills_directory_mount",
+        lambda: [{"host_path": str(safe_skills_dir), "container_path": "/root/.hermes/skills"}],
+    )
+    monkeypatch.setattr(
+        "tools.credential_files.get_cache_directory_mounts",
+        lambda: [{"host_path": str(cache_dir), "container_path": "/root/.hermes/cache/documents"}],
+    )
+
+    _make_dummy_env(persistent_filesystem=True)
+
+    run_args = _run_args_from_calls(calls)
+    assert "/host/hermes-data/google_token.json:/root/.hermes/google_token.json:ro" in run_args
+    assert next(arg for arg in run_args if arg.endswith(":/root/.hermes/skills:ro")).startswith(
+        "/host/hermes-data/sandboxes/docker/safe-skills-"
+    )
+    assert "/host/hermes-data/cache/documents:/root/.hermes/cache/documents:ro" in run_args
+    assert "/host/hermes-data/sandboxes/docker/test-task/home:/root" in run_args
+    assert "/host/hermes-data/sandboxes/docker/test-task/workspace:/workspace" in run_args
+    assert not any(str(container_data) in arg for arg in run_args)
+
+
+def test_daemon_visible_bind_source_uses_the_most_specific_matching_mount():
+    mounts = [
+        ("/opt/data", "/host/hermes-data"),
+        ("/opt/data/profiles/work", "/host/work-profile"),
+    ]
+
+    assert (
+        docker_env._daemon_visible_bind_source("/opt/data/profiles/work/cache/images/a.png", mounts)
+        == "/host/work-profile/cache/images/a.png"
+    )
+    assert (
+        docker_env._daemon_visible_bind_source("/opt/data-old/skills", mounts)
+        == "/opt/data-old/skills"
+    )
+    assert (
+        docker_env._daemon_visible_volume_spec(
+            "/opt/data/proxy/ca.crt:/etc/ssl/certs/hermes-ca.crt:ro", mounts,
+        )
+        == "/host/hermes-data/proxy/ca.crt:/etc/ssl/certs/hermes-ca.crt:ro"
+    )
+
+
+def test_current_container_bind_mounts_use_docker_inspection(monkeypatch):
+    container_id = "0123456789ab"
+    monkeypatch.setattr(docker_env, "_current_container_ids", lambda: [container_id])
+
+    def _run(cmd, **kwargs):
+        assert cmd == ["/usr/bin/docker", "container", "inspect", container_id]
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps([{
+                "Mounts": [
+                    {"Type": "volume", "Source": "ignored", "Destination": "/var/lib/data"},
+                    {"Type": "bind", "Source": "/home/user/.hermes", "Destination": "/opt/data"},
+                ],
+            }]),
+            stderr="",
+        )
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    assert docker_env._get_current_container_bind_mounts("/usr/bin/docker") == [
+        ("/opt/data", "/home/user/.hermes"),
+    ]
 
 
 # ── s6-overlay /init image handling (issue #34628) ────────────────

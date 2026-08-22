@@ -43,6 +43,7 @@ _DOCKER_SEARCH_PATHS = [
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EGRESS_LABEL_KEY = "hermes-egress"
+_MOUNT_LABEL_KEY = "hermes-mounts"
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -319,6 +320,118 @@ def find_docker() -> Optional[str]:
     return None
 
 
+_CONTAINER_ID_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{12,64}(?![0-9a-f])", re.IGNORECASE)
+
+
+def _current_container_ids() -> list[str]:
+    """Return Docker IDs that can identify this process's container.
+
+    Docker's default hostname is the short container ID. A cgroup path is a
+    useful fallback for runtimes that do not expose that default hostname.
+    Deliberately ignore arbitrary hostnames: inspecting a same-named but
+    unrelated container could turn its bind mounts into sandbox sources.
+    """
+    candidates: list[str] = []
+
+    hostname = os.environ.get("HOSTNAME", "").strip()
+    if _CONTAINER_ID_RE.fullmatch(hostname):
+        candidates.append(hostname)
+
+    for path in ("/proc/self/cgroup", "/proc/1/cpuset"):
+        try:
+            contents = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        candidates.extend(match.group(0) for match in _CONTAINER_ID_RE.finditer(contents))
+
+    return list(dict.fromkeys(candidates))
+
+
+def _get_current_container_bind_mounts(docker_exe: str) -> list[tuple[str, str]]:
+    """Return ``(container_destination, daemon_source)`` bind mounts for self.
+
+    When Hermes runs in a container but talks to the host Docker socket, the
+    daemon resolves ``-v`` sources on the host, not inside Hermes. Inspecting
+    the current container gives the one path translation the daemon already
+    knows to be correct. On a normal host install there is no container ID to
+    inspect, so this is a no-op and existing Docker behaviour is unchanged.
+    """
+    for container_id in _current_container_ids():
+        try:
+            result = subprocess.run(
+                [docker_exe, "container", "inspect", container_id],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.debug("Docker: could not inspect current container mounts: %s", exc)
+            continue
+
+        if result.returncode != 0:
+            continue
+        try:
+            inspected = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError:
+            logger.debug("Docker: current container mount inspection returned invalid JSON")
+            continue
+
+        if not isinstance(inspected, list):
+            continue
+        for container in inspected:
+            if not isinstance(container, dict):
+                continue
+            mounts = container.get("Mounts")
+            if not isinstance(mounts, list):
+                continue
+            bind_mounts: list[tuple[str, str]] = []
+            for mount in mounts:
+                if not isinstance(mount, dict) or mount.get("Type") != "bind":
+                    continue
+                destination = mount.get("Destination")
+                source = mount.get("Source")
+                if not isinstance(destination, str) or not isinstance(source, str):
+                    continue
+                if not destination.startswith("/") or not source.startswith("/"):
+                    continue
+                bind_mounts.append((destination.rstrip("/") or "/", source.rstrip("/") or "/"))
+            if bind_mounts:
+                return sorted(bind_mounts, key=lambda mount: len(mount[0]), reverse=True)
+
+    return []
+
+
+def _daemon_visible_bind_source(
+    source_path: str,
+    current_bind_mounts: list[tuple[str, str]],
+) -> str:
+    """Map an in-container path to the Docker daemon's source path when known."""
+    source = os.path.normpath(source_path)
+    for container_destination, daemon_source in sorted(
+        current_bind_mounts, key=lambda mount: len(mount[0]), reverse=True,
+    ):
+        if source == container_destination:
+            return daemon_source
+        prefix = container_destination.rstrip("/") + "/"
+        if source.startswith(prefix):
+            return daemon_source.rstrip("/") + source[len(container_destination):]
+    return source_path
+
+
+def _daemon_visible_volume_spec(
+    volume_spec: str,
+    current_bind_mounts: list[tuple[str, str]],
+) -> str:
+    """Rewrite the source of a POSIX ``-v`` spec when Docker sees a host path."""
+    source, separator, remainder = volume_spec.partition(":")
+    if not separator or not source.startswith("/"):
+        return volume_spec
+    return f"{_daemon_visible_bind_source(source, current_bind_mounts)}:{remainder}"
+
+
 # Security flags applied to every container.
 # The container itself is the security boundary (isolated from host).
 # We drop all capabilities then add back the minimum needed:
@@ -569,6 +682,18 @@ def _egress_reuse_fingerprint(
             "env_overrides": env_overrides,
             "host_args": host_args,
         },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def _mount_reuse_fingerprint(
+    writable_args: list[str], volume_args: list[str],
+) -> str:
+    """Fingerprint immutable mount arguments for safe cross-process reuse."""
+    payload = json.dumps(
+        {"writable_args": writable_args, "volume_args": volume_args},
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -915,6 +1040,10 @@ class DockerEnvironment(BaseEnvironment):
 
         # Fail fast if Docker is not available.
         _ensure_docker_available()
+        # Resolve once before assembling automatic mounts as those mounts may
+        # need to inspect this outer container through the same Docker client.
+        self._docker_exe = find_docker() or "docker"
+        self._current_bind_mounts = _get_current_container_bind_mounts(self._docker_exe)
 
         # Build resource limit args (gated by cgroup availability probe so
         # they degrade gracefully on hosts without controller delegation,
@@ -949,6 +1078,8 @@ class DockerEnvironment(BaseEnvironment):
         # mode uses tmpfs (ephemeral, fast, gone on cleanup).
         from tools.environments.base import get_sandbox_dir
 
+        sandbox_root = get_sandbox_dir()
+
         # User-configured volume mounts (from config.yaml docker_volumes)
         volume_args = []
         workspace_explicitly_mounted = False
@@ -980,17 +1111,17 @@ class DockerEnvironment(BaseEnvironment):
         self._home_dir: Optional[str] = None
         writable_args = []
         if self._persistent:
-            sandbox = get_sandbox_dir() / "docker" / task_id
+            sandbox = sandbox_root / "docker" / task_id
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
             writable_args.extend([
-                "-v", f"{self._home_dir}:/root",
+                "-v", f"{_daemon_visible_bind_source(self._home_dir, self._current_bind_mounts)}:/root",
             ])
             if not bind_host_cwd and not workspace_explicitly_mounted:
                 self._workspace_dir = str(sandbox / "workspace")
                 os.makedirs(self._workspace_dir, exist_ok=True)
                 writable_args.extend([
-                    "-v", f"{self._workspace_dir}:/workspace",
+                    "-v", f"{_daemon_visible_bind_source(self._workspace_dir, self._current_bind_mounts)}:/workspace",
                 ])
         else:
             if not bind_host_cwd and not workspace_explicitly_mounted:
@@ -1003,8 +1134,11 @@ class DockerEnvironment(BaseEnvironment):
             ])
 
         if bind_host_cwd:
-            logger.info("Mounting configured host cwd to /workspace: %s", host_cwd_abs)
-            volume_args = ["-v", f"{host_cwd_abs}:/workspace", *volume_args]
+            daemon_source = _daemon_visible_bind_source(
+                host_cwd_abs, self._current_bind_mounts,
+            )
+            logger.info("Mounting configured host cwd to /workspace: %s", daemon_source)
+            volume_args = ["-v", f"{daemon_source}:/workspace", *volume_args]
         elif workspace_explicitly_mounted:
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
 
@@ -1034,13 +1168,16 @@ class DockerEnvironment(BaseEnvironment):
                         "Docker: skipping credential mount — source not found: %s", src,
                     )
                     continue
+                daemon_source = _daemon_visible_bind_source(
+                    mount_entry["host_path"], self._current_bind_mounts,
+                )
                 volume_args.extend([
                     "-v",
-                    f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro",
+                    f"{daemon_source}:{mount_entry['container_path']}:ro",
                 ])
                 logger.info(
                     "Docker: mounting credential %s -> %s",
-                    mount_entry["host_path"],
+                    daemon_source,
                     mount_entry["container_path"],
                 )
 
@@ -1054,13 +1191,32 @@ class DockerEnvironment(BaseEnvironment):
                         src,
                     )
                     continue
+                daemon_source = _daemon_visible_bind_source(str(src), self._current_bind_mounts)
+                skills_fingerprint = "\0".join(
+                    f"{skill_path.relative_to(src)}:{skill_path.stat().st_mtime_ns}:{skill_path.stat().st_size}"
+                    for skill_path in sorted(src.rglob("*")) if skill_path.is_file()
+                )
+                staged_path = sandbox_root / "docker" / f"safe-skills-{hashlib.sha256(skills_fingerprint.encode()).hexdigest()}"
+                staged_daemon_source = _daemon_visible_bind_source(
+                    str(staged_path), self._current_bind_mounts,
+                )
+                if daemon_source == str(src) and staged_daemon_source != str(staged_path):
+                    # credential_files already returned a symlink-safe source.
+                    try:
+                        if not staged_path.is_dir():
+                            staged_path.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copytree(src, staged_path)
+                    except OSError as exc:
+                        logger.warning("Docker: could not stage skills for host Docker socket: %s", exc)
+                    else:
+                        daemon_source = staged_daemon_source
                 volume_args.extend([
                     "-v",
-                    f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro",
+                    f"{daemon_source}:{skills_mount['container_path']}:ro",
                 ])
                 logger.info(
                     "Docker: mounting skills dir %s -> %s",
-                    skills_mount["host_path"],
+                    daemon_source,
                     skills_mount["container_path"],
                 )
 
@@ -1076,13 +1232,16 @@ class DockerEnvironment(BaseEnvironment):
                         src,
                     )
                     continue
+                daemon_source = _daemon_visible_bind_source(
+                    cache_mount["host_path"], self._current_bind_mounts,
+                )
                 volume_args.extend([
                     "-v",
-                    f"{cache_mount['host_path']}:{cache_mount['container_path']}:ro",
+                    f"{daemon_source}:{cache_mount['container_path']}:ro",
                 ])
                 logger.info(
                     "Docker: mounting cache dir %s -> %s",
-                    cache_mount["host_path"],
+                    daemon_source,
                     cache_mount["container_path"],
                 )
         except Exception as e:
@@ -1095,6 +1254,12 @@ class DockerEnvironment(BaseEnvironment):
         egress_volume_args, egress_env_overrides, egress_host_args = (
             _egress_proxy_args_for_docker()
         )
+        egress_volume_args = [
+            _daemon_visible_volume_spec(value, self._current_bind_mounts)
+            if index > 0 and egress_volume_args[index - 1] in {"-v", "--volume"}
+            else value
+            for index, value in enumerate(egress_volume_args)
+        ]
         egress_label = _egress_reuse_fingerprint(
             egress_volume_args, egress_env_overrides, egress_host_args,
         )
@@ -1297,10 +1462,6 @@ class DockerEnvironment(BaseEnvironment):
                 # Fall back to the full cap set — without --user, an image's
                 # init may still need s6-setuidgid/gosu/su to drop privileges.
 
-        # Resolve the docker executable once so it works even when
-        # /usr/local/bin is not in PATH (common on macOS gateway/service).
-        self._docker_exe = find_docker() or "docker"
-
         # s6-overlay images (e.g. hermes-agent:latest) already use /init as PID 1
         # and exec /run/s6/basedir/bin/init during startup. For those images we
         # must (a) skip Docker's --init (two competing PID-1 inits) and (b) mount
@@ -1364,17 +1525,20 @@ class DockerEnvironment(BaseEnvironment):
         # Labels make hermes-created containers identifiable to:
         #   * the orphan reaper (`hermes-agent=1` for the global sweep filter)
         #   * future cross-process reuse (`hermes-task-id`, `hermes-profile`)
+        #   * immutable mount configuration (`hermes-mounts`)
         #   * operators running `docker ps --filter label=hermes-agent=1`
         # Values are limited to the safe character set defined by
         # _sanitize_label_value(); the active Hermes profile is captured at
         # container-start time and never changes for the container's lifetime.
         profile_name = _sanitize_label_value(_get_active_profile_name())
         task_label = _sanitize_label_value(task_id)
+        mount_label = _mount_reuse_fingerprint(writable_args, volume_args)
         label_args = [
             "--label", "hermes-agent=1",
             "--label", f"hermes-task-id={task_label}",
             "--label", f"hermes-profile={profile_name}",
             "--label", f"{_EGRESS_LABEL_KEY}={egress_label}",
+            "--label", f"{_MOUNT_LABEL_KEY}={mount_label}",
         ]
         # Save args for container recreation on "No such container" recovery.
         self._image = image
@@ -1387,6 +1551,7 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
             _EGRESS_LABEL_KEY: egress_label,
+            _MOUNT_LABEL_KEY: mount_label,
         }
 
         # Cross-process container reuse (issue #20561 — docs claim "ONE long-lived
@@ -1396,14 +1561,14 @@ class DockerEnvironment(BaseEnvironment):
         # restores the documented contract; opt out via
         # ``terminal.docker_persist_across_processes: false``.
         #
-        # Reuse matches on labels only.  The egress posture gets its own label
-        # because env vars, CA mounts, and host mappings are immutable after
-        # container creation — reusing a pre-egress or pre-rotation container
-        # would silently bypass the credential firewall.
+        # Reuse matches on labels only. Egress posture and mount sources get
+        # their own labels because env vars, CA mounts, and bind mounts are
+        # immutable after container creation. Reusing an old container could
+        # otherwise bypass the credential firewall or retain stale mount paths.
         reused = False
         if persist_across_processes:
             existing = self._find_reusable_container(
-                task_label, profile_name, egress_label,
+                task_label, profile_name, egress_label, mount_label,
             )
             if existing is not None:
                 container_id, state = existing
@@ -1663,7 +1828,10 @@ class DockerEnvironment(BaseEnvironment):
         task_label = self._labels.get("hermes-task-id", "")
         profile_label = self._labels.get("hermes-profile", "")
         existing = self._find_reusable_container(
-            task_label, profile_label, self._labels.get(_EGRESS_LABEL_KEY, "off"),
+            task_label,
+            profile_label,
+            self._labels.get(_EGRESS_LABEL_KEY, "off"),
+            self._labels.get(_MOUNT_LABEL_KEY, ""),
         )
         if existing is not None:
             cid, state = existing
@@ -1828,6 +1996,7 @@ class DockerEnvironment(BaseEnvironment):
         task_label: str,
         profile_label: str,
         egress_label: str,
+        mount_label: str,
     ) -> Optional[tuple[str, str]]:
         """Look for an existing container labeled for this (task, profile).
 
@@ -1846,6 +2015,7 @@ class DockerEnvironment(BaseEnvironment):
                 "--filter", "label=hermes-agent=1",
                 "--filter", f"label=hermes-task-id={task_label}",
                 "--filter", f"label=hermes-profile={profile_label}",
+                "--filter", f"label={_MOUNT_LABEL_KEY}={mount_label}",
             ]
             if egress_label != "off":
                 filters.extend(["--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"])

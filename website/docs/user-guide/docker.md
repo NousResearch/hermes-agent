@@ -555,9 +555,11 @@ docker compose up -d
 Set `HERMES_SKIP_CONFIG_MIGRATION=1` only if you need to inspect or migrate the
 persisted config manually before letting the new image rewrite it.
 
-## Skills and credential files
+## Skills, caches, and credential files
 
-When using Docker as the execution environment (not the methods above, but when the agent runs commands inside a Docker sandbox — see [Configuration → Docker Backend](./configuration.md#docker-backend)), Hermes reuses a single long-lived container for all tool calls and automatically bind-mounts the skills directory (`~/.hermes/skills/`) and any credential files declared by skills into that container as read-only volumes. Skill scripts, templates, and references are available inside the sandbox without manual configuration, and because the container persists for the life of the Hermes process, any dependencies you install or files you write stay around for the next tool call.
+When using Docker as the execution environment (not the methods above, but when the agent runs commands inside a Docker sandbox — see [Configuration → Docker Backend](./configuration.md#docker-backend)), Hermes reuses a single long-lived container for all tool calls and automatically bind-mounts the skills directory (`~/.hermes/skills/`), cache directories, and credential files declared by skills into that container as read-only volumes.
+
+This also works when Hermes itself runs in Docker with the host Docker socket mounted: Hermes inspects its own data-volume bind mount and gives the sandbox the daemon-visible host source. Skill scripts, templates, and references are available inside the sandbox without manual configuration, and because the container persists for the life of the Hermes process, any dependencies you install or files you write stay around for the next tool call.
 
 The same syncing happens for SSH and Modal backends — skills and credential files are uploaded via rsync or the Modal mount API before each command.
 

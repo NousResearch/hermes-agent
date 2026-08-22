@@ -7119,7 +7119,25 @@ class AIAgent:
             "image/jpeg": ".jpg",
             "image/jpg": ".jpg",
         }.get(mime, ".jpg")
-        tmp = tempfile.NamedTemporaryFile(prefix="anthropic_image_", suffix=suffix, delete=False)
+        # Materialize into the agent's own media cache rather than the system
+        # temp dir. image_source._permitted_host_read_target() confines host
+        # reads to _media_cache_roots() under a non-local terminal backend, so
+        # a /tmp path is refused on the host and then looked for inside the
+        # sandbox, where it was never written — every data-URL image fails with
+        # "not reachable inside the sandbox". Falls back to the previous
+        # behaviour if the cache dir cannot be created.
+        _vision_dir = None
+        try:
+            from hermes_constants import get_hermes_home
+
+            _cache = get_hermes_home() / "cache" / "vision"
+            _cache.mkdir(parents=True, exist_ok=True)
+            _vision_dir = str(_cache)
+        except Exception:  # noqa: BLE001 — unwritable cache: keep the old path
+            _vision_dir = None
+        tmp = tempfile.NamedTemporaryFile(
+            prefix="anthropic_image_", suffix=suffix, delete=False, dir=_vision_dir
+        )
         try:
             with tmp:
                 tmp.write(base64.b64decode(data))

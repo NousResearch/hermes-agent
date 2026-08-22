@@ -10169,6 +10169,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return text
         return (enriched_text or text).strip()
 
+    def _should_auto_queue_busy_followup(self, event: MessageEvent) -> bool:
+        """Return True when a busy follow-up should wait for the next turn.
+
+        Telegram is the platform where users most often send multi-part
+        instructions as separate text bubbles or voice notes. Treating those
+        ordinary follow-ups as interrupts aborts long tool/subagent work and
+        makes voice users especially stuck because they cannot prefix
+        ``/queue``. Commands still use the explicit command paths; ``/stop``
+        remains the cancellation mechanism. Multiplexed gateways preserve
+        their configured per-profile busy policies.
+        """
+        return (
+            getattr(event, "source", None) is not None
+            and getattr(event.source, "platform", None) == Platform.TELEGRAM
+            and not getattr(event, "internal", False)
+            and not event.get_command()
+            and not getattr(getattr(self, "config", None), "multiplex_profiles", False)
+        )
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -10316,11 +10335,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _busy_state = self._peek_session_state(session_key)
         running_agent = _busy_state.turn.agent if _busy_state else None
 
+        # Preserve the routed profile's busy policy before applying the
+        # Telegram-specific interrupt-to-queue exception below.
         busy_text_mode = self._effective_busy_text_mode(event.source)
+        auto_queued_for_platform = False
+        if (
+            effective_mode == "interrupt"
+            and self._should_auto_queue_busy_followup(event)
+        ):
+            logger.info(
+                "Demoting Telegram busy follow-up from interrupt to queue for session %s",
+                session_key,
+            )
+            effective_mode = "queue"
+            auto_queued_for_platform = True
         if (
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
             and effective_mode != "steer"
+            and not auto_queued_for_platform
         ):
             return False
 
@@ -10554,6 +10587,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             message = (
                 f"⏳ Compressing context{status_detail} — your message is queued for "
                 f"when it finishes (use /stop to cancel everything)."
+            )
+        elif is_queue_mode and auto_queued_for_platform:
+            message = (
+                f"⏳ Queued for the next turn{status_detail}. "
+                f"I'll respond once the current task finishes. Use /stop to cancel the current task."
             )
         elif is_queue_mode:
             message = (
@@ -17268,6 +17306,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
 
             effective_busy_input_mode = self._effective_busy_input_mode(source)
+            if (
+                effective_busy_input_mode == "interrupt"
+                and self._should_auto_queue_busy_followup(event)
+            ):
+                logger.info(
+                    "PRIORITY demoting Telegram busy follow-up from interrupt to queue "
+                    "for session %s",
+                    _quick_key,
+                )
+                adapter = self._adapter_for_source(source)
+                if adapter:
+                    # Keep rapid Telegram text follow-ups in the adapter's
+                    # existing merged pending event rather than splitting
+                    # them into FIFO turns.
+                    merge_pending_message_event(
+                        adapter._pending_messages,
+                        _quick_key,
+                        event,
+                        merge_text=True,
+                    )
+                return None
             _telegram_followup_grace = float(
                 os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
             )

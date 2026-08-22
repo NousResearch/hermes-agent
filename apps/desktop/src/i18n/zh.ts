@@ -1555,6 +1555,7 @@ export const zh: Translations = {
     running: '运行中',
     failed: '失败',
     done: '完成',
+    verificationRequired: '需要验证',
     streaming: '流式传输',
     files: '文件',
     moreFiles: count => `还有 ${count} 个文件`,
@@ -3387,6 +3388,9 @@ export const zh: Translations = {
       statusError: '错误',
       statusRecovered: '已恢复',
       statusDone: '完成',
+      statusDispatched: '已分派',
+      statusUnverified: '未验证',
+      statusPartial: '部分完成',
       memoryWriteNoted: '已记下记忆写入',
       actions: {
         read: '已读取',

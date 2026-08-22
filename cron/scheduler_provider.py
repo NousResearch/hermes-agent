@@ -511,6 +511,7 @@ class InProcessCronScheduler(CronScheduler):
         interval=60,
         can_dispatch=None,
         profile_homes=None,
+        profile_adapters=None,
     ):
         import logging
         from cron.scheduler import tick as cron_tick
@@ -538,6 +539,7 @@ class InProcessCronScheduler(CronScheduler):
                 loop=loop,
                 interval=interval,
                 can_dispatch=can_dispatch,
+                profile_adapters=profile_adapters,
             )
             return
 
@@ -609,6 +611,7 @@ class InProcessCronScheduler(CronScheduler):
         loop=None,
         interval=60,
         can_dispatch=None,
+        profile_adapters=None,
     ):
         """Tick every served profile's cron store when multiplex_profiles is on.
 
@@ -662,12 +665,27 @@ class InProcessCronScheduler(CronScheduler):
                 else:
                     for entry in profile_homes:
                         home = entry[1] if isinstance(entry, tuple) else entry
+                        prof_name = entry[0] if isinstance(entry, tuple) else None
+                        # Owning-profile delivery (#83182): a profile's own
+                        # adapters shadow the default map, so its cron output
+                        # goes out under its OWN platform identity (e.g. its
+                        # own Discord bot). Platforms the profile does not
+                        # run itself still resolve from the default map and
+                        # remain subject to the delivery enablement gate.
+                        # profile_adapters is the gateway's LIVE dict — read
+                        # per tick, never cached, so late-connecting profile
+                        # adapters are picked up.
+                        tick_adapters = adapters
+                        if profile_adapters and prof_name:
+                            own = profile_adapters.get(prof_name)
+                            if own:
+                                tick_adapters = {**(adapters or {}), **own}
                         home_token = set_hermes_home_override(str(home))
                         try:
                             with use_cron_store(home):
                                 cron_tick(
                                     verbose=False,
-                                    adapters=adapters,
+                                    adapters=tick_adapters,
                                     loop=loop,
                                     sync=False,
                                     can_dispatch=can_dispatch,

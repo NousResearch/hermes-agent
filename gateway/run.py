@@ -30996,6 +30996,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             profile_homes = _multiplex_profile_homes(runner.config)
             if profile_homes:
                 cron_start_kwargs["profile_homes"] = profile_homes
+                # Owning-profile delivery (#83182): hand the ticker the LIVE
+                # per-profile adapter maps so a secondary profile's cron
+                # delivery goes out via its OWN adapters (its own Discord
+                # bot), not the default profile's. The dict mutates as
+                # profiles connect; the scheduler reads it per tick.
+                cron_start_kwargs["profile_adapters"] = runner._profile_adapters
                 logger.info(
                     "Cron scheduler will tick %d profile(s) under multiplex: %s",
                     len(profile_homes),

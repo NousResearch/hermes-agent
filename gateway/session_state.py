@@ -166,6 +166,10 @@ class PersistentState:
     # not). gateway.run mirrors this value to the DB keyed by session_key so
     # the same semantics also survive gateway restarts.
     hygiene_failure_streak: int = 0
+    # Durable runtime options have been loaded from SessionStore for this
+    # process. Conversation boundaries clear both stores explicitly; gateway
+    # restart constructs fresh SessionState objects and rehydrates once.
+    runtime_options_rehydrated: bool = False
 
 
 @dataclass

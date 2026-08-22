@@ -45,7 +45,7 @@ from collections import OrderedDict
 from contextvars import Context, copy_context
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from typing import Awaitable, Callable, Dict, Optional, Any, List, Tuple, Union, cast
+from typing import Awaitable, Callable, Dict, Mapping, Optional, Any, List, Tuple, Union, cast
 
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
 from agent.conversation_compression import (
@@ -6911,6 +6911,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Sync helpers keep using ``session_store`` directly; async gateway
         # handlers call this facade and await every operation.
         self._async_session_store = AsyncSessionStore(self.session_store)
+        # Serializes structured host-UI option changes per messaging session.
+        # Locks are process-local; accepted values are persisted by SessionStore.
+        self._session_options_locks: Dict[str, asyncio.Lock] = {}
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -8044,7 +8047,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         model = _resolve_gateway_model(user_config)
         if resolved_session_key:
-            self._rehydrate_session_model_override(resolved_session_key)
+            self._rehydrate_session_runtime_options(resolved_session_key)
         _override_state = (
             self._peek_session_state(resolved_session_key)
             if resolved_session_key
@@ -9492,6 +9495,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 resolved_session_key = None
 
         if resolved_session_key:
+            self._rehydrate_session_runtime_options(resolved_session_key)
             _r_state = self._peek_session_state(resolved_session_key)
             if _r_state is not None and _r_state.conversation.reasoning_override is not None:
                 return _r_state.conversation.reasoning_override
@@ -9505,12 +9509,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Set or clear the session-scoped reasoning override."""
         if not session_key:
             return
+        self._rehydrate_session_runtime_options(session_key)
         # Per-session field write — the old lazy ``self._session_reasoning_overrides
         # = {}`` init replaced the WHOLE dict, racing concurrent sessions'
         # overrides; a SessionState field reset cannot cross sessions.
         self._session_state(session_key).conversation.reasoning_override = (
             None if reasoning_config is None else dict(reasoning_config)
         )
+        self._persist_session_runtime_options(session_key)
 
     def _resolve_session_service_tier(
         self,
@@ -9531,6 +9537,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 resolved_session_key = None
 
         if resolved_session_key:
+            self._rehydrate_session_runtime_options(resolved_session_key)
             _t_state = self._peek_session_state(resolved_session_key)
             if (
                 _t_state is not None
@@ -9553,6 +9560,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not session_key:
             return
+        self._rehydrate_session_runtime_options(session_key)
         # Presence-sensitive: "priority" or None (explicit normal) both count
         # as an override; the sentinel means "no override".  Old code
         # wholesale-replaced the dict on lazy init (cross-session race) —
@@ -9560,6 +9568,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._session_state(session_key).conversation.service_tier_override = (
             _SERVICE_TIER_UNSET if clear else service_tier
         )
+        self._persist_session_runtime_options(session_key)
 
     @staticmethod
     def _load_service_tier() -> str | None:
@@ -26431,67 +26440,113 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
-    def _rehydrate_session_model_override(self, session_key: str) -> None:
-        """Lazily restore a persisted /model override after a gateway restart.
+    async def apply_session_options(
+        self,
+        source: SessionSource,
+        options: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        """Apply silent, structured runtime options to a messaging session.
 
-        ``_session_model_overrides`` is in-memory only, so before persistence
-        a restart silently reverted every session to the global default model.
-        The non-secret parts (model/provider/base_url) are written through to
-        the session store when /model runs (and cleared on /new); here we read
-        them back on first use and re-resolve credentials via the normal
-        runtime provider resolution — api_key is never persisted to disk.
-
-        No-op when an in-memory override already exists (live state wins) or
-        when the store has nothing persisted (e.g. the user ran /new, which
-        clears both the in-memory dict and the persisted field).
+        Messaging adapters and host UIs should use this public boundary instead
+        of injecting visible slash-command turns. Values are validated before
+        any state is created or changed, then persisted atomically per session.
         """
-        _rehydrate_state = self._peek_session_state(session_key)
-        if (
-            _rehydrate_state is not None
-            and _rehydrate_state.conversation.model_override is not None
-        ):
+        from gateway.session_options import apply_gateway_session_options
+
+        return await apply_gateway_session_options(self, source, options)
+
+    def _rehydrate_session_runtime_options(self, session_key: str) -> None:
+        """Lazily restore persisted runtime options after a gateway restart.
+
+        The model, reasoning effort, and fast tier belong to the existing
+        messaging session. Model credentials are re-resolved from live config;
+        they are never stored in sessions.json.
+        """
+        state = self._session_state(session_key)
+        if state.persistent.runtime_options_rehydrated:
             return
         store = getattr(self, "session_store", None)
         if store is None:
             return
         try:
-            persisted = store.get_model_override(session_key)
+            persisted = store.get_runtime_options(session_key)
         except Exception:
             logger.debug(
-                "Failed to read persisted session model override", exc_info=True
+                "Failed to read persisted session runtime options", exc_info=True
             )
             return
+        state.persistent.runtime_options_rehydrated = True
         if not persisted:
             return
-        override: Dict[str, Any] = {
-            "model": persisted.get("model"),
-            "provider": persisted.get("provider"),
-            "base_url": persisted.get("base_url"),
-        }
-        provider = persisted.get("provider")
-        if provider:
+        model_persisted = persisted.get("model_override")
+        if model_persisted:
+            override: Dict[str, Any] = {
+                "model": model_persisted.get("model"),
+                "provider": model_persisted.get("provider"),
+                "base_url": model_persisted.get("base_url"),
+            }
+            provider = model_persisted.get("provider")
             # Re-resolve credentials for the persisted provider. On failure
             # (e.g. credentials were removed since the switch) keep the
             # credential-less override — _resolve_session_agent_runtime falls
             # back to env-based resolution and applies model/provider on top.
-            try:
-                runtime = _resolve_runtime_agent_kwargs_for_provider(provider)
-                override["api_key"] = runtime.get("api_key")
-                override["api_mode"] = runtime.get("api_mode")
-                override["credential_pool"] = runtime.get("credential_pool")
-                if not override.get("base_url"):
-                    override["base_url"] = runtime.get("base_url")
-            except Exception:
-                logger.debug(
-                    "Credential re-resolution failed for persisted override "
-                    "(provider=%s); using credential-less override",
-                    provider, exc_info=True,
-                )
-        self._session_state(session_key).conversation.model_override = override
-        logger.info(
-            "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
-            session_key, override.get("model"), provider or "",
+            if provider:
+                try:
+                    runtime = _resolve_runtime_agent_kwargs_for_provider(provider)
+                    override["api_key"] = runtime.get("api_key")
+                    override["api_mode"] = runtime.get("api_mode")
+                    override["credential_pool"] = runtime.get("credential_pool")
+                    if not override.get("base_url"):
+                        override["base_url"] = runtime.get("base_url")
+                except Exception:
+                    logger.debug(
+                        "Credential re-resolution failed for persisted override "
+                        "(provider=%s); using credential-less override",
+                        provider, exc_info=True,
+                    )
+            state.conversation.model_override = override
+
+        reasoning = persisted.get("reasoning_override")
+        state.conversation.reasoning_override = (
+            dict(reasoning) if isinstance(reasoning, dict) else None
         )
+        tier = persisted.get("service_tier_override")
+        if tier == "priority":
+            state.conversation.service_tier_override = "priority"
+        elif tier == "normal":
+            state.conversation.service_tier_override = None
+        else:
+            state.conversation.service_tier_override = _SERVICE_TIER_UNSET
+
+    def _rehydrate_session_model_override(self, session_key: str) -> None:
+        """Compatibility alias for callers that predate structured options."""
+        self._rehydrate_session_runtime_options(session_key)
+
+    def _persist_session_runtime_options(self, session_key: str) -> None:
+        """Keep durable host defaults aligned with later slash-command edits."""
+        store = getattr(self, "session_store", None)
+        state = self._peek_session_state(session_key)
+        if store is None or state is None:
+            return
+        tier = state.conversation.service_tier_override
+        durable_tier = (
+            None
+            if tier is _SERVICE_TIER_UNSET
+            else ("priority" if tier == "priority" else "normal")
+        )
+        try:
+            store.set_runtime_options(
+                session_key,
+                model_override=state.conversation.model_override,
+                reasoning_override=state.conversation.reasoning_override,
+                service_tier_override=durable_tier,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to persist session runtime options for %s",
+                session_key,
+                exc_info=True,
+            )
 
     def _apply_session_model_override(
         self, session_key: str, model: str, runtime_kwargs: dict

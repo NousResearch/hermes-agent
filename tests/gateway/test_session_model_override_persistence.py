@@ -15,6 +15,7 @@ Covers:
   - api_key is NEVER serialized to sessions.json
 """
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -132,4 +133,182 @@ def test_sanitize_model_override():
         "model": "gpt-5o",
         "provider": "openai",
         "base_url": "https://api.openai.example/v1",
+    }
+
+
+def test_structured_runtime_options_persist_atomically_and_reset(store_factory, tmp_path):
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+
+    assert store.set_runtime_options(
+        session_key,
+        model_override=OVERRIDE,
+        reasoning_override={"enabled": True, "effort": "high"},
+        service_tier_override="normal",
+    )
+
+    restarted = store_factory()
+    assert restarted.get_runtime_options(session_key) == {
+        "model_override": {
+            "model": "gpt-5o",
+            "provider": "openai",
+            "base_url": "https://api.openai.example/v1",
+        },
+        "reasoning_override": {"enabled": True, "effort": "high"},
+        "service_tier_override": "normal",
+    }
+    assert "sk-SUPER-SECRET" not in _sessions_json(tmp_path)
+
+    restarted.reset_session(session_key)
+    assert restarted.get_runtime_options(session_key) == {
+        "model_override": None,
+        "reasoning_override": None,
+        "service_tier_override": None,
+    }
+
+
+def test_structured_runtime_options_roll_back_memory_when_save_fails(
+    store_factory, monkeypatch
+):
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+    assert store.set_runtime_options(
+        session_key,
+        model_override=OVERRIDE,
+        reasoning_override={"enabled": True, "effort": "high"},
+        service_tier_override="priority",
+    )
+    before = store.get_runtime_options(session_key)
+
+    def _fail_save():
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "_save", _fail_save)
+    with pytest.raises(OSError, match="disk full"):
+        store.set_runtime_options(
+            session_key,
+            model_override=None,
+            reasoning_override={"enabled": False},
+            service_tier_override="normal",
+        )
+
+    assert store.get_runtime_options(session_key) == before
+
+
+def test_runner_rehydrates_all_structured_runtime_options(store_factory):
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+    store.set_runtime_options(
+        session_key,
+        model_override=OVERRIDE,
+        reasoning_override={"enabled": False},
+        service_tier_override="normal",
+    )
+
+    runner = _make_runner(store_factory())
+    with patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        return_value={"api_key": "sk-live", "provider": "openai"},
+    ):
+        runner._rehydrate_session_runtime_options(session_key)
+
+    state = runner._session_state(session_key)
+    assert state.conversation.model_override["api_key"] == "sk-live"
+    assert state.conversation.reasoning_override == {"enabled": False}
+    assert state.conversation.service_tier_override is None
+    assert state.persistent.runtime_options_rehydrated is True
+
+
+@pytest.mark.asyncio
+async def test_public_session_options_api_applies_without_a_message_turn(store_factory):
+    from gateway.run import GatewayRunner
+
+    source = _make_source()
+    store = store_factory()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.session_store = store
+    runner._session_options_locks = {}
+    runner._resolve_session_agent_runtime = lambda **_kwargs: (
+        "anthropic/claude-sonnet-4",
+        {"provider": "openrouter", "base_url": "", "api_key": ""},
+    )
+    runner._evict_cached_agent = lambda _session_key: None
+    runner._session_db = None
+
+    result = await runner.apply_session_options(
+        source,
+        {"reasoning_effort": "high", "fast": False, "initial": True},
+    )
+
+    assert result["status"] == "accepted"
+    assert result["applied"] == ["reasoning_effort", "fast"]
+    session_key = result["session_key"]
+    assert store.get_runtime_options(session_key) == {
+        "model_override": None,
+        "reasoning_override": {"enabled": True, "effort": "high"},
+        "service_tier_override": "normal",
+    }
+    assert runner._session_reasoning_overrides[session_key] == {
+        "enabled": True,
+        "effort": "high",
+    }
+    assert runner._session_service_tier_overrides[session_key] is None
+
+
+@pytest.mark.asyncio
+async def test_public_session_options_api_uses_native_model_validation(store_factory):
+    from gateway.run import GatewayRunner
+
+    source = _make_source()
+    store = store_factory()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.session_store = store
+    runner._session_options_locks = {}
+    runner._resolve_session_agent_runtime = lambda **_kwargs: (
+        "old-model",
+        {"provider": "openrouter", "base_url": "", "api_key": ""},
+    )
+    runner._evict_cached_agent = lambda _session_key: None
+    runner._session_db = None
+    selected = SimpleNamespace(
+        success=True,
+        new_model="gpt-5",
+        target_provider="openai",
+        api_key="sk-live-only",
+        base_url="https://api.openai.com/v1",
+        api_mode="responses",
+        model_info=None,
+        warning_message="",
+    )
+
+    with (
+        patch("gateway.run._load_gateway_config", return_value={}),
+        patch("hermes_cli.model_switch.switch_model", return_value=selected),
+        patch(
+            "hermes_cli.model_selection_guards.combined_selection_warning",
+            return_value=None,
+        ),
+    ):
+        result = await runner.apply_session_options(
+            source,
+            {
+                "model": "gpt-5",
+                "provider": "openai",
+                "confirm_model_selection": True,
+                "initial": True,
+            },
+        )
+
+    assert result["status"] == "accepted"
+    assert result["effective"]["model"] == "gpt-5"
+    persisted = store.get_runtime_options(result["session_key"])
+    assert persisted["model_override"] == {
+        "model": "gpt-5",
+        "provider": "openai",
+        "base_url": "https://api.openai.com/v1",
     }

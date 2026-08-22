@@ -449,8 +449,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         stable_parts.append(" ".join(tool_guidance))
 
     # Steering only lands inside tool results, so it's only reachable when the
-    # agent has tools. Static text → byte-stable prompt (no cache hit).
-    if agent.valid_tool_names:
+    # agent has tools. Cron agents have no live user channel and cannot receive
+    # a genuine steer, so teaching them the trusted marker only creates a
+    # self-injection pattern for scheduled models to imitate. Static text →
+    # byte-stable prompt (no cache hit).
+    if agent.valid_tool_names and agent.platform != "cron":
         stable_parts.append(STEER_CHANNEL_NOTE)
 
     # Computer-use — goes in as its own block rather than being merged into

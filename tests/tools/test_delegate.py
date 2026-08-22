@@ -288,6 +288,26 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
 
+    def test_cron_parent_child_uses_subagent_platform(self):
+        parent = _make_mock_parent(depth=0)
+        parent.platform = "cron"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Verify scheduled delegation",
+                context=None,
+                toolsets=None,
+                model="test-model",
+                max_iterations=5,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["platform"], "subagent")
+
     def test_child_gets_dedicated_session_db_not_parents_handle(self):
         """#81267: children must not share the parent's SessionDB object.
 

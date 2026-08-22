@@ -1121,15 +1121,21 @@ async def web_extract_tool(
         if not safe_urls:
             results = []
         else:
-            backend = _get_extract_backend()
-
-            # All seven providers (brave-free, ddgs, searxng, exa, parallel,
-            # tavily, firecrawl) now live as plugins. The dispatcher is a
+            # All providers now live as plugins. The dispatcher is a
             # registry lookup + delegation. Some providers' extract() is
             # async (parallel, firecrawl), others sync (exa, tavily) — we
             # detect coroutine functions and await; sync functions run
             # inline (the policy gate, SSRF re-check, etc. live inside the
             # provider itself for the firecrawl per-URL loop).
+            #
+            # Plugin discovery MUST happen before _get_extract_backend().
+            # Backends outside _LEGACY_WEB_BACKENDS resolve their
+            # availability through the registry, which is empty until the
+            # plugins are loaded. In cold-start contexts (cron subprocesses,
+            # delegate children — see _ensure_web_plugins_loaded's
+            # docstring) doing the backend lookup first makes a configured
+            # plugin-only extract_backend silently fall through to the
+            # shared web.backend default.
             _ensure_web_plugins_loaded()
             from agent.web_search_registry import (
                 get_active_extract_provider,
@@ -1137,6 +1143,7 @@ async def web_extract_tool(
                 _disabled_web_plugin_for,
             )
 
+            backend = _get_extract_backend()
             provider = _wsp_get_provider(backend) if backend else None
             if provider is None or not provider.supports_extract():
                 # When the configured name IS registered but doesn't support

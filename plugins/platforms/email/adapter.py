@@ -538,6 +538,12 @@ class EmailAdapter(BasePlatformAdapter):
     # design — after a full restart the usual mark-all-seen baseline applies.
     _seen_uids_snapshot: Dict[str, set] = {}
 
+    # SMTP/MIME supports messages far beyond the gateway's 4,000-character
+    # chat-platform guard.  Declaring long-message support ensures cron output
+    # reaches the email body intact instead of being replaced by a local-file
+    # truncation notice intended for non-chunking chat adapters.
+    splits_long_messages = True
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
 

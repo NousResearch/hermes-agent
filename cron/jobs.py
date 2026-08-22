@@ -24,13 +24,15 @@ import uuid
 # in which case _jobs_lock() degrades to in-process locking only (the old
 # behaviour) rather than failing.
 try:
-    import fcntl
-except ImportError:  # pragma: no cover - non-Unix
+    import fcntl  # POSIX
+except ImportError:  # pragma: no cover - Windows
     fcntl = None
 try:
-    import msvcrt
-except ImportError:  # pragma: no cover - non-Windows
+    import msvcrt  # Windows
+except ImportError:  # pragma: no cover - POSIX
     msvcrt = None
+
+from cron.cross_process_lock import lock_exclusive_bounded, unlock_quietly
 from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -350,7 +352,24 @@ def _jobs_lock():
                                 break
                             time.sleep(0.1)
                 elif msvcrt is not None:
-                    getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
+                    # Bounded polling (not LK_LOCK, whose ~10s internal retry
+                    # is shorter than the POSIX budget above — see the fire
+                    # fence note in _fire_job_lock). Degrade identically to
+                    # the POSIX timeout path: log, close, proceed in-process.
+                    if not lock_exclusive_bounded(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS):
+                        logger.error(
+                            "Timed out after %.0fs waiting for the cron "
+                            "jobs lock (%s) — another process is holding "
+                            "it. Proceeding with in-process locking only "
+                            "so the scheduler stays alive (#60703).",
+                            _JOBS_LOCK_TIMEOUT_SECONDS,
+                            _jobs_lock_file(),
+                        )
+                        try:
+                            lock_fd.close()
+                        except OSError:
+                            pass
+                        lock_fd = None
             except (OSError, IOError) as e:
                 # Never let a locking failure take down cron writes — fall back to
                 # in-process-only protection (still held via _jobs_file_lock).
@@ -360,15 +379,8 @@ def _jobs_lock():
                 yield
             finally:
                 if lock_fd is not None:
-                    try:
-                        if fcntl is not None:
-                            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                        elif msvcrt is not None:
-                            getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
-                    except (OSError, IOError):
-                        pass
-                    finally:
-                        lock_fd.close()
+                    unlock_quietly(lock_fd)
+                    lock_fd.close()
         finally:
             _jobs_lock_state.depth = 0
             _jobs_lock_state.load_stamp = None
@@ -396,28 +408,24 @@ def _fire_job_lock(job_id: str):
         try:
             lock_fd = open(lock_path, "a+", encoding="utf-8")
             lock_fd.seek(0)
-            if fcntl is not None:
-                deadline = time.monotonic() + _JOBS_LOCK_TIMEOUT_SECONDS
-                while True:
-                    try:
-                        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        acquired = True
-                        break
-                    except (OSError, IOError):
-                        if time.monotonic() >= deadline:
-                            logger.error(
-                                "Timed out waiting for fire fence %s; failing closed",
-                                lock_path,
-                            )
-                            break
-                        time.sleep(0.1)
-            elif msvcrt is not None:
-                getattr(msvcrt, "locking")(
-                    lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1
+            # Same bounded-polling discipline on every backend: POSIX fcntl
+            # polls LOCK_NB against the deadline (#60703); the msvcrt branch
+            # used LK_LOCK, whose internal retry gives up after only ~10s —
+            # shorter than the POSIX budget, so Windows failed closed EARLY.
+            # A second gateway holding the fence for a legitimate long
+            # delivery (>10s, <30s) then saw mark_job_run return False,
+            # which run_one_job interprets as "fire claim ownership lost"
+            # and discards the successful completion. Poll LK_NBLCK against
+            # the same _JOBS_LOCK_TIMEOUT_SECONDS budget instead.
+            acquired = lock_exclusive_bounded(
+                lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS
+            )
+            if not acquired:
+                logger.error(
+                    "Timed out after %.0fs waiting for fire fence %s; failing closed",
+                    _JOBS_LOCK_TIMEOUT_SECONDS,
+                    lock_path,
                 )
-                acquired = True
-            else:  # pragma: no cover - supported platforms provide one backend
-                logger.error("No cross-process lock backend for cron fire fence")
         except (OSError, IOError) as exc:
             logger.error("Cron fire fence unavailable for %s: %s", job_id, exc)
 
@@ -425,17 +433,9 @@ def _fire_job_lock(job_id: str):
             yield acquired
         finally:
             if lock_fd is not None:
-                try:
-                    if acquired and fcntl is not None:
-                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                    elif acquired and msvcrt is not None:
-                        getattr(msvcrt, "locking")(
-                            lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
-                        )
-                except (OSError, IOError):
-                    pass
-                finally:
-                    lock_fd.close()
+                if acquired:
+                    unlock_quietly(lock_fd)
+                lock_fd.close()
 
 
 @contextlib.contextmanager

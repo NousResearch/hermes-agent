@@ -1497,7 +1497,10 @@ class _CodexCompletionsAdapter:
         # assistant tool calls as `function_call` items and tool results as
         # `function_call_output` items with a valid call_id, so every
         # Responses path normalizes tool history identically and cannot drift.
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from agent.codex_responses_adapter import (
+            _chat_messages_to_responses_input,
+            _msg_item,
+        )
         from utils import base_url_host_matches
 
         instructions = "You are a helpful assistant."
@@ -1533,7 +1536,7 @@ class _CodexCompletionsAdapter:
         resp_kwargs: Dict[str, Any] = {
             "model": model,
             "instructions": instructions,
-            "input": input_items or [{"role": "user", "content": ""}],
+            "input": input_items or [_msg_item("user", "")],
             "store": False,
         }
 

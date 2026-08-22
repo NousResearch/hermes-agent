@@ -2655,6 +2655,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
+    split_key_namespace,
 )
 from gateway.delivery import (
     DeliveryRouter,
@@ -3869,12 +3870,19 @@ def _parse_session_key(session_key: str) -> "dict | None":
     thread_id, so we leave ``thread_id`` out to avoid mis-routing.
     """
     parts = session_key.split(":")
-    if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
+    # Accept the default namespace with or without a multi-account suffix
+    # (``agent:main`` / ``agent:main@support``, #8287) — the positional
+    # layout after the namespace slot is identical. Named-profile keys stay
+    # excluded, as before.
+    _ns, _account = split_key_namespace(parts[1]) if len(parts) > 1 else ("", None)
+    if len(parts) >= 5 and parts[0] == "agent" and _ns == "main":
         result = {
             "platform": parts[2],
             "chat_type": parts[3],
             "chat_id": parts[4],
         }
+        if _account:
+            result["account"] = _account
         if len(parts) > 5 and parts[3] in {"dm", "thread"}:
             result["thread_id"] = parts[5]
         return result
@@ -6866,6 +6874,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # sites are untouched when multiplexing is off (this dict is empty).
         # Populated by _start_secondary_profile_adapters().
         self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
+        # Multi-account (#8287): adapters for NAMED bot accounts live here,
+        # keyed by Platform then account name. self.adapters stays the default
+        # account's map — the same shape as _profile_adapters above, so every
+        # existing self.adapters[...] site is untouched when no named accounts
+        # are configured (this dict is empty). Populated by
+        # _start_account_adapters().
+        self._account_adapters: Dict[Platform, Dict[str, BasePlatformAdapter]] = {}
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
@@ -12825,6 +12840,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
             enabled_platform_count += 1
 
+            # Named bot accounts (#8287) join the SAME fan-out as the default
+            # adapter, so they connect concurrently rather than serially behind
+            # it, and their success is independent of the default's outcome — a
+            # bad or absent default token cannot keep healthy named bots
+            # offline (#67455 review finding).
+            _pending_connects.extend(
+                self._prepare_account_adapters(platform, platform_config)
+            )
+
+            # Accounts-only configuration (#8287): named tokens with no default
+            # credential. Skip the doomed token-less default connect — it would
+            # fail and be reported as a platform outage — while the named
+            # accounts queued above still connect.
+            if not _platform_has_bot_credential(platform, platform_config) and (
+                platform_config.extra or {}
+            ).get("accounts"):
+                logger.info(
+                    "%s has no default-account credential; "
+                    "connecting named accounts only.",
+                    platform.value,
+                )
+                continue
+
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
                 # Distinguish between missing builtin deps and missing plugin
@@ -12864,10 +12902,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             """Connect a single platform; never let one block the others (#83791)."""
             if await self._abort_startup_if_shutdown_requested(adp, p):
                 return (p, adp, p_cfg, "aborted", None)
-            logger.info("Connecting to %s...", p.value)
-            self._update_platform_runtime_status(
-                p.value, platform_state="connecting", error_code=None, error_message=None,
-            )
+            # A named bot account (#8287) shares the platform but not its
+            # runtime status: that row reports the DEFAULT account's health, so
+            # an account connect must not flip the whole platform to
+            # "connecting" (and, on failure, must not mark the platform down
+            # while the default bot is serving fine).
+            _acct = getattr(adp, "account_name", None)
+            _acct = _acct if isinstance(_acct, str) and _acct else None
+            if _acct:
+                logger.info("Connecting to %s (account %r)...", p.value, _acct)
+            else:
+                logger.info("Connecting to %s...", p.value)
+                self._update_platform_runtime_status(
+                    p.value, platform_state="connecting", error_code=None, error_message=None,
+                )
             try:
                 ok = await self._connect_initial_adapter_with_timeout(adp, p)
             except Exception as _exc:  # noqa: BLE001 - surfaced below as a retryable error
@@ -12944,6 +12992,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
             platform, adapter, platform_config, outcome, exc = _item
             if outcome == "aborted":
+                continue
+            # Named bot accounts (#8287) share this fan-out but not the
+            # platform's shared state: a named account owns no entry in
+            # self.adapters and must never claim the platform's single
+            # _failed_platforms retry slot — doing so would respawn the DEFAULT
+            # adapter from the account's config. isinstance-guard because a
+            # MagicMock adapter auto-creates a truthy account_name
+            # (AGENTS.md pitfall #17), which would route a default adapter down
+            # this branch.
+            _account = getattr(adapter, "account_name", None)
+            if isinstance(_account, str) and _account:
+                if outcome == "ok":
+                    self._account_adapters.setdefault(platform, {})[_account] = adapter
+                    self._sync_voice_mode_state_to_adapter(adapter)
+                    connected_count += 1
+                    logger.info(
+                        "✓ %s connected (account %r)", platform.value, _account
+                    )
+                else:
+                    logger.warning(
+                        "✗ %s account %r failed to connect%s",
+                        platform.value,
+                        _account,
+                        f": {exc}" if exc else "",
+                    )
+                    # Freed rather than left orphaned; per-account reconnect
+                    # queueing lands with the delivery/reconnect slice, so this
+                    # account is retried at the next gateway start.
+                    await self._safe_adapter_disconnect(adapter, platform)
                 continue
             if outcome == "exception":
                 logger.error("\u2717 %s error: %s", platform.value, exc)
@@ -15781,6 +15858,112 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None
         import hashlib
         return hashlib.sha256(("hermes-mux:" + token).encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _account_platform_config(
+        platform: Platform,
+        platform_config: "PlatformConfig",
+        account_block: Dict[str, Any],
+    ) -> "PlatformConfig":
+        """Derive a per-account PlatformConfig from the platform's own (#8287).
+
+        The account adapter is handed an ordinary PlatformConfig — its own
+        token, its own home_channel, and account-block settings overriding
+        the platform-level ``extra`` — so adapter internals stay entirely
+        account-agnostic. The ``accounts`` map itself is stripped from the
+        derived ``extra``: an account must never be able to spawn accounts.
+        """
+        import dataclasses as _dc
+
+        from gateway.config import HomeChannel as _HomeChannel
+
+        merged_extra = {
+            key: value
+            for key, value in (platform_config.extra or {}).items()
+            if key != "accounts"
+        }
+        home_channel = platform_config.home_channel
+        token = platform_config.token
+        for key, value in (account_block or {}).items():
+            if key == "token":
+                token = value
+            elif key == "home_channel" and isinstance(value, dict):
+                # The platform is implicit inside its own account block.
+                channel = dict(value)
+                channel.setdefault("platform", platform.value)
+                home_channel = _HomeChannel.from_dict(channel)
+            else:
+                merged_extra[key] = value
+        return _dc.replace(
+            platform_config,
+            token=token,
+            home_channel=home_channel,
+            extra=merged_extra,
+        )
+
+    def _prepare_account_adapters(
+        self, platform: Platform, platform_config: "PlatformConfig"
+    ) -> list:
+        """Create and wire one adapter per NAMED bot account (#8287).
+
+        Prepare-only, deliberately: the returned
+        ``(platform, account_config, adapter)`` triples join the SAME
+        ``_pending_connects`` fan-out the default adapter uses, so named
+        accounts connect concurrently with every other platform instead of
+        serially behind them. Connecting them in a loop here would reintroduce
+        exactly the head-of-line blocking #83791 removed — N bots each costing
+        a full connect timeout.
+
+        Each adapter is wired like a default adapter and stamped with its
+        account name; ``build_source`` copies that stamp onto every inbound
+        ``SessionSource.account``, which is where the per-account session keys
+        from the previous slice light up. Registration into
+        ``_account_adapters[platform][name]`` happens in the aggregation loop,
+        keyed off ``adapter.account_name``, so shared state is still mutated
+        single-threaded exactly as before.
+        """
+        accounts = (platform_config.extra or {}).get("accounts")
+        if not isinstance(accounts, dict) or not accounts:
+            return []
+        prepared = []
+        for account_name, account_block in accounts.items():
+            block = account_block if isinstance(account_block, dict) else {}
+            if not block.get("token"):
+                logger.warning(
+                    "Skipping %s account %r: no token (set %s_BOT_TOKEN_%s)",
+                    platform.value,
+                    account_name,
+                    platform.value.upper(),
+                    account_name.upper(),
+                )
+                continue
+            account_config = self._account_platform_config(
+                platform, platform_config, block
+            )
+            adapter = self._create_adapter(platform, account_config)
+            if not adapter:
+                logger.warning(
+                    "No adapter available for %s account %r",
+                    platform.value,
+                    account_name,
+                )
+                continue
+            adapter.account_name = account_name
+            adapter.set_message_handler(self._primary_message_handler())
+            adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
+            adapter.set_session_store(self.session_store)
+            adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            _set_reaction = getattr(adapter, "set_reaction_handler", None)
+            if callable(_set_reaction):
+                _set_reaction(self._handle_reaction_event)
+            adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+            adapter.set_authorization_check(
+                self._make_adapter_auth_check(adapter.platform)
+            )
+            adapter.set_platform_event_handler(self._primary_platform_event_handler())
+            adapter._busy_text_mode = self._busy_text_mode
+            prepared.append((platform, account_config, adapter))
+        return prepared
 
     def _create_adapter(
         self, 

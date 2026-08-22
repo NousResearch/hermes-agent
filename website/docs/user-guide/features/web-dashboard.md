@@ -599,6 +599,29 @@ same auth gate as the rest of `/api/`.
 | `POST /api/sessions/prune` | Delete ended sessions older than N days |
 | `PUT /api/cron/jobs/{id}` | Edit a cron job's prompt / schedule / name / deliver |
 
+## Embedded chat hosts
+
+The dashboard can expose its real xterm/TUI chat as a bounded iframe without the dashboard navigation chrome. Configure exact parent origins and a server-pinned profile for each host:
+
+```yaml
+dashboard:
+  embed_parent_origins:
+    - https://console.example.com
+  embed_profiles:
+    console-default: default
+    console-research: research
+```
+
+Then frame:
+
+```text
+/chat?embed=console-research&profile=research&parent_origin=https%3A%2F%2Fconsole.example.com
+```
+
+The parent and dashboard must be on the same schemeful site (for example `console.example.com` and `api.example.com` over HTTPS), because gated dashboard sessions use `SameSite=Lax` cookies. Cross-site embedding is deliberately unsupported; deploy a same-site dashboard hostname instead of weakening cookie policy. The `embed` ID must exist in `embed_profiles`, and the requested `profile` must match that mapping. The PTY WebSocket validates the mapping again before accepting, so changing the query cannot retarget the frame. Empty configuration disables external embedding. Only the chat document is frameable; OAuth remains a top-level popup flow.
+
+For OAuth, open the same URL in a top-level popup with `auth_bridge=1`. After the authenticated callback, the page posts a bounded `hermes.dashboard.embed` / `authenticated` event to the configured parent origin and closes. The framed chat posts `connecting`, `ready`, `reconnecting`, `disconnected`, and `ended` lifecycle events. Hosts must verify `event.origin`, `event.source`, `type`, and `embedId` before acting.
+
 ## Authentication (gated mode)
 
 When the dashboard is bound to a public or non-loopback address — anything other than `127.0.0.1` / `localhost` — Hermes Agent engages an auth gate. Every request must carry a verified session cookie or it's bounced to the login page. Three providers ship in the box:

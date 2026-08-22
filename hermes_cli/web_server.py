@@ -523,6 +523,18 @@ def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
 # injection share a single, testable seam.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 
+
+def _resolve_pty_embed_profile(
+    embed_id: Optional[str], requested_profile: Optional[str]
+) -> Optional[str]:
+    """Resolve a configured chat embed to its immutable profile scope."""
+    if not embed_id:
+        return requested_profile
+    from hermes_cli.dashboard_embed import resolve_embedded_profile
+
+    return resolve_embedded_profile(load_config(), embed_id, requested_profile)
+
+
 # Desktop's file.attach compatibility transport sends a complete base64 data
 # URL in one JSON-RPC frame. Uvicorn defaults to 16 MiB, which rejects files at
 # the preview ceiling before the dispatcher sees them. Keep the gateway
@@ -17027,6 +17039,15 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=4408, reason=_ws_close_reason(client_reason))
         return
 
+    raw_profile = ws.query_params.get("profile") or None
+    embed_id = ws.query_params.get("embed") or None
+    try:
+        profile = _resolve_pty_embed_profile(embed_id, raw_profile)
+    except ValueError as exc:
+        _log.warning("pty refused: embed policy rejected peer=%s reason=%s", peer, exc)
+        await ws.close(code=4403, reason=_ws_close_reason("embed policy rejected"))
+        return
+
     await ws.accept()
     _log.info("pty accepted peer=%s mode=%s cred=%s", peer, mode, cred)
 
@@ -17045,7 +17066,6 @@ async def pty_ws(ws: WebSocket) -> None:
     # --- spawn PTY ------------------------------------------------------
     raw_resume = ws.query_params.get("resume") or None
     resume = raw_resume
-    profile = ws.query_params.get("profile") or None
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
     force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {
@@ -17415,7 +17435,7 @@ def mount_spa(application: FastAPI):
 
     _index_path = WEB_DIST / "index.html"
 
-    def _serve_index(prefix: str = ""):
+    def _serve_index(prefix: str = "", *, embedded_request: bool = False):
         """Return index.html with the session token + base-path injected.
 
         ``prefix`` is the normalised ``X-Forwarded-Prefix`` (e.g. ``/hermes``)
@@ -17442,12 +17462,24 @@ def mount_spa(application: FastAPI):
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
         gated_js = "true" if gated else "false"
+        from hermes_cli.dashboard_embed import (
+            configured_embed_parent_origins,
+            configured_embed_profiles,
+        )
+
+        dashboard_config = load_config()
+        embed_parent_origins = configured_embed_parent_origins(dashboard_config)
+        embed_profiles = configured_embed_profiles(dashboard_config)
+        embed_origins_js = json.dumps(list(embed_parent_origins), separators=(",", ":"))
+        embed_profiles_js = json.dumps(embed_profiles, separators=(",", ":"))
         if gated:
             bootstrap_script = (
                 f"<script>"
                 f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
                 f'window.__HERMES_BASE_PATH__="{prefix}";'
                 f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
+                f"window.__HERMES_DASHBOARD_EMBED_PARENT_ORIGINS__={embed_origins_js};"
+                f"window.__HERMES_DASHBOARD_EMBED_PROFILES__={embed_profiles_js};"
                 f"</script>"
             )
         else:
@@ -17456,6 +17488,8 @@ def mount_spa(application: FastAPI):
                 f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
                 f'window.__HERMES_BASE_PATH__="{prefix}";'
                 f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
+                f"window.__HERMES_DASHBOARD_EMBED_PARENT_ORIGINS__={embed_origins_js};"
+                f"window.__HERMES_DASHBOARD_EMBED_PROFILES__={embed_profiles_js};"
                 f"</script>"
             )
         if prefix:
@@ -17478,10 +17512,11 @@ def mount_spa(application: FastAPI):
         if theme_bootstrap:
             html = html.replace("</head>", f"{theme_bootstrap}</head>", 1)
         html = html.replace("</head>", f"{bootstrap_script}</head>", 1)
-        return HTMLResponse(
-            html,
-            headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
-        )
+        headers = {"Cache-Control": "no-store, no-cache, must-revalidate"}
+        if embedded_request:
+            ancestors = " ".join(("'self'", *embed_parent_origins))
+            headers["Content-Security-Policy"] = f"frame-ancestors {ancestors}"
+        return HTMLResponse(html, headers=headers)
 
     # When served behind a path-prefix proxy, the built CSS contains
     # absolute ``url(/fonts/...)`` and ``url(/ds-assets/...)`` references.
@@ -17554,7 +17589,7 @@ def mount_spa(application: FastAPI):
             and file_path.is_file()
         ):
             return FileResponse(file_path)
-        return _serve_index(prefix)
+        return _serve_index(prefix, embedded_request=bool(request.query_params.get("embed")))
 
 
 # ---------------------------------------------------------------------------

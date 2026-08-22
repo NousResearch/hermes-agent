@@ -275,6 +275,25 @@ describe("ChatPage", () => {
     expect(maybeReloadForLoopbackWsAuthFailure).toHaveBeenCalledWith(4401);
   });
 
+  it("renders only the terminal viewport and binds the PTY to the embed policy", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+
+    await render(
+      <MemoryRouter initialEntries={["/chat?profile=wolf"]}>
+        <ChatPage isActive embedded embedId="console-wolf" />
+      </MemoryRouter>,
+    );
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    expect(apiMocks.buildWsUrl).toHaveBeenCalledWith(
+      "/api/pty",
+      expect.objectContaining({ embed: "console-wolf" }),
+    );
+    expect(container.querySelector('[role="complementary"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Copy last assistant response"]')).toBeNull();
+    expect(container.querySelector('[data-hermes-embedded-chat="true"]')).not.toBeNull();
+  });
+
   it("attaches visualViewport keyboard-inset listeners only while the chat tab is active", async () => {
     // NS-434 follow-up: ChatPage stays mounted (hidden) on every dashboard
     // route. The keyboard-inset/scroll-pin listeners must only be live while

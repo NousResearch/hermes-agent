@@ -19,6 +19,7 @@ import {
   Navigate,
   useLocation,
   useNavigate,
+  useSearchParams,
 } from "react-router";
 import {
   Activity,
@@ -73,6 +74,8 @@ import { useProfileScope } from "@/contexts/useProfileScope";
 import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
 import { MemoryPressureBanner } from "@/components/MemoryPressureBanner";
+import { EmbeddedChatHost } from "@/components/EmbeddedChatHost";
+import { parseDashboardEmbedRequest } from "@/lib/dashboard-embed";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
 // Route pages are lazy-loaded so the initial dashboard shell does not pay for
@@ -372,6 +375,7 @@ const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
 export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
+  const [searchParams] = useSearchParams();
   const { manifests, loading: pluginsLoading } = usePlugins();
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -508,6 +512,29 @@ export default function App() {
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
   }, []);
+
+  const embedRequested = isChatRoute && searchParams.has("embed");
+  const embedRequest = embedRequested
+    ? parseDashboardEmbedRequest(
+        searchParams,
+        window.__HERMES_DASHBOARD_EMBED_PARENT_ORIGINS__ ?? [],
+        window.__HERMES_DASHBOARD_EMBED_PROFILES__ ?? {},
+      )
+    : null;
+
+  if (embedRequested) {
+    return (
+      <PageHeaderProvider pluginTabs={[]}>
+        {embedRequest ? (
+          <EmbeddedChatHost request={embedRequest} />
+        ) : (
+          <main className="flex h-dvh items-center justify-center bg-black px-6 text-center text-sm text-white/75">
+            This embedded chat request is not allowed by the dashboard policy.
+          </main>
+        )}
+      </PageHeaderProvider>
+    );
+  }
 
   return (
     <ProfileProvider>

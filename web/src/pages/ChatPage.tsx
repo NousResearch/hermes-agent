@@ -173,7 +173,19 @@ function terminalLineHeightForWidth(layoutWidthPx: number): number {
   return layoutWidthPx < 1024 ? 1.02 : 1.15;
 }
 
-export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
+interface ChatPageProps {
+  embedId?: string;
+  embedded?: boolean;
+  isActive?: boolean;
+  onPtyStateChange?: (state: PtyConnectionState) => void;
+}
+
+export default function ChatPage({
+  embedId,
+  embedded = false,
+  isActive = true,
+  onPtyStateChange,
+}: ChatPageProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termWrapRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -248,7 +260,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [reconnectNonce, setReconnectNonce] = useState(0);
   useEffect(() => {
     ptyStateRef.current = ptyState;
-  }, [ptyState]);
+    onPtyStateChange?.(ptyState);
+  }, [ptyState, onPtyStateChange]);
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
@@ -1166,6 +1179,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // selected profile, so the conversation runs with that profile's model,
       // skills, memory, and sessions (see web_server._resolve_chat_argv).
       if (scopedProfile) params.profile = scopedProfile;
+      if (embedId) params.embed = embedId;
 
       ticketTimer = setTimeout(() => {
         ticketTimer = null;
@@ -1519,6 +1533,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     clearReconnectTimer,
     resumeParam,
     scopedProfile,
+    embedId,
     reconnectNonce,
   ]);
 
@@ -1684,6 +1699,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     hydrating: resumeHydrating,
   });
   const mobileModelToolsPortal =
+    !embedded &&
     isActive &&
     narrow &&
     portalRoot &&
@@ -1770,8 +1786,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
-      <PluginSlot name="chat:top" />
+    <div
+      className={cn(
+        "flex min-h-0 flex-1 flex-col",
+        embedded ? "gap-0" : "gap-2",
+      )}
+      data-hermes-embedded-chat={embedded ? "true" : undefined}
+    >
+      {!embedded && <PluginSlot name="chat:top" />}
       {mobileModelToolsPortal}
 
       {visibleBanner && (
@@ -1780,12 +1802,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col",
+          !embedded && "gap-2 lg:flex-row lg:gap-3",
+        )}
+      >
         <div
           ref={termWrapRef}
           className={cn(
-            "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
-            "p-2 sm:p-3",
+            "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
+            embedded ? "rounded-none p-0" : "rounded-lg p-2 sm:p-3",
           )}
           style={{
             backgroundColor: terminalBg,
@@ -1849,6 +1876,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             </div>
           )}
 
+          {!embedded && (
           <Button
             ghost
             onClick={handleCopyLast}
@@ -1873,8 +1901,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               </span>
             </span>
           </Button>
+          )}
 
-          {chatPanelCollapsed && (
+          {!embedded && chatPanelCollapsed && (
             <Button
               ghost
               onClick={toggleChatPanel}
@@ -1901,7 +1930,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           )}
         </div>
 
-        {!narrow && !chatPanelCollapsed && (
+        {!embedded && !narrow && !chatPanelCollapsed && (
           <div
             id="chat-side-panel"
             role="complementary"
@@ -1941,7 +1970,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           </div>
         )}
       </div>
-      <PluginSlot name="chat:bottom" />
+      {!embedded && <PluginSlot name="chat:bottom" />}
     </div>
   );
 }

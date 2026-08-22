@@ -857,7 +857,8 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     if not api_key:
         return default_url
 
-    # Check provider-state cache for a previously-detected endpoint.
+    # Check provider-state cache (profile → global fallback) for a previously
+    # detected endpoint.
     auth_store = _load_auth_store()
     state = _load_provider_state(auth_store, "zai") or {}
     cached = state.get("detected_endpoint")
@@ -7291,8 +7292,16 @@ def _get_azure_foundry_auth_status() -> Dict[str, Any]:
     return info
 
 
-def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
+def resolve_api_key_provider_credentials(
+    provider_id: str,
+    *,
+    api_key_override: Optional[str] = None,
+) -> Dict[str, Any]:
     """Resolve API key and base URL for an API-key provider.
+
+    ``api_key_override`` takes precedence over configured credentials and is
+    also used for credential-sensitive base-URL resolution (notably Z.AI's
+    cached endpoint and plan detection).
 
     Returns dict with: provider, api_key, base_url, source.
     """
@@ -7307,6 +7316,10 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     api_key = ""
     key_source = ""
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
+    explicit_key = str(api_key_override or "").strip()
+    if explicit_key:
+        api_key = explicit_key
+        key_source = "explicit"
 
     # No-auth LM Studio: substitute a placeholder so runtime / auxiliary_client
     # see the local server as configured. doctor still reports unconfigured

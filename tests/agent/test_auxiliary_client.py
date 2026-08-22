@@ -3762,6 +3762,25 @@ class TestOpenRouterExplicitApiKey:
             )
 
 
+class TestApiKeyProviderExplicitApiKey:
+    def test_zai_uses_explicit_key_over_environment(self, monkeypatch):
+        """Generic API-key providers must preserve caller credential precedence."""
+        monkeypatch.setenv("GLM_API_KEY", "env-fallback-key")
+        monkeypatch.setenv("GLM_BASE_URL", "https://api.z.ai/api/paas/v4")
+        mock_openai = MagicMock(return_value=MagicMock(name="zai-client"))
+
+        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+            client, model = resolve_provider_client(
+                provider="zai",
+                model="glm-5.2",
+                explicit_api_key="explicit-key",
+            )
+
+        assert client is not None
+        assert model == "glm-5.2"
+        assert mock_openai.call_args.kwargs["api_key"] == "explicit-key"
+
+
 def test_pool_runtime_base_url_uses_nous_env_override(monkeypatch):
     entry = SimpleNamespace(
         provider="nous",

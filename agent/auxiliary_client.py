@@ -6797,12 +6797,33 @@ def resolve_provider_client(
             final_model = _normalize_resolved_model(model or default_model, provider)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode else (client, final_model))
 
-        creds = resolve_api_key_provider_credentials(provider)
-        api_key = str(creds.get("api_key", "")).strip()
-        # Honour an explicit api_key override (e.g. from a fallback_model entry
-        # or a custom_providers entry) so callers that pass an explicit
-        # credential can authenticate against endpoints where no built-in
-        # credential is registered for this provider alias.
+         # A caller-supplied key/base pair is already complete and coherent.
+        # Do not send it back through provider discovery: besides avoiding an
+        # unnecessary endpoint probe, this keeps explicit hardcoded fallbacks
+        # usable when canonical credential resolution itself is unavailable.
+        caller_api_key = str(explicit_api_key or "").strip()
+        caller_base_url = str(explicit_base_url or "").strip().rstrip("/")
+        if caller_api_key and caller_base_url:
+            api_key = caller_api_key
+            raw_base_url = caller_base_url
+        else:
+            if caller_api_key:
+                creds = resolve_api_key_provider_credentials(
+                    provider,
+                    api_key_override=caller_api_key,
+                )
+            else:
+                creds = resolve_api_key_provider_credentials(provider)
+            api_key = str(creds.get("api_key", "")).strip()
+            raw_base_url = (
+                str(creds.get("base_url", "")).strip().rstrip("/")
+                or pconfig.inference_base_url
+            )
+            # Honour a caller base_url when credentials still came from the
+            # provider resolver.
+            if caller_base_url:
+                raw_base_url = caller_base_url
+
         if explicit_api_key:
             api_key = explicit_api_key.strip() or api_key
         raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
@@ -6843,11 +6864,6 @@ def resolve_provider_client(
             return None, None
 
         base_url = _to_openai_base_url(raw_base_url)
-        # Honour an explicit base_url override from the caller — used when a
-        # fallback_model entry (or custom_providers lookup) routes through a
-        # built-in provider name but targets a user-specified endpoint.
-        if explicit_base_url:
-            base_url = _to_openai_base_url(explicit_base_url.strip().rstrip("/"))
 
         default_model = _get_aux_model_for_provider(provider)
         final_model = _normalize_resolved_model(model or default_model, provider)
@@ -7475,15 +7491,51 @@ def resolve_vision_provider_client(
     # The Anthropic wire rejects max_tokens on multimodal calls (error 1210),
     # while the OpenAI wire handles it correctly.
     if requested == "zai" and not resolved_base_url:
-        zai_openai_urls = [
+        # Resolve one effective key/base-URL pair through the canonical Z.AI
+        # resolver. Pool selection happens first because that is the credential
+        # _get_cached_client() will use; passing it as an override keeps endpoint
+        # cache validation and client construction tied to the same key. The
+        # resolver also owns GLM_BASE_URL precedence, endpoint detection, and
+        # profile → global auth-state fallback.
+        effective_key = (resolved_api_key or "").strip()
+        if not effective_key:
+            pool_entry = _peek_pool_entry("zai")
+            if pool_entry is not None:
+                effective_key = _pool_runtime_api_key(pool_entry).strip()
+
+        canonical_url = ""
+        try:
+            from hermes_cli.auth import (
+                resolve_api_key_provider_credentials as resolve_zai_credentials,
+            )
+
+            if effective_key:
+                creds = resolve_zai_credentials(
+                    "zai",
+                    api_key_override=effective_key,
+                )
+            else:
+                creds = resolve_zai_credentials("zai")
+            effective_key = str(creds.get("api_key", "")).strip()
+            canonical_url = str(creds.get("base_url", "")).strip().rstrip("/")
+        except Exception:
+            logger.debug("Could not resolve canonical Z.AI vision credentials",
+                         exc_info=True)
+
+        zai_openai_urls = []
+        for candidate_url in (
+            canonical_url,
             "https://open.bigmodel.cn/api/paas/v4",
             "https://api.z.ai/api/paas/v4",
-        ]
+        ):
+            if candidate_url and candidate_url not in zai_openai_urls:
+                zai_openai_urls.append(candidate_url)
+
         for _zai_url in zai_openai_urls:
             client, final_model = _get_cached_client(
                 requested, resolved_model, async_mode,
                 base_url=_zai_url,
-                api_key=resolved_api_key or None,
+                api_key=effective_key,
                 api_mode="chat_completions",
                 main_runtime=runtime,
                 is_vision=True,

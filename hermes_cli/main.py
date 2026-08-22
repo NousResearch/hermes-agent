@@ -445,6 +445,7 @@ from hermes_cli.subcommands.sync import build_sync_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
+from hermes_cli.subcommands.subagent import build_subagent_parser
 from hermes_cli.subcommands.setup import build_setup_parser
 
 from hermes_cli.subcommands.whatsapp import build_whatsapp_parser
@@ -3572,13 +3573,22 @@ def _is_profile_api_key_provider(provider_id: str) -> bool:
         return False
 
 
-def select_provider_and_model(args=None):
+def select_provider_and_model(
+    args=None,
+    *,
+    initial_model=None,
+    initial_provider=None,
+):
     """Core provider selection + model picking logic.
 
     Shared by ``cmd_model`` (``hermes model``) and the setup wizard
     (``setup_model_provider`` in setup.py).  Handles the full flow:
     provider picker, credential prompting, model selection, and config
     persistence.
+
+    ``initial_model`` and ``initial_provider`` affect only the displayed
+    current selection and picker cursors. Secondary targets can therefore
+    reuse the complete setup flow without changing its persistence owner.
     """
     from hermes_cli.auth import (
         resolve_provider,
@@ -3597,16 +3607,17 @@ def select_provider_and_model(args=None):
     )
 
     config = load_config()
-    current_model = config.get("model")
-    if isinstance(current_model, dict):
-        current_model = current_model.get("default", "")
-    current_model = current_model or "(not set)"
+    initial_model_cursor = str(initial_model or "").strip()
+    configured_model = config.get("model")
+    if isinstance(configured_model, dict):
+        configured_model = configured_model.get("default", "")
+    current_model = initial_model_cursor or configured_model or "(not set)"
 
     # Read effective provider the same way the CLI does at startup:
     # config.yaml model.provider > env var > auto-detect
-    config_provider = None
+    config_provider = str(initial_provider or "").strip() or None
     model_cfg = config.get("model")
-    if isinstance(model_cfg, dict):
+    if config_provider is None and isinstance(model_cfg, dict):
         config_provider = model_cfg.get("provider")
 
     effective_provider = (
@@ -3885,6 +3896,8 @@ def select_provider_and_model(args=None):
         base_url = provider_info["base_url"]
         short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")
         saved_model = provider_info.get("model", "")
+        if initial_model_cursor and active and key == active:
+            saved_model = initial_model_cursor
         model_hint = f" — {saved_model}" if saved_model else ""
         label = f"{name} ({short_url}){model_hint}"
         if active and key == active:
@@ -3974,6 +3987,9 @@ def select_provider_and_model(args=None):
                 "It may have been removed from config.yaml. No change."
             )
             return
+        if initial_model_cursor and selected_provider == active:
+            provider_info = dict(provider_info)
+            provider_info["model"] = initial_model_cursor
         _model_flow_named_custom(config, provider_info)
     elif selected_provider == "remove-custom":
         _remove_custom_provider(config)
@@ -5347,6 +5363,101 @@ def cmd_auth(args):
     from hermes_cli.auth_commands import auth_command
 
     auth_command(args)
+
+
+def cmd_subagent(args):
+    """Inspect or configure the subagent model and reasoning."""
+    from hermes_cli.subagent_model import (
+        get_subagent_model_status,
+        get_subagent_reasoning_status,
+        reset_subagent_model,
+        reset_subagent_reasoning_effort,
+        select_subagent_model_interactively,
+        set_subagent_model,
+        set_subagent_reasoning_effort,
+    )
+
+    sub = getattr(args, "subagent_command", None)
+    if sub in {None, ""}:
+        _print_subagent_status(get_subagent_model_status())
+        _print_subagent_reasoning_status(get_subagent_reasoning_status())
+        return
+
+    if sub == "model":
+        model_arg = getattr(args, "model", None)
+        positional_reset = (
+            isinstance(model_arg, str) and model_arg.strip().lower() == "reset"
+        )
+        if getattr(args, "reset", False) or positional_reset:
+            _print_subagent_status(reset_subagent_model(), action="Reset")
+            return
+        if model_arg:
+            try:
+                status = set_subagent_model(
+                    model_arg,
+                    provider=getattr(args, "provider", None) or None,
+                )
+            except ValueError as exc:
+                print(f"  ✗ {exc}", file=sys.stderr)
+                return 2
+            _print_subagent_status(status, action="Pinned")
+            return
+        _require_tty("subagent model")
+        status = select_subagent_model_interactively(
+            refresh=bool(getattr(args, "refresh", False)),
+            initial_provider=getattr(args, "provider", None) or None,
+        )
+        if status is None:
+            print("  Subagent model selection cancelled.")
+            return
+        _print_subagent_status(status, action="Selected")
+        return
+
+    if sub == "reasoning":
+        effort_arg = getattr(args, "effort", None)
+        positional_reset = (
+            isinstance(effort_arg, str)
+            and effort_arg.strip().lower() in {"clear", "default", "inherit", "reset"}
+        )
+        if getattr(args, "reset", False) or positional_reset:
+            _print_subagent_reasoning_status(
+                reset_subagent_reasoning_effort(), action="Reset"
+            )
+            return
+        if effort_arg:
+            try:
+                status = set_subagent_reasoning_effort(effort_arg)
+            except ValueError as exc:
+                print(f"  ✗ {exc}", file=sys.stderr)
+                return 2
+            _print_subagent_reasoning_status(status, action="Set")
+            return
+        _print_subagent_reasoning_status(get_subagent_reasoning_status())
+        return
+
+    print(
+        "usage: hermes subagent "
+        "[model [<model>|--reset|--refresh] | reasoning [<effort>|--reset]]"
+    )
+
+
+def _print_subagent_status(status, action=None):
+    if status.inherits_parent:
+        label = "inherits parent"
+    elif status.model:
+        label = status.model
+        if status.provider:
+            label = f"{label} (provider: {status.provider})"
+    else:
+        label = f"provider default (provider: {status.provider})"
+    prefix = f"{action} " if action else ""
+    print(f"  {prefix}subagent model: {label}")
+
+
+def _print_subagent_reasoning_status(status, action=None):
+    label = "inherits parent" if status.inherits_parent else (status.effort or "(none)")
+    prefix = f"{action} " if action else ""
+    print(f"  {prefix}subagent reasoning: {label}")
 
 
 def cmd_status(args):
@@ -12478,6 +12589,11 @@ def main():
     # model command  (parser built in hermes_cli/subcommands/model.py)
     # =========================================================================
     build_model_parser(subparsers, cmd_model=cmd_model)
+
+    # =========================================================================
+    # subagent command — configure future child model and reasoning
+    # =========================================================================
+    build_subagent_parser(subparsers, cmd_subagent=cmd_subagent)
 
     from hermes_cli.moa_cmd import cmd_moa
 

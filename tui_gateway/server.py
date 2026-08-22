@@ -13406,8 +13406,10 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
         "commands",
         "approve",
         "deny",
+        "subagent",
     }
 )
+_TUI_EXEC_BLOCKED: frozenset[str] = frozenset({"subagent"})
 
 _TUI_EXTRA: list[tuple[str, str, str]] = [
     ("/density", "Toggle compact display mode", "TUI"),
@@ -13554,6 +13556,8 @@ def _cli_exec_blocked(argv: list[str]) -> str | None:
     if not argv:
         return "bare `hermes` is interactive — use `/hermes chat -q …` or run `hermes` in another terminal"
     a0 = argv[0].lower()
+    if a0 in _TUI_EXEC_BLOCKED:
+        return f"`hermes {a0}` is CLI-only — run it in another terminal"
     if a0 == "setup":
         return "`hermes setup` needs a full terminal — run it outside the TUI"
     if a0 == "gateway":

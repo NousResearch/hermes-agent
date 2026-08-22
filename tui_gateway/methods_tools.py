@@ -351,7 +351,11 @@ def _(rid, params: dict) -> dict:
         for cat in cat_order:
             categories.append({"name": cat, "pairs": cat_map[cat]})
 
-        sub = {k: v[:] for k, v in SUBCOMMANDS.items()}
+        sub = {
+            k: v[:]
+            for k, v in SUBCOMMANDS.items()
+            if k.lstrip("/").lower() not in _TUI_EXEC_BLOCKED
+        }
         return _ok(
             rid,
             {
@@ -414,7 +418,10 @@ def _(rid, params: dict) -> dict:
     try:
         from hermes_cli.commands import resolve_command
 
-        r = resolve_command(params.get("name", ""))
+        requested = str(params.get("name", "")).lstrip("/").lower()
+        if requested in _TUI_EXEC_BLOCKED:
+            return _err(rid, 4011, f"unknown command: {params.get('name')}")
+        r = resolve_command(requested)
         if r:
             return _ok(
                 rid,
@@ -432,6 +439,8 @@ def _(rid, params: dict) -> dict:
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:
     name, arg = params.get("name", "").lstrip("/"), params.get("arg", "")
+    if name.lower() in _TUI_EXEC_BLOCKED:
+        return _err(rid, 4011, f"unknown command: {name}")
     resolved = _resolve_name(name)
     if resolved != name:
         name = resolved
@@ -1141,6 +1150,9 @@ def _(rid, params: dict) -> dict:
     _cmd_parts = _cmd_text.split(maxsplit=1)
     _cmd_base = (_cmd_parts[0] if _cmd_parts else "").lower()
     _cmd_arg = _cmd_parts[1] if len(_cmd_parts) > 1 else ""
+
+    if _cmd_base in _TUI_EXEC_BLOCKED:
+        return _err(rid, 4003, f"command not available in TUI: /{_cmd_base}")
 
     live_output = _live_slash_command_output(
         params.get("session_id", ""), session, _cmd_base, _cmd_arg

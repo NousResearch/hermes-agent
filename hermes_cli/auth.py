@@ -74,6 +74,7 @@ else:
 
     httpx = _LazyHttpx()
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -92,6 +93,20 @@ from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value
 
 logger = logging.getLogger(__name__)
+
+_MODEL_SELECTION_RECORDER: ContextVar[Optional[Callable[[str], None]]] = ContextVar(
+    "model_selection_recorder", default=None
+)
+
+
+@contextmanager
+def capture_model_selection(recorder: Callable[[str], None]):
+    """Capture a confirmed model choice for a secondary config target."""
+    token = _MODEL_SELECTION_RECORDER.set(recorder)
+    try:
+        yield
+    finally:
+        _MODEL_SELECTION_RECORDER.reset(token)
 
 try:
     import fcntl
@@ -7889,6 +7904,13 @@ def _prompt_model_selection(
             return None
 
 
+def record_model_selection(model_id: str) -> None:
+    """Notify an active secondary-target capture after a confirmed save."""
+    recorder = _MODEL_SELECTION_RECORDER.get()
+    if recorder is not None:
+        recorder(model_id)
+
+
 def _save_model_choice(model_id: str) -> None:
     """Save the selected model to config.yaml (single source of truth).
 
@@ -7904,6 +7926,7 @@ def _save_model_choice(model_id: str) -> None:
     else:
         config["model"] = {"default": model_id}
     save_config(config)
+    record_model_selection(model_id)
 
 
 def login_command(args) -> None:

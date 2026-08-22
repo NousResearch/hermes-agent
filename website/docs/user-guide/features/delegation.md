@@ -149,9 +149,30 @@ You can configure a different model for subagents via `config.yaml` — useful f
 delegation:
   model: "google/gemini-flash-2.0"    # Cheaper model for subagents
   provider: "openrouter"              # Optional: route subagents to a different provider
+  reasoning_effort: "high"             # Optional: independent child reasoning level
 ```
 
-If omitted, subagents use the same model as the parent.
+If omitted, subagents use the same model and reasoning policy as the parent.
+You can manage these overrides without editing YAML:
+
+- `hermes subagent` shows the effective override state.
+- `hermes subagent model` opens the complete `hermes model` setup flow,
+  including provider login and custom endpoint creation. Shared setup additions
+  are retained, while the active primary model and auth route remain unchanged.
+- `hermes subagent model <model> --provider <provider>` validates a direct
+  selection through the same model resolver. `hermes subagent model reset`
+  restores parent-model inheritance.
+- `hermes subagent reasoning <level>` sets an independent child reasoning
+  policy. Valid levels are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+  `max`, and `ultra`; `none` explicitly disables reasoning. `reasoning reset`
+  restores parent-reasoning inheritance.
+- In the Classic CLI, the equivalent in-session commands are `/subagent`,
+  `/subagent model`, `/subagent model reset`, and `/subagent reasoning ...`.
+
+Model/provider and reasoning resets are independent. Changes apply to newly
+spawned children; already-running subagents keep the configuration they started
+with. Provider/model selections are saved atomically under
+`delegation.provider` and `delegation.model`.
 
 ### Cost strategy: frontier planner, inexpensive workers
 

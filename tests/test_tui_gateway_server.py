@@ -9936,6 +9936,7 @@ def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible
     assert "/approve" not in pairs
     assert "/deny" not in pairs
     assert "/sethome" not in pairs
+    assert "/subagent" not in pairs
 
     assert "/update" in pairs
     assert canon["/update"] == "/update"
@@ -9944,6 +9945,52 @@ def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible
     assert "/approve" not in canon
     assert "/deny" not in canon
     assert "/set-home" not in canon
+    assert "/subagent" not in canon
+    assert "/subagent" not in resp["result"]["sub"]
+
+
+def test_tui_slash_exec_rejects_cli_only_subagent_command():
+    server._sessions["sid"] = _session()
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "slash.exec",
+                "params": {
+                    "command": "/subagent reasoning high",
+                    "session_id": "sid",
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["error"]["code"] == 4003
+    assert "not available in TUI" in resp["error"]["message"]
+
+    cli_resp = server.handle_request(
+        {
+            "id": "2",
+            "method": "cli.exec",
+            "params": {"argv": ["subagent", "reasoning", "high"]},
+        }
+    )
+    assert cli_resp["result"]["blocked"] is True
+
+    for method, params in (
+        ("command.resolve", {"name": "subagent"}),
+        ("command.dispatch", {"name": "subagent", "arg": "reasoning high"}),
+    ):
+        blocked = server.handle_request({"id": method, "method": method, "params": params})
+        assert blocked["error"]["code"] == 4011
+
+    completion = server.handle_request(
+        {"id": "3", "method": "complete.slash", "params": {"text": "/suba"}}
+    )
+    assert all(
+        item["text"].lstrip("/").lower() != "subagent"
+        for item in completion["result"]["items"]
+    )
 
 
 def test_session_status_reads_live_gateway_agent(monkeypatch):

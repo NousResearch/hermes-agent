@@ -1492,6 +1492,8 @@ delegation:
   # model: "google/gemini-3-flash-preview"    # Override model for subagents (empty = inherit parent)
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
+  # reasoning_effort: "medium"                # Child reasoning: none|minimal|low|medium|high|xhigh|max|ultra.
+  #                                           # Omit to inherit the parent agent's reasoning configuration.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
   #                                           # Cost tip: keep the parent on a frontier model and pin
   #                                           # delegation.model to an inexpensive one — children carry the

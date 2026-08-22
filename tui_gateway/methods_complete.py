@@ -371,6 +371,8 @@ def _(rid, params: dict) -> dict:
                 ),
             }
             for c in completer.get_completions(doc, None)
+            if c.text.strip().lstrip("/").split(" ", 1)[0].lower()
+            not in _TUI_EXEC_BLOCKED
         ]
 
         # Rank and bound the list (see _rank_slash_completions) while a
@@ -403,6 +405,8 @@ def _(rid, params: dict) -> dict:
                         ),
                     }
                     for c in completer.get_completions(Document("/", 1), None)
+                    if c.text.strip().lstrip("/").split(" ", 1)[0].lower()
+                    not in _TUI_EXEC_BLOCKED
                 ]
                 items, score_of = fuzzy_rank_slash_items(
                     items, universe, normalize_slash_search_query(text)

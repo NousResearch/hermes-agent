@@ -16,8 +16,12 @@ with their own system prompt, not conversation turns, so persisting them as
 message rows would corrupt role alternation / replay. Traces live in their own
 files, keyed by session id, and are safe to delete.
 
-Cost model note: gated OFF by default. When off, the only overhead is the
-``_traces_enabled()`` config read (cheap) — no file I/O, no serialization.
+Cost model note: full traces are gated OFF by default. When off, the only
+overhead is one metrics-lite append per reference fan-out
+(``<hermes_home>/metrics/moa-refs.jsonl`` — duration/usage/stats, no message
+bodies). No full-trace serialization. Metrics-lite is independent of
+``moa.save_traces`` so preset editors that rewrite the moa block and drop
+``save_traces`` cannot silently kill proposer observability.
 """
 
 from __future__ import annotations
@@ -91,6 +95,8 @@ def _slot_trace(acct: Any, label: str) -> dict[str, Any]:
         "cost_usd": getattr(acct, "cost_usd", None),
         "cost_status": getattr(acct, "cost_status", None),
         "cost_source": getattr(acct, "cost_source", None),
+        "duration_s": getattr(acct, "duration_s", None),
+        "stats": getattr(acct, "stats", None),
     }
 
 
@@ -127,6 +133,10 @@ def save_moa_turn(
     Best-effort: any failure is logged at debug and swallowed — tracing must
     never break a live turn. Called once per turn on a reference cache MISS.
 
+    Metrics-lite (``metrics/moa-refs.jsonl``) writes on every reference
+    fan-out, independent of ``moa.save_traces``. The full trace file is
+    still gated.
+
     ``aggregator_output`` is the aggregator's synthesized text. On the
     non-streaming path (eval / quiet-mode / subagents) it was captured inline
     at call time. On the streaming path it is captured after the fact from the
@@ -135,9 +145,19 @@ def save_moa_turn(
     that resolved text was unavailable, it falls back to None and the record
     points at the session store via ``output_location``.
     """
+    try:
+        _save_moa_metrics(
+            session_id=session_id,
+            preset_name=preset_name,
+            reference_outputs=reference_outputs,
+        )
+    except Exception as exc:  # pragma: no cover
+        logger.debug("MoA metrics-lite write failed (session=%s): %s", session_id, exc)
+
     base = _traces_enabled_and_dir()
     if base is None:
         return
+
     try:
         base.mkdir(parents=True, exist_ok=True)
         path = base / f"{_sanitize_session_id(session_id)}.jsonl"
@@ -180,3 +200,51 @@ def save_moa_turn(
             f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
     except Exception as exc:  # pragma: no cover - tracing must never break a turn
         logger.debug("MoA trace write failed (session=%s): %s", session_id, exc)
+
+
+def _save_moa_metrics(
+    *,
+    session_id: Optional[str],
+    preset_name: str,
+    reference_outputs: list[tuple[str, str, Any]],
+) -> None:
+    """Append a metrics-lite MoA record (no message bodies) per fan-out.
+
+    Observer path for per-proposer duration/usage/stats. Independent of
+    ``moa.save_traces`` — one JSONL append per reference fan-out even when
+    the full-body trace is off. Never writes message bodies.
+    """
+    base = get_hermes_home() / "metrics"
+    base.mkdir(parents=True, exist_ok=True)
+    path = base / "moa-refs.jsonl"
+    refs = []
+    for label, _text, acct in reference_outputs:
+        usage = getattr(acct, "usage", None)
+        usage_dict: dict[str, Any] = {}
+        if usage is not None:
+            usage_dict = {
+                "input_tokens": getattr(usage, "input_tokens", 0),
+                "output_tokens": getattr(usage, "output_tokens", 0),
+                "cache_read_tokens": getattr(usage, "cache_read_tokens", 0),
+                "cache_write_tokens": getattr(usage, "cache_write_tokens", 0),
+                "reasoning_tokens": getattr(usage, "reasoning_tokens", 0),
+            }
+        refs.append(
+            {
+                "label": label,
+                "model": getattr(acct, "model", None),
+                "provider": getattr(acct, "provider", None),
+                "usage": usage_dict,
+                "cost_usd": getattr(acct, "cost_usd", None),
+                "duration_s": getattr(acct, "duration_s", None),
+                "stats": getattr(acct, "stats", None),
+            }
+        )
+    record = {
+        "ts": time.time(),
+        "session_id": session_id,
+        "preset": preset_name,
+        "references": refs,
+    }
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")

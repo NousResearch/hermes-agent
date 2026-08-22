@@ -538,6 +538,10 @@ class EmailAdapter(BasePlatformAdapter):
     # design — after a full restart the usual mark-all-seen baseline applies.
     _seen_uids_snapshot: Dict[str, set] = {}
 
+    # SMTP accepts report-sized plaintext bodies directly; unlike chat adapters,
+    # Email does not need to split the body to preserve it.
+    preserves_long_messages = True
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
 

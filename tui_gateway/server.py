@@ -3025,6 +3025,23 @@ def _ensure_session_db_row(session: dict) -> None:
     parent_session_id = session.get("parent_session_id") or None
     if parent_session_id:
         model_config["_branched_from"] = parent_session_id
+    # Bot-Mode room plumbing sessions are per-member scratch conversations
+    # inside a group chat: their runtime must ALWAYS follow the member profile's
+    # CURRENT config, never the provider that was pinned when the row was first
+    # written. Persist that contract explicitly so resume can distinguish room
+    # plumbing from a normal user chat (whose stored model/provider must be
+    # restored verbatim). See _stored_session_runtime_overrides.
+    if session.get("room_plumbing"):
+        model_config["room_plumbing"] = True
+    # Bot-Mode canonical chats (the ONE forever DM per bot) and room plumbing
+    # sessions are plugin-owned scratch conversations: their runtime must ALWAYS
+    # follow the member profile's CURRENT config, never the model/provider that
+    # was pinned when the row was first written. Persist that contract explicitly
+    # so resume can distinguish them from a normal user chat (whose stored
+    # model/provider must be restored verbatim). See
+    # _stored_session_runtime_overrides.
+    if session.get("follow_profile_config"):
+        model_config["follow_profile_config"] = True
     try:
         db.create_session(
             key,
@@ -4162,6 +4179,64 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     ``billing_provider``, and richer runtime knobs in JSON ``model_config``.
     """
     if not row:
+        return {}
+
+    # Bot-Mode room plumbing sessions (hidden, titled "Group: <name>") are
+    # per-member scratch conversations inside a group chat. They must always
+    # rebuild from the member profile's CURRENT config: restoring the stored
+    # model/provider pin from an old row is what left room bots stuck on
+    # Nous (or any earlier provider) long after the profile was switched —
+    # every room message then failed with "out of Nous credits" while the
+    # same bots worked fine in DMs. 1:1 chats keep the stored-runtime
+    # restore (opening an older chat must show the model it actually used);
+    # only the room plumbing is exempt.
+    #
+    # The primary signal is the EXPLICIT ``room_plumbing`` contract persisted
+    # by session.create/room consumers (desktop Bot Mode) — a deliberate
+    # marker, not a presentation heuristic. The hidden + "Group:" title
+    # shape is kept as a legacy fallback so rows created by older desktop
+    # builds (which never sent the marker) still behave correctly until the
+    # client catches up.
+    raw_plumbing = row.get("model_config")
+    if isinstance(raw_plumbing, dict):
+        _plumbing_marker = raw_plumbing.get("room_plumbing")
+    elif isinstance(raw_plumbing, str) and raw_plumbing.strip():
+        try:
+            _plumbing_marker = json.loads(raw_plumbing).get("room_plumbing")
+        except Exception:
+            _plumbing_marker = None
+    else:
+        _plumbing_marker = None
+    if _plumbing_marker:
+        return {}
+    _row_title = str(row.get("title") or "").strip()
+    _row_hidden = row.get("hidden")
+    if _row_hidden and _row_title.startswith("Group:"):
+        return {}
+
+    # Bot-Mode canonical chats (the ONE forever DM per bot) and room plumbing
+    # sessions are plugin-owned scratch conversations. They must always rebuild
+    # from the member profile's CURRENT config: restoring the stored
+    # model/provider pin from an old row is what left bot DMs stuck on a stale
+    # provider (e.g. "out of Nous credits" after the profile was switched to
+    # ollama-cloud) while the same bot worked fine in rooms. 1:1 user chats
+    # keep the stored-runtime restore (opening an older chat must show the
+    # model it actually used); only the plugin-owned bot sessions are exempt.
+    #
+    # The primary signal is the EXPLICIT ``follow_profile_config`` contract
+    # persisted by session.create consumers (desktop Bot Mode) — a deliberate
+    # marker, not a presentation heuristic.
+    raw_follow = row.get("model_config")
+    if isinstance(raw_follow, dict):
+        _follow_marker = raw_follow.get("follow_profile_config")
+    elif isinstance(raw_follow, str) and raw_follow.strip():
+        try:
+            _follow_marker = json.loads(raw_follow).get("follow_profile_config")
+        except Exception:
+            _follow_marker = None
+    else:
+        _follow_marker = None
+    if _follow_marker:
         return {}
 
     raw_config = row.get("model_config")

@@ -924,6 +924,7 @@ export const en: Translations = {
       sshPortDesc: 'Blank = 22 or the ~/.ssh/config port.',
       sshKeyTitle: 'Identity file',
       sshKeyDesc: 'Private key path. Blank = ssh-agent or ~/.ssh/config.',
+      sshKeyPlaceholder: 'from ssh-agent or ~/.ssh/config',
       sshHermesPathTitle: 'Hermes path (optional)',
       sshHermesPathDesc: 'Full path to the remote hermes binary. Blank = auto-detect.',
       sshHermesPathPlaceholder: 'auto-detect',

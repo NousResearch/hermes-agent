@@ -872,6 +872,7 @@ export const ja = defineLocale({
       sshPortDesc: '空欄 = 22 または ~/.ssh/config のポート。',
       sshKeyTitle: '鍵ファイル',
       sshKeyDesc: '秘密鍵のパス。空欄 = ssh-agent または ~/.ssh/config。',
+      sshKeyPlaceholder: 'ssh-agent または ~/.ssh/config から',
       sshHermesPathTitle: 'Hermes パス（任意）',
       sshHermesPathDesc: 'リモートの hermes バイナリへのフルパス。空欄 = 自動検出。',
       sshHermesPathPlaceholder: '自動検出',

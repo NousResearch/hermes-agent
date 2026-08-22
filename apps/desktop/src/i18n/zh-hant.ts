@@ -847,6 +847,7 @@ export const zhHant = defineLocale({
       sshPortDesc: '留空 = 22 或 ~/.ssh/config 中的連接埠。',
       sshKeyTitle: '金鑰檔案',
       sshKeyDesc: '私密金鑰路徑。留空 = ssh-agent 或 ~/.ssh/config。',
+      sshKeyPlaceholder: '來自 ssh-agent 或 ~/.ssh/config',
       sshHermesPathTitle: 'Hermes 路徑（選用）',
       sshHermesPathDesc: '遠端 hermes 執行檔的完整路徑。留空 = 自動偵測。',
       sshHermesPathPlaceholder: '自動偵測',

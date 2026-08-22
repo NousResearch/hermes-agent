@@ -1413,6 +1413,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
               <Input
                 className={cn('h-8 font-mono', CONTROL_TEXT)}
                 onChange={event => setState(current => ({ ...current, sshKeyPath: event.target.value }))}
+                placeholder={g.sshKeyPlaceholder}
                 value={state.sshKeyPath}
               />
             }

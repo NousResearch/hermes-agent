@@ -1123,6 +1123,7 @@ export const zh: Translations = {
       sshPortDesc: '留空 = 22 或 ~/.ssh/config 中的端口。',
       sshKeyTitle: '密钥文件',
       sshKeyDesc: '私钥路径。留空 = ssh-agent 或 ~/.ssh/config。',
+      sshKeyPlaceholder: '来自 ssh-agent 或 ~/.ssh/config',
       sshHermesPathTitle: 'Hermes 路径（可选）',
       sshHermesPathDesc: '远程 hermes 可执行文件的完整路径。留空 = 自动检测。',
       sshHermesPathPlaceholder: '自动检测',

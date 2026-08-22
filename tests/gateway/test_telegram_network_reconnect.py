@@ -207,6 +207,70 @@ async def test_reconnect_continues_if_drain_hangs(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_reconnect_stop_deadline_does_not_wait_for_cancel_cleanup(monkeypatch):
+    """A cancellation-resistant PTB stop must not freeze the retry ladder.
+
+    ``asyncio.wait_for`` waits for the cancelled coroutine to finish.  AnyIO's
+    cancellation-shielded httpcore cleanup can therefore leave ``stop()``
+    pending forever after the timeout fires: the gateway process stays alive,
+    but no later Telegram retry runs.  The wall-clock deadline must abandon
+    that task and escalate to a fresh adapter without reusing the Updater.
+    """
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 1
+
+    release_stop = asyncio.Event()
+    stop_cancelled = asyncio.Event()
+    lifecycle_lock = asyncio.Lock()
+
+    async def _cancellation_resistant_stop():
+        async with lifecycle_lock:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                stop_cancelled.set()
+                await release_stop.wait()
+
+    async def _start_polling_with_same_lock(*args, **kwargs):
+        async with lifecycle_lock:
+            return None
+
+    mock_updater = MagicMock()
+    mock_updater.running = True
+    mock_updater.stop = AsyncMock(side_effect=_cancellation_resistant_stop)
+    mock_updater.start_polling = AsyncMock(side_effect=_start_polling_with_same_lock)
+
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    mock_app.bot = MagicMock()
+    mock_app.bot._request = ()
+    adapter._app = mock_app
+    adapter._notify_fatal_error = AsyncMock()
+
+    monkeypatch.setattr(tg_adapter, "_UPDATER_STOP_TIMEOUT", 0.01)
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        recovery = asyncio.create_task(
+            adapter._handle_polling_network_error(Exception("Timed out"))
+        )
+        done, _ = await asyncio.wait({recovery}, timeout=0.2)
+
+    try:
+        assert recovery in done, (
+            "reconnect remained blocked waiting for cancellation-shielded "
+            "updater.stop() cleanup"
+        )
+        assert stop_cancelled.is_set()
+        assert adapter.has_fatal_error
+        adapter._notify_fatal_error.assert_awaited_once()
+        mock_updater.start_polling.assert_not_awaited()
+    finally:
+        release_stop.set()
+        if not recovery.done():
+            recovery.cancel()
+        await asyncio.gather(recovery, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_force_escalates_wedged_recovery_task(monkeypatch):
     """#66377: the heartbeat is an independent, cause-agnostic watchdog.
 
@@ -549,12 +613,12 @@ async def test_handle_polling_network_error_updater_stop_timeout():
 
     When the underlying TCP connection is in CLOSE-WAIT, PTB's polling task is
     blocked on epoll on the dead socket.  updater.stop() awaits that task and
-    therefore hangs indefinitely.  The fix wraps stop() in asyncio.wait_for()
-    with a 15-second timeout so the reconnect always advances.
+    therefore hangs indefinitely.  The wall-clock deadline abandons the stop
+    task and escalates to fresh-adapter recovery instead of calling
+    start_polling() while PTB's shared lifecycle lock may still be held.
 
-    This test simulates the hang by making stop() sleep forever and verifies
-    that _drain_polling_connections() and start_polling() are still called
-    after the timeout fires.
+    This test simulates the hang by making stop() outlive the deadline and
+    verifies that the current Updater is not drained or restarted afterward.
     Refs: NousResearch/hermes-agent#58270
     """
     adapter = _make_adapter()
@@ -571,6 +635,7 @@ async def test_handle_polling_network_error_updater_stop_timeout():
     app.updater.stop = _hanging_stop
     app.updater.start_polling = AsyncMock()
     adapter._app = app
+    adapter._notify_fatal_error = AsyncMock()
 
     drain_called = []
 
@@ -594,9 +659,13 @@ async def test_handle_polling_network_error_updater_stop_timeout():
     with patch.object(_mod, "_UPDATER_STOP_TIMEOUT", 0.05):
         await adapter._handle_polling_network_error(OSError("CLOSE-WAIT test"))
 
-    # The reconnect ladder must have advanced past the hung stop().
-    assert drain_called, "_drain_polling_connections was not called after stop() timeout"
-    assert start_polling_called, "start_polling was not called after stop() timeout"
+    # A timed-out stop may still hold PTB's lifecycle lock. Reusing this
+    # Updater would wedge start_polling() behind it, so recovery must hand the
+    # runner a retryable fatal and rebuild the adapter instead.
+    assert adapter.has_fatal_error
+    adapter._notify_fatal_error.assert_awaited_once()
+    assert not drain_called
+    assert not start_polling_called
 
 
 @pytest.mark.asyncio

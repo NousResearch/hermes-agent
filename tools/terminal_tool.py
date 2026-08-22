@@ -272,6 +272,19 @@ def _get_sudo_password_callback():
     return getattr(_callback_tls, "sudo_password", None)
 
 
+def _current_session_key() -> str:
+    """Return the active gateway/WebUI session key, or "" outside sessions.
+
+    Single lookup point for the ``HERMES_SESSION_KEY`` ContextVar with the
+    os.environ fallback that ``get_session_env()`` applies for CLI, cron, and
+    test processes. Callers scope per-session caches by prefixing the value
+    with ``"session:"`` so two sessions never share a cache slot.
+    """
+    from gateway.session_context import get_session_env
+
+    return get_session_env("HERMES_SESSION_KEY", "")
+
+
 def _get_approval_callback():
     return getattr(_callback_tls, "approval", None)
 
@@ -297,12 +310,7 @@ def set_approval_callback(cb):
 
 def _get_sudo_password_cache_scope() -> str:
     """Return the cache scope for interactive sudo passwords."""
-    try:
-        from gateway.session_context import get_session_env
-
-        session_key = get_session_env("HERMES_SESSION_KEY", "")
-    except Exception:
-        session_key = os.getenv("HERMES_SESSION_KEY", "")
+    session_key = _current_session_key()
     if session_key:
         return f"session:{session_key}"
 
@@ -1386,6 +1394,21 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         return task_id
     if task_id and _docker_session_isolation_enabled():
         return _resolve_container_alias(task_id)
+    # Per-session isolation: when a session key is present (the WebUI streaming
+    # layer sets it per-session, the gateway per-message via contextvars), scope
+    # the container to it so switching profiles can't reuse a previous profile's
+    # SSHEnvironment and silently run commands on the wrong remote host. Subagents
+    # inherit the same session key, so they still collapse onto the parent's
+    # container (the #16177 shared-container intent). CLI mode has no session key
+    # and falls through to "default", behaviour unchanged. See commit e00f940a9.
+    #
+    # This runs *after* the isolation-override and docker/container_persistent
+    # branches above: those paths already key containers per task_id, so they
+    # stay authoritative where they apply and this only covers the cases that
+    # would otherwise collapse to the shared "default" key (notably SSH).
+    session_key = _current_session_key()
+    if session_key:
+        return f"session:{session_key}"
     return "default"
 
 

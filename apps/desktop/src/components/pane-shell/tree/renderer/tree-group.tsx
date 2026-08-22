@@ -28,6 +28,7 @@ import {
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
+import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
 
 import { $layoutEditMode } from '../../edit-mode'
@@ -58,8 +59,8 @@ import {
   restoreTreePane,
   SESSION_TILE_DRAG,
   setStripTabHidden,
-  setTreeGroupHeaderHidden,
   setTreeGroupMinimized,
+  setTreeGroupTabStrip,
   treeTabCloseTargets
 } from '../store'
 import {
@@ -71,8 +72,8 @@ import {
   toggleTabSelected
 } from '../tab-selection'
 
-import { type DoubleTapContext, startPaneDrag } from './drag-session'
-import { forceLoneHeaderForPanes } from './lone-header'
+import { startPaneDrag } from './drag-session'
+import { tabStripVisibleForZone } from './strip-visibility'
 import { useActiveTabVisible } from './tab-strip-scroll'
 import { paneChrome } from './track-model'
 
@@ -85,9 +86,9 @@ function ZoneMenu({
   children,
   closable,
   minimizable = true,
-  headerHidden,
   minimized,
   nodeId,
+  stripVisible,
   targetPane
 }: {
   children: ReactNode
@@ -97,9 +98,11 @@ function ZoneMenu({
   /** False for the zone hosting the uncloseable workspace — collapsing the
    *  MAIN pane strands the app behind a strip. */
   minimizable?: boolean
-  headerHidden?: boolean
   minimized?: boolean
   nodeId: string
+  /** Whether the strip is on screen — the Hide/Show row toggles against what
+   *  the user can see, not against the stored mode (a zone on auto has none). */
+  stripVisible?: boolean
   /** The right-clicked chip (else the active pane) — what the close-others /
    *  to-the-right / all verbs measure from. Called when the menu RENDERS, not
    *  on every zone re-render: resolving the siblings reads the layout tree,
@@ -108,6 +111,10 @@ function ZoneMenu({
   targetPane: () => string
 }) {
   const { t } = useI18n()
+  // Hiding the strip takes this menu with it, so the row that hides it is the
+  // last place to say how to get it back — the status bar's hide row does the
+  // same for the same reason.
+  const toggleHint = useKeybindHint('view.toggleTabStrip')
 
   // Resolved at render: the menu mounts on open, after the right-click set
   // menuPane — so an uncloseable target hides Close instead of offering a
@@ -157,9 +164,17 @@ function ZoneMenu({
         })()}
         <kit.Separator />
         {renderActionItem(kit, {
-          icon: headerHidden ? 'eye' : 'eye-closed',
-          label: headerHidden ? t.zones.showHeader : t.zones.hideHeader,
-          onSelect: () => setTreeGroupHeaderHidden(nodeId, !headerHidden)
+          icon: stripVisible ? 'eye-closed' : 'eye',
+          key: 'zone-tabstrip',
+          label: (
+            <>
+              {/* The hint's `ml-auto` makes the label the row's flexible part,
+                  so without this it breaks mid-phrase before the menu widens. */}
+              <span className="whitespace-nowrap">{stripVisible ? t.zones.hideTabStrip : t.zones.showTabStrip}</span>
+              {toggleHint && <span className="ml-auto pl-2 text-(--ui-text-quaternary)">{toggleHint}</span>}
+            </>
+          ),
+          onSelect: () => setTreeGroupTabStrip(nodeId, stripVisible ? 'never' : 'always')
         })}
         {minimizable &&
           renderActionItem(kit, {
@@ -256,23 +271,17 @@ export function TreeGroup({
   const paneLifecycle = lifecycleRef.current.entries
   const keptPanes = shown.filter(id => paneLifecycle[id] && paneLifecycle[id].lifecycle !== 'parked')
 
-  // ONE header style: the app's compact pane-header. DEFAULT is contextual —
-  // a single pane isn't a "tab", so its header auto-hides; a stack shows its
-  // chips. EXCEPTIONS force a lone pane to keep its header (tab + close X):
-  //  - a TILE (closeable, placement 'main' — a session/page split), else a
-  //    tile in its own zone is unclosable (the "3rd tile has no tab" trap);
-  //  - a TOOL PANEL (terminal/logs — a collapse pane) dragged out of the main
-  //    stack, else it's a dead zone with no tab to grab or ✕ to close.
-  // The uncloseable workspace and side chrome (sessions/files) keep the clean
-  // no-tab default. Double-click toggles it either way; a minimized group
-  // always shows its header (it IS the header).
-  // Session-tile ids force the header even before chrome registers — cycling
-  // onto a freshly-split tile used to land headerless ("name card missing").
-  const forceLoneHeader = forceLoneHeaderForPanes(shown, id => paneChrome(paneFor(id)), isCollapsePane)
-
-  // A full-page view (headerVeto) suppresses the strip while it's the active
-  // pane — a page is not a tab-able surface; the bar returns with the chat.
-  const headerHidden = paneChrome(active).headerVeto || (node.headerHidden ?? (shown.length <= 1 && !forceLoneHeader))
+  // ONE header style: the app's compact pane-header. Whether this zone shows
+  // it is the resolver's call, not this component's — see strip-visibility.ts
+  // for the precedence. The same resolver answers for the toggle command, so
+  // the keystroke and the screen always agree about which way "toggle" points.
+  const stripVisible = tabStripVisibleForZone({
+    active: activeId,
+    isCollapsePane,
+    mode: node.tabStrip,
+    paneFor,
+    shown
+  })
 
   // A group collapses ALONG its parent split's axis. In a row that means the
   // WIDTH collapses — a full-width horizontal header would strand a tall
@@ -280,7 +289,8 @@ export function TreeGroup({
   // (tabs reading top-to-bottom). In a column (stacked zones) the horizontal
   // header IS the collapsed form, exactly as before.
   const verticalCollapse = Boolean(node.minimized) && parentAxis === 'row' && !isEmpty
-  const headerVisible = !isEmpty && !verticalCollapse && (Boolean(node.minimized) || !headerHidden)
+  // A minimized group IS its header, so it shows one regardless.
+  const headerVisible = !isEmpty && !verticalCollapse && (Boolean(node.minimized) || stripVisible)
 
   // Keep the activated tab — and, on the last one, the trailing "+" — inside
   // the strip's scroll window. Opening a tab past the right edge otherwise
@@ -290,17 +300,6 @@ export function TreeGroup({
     last: shown[shown.length - 1] === activeId,
     tabCount: shown.length
   })
-
-  // Drag handles preventDefault pointerdown (no native dblclick), so the
-  // header + chips share a synthesized double-tap: restore if collapsed
-  // (undoing the first tap's minimize toggle) and hide the chrome.
-  const hideHeaderDoubleTap: DoubleTapContext = {
-    key: `hide-header-${node.id}`,
-    onDoubleTap: () => {
-      setTreeGroupMinimized(node.id, false)
-      setTreeGroupHeaderHidden(node.id, true)
-    }
-  }
 
   // Zone-menu close targets read the layout tree, but this component must NOT
   // subscribe to it: `useStore($layoutTree)` here wires every zone — and
@@ -348,18 +347,12 @@ export function TreeGroup({
   // Same menu on the header strip and the edit veil — one prop bag.
   const zoneMenu = {
     closable,
-    headerHidden,
     minimizable,
     minimized: node.minimized,
     nodeId: node.id,
+    stripVisible,
     targetPane
   }
-
-  // NO body double-click toggle: virtualized content (the thread) recreates
-  // its nodes between clicks, so the gesture was hopelessly unreliable. The
-  // bar's lifecycle is explicit instead — gaining a tab sticky-shows it
-  // (insertAtGroup pins headerHidden false), the main tab's context menu
-  // hides it, and full-page views veto it via paneChrome.headerVeto.
 
   return (
     <div
@@ -442,16 +435,11 @@ export function TreeGroup({
             listRef={tabsRef}
             onPointerDown={e =>
               // Tap the header to collapse to it / expand back — the DetailPane
-              // / sidebar-section gesture (never for the main zone). Double-tap
-              // hides the header entirely. Drag still moves the pane.
-              startPaneDrag(
-                activeId,
-                e,
-                () => minimizable && toggleCollapse(),
-                undefined,
-                hideHeaderDoubleTap,
-                active?.title ?? activeId
-              )
+              // / sidebar-section gesture (never for the main zone). Drag still
+              // moves the pane. No double-tap hide belongs here: hiding the
+              // strip unmounts every affordance the zone has, including the
+              // menu offering "Show", so it stays a named command.
+              startPaneDrag(activeId, e, () => minimizable && toggleCollapse(), undefined, active?.title ?? activeId)
             }
             ref={stripRef}
             style={{ cursor: 'grab' }}
@@ -545,7 +533,6 @@ export function TreeGroup({
                         e,
                         onTap,
                         stripRef.current ? { groupId: node.id, strip: stripRef.current } : undefined,
-                        hideHeaderDoubleTap,
                         t.zones.tabCount(dragSelection.length),
                         dragSelection
                       )
@@ -557,20 +544,18 @@ export function TreeGroup({
                     // session drop language — link/stack/split); `false` defers
                     // to the generic pane move (the workspace tab on a fresh
                     // draft has no session to link).
-                    if (!chrome.tabDrag?.(e, onTap, hideHeaderDoubleTap)) {
+                    if (!chrome.tabDrag?.(e, onTap)) {
                       startPaneDrag(
                         paneId,
                         e,
                         onTap,
                         stripRef.current ? { groupId: node.id, strip: stripRef.current } : undefined,
-                        hideHeaderDoubleTap,
                         title
                       )
                     }
                   }}
                   role="tab"
                   selected={isSelected}
-                  showCloseButton={chrome.showCloseButton !== false}
                   style={{ cursor: 'grab' }}
                 >
                   {chrome.tabLead ? (
@@ -679,7 +664,7 @@ export function TreeGroup({
             // barely-tinted wash; the light blur reads as "edit mode" the same
             // way the zone editor's backdrop does.
             className="absolute inset-x-0 bottom-0 z-50 flex cursor-grab items-center justify-center outline-1 -outline-offset-2 outline-dashed backdrop-blur-[2px]"
-            onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, undefined, active?.title ?? activeId)}
+            onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, active?.title ?? activeId)}
             style={{
               top: headerVisible ? 28 : 0,
               background:

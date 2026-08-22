@@ -755,6 +755,10 @@ def _billing_failure_result(
         "failed": True,
         "error": summary,
         "failure_reason": classified.reason.value,
+        # The classifier's own retry verdict — carried so UI surfaces
+        # (agent/error_surface.py) show Retry only when a re-run can differ,
+        # instead of re-deriving retryability from a second taxonomy.
+        "failure_retryable": bool(classified.retryable),
         # The billing verdict may rest on an ambiguous body (#82154) — carry
         # that through the structured result, not just the prose.
         "billing_unverified": unverified,
@@ -6439,6 +6443,9 @@ def run_conversation(
                         # different exit code. ``rate_limit`` / ``billing`` here
                         # mean "quota wall, not a task error".
                         "failure_reason": classified.reason.value,
+                        # The classifier's own retry verdict — UI surfaces use
+                        # this instead of re-deriving from the reason string.
+                        "failure_retryable": bool(classified.retryable),
                         # True when the billing verdict rests on an ambiguous
                         # body (#82154) — may be a content-filter rejection.
                         "billing_unverified": _billing_unverified,

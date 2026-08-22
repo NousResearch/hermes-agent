@@ -8,8 +8,10 @@ import {
 } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useCallback, useMemo, useState } from 'react'
+import { useInRouterContext, useNavigate } from 'react-router'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { SETTINGS_ROUTE } from '@/app/routes'
 import { ChangedFilesCard } from '@/components/assistant-ui/thread/changed-files-card'
 import {
   contentHasVisibleText,
@@ -28,14 +30,26 @@ import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
+import { type ErrorSurface, formatErrorDiagnostics } from '@/lib/error-surface'
 import { triggerHaptic } from '@/lib/haptics'
-import { AudioLines, GitForkIcon, Loader2Icon, RefreshCwIcon, SmilePlusIcon, VolumeXIcon, XIcon } from '@/lib/icons'
+import {
+  AudioLines,
+  GitForkIcon,
+  Loader2Icon,
+  RefreshCwIcon,
+  SmilePlusIcon,
+  Upload,
+  VolumeXIcon,
+  XIcon
+} from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { markAssistantIdSpoken } from '@/lib/spoken-reply'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
+import { requestSendDiagnostics } from '@/store/send-diagnostics'
+import { $connection, $currentModel } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
 
 // Stable empty identity for the settled-parts selector — a fresh [] per render
@@ -224,20 +238,26 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
             <AssistantPreviewEmbeds />
             <MessagePrimitive.Error>
               <ErrorPrimitive.Root
-                className="mt-1.5 flex items-start gap-1.5 text-[0.78rem] leading-5 text-[color-mix(in_srgb,var(--dt-destructive)_78%,var(--ui-text-secondary))]"
+                className="mt-1.5 flex flex-col gap-1.5 rounded-lg border border-[color-mix(in_srgb,var(--dt-destructive)_35%,transparent)] bg-[color-mix(in_srgb,var(--dt-destructive)_7%,transparent)] px-3 py-2 text-[0.78rem] leading-5 text-[color-mix(in_srgb,var(--dt-destructive)_78%,var(--ui-text-secondary))]"
                 role="alert"
               >
-                <ErrorPrimitive.Message className="min-w-0 flex-1" />
-                {onDismissError && (
-                  <TooltipIconButton
-                    className="-my-0.5 shrink-0 text-current opacity-70 hover:opacity-100"
-                    onClick={() => onDismissError(messageId)}
-                    side="top"
-                    tooltip={t.assistant.thread.dismissError}
-                  >
-                    <XIcon className="size-3.5" />
-                  </TooltipIconButton>
-                )}
+                <div className="flex items-start gap-1.5">
+                  <div className="min-w-0 flex-1">
+                    <ErrorLayerLabel />
+                    <ErrorPrimitive.Message className="min-w-0" />
+                  </div>
+                  {onDismissError && (
+                    <TooltipIconButton
+                      className="-my-0.5 shrink-0 text-current opacity-70 hover:opacity-100"
+                      onClick={() => onDismissError(messageId)}
+                      side="top"
+                      tooltip={t.assistant.thread.dismissError}
+                    >
+                      <XIcon className="size-3.5" />
+                    </TooltipIconButton>
+                  )}
+                </div>
+                <ErrorRecoveryActions />
               </ErrorPrimitive.Root>
             </MessagePrimitive.Error>
           </div>
@@ -430,6 +450,131 @@ const StreamingMarker: FC = () => {
       data-message-streaming={isRunning ? 'true' : undefined}
       data-slot="aui_message-streaming-marker"
     />
+  )
+}
+
+// ── Layered error card pieces ────────────────────────────────────────────
+//
+// The gateway stamps failed turns with a structured {layer, code, retryable}
+// descriptor (metadata.custom.errorSurface — see agent/error_surface.py).
+// These leaves render the layer label + recovery actions. Older backends
+// never send the descriptor: the label falls back to a generic title and the
+// action row still offers Retry / Open Logs / Copy error details, so nothing
+// regresses on version skew.
+
+const ErrorLayerLabel: FC = () => {
+  const { t } = useI18n()
+  const surface = useAuiState(s => s.message.metadata?.custom?.errorSurface as ErrorSurface | undefined)
+
+  const labels = t.assistant.thread.errorLayers
+  const label = (surface && labels[surface.layer]) || labels.generic
+
+  return <div className="font-medium">{label}</div>
+}
+
+// Isolated because useNavigate() THROWS outside a <Router> (bare test
+// harnesses, embedded panes render threads router-free). The parent gates
+// this child's mount on useInRouterContext(), which is safe anywhere.
+const SwitchProviderAction: FC<{ label: string }> = ({ label }) => {
+  const navigate = useNavigate()
+
+  return (
+    <button className="aui-error-action" onClick={() => navigate(`${SETTINGS_ROUTE}?tab=config:model`)} type="button">
+      {label}
+    </button>
+  )
+}
+
+const ErrorRecoveryActions: FC = () => {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
+  const surface = useAuiState(s => s.message.metadata?.custom?.errorSurface as ErrorSurface | undefined)
+
+  const errorText = useAuiState(s => {
+    const status = s.message.status as { error?: unknown; type?: string } | undefined
+
+    return status?.type === 'incomplete' && typeof status.error === 'string' ? status.error : ''
+  })
+
+  // useNavigate() would throw here when no Router is above us; the deep-link
+  // child mounts only when one is (see SwitchProviderAction).
+  const inRouter = useInRouterContext()
+  const model = useStore($currentModel)
+  const connection = useStore($connection)
+
+  // Open Logs reveals the LOCAL Electron profile's HERMES_HOME/logs. On a
+  // remote/cloud connection the failed turn's gateway+agent logs live on the
+  // remote box — the local folder only holds Desktop-side transport logs, so
+  // the label says "Open Desktop logs" there instead of implying it opens the
+  // runtime's logs.
+  const remoteConnection = connection?.mode === 'remote'
+
+  // Retry = assistant-ui reload (same wiring as the footer's refresh action):
+  // re-runs the failed turn's prompt in place. Suppressed when the classifier
+  // says the failure is deterministic (retrying reproduces it).
+  const retryable = !surface || surface.retryable
+
+  // Switch Provider deep-links Settings → Models for the layers where the fix
+  // is provider/endpoint/auth config, not a retry.
+  const showSwitchProvider = surface != null && ['auth', 'billing', 'endpoint', 'provider'].includes(surface.layer)
+
+  const openLogs = useCallback(async () => {
+    try {
+      const root = await window.hermesDesktop?.logsRoot?.()
+
+      if (!root) {
+        notifyError(new Error('logs root unavailable'), copy.errorOpenLogsFailed)
+
+        return
+      }
+
+      const result = await window.hermesDesktop?.openDir?.(root)
+
+      if (result && !result.ok) {
+        notifyError(new Error(result.error || 'open failed'), copy.errorOpenLogsFailed)
+      }
+    } catch (error) {
+      notifyError(error, copy.errorOpenLogsFailed)
+    }
+  }, [copy.errorOpenLogsFailed])
+
+  const diagnosticsText = useCallback(
+    () =>
+      formatErrorDiagnostics({
+        errorText,
+        model: model || undefined,
+        surface
+      }),
+    [errorText, model, surface]
+  )
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {retryable && (
+        <ActionBarPrimitive.Reload asChild>
+          <button className="aui-error-action" onClick={() => triggerHaptic('submit')} type="button">
+            <RefreshCwIcon className="size-3" />
+            {copy.errorRetry}
+          </button>
+        </ActionBarPrimitive.Reload>
+      )}
+      {showSwitchProvider && inRouter && <SwitchProviderAction label={copy.errorSwitchProvider} />}
+      {window.hermesDesktop?.logsRoot && (
+        <button className="aui-error-action" onClick={() => void openLogs()} type="button">
+          {remoteConnection ? copy.errorOpenDesktopLogs : copy.errorOpenLogs}
+        </button>
+      )}
+      <button className="aui-error-action" onClick={() => requestSendDiagnostics(diagnosticsText())} type="button">
+        <Upload className="size-3" />
+        {copy.errorSendDiagnostics}
+      </button>
+      <CopyButton
+        appearance="inline"
+        className="aui-error-action"
+        label={copy.errorCopyDiagnostics}
+        text={diagnosticsText}
+      />
+    </div>
   )
 }
 

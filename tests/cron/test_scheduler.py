@@ -2194,11 +2194,20 @@ class TestCronDeliveryTargets:
 
         targets = {t["id"]: t for t in cron_delivery_targets()}
 
-        assert set(targets) == {"matrix", "telegram"}
+        # bot-chat:<profile> entries (machine-local Bot Chat injection) ride
+        # the same listing but are not gateway platforms — scope the
+        # platform assertions to the gateway entries.
+        platform_targets = {k: v for k, v in targets.items() if not k.startswith("bot-chat")}
+
+        assert set(platform_targets) == {"matrix", "telegram"}
         # Configured but no home channel → surfaced, flagged for the UI.
-        assert targets["matrix"]["home_target_set"] is False
-        assert targets["matrix"]["home_env_var"] == "MATRIX_HOME_ROOM"
-        assert targets["telegram"]["home_target_set"] is False
+        assert platform_targets["matrix"]["home_target_set"] is False
+        assert platform_targets["matrix"]["home_env_var"] == "MATRIX_HOME_ROOM"
+        assert platform_targets["telegram"]["home_target_set"] is False
+        # Bot Chat targets need no home channel: whatever profiles exist on
+        # this machine must all be listed as ready.
+        bot_chat = [v for k, v in targets.items() if k.startswith("bot-chat")]
+        assert all(t["home_target_set"] for t in bot_chat)
 
 
 class TestHomeTargetEnvVarRegistry:

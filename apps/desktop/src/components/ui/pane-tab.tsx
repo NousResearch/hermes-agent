@@ -53,13 +53,14 @@ interface PaneTabProps extends React.ComponentProps<'div'> {
   dirty?: boolean
   /** Close verb. Horizontal tabs reveal a hover ✕ on the right (a `--tab-face`
    *  gradient fades it over the label); middle-click and ⌘-click always work,
-   *  and stay the only gestures on vertical rails (no room for a chip ✕). */
+   *  and stay the only gestures on vertical rails (no room for a chip ✕).
+   *  There is no way to take the ✕ off a tab that HAS this verb: the chip and
+   *  the pointer gestures are one affordance, so a closeable tab always says
+   *  so. Omit `onClose` to make a tab uncloseable. */
   onClose?: () => void
   /** Part of a multi-tab selection (⌥/Ctrl-click, Shift-click) — an accent
    *  wash marks every tab that a drag would carry, Chrome-style. */
   selected?: boolean
-  /** Whether a closeable horizontal tab reveals the hover ✕. */
-  showCloseButton?: boolean
   /** Vertical rail form (collapsed sidebar zones). */
   vertical?: boolean
   /** Content-facing edge of a vertical rail — the strip line the active tab cuts. */
@@ -83,7 +84,6 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
     onPointerUp,
     onClickCapture,
     selected = false,
-    showCloseButton = true,
     vertical = false,
     side = 'left',
     children,
@@ -162,7 +162,7 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
           <span className="size-2 rounded-full bg-amber-500 shadow-[0_0_0_2px_var(--tab-bg),0_1px_2px_rgba(0,0,0,0.45)] dark:bg-amber-400" />
         </span>
       )}
-      {onClose && showCloseButton && !vertical && (
+      {onClose && !vertical && (
         // Hover ✕, painted OVER the label's right edge as an overlay (no
         // layout shift, tab width never jumps on hover). The runway is a tiny
         // transparent→`--tab-face` gradient, so the button melts into the

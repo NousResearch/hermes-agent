@@ -186,7 +186,7 @@ def _(rid, params: dict) -> dict:
             # resolve (canonical chats are born hidden); archived rows and
             # deny-listed sources do not; compression lineages resolve to the
             # live tip (``resolved_id``), mirroring profiles.list's
-            # preferred_session resolver. Older clients never send this param;
+            # canonical_session resolver. Older clients never send this param;
             # newer clients falling back to older gateways just get the normal
             # windowed listing back (the param is ignored) and scan it.
             title_lookup = str(params.get("title") or "").strip()
@@ -861,7 +861,14 @@ def _(rid, params: dict) -> dict:
                     # leaves the old leak, which is survivable; closing under a
                     # live session is the permanent "Cannot operate on a closed
                     # database" break this patch exists to avoid.
-                    _transfer_db_to_agent(agent, db)
+                    #
+                    # The transfer itself is gated on owns_db: with no
+                    # non-launch profile selected this path resolved db to the
+                    # SHARED launch handle (_get_db()), and transferring it
+                    # made session.close() tear down the process-wide
+                    # database under every unrelated session (#91610).
+                    if owns_db:
+                        _transfer_db_to_agent(agent, db)
                     owns_db = False
                 finally:
                     if init_home_token is not None:

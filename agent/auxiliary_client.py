@@ -671,7 +671,9 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
     via prefix so the override tracks every 272K-capped family (5.4, 5.5,
     5.6 sol/terra/luna incl. their ``-pro`` modes) without re-listing every
     variant. (Name kept for backward compatibility with the
-    ``compression.codex_gpt55_autoraise`` config key.)
+    ``compression.codex_gpt55_autoraise`` config key.) The exact
+    ``gpt-daybreak-blue-latest`` Codex slug is also a verified Sol-family
+    alias and receives the same autoraise.
     """
     prov = (provider or "").strip().lower()
     if prov != "openai-codex":
@@ -687,6 +689,7 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
         or bare == "gpt-5.6"
         or bare.startswith("gpt-5.6-")
         or bare.startswith("gpt-5.6.")
+        or bare == "gpt-daybreak-blue-latest"
     )
 
 
@@ -741,7 +744,8 @@ def _compression_threshold_for_model(
 
     Per-model/route overrides:
       - Arcee Trinity Large Thinking → 0.75 (preserve reasoning context).
-      - gpt-5.4 / gpt-5.5 / gpt-5.6 on the Codex OAuth route → 0.85, because
+      - gpt-5.4 / gpt-5.5 / gpt-5.6 and the exact Daybreak Sol alias on the
+        Codex OAuth route → 0.85, because
         Codex caps all three families at 272K and the default 50% trigger
         would compact at ~136K. Gated by ``allow_codex_gpt55_autoraise``
         (historical config-key name kept for backward compatibility) so the
@@ -2826,8 +2830,15 @@ _paid_lane_warned: set = set()
 
 
 def _is_free_model(model: Optional[str]) -> bool:
-    """True when ``model`` is an OpenRouter free SKU (``:free`` suffix)."""
-    return bool(model) and str(model).strip().endswith(":free")
+    """True when ``model`` is a free SKU (``:free`` suffix or ``stealth/`` prefix).
+
+    Naming-convention trust: a paid model shipped under ``stealth/`` would
+    silently bypass both the free_only gate and the paid-lane warning.
+    """
+    if not model:
+        return False
+    normalized = str(model).strip()
+    return normalized.endswith(":free") or normalized.startswith("stealth/")
 
 
 def _aux_openrouter_settings() -> Tuple[bool, str]:
@@ -2849,7 +2860,8 @@ def _aux_openrouter_settings() -> Tuple[bool, str]:
 
 
 def _warn_paid_lane_once(model: str) -> None:
-    """Log a WARNING the first time a non-:free OpenRouter model is engaged."""
+    """Log a WARNING the first time a non-free (neither ``:free`` nor
+    ``stealth/``) OpenRouter model is engaged."""
     if model in _paid_lane_warned:
         return
     _paid_lane_warned.add(model)
@@ -6979,8 +6991,12 @@ def resolve_provider_client(
         default_model = "google/gemini-3-flash-preview"
         final_model = _normalize_resolved_model(model or default_model, provider)
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=token, base_url=base_url)
+            # Alias the import: a bare `from openai import OpenAI` here would
+            # make `OpenAI` function-local and shadow the module-level lazy
+            # proxy for every other branch of this function (breaking both the
+            # Bedrock Mantle branch below and patch("agent.auxiliary_client.OpenAI")).
+            from openai import OpenAI as _VertexOpenAI
+            client = _VertexOpenAI(api_key=token, base_url=base_url)
         except Exception as exc:
             logger.warning("resolve_provider_client: cannot create Vertex "
                            "client: %s", exc)
@@ -6991,17 +7007,23 @@ def resolve_provider_client(
 
     elif pconfig.auth_type == "aws_sdk":
         # AWS SDK providers (Bedrock) — Claude models use the Anthropic Bedrock
-        # SDK (prompt caching, thinking); non-Claude models use Converse API.
+        # SDK (prompt caching, thinking); OpenAI models (GPT-5.5/5.6) use
+        # Bedrock Mantle's OpenAI Responses endpoint; all other models use the
+        # Converse API.
         try:
             from agent.bedrock_adapter import (
                 has_aws_credentials,
                 is_anthropic_bedrock_model,
-                resolve_bedrock_region,
+                resolve_bedrock_runtime_region,
+                is_openai_bedrock_model,
+                bedrock_openai_base_url,
+                resolve_bedrock_bearer_token,
+                configure_bedrock_openai_client_kwargs,
             )
             from agent.anthropic_adapter import build_anthropic_bedrock_client
         except ImportError:
             logger.warning("resolve_provider_client: bedrock requested but "
-                           "boto3 or anthropic SDK not installed")
+                           "boto3, httpx/openai, or anthropic SDK not installed")
             return None, None
 
         if not has_aws_credentials():
@@ -7009,9 +7031,34 @@ def resolve_provider_client(
                          "no AWS credentials found")
             return None, None
 
-        region = resolve_bedrock_region()
+        # Region must match the main runtime's resolution (bedrock.region in
+        # config.yaml first, then env/profile) — see review on #53880/#65076:
+        # a bare resolve_bedrock_region() here let auxiliary calls (compression,
+        # memory, vision) leave the primary runtime's configured region.
+        region = resolve_bedrock_runtime_region()
         default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
-        final_model = _normalize_resolved_model(model or default_model, provider)
+        final_model = _normalize_resolved_model(model or default_model, provider) or default_model
+
+        if is_openai_bedrock_model(final_model):
+            # NOTE: no local `from openai import OpenAI` here — the module-level
+            # lazy proxy (see top of file) must stay visible so tests can
+            # patch("agent.auxiliary_client.OpenAI", ...).
+            bearer = resolve_bedrock_bearer_token()
+            mantle_base_url = bedrock_openai_base_url(region)
+            client_kwargs: Dict[str, Any] = {
+                "api_key": bearer or "aws-sdk",
+                "base_url": mantle_base_url,
+            }
+            configure_bedrock_openai_client_kwargs(client_kwargs)
+            client = OpenAI(**client_kwargs)
+            logger.debug("resolve_provider_client: bedrock-openai (%s, %s)", final_model, region)
+            if raw_codex:
+                return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                        else (client, final_model))
+            wrapped = CodexAuxiliaryClient(client, final_model)
+            return (_to_async_client(wrapped, final_model, is_vision=is_vision) if async_mode
+                    else (wrapped, final_model))
+
         base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
 
         if is_anthropic_bedrock_model(final_model):

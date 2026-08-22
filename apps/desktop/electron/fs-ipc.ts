@@ -98,6 +98,12 @@ export function registerFsIpc({
 
   ipcMain.handle('hermes:fs:desktopPluginsRoot', async () => localPluginsRoot('desktop-plugins'))
 
+  // The LOCAL logs root (`<HERMES_HOME>/logs`, profile-aware) — the error
+  // card's "Open Logs" action reveals agent.log/gateway.log without the user
+  // knowing where HERMES_HOME lives. Same Electron-local resolution as the
+  // plugin roots: valid in every connection mode, created on demand.
+  ipcMain.handle('hermes:fs:logsRoot', async () => localPluginsRoot('logs'))
+
   // The LOCAL agent-plugin root (`<HERMES_HOME>/plugins`), same Electron-local
   // resolution as above. This is the desktop half of a UNIFIED plugin package:
   // an agent plugin may ship `desktop/plugin.js` alongside its Python code (the

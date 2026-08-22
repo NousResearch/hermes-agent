@@ -1004,14 +1004,23 @@ def _assess_parked_branch_switch(
     autostashed, ran its post-update steps and printed "✓ Code updated!"
     while the running code stayed days behind main. The guard's contract:
 
-    - safe (True, "") only when the working tree + index are clean AND every
-      commit on the parked branch is already contained in
-      ``origin/<target_branch>`` (``git cherry`` reports no ``+`` lines).
-    - anything else — dirty tree, unmerged commits, git errors, or the
-      ``updates.auto_switch_parked_branch: false`` config opt-out — returns
-      (False, <reason>) and the caller must NOT touch the branch.
+    - (True, "") when the working tree + index are clean AND every commit on
+      the parked branch is already contained in ``origin/<target_branch>``
+      (``git cherry`` reports no ``+`` lines).
+    - (True, "unmerged:<count>") when the tree is clean but the branch has
+      commits not yet in the target. Switching is safe — ``git checkout``
+      never discards committed work and the branch keeps the commits — but
+      the caller must print a LOUD notice naming the branch and count so the
+      work is not forgotten. This is what non-interactive callers (desktop
+      update button, gateway /update, cron) rely on: they have no way to
+      resolve a skip, so a clean checkout must always reach the target.
+    - (False, <reason>) — dirty tree, git errors, or the
+      ``updates.auto_switch_parked_branch: false`` config opt-out — and the
+      caller must NOT touch the branch. A dirty tree is the one genuinely
+      unsafe case: uncommitted work would have to ride an autostash across
+      branches, which is how the 2026-08-17 incident started.
 
-    Reasons: "disabled", "dirty", "unmerged:<count>", "unverifiable".
+    Block reasons: "disabled", "dirty", "unverifiable".
     """
     try:
         from hermes_cli.config import load_config
@@ -1047,7 +1056,10 @@ def _assess_parked_branch_switch(
         line for line in cherry.stdout.splitlines() if line.startswith("+")
     ]
     if unmerged:
-        return False, f"unmerged:{len(unmerged)}"
+        # Clean tree: switching is safe (checkout keeps the commits on the
+        # branch). The reason string tells the caller to print the loud
+        # "branch kept with N unmerged commit(s)" notice.
+        return True, f"unmerged:{len(unmerged)}"
     return True, ""
 
 
@@ -1074,12 +1086,6 @@ def _print_parked_branch_skip_warning(
 
     if reason == "dirty":
         why = "the working tree has uncommitted changes"
-    elif reason.startswith("unmerged:"):
-        count = reason.split(":", 1)[1]
-        why = (
-            f"the branch has {count} commit(s) not merged into "
-            f"origin/{target_branch}"
-        )
     elif reason == "disabled":
         why = "updates.auto_switch_parked_branch is set to false in config.yaml"
     else:
@@ -1109,6 +1115,35 @@ def _print_parked_branch_skip_warning(
     print(bar)
 
 
+def _print_parked_branch_kept_notice(
+    current_branch: str, target_branch: str, unmerged_count: str
+) -> None:
+    """LOUD notice printed when a clean parked branch with unmerged commits
+    is auto-switched back to the update target.
+
+    Non-interactive callers (desktop update button, gateway /update, cron)
+    cannot resolve a skip, so a clean checkout always proceeds to the
+    target — but the unmerged work must be impossible to miss.  The commits
+    are untouched: ``git checkout`` never discards committed work; the
+    branch keeps them until the user returns.
+    """
+    bar = "=" * 68
+    print()
+    print(bar)
+    print(
+        f"⚠ Checkout was parked on '{current_branch}' with "
+        f"{unmerged_count} commit(s) not merged into origin/{target_branch}."
+    )
+    print(
+        f"  Switching to {target_branch} so the update can proceed — your "
+        f"commit(s) are safe on '{current_branch}'."
+    )
+    print()
+    print("  To pick the work back up later:")
+    print(f"    git checkout {current_branch}")
+    print(bar)
+
+
 def _print_update_completion(message: str) -> None:
     """Print an update outcome plus, when the dashboard launched this run
     with an action id, a terminal receipt line the Desktop can match after
@@ -1121,6 +1156,166 @@ def _print_update_completion(message: str) -> None:
     action_id = os.environ.get("HERMES_ACTION_ID", "")
     if len(action_id) == 32 and all(char in "0123456789abcdef" for char in action_id):
         print(f"=== hermes-update completed {action_id} ===")
+
+
+def _called_process_error_cmd_parts(exc: subprocess.CalledProcessError) -> list[str]:
+    """Normalize ``CalledProcessError.cmd`` into argv-style tokens."""
+    cmd = exc.cmd
+    if cmd is None:
+        return []
+    if isinstance(cmd, (str, bytes)):
+        text = cmd.decode("utf-8", "replace") if isinstance(cmd, bytes) else cmd
+        try:
+            return shlex.split(text, posix=os.name != "nt")
+        except ValueError:
+            return text.split()
+    return [str(part) for part in cmd]
+
+
+def _called_process_error_is_git(exc: subprocess.CalledProcessError) -> bool:
+    """True when the failed subprocess was git itself."""
+    parts = _called_process_error_cmd_parts(exc)
+    if not parts:
+        return False
+    # Windows argv may use backslashes; basename() on POSIX would otherwise
+    # keep the whole path. Normalize separators before taking the name.
+    name = os.path.basename(parts[0].replace("\\", "/")).lower()
+    return name in {"git", "git.exe"}
+
+
+def _called_process_error_is_python_dep_install(
+    exc: subprocess.CalledProcessError,
+) -> bool:
+    """True when the failed subprocess was a uv/pip (or ensurepip) install."""
+    parts = [part.lower() for part in _called_process_error_cmd_parts(exc)]
+    if not parts:
+        return False
+    exe = os.path.basename(parts[0].replace("\\", "/"))
+    if "ensurepip" in parts:
+        return True
+    if "install" in parts and (
+        "pip" in parts or exe in {"pip", "pip.exe", "pip3", "pip3.exe", "uv", "uv.exe"}
+    ):
+        return True
+    return False
+
+
+def _format_update_failure_stage(exc: subprocess.CalledProcessError) -> str:
+    """Name the update stage that actually failed.
+
+    The git pull and the Python-dependency install share one ``try`` in
+    ``_cmd_update_impl``. Calling every ``CalledProcessError`` a git failure
+    (the historical Windows message) sent users hunting in the wrong place
+    and, worse, keyed the ZIP overlay on exception *type* rather than on git
+    actually having failed (#87304, #85840).
+    """
+    if _called_process_error_is_python_dep_install(exc):
+        return "Python dependency install failed"
+    if _called_process_error_is_git(exc):
+        return "Git update failed"
+    return "Update step failed"
+
+
+def _should_zip_fallback_on_update_error(exc: BaseException) -> bool:
+    """ZIP fallback is for Windows git file-I/O breakage, not later stages.
+
+    A dependency-install failure (locked ``hermes.exe`` / ``uv pip install``
+    exit 2) is not a git failure. The pull has already succeeded by then, so
+    re-downloading the source ZIP cannot fix the install and would replace
+    every top-level entry except ``venv`` / ``node_modules`` / ``.git`` /
+    ``.env`` — permanently deleting uncommitted edits and untracked files.
+    """
+    return (
+        isinstance(exc, subprocess.CalledProcessError)
+        and _m()._is_windows()
+        and _called_process_error_is_git(exc)
+    )
+
+
+def _print_called_process_error_tail(
+    exc: subprocess.CalledProcessError, *, limit: int = 12
+) -> None:
+    """Print a captured stderr/stdout tail when the failing call recorded one."""
+    blob = exc.stderr or exc.stdout or ""
+    if isinstance(blob, bytes):
+        blob = blob.decode("utf-8", "replace")
+    lines = [line for line in str(blob).splitlines() if line.strip()]
+    if not lines:
+        return
+    print("  Last output:")
+    for line in lines[-limit:]:
+        print(f"    {line}")
+
+
+def _zip_overlay_block_reason(
+    root: Path, *, ignore_staging_artifacts: bool = False
+) -> Optional[str]:
+    """Why overlaying a ZIP onto ``root`` would destroy work, or None if safe.
+
+    The ZIP path swaps every top-level entry (except a tiny preserve set) and
+    then deletes the backups, so uncommitted edits and untracked files under
+    a replaced directory are gone. Fail closed when git status cannot run:
+    unknown dirtiness is not a license to clobber the tree (#87304).
+
+    ``ignore_staging_artifacts`` is for the pre-swap re-check: phase 1 of the
+    two-phase replace creates ``*.hermes-update-staging`` siblings inside the
+    checkout, which git reports as untracked. Those are our own artifacts,
+    not user work — without the filter the re-check would always refuse.
+    """
+    if not (root / ".git").exists():
+        return None
+    git_cmd = ["git"]
+    if sys.platform == "win32":
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+    result = subprocess.run(
+        # -uall: a user-level ``status.showUntrackedFiles = no`` git config
+        # would otherwise hide untracked files and silently blind this guard.
+        git_cmd + ["status", "--porcelain", "--untracked-files=all"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        suffix = f" ({detail[0]})" if detail else ""
+        return f"could not check the working tree{suffix}"
+    lines = [line for line in (result.stdout or "").splitlines() if line.strip()]
+    if ignore_staging_artifacts:
+        lines = [
+            line for line in lines if not _is_zip_staging_artifact_status_line(line)
+        ]
+    if lines:
+        return "the working tree has uncommitted changes or untracked files"
+    return None
+
+
+_ZIP_STAGING_ARTIFACT_SUFFIXES = (".hermes-update-staging", ".hermes-update-old")
+
+
+def _is_zip_staging_artifact_status_line(line: str) -> bool:
+    """True when a porcelain status line is our own two-phase-swap artifact."""
+    payload = line[3:] if len(line) >= 3 else line
+    top_level = (
+        payload.strip().strip('"').replace("\\", "/").rstrip("/").split("/", 1)[0]
+    )
+    return top_level.endswith(_ZIP_STAGING_ARTIFACT_SUFFIXES)
+
+
+def _abort_zip_update_if_dirty_tree() -> None:
+    """Refuse to overlay a ZIP onto a dirty git checkout (#87304)."""
+    reason = _zip_overlay_block_reason(_m().PROJECT_ROOT)
+    if reason is None:
+        return
+    print(f"✗ ZIP fallback refused: {reason}.")
+    print(
+        "  Overlaying the ZIP would overwrite uncommitted edits and permanently "
+        "delete untracked files."
+    )
+    print("  Stash or commit your changes, then rerun `hermes update`.")
+    print("  To inspect: git status --porcelain")
+    _m().sys.exit(1)
 
 
 def _read_project_version() -> str | None:
@@ -1233,6 +1428,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
             f"--branch {branch}`, or update against main with `hermes update`."
         )
         _m().sys.exit(1)
+    _abort_zip_update_if_dirty_tree()
     zip_url = (
         f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
     )
@@ -1326,6 +1522,22 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
                 src = os.path.join(extracted, item)
                 dst = os.path.join(str(_m().PROJECT_ROOT), item)
                 staged.append((_stage_replacement(src, dst), dst))
+                # #70337/#87331: the GitHub source ZIP contains only source —
+                # apps/desktop/release/ (the BUILT desktop app, win-unpacked/
+                # Hermes.exe) exists only in the LIVE tree. Swapping `apps`
+                # without it deletes the desktop build and breaks the
+                # shortcut. Graft the live release dir into the staged copy
+                # BEFORE the swap so the commit preserves it atomically.
+                if item == "apps":
+                    live_release = os.path.join(dst, "desktop", "release")
+                    staged_release = os.path.join(
+                        staged[-1][0], "desktop", "release"
+                    )
+                    if os.path.isdir(live_release) and not os.path.exists(
+                        staged_release
+                    ):
+                        os.makedirs(os.path.dirname(staged_release), exist_ok=True)
+                        shutil.copytree(live_release, staged_release)
         except Exception:
             # Nothing is live yet; drop the partial staging copies so a retry
             # starts from the same free space this attempt did.
@@ -1333,6 +1545,23 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
             raise
 
         try:
+            # Re-check the tree right before the swap (#87304 TOCTOU): the
+            # download + extract + staging window above can take minutes, and
+            # work created in it would be destroyed by the commit below. Our
+            # own phase-1 staging siblings are filtered out — they are the
+            # expected artifacts of getting here, not user work.
+            recheck_reason = _zip_overlay_block_reason(
+                _m().PROJECT_ROOT, ignore_staging_artifacts=True
+            )
+            if recheck_reason is not None:
+                _discard_staged(staged)
+                print(f"✗ ZIP fallback aborted before the swap: {recheck_reason}.")
+                print(
+                    "  Files appeared in the checkout while the update was "
+                    "downloading; committing the swap would delete them."
+                )
+                print("  Stash or commit your changes, then rerun `hermes update`.")
+                _m().sys.exit(1)
             _commit_staged_replacements(staged)
         except Exception:
             # The rollback already restored every swapped entry, but staging
@@ -3181,7 +3410,12 @@ def _ensure_fhs_path_guard() -> None:
         print("    (reload your shell or run 'source ~/.bashrc' to pick it up)")
 
 def _ensure_acp_launcher() -> None:
-    """Self-heal: install a ``hermes-acp`` launcher next to the ``hermes`` one.
+    """Self-heal the platform launchers exposed on PATH.
+
+    On Windows, restore missing ``hermes.exe`` / ``hermes-acp.exe`` copies in
+    the dedicated ``<install>\\bin`` directory.  Existing files are not
+    overwritten because ``bin\\hermes.exe`` may be the currently running
+    update launcher.
 
     Mirrors the launcher block in ``scripts/install.sh`` so existing installs
     gain the ACP command on ``hermes update`` without a reinstall.  ACP hosts
@@ -3195,14 +3429,21 @@ def _ensure_acp_launcher() -> None:
     (venv wrapper, FHS symlink, pipx/pip console script) without having to
     reconstruct interpreter/entrypoint paths.
 
-    No-op on Windows (install.ps1 copies ``hermes.exe`` + ``hermes-acp.exe``
-    into ``$InstallDir\bin`` and puts THAT on the user PATH — never the whole
-    ``venv\Scripts`` dir, which would shadow the user's ``python`` (#83797) —
-    so ``hermes-acp.exe`` already resolves) and wherever a ``hermes-acp`` is
-    already present next to the ``hermes`` command.  Unwritable directories
+    On POSIX, the ACP shim is skipped wherever a ``hermes-acp`` is already
+    present next to the ``hermes`` command.  Unwritable POSIX directories
     (e.g. ``/usr/local/bin`` as non-root) are skipped silently.  Idempotent.
     """
     if _m().sys.platform == "win32":
+        from hermes_cli._install_repair import _sync_windows_cli_launchers
+
+        try:
+            copied = _sync_windows_cli_launchers(Path(_m().PROJECT_ROOT))
+        except OSError as exc:
+            print(f"  ⚠ Could not restore Windows command launchers: {exc}")
+            return
+        if copied:
+            names = ", ".join(path.name for path in copied)
+            print(f"  ✓ Restored Windows command launcher(s): {names}")
         return
     for bin_dir in (Path.home() / ".local" / "bin", Path("/usr/local/bin")):
         hermes_cmd = bin_dir / "hermes"
@@ -3230,6 +3471,11 @@ def _ensure_acp_launcher() -> None:
         print(f"  ✓ Installed hermes-acp launcher → {acp_cmd}")
 
 _PRE_UPDATE_SNAPSHOT_KEEP = 1
+# Sibling-profile snapshot ids from the current run's pre-update backup
+# ({profile: snapshot_id}) — consumed by the post-update per-profile
+# cron-jobs safety net (#66140). Module-level because the snapshot and the
+# restore run in the same process but far apart in _cmd_update_impl.
+_LAST_SIBLING_SNAPSHOTS: dict = {}
 
 # Per-file size cap for the pre-update quick snapshot. Anything larger is
 # skipped with a warning: the snapshot exists to protect small, hard-to-
@@ -3379,6 +3625,40 @@ def _run_pre_update_backup(args) -> Optional[str]:
                     print()
         if snapshot_id:
             print(f"◆ Pre-update snapshot: {snapshot_id}")
+
+        # #66140: the code swap + fleet restart touch EVERY profile, so
+        # every profile gets the same snapshot (same set, same 1GiB cap,
+        # keep=1) under its own state-snapshots/. Best-effort per profile.
+        try:
+            from hermes_cli.backup import create_pre_update_snapshots_all_profiles
+
+            _sibling_snaps = create_pre_update_snapshots_all_profiles(
+                keep=_PRE_UPDATE_SNAPSHOT_KEEP,
+                max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+            )
+            if _sibling_snaps:
+                print(
+                    f"◆ Sibling profile snapshot(s): "
+                    + ", ".join(sorted(_sibling_snaps))
+                )
+                try:
+                    from hermes_cli.update_receipt import record_step
+
+                    record_step(
+                        "sibling_profile_snapshots",
+                        True,
+                        ", ".join(
+                            f"{k}={v}" for k, v in sorted(_sibling_snaps.items())
+                        ),
+                    )
+                except Exception:
+                    pass
+                global _LAST_SIBLING_SNAPSHOTS
+                _LAST_SIBLING_SNAPSHOTS = _sibling_snaps
+        except Exception as _sib_exc:
+            logging.getLogger(__name__).debug(
+                "Sibling profile snapshots failed: %s", _sib_exc
+            )
     except Exception as exc:
         # Never let a snapshot failure block an update.
         logging.getLogger(__name__).debug("Pre-update snapshot failed: %s", exc)
@@ -3610,7 +3890,27 @@ def _detect_venv_python_processes(
     skip: set[int] = set(exclude_pids or set())
     skip.add(os.getpid())
     try:
+        from gateway.status import looks_like_gateway_command_line as _is_gw
+    except Exception:
+        _is_gw = None
+    try:
         for anc in psutil.Process().parents():
+            # #87594: do NOT blanket-exclude ancestors. When `/update` runs
+            # from a messaging platform the updater is a CHILD of the gateway
+            # — excluding all ancestors hides the gateway from the scan, so
+            # the pause machinery downstream never sees the one process it
+            # exists to stop, and the update dead-ends on `venv-blocked`.
+            # A GATEWAY ancestor stays visible (the pause path stops it
+            # gracefully; a detached child updater survives its parent's
+            # stop on Windows). Every other ancestor (shells, terminals,
+            # this CLI's own venv python chain) stays excluded — an updater
+            # must never nominate its own interactive ancestry as blockers.
+            try:
+                anc_cmdline = " ".join(anc.cmdline() or [])
+            except Exception:
+                anc_cmdline = ""
+            if _is_gw is not None and anc_cmdline and _is_gw(anc_cmdline):
+                continue
             skip.add(int(anc.pid))
     except Exception:
         pass
@@ -3841,18 +4141,115 @@ def _defer_update_for_self_lock(loaded: list[str]) -> None:
     _m()._write_update_incomplete_marker()
 
 
+_HOLDER_VALUE_FLAGS_FALLBACK = frozenset(
+    {
+        "--profile", "-p", "--config",
+        "--model", "-m", "--provider", "--reasoning",
+        "--toolsets", "-t", "--skills", "-s",
+        "--continue", "-c", "--resume", "-r",
+        "--oneshot", "-z", "--in", "--usage-file",
+    }
+)
+_holder_value_flags_cache: frozenset | None = None
+
+
+def _holder_value_flags() -> frozenset:
+    """Top-level CLI flags that consume a value — derived from the REAL parser.
+
+    Introspects ``build_top_level_parser()`` (every option with nargs != 0)
+    so the holder classifier can never drift from the argparse surface
+    (#91869 review: a handwritten subset misparsed ``--reasoning high
+    serve`` as subcommand ``high`` and ``-m dashboard serve`` as
+    ``dashboard`` — recreating the wrong-hint class). The pre-argparse
+    profile selectors (``--profile``/``-p``, ``--config``) are added
+    explicitly since they are stripped before argparse sees argv. Falls
+    back to a static snapshot when the parser cannot be imported (the
+    updater must classify holders even mid-upgrade on a broken tree).
+    Cached per process.
+    """
+    global _holder_value_flags_cache
+    if _holder_value_flags_cache is not None:
+        return _holder_value_flags_cache
+    flags: set[str] = {"--profile", "-p", "--config"}
+    try:
+        from hermes_cli._parser import build_top_level_parser
+
+        parser = build_top_level_parser()[0]
+        for action in parser._actions:
+            if action.option_strings and action.nargs != 0:
+                flags.update(action.option_strings)
+        _holder_value_flags_cache = frozenset(flags)
+    except Exception:
+        _holder_value_flags_cache = _HOLDER_VALUE_FLAGS_FALLBACK
+    return _holder_value_flags_cache
+
+
+def _hermes_holder_subcommand(cmdline: str) -> str | None:
+    """The actual Hermes SUBCOMMAND a venv-holder argv runs, or None.
+
+    Token-based, never substring (#90778: ``kanban --preserve-cache``
+    contained \"serve\" and got labeled as the Desktop backend). Finds the
+    ``hermes_cli.main`` / ``hermes(.exe)`` entry token, then returns the
+    first following token that is not a flag or a flag's value. Profile
+    selectors (``--profile X``, ``-p X``) are skipped like the canonical
+    gateway matcher does. Returns None when no subcommand can be
+    determined — callers must NOT guess a label in that case.
+    """
+    try:
+        import shlex
+
+        tokens = shlex.split(cmdline, posix=False)
+    except Exception:
+        tokens = cmdline.split()
+
+    entry_idx: int | None = None
+    for i, token in enumerate(tokens):
+        low = token.lower().strip('"')
+        if low.endswith("hermes_cli.main") and i > 0 and tokens[i - 1] == "-m":
+            entry_idx = i
+            break
+        base = low.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+        if base in ("hermes", "hermes.exe"):
+            entry_idx = i
+            break
+    if entry_idx is None:
+        return None
+
+    value_flags = _holder_value_flags()
+    i = entry_idx + 1
+    while i < len(tokens):
+        token = tokens[i]
+        if token in value_flags or token.split("=", 1)[0] in value_flags:
+            # --flag value consumes two tokens; --flag=value consumes one.
+            i += 1 if "=" in token else 2
+            continue
+        if token.startswith("-"):
+            i += 1
+            continue
+        return token.lower()
+    return None
+
+
 def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> str:
-    """Explain which venv processes block the update and how to clear them."""
+    """Explain which venv processes block the update and how to clear them.
+
+    Holder labels come from the parsed SUBCOMMAND, never substring matching
+    (#90778): a standalone ``hermes dashboard`` must not be labeled as the
+    Desktop backend (advice to close an app that isn't running), and flags
+    like ``--preserve-cache`` must not match \"serve\". Unknown argv gets no
+    hint rather than a wrong one.
+    """
     lines = [
         "✗ Other Hermes processes are running from this install's venv:",
     ]
+    hint_by_subcommand = {
+        "serve": "  ← Hermes backend (if the Desktop app is open, close it)",
+        "dashboard": "  ← hermes dashboard (stop it: hermes dashboard stop, or close that terminal)",
+        "gateway": "  ← gateway",
+    }
     for pid, name, cmdline in matches[:6]:
-        hint = ""
-        low = cmdline.lower()
-        if "serve" in low or "dashboard" in low:
-            hint = "  ← Hermes Desktop backend (close the desktop app)"
-        elif "gateway" in low:
-            hint = "  ← gateway"
+        sub = _hermes_holder_subcommand(cmdline)
+        hint = hint_by_subcommand.get(sub or "", "")
         lines.append(f"  PID {pid}  {name}  {cmdline[:120]}{hint}")
     if len(matches) > 6:
         lines.append(f"  ... and {len(matches) - 6} more")
@@ -3909,9 +4306,23 @@ def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
 
     # Never return ourselves or our own ancestry: a CLI ``hermes update``
     # runs from the venv python and would otherwise nominate itself.
+    # Same #87594 carve-out as _detect_venv_python_processes: a GATEWAY
+    # ancestor is not "our own ancestry" in the interactive sense — it is
+    # the process the pause machinery must see (the /update-from-gateway
+    # topology makes the updater the gateway's child).
+    try:
+        from gateway.status import looks_like_gateway_command_line as _is_gw
+    except Exception:
+        _is_gw = None
     skip: set[int] = {os.getpid()}
     try:
         for anc in psutil.Process().parents():
+            try:
+                anc_cmdline = " ".join(anc.cmdline() or [])
+            except Exception:
+                anc_cmdline = ""
+            if _is_gw is not None and anc_cmdline and _is_gw(anc_cmdline):
+                continue
             skip.add(int(anc.pid))
     except Exception:
         pass
@@ -5095,6 +5506,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # stash. Only applies when an update actually landed; abort/no-op paths
     # still restore, since the tree they restore onto is unchanged.
     keep_stash = bool(getattr(args, "keep_stash", False))
+    # --switch-branch: on a branch carrying unmerged commits, prefer switching
+    # to the update target over an in-place merge, so the branch's history is
+    # never written to by an update (#89507 review feedback). Only meaningful
+    # when updates.parked_branch_strategy is "update_in_place".
+    switch_branch = bool(getattr(args, "switch_branch", False))
 
     # Whether this update is running without a human at the keyboard.
     # Interactive terminal updates always stash-and-ask (unchanged behavior);
@@ -5434,48 +5850,105 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         current_branch = result.stdout.strip()
 
-        # If user is on a different branch than the update target, switch
-        # to the target. When the target is "main" this is the historical
-        # "always update against main" behavior; for any other target it's
-        # the same thing — get HEAD onto the requested branch first, then
-        # fast-forward.
-        #
         # Parked-branch guard (2026-08-17 live incident): the checkout can be
         # left parked on a stale feature branch by earlier tooling. Blindly
         # stash-switch-pull-switch-back "updates" main while the running code
-        # stays days behind, then prints "✓ Code updated!". Only auto-switch
-        # when the parked branch is clean AND fully merged into the target;
-        # otherwise warn loudly, mark the code update SKIPPED, and stop
-        # before the post-update steps reinforce the stale tree.
+        # stays days behind, then prints "✓ Code updated!".
+        #
+        # What happens next is routed by what the branch carries (which is
+        # exactly what the guard measures) plus updates.parked_branch_strategy:
+        #
+        #   fully merged  -> a stale leftover with nothing to lose: switch
+        #                    back to the target.
+        #   unmerged: N   -> strategy "switch" (default): switch to the
+        #                    target anyway — committed work is safe on the
+        #                    branch (git checkout never discards commits) and
+        #                    a loud "kept" notice names the branch + count.
+        #                    Deterministic, so non-interactive callers
+        #                    (desktop update button, gateway /update, cron)
+        #                    always reach the target.
+        #                    strategy "update_in_place": a maintained custom
+        #                    branch (local patches on top of main) is updated
+        #                    IN PLACE from origin/<target> — the checkout
+        #                    never moves, local commits survive, the running
+        #                    code advances. --switch-branch overrides back to
+        #                    the switch path for one run.
+        #   anything else -> dirty / unverifiable / opted out: touch nothing,
+        #                    warn loudly, mark the code update SKIPPED, and
+        #                    stop before the post-update steps reinforce the
+        #                    stale tree.
         parked_branch_switched = False
-        if current_branch != branch:
-            if current_branch != "HEAD":
-                switch_safe, switch_block_reason = _m()._assess_parked_branch_switch(
-                    git_cmd, _m().PROJECT_ROOT, current_branch, branch
+        in_place_update = False
+        if current_branch != branch and current_branch != "HEAD":
+            switch_safe, switch_block_reason = _m()._assess_parked_branch_switch(
+                git_cmd, _m().PROJECT_ROOT, current_branch, branch
+            )
+            if not switch_safe:
+                _m()._print_parked_branch_skip_warning(
+                    git_cmd,
+                    _m().PROJECT_ROOT,
+                    current_branch,
+                    branch,
+                    switch_block_reason,
                 )
-                if not switch_safe:
-                    _m()._print_parked_branch_skip_warning(
-                        git_cmd,
-                        _m().PROJECT_ROOT,
+                print()
+                print(
+                    "⚠ Update finished — code update SKIPPED"
+                    f"{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}"
+                )
+                _m()._resume_windows_gateways_after_update(
+                    _windows_gateway_resume
+                )
+                sys.exit(1)
+            if switch_block_reason.startswith("unmerged:"):
+                _in_place_configured = False
+                try:
+                    from hermes_cli.config import load_config as _load_cfg
+
+                    _upd_cfg = (_load_cfg() or {}).get("updates", {})
+                    _in_place_configured = (
+                        isinstance(_upd_cfg, dict)
+                        and _upd_cfg.get("parked_branch_strategy", "switch")
+                        == "update_in_place"
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "Could not read updates.parked_branch_strategy: %s", exc
+                    )
+                if _in_place_configured and not switch_branch:
+                    # The merge source must exist upstream; --branch typos
+                    # previously surfaced through the checkout failing, which
+                    # does not run on this path.
+                    verify_ref = subprocess.run(
+                        git_cmd + ["rev-parse", "--verify", "--quiet", f"origin/{branch}"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    )
+                    if verify_ref.returncode != 0:
+                        print(f"✗ Branch '{branch}' does not exist locally or on origin.")
+                        sys.exit(1)
+                    in_place_update = True
+                    print(
+                        f"  ℹ On branch '{current_branch}' — updating it in place from "
+                        f"origin/{branch} (no branch switch; local commits preserved)."
+                    )
+                else:
+                    parked_branch_switched = True
+                    _m()._print_parked_branch_kept_notice(
                         current_branch,
                         branch,
-                        switch_block_reason,
+                        switch_block_reason.split(":", 1)[1],
                     )
-                    print()
-                    print(
-                        "⚠ Update finished — code update SKIPPED"
-                        f"{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}"
-                    )
-                    _m()._resume_windows_gateways_after_update(
-                        _windows_gateway_resume
-                    )
-                    sys.exit(1)
+            else:
                 parked_branch_switched = True
                 print(
                     f"  ⚠ Checkout was parked on '{current_branch}' "
                     f"(fully merged) — switching back to {branch}..."
                 )
-            else:
+
+        if not in_place_update and current_branch != branch:
+            if current_branch == "HEAD":
                 print(
                     f"  ⚠ Currently on detached HEAD — switching to {branch} "
                     "for update..."
@@ -5500,7 +5973,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     text=True, encoding="utf-8", errors="replace",
                 )
                 if track_result.returncode != 0:
-                    # Restore the user's prior branch + stash before bailing
+                    # Restore the user's prior stash before bailing
                     # so we don't leave them stranded in a weird state.
                     if auto_stash_ref is not None:
                         _m()._restore_stashed_changes(
@@ -5585,10 +6058,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     input_fn=gw_input_fn,
                 )
             if parked_branch_switched:
-                print(
-                    f"  ✓ Checkout was parked on '{current_branch}' (fully "
-                    f"merged) — switched back to {branch}."
-                )
+                if switch_block_reason.startswith("unmerged:"):
+                    _count = switch_block_reason.split(":", 1)[1]
+                    print(
+                        f"  ✓ Checkout was parked on '{current_branch}' — "
+                        f"switched back to {branch}; {_count} unmerged "
+                        f"commit(s) kept on '{current_branch}'."
+                    )
+                else:
+                    print(
+                        f"  ✓ Checkout was parked on '{current_branch}' (fully "
+                        f"merged) — switched back to {branch}."
+                    )
             elif current_branch not in {branch, "HEAD"}:
                 subprocess.run(
                     git_cmd + ["checkout", current_branch],
@@ -5735,26 +6216,80 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 text=True, encoding="utf-8", errors="replace",
             )
             if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
-                )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
-                    cwd=_m().PROJECT_ROOT,
-                    capture_output=True,
-                    text=True, encoding="utf-8", errors="replace",
-                )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
+                # ff-only failed — local and remote have diverged. Before
+                # assuming an upstream force-push, check WHY: a checkout on a
+                # custom branch (local commits on top of origin/<branch>) also
+                # cannot fast-forward, and `reset --hard` here would silently
+                # discard that work. Merge instead and stop cleanly on
+                # conflict — an update must never destroy local commits.
+                _cur_branch = (
+                    subprocess.run(
+                        git_cmd + ["branch", "--show-current"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    ).stdout
+                    or ""
+                ).strip()
+                if _cur_branch and _cur_branch != branch:
                     print(
-                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        f"  ⚠ Checkout is on custom branch '{_cur_branch}' — "
+                        f"merging origin/{branch} instead of resetting so local commits survive..."
                     )
-                    sys.exit(1)
+                    # Best-effort safety tag; recovery anchor if anything goes wrong.
+                    subprocess.run(
+                        git_cmd
+                        + ["tag", f"pre-update-{_time.strftime('%Y%m%d-%H%M%S')}"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        check=False,
+                    )
+                    merge_result = subprocess.run(
+                        git_cmd + ["merge", "--no-edit", f"origin/{branch}"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    )
+                    if merge_result.returncode != 0:
+                        subprocess.run(
+                            git_cmd + ["merge", "--abort"],
+                            cwd=_m().PROJECT_ROOT,
+                            capture_output=True,
+                            check=False,
+                        )
+                        print(
+                            "✗ Merge conflict between local commits and upstream — "
+                            "update stopped, nothing was changed."
+                        )
+                        print(
+                            f"  Resolve manually: cd {_m().PROJECT_ROOT} && "
+                            f"git merge origin/{branch}"
+                        )
+                        print(
+                            "  Then re-run the update. Local work is untouched."
+                        )
+                        sys.exit(1)
+                else:
+                    # Same branch as the update target — a true upstream
+                    # force-push/rebase. Local changes are already stashed;
+                    # reset to match the remote exactly (original behaviour).
+                    print(
+                        "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    )
+                    reset_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    )
+                    if reset_result.returncode != 0:
+                        print(f"✗ Failed to reset to origin/{branch}.")
+                        if reset_result.stderr.strip():
+                            print(f"  {reset_result.stderr.strip()}")
+                        print(
+                            f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        )
+                        sys.exit(1)
 
             # Post-pull syntax guard: validate critical-path files actually
             # parse before declaring the update successful. If a bad commit
@@ -5861,13 +6396,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # branch guard above should make this unreachable, but if any path
         # leaves the checkout attached elsewhere, "✓ Code updated!" would be
         # a lie — refuse to claim success (2026-08-17 incident class).
+        #
+        # An IN-PLACE branch update is the one legitimate way to end on a
+        # non-target branch: origin/<target> was merged INTO the checked-out
+        # branch, so the running code *is* up to date and HEAD staying put is
+        # the whole point. Claiming failure there would make every update on a
+        # real working branch exit 1 after doing exactly the right thing.
         post_pull_branch = subprocess.run(
             git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
             cwd=_m().PROJECT_ROOT,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
         ).stdout.strip()
-        if post_pull_branch and post_pull_branch not in {branch, "HEAD"}:
+        if (
+            not in_place_update
+            and post_pull_branch
+            and post_pull_branch not in {branch, "HEAD"}
+        ):
             print()
             print(
                 f"✗ Update pulled origin/{branch}, but the checkout is on "
@@ -6435,6 +6980,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # Never let the cron safety net break an otherwise-good update.
             logger.debug("Cron jobs auto-restore check failed: %s", exc)
 
+        # #66140: run the same cron-jobs safety net for every sibling
+        # profile against ITS OWN pre-update snapshot (same-generation by
+        # construction — both taken by this run).
+        try:
+            from hermes_cli.backup import restore_cron_jobs_all_profiles
+
+            for _restored in restore_cron_jobs_all_profiles(
+                _LAST_SIBLING_SNAPSHOTS
+            ):
+                print()
+                print(
+                    f"  ⚠️  Profile '{_restored['profile']}': cron/jobs.json "
+                    f"lost jobs during this update — restored "
+                    f"{_restored['job_count']} job(s) from pre-update "
+                    f"snapshot {_restored['snapshot_id']}."
+                )
+        except Exception as exc:
+            logger.debug("Sibling cron auto-restore check failed: %s", exc)
+
         _print_update_summary(
             node_failures=node_failures,
             desktop_build_ok=desktop_build_ok,
@@ -6478,9 +7042,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("FHS PATH guard check failed: %s", e)
 
-        # Self-heal the hermes-acp launcher for installs that predate it, so
-        # ACP hosts (Zed, JetBrains, Buzz) can resolve Hermes on PATH without
-        # a reinstall.  No-op on Windows and when already present.
+        # Self-heal the launchers exposed on PATH: the POSIX hermes-acp shim
+        # and missing copies in Windows' dedicated bin directory.
         try:
             _ensure_acp_launcher()
         except Exception as e:
@@ -7428,8 +7991,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             sys.exit(1)
 
     except subprocess.CalledProcessError as e:
-        if _m()._is_windows():
-            print(f"⚠ Git update failed: {e}")
+        stage = _format_update_failure_stage(e)
+        if _should_zip_fallback_on_update_error(e):
+            print(f"⚠ {stage}: {e}")
             print("→ Falling back to ZIP download...")
             print()
             desktop_build_ok = _update_via_zip(
@@ -7439,7 +8003,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if gateway_mode:
                 _write_gateway_update_exit_code(desktop_build_ok)
         else:
-            print(f"✗ Update failed: {e}")
+            print(f"✗ {stage}: {e}")
+            _print_called_process_error_tail(e)
+            if _called_process_error_is_python_dep_install(e):
+                print(
+                    "  The git update already finished. Re-downloading the source "
+                    "ZIP cannot fix a dependency install error and would overwrite "
+                    "local files."
+                )
+                if _m()._is_windows():
+                    print("  Retry through the venv interpreter:")
+                    print(
+                        '    venv\\Scripts\\python.exe -c '
+                        '"from hermes_cli.main import main; main()" update --yes'
+                    )
             try:
                 from hermes_cli.update_receipt import finalize_update_receipt
 

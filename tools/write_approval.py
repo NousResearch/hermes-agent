@@ -112,7 +112,7 @@ def _pending_dir(subsystem: str) -> Path:
 
 
 def stage_write(subsystem: str, payload: Dict[str, Any],
-                *, summary: str, origin: str) -> Dict[str, Any]:
+                *, summary: str, origin: str, validation: str = "ok") -> Dict[str, Any]:
     """Persist a pending write and return a short record describing it.
 
     Args:
@@ -124,6 +124,11 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
             For skills this is the LLM/heuristic gist; for memory it can be the
             entry text itself.
         origin: ``foreground`` or ``background_review`` — recorded for audit.
+        validation: pre-computed apply-time check result for the staged write.
+            ``"ok"`` (default) means it will apply; anything else is a short
+            ``"blocked: <reason>"`` flag surfaced in pending lists so a record
+            that can never be applied is visible before approval. Recorded for
+            audit; never used to refuse staging (a staged write is never lost).
 
     Returns a dict with ``id`` and metadata. Best-effort: on disk failure it
     logs and still returns a record (the write is simply lost, which is the
@@ -136,6 +141,7 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
         "action": payload.get("action", ""),
         "summary": (summary or "").strip(),
         "origin": origin or "foreground",
+        "validation": validation,
         "created_at": time.time(),
         "payload": payload,
     }

@@ -38,7 +38,12 @@ def _fmt_pending_list(subsystem: str) -> str:
     for r in records:
         origin = r.get("origin", "foreground")
         tag = " [auto]" if origin == "background_review" else ""
-        lines.append(f"  {r['id']}{tag}  {r.get('summary', '')}")
+        badge = ""
+        v = r.get("validation")
+        if v and v != "ok":
+            reason = v[len("blocked: "):] if v.startswith("blocked: ") else v
+            badge = "  \u26a0\ufe0f BLOCKED: %s" % reason[:70]
+        lines.append(f"  {r['id']}{tag}{badge}  {r.get('summary', '')}")
     where = "/{s} approve <id>".format(s=subsystem)
     lines.append("")
     lines.append(f"Apply: {where}   Reject: /{subsystem} reject <id>")

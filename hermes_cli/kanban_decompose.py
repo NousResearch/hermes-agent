@@ -289,6 +289,9 @@ def decompose_task(
         return DecomposeOutcome(
             task_id, False, f"task is not in triage (status={task.status!r})"
         )
+    with kb.connect_closing() as conn:
+        if kb.has_block_loop_hold(conn, task_id):
+            return DecomposeOutcome(task_id, False, "task is held after block loop")
 
     cfg = _load_config()
     orchestrator = _resolve_orchestrator_profile(cfg)
@@ -465,4 +468,4 @@ def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
             tenant=tenant,
             limit=1000,
         )
-    return [row.id for row in rows]
+        return [row.id for row in rows if not kb.has_block_loop_hold(conn, row.id)]

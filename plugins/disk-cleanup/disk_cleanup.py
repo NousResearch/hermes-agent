@@ -151,6 +151,10 @@ _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
     # User-authored project trees — never sweep empty directories
     # inside these (#75403).
     "patches", "projects", "skins", "themes", "contributors",
+    # Bare git shadow stores: refs/ and objects/ are legitimately empty on a
+    # fresh store, and deleting them makes git report "not a git repository"
+    # (broke ~/.hermes/checkpoints/store and two profile stores by 2026-08-21).
+    "checkpoints",
 })
 
 _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({

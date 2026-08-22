@@ -474,19 +474,150 @@ def estimate_request_context_tokens(api_payload: Any) -> int:
       - dict with ``messages`` -> Chat Completions (+ ``tools`` if present)
       - dict with ``input`` -> Responses API (+ ``instructions``/``tools``)
       - any other dict -> fall back to summing string values
+
+    Multimodal payloads (structured ``image_url`` / ``input_image`` /
+    ``image`` parts) are NOT counted as raw text: the base64 transport bytes
+    would inflate the estimate ~4x (issue #76411) and shift the watchdog
+    tiers. Only the conversational region (``messages`` / ``input``) is
+    walked for image parts; each image contributes a fixed bounded visual
+    cost and surrounding text still counts (text chars are accumulated and
+    divided once, so short fragments keep their remainders). A plain string
+    that happens to look like a data URL remains text — only structured
+    multimodal parts switch modes. ``tools`` and ``instructions`` stay
+    opaque with the legacy ``len(str(...))`` cost. Pure-text payloads keep
+    the exact legacy char/4 estimate.
     """
 
-    def _chars(value: Any) -> int:
-        if value is None:
-            return 0
-        if isinstance(value, str):
-            return len(value)
-        return len(str(value))
+    target, extra_chars = _estimation_parts(api_payload)
+    has_image, text_chars, image_tokens = _scan_context_payload(target)
+    if not has_image:
+        return _legacy_estimate(api_payload)
+    # Multimodal payload: bounded per-image cost + accumulated text.
+    # Opaque fields (tools/instructions) keep legacy char cost and share
+    # the single //4 so remainders are not dropped twice.
+    return (text_chars + extra_chars) // 4 + image_tokens
+
+
+# ── Multimodal-aware context scan (issue #76411) ──────────────────────────
+#
+# Structured image parts must NOT have their base64 transport counted as
+# text: that encoding inflates the estimate ~4x and shifts the watchdog
+# tiers. Each image contributes a fixed bounded cost; surrounding text
+# still counts. The scan is a single iterative pass (explicit stack — no
+# recursion, no depth limit) that returns ``(has_image, text_chars,
+# image_tokens)``, so the detector and the estimator can never disagree
+# and no subtree is silently dropped.
+#
+# Only structured multimodal parts (image_url / input_image / image with
+# their expected fields) switch modes. A plain string that looks like a
+# data URL is still text. Multimodal scanning is limited to messages /
+# input; tools and instructions use the legacy opaque char estimate.
+#
+# This PR intentionally does not decode image payloads; a fixed bounded cost
+# replaces byte-dependent inflation with a stable visual estimate. It does
+# not try to reproduce any provider's image tokenizer.
+
+# Bounded default visual cost per image. A screenshot (1920x1080) would
+# tile to more than this under a tile-based heuristic; the point here is a
+# stable per-image bound, not a per-provider ground truth.
+_DEFAULT_IMAGE_TOKEN_ESTIMATE = 170
+
+
+def _legacy_chars(value: Any) -> int:
+    """Opaque char count matching the historical estimator."""
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    return len(str(value))
+
+
+def _is_multimodal_part(part: Any) -> bool:
+    """True for a content part that carries an image (any provider shape).
+
+    Requires the structural field expected for each shape so bare tool-schema
+    dicts like ``{"type": "image", "description": "..."}`` are not treated as
+    multimodal content.
+    """
+    if not isinstance(part, dict):
+        return False
+    part_type = part.get("type")
+    if part_type == "image_url":
+        return "image_url" in part
+    if part_type == "input_image":
+        return "image_url" in part or "file_id" in part
+    if part_type == "image":
+        return "source" in part
+    return False
+
+
+def _estimation_parts(api_payload: Any) -> tuple:
+    """Split the payload into a multimodal-scannable region and opaque chars.
+
+    Only ``messages`` / ``input`` (and bare message lists) are walked for
+    images. ``tools`` and ``instructions`` stay opaque with the legacy char
+    cost — same fields the legacy path counted, without interpreting tool
+    schemas as multimodal content.
+    """
+    if isinstance(api_payload, list):
+        return api_payload, 0
+    if isinstance(api_payload, dict):
+        messages = api_payload.get("messages")
+        if isinstance(messages, list):
+            extra_chars = 0
+            if "tools" in api_payload:
+                extra_chars += _legacy_chars(api_payload.get("tools"))
+            return messages, extra_chars
+        if "input" in api_payload:
+            extra_chars = (
+                _legacy_chars(api_payload.get("instructions"))
+                + _legacy_chars(api_payload.get("tools"))
+            )
+            return api_payload.get("input"), extra_chars
+        return list(api_payload.values()), 0
+    return api_payload, 0
+
+
+def _scan_context_payload(value: Any) -> tuple:
+    """Single iterative pass returning ``(has_image, text_chars, image_tokens)``.
+
+    Structured image parts cost a fixed amount and are not walked further
+    (so nested base64 transport bytes never count as text). Plain strings —
+    including a data URL used as textual content — always add their chars.
+    Containers are walked with an explicit stack, never stringified, so a
+    structured image nested at any depth is still detected and no deep text
+    subtree is dropped.
+    """
+    has_image = False
+    text_chars = 0
+    image_tokens = 0
+    stack = [value]
+    while stack:
+        node = stack.pop()
+        if _is_multimodal_part(node):
+            has_image = True
+            image_tokens += _DEFAULT_IMAGE_TOKEN_ESTIMATE
+            # Do not descend: base64 inside the part must not count as text.
+        elif isinstance(node, str):
+            text_chars += len(node)
+        elif isinstance(node, list):
+            stack.extend(node)
+        elif isinstance(node, dict):
+            stack.extend(node.values())
+        elif node is None:
+            continue
+        else:
+            text_chars += len(str(node))
+    return has_image, text_chars, image_tokens
+
+
+def _legacy_estimate(api_payload: Any) -> int:
+    """The original char/4 estimate, byte-for-byte unchanged."""
 
     def _message_chars(messages: Any) -> int:
         if not isinstance(messages, list):
-            return _chars(messages)
-        return sum(_chars(item) for item in messages)
+            return _legacy_chars(messages)
+        return sum(_legacy_chars(item) for item in messages)
 
     if isinstance(api_payload, list):
         return _message_chars(api_payload) // 4
@@ -496,20 +627,20 @@ def estimate_request_context_tokens(api_payload: Any) -> int:
         if isinstance(messages, list):
             total_chars = _message_chars(messages)
             if "tools" in api_payload:
-                total_chars += _chars(api_payload.get("tools"))
+                total_chars += _legacy_chars(api_payload.get("tools"))
             return total_chars // 4
 
         if "input" in api_payload:
             total_chars = (
-                _chars(api_payload.get("input"))
-                + _chars(api_payload.get("instructions"))
-                + _chars(api_payload.get("tools"))
+                _legacy_chars(api_payload.get("input"))
+                + _legacy_chars(api_payload.get("instructions"))
+                + _legacy_chars(api_payload.get("tools"))
             )
             return total_chars // 4
 
-        return sum(_chars(value) for value in api_payload.values()) // 4
+        return sum(_legacy_chars(value) for value in api_payload.values()) // 4
 
-    return _chars(api_payload) // 4
+    return _legacy_chars(api_payload) // 4
 
 
 def _is_openai_codex_backend(agent) -> bool:

@@ -52,6 +52,10 @@ _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 # tests/openviking_plugin/test_openviking.py::test_skill_markers_match_hermes_scaffolding.
 # ---------------------------------------------------------------------------
 _SKILL_INVOCATION_PREFIX = "[IMPORTANT: The user has invoked the "
+# Gateway channel/topic auto-load note ("[IMPORTANT: The \"X\" skill is
+# auto-loaded. ...]"). Distinct from the slash-skill prefix at the first
+# quoted span; must stay byte-identical to the builder in gateway/run.py.
+_AUTO_LOAD_PREFIX = '[IMPORTANT: The "'
 _SINGLE_SKILL_MARKER = "The full skill content is loaded below.]"
 _SINGLE_SKILL_INSTRUCTION = (
     "The user has provided the following instruction alongside the skill invocation: "
@@ -105,9 +109,21 @@ def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
           instruction (i.e. a bare ``/skill`` invocation). Callers that feed
           memory providers should skip the turn in that case — there is no
           user content worth storing.
+
+    Gateway channel/topic auto-loaded turns (Discord channel_skill_bindings,
+    Telegram topic bindings) use a different activation note but carry the
+    same scaffolding risk: the framework injects whole skill bodies as user
+    role. They are recognized here too, so memory providers only ever see
+    the user-authored tail (#92036).
     """
     if not isinstance(content, str):
         return None
+
+    if content.startswith(_AUTO_LOAD_PREFIX):
+        # The gateway appends the user's original text after the last skill
+        # payload, prefixed by the same instruction marker the single-skill
+        # builder uses — the last-occurrence extraction applies unchanged.
+        return _extract_single_skill_user_instruction(content)
 
     if not content.startswith(_SKILL_INVOCATION_PREFIX):
         return content

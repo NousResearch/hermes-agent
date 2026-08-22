@@ -19317,7 +19317,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _is_new_session and _auto:
             _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
             try:
-                from agent.skill_commands import _load_skill_payload, _build_skill_message
+                from agent.skill_commands import (
+                    _SINGLE_SKILL_INSTRUCTION,
+                    _build_skill_message,
+                    _load_skill_payload,
+                )
                 _combined_parts: list[str] = []
                 _loaded_names: list[str] = []
                 for _sname in _skill_names:
@@ -19335,8 +19339,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else:
                         logger.warning("[Gateway] Auto-skill '%s' not found", _sname)
                 if _combined_parts:
-                    # Append the user's original text after all skill payloads
-                    _combined_parts.append(event.text)
+                    # Append the user's original text after all skill payloads,
+                    # behind the shared instruction marker so
+                    # extract_user_instruction_from_skill_message can recover
+                    # it — otherwise memory providers store the whole injected
+                    # skill body as user speech (#92036).
+                    _combined_parts.append(
+                        f"{_SINGLE_SKILL_INSTRUCTION}{event.text}"
+                    )
                     event.text = "\n\n".join(_combined_parts)
                     logger.info(
                         "[Gateway] Auto-loaded skill(s) %s for session %s",

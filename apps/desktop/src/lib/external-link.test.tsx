@@ -1,6 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { IS_MAC } from '@/lib/keybinds/combo'
+import { $previewTabs, closeRightRail } from '@/store/preview'
+
 import {
   __resetLinkTitleCache,
   ExternalLink,
@@ -8,6 +11,7 @@ import {
   hostPathLabel,
   isTitleFetchable,
   LinkifiedText,
+  MarkdownLinkText,
   PrettyLink,
   urlSlugTitleLabel
 } from './external-link'
@@ -35,6 +39,7 @@ function installTitleBridge(title: string) {
 
 afterEach(() => {
   __resetLinkTitleCache()
+  closeRightRail()
   vi.restoreAllMocks()
   cleanup()
 
@@ -102,14 +107,59 @@ describe('external link helpers', () => {
     expect(bridge).toHaveBeenCalledTimes(1)
   })
 
-  it('opens links via the desktop bridge', () => {
+  // A web link belongs in the in-app browser now; the OS browser is the
+  // ⌘/Ctrl-click escape hatch.
+  it('opens a web link in the in-app browser', async () => {
     const openExternal = vi.fn().mockResolvedValue(undefined)
     installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
 
     render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
 
     fireEvent.click(screen.getByRole('link', { name: 'Example link' }))
+
+    expect(openExternal).not.toHaveBeenCalled()
+    await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/path/to/resource'))
+  })
+
+  // Platform-specific on purpose (same rule as terminal links / middle-click):
+  // ⌘ on macOS, Ctrl elsewhere. The suite runs as non-mac.
+  it('escapes to the OS browser on the platform open-elsewhere modifier', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+    render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Example link' }), IS_MAC ? { metaKey: true } : { ctrlKey: true })
+
     expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  // A setup step sends you to a console you are signed into in your own
+  // browser, to fill in a form and copy a secret back. The in-app pane has
+  // none of that session and is the wrong destination even for web URLs.
+  it('sends a setup-step link straight to the OS browser', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+    render(<MarkdownLinkText text="Enable the [Docs API](https://console.cloud.google.com/apis/library) first." />)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Docs API' }))
+
+    expect(openExternal).toHaveBeenCalledWith('https://console.cloud.google.com/apis/library')
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  // A webview can't do anything useful with these, so they always hand off.
+  it('hands a non-web scheme to the OS', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+    render(<ExternalLink href="mailto:hi@example.com">Mail</ExternalLink>)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Mail' }))
+
+    expect(openExternal).toHaveBeenCalledWith('mailto:hi@example.com')
   })
 
   it('hides the trailing external-link icon by default', () => {

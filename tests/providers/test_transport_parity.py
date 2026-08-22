@@ -105,7 +105,7 @@ class TestOpenRouterParity:
 
 
 class TestNousParity:
-    """Nous: product tags, reasoning, omit when disabled."""
+    """Nous: product tags, reasoning passthrough (disable included)."""
 
     def test_tags(self, transport):
         from agent.portal_tags import nous_portal_tags

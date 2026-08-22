@@ -35,6 +35,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
+from agent.compaction_display import project_compaction_message_for_display
 from agent.skill_commands import describe_skill_invocation
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from tui_gateway import git_probe
@@ -145,10 +146,18 @@ _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
 _answers: dict[str, str] = {}
+# Batch clarify accumulators: rid → {"qids": [...], "answers": {qid: answer}}.
+# Written by clarify.respond (per-question lock, update-in-place), read out by
+# _block on resolution/timeout so locked answers survive the deadline.
+_batch_clarify: dict[str, dict] = {}
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
+# Shared profile UI metadata can be updated concurrently by Desktop, mobile,
+# and multiple worker-pool RPCs.  Its compare/check/write transaction needs a
+# dedicated lock rather than the unrelated process-config cache lock.
+_profile_ui_meta_lock = threading.Lock()
 _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run under callers that already hold it
 _prompt_lock = threading.Lock()
 _cfg_cache: dict | None = None
@@ -1462,6 +1471,18 @@ def _transfer_db_to_agent(agent, db) -> bool:
     try:
         if getattr(agent, "_session_db", None) is not db:
             return False
+        # Defense in depth (#91610): the shared launch handle must never
+        # transfer. Identity alone passes for it — a launch-profile agent IS
+        # holding that handle — and ownership would make session.close() tear
+        # down the process-wide database every other session shares. Refuse it
+        # explicitly even if a caller invokes the transfer incorrectly; the
+        # caller's own `owns_db` gate is the first line of defense.
+        if db is _get_db():
+            logger.warning(
+                "Refused transfer of the shared launch SessionDB to a session "
+                "agent — the caller's owns_db gate should have prevented this."
+            )
+            return False
         agent._owns_session_db = True
         return True
     except Exception:
@@ -1530,13 +1551,12 @@ def _profile_home(profile: str | None) -> Path | None:
 
 
 def _profile_scoped(handler):
-    """Bind ``params['profile']``'s HERMES_HOME around a pet RPC handler.
+    """Bind ``params['profile']``'s HERMES_HOME around a handler.
 
-    Pets are per-profile: ``display.pet.*`` lives in the profile's config.yaml and
-    sprites install under its ``pets/`` dir (both resolve via ``get_hermes_home``).
-    The desktop sends ``profile`` on pet calls so config + pets dir resolve to the
-    focused profile even in app-global remote mode, where one backend serves every
-    profile. No-op for the launch profile (own-profile backends already resolve it).
+    Pets (config + sprites) and projects (projects.db, discovery policy) both
+    resolve via ``get_hermes_home``. The desktop sends ``profile`` so a single
+    backend serving every profile in app-global remote mode still hits the
+    focused profile's home. No-op for the launch profile.
     """
 
     def wrapper(rid, params):
@@ -1760,6 +1780,7 @@ def _compute_host_turn_frame(
     text: Any,
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
+    display_kind: str | None = None,
 ) -> dict:
     with session["history_lock"]:
         history = list(session.get("history", []))
@@ -1775,6 +1796,7 @@ def _compute_host_turn_frame(
         "request_id": rid,
         "session_key": session.get("session_key") or sid,
         "text": text,
+        **({"display_kind": display_kind} if display_kind else {}),
         "history": history,
         "history_version": history_version,
         "cols": int(session.get("cols", 80) or 80),
@@ -1863,6 +1885,7 @@ def _submit_prompt_to_compute_host(
     text: Any,
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
+    display_kind: str | None = None,
 ) -> dict:
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(
@@ -1872,6 +1895,7 @@ def _submit_prompt_to_compute_host(
         text,
         image_paths=image_paths,
         queued_prompt_generation=queued_prompt_generation,
+        display_kind=display_kind,
     )
 
     def _complete(done: dict) -> None:
@@ -1948,7 +1972,14 @@ def _pending_clarify_request_payload(sid: str) -> dict | None:
                 continue
             event, prompt_payload = _pending_prompt_payloads.get(rid, ("", {}))
             if event == "clarify.request":
-                return dict(prompt_payload)
+                snapshot = dict(prompt_payload)
+                # Batch clarify: replay the answers locked so far, so a
+                # reconnecting client restores its per-question ✓ state
+                # instead of presenting every question as unanswered.
+                batch = _batch_clarify.get(rid)
+                if batch is not None and batch["answers"]:
+                    snapshot["answers"] = dict(batch["answers"])
+                return snapshot
     return None
 
 
@@ -3414,6 +3445,8 @@ def _set_session_context(
         # it instead of falling back to the gateway launch dir.
         resolved = cwd if cwd is not None else _cwd_for_session_key(session_key)
         source = _resolve_session_platform()
+        browser_control_principal = ""
+        browser_control_transport_family = ""
         # Derive the live conversation id so terminal/execute_code subprocesses
         # can read HERMES_SESSION_ID. Without this, set_session_vars leaves the
         # session-id contextvar as "" (explicitly empty), and the subprocess-env
@@ -3431,11 +3464,22 @@ def _set_session_context(
                     session_id = (
                         getattr(sess.get("agent"), "session_id", None) or session_key
                     )
+                    transport = sess.get("transport")
+                    identity = getattr(transport, "auth_identity", None)
+                    if _methods_browser_control._is_authenticated_identity(identity):
+                        browser_control_principal = (
+                            _methods_browser_control._principal_digest(identity)
+                        )
+                        browser_control_transport_family = (
+                            _methods_browser_control._CLOUD_TRANSPORT_FAMILY
+                        )
                     break
         return set_session_vars(
             session_key=session_key,
             session_id=session_id,
             source=source,
+            browser_control_principal=browser_control_principal,
+            browser_control_transport_family=browser_control_transport_family,
             cwd=resolved,
             ui_session_id=ui_session_id,
             cron_session="",
@@ -3465,16 +3509,28 @@ def _enable_gateway_prompts() -> None:
 # ── Blocking prompt factory ──────────────────────────────────────────
 
 
-def _block(event: str, sid: str, payload: dict, timeout: float | None = 300) -> str:
+def _block(
+    event: str,
+    sid: str,
+    payload: dict,
+    timeout: float | None = 300,
+    batch_qids: list[str] | None = None,
+) -> str:
     rid = uuid.uuid4().hex[:8]
     ev = threading.Event()
     with _prompt_lock:
         _pending[rid] = (sid, ev)
         payload["request_id"] = rid
         _pending_prompt_payloads[rid] = (event, dict(payload))
+        if batch_qids:
+            # Multi-question clarify: per-question answers accumulate here
+            # (update-in-place until every qid is locked). Locked answers
+            # survive a timeout — see the batch read-out below.
+            _batch_clarify[rid] = {"qids": list(batch_qids), "answers": {}}
     answered = False
     answer = ""
     answer_present = False
+    batch_answers: dict | None = None
     try:
         _emit(event, sid, payload)
         # Natural Event semantics: None → wait forever (clarify configured with
@@ -3487,6 +3543,27 @@ def _block(event: str, sid: str, payload: dict, timeout: float | None = 300) -> 
             _pending_prompt_payloads.pop(rid, None)
             answer_present = rid in _answers
             answer = _answers.pop(rid, "")
+            batch_state = _batch_clarify.pop(rid, None)
+            if batch_state is not None:
+                batch_answers = dict(batch_state["answers"])
+
+    if batch_qids is not None:
+        # Cancel-all (respond with no question_id) resolves via _answers with
+        # an empty string — that stays a plain cancel, not a partial result.
+        if answer_present:
+            return answer
+        result: dict[str, object] = {"answers": batch_answers or {}}
+        if not answered:
+            # Deadline hit: keep whatever was locked, tell the tool the rest
+            # are absences (not skips), and still fire the expire
+            # notification so live cards tear down.
+            result["timed_out"] = True
+            _emit(
+                f"{event.removesuffix('.request')}.expire",
+                sid,
+                {"request_id": rid},
+            )
+        return json.dumps(result, ensure_ascii=False)
 
     # Emit an `.expire` notification on timeout for every blocking request type
     # whose `*.respond` handler tolerates a late reply (allow_expired=True).
@@ -3501,8 +3578,10 @@ def _block(event: str, sid: str, payload: dict, timeout: float | None = 300) -> 
         "clarify.request",
         "terminal.read.request",
         "preview.read.request",
+        "preview.act.request",
         "window.read.request",
         "mcp.setup.request",
+        "tour.request",
     }:
         _emit(
             f"{event.removesuffix('.request')}.expire",
@@ -3523,6 +3602,118 @@ def _clarify_timeout_seconds() -> float | None:
         return timeout if timeout > 0 else None
     except Exception:
         return 300
+
+
+def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
+    """Bridge the clarify tool callback onto _block.
+
+    Single-question calls keep the exact historical payload shape (older
+    renderers never see a new field). Batch calls emit one clarify.request
+    carrying the question list — only wire fields (qid/question/choices/
+    multi_select) are forwarded; the tool-side normalized entries also carry
+    result-assembly keys (id, choices_offered) the renderer must not see.
+    The tool decodes the JSON reply via its batch answer parser.
+    """
+    if questions:
+        wire = [
+            {
+                "qid": entry["qid"],
+                "question": entry["question"],
+                "choices": entry["choices"],
+                "multi_select": bool(entry["multi_select"]),
+            }
+            for entry in questions
+        ]
+        return _block(
+            "clarify.request",
+            sid,
+            {"questions": wire},
+            timeout=_clarify_timeout_seconds(),
+            batch_qids=[entry["qid"] for entry in questions],
+        )
+    # multi_select is a pass-through hint: renderers with checkbox
+    # support can honor it; older renderers ignore the extra field
+    # and stay single-select (a single answer still parses as a
+    # one-element list on the tool side). Only emitted when True so
+    # single-select payloads keep the exact pre-multi-select shape.
+    return _block(
+        "clarify.request",
+        sid,
+        (
+            {"question": q, "choices": c, "multi_select": True}
+            if multi_select
+            else {"question": q, "choices": c}
+        ),
+        timeout=_clarify_timeout_seconds(),
+    )
+
+
+# A tour action is a DOM operation the renderer performs and answers straight
+# back, so a client that implements the bridge replies in milliseconds. The
+# generous deadline exists for one case only: a preview tour's first action
+# injects the engine into a live page.
+_TOUR_TIMEOUT_S = 45
+# Until a session's client has proven it answers at all, hold it to a deadline
+# a working renderer cannot miss. See _tour_request.
+_TOUR_PROBE_TIMEOUT_S = 10
+
+_TOUR_BRIDGE_UNAVAILABLE = json.dumps(
+    {
+        "success": False,
+        "error": (
+            "No Hermes Desktop window answered the tour request. The tour is "
+            "driven by the desktop app's renderer, which updates separately "
+            "from this backend, so an app build older than the tour tool has "
+            "nothing listening. Update the Hermes Desktop app and start a new "
+            "session. Do not retry tour in this session."
+        ),
+    }
+)
+
+
+def _tour_request(sid: str, payload: dict) -> str:
+    """Bridge the tour tool callback onto _block, without paying for a client
+    that cannot answer it.
+
+    The renderer's ``tour.request`` handler ships in the desktop bundle, but
+    the tool is offered by this backend — and the two update on different
+    clocks. Against an app older than the tool the event lands in a renderer
+    with no branch for it, nobody ever calls ``tour.respond``, and the agent
+    blocks for the full deadline. The model then does what the schema tells it
+    to and tries the next action, so a single "give me a tour" turn stacks
+    those waits (the timeouts reported against #89620).
+
+    A session's first action therefore gets the probe deadline, and an
+    unanswered probe marks the bridge unavailable for that session: every later
+    call returns immediately, telling the user what to actually fix instead of
+    stalling again. Once a client has answered, real actions get the full
+    deadline back and a single slow one no longer condemns it. The verdict
+    lives on the session record, so it dies with the session and a new one
+    re-probes.
+    """
+    # A detached caller has no session record; the throwaway keeps it on the
+    # plain bridge, unprobed.
+    session = _sessions.get(sid)
+    if session is None:
+        session = {}
+    state = session.get("tour_bridge")
+
+    if state == "unanswered":
+        return _TOUR_BRIDGE_UNAVAILABLE
+
+    answer = _block(
+        "tour.request",
+        sid,
+        dict(payload),
+        timeout=_TOUR_TIMEOUT_S if state == "answered" else _TOUR_PROBE_TIMEOUT_S,
+    )
+
+    if answer:
+        session["tour_bridge"] = "answered"
+    elif state != "answered":
+        session["tour_bridge"] = "unanswered"
+
+    return answer or _TOUR_BRIDGE_UNAVAILABLE
 
 
 def _clear_pending(sid: str | None = None) -> None:
@@ -5683,6 +5874,20 @@ def _emit_session_info_for_session(sid: str, session: dict) -> None:
         pass
 
 
+def broadcast_session_info() -> None:
+    """Re-emit ``session.info`` to every live session.
+
+    For approvals-config writers that bypass the ``config.set`` RPC (which
+    re-emits itself): the REST config saves and the ``/approvals`` slash
+    mirror. Only reaches sessions in THIS process; a spawned
+    ``tui_gateway.entry`` child gateway has its own ``_sessions``.
+    """
+    with _sessions_lock:
+        sessions = list(_sessions.items())
+    for sid, sess in sessions:
+        _emit_session_info_for_session(sid, sess)
+
+
 # Tool Args/Result text shipped to the TUI for the verbose trail line. The TUI
 # renders only a small persisted preview (ui-tui VERBOSE_TRAIL_MAX_CHARS), kept
 # all session and expanded by default — so shipping more than that is pure pipe
@@ -6172,20 +6377,8 @@ def _agent_cbs(sid: str) -> dict:
         "notice_clear_callback": lambda key: _emit(
             "notification.clear", sid, {"key": key}
         ),
-        "clarify_callback": lambda q, c, multi_select=False: _block(
-            "clarify.request",
-            sid,
-            # multi_select is a pass-through hint: renderers with checkbox
-            # support can honor it; older renderers ignore the extra field
-            # and stay single-select (a single answer still parses as a
-            # one-element list on the tool side). Only emitted when True so
-            # single-select payloads keep the exact pre-multi-select shape.
-            (
-                {"question": q, "choices": c, "multi_select": True}
-                if multi_select
-                else {"question": q, "choices": c}
-            ),
-            timeout=_clarify_timeout_seconds(),
+        "clarify_callback": lambda q, c, multi_select=False, questions=None: (
+            _clarify_block(sid, q, c, multi_select=multi_select, questions=questions)
         ),
         # read_terminal tool (desktop GUI): same blocking bridge as clarify — the
         # renderer answers terminal.read.respond with the serialized buffer.
@@ -6203,6 +6396,20 @@ def _agent_cbs(sid: str) -> dict:
             "preview.read.request",
             sid,
             {k: v for k, v in (("start", start), ("count", count)) if v is not None},
+            timeout=45,
+        ),
+        # drive_preview tool (desktop GUI): the renderer injects the interaction
+        # engine into the preview pane's webview (or drives the pane's history)
+        # and answers preview.act.respond with the outcome plus a refreshed
+        # element inventory. Same budget as the preview read, which it ends
+        # with — a click on a slow page pays for the settle and the re-scan.
+        # annotate_preview rides this same callback: it resolves a target
+        # through the same engine and differs only in the verb it sends, so it
+        # needs a tool of its own but not a channel of its own.
+        "drive_preview_callback": lambda payload: _block(
+            "preview.act.request",
+            sid,
+            dict(payload),
             timeout=45,
         ),
         # read_window_below tool (desktop GUI): the renderer asks its main
@@ -6227,6 +6434,11 @@ def _agent_cbs(sid: str) -> dict:
             {"server": server, "action": action, "reason": reason},
             timeout=600,
         ),
+        # tour tool (desktop GUI): the renderer drives driver.js — highlighting
+        # elements in the app's own DOM or injecting the engine into the
+        # preview pane's webview — and answers tour.respond with the outcome
+        # (did the selector match, which step is active).
+        "tour_callback": lambda payload: _tour_request(sid, payload),
     }
 
     # Interim assistant commentary (text alongside tool calls, or the attempted
@@ -6436,14 +6648,20 @@ def _apply_personality_to_session(
 
 
 def _cfg_max_turns(cfg: dict, default: int) -> int:
-    try:
-        env_max = int(os.environ.get("HERMES_TUI_MAX_TURNS", "") or 0)
-        if env_max > 0:
-            return env_max
-    except (TypeError, ValueError):
-        pass
+    from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
+    # Env var override (highest priority)
+    env_val = os.environ.get("HERMES_TUI_MAX_TURNS")
+    if env_val:
+        return _resolve_turn_limit(env_val, default=default)
+    # Config file value — route through resolve_turn_limit so that
+    # "none"/"unlimited"/0 are first-class spellings, not int() crashes.
     agent_cfg = cfg.get("agent") or {}
-    return int(agent_cfg.get("max_turns") or cfg.get("max_turns") or default)
+    raw = agent_cfg.get("max_turns")
+    if raw is None:
+        raw = cfg.get("max_turns")
+    if raw is not None:
+        return _resolve_turn_limit(raw, default=default)
+    return default
 
 
 def _parse_tui_skills_env() -> list[str]:
@@ -7481,6 +7699,9 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
     for m in history:
         if not isinstance(m, dict):
             continue
+        m = project_compaction_message_for_display(m)
+        if m is None:
+            continue
         role = m.get("role")
         if role not in {"user", "assistant", "tool", "system"}:
             continue
@@ -7693,7 +7914,9 @@ def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
 
 
-def _fail_inflight_turn(session: dict, error: Any) -> None:
+def _fail_inflight_turn(
+    session: dict, error: Any, error_surface: Optional[dict] = None
+) -> None:
     """Mark the in-flight turn terminal-error but keep it replayable.
 
     Normal completion clears ``inflight_turn`` because the response is now in
@@ -7717,6 +7940,13 @@ def _fail_inflight_turn(session: dict, error: Any) -> None:
     turn["error"] = message or "turn failed"
     turn["status"] = "error"
     turn["recoverable"] = True
+    if error_surface:
+        # Structured {layer, code, retryable} descriptor — replayed to
+        # resuming clients via the resume snapshot so a reconnect renders the
+        # same layered error card the live frame carried.
+        turn["error_surface"] = dict(error_surface)
+    else:
+        turn.pop("error_surface", None)
     turn["streaming"] = False
     turn["updated_at"] = now
     session["inflight_turn"] = turn
@@ -8276,10 +8506,15 @@ def _inflight_snapshot(session: dict) -> dict | None:
         snapshot["error"] = error
         snapshot["status"] = str(turn.get("status") or "error")
         snapshot["recoverable"] = bool(turn.get("recoverable"))
+        surface = turn.get("error_surface")
+        if isinstance(surface, dict) and surface:
+            snapshot["error_surface"] = surface
     return snapshot
 
 
-def _emit_terminal_turn_error(sid: str, session: dict, error: Any) -> None:
+def _emit_terminal_turn_error(
+    sid: str, session: dict, error: Any, error_surface: Optional[dict] = None
+) -> None:
     """Close a failed turn with a terminal ``message.complete`` frame.
 
     Emits the same ``status: "error"`` frame shape the returned-error path in
@@ -8287,15 +8522,33 @@ def _emit_terminal_turn_error(sid: str, session: dict, error: Any) -> None:
     uniform), and retains the failed turn via ``_fail_inflight_turn`` so a
     client that missed this frame (disconnect window) can recover it from
     ``session.resume``'s ``inflight`` payload.
+
+    ``error_surface`` lets callers that already know the failing layer (e.g.
+    agent-init failures = local runtime) pass it explicitly; exception
+    callers leave it None and the classifier derives it here.
     """
+    agent = session.get("agent")
+    # Classify the failure into a {layer, code, retryable} descriptor so the
+    # desktop can say "Provider error" / "Gateway error" with matching
+    # recovery actions instead of a generic toast. Never raises (advisory).
+    if error_surface is None and isinstance(error, BaseException):
+        try:
+            from agent.error_surface import build_error_surface_from_exception
+
+            error_surface = build_error_surface_from_exception(
+                error,
+                provider=str(getattr(agent, "provider", "") or ""),
+                model=str(getattr(agent, "model", "") or ""),
+            )
+        except Exception:
+            error_surface = None
     with session["history_lock"]:
-        _fail_inflight_turn(session, error)
+        _fail_inflight_turn(session, error, error_surface=error_surface)
         turn = session.get("inflight_turn") or {}
         message = str(turn.get("error") or "turn failed")
         partial = str(turn.get("assistant") or "")
         cols = int(session.get("cols", 80))
     text = partial or f"Error: {message}"
-    agent = session.get("agent")
     payload = {
         "text": text,
         "usage": _get_usage(agent) if agent is not None else {},
@@ -8303,6 +8556,8 @@ def _emit_terminal_turn_error(sid: str, session: dict, error: Any) -> None:
         "error": message,
         "recoverable": True,
     }
+    if error_surface:
+        payload["error_surface"] = error_surface
     if partial:
         payload["partial"] = True
     try:
@@ -10231,7 +10486,7 @@ _desktop_ui_wired = False
 
 
 def _wire_desktop_ui() -> None:
-    """Bridge desktop-only tools (open_preview, focus_pane) to renderer events.
+    """Bridge desktop-only tools (open_preview, close_preview, focus_pane) to renderer events.
 
     Idempotent. The tool hands back the turn's ``HERMES_UI_SESSION_ID`` as
     ``sid`` so the event routes to the window that asked (``_emit`` /
@@ -11024,6 +11279,25 @@ def _run_prompt_submit(
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
+            # Structured layer descriptor ({layer, code, retryable}) so
+            # clients can name WHICH part of the stack failed (provider /
+            # streaming / auth / gateway / …) and offer layer-appropriate
+            # recovery actions instead of sniffing the message string.
+            # Advisory: older clients ignore it, absence falls back to
+            # string heuristics on newer clients. Computed before the retain
+            # below so resume replay carries the same descriptor.
+            _error_surface = None
+            if status == "error":
+                try:
+                    from agent.error_surface import build_error_surface_from_result
+
+                    _error_surface = build_error_surface_from_result(
+                        result,
+                        provider=str(getattr(agent, "provider", "") or ""),
+                        model=str(getattr(agent, "model", "") or ""),
+                    )
+                except Exception:
+                    _error_surface = None
             with session["history_lock"]:
                 if status == "error":
                     # Returned-error result (provider 4xx, budget, etc.): retain
@@ -11033,6 +11307,7 @@ def _run_prompt_submit(
                     _fail_inflight_turn(
                         session,
                         result.get("error") if isinstance(result, dict) else raw,
+                        error_surface=_error_surface,
                     )
                     turn_error_retained = True
                 else:
@@ -11042,6 +11317,8 @@ def _run_prompt_submit(
                     (result.get("error") if isinstance(result, dict) else "") or raw
                 )
                 payload["recoverable"] = True
+                if _error_surface:
+                    payload["error_surface"] = _error_surface
             _retire_turn_marker(session, marker_key)
             _emit("message.complete", sid, payload)
 
@@ -11707,6 +11984,7 @@ def _stage_session_file_attachment(
 
 def _respond(rid, params, key, *, allow_expired=False):
     r = params.get("request_id", "")
+    question_id = str(params.get("question_id") or "")
     with _prompt_lock:
         entry = _pending.get(r)
         if not entry:
@@ -11714,6 +11992,21 @@ def _respond(rid, params, key, *, allow_expired=False):
                 return _ok(rid, {"status": "expired"})
             return _err(rid, 4009, f"no pending {key} request")
         _, ev = entry
+        batch = _batch_clarify.get(r)
+        if batch is not None and question_id:
+            # Per-question lock (multi-question clarify). Update-in-place is
+            # deliberate: a locked answer stays editable until the batch
+            # completes, and completion is exactly "every qid locked" — the
+            # final lock is the Confirm-and-continue click.
+            if question_id not in batch["qids"]:
+                return _err(rid, 4002, f"unknown question_id {question_id!r}")
+            batch["answers"][question_id] = params.get(key, "")
+            remaining = [
+                qid for qid in batch["qids"] if qid not in batch["answers"]
+            ]
+            if not remaining:
+                ev.set()
+            return _ok(rid, {"status": "ok", "remaining": remaining})
         _answers[r] = params.get(key, "")
         ev.set()
     return _ok(rid, {"status": "ok"})
@@ -12450,13 +12743,14 @@ def _projects_payload(conn) -> dict:
 def _projects_method(name: str):
     """Register a projects RPC, injecting (pdb, conn) and unifying error mapping.
 
-    Every project CRUD handler opened the per-profile DB, mapped a missing id to
-    5062, bad args to 5063, and everything else to 5061. This collapses that
-    boilerplate so each handler is just its one meaningful operation.
+    Binds ``params['profile']`` (via ``@_profile_scoped``) so app-global remote
+    mode reads that profile's ``projects.db``. Missing id maps to 5062, bad args
+    to 5063, everything else to 5061.
     """
 
     def decorator(fn):
         @method(name)
+        @_profile_scoped
         def handler(rid, params: dict) -> dict:
             try:
                 from hermes_cli import projects_db as pdb
@@ -12693,6 +12987,89 @@ def _repo_discovery_policy_is_default(policy: dict) -> bool:
     return _repo_discovery_policy_key(policy) == _repo_discovery_policy_key(
         _repo_discovery_policy(DEFAULT_CONFIG["desktop"])
     )
+
+
+def _scan_discovered_repos_remote(conn, policy: dict) -> bool:
+    """Backend-side disk scan of the discovery policy roots.
+
+    The desktop's native repo scan only runs on the local filesystem. On a
+    remote gateway connection the host must scan its own disk so repos with
+    zero Hermes sessions still appear in the sidebar (#81723). Mirrors the
+    desktop's behavior: walk each root (bounded depth), find `.git`
+    directories, record (root, label) pairs into the discovery cache.
+
+    Best-effort: any failure logs and leaves the cache untouched — the
+    session-derived repos from `_discover_repos_payload` still surface.
+
+    Returns True when the scan is authoritative (every root was walked to
+    completion without error and the per-scan cap was not hit). Only then may
+    the caller treat the result as a full replacement and pass ``replace=True``
+    to the cache write — a partial or errored scan must merge, never wipe, so
+    a failed remote refresh can't blank the previously cached repos into the
+    silent, unpopulated sidebar of #81723.
+    """
+    from hermes_cli import projects_db as pdb
+
+    roots = policy.get("roots") or []
+    excludes = policy.get("exclude_paths") or []
+    pairs: list[tuple[str, str | None]] = []
+    seen: set[str] = set()
+    authoritative = True
+
+    def _is_excluded(path: str) -> bool:
+        return any(path == ex or path.startswith(ex.rstrip("/\\") + os.sep) for ex in excludes if ex)
+
+    for root in roots:
+        if not os.path.isdir(root):
+            # `os.walk` on a missing root silently yields nothing instead of
+            # raising, so a temporarily unavailable root (unmounted volume,
+            # moved path) would otherwise look like a genuinely empty scan and
+            # let `authoritative` stay True — letting the replace wipe every
+            # cached repo that lived under the missing root. A missing root
+            # contributes nothing and must not be treated as authoritative.
+            authoritative = False
+            logger.debug("discover_repos scan root missing, skipping: %s", root)
+            continue
+        try:
+            for dirpath, dirnames, _filenames in os.walk(root):
+                if _is_excluded(dirpath):
+                    dirnames[:] = []
+                    continue
+                # A `.git` directory marks this directory as a repo root. Check
+                # BEFORE pruning hidden dirs — `.git` is itself hidden, so a
+                # prune-first order would drop it and never detect any repo.
+                if ".git" in dirnames:
+                    repo_root = dirpath
+                    if repo_root not in seen:
+                        seen.add(repo_root)
+                        pairs.append((repo_root, os.path.basename(repo_root)))
+                    # Don't descend into the repo's own .git to hunt nested repos.
+                    dirnames[:] = []
+                else:
+                    # Not a repo: skip hidden dirs (e.g. .hermes) and node_modules.
+                    dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in ("node_modules",)]
+                if len(pairs) >= 500:
+                    break
+        except Exception:
+            # A root that can't be walked yields no authoritative set — fall back
+            # to merging, never replacing, so the prior cache survives.
+            authoritative = False
+            logger.debug("discover_repos scan failed for root %s", root, exc_info=True)
+        if len(pairs) >= 500:
+            # Cap hit means the walk didn't cover the full roots; the collected
+            # set must not be treated as the complete authoritative universe.
+            authoritative = False
+            break
+
+    if pairs:
+        try:
+            pdb.record_discovered_repos(
+                conn, pairs, replace=authoritative, policy_key=_repo_discovery_policy_key(policy)
+            )
+        except Exception:
+            logger.debug("discover_repos cache write failed", exc_info=True)
+            authoritative = False
+    return authoritative
 
 
 def _discover_repos_payload(
@@ -13597,14 +13974,17 @@ def _format_live_usage_output(session: dict) -> str:
 def _format_live_history_output(session: dict) -> str:
     with session["history_lock"]:
         history = list(session.get("history", []))
-    db = _get_db()
-    if db is not None and session.get("session_key"):
-        try:
-            history = db.get_messages_as_conversation(
-                session["session_key"], include_ancestors=True, include_row_ids=True
-            )
-        except Exception:
-            pass
+    # _session_db, not _get_db(): a profile session's transcript lives in its
+    # own profile's state.db, and this read is scoped by session id — through
+    # the launch handle it comes back empty and /history renders nothing.
+    with _session_db(session) as db:
+        if db is not None and session.get("session_key"):
+            try:
+                history = db.get_messages_as_conversation(
+                    session["session_key"], include_ancestors=True, include_row_ids=True
+                )
+            except Exception:
+                pass
     messages = _history_to_messages(history)
     if not messages:
         return "No conversation history yet."
@@ -13637,16 +14017,18 @@ def _format_live_prompt_output(session: dict) -> str:
 
 def _format_live_context_output(session: dict) -> str:
     messages = []
-    db = _get_db()
-    if db is not None and session.get("session_key"):
-        try:
-            messages = _history_to_messages(
-                db.get_messages_as_conversation(
-                    session["session_key"], include_ancestors=True, include_row_ids=True
+    # Same session-scoped read as /history — resolve it against the db that
+    # owns this session's rows, not the launch profile's handle.
+    with _session_db(session) as db:
+        if db is not None and session.get("session_key"):
+            try:
+                messages = _history_to_messages(
+                    db.get_messages_as_conversation(
+                        session["session_key"], include_ancestors=True, include_row_ids=True
+                    )
                 )
-            )
-        except Exception:
-            messages = []
+            except Exception:
+                messages = []
     if not messages:
         with session["history_lock"]:
             messages = _history_to_messages(list(session.get("history", [])))
@@ -13831,6 +14213,10 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         if name == "model" and arg and agent:
             result = _apply_model_switch(sid, session, arg)
             return result.get("warning", "")
+        elif name == "approvals" and arg:
+            # The slash worker already persisted the new approvals.mode; the
+            # bare (read-only) form has no arg and needs no repaint.
+            broadcast_session_info()
         elif name == "personality" and arg and agent:
             pname, new_prompt = _validate_personality(arg, _load_cfg())
             # Persist through the single owner so this surface can never
@@ -15316,6 +15702,7 @@ def _mcp_summarize_server(name, cfg):  # noqa: E402
 # Imported at the end of this module so every global the handlers close
 # over already exists; register() rebinds them onto this namespace.
 from . import (  # noqa: E402
+    methods_browser_control as _methods_browser_control,
     methods_complete as _methods_complete,
     methods_config as _methods_config,
     methods_images as _methods_images,
@@ -15326,6 +15713,7 @@ from . import (  # noqa: E402
 )
 
 for _m in (
+    _methods_browser_control,
     _methods_session,
     _methods_prompt,
     _methods_config,

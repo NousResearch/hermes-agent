@@ -46,11 +46,16 @@ vi.mock('@/store/session', () => ({
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
 
 const {
+  activeGateway,
   closeSecondaryGateways,
   configureGatewayRegistry,
   disposeSecondariesForConnection,
   ensureActiveGatewayOpen,
   ensureGatewayForAgent,
+  ensureGatewayForProfile,
+  openGatewayForProfile,
+  reconnectSecondaryGateways,
+  retireLocalProfileGateways,
   setPrimaryGateway
 } = await import('./gateway')
 
@@ -83,6 +88,29 @@ afterEach(() => {
 })
 
 describe('disposeSecondariesForConnection', () => {
+  it('keeps the previous source socket alive when another source becomes foreground', async () => {
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+      descriptorFor(connectionId, profile)
+    )
+
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('homelab', 'default')
+    const homelab = gatewayMocks.instances[0]
+
+    await ensureGatewayForAgent('office', 'default')
+
+    expect(gatewayMocks.instances).toHaveLength(2)
+    expect(homelab.close).not.toHaveBeenCalled()
+    expect(homelab.connectionState).toBe('open')
+
+    // Returning to the first source reuses its live socket. A source switch is
+    // only a foreground routing change; it must never interrupt backend work.
+    await ensureGatewayForAgent('homelab', 'default')
+    expect(gatewayMocks.instances).toHaveLength(2)
+    expect(activeGateway()).toBe(homelab)
+  })
+
   it('closes and evicts every secondary scoped to the removed connection', async () => {
     const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
       descriptorFor(connectionId, profile)
@@ -145,6 +173,51 @@ describe('disposeSecondariesForConnection', () => {
   })
 })
 
+describe('retireLocalProfileGateways', () => {
+  it('retires both local profile scopes without touching the same-named remote agent', async () => {
+    const getConnection = vi.fn(async (profile: string) => descriptorFor('legacy-local', profile))
+
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+      descriptorFor(connectionId, profile)
+    )
+
+    installDesktop({ getConnection, getConnectionFor })
+
+    await openGatewayForProfile('selena')
+    await ensureGatewayForAgent('local', 'selena')
+    await ensureGatewayForAgent('homelab', 'selena')
+
+    expect(gatewayMocks.instances).toHaveLength(3)
+    const connectionCallsBeforeRetire = getConnection.mock.calls.length + getConnectionFor.mock.calls.length
+
+    retireLocalProfileGateways('selena')
+
+    expect(gatewayMocks.instances[0].close).toHaveBeenCalledOnce()
+    expect(gatewayMocks.instances[1].close).toHaveBeenCalledOnce()
+    expect(gatewayMocks.instances[2].close).not.toHaveBeenCalled()
+
+    // A wake/reconnect sweep cannot redial either retired local scope. The
+    // homelab entry remains open and therefore also needs no extra dial.
+    reconnectSecondaryGateways()
+    await Promise.resolve()
+    expect(getConnection.mock.calls.length + getConnectionFor.mock.calls.length).toBe(connectionCallsBeforeRetire)
+  })
+
+  it('allows an explicit later access to create a fresh profile secondary', async () => {
+    const getConnection = vi.fn(async (profile: string) => descriptorFor('legacy-local', profile))
+
+    installDesktop({ getConnection })
+
+    await openGatewayForProfile('selena')
+    retireLocalProfileGateways('selena')
+    await openGatewayForProfile('selena')
+
+    expect(gatewayMocks.instances).toHaveLength(2)
+    expect(gatewayMocks.instances[0].close).toHaveBeenCalledOnce()
+    expect(gatewayMocks.instances[1].close).not.toHaveBeenCalled()
+  })
+})
+
 describe('reconnect fail-stop on a removed connection', () => {
   it('evicts the entry instead of retrying when the registry no longer knows the id', async () => {
     const getConnectionFor = vi
@@ -192,5 +265,115 @@ describe('reconnect fail-stop on a removed connection', () => {
     const reopened = await ensureActiveGatewayOpen()
 
     expect(reopened).not.toBeNull()
+  })
+
+  it('evicts a LOCAL profile entry when the deletion guard reports the profile gone (#88769)', async () => {
+    // A stale rail badge clicked after deletion drives reconnects against
+    // Electron's spawn guard, which rejects every attempt. That rejection is
+    // permanent — the loop must fail-stop, not hammer the guard on backoff.
+    // sharedPrimaryRoute probes getConnection too, so resolve enough calls to
+    // get the socket open before the guard starts rejecting.
+    let connectionCalls = 0
+
+    const getConnection = vi.fn(async () => {
+      connectionCalls += 1
+
+      if (connectionCalls <= 3) {
+        return descriptorFor('legacy-local', 'selena')
+      }
+
+      throw new Error('Profile "selena" no longer exists.')
+    })
+
+    installDesktop({ getConnection })
+
+    await openGatewayForProfile('selena')
+    await ensureGatewayForProfile('selena')
+    expect(gatewayMocks.instances).toHaveLength(1)
+    connectionCalls = 99
+
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    // Drive the reconnect: the guard rejection must dispose + evict.
+    const result = await ensureActiveGatewayOpen()
+
+    expect(result).toBeNull()
+    const callsAfterFailStop = getConnection.mock.calls.length
+    await ensureActiveGatewayOpen()
+    expect(getConnection.mock.calls.length).toBe(callsAfterFailStop)
+  })
+
+  it('fail-stops on the mid-delete guard rejection too', async () => {
+    let connectionCalls = 0
+
+    const getConnection = vi.fn(async () => {
+      connectionCalls += 1
+
+      if (connectionCalls <= 3) {
+        return descriptorFor('legacy-local', 'selena')
+      }
+
+      throw new Error('Profile "selena" is being deleted.')
+    })
+
+    installDesktop({ getConnection })
+
+    await openGatewayForProfile('selena')
+    await ensureGatewayForProfile('selena')
+    connectionCalls = 99
+
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    await ensureActiveGatewayOpen()
+
+    const callsAfterFailStop = getConnection.mock.calls.length
+    await ensureActiveGatewayOpen()
+    expect(getConnection.mock.calls.length).toBe(callsAfterFailStop)
+  })
+
+  it('waits out an in-flight secondary activation instead of failing instantly (#88880)', async () => {
+    // A remote secondary whose activation is ALREADY in flight from another
+    // path (wake sweep, agent activation) used to make ensureActiveGatewayOpen
+    // return null immediately: reconnectSecondary early-returns on
+    // `reconnecting`, the socket is still closed, and the caller surfaced
+    // "Hermes gateway is not connected" on the Sessions + action. The drive
+    // must ride out the in-flight activation and hand back the opened socket.
+    let releaseDial: (() => void) | undefined
+
+    const dialGate = new Promise<void>(resolve => {
+      releaseDial = resolve
+    })
+
+    const getConnectionFor = vi.fn(async () => descriptorFor('homelab', 'default'))
+
+    installDesktop({ getConnectionFor })
+
+    gatewayMocks.connect
+      .mockImplementationOnce(async () => undefined) // initial open
+      .mockImplementationOnce(async () => {
+        await dialGate // the sweep-driven reconnect dial hangs until released
+      })
+
+    await ensureGatewayForAgent('homelab', 'default')
+
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    // Another path (the wake sweep) starts the reconnect first — the drive
+    // below meets an entry that is already `reconnecting`.
+    reconnectSecondaryGateways()
+    await Promise.resolve()
+
+    const driving = ensureActiveGatewayOpen()
+
+    await new Promise(resolve => setTimeout(resolve, 300))
+    releaseDial?.()
+
+    const result = await driving
+
+    expect(result).not.toBeNull()
+    expect((result as unknown as { connectionState: string }).connectionState).toBe('open')
   })
 })

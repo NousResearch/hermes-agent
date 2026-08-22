@@ -17,31 +17,40 @@ _profile_scoped = _registry.profile_scoped
 
 
 @method("projects.discover_repos")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Repos for the desktop overview: scanned-from-disk (cached) ∪ session-derived."""
     try:
-        db = _get_db()
-        if db is None:
-            return _ok(rid, {"repos": []})
-        from hermes_cli import projects_db as pdb
+        with _profile_db(params) as db:
+            if db is None:
+                return _ok(rid, {"repos": []})
+            from hermes_cli import projects_db as pdb
 
-        policy = _repo_discovery_policy()
-        policy_key = _repo_discovery_policy_key(policy)
-        with pdb.connect_closing() as conn:
-            pdb.reconcile_discovered_repos_policy(
-                conn,
-                policy_key,
-                preserve_unversioned=_repo_discovery_policy_is_default(policy),
-            )
-            repos = _discover_repos_payload(
-                db, conn=conn, include_cached=policy["enabled"]
-            )
-        return _ok(rid, {"repos": repos, "discovery_policy": policy})
+            policy = _repo_discovery_policy()
+            policy_key = _repo_discovery_policy_key(policy)
+            with pdb.connect_closing() as conn:
+                pdb.reconcile_discovered_repos_policy(
+                    conn,
+                    policy_key,
+                    preserve_unversioned=_repo_discovery_policy_is_default(policy),
+                )
+                # `scan=true` (set by the desktop in remote-gateway mode): run a
+                # backend-side filesystem scan of the policy roots so repos with
+                # zero Hermes sessions still surface. The desktop's native scan
+                # only runs on the local filesystem; on a remote connection it
+                # must ask the host to scan itself (#81723).
+                if params.get("scan") and policy["enabled"]:
+                    _scan_discovered_repos_remote(conn, policy)
+                repos = _discover_repos_payload(
+                    db, conn=conn, include_cached=policy["enabled"]
+                )
+            return _ok(rid, {"repos": repos, "discovery_policy": policy})
     except Exception as e:
         return _err(rid, 5061, str(e))
 
 
 @method("projects.record_repos")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Persist git repo roots found by the client's filesystem scan, then return
     the merged repo list. The native crawl runs on the desktop (local fs); this
@@ -88,24 +97,25 @@ def _(rid, params: dict) -> dict:
             elif not policy["enabled"]:
                 pdb.clear_discovered_repos(conn, policy_key=policy_key)
 
-        db = _get_db()
-        return _ok(
-            rid,
-            {
-                "repos": _discover_repos_payload(
-                    db, include_cached=policy["enabled"]
-                )
-                if db is not None
-                else [],
-                "accepted": accepted,
-                "discovery_policy": policy,
-            },
-        )
+        with _profile_db(params) as db:
+            return _ok(
+                rid,
+                {
+                    "repos": _discover_repos_payload(
+                        db, include_cached=policy["enabled"]
+                    )
+                    if db is not None
+                    else [],
+                    "accepted": accepted,
+                    "discovery_policy": policy,
+                },
+            )
     except Exception as e:
         return _err(rid, 5061, str(e))
 
 
 @method("projects.tree")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Authoritative project overview: project -> repo -> lane structure with
     counts + a few preview sessions per project, plus the flat set of session
@@ -113,26 +123,33 @@ def _(rid, params: dict) -> dict:
     Lanes carry no session rows here; drill-in uses ``projects.project_sessions``.
     """
     try:
-        db = _get_db()
-        if db is None:
-            return _ok(rid, {"projects": [], "active_id": None, "scoped_session_ids": []})
+        with _profile_db(params) as db:
+            if db is None:
+                return _ok(
+                    rid, {"projects": [], "active_id": None, "scoped_session_ids": []}
+                )
 
-        tree, active_id = _build_project_tree(
-            db,
-            preview_limit=int(params.get("preview_limit") or 3),
-            hydrate=False,
-            session_limit=int(params.get("session_limit") or 2000),
-            include_discovered=True,
-        )
-        return _ok(
-            rid,
-            {"projects": tree["projects"], "active_id": active_id, "scoped_session_ids": tree["scoped_session_ids"]},
-        )
+            tree, active_id = _build_project_tree(
+                db,
+                preview_limit=int(params.get("preview_limit") or 3),
+                hydrate=False,
+                session_limit=int(params.get("session_limit") or 2000),
+                include_discovered=True,
+            )
+            return _ok(
+                rid,
+                {
+                    "projects": tree["projects"],
+                    "active_id": active_id,
+                    "scoped_session_ids": tree["scoped_session_ids"],
+                },
+            )
     except Exception as e:
         return _err(rid, 5061, str(e))
 
 
 @method("projects.project_sessions")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Fully hydrated lanes (repo -> lane -> session rows) for one project,
     built from the same authoritative grouping as ``projects.tree`` so ids and
@@ -142,18 +159,21 @@ def _(rid, params: dict) -> dict:
         if not project_id:
             return _err(rid, 5063, "project_id required")
 
-        db = _get_db()
-        if db is None:
-            return _ok(rid, {"project": None})
+        with _profile_db(params) as db:
+            if db is None:
+                return _ok(rid, {"project": None})
 
-        # Drill-in only needs the entered project (which has sessions), so skip
-        # the zero-session discovery tier entirely.
-        tree, _active = _build_project_tree(
-            db, preview_limit=0, hydrate=True, session_limit=int(params.get("session_limit") or 5000),
-            include_discovered=False,
-        )
-        proj = next((p for p in tree["projects"] if p["id"] == project_id), None)
-        return _ok(rid, {"project": proj})
+            # Drill-in only needs the entered project (which has sessions), so skip
+            # the zero-session discovery tier entirely.
+            tree, _active = _build_project_tree(
+                db,
+                preview_limit=0,
+                hydrate=True,
+                session_limit=int(params.get("session_limit") or 5000),
+                include_discovered=False,
+            )
+            proj = next((p for p in tree["projects"] if p["id"] == project_id), None)
+            return _ok(rid, {"project": proj})
     except Exception as e:
         return _err(rid, 5061, str(e))
 
@@ -309,7 +329,15 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"value": "on" if on else "off"})
     if key == "theme":
         display = _load_cfg().get("display")
-        raw = str(display.get("tui_theme", "auto") if isinstance(display, dict) else "auto").strip().lower()
+        raw = (
+            str(
+                display.get("tui_theme", "auto")
+                if isinstance(display, dict)
+                else "auto"
+            )
+            .strip()
+            .lower()
+        )
         return _ok(rid, {"value": raw if raw in {"auto", "light", "dark"} else "auto"})
     if key == "statusbar":
         display = _load_cfg().get("display")
@@ -319,10 +347,17 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"value": _coerce_statusbar(raw)})
     if key == "focus":
         display = _load_cfg().get("display")
-        on = bool(display.get("focus_view", False)) if isinstance(display, dict) else False
+        on = (
+            bool(display.get("focus_view", False))
+            if isinstance(display, dict)
+            else False
+        )
         return _ok(
             rid,
-            {"value": "on" if on else "off", "tool_progress": _load_tool_progress_mode()},
+            {
+                "value": "on" if on else "off",
+                "tool_progress": _load_tool_progress_mode(),
+            },
         )
     if key == "mouse":
         display = _load_cfg().get("display")
@@ -372,10 +407,15 @@ def _(rid, params: dict) -> dict:
         provider_configured = bool(_has_any_provider_configured())
         provider = runtime.get("provider") or "provider"
         source = str(runtime.get("source") or "")
-        if not provider_configured and provider == "bedrock" and source in {
-            "iam-role",
-            "aws-sdk-default-chain",
-        }:
+        if (
+            not provider_configured
+            and provider == "bedrock"
+            and source
+            in {
+                "iam-role",
+                "aws-sdk-default-chain",
+            }
+        ):
             return _ok(
                 rid,
                 {
@@ -415,6 +455,98 @@ def _(rid, params: dict) -> dict:
                 "provider": runtime.get("provider"),
                 "model": runtime.get("model"),
                 "source": runtime.get("source"),
+            },
+        )
+    except Exception as e:
+        return _ok(rid, {"ok": False, "error": str(e)})
+
+
+@method("diagnostics.share_nous")
+def _(rid, params: dict) -> dict:
+    """Upload a redacted debug bundle to Nous-internal diagnostics storage.
+
+    Desktop's "Send Diagnostics" action (error card / diagnostics UI). Same
+    collection + force-redaction pipeline as ``hermes debug share --nous``
+    (collect_share_bundle → build_nous_bundle → share_to_nous); redaction is
+    NOT client-controllable — this handler always redacts.
+
+    Params (all optional):
+      - ``error_context``: short client-supplied text describing the failure
+        that prompted the report (the error card's layer/code/message blob).
+        Redacted server-side and attached as ``error-context.txt``.
+      - ``extra_files``: {label → text} of client-side artifacts the backend
+        can't see (e.g. the local desktop.log when this backend is remote).
+        Each value is force-redacted server-side before inclusion; labels are
+        sanitized and size-capped.
+      - ``log_lines``: report excerpt length (default 200).
+
+    Consent lives with the CALLER: the desktop shows the privacy notice and
+    an explicit Upload button before invoking this. Structured envelope
+    (``ok``/``error``) rather than JSON-RPC errors so the client can render
+    upload failures inline.
+    """
+    try:
+        from hermes_cli.debug import (
+            _redact_log_text,
+            build_nous_bundle,
+            collect_share_bundle,
+        )
+        from hermes_cli.diagnostics_upload import share_to_nous
+
+        log_lines = params.get("log_lines")
+        if not isinstance(log_lines, int) or not (10 <= log_lines <= 2000):
+            log_lines = 200
+
+        bundle = collect_share_bundle(log_lines=log_lines, redact=True)
+
+        # Client-supplied text goes through the SAME upload-safe log redactor
+        # as backend-collected logs (_redact_log_text = force secret redaction
+        # + email masking) — never the weaker bare secret pass, so the remote
+        # path can't upload what the CLI pipeline would have removed.
+        error_context = params.get("error_context")
+        if isinstance(error_context, str) and error_context.strip():
+            bundle["error-context.txt"] = _redact_log_text(
+                error_context.strip()[:8_000]
+            )
+
+        # Client-side artifacts (local desktop.log on remote connections).
+        # Bounded: at most 4 files, 512KB of text each, sanitized labels —
+        # this is a diagnostics channel, not an arbitrary upload surface.
+        extra_files = params.get("extra_files")
+        if isinstance(extra_files, dict):
+            for label, text in list(extra_files.items())[:4]:
+                if not isinstance(label, str) or not isinstance(text, str):
+                    continue
+                safe_label = "".join(
+                    ch for ch in label if ch.isalnum() or ch in "._- ()"
+                ).strip()[:64]
+                # Collapse dot-runs and leading dots so traversal-shaped labels
+                # ("../../etc/passwd") can't survive even cosmetically.
+                while ".." in safe_label:
+                    safe_label = safe_label.replace("..", ".")
+                safe_label = safe_label.lstrip(".").strip()
+                if not safe_label or not text.strip():
+                    continue
+                bundle[f"client/{safe_label}"] = _redact_log_text(text[:524_288])
+
+        blob = build_nous_bundle(bundle, redact=True)
+        res = share_to_nous(blob)
+        view_url = res.get("viewUrl") or res.get("view_url")
+        upload_id = res.get("id")
+        if not view_url and not upload_id:
+            # An upload the user can't reference is useless to support —
+            # surface it as a failure instead of a linkless success.
+            return _ok(
+                rid,
+                {"ok": False, "error": "upload succeeded but returned no view URL or id"},
+            )
+        return _ok(
+            rid,
+            {
+                "ok": True,
+                "view_url": view_url,
+                "upload_id": upload_id,
+                "expires_at": res.get("expiresAt") or res.get("expires_at"),
             },
         )
     except Exception as e:

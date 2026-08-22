@@ -52,6 +52,9 @@ export const zh: Translations = {
     revealInSidebar: '在文件树中显示',
     copyPath: '复制路径',
     copyRelativePath: '复制相对路径',
+    download: '下载',
+    downloadSaved: '已保存',
+    downloadFailed: '下载失败',
     rename: '重命名…',
     delete: '删除',
     renameTitle: '重命名',
@@ -97,6 +100,12 @@ export const zh: Translations = {
         `先退出已保存的远程浏览器会话，然后打开${signInLabel}。也可以使用本地网关切换到随应用提供的后端。`,
       signOutAndSignIn: '退出并重新登录',
       remoteFailureHint: '在“网关设置”中检查网关 URL 和登录，或切换到本地网关。',
+      cloudDownTitle: 'Nous Cloud 代理已宕机',
+      cloudDownDescription:
+        '此网关连接的 Nous 托管云代理正在返回服务器错误。无法在此处重启——请检查其状态、切换到本地网关或获取支持。',
+      cloudDownHint: '使用下方按钮打开 Nous Portal（查看实例状态与操作）或加入 Discord 获取支持。',
+      cloudDownCheckPortal: '查看 Portal 状态',
+      cloudDownDiscord: '在 Discord 获取帮助',
       hideRecentLogs: '隐藏最近日志',
       showRecentLogs: '显示最近日志',
       signedInTitle: '已登录',
@@ -195,6 +204,29 @@ export const zh: Translations = {
     dismiss: '忽略'
   },
 
+  sendDiagnostics: {
+    title: '向 Nous 发送诊断信息',
+    privacyNotice:
+      '这会将调试包上传到 Nous 内部存储（并非公开粘贴板）。内容包括系统信息（操作系统、版本、服务商、已配置的 API 密钥种类 — 绝不包含密钥本身）以及完整的 agent、gateway 和桌面端日志（每个最多 512 KB，很可能包含对话内容、工具输出与文件路径）。上传前会先脱敏。仅 Nous 员工与获准的 Discord 版主可查看，14 天后自动删除。',
+    upload: '上传',
+    uploading: '上传中…',
+    cancel: '取消',
+    close: '关闭',
+    copyLink: '复制链接',
+    uploadIdFallback: id => `未返回查看链接 — 请向支持人员提供上传 ID ${id}`,
+    doneTitle: '诊断信息已发送',
+    doneDescription: '调试包已私密上传。在您的支持会话中分享以下链接，团队即可查看您的日志。',
+    failedTitle: '上传失败',
+    failedHint:
+      '您也可以在终端运行 `hermes debug share --nous`，或运行 `hermes debug share --local` 在不上传的情况下查看报告。',
+    handoffLead: '在以下位置继续讨论:',
+    links: {
+      github: 'GitHub Issues',
+      portal: 'Nous Portal 支持',
+      discord: 'Discord'
+    }
+  },
+
   titlebar: {
     hideSidebar: '隐藏侧边栏',
     showSidebar: '显示侧边栏',
@@ -203,6 +235,7 @@ export const zh: Translations = {
     swapSidebarSides: '交换侧边栏位置',
     hideRightSidebar: '隐藏右侧栏',
     showRightSidebar: '显示右侧栏',
+    unreadSessions: count => (count === 1 ? '1 个未读会话' : `${count} 个未读会话`),
     muteHaptics: '关闭触感反馈',
     unmuteHaptics: '开启触感反馈',
     openSettings: '打开设置',
@@ -267,7 +300,9 @@ export const zh: Translations = {
       'view.toggleRightSidebar': '切换文件浏览器',
       'view.toggleReview': '切换审查面板',
       'view.toggleStatusbar': '切换状态栏',
+      'view.toggleTabStrip': '切换标签',
       'view.showFiles': '显示文件浏览器',
+      'view.showBrowser': '打开浏览器',
       'view.showTerminal': '显示终端',
       'view.terminalSelection': '将终端选区发送到输入框',
       'view.terminalCopy': '复制终端选区',
@@ -344,7 +379,6 @@ export const zh: Translations = {
       providerApiKeys: 'API 密钥',
       providerCustomEndpoints: '自定义端点',
       gateway: '网关',
-      connections: '连接',
       apiKeys: '工具与密钥',
       keybinds: '键盘快捷键',
       keysTools: '工具',
@@ -372,7 +406,8 @@ export const zh: Translations = {
       agent: {
         title: '智能体插件',
         blurb:
-          '运行在 Hermes 后端——工具、技能、MCP 服务器、钩子和斜杠命令。「便携」插件是 Agent Plugins 标准包（技能 + MCP 组合，也可在其他智能体中使用）。开关在新会话中生效。',
+          '你安装到 Hermes 后端的插件——工具、技能、MCP 服务器、钩子和斜杠命令。「便携」插件是 Agent Plugins 标准包（技能 + MCP 组合，也可在其他智能体中使用）。开关在新会话中生效。',
+        appliesTo: '应用于：',
         empty: '尚未安装智能体插件。',
         loadFailed: '无法加载智能体插件',
         portable: '便携',
@@ -381,6 +416,38 @@ export const zh: Translations = {
         toggleFailed: (name: string) => `无法切换 ${name}`,
         updateBackendToManage: '请更新 Hermes 后端以便在桌面端管理此插件。',
         sources: { bundled: '内置', user: '用户', git: 'git', project: '项目', entrypoint: 'pip' }
+      },
+      installModal: {
+        title: '安装插件',
+        description: '在安装前查看此仓库包含哪些组件。',
+        repoLabel: '仓库',
+        includesHeading: '此包包含',
+        agentLabel: '智能体插件',
+        desktopLabel: '桌面 UI',
+        agentTargetLocal: profile => `安装到 ${profile} 后端（~/.hermes/plugins/）`,
+        agentTargetRemote: profile => `安装到已连接的 ${profile} 后端`,
+        desktopTarget: '安装到此应用的本地 desktop-plugins 文件夹',
+        desktopOnlyNote: '仅桌面包不会安装后端智能体插件。',
+        insecureWarning: '此 URL 使用了不安全的本地 scheme。生产环境请优先使用 https:// 或 git@。',
+        securityHeading: '安装前须知',
+        securityIntro: '请仅安装你信任的来源 — 如需了解将添加的内容，可先查看下方仓库。',
+        sourceHeading: '源代码',
+        viewRepository: '查看仓库',
+        viewPluginFiles: '查看插件文件',
+        gitCloneLabel: 'Git 克隆地址',
+        enableAgent: '安装后启用智能体插件',
+        forceReinstall: '强制重装（替换已存在的安装）',
+        install: '安装',
+        installing: '正在安装…',
+        probing: '正在检查仓库…',
+        probeUnavailable: '当前环境无法检查插件仓库。',
+        desktopUnavailable: '当前环境无法安装桌面插件。',
+        selectComponent: '请至少选择一个要安装的组件。',
+        agentSuccess: name => `智能体插件 ${name} 已安装`,
+        desktopSuccess: name => `桌面插件 ${name} 已安装`,
+        agentFailed: '智能体插件安装失败',
+        desktopFailed: '桌面插件安装失败',
+        missingEnv: vars => `缺少环境变量：${vars}。请在设置 → 密钥中添加。`
       }
     },
     notifications: {
@@ -468,6 +535,11 @@ export const zh: Translations = {
       sessionDensityCompact: '紧凑',
       sessionDensityComfortable: '舒适',
       sessionDensityDetailed: '详细',
+      tabStripTitle: '标签栏',
+      tabStripDesc: '在分区上方显示标签。自动模式会在分区只有一个面板时隐藏标签。',
+      tabStripAuto: '自动',
+      tabStripAlways: '始终',
+      tabStripNever: '从不',
       terminalFontTitle: '终端字体',
       terminalFontDesc:
         '选择已安装的字体用于桌面端终端。Nerd Font 可正确显示 Powerlevel10k 和 Shell 图标；留空则使用内置的 JetBrains Mono。',
@@ -475,9 +547,28 @@ export const zh: Translations = {
       terminalFontPreview: '字形预览',
       terminalFontReset: '使用默认字体',
       translucencyTitle: '窗口透明',
-      translucencyDesc: '让整个窗口透出桌面。仅支持 macOS 和 Windows。',
+      translucencyDesc: '让整个窗口（包括文字）透出桌面。',
+      translucencyGlassDesc: '磨砂玻璃：桌面以柔和模糊透出，文字保持清晰。',
+      translucencyModeClear: '透明',
+      translucencyModeGlass: '玻璃',
+      translucencyTintTitle: '色调',
+      translucencyFadeTitle: '淡出',
+      translucencyFrostTitle: '磨砂质感',
+      translucencyFrost: {
+        'under-window': '深邃',
+        popover: '柔和',
+        titlebar: '明亮',
+        header: '透亮'
+      },
+      translucencyScopeTitle: '应用范围',
+      translucencyScope: {
+        window: '整个窗口',
+        sidebar: '仅侧边栏'
+      },
       backdropTitle: '聊天背景',
       backdropDesc: '对话后方那张淡淡的雕像图片。',
+      introSplashTitle: '开场标识',
+      introSplashDesc: '空白对话中显示的字标和提示语。',
       reactionsTitle: '消息回应',
       reactionsDesc: 'iMessage 风格的表情回应 — 你可以给消息添加回应，Hermes 也能回应你的消息。',
       composerPopoutTitle: '悬浮输入框',
@@ -771,6 +862,10 @@ export const zh: Translations = {
       heading: 'Hermes Desktop',
       version: value => `版本 ${value}`,
       versionUnavailable: '版本不可用',
+      bundleOutOfSync: '应用构建版本过旧',
+      bundleOutOfSyncDesc:
+        'Hermes 运行时已更新,但桌面应用本身仍是旧构建——在应用更新之前,新的界面功能(如 Bot Mode)不会显示。请运行下方的更新以重新构建应用。如果此警告仍未消除,请从最新的桌面安装程序重新安装。',
+      bundleOutOfSyncAction: '获取安装程序',
       updates: '更新',
       checkNow: '立即检查',
       checking: '检查中…',
@@ -852,14 +947,20 @@ export const zh: Translations = {
       set: '设置',
       clear: '清除'
     },
-    // v2 多连接注册表：设置 → 连接。
+    // v2 多连接注册表：设置 → 网关。
     connections: {
-      title: '连接',
-      intro: '注册你的智能体所在的每个位置——本机、局域网中的远程网关、Hermes Cloud 实例——全部保存在这里。',
-      stagedNote: '聊天和智能体列表会跟随你选择的来源；应用管理的窗口后端仍在“设置 → 网关”中选择。',
+      title: '已注册网关',
+      intro: '管理本机以及通过远程、SSH 或 Hermes Cloud 连接可访问的每个 Hermes 网关。',
+      stagedNote:
+        '可在“会话”侧边栏切换网关。配置档案、聊天、消息和定时任务归属于各自网关；其他网关上的工作会继续运行。',
+      launchModeTitle: '启动时返回上次使用网关的会话视图',
+      launchModeDesc: '关闭时，会话将在主网关上打开。',
+      searchPlaceholder: '搜索网关…',
+      noSearchResults: '没有与搜索匹配的网关。',
       loadFailed: '无法加载连接',
+      currentPill: '当前',
       primaryPill: '主连接',
-      managedPill: '本机',
+      managedPill: '应用管理',
       addConnection: '添加连接',
       editConnection: '编辑',
       removeConnection: '移除',
@@ -896,6 +997,12 @@ export const zh: Translations = {
       headerValueSaved: '已保存——留空以保留',
       headerAdd: '添加请求头',
       headerRemove: '移除',
+      duplicateLocal: '本应用已管理一个本地连接——只能有一个。',
+      duplicateUrl: (label: string) => `已存在指向此网关 URL 的连接（“${label}”）。`,
+      duplicateSsh: (label: string) => `已存在指向此 SSH 主机的连接（“${label}”）。`,
+      sameBackendHint: (label: string) => `与“${label}”是同一后端`,
+      localAddHint: '“本地”不可用：应用管理的本地连接已存在（永远只有一个）。',
+      cloudAddHint: '提示：在上方登录 Hermes Cloud 可自动发现你的智能体——此表单仅用于手动注册已知的实例 URL。',
       save: '保存连接',
       saving: '保存中…',
       cancel: '取消',
@@ -908,18 +1015,12 @@ export const zh: Translations = {
       title: '网关连接',
       envOverride: '环境变量覆盖',
       intro:
-        'Hermes Desktop 默认会启动自己的本地网关。当你希望此应用控制另一台机器上或可信代理后的现有 Hermes 后端时，可以使用远程网关。下面可按 profile 指定各自的远程主机。',
-      appliesTo: '应用于',
-      allProfiles: '所有 profile',
-      defaultConnection: '默认连接会用于所有没有自定义覆盖的 profile。',
-      profileConnection: profile => `仅当“${profile}”是当前 profile 时使用此连接。选择“使用默认网关”可移除其覆盖。`,
+        'Hermes Desktop 默认会启动自己的本地网关。当你希望此应用控制另一台机器上或可信代理后的现有 Hermes 后端时，可以使用远程网关。网关连接属于本机级设置；profile 是从所连接的网关中发现的。',
       envOverrideTitle: '环境变量正在控制此桌面会话。',
       envOverrideDesc: '取消设置 HERMES_DESKTOP_REMOTE_URL 和 HERMES_DESKTOP_REMOTE_TOKEN 后才会使用下面保存的设置。',
       modeTitle: '连接模式',
       localTitle: '本地网关',
       localDesc: '在 localhost 启动私有 Hermes 后端。这是默认方式，并且可离线工作。',
-      inheritTitle: '使用默认网关',
-      inheritDesc: '移除此 profile 的自定义覆盖并使用默认连接。',
       remoteTitle: '远程网关',
       remoteDesc: '将此桌面外壳连接到远程 Hermes 后端。',
       remoteAuthHint: '托管网关使用 OAuth 或用户名密码；自托管网关也可能使用会话 token。',
@@ -1025,8 +1126,6 @@ export const zh: Translations = {
       sshHermesPathTitle: 'Hermes 路径（可选）',
       sshHermesPathDesc: '远程 hermes 可执行文件的完整路径。留空 = 自动检测。',
       sshHermesPathPlaceholder: '自动检测',
-      sshRemoteProfileTitle: '远程配置文件（可选）',
-      sshRemoteProfileDesc: '远程主机上的配置文件名称。留空 = 使用 Desktop 配置文件名称。',
       sshTestConnection: '测试 SSH',
       sshConnect: '连接',
       sshButtonsHint: '“保存”将在下次启动时生效，“连接”则立即重新连接。',
@@ -1047,6 +1146,14 @@ export const zh: Translations = {
       loading: '正在加载 API 密钥和凭据...',
       failedLoad: 'API 密钥加载失败',
       empty: '此类别暂时没有配置项。'
+    },
+    search: {
+      placeholder: '搜索所有设置...',
+      pill: '搜索'
+    },
+    profileScope: {
+      appliesTo: '应用于',
+      editsProfile: profile => `此页面的更改将应用于“${profile}”配置文件。`
     },
     mcp: {
       loading: '正在加载 MCP 服务器...',
@@ -1581,8 +1688,10 @@ export const zh: Translations = {
     gatewayStopped: '消息网关已停止',
     hermesActiveSessions: (version, count) => `Hermes ${version} · 活跃会话 ${count}`,
     restartGateway: '重启网关',
+    openBrowser: '打开浏览器',
     gatewayRestartFailed: '网关重启失败。',
     updateHermes: '更新 Hermes',
+    reloadWindow: '重新载入窗口',
     actionRunning: '运行中',
     actionDone: '完成',
     actionFailed: '失败',
@@ -1888,8 +1997,10 @@ export const zh: Translations = {
     allProfiles: '全部配置档案',
     showAllProfiles: '显示全部配置档案',
     switchToProfile: name => `切换到 ${name}`,
+    switchToConnection: name => `切换到 ${name}`,
+    switchConnectionFailed: name => `无法连接到 ${name}`,
     manageProfiles: '管理配置档案…',
-    connectGateway: '连接另一个 Hermes 网关…',
+    connectGateway: '管理网关…',
     actions: '操作',
     color: '颜色…',
     colorFor: '颜色',
@@ -1938,6 +2049,9 @@ export const zh: Translations = {
     creating: '创建中…',
     createAction: '创建配置档案',
     renameTitle: '重命名配置档案',
+    displayNameTitle: '为智能体命名',
+    displayNameDesc: '设置一个在整个应用中显示的名称。内部配置档案 ID 仍为 "default"。',
+    displayNameLabel: '显示名称',
     renameDescPrefix: '重命名会更新配置档案目录以及 ',
     renameDescSuffix: ' 中的所有包装脚本。',
     newNameLabel: '新名称',
@@ -2361,6 +2475,7 @@ export const zh: Translations = {
     endShort: '结束',
     stopDictation: '停止听写',
     transcribingDictation: '正在转写听写',
+    voiceControls: '语音',
     voiceDictation: '语音听写',
     speakReplies: '朗读回复',
     stopSpeakingReplies: '停止朗读回复',
@@ -2544,6 +2659,7 @@ export const zh: Translations = {
       openPr: '打开 PR',
       ghMissing: '安装 GitHub CLI (gh) 并登录后可打开 PR',
       agentShip: '让 Hermes 提交并开 PR',
+      agentShipUnavailable: '拥有这些更改的会话当前不在屏幕上。',
       agentShipPrompt: '检查当前更改，使用清晰的约定式提交信息提交，推送分支，并开启一个拉取请求。',
       newBranch: '新建分支',
       branchOffFrom: base => `从 ${base} 新建分支`,
@@ -2612,6 +2728,13 @@ export const zh: Translations = {
     pidLabel: pid => `PID ${pid}`,
     technicalDetails: '技术详情',
     notNow: '暂不',
+    clientAlsoBehindTitle: '桌面应用版本落后',
+    clientAlsoBehindMessage: '后端已是最新，但此桌面应用仍是旧版本。请更新以获得最新修复。',
+    clientAlsoBehindAction: '更新桌面应用',
+    everythingDispatched: '更新已分发',
+    everythingSkipped: '已跳过',
+    everythingRowFailed: '更新失败',
+    everythingFanoutFailedTitle: '无法更新其他实例',
     applyStatus: {
       preparing: '正在更新后端…',
       pulling: '后端更新中…',
@@ -3016,6 +3139,8 @@ export const zh: Translations = {
     web: {
       appFailedToBoot: '预览应用启动失败',
       serverNotFound: '未找到服务器',
+      remoteLoopback:
+        '该地址指向运行代理的那台机器，而不是本机。浏览器面板在本地加载页面，因此远程开发服务器需要端口转发或可访问的主机名。',
       failedToLoad: '预览加载失败',
       tryAgain: '重试',
       restarting: 'Hermes 正在重启...',
@@ -3029,6 +3154,12 @@ export const zh: Translations = {
       showConsole: '显示预览控制台',
       hideDevTools: '隐藏预览 DevTools',
       openDevTools: '打开预览 DevTools',
+      goBack: '后退',
+      goForward: '前进',
+      reload: '重新加载页面',
+      address: '地址',
+      addressPlaceholder: '输入地址',
+      blankPageBody: '在上方输入地址开始浏览，或让 Hermes 打开一个页面。',
       finishedRestarting: message => `Hermes 已完成预览服务器重启${message ? `: ${message}` : ''}`,
       failedRestarting: message => `服务器重启失败：${message}`,
       unknownError: '未知错误',
@@ -3051,8 +3182,13 @@ export const zh: Translations = {
   },
 
   zones: {
-    showHeader: '显示标题栏',
-    hideHeader: '隐藏标题栏',
+    showTabStrip: '显示标签',
+    hideTabStrip: '隐藏标签',
+    showStripTab: title => `显示 ${title}`,
+    hideStripTab: title => `隐藏 ${title}`,
+    lastTabKeptTitle: '保留最后一个标签',
+    lastTabKeptBody: '该区域至少需要一个可见标签。请先显示另一个标签，或折叠整个侧边栏。',
+    toggleStripTab: title => `切换 ${title} 标签`,
     minimize: '最小化',
     restore: '还原',
     closeRunningTitle: '关闭正在运行的标签？',
@@ -3092,6 +3228,30 @@ export const zh: Translations = {
     tabCount: count => `${count} 个标签页`
   },
 
+  contextMenu: {
+    link: {
+      openInApp: '在应用内浏览器中打开',
+      openExternal: '在外部浏览器中打开',
+      copyUrl: '复制 URL',
+      copyResolvedUrl: '复制解析后的 URL'
+    },
+    image: {
+      copyImage: '复制图片',
+      copyImageAddress: '复制图片地址',
+      saveImageAs: '图片另存为…'
+    },
+    edit: {
+      cut: '剪切',
+      paste: '粘贴',
+      selectAll: '全选',
+      addToDictionary: '添加到词典'
+    },
+    page: {
+      copyPageUrl: '复制页面 URL',
+      inspectElement: '检查元素'
+    }
+  },
+
   assistant: {
     thread: {
       loadingSession: '正在加载会话',
@@ -3112,6 +3272,24 @@ export const zh: Translations = {
       branchNewChat: '在新对话中分支',
       react: '回应',
       dismissError: '关闭错误',
+      errorLayers: {
+        auth: '认证错误',
+        billing: '额度不足',
+        disk: '磁盘已满',
+        endpoint: '自定义端点错误',
+        gateway: '网关错误',
+        generic: '本轮失败',
+        provider: '模型服务商错误',
+        runtime: '本地运行时错误',
+        streaming: '流式连接错误'
+      },
+      errorRetry: '重试',
+      errorSwitchProvider: '切换服务商',
+      errorOpenLogs: '打开日志',
+      errorOpenLogsFailed: '无法打开日志文件夹',
+      errorOpenDesktopLogs: '打开桌面端日志',
+      errorCopyDiagnostics: '复制错误详情',
+      errorSendDiagnostics: '发送诊断信息',
       filesChanged: count => `${count} 个文件已更改`,
       reviewChanges: '查看',
       readAloudFailed: '朗读失败',
@@ -3158,6 +3336,9 @@ export const zh: Translations = {
       skip: '跳过',
       skipped: '已跳过',
       continueLabel: '继续',
+      confirmAndContinueLabel: '确认并继续',
+      answeredBadge: '已回答',
+      questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       lateAnswer: (question, choice) => `关于"${question}" — 我的回答: ${choice}`,
       lateAnswerTip: '将此回答起草为后续消息',
       lateAnswerHint: '此问题已不再等待回答。选择一个选项会将其起草为后续消息。'

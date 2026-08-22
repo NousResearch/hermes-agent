@@ -113,20 +113,38 @@ def _config_cdp_url() -> str:
 
 
 def is_camofox_mode() -> bool:
-    """True when Camofox backend is configured and no CDP override is active.
+    """True when the Camofox backend is selected and no CDP override is active.
+
+    Camofox is a selection: ``browser.cloud_provider: camofox`` (set via
+    ``hermes tools``). ``CAMOFOX_URL`` is the server ADDRESS only — its
+    presence no longer selects the backend when a different
+    ``browser.cloud_provider`` is stored. Legacy read-time interpretation:
+    when NO cloud provider selection was ever written, a set ``CAMOFOX_URL``
+    keeps activating Camofox exactly as before (nothing is migrated/written
+    to config).
 
     A CDP override takes priority over Camofox so the browser tools operate on
     the real CDP browser (and a CDP backend is treated as non-local for SSRF
     checks) instead of being silently routed to Camofox. The override may come
     from the ``BROWSER_CDP_URL`` env var (set by ``/browser connect``) OR a
     persistent ``browser.cdp_url`` in config.yaml — both are honored, matching
-    ``browser_tool._get_cdp_override()``'s precedence. (Previously only the env
-    var suppressed Camofox, so ``CAMOFOX_URL`` + a config CDP override still
-    routed navigation through Camofox.)
+    ``browser_tool._get_cdp_override()``'s precedence.
     """
     if os.getenv("BROWSER_CDP_URL", "").strip():
         return False
     if _config_cdp_url():
+        return False
+    try:
+        from tools.tool_backend_helpers import read_selection
+
+        selected = read_selection("browser")
+    except Exception:  # pragma: no cover — helpers are in-repo
+        selected = None
+    if selected == "camofox":
+        return True
+    if selected is not None:
+        # An explicit different browser selection wins: CAMOFOX_URL is just
+        # an address, not a choice.
         return False
     return bool(get_camofox_url())
 

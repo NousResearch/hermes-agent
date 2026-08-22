@@ -274,7 +274,10 @@ class TestHealthyPathUnchanged:
         # Turn scope and session scope both pushed and popped exactly once.
         assert fake.scope.pushed.count(relay_runtime.TURN_SCOPE) == 1
         assert relay_runtime.TURN_SCOPE in fake.scope.popped
-        assert fake.subscribers.flushed >= 1
+        # Session close must not flush process-wide subscribers: another
+        # session may still own an active publication. Plugin teardown owns
+        # the final flush after tracked operations drain.
+        assert fake.subscribers.flushed == 0
 
     def test_healthy_pop_result_propagates_synchronously(self, coordinator):
         """A healthy pop completes and is observed before end_turn returns."""

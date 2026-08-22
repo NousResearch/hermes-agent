@@ -23,12 +23,16 @@ def test_build_apikey_providers_list_skips_dedicated_check_providers():
 
     # Tuple shape: (display_name, env_vars, default_url, base_env, supports_health_check)
     names = {entry[0].lower() for entry in entries}
-    assert not any("anthropic" in name for name in names), (
+    # Exact-name checks, not substring: third-party gateways that expose an
+    # Anthropic-compatible endpoint under Bearer auth (e.g. "CommandCode
+    # (Anthropic)") legitimately belong in the generic loop. Only the native
+    # Anthropic profile (x-api-key headers) must be skipped.
+    assert "anthropic" not in names, (
         f"Anthropic provider profile leaked into generic Bearer-auth health "
         f"check loop. Dedicated check above already covers it with "
         f"x-api-key headers. Got entries: {sorted(names)}"
     )
-    assert not any("openrouter" in name for name in names), (
+    assert "openrouter" not in names, (
         f"OpenRouter has a dedicated check; generic loop must skip it. "
         f"Got: {sorted(names)}"
     )

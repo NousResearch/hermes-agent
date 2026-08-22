@@ -1305,6 +1305,62 @@ def _consume_codex_event_stream(
     return final
 
 
+def _sanitize_consumer_codex_request(
+    agent: Any,
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    """Drop fields the ChatGPT OAuth Codex endpoint does not accept.
+
+    This guard intentionally lives at the final wire boundary, after Relay or
+    other request middleware has had a chance to transform the request. The
+    normal transport builder already omits ``prompt_cache_retention`` for this
+    endpoint, but a late mutation must not be allowed to turn a valid tool
+    follow-up into a non-retryable HTTP 400.
+
+    Explicit ``request_overrides`` are subject to the same endpoint contract:
+    unsupported retention is dropped with a warning instead of being sent and
+    rejected by the provider. The check covers both the top-level kwarg and a
+    nested ``extra_body`` entry — the OpenAI SDK merges ``extra_body`` into
+    the outgoing JSON body, so either shape reaches the endpoint.
+    """
+    sanitized = dict(request)
+    # Resolved defensively on purpose: run_codex_stream is also driven with
+    # lightweight stand-in agents that carry only the attributes a given path
+    # needs (see tests/agent/test_codex_request_transport_diagnostics.py), so a
+    # bare agent._is_codex_backend() here would raise AttributeError on them.
+    backend_predicate = getattr(agent, "_is_codex_backend", None)
+    is_consumer_codex = (
+        bool(backend_predicate()) if callable(backend_predicate) else False
+    )
+    if not is_consumer_codex:
+        return sanitized
+    dropped_from: list[str] = []
+    if "prompt_cache_retention" in sanitized:
+        sanitized.pop("prompt_cache_retention")
+        dropped_from.append("top-level")
+    # The OpenAI SDK merges ``extra_body`` into the outgoing JSON body, so a
+    # nested ``extra_body.prompt_cache_retention`` reaches the endpoint just
+    # like the top-level field would. Copy before editing — the caller's
+    # mapping must not be mutated — and drop the mapping when it empties.
+    extra_body = sanitized.get("extra_body")
+    if isinstance(extra_body, dict) and "prompt_cache_retention" in extra_body:
+        extra_body = dict(extra_body)
+        extra_body.pop("prompt_cache_retention")
+        if extra_body:
+            sanitized["extra_body"] = extra_body
+        else:
+            sanitized.pop("extra_body")
+        dropped_from.append("extra_body")
+    if dropped_from:
+        logger.warning(
+            "Dropped unsupported prompt_cache_retention at consumer Codex "
+            "wire boundary (model=%s, via %s).",
+            sanitized.get("model", getattr(agent, "model", "unknown")),
+            ", ".join(dropped_from),
+        )
+    return sanitized
+
+
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """Execute one streaming Responses API request and return the final response.
 
@@ -1347,7 +1403,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         writer_token = {"value": None}
 
         def _open_codex_stream(next_api_kwargs: dict[str, Any]):
-            stream_kwargs = dict(next_api_kwargs)
+            stream_kwargs = _sanitize_consumer_codex_request(
+                agent,
+                next_api_kwargs,
+            )
             stream_kwargs["stream"] = True
             return active_client.responses.create(**stream_kwargs)
 

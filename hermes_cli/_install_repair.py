@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -92,7 +93,9 @@ def _resolve_install_target(root: Path) -> tuple[list[str], dict | None]:
     """
     uv_bin = _er._find_uv_binary()
     if uv_bin:
-        env = {**os.environ, "VIRTUAL_ENV": str(root / "venv")}
+        from hermes_constants import project_venv_dir
+
+        env = {**os.environ, "VIRTUAL_ENV": str(project_venv_dir(root) or root / "venv")}
         if _is_termux_env(env):
             env.pop("PYTHONPATH", None)
             env.pop("PYTHONHOME", None)
@@ -102,16 +105,66 @@ def _resolve_install_target(root: Path) -> tuple[list[str], dict | None]:
 
 def _venv_scripts_dir(root: Path) -> Path | None:
     """Project venv Scripts/bin dir, when present. stdlib-only."""
-    venv_dir = root / "venv"
-    if not venv_dir.is_dir():
-        return None
-    # hermes_constants is stdlib-only, so the canonical layout helper is safe
+    # hermes_constants is stdlib-only, so the canonical layout helpers are safe
     # to use from this corrupted-venv repair path (#76105: never open-code
     # the Scripts/bin split).
-    from hermes_constants import venv_bin_dir
+    from hermes_constants import project_venv_dir, venv_bin_dir
+
+    venv_dir = project_venv_dir(root)
+    if venv_dir is None:
+        return None
 
     scripts = venv_bin_dir(venv_dir, windows=_is_windows())
     return scripts if scripts.is_dir() else None
+
+
+def _sync_windows_cli_launchers(root: Path) -> list[Path]:
+    """Copy the venv's Hermes launchers into the dedicated PATH directory.
+
+    Windows installs expose ``<root>\\bin`` on PATH instead of the full
+    ``venv\\Scripts`` directory, which would shadow the user's Python.  Keep
+    that narrow PATH layout usable after an update by restoring launchers that
+    are missing from the dedicated directory.
+
+    ``hermes.exe`` is required; ``hermes-acp.exe`` is copied when available.
+    Existing files are left alone because ``bin\\hermes.exe`` may be the
+    executable currently running this process.
+    """
+    if not _is_windows():
+        return []
+
+    root = Path(root)
+    scripts_dir = _venv_scripts_dir(root)
+    if scripts_dir is None:
+        raise FileNotFoundError(
+            f"project venv executable directory not found under: {root}"
+        )
+    required_source = scripts_dir / "hermes.exe"
+    if not required_source.is_file():
+        raise FileNotFoundError(
+            f"required Hermes launcher not found: {required_source}"
+        )
+
+    bin_dir = root / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+
+    copied: list[Path] = []
+    for name in ("hermes.exe", "hermes-acp.exe"):
+        source = scripts_dir / name
+        if not source.is_file():
+            continue
+        destination = bin_dir / name
+        if destination.exists():
+            continue
+        shutil.copy2(source, destination)
+        copied.append(destination)
+
+    required_destination = bin_dir / "hermes.exe"
+    if not required_destination.is_file():
+        raise FileNotFoundError(
+            f"Hermes launcher was not installed: {required_destination}"
+        )
+    return copied
 
 
 def _load_console_script_names(root: Path) -> list[str]:

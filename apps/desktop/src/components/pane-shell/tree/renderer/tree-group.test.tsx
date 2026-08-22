@@ -27,10 +27,12 @@ function render(ui: ReactNode) {
 function terminalGroup(minimized: boolean): GroupNode {
   return {
     active: 'terminal',
-    headerHidden: false,
     id: 'terminal-zone',
     minimized,
     panes: ['terminal'],
+    // The chevron lives in the strip, so this zone has to be showing one. A
+    // lone unregistered pane is on auto and would render none.
+    tabStrip: 'always',
     type: 'group'
   }
 }

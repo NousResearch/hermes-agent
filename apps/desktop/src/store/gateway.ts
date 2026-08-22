@@ -27,6 +27,15 @@ interface RegistryConfig {
   onEvent: (event: GatewayEvent) => void
   onActiveConnectionInvalidated?: (fallbackProfile: string, activationEpoch: number) => void
   onActiveConnectionChanged?: (connection: HermesConnection) => void
+  /**
+   * Fires whenever applyActive() moves the active route to a (possibly
+   * different) profile — including registry-internal eviction fallbacks
+   * (idle reap, connection removal, profile delete) that no renderer call
+   * initiated. Consumers mirror this into $activeGatewayProfile so the
+   * published profile can never diverge from the socket actually selected
+   * (#89206: the stale-profile split-brain that stranded bot wake-ups).
+   */
+  onActiveRouteChanged?: (profile: string) => void
 }
 
 // ── Secondary (pool) backends ──────────────────────────────────────────────
@@ -50,7 +59,22 @@ interface Secondary {
   // While true the entry auto-reconnects on drop; pruning flips it off so a
   // deliberate close doesn't trigger the backoff loop.
   wantOpen: boolean
+  /**
+   * Epoch-ms deadline while an activation (prepare/ensure) is mid-dial. The
+   * live-work pruner must not dispose an entry the user is switching to: a
+   * switch target is not yet the active key, has no live sessions and holds
+   * no request lease, so during a cold pool spawn (~3s) every prune recompute
+   * saw it as idle garbage and disposed it mid-dial — the root of the dead
+   * profile clicks in #89622. Cleared when the activation settles; bounded so
+   * an orphaned lease self-heals.
+   */
+  activationLeaseUntil: number
 }
+
+// How long a mid-dial activation holds its prune lease: covers a cold pool
+// backend spawn + socket connect with margin, while still letting a leaked
+// lease expire quickly enough for the reaper to reclaim the entry.
+const ACTIVATION_LEASE_MS = 30_000
 
 // ── HMR-stable module state ─────────────────────────────────────────────────
 // All mutable singletons (live sockets, active-profile routing, the event
@@ -71,6 +95,7 @@ interface GatewayRegistryState {
   activationEpoch: number
   secondaries: Map<string, Secondary>
   $gateway: ReturnType<typeof atom<HermesGateway | null>>
+  $activeProfile: ReturnType<typeof atom<string>>
 }
 
 const STATE_KEY = Symbol.for('hermes.desktop.gatewayRegistryState')
@@ -86,7 +111,14 @@ function createRegistryState(): GatewayRegistryState {
     // The active gateway instance, exposed for inline message-stream
     // components (inline ClarifyTool, model overlays) that call gateway
     // methods without the instance threaded down through props.
-    $gateway: atom<HermesGateway | null>(null)
+    $gateway: atom<HermesGateway | null>(null),
+    // The PROFILE the active gateway is routed to (bare profile name, never a
+    // composite registry scope). Owned exclusively by applyActive() so the
+    // published profile can never diverge from the socket actually selected —
+    // the split-brain where an eviction re-pointed activeKey at the primary
+    // while the profile atom kept naming the evicted bot routed every
+    // "loki" session.resume to the default backend (#89206 wake failures).
+    $activeProfile: atom<string>('default')
   }
 }
 
@@ -114,6 +146,19 @@ const g = gatewayState()
 // reload of this module hands back the SAME atom subscribers are already wired
 // to. (A fresh `atom()` per reload would orphan existing subscriptions.)
 export const $gateway = g.$gateway
+
+// The profile the ACTIVE gateway is actually routed to. Registry-owned: the
+// only writer is applyActive(), which sets it in the same synchronous step
+// that selects the socket — so a consumer that reads this and then calls
+// activeGateway() always gets a matching (profile, socket) pair. Renderer
+// surfaces (store/profile.ts's $activeGatewayProfile) mirror this atom
+// instead of writing their own copy.
+export const $activeGatewayRoute = g.$activeProfile
+
+/** Bare profile name the active gateway serves (never a composite scope). */
+export function activeGatewayProfileKey(): string {
+  return g.$activeProfile.get()
+}
 
 export function configureGatewayRegistry(cfg: RegistryConfig): void {
   g.config = cfg
@@ -219,6 +264,19 @@ function applyActive(profile: string, activationEpoch: number): boolean {
   // registry-agent activations included, not just profile switches.
   setApiRequestConnection(activeGatewayConnectionId())
 
+  // Publish the BARE profile this route serves, in the same synchronous step
+  // as the socket selection. activeKey may be a composite registry scope
+  // (connectionId::profile); consumers route RPCs by profile, so resolve it
+  // through the secondary's own record. This atom is the single source of
+  // truth for "which profile is the active gateway on" — every eviction /
+  // fallback path funnels through applyActive, so the published profile can
+  // never linger on a backend that is no longer selected (#89206).
+  const routeProfile =
+    g.activeKey === g.primaryProfile ? g.primaryProfile : (g.secondaries.get(g.activeKey)?.profile ?? g.primaryProfile)
+
+  g.$activeProfile.set(routeProfile)
+  g.config?.onActiveRouteChanged?.(routeProfile)
+
   return true
 }
 
@@ -323,14 +381,37 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
   try {
     await openSecondary(entry)
     entry.reconnectAttempt = 0
+    // The re-dialed backend may have respawned and re-minted runtime ids —
+    // busy flags recorded from THIS socket's pre-drop events would then never
+    // receive their terminal busy:false, leaving the session's running arc
+    // armed forever (#53902/#73082 stale-flag half). Scoped: only runtimes
+    // whose events arrived on this connection are reconciled; live work on
+    // other sockets is untouched, and a genuinely live turn here re-asserts
+    // busy on its next event. Lazy import: a static edge here closes a module
+    // cycle (session-states → … → gateway) that leaves nanostores atoms
+    // undefined at init for whichever module loads second. Best-effort catch:
+    // under partial vi.mock('@/hermes') harnesses the transitive graph can
+    // fail to load — a skipped reconcile there must not surface as an
+    // unhandled rejection (the real graph always loads in production).
+    void import('@/store/session-states')
+      .then(({ reconcileBusyStatesOnReconnect }) => reconcileBusyStatesOnReconnect(entry.scope))
+      .catch(() => undefined)
   } catch (error) {
     // The registry no longer knows this connection (removed while we were
-    // backing off). Retrying forever can never succeed — fail-stop: dispose
-    // the entry and evict it instead of an infinite 15s-cap retry loop.
-    if (entry.connectionId && isMissingConnectionError(error)) {
+    // backing off), or Electron's deletion guard reports the profile itself
+    // gone/mid-delete. Both are permanent for this scoped socket — retrying
+    // forever can never succeed and hammers the spawn guard every backoff
+    // tick (#88769). Fail-stop: dispose the entry and evict it instead of an
+    // infinite 15s-cap retry loop.
+    if ((entry.connectionId && isMissingConnectionError(error)) || isMissingProfileError(error)) {
       entry.reconnecting = false
       disposeSecondary(entry)
-      g.secondaries.delete(entry.scope)
+
+      if (g.secondaries.get(entry.scope) === entry) {
+        g.secondaries.delete(entry.scope)
+      }
+
+      restoreActiveToPrimaryIfEvicted()
 
       return
     }
@@ -353,6 +434,16 @@ function isMissingConnectionError(error: unknown): boolean {
   return message.includes('No connection with id')
 }
 
+// Electron's spawn guard (assertLocalProfileCanStart) rejects with these when
+// the profile's directory is gone or its DELETE is still in flight. For a
+// renderer socket that condition is permanent: the backend it reconnects to
+// can never come back, and every retry hammers the guard (#88769).
+function isMissingProfileError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+
+  return message.includes('no longer exists') || message.includes('is being deleted')
+}
+
 function createSecondary(profile: string, connectionId: null | string = null): Secondary {
   const gateway = new HermesGateway()
   const scope = registryBackendScopeKey(connectionId, profile)
@@ -371,7 +462,8 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     reconnectAttempt: 0,
     reconnecting: false,
     retained: false,
-    wantOpen: true
+    wantOpen: true,
+    activationLeaseUntil: 0
   }
 
   // Events keep carrying the bare profile — session routing is profile-keyed
@@ -496,7 +588,9 @@ async function gatewayForProfile(
 export async function requestGatewayForProfile<T>(
   profile: string,
   method: string,
-  params: Record<string, unknown> = {}
+  params: Record<string, unknown> = {},
+  timeoutMs?: number,
+  signal?: AbortSignal
 ): Promise<T> {
   const route = await gatewayForProfile(profile, true)
 
@@ -507,7 +601,12 @@ export async function requestGatewayForProfile<T>(
 
     const routedParams = route.scopeProfile ? { ...params, profile: route.key } : params
 
-    return await route.gateway.request<T>(method, routedParams)
+    // Same arity contract as the ambient path in session-request-router: only
+    // pass the deadline args through when the caller set them, so a plain
+    // profile-routed RPC keeps its two-argument call shape.
+    return await (timeoutMs === undefined && signal === undefined
+      ? route.gateway.request<T>(method, routedParams)
+      : route.gateway.request<T>(method, routedParams, timeoutMs, signal))
   } finally {
     route.release()
   }
@@ -629,6 +728,11 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
 
   entry.retained = true
   entry.wantOpen = true
+  // Lease the entry against the live-work pruner for the whole dial: the
+  // switch target is not yet active and has no live sessions, so a prune
+  // recompute firing mid-spawn would otherwise dispose it and this
+  // activation would fail (#89622).
+  entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
 
   if (!isOpen(entry.gateway)) {
     clearTimer(entry)
@@ -640,6 +744,9 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
       scheduleReconnect(entry)
     }
   }
+
+  // The activation is settling either way — release the prune lease.
+  entry.activationLeaseUntil = 0
 
   // A source edit/remove may dispose this entry while its dial is still in
   // flight. Only the still-registered, still-owned activation may publish.
@@ -687,6 +794,9 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
 
   entry.retained = true
   entry.wantOpen = true
+  // Lease the entry against the live-work pruner for the whole dial — the
+  // profile-door twin of the agent path's lease above (#89622).
+  entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
 
   if (!isOpen(entry.gateway)) {
     clearTimer(entry)
@@ -698,6 +808,9 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
       scheduleReconnect(entry)
     }
   }
+
+  // The activation is settling either way — release the prune lease.
+  entry.activationLeaseUntil = 0
 
   if (entry.wantOpen && g.secondaries.get(key) === entry && applyActive(key, activationEpoch) && entry.connection) {
     publishActiveConnection(entry.connection)
@@ -721,8 +834,29 @@ export async function ensureActiveGatewayOpen(): Promise<HermesGateway | null> {
     await reconnectSecondary(entry)
   }
 
+  if (!isOpen(entry.gateway)) {
+    // A remote/registry secondary can still be ACTIVATING (backend waking,
+    // socket dialing). Failing instantly turned a routine cold start into
+    // "Hermes gateway is not connected" on the Sessions `+` action (#88880).
+    // Wait a bounded beat for the in-flight activation instead of erroring;
+    // a genuinely dead gateway still returns null when the window closes.
+    const deadline = Date.now() + ACTIVE_GATEWAY_OPEN_WAIT_MS
+
+    while (Date.now() < deadline && entry.wantOpen && g.secondaries.get(g.activeKey) === entry) {
+      if (isOpen(entry.gateway)) {
+        break
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 250))
+    }
+  }
+
   return isOpen(entry.gateway) ? entry.gateway : null
 }
+
+// How long ensureActiveGatewayOpen waits out an in-flight secondary
+// activation before reporting the gateway as unavailable.
+const ACTIVE_GATEWAY_OPEN_WAIT_MS = 8_000
 
 // Wake signal (sleep/network/visibility): nudge every live secondary back open.
 export function reconnectSecondaryGateways(): void {
@@ -780,12 +914,20 @@ function restoreActiveToPrimaryIfEvicted(): void {
 // bare profile name kept gateway B's 'default' socket alive off gateway A's
 // 'default' activity (and vice versa) — cross-connection attribution.
 export function pruneSecondaryGateways(keep: Set<string>): void {
+  const now = Date.now()
+
   for (const [key, entry] of [...g.secondaries]) {
     if (
       key === g.activeKey ||
       keep.has(key) ||
       (!entry.connectionId && keep.has(entry.profile)) ||
-      entry.activeRequests > 0
+      entry.activeRequests > 0 ||
+      // Mid-dial activation target: the profile being switched TO is not yet
+      // active and has no live work, so without this lease any recompute
+      // during its cold spawn disposed the entry and the click died silently
+      // (#89622). Number guard: dev-HMR entries predate the field. Bounded:
+      // an orphaned lease expires on its own.
+      (Number.isFinite(entry.activationLeaseUntil) && entry.activationLeaseUntil > now)
     ) {
       continue
     }
@@ -804,6 +946,43 @@ export function closeSecondaryGateways(): void {
 
   g.secondaries.clear()
   restoreActiveToPrimaryIfEvicted()
+}
+
+// A local profile can have two renderer-owned sockets: the legacy bare
+// profile scope and the explicit `local` registry scope. Profile deletion
+// stops their Electron backend processes, but a retained Secondary otherwise
+// sees that shutdown as a transient disconnect and starts its reconnect loop,
+// resurrecting the backend that was just deleted. Retire both local scopes
+// before the DELETE request while preserving same-named agents on remote,
+// cloud, or SSH connections.
+export function retireLocalProfileGateways(profile: string): void {
+  const name = String(profile || '').trim()
+
+  if (!name) {
+    return
+  }
+
+  const key = normKey(name)
+  const scopes = new Set([key, registryBackendScopeKey('local', key)])
+  let activeInvalidated = false
+
+  for (const scope of scopes) {
+    const entry = g.secondaries.get(scope)
+
+    if (!entry) {
+      continue
+    }
+
+    activeInvalidated ||= scope === g.activeKey
+    disposeSecondary(entry)
+    g.secondaries.delete(scope)
+  }
+
+  restoreActiveToPrimaryIfEvicted()
+
+  if (activeInvalidated) {
+    g.config?.onActiveConnectionInvalidated?.(g.primaryProfile, gatewayActivationEpoch())
+  }
 }
 
 // Registry lifecycle: a connection was removed or materially edited. Dispose

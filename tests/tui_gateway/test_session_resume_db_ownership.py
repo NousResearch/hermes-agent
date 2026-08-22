@@ -333,3 +333,42 @@ def test_resume_never_closes_shared_launch_db(profile_dbs, monkeypatch):
     assert resp["error"]["code"] == 4007
     assert profile_dbs == []  # no dedicated handle was opened
     assert shared.closed == 0
+
+
+def test_resume_eager_never_transfers_shared_launch_db(profile_dbs, monkeypatch):
+    """Regression #91610: an eager resume in the LAUNCH profile resolves the
+    shared ``_get_db()`` handle and used to transfer ownership to the agent
+    unconditionally — session.close() then closed the process-wide database
+    under every unrelated session. The transfer must be gated on owns_db."""
+    shared = _RecordingDB(db_path="launch")
+    shared.rows["s1"] = {"id": "s1", "cwd": ""}
+    monkeypatch.setattr(server, "_get_db", lambda: shared)
+
+    def _fake_make_agent(sid, key, session_db=None, **_kwargs):
+        agent = types.SimpleNamespace(model="test")
+        agent._session_db = session_db  # the agent IS holding the shared handle
+        agent._owns_session_db = False
+        return agent
+
+    def _fake_init_session(sid, key, agent, history, session_db=None, **_kwargs):
+        with server._sessions_lock:
+            server._sessions[sid] = {"agent": agent, "session_key": key}
+
+    monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
+    monkeypatch.setattr(server, "_init_session", _fake_init_session)
+    monkeypatch.setattr(server, "_set_session_context", lambda _target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+    monkeypatch.setattr(
+        server, "_stored_session_runtime_overrides", lambda _found: {}
+    )
+    monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": "test"})
+
+    resp = _resume(session_id="s1", eager_build=True)
+
+    assert resp["result"]["session_key"] == "s1"
+    agent = server._sessions.get(resp["result"]["session_id"], {}).get("agent")
+    assert agent is not None
+    # Ownership never transferred: closing this one session must not own the
+    # process-wide handle, and the shared handle stays open for others.
+    assert agent._owns_session_db is False
+    assert shared.closed == 0

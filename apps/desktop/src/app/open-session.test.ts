@@ -120,6 +120,14 @@ describe('openSession', () => {
     expect(navigate).toHaveBeenCalledWith('/c/s1')
   })
 
+  it('main routes to the workspace even when the session is already open as a tile', () => {
+    focusOpenSession.mockReturnValue('tile')
+    openSession('s1', navigate, 'main')
+    expect(navigate).toHaveBeenCalledWith('/c/s1')
+    expect(focusOpenSession).not.toHaveBeenCalled()
+    expect(openSessionTile).not.toHaveBeenCalled()
+  })
+
   it('tab focuses an existing open session instead of stacking another', () => {
     focusOpenSession.mockReturnValue('tile')
     openSession('s1', navigate, 'tab')

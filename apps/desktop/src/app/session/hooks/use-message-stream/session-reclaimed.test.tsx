@@ -1,6 +1,5 @@
 import { QueryClient } from '@tanstack/react-query'
-import { act, cleanup, render, waitFor } from '@testing-library/react'
-import { useEffect, useRef } from 'react'
+import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
@@ -8,7 +7,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { $sessionStates, $sessionTiles, publishSessionState } from '@/store/session-states'
 import type { RpcEvent } from '@/types/hermes'
 
-import { useMessageStream } from './index'
+import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
 // `session.reclaimed`: the backend tore down a live session we're still
 // holding (idle TTL, LRU cap, WS-orphan reap). Before this event the runtime id
@@ -17,48 +16,18 @@ import { useMessageStream } from './index'
 
 const ACTIVE_SID = 'session-active'
 const ACTIVE_PROFILE = 'compass'
-let handleEvent: ((event: RpcEvent) => void) | null = null
+let stream: MessageStreamHarness
 let queryClient: QueryClient
 let wiringCache: Map<string, ClientSessionState>
 
-function Harness() {
-  const activeSessionIdRef = useRef<string | null>(ACTIVE_SID)
-  const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
-
-  wiringCache = sessionStateByRuntimeIdRef.current
-
-  const stream = useMessageStream({
-    activeGatewayProfile: ACTIVE_PROFILE,
-    activeSessionIdRef,
-    hydrateFromStoredSession: vi.fn(async () => undefined),
-    queryClient,
-    refreshHermesConfig: vi.fn<() => Promise<void>>(async () => undefined),
-    refreshSessions: vi.fn<() => Promise<void>>(async () => undefined),
-    sessionStateByRuntimeIdRef,
-    updateSessionState: (sessionId, updater) => {
-      const current = sessionStateByRuntimeIdRef.current.get(sessionId) ?? createClientSessionState()
-      const next = updater(current)
-      sessionStateByRuntimeIdRef.current.set(sessionId, next)
-
-      return next
-    }
-  })
-
-  useEffect(() => {
-    handleEvent = stream.handleGatewayEvent
-  }, [stream.handleGatewayEvent])
-
-  return null
-}
-
-async function mountStream() {
-  render(<Harness />)
-  await waitFor(() => expect(handleEvent).not.toBeNull())
+function mountStream() {
+  stream = renderMessageStream(ACTIVE_SID, { activeGatewayProfile: ACTIVE_PROFILE, queryClient })
+  wiringCache = stream.states
 }
 
 const reclaim = (sessionId: string, reason = 'ws_orphan_reap') =>
   act(() =>
-    handleEvent!({
+    stream.handleEvent({
       payload: { reason, session_id: sessionId, stored_session_id: 'stored-1' },
       session_id: '',
       type: 'session.reclaimed'
@@ -66,7 +35,6 @@ const reclaim = (sessionId: string, reason = 'ws_orphan_reap') =>
   )
 
 beforeEach(() => {
-  handleEvent = null
   queryClient = new QueryClient()
   $sessionStates.set({})
   $sessionTiles.set([])
@@ -80,8 +48,8 @@ afterEach(() => {
 })
 
 describe('session.reclaimed', () => {
-  it('drops the cached state for the reclaimed runtime', async () => {
-    await mountStream()
+  it('drops the cached state for the reclaimed runtime', () => {
+    mountStream()
     publishSessionState('live-gone', createClientSessionState())
     expect($sessionStates.get()['live-gone']).toBeDefined()
 
@@ -90,8 +58,8 @@ describe('session.reclaimed', () => {
     expect($sessionStates.get()['live-gone']).toBeUndefined()
   })
 
-  it('leaves every other live session alone', async () => {
-    await mountStream()
+  it('leaves every other live session alone', () => {
+    mountStream()
     publishSessionState('live-gone', createClientSessionState())
     publishSessionState('live-kept', createClientSessionState())
 
@@ -103,8 +71,8 @@ describe('session.reclaimed', () => {
     expect($sessionStates.get()['live-kept']).toBeDefined()
   })
 
-  it('ignores a payload with no runtime id instead of clearing everything', async () => {
-    await mountStream()
+  it('ignores a payload with no runtime id instead of clearing everything', () => {
+    mountStream()
     publishSessionState('live-a', createClientSessionState())
     publishSessionState('live-b', createClientSessionState())
 
@@ -114,12 +82,11 @@ describe('session.reclaimed', () => {
     expect(Object.keys($sessionStates.get()).sort()).toEqual(['live-a', 'live-b'])
   })
 
-  it('drops the runtime regardless of which reclaim reason fired', async () => {
+  it('drops the runtime regardless of which reclaim reason fired', () => {
     for (const reason of ['idle_timeout', 'lru_evict', 'ws_orphan_reap']) {
       $sessionStates.set({})
       cleanup()
-      handleEvent = null
-      await mountStream()
+      mountStream()
       publishSessionState('live-gone', createClientSessionState())
 
       reclaim('live-gone', reason)
@@ -132,8 +99,8 @@ describe('session.reclaimed', () => {
   // state drop above empties the tile's view, but with `runtimeId` still set
   // the tile's resume effect (gated on !runtimeId) never refires — an empty
   // transcript under live chrome, unrecoverable without closing the tab.
-  it('unbinds a tile holding the reclaimed runtime so its resume can refire', async () => {
-    await mountStream()
+  it('unbinds a tile holding the reclaimed runtime so its resume can refire', () => {
+    mountStream()
     publishSessionState('live-gone', createClientSessionState('stored-1'))
     $sessionTiles.set([
       { runtimeId: 'live-gone', storedSessionId: 'stored-1' },
@@ -152,8 +119,8 @@ describe('session.reclaimed', () => {
   // The wiring cache is resumeTile's warm path: a leftover entry for the dead
   // runtime would be handed straight back on the re-resume, rebinding the tile
   // to the same reclaimed id the backend just forgot.
-  it('purges the wiring cache entry for the reclaimed runtime', async () => {
-    await mountStream()
+  it('purges the wiring cache entry for the reclaimed runtime', () => {
+    mountStream()
     wiringCache.set('live-gone', createClientSessionState('stored-1'))
     wiringCache.set('live-kept', createClientSessionState('stored-2'))
 

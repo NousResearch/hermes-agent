@@ -43,7 +43,17 @@ DEFAULT_CONFIG = {
         "terminal_continue": True,
     },
     "agent": {
-        "max_turns": 500,
+        # Unlimited by default. The agent turn cap caused more problems than
+        # it solved (silent mid-task truncation). null = unlimited; set a
+        # positive integer to cap, or use "none"/"unlimited"/"inf"/0/-1 —
+        # all normalized by hermes_cli.config.resolve_turn_limit.
+        "max_turns": None,
+        # Optional wall-clock budget in seconds per conversation run.
+        # null/absent = feature fully off (zero behavior change). When set,
+        # the agent gets a one-time wrap-up notice at 80% elapsed and
+        # implicit provider stale timeouts are capped to the remaining
+        # budget. CLI one-shot equivalent: `hermes chat --run-budget N`.
+        "run_budget_seconds": None,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has
@@ -146,6 +156,15 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Execution-discipline guidance: injects a system prompt block covering
+        # tool persistence, mandatory tool use for arithmetic/system facts,
+        # external-write read-back, count reconciliation, literal preservation
+        # of identifiers, and verification-gated completion.  Chosen once at
+        # session start keyed on model name (prompt stays byte-stable).
+        # Values: "auto" (default — applies to gpt/codex/grok/deepseek/kimi/
+        # qwen/glm/minimax/mimo/mistral models), true/false (force on/off for
+        # all models), or a list of model-name substrings to match.
+        "execution_guidance": "auto",
         # Intent-ack continuation: when the model opens a turn by narrating an
         # action it will take ("I'll go check the logs...") but emits no tool
         # call, intercept the turn-end, inject a "continue now, execute the
@@ -156,6 +175,15 @@ DEFAULT_CONFIG = {
         # api_modes — fixes the Gemini/Claude "stops after stating intent" case),
         # false (never), or a list of model-name substrings to match.
         "intent_ack_continuation": "auto",
+        # Runtime anti-stall guards. When True (default), two conservative
+        # guards run: (1) an identical-call loop breaker that appends a short
+        # notice to the tool result when the same tool is called 3+ consecutive
+        # times with identical arguments AND identical results (never blocks;
+        # pollers like `process` are exempt), and (2) a continue-intent
+        # extension of the empty-response recovery that re-prompts once when
+        # the model ends its turn saying it will continue but takes no action.
+        # Set False to disable both.
+        "stall_guards": True,
         # Universal "finish the job" guidance — short prompt block applied to
         # all models that targets two cross-family failure modes: (1) stopping
         # after a stub instead of finishing the artifact, (2) fabricating
@@ -328,6 +356,20 @@ DEFAULT_CONFIG = {
         # matches a key in this dict.
         # Edit directly in config.yaml (no CLI support due to dots in keys).
         "reasoning_overrides": {},
+
+        # Per-provider opt-in to preserve assistant ``reasoning_content``
+        # when replaying history.  The built-in echo families (DeepSeek,
+        # Kimi/Moonshot, Xiaomi MiMo) are auto-detected by provider name
+        # and base-URL host.  Custom providers and OpenAI-compatible
+        # gateways that proxy those same models (or other thinking-mode
+        # backends) are not covered by the host-based rules.
+        #
+        # Set ``reasoning_echo: true`` on a ``model:`` entry (primary) or a
+        # ``fallback_providers:`` entry (per-fallback) to preserve
+        # ``reasoning_content`` on replay for that provider only.  Default
+        # ``false`` keeps the historical strict-provider behavior (Mistral,
+        # Groq, Cerebras reject the field with HTTP 400).
+        "reasoning_echo": False,
     },
 
     "terminal": {
@@ -454,6 +496,26 @@ DEFAULT_CONFIG = {
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
         "extract_char_limit": 15000,  # per-page char budget for web_extract; larger pages truncate + store full text in cache/web
+        # Keyless free-tier ring: with NO web backend configured or keyed,
+        # web_search/web_extract rotate round-robin across five vendors'
+        # public free tiers (exa, parallel, tavily, firecrawl, keenable),
+        # failing over to the next ring vendor on rate limits. Never
+        # pre-empts a configured or keyed backend. Set false to disable.
+        "keyless_fallback": True,
+        # One-shot keyless rescue: when the chosen/keyed backend fails a
+        # web_search/web_extract call, THAT call retries once on the keyless
+        # free-tier ring — the next call attempts the chosen backend again
+        # (no sticky failover). Off when keyless_fallback is false.
+        "keyless_rescue": True,
+        # Per-provider tier selection for ring vendors with both a keyless
+        # free endpoint and a keyed paid path (exa, parallel, tavily,
+        # firecrawl, keenable). Set by the `hermes tools` picker's
+        # "Free (keyless)" / "Paid (API key)" rows.
+        #   free  — always use the anonymous free endpoint (even with a key)
+        #   paid  — always use the keyed path (missing key = error; vendor
+        #           is also excluded from the keyless ring)
+        #   unset — auto: keyed when the API key is present, else the ring
+        "provider_tier": {},
     },
 
     "browser": {
@@ -506,6 +568,16 @@ DEFAULT_CONFIG = {
             # host alias while leaving CAMOFOX_URL itself unchanged.
             "rewrite_loopback_urls": False,
             "loopback_host_alias": "host.docker.internal",
+        },
+        # Authenticated browser-extension controller lane. When enabled, an
+        # extension that registers through the gateway can become the exact
+        # controller for a session's browser_* tools (fail-closed once bound).
+        # Local API registration additionally requires the API server bearer
+        # key. developer_mode gates the privileged capabilities
+        # (browser_cdp / browser_evaluate) — never negotiable without it.
+        "extension_control": {
+            "enabled": False,
+            "developer_mode": False,
         },
     },
 
@@ -1653,7 +1725,11 @@ DEFAULT_CONFIG = {
         # the raw transcript is also echoed back to the user as a 🎙️ message.
         # Set false to keep STT for the agent while suppressing that user-facing echo.
         "echo_transcripts": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "deepinfra"
+        # NOTE: no seeded "provider" key. Strict selection semantics treat a
+        # stored stt.provider as an explicit user pick; seeding "local" here
+        # made a fresh install indistinguishable from a user choice. The
+        # autodetect ladder covers unset. Valid values when set:
+        # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "deepinfra"
         # Global language hint applied to EVERY provider unless a per-provider
         # language overrides it. Defaults to "en" — Whisper auto-detection
         # frequently misidentifies short/accented clips, which reads as
@@ -1811,6 +1887,10 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # Periodic built-in memory review. External providers with automatic
+        # turn/session extraction can set this to 0 and keep the small local
+        # store reserved for explicit high-frequency operational facts.
+        "nudge_interval": 10,
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".
@@ -1964,6 +2044,16 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Project-local skill discovery: when a session starts inside a git
+        # checkout, ``<root>/.hermes/skills/`` and ``<root>/.agents/skills/``
+        # are sourced as the highest-precedence skill tier — but ONLY when the
+        # project root is listed in trusted_project_dirs below. Trust a repo
+        # with ``hermes skills trust`` (run from inside it). Set to false to
+        # disable discovery entirely (no scan, no untrusted-skills notice).
+        "project_discovery": True,
+        # Absolute paths of project roots whose repo-local skills may load.
+        # Managed by ``hermes skills trust`` / ``hermes skills untrust``.
+        "trusted_project_dirs": [],
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled
@@ -1989,6 +2079,18 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Advisory NVIDIA SkillEvaluator Tier 1 scan on hub installs
+        # (`hermes skills install`). Runs ALONGSIDE the built-in skills
+        # guard (which stays the enforcement layer) and only when the
+        # optional `skillevaluator` binary is on PATH:
+        #   uv tool install --python 3.13 \
+        #     "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git@v0.1.0"
+        # Findings are informational — shown with file/line before the
+        # install confirmation, never blocking. Secrets-class findings
+        # (private keys, tokens, credentialed connection strings) are
+        # highlighted in red. On by default because it is a no-op
+        # without the binary installed.
+        "tier1_advisory": True,
         # Approval gate for skill_manage (create/edit/patch/write_file/delete/
         # remove_file), applied to BOTH foreground agent turns and the
         # background self-improvement review fork.
@@ -2480,6 +2582,12 @@ DEFAULT_CONFIG = {
         # wedges the job's dispatch guard forever. Also overridable via
         # HERMES_CRON_SESSION_DB_TIMEOUT env var. 0 = unlimited (skip the bound).
         "session_db_timeout_seconds": 10,
+        # Timeout (seconds) for each media attachment send during cron
+        # delivery via a live gateway adapter. Large attachments (long TTS
+        # audio, big exports) can exceed the old fixed 30s window. Also
+        # overridable via HERMES_CRON_MEDIA_SEND_TIMEOUT env var. Keep in
+        # sync with cron.scheduler._DEFAULT_MEDIA_SEND_TIMEOUT.
+        "media_send_timeout_seconds": 300,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that
@@ -2811,6 +2919,16 @@ DEFAULT_CONFIG = {
         # of leaving a wedged-but-alive zombie. Set to false to disable.
         "loop_watchdog": True,
 
+        # Loop-liveness watchdog tuning (defaults mirror
+        # gateway/shutdown_watchdog.py constants). probe_interval = seconds
+        # between liveness probes; probe_timeout = seconds a probe may go
+        # unprocessed before counting as a miss; max_strikes = consecutive
+        # misses before the watchdog hard-exits 75 for a service respawn
+        # (~90-120s of sustained loop block at the defaults).
+        "loop_watchdog_probe_interval_s": 30.0,
+        "loop_watchdog_probe_timeout_s": 10.0,
+        "loop_watchdog_max_strikes": 3,
+
         # Whether the gateway keeps writing the legacy sessions.json mirror of
         # its routing index. The primary copy lives in state.db (the
         # gateway_routing table). Default True for backward compatibility with
@@ -2827,7 +2945,7 @@ DEFAULT_CONFIG = {
         # — whether the feature is enabled at all is the Labs toggle, never a
         # config key (decisions.md D2/D11). 0/negative falls back to the default.
         "scale_to_zero": {
-            "idle_timeout_minutes": 5,
+            "idle_timeout_minutes": 2,
         },
 
         # Auto-resume restart-loop breaker (#30719, defense-3). When the
@@ -3143,6 +3261,39 @@ DEFAULT_CONFIG = {
         #               ignored paths — node_modules, venv, build outputs —
         #               are never touched.
         "non_interactive_local_changes": "stash",
+        # When `hermes update` finds the source checkout parked on a feature
+        # branch (left behind by tooling or a manual checkout), switch back
+        # to the update target automatically whenever the working tree is
+        # clean. Committed-but-unmerged work is safe — `git checkout` never
+        # discards commits; the branch keeps them and the update prints a
+        # loud notice naming the branch and count. This keeps non-
+        # interactive updates (desktop update button, gateway /update,
+        # cron) working: they have no way to resolve a skip. Only a DIRTY
+        # tree (uncommitted changes) blocks the switch — the code update is
+        # then SKIPPED with a loud warning instead of pretending success
+        # (2026-08-17 incident: "✓ Code updated!" printed while the
+        # checkout stayed days behind main on a stale branch). Set false to
+        # never auto-switch.
+        "auto_switch_parked_branch": True,
+        # HOW a clean parked branch with unmerged commits is handled:
+        #   "switch" (default)  — switch to the update target; the commits
+        #                         stay on the branch (git checkout never
+        #                         discards committed work) and a loud notice
+        #                         names the branch + count. Deterministic —
+        #                         never conflicts — so desktop/gateway/cron
+        #                         updates always land on current code.
+        #   "update_in_place"   — for a deliberately maintained custom branch
+        #                         (local patches on top of main): merge
+        #                         origin/<target> INTO the branch instead.
+        #                         The checkout never moves and local commits
+        #                         survive; a conflict stops the update
+        #                         cleanly with nothing changed. A safety tag
+        #                         (pre-update-<stamp>) is left before the
+        #                         merge. `hermes update --switch-branch`
+        #                         overrides back to the switch path for one
+        #                         run (e.g. a deep feature branch that must
+        #                         not accumulate update merge commits).
+        "parked_branch_strategy": "switch",
         # Refresh an already-installed cua-driver during `hermes update`.
         # The refresh is best-effort and macOS-only. Turn this off if the
         # upstream installer is not appropriate for the machine, for example
@@ -3520,7 +3671,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 37,
+    "_config_version": 38,
 }
 
 # Optional environment variables that enhance functionality
@@ -3832,6 +3983,14 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "COMMANDCODE_API_KEY": {
+        "description": "CommandCode API key (GOAT/Pro/Max/Provider plans — 30+ models via one key)",
+        "prompt": "CommandCode API key",
+        "url": "https://commandcode.ai/studio/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
     "OPENCODE_ZEN_BASE_URL": {
         "description": "OpenCode Zen base URL override",
         "prompt": "OpenCode Zen base URL (leave empty for default)",
@@ -4014,9 +4173,17 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "TAVILY_API_KEY": {
-        "description": "Tavily API key for AI-native web search and extract",
+        "description": "Tavily API key for AI-native web search and extract (optional — keyless works without it)",
         "prompt": "Tavily API key",
         "url": "https://app.tavily.com/home",
+        "tools": ["web_search", "web_extract"],
+        "password": True,
+        "category": "tool",
+    },
+    "KEENABLE_API_KEY": {
+        "description": "Keenable API key for fast independent-index web search and page fetch (optional — keyless free tier works without it)",
+        "prompt": "Keenable API key",
+        "url": "https://keenable.ai",
         "tools": ["web_search", "web_extract"],
         "password": True,
         "category": "tool",

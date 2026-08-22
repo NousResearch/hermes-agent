@@ -14,9 +14,11 @@ import weakref
 from tools.delegate_tool import (
     _handle_control_action,
     _is_descendant_of,
+    _owns_subagent_record,
     _register_subagent,
     _unregister_subagent,
     delegate_task,
+    get_subagent_attribution,
 )
 
 
@@ -291,10 +293,245 @@ def test_empty_tasks_array_with_goal_is_single_task_not_batch_error():
 
 
 # ---------------------------------------------------------------------------
-# Guardrail: control actions never consume the spawn cap
+# Durable ownership: registry survives parent-agent object rebuilds
+# (regression for deleg_88454b70 / sa-0-dc0100f4, 2026-08-17: CLI rebuilt its
+# AIAgent mid-session; running child fell out of list/steer while completion
+# delivery — which routes by durable session id — still worked)
 # ---------------------------------------------------------------------------
 
 
+class _StubParentWithSession:
+    def __init__(self, session_id: str, session_db=None):
+        self.session_id = session_id
+        self._session_db = session_db
+
+
+class _StubSessionDB:
+    """resolve_resume_session_id lineage: old_id -> tip mapping."""
+
+    def __init__(self, lineage=None):
+        self._lineage = dict(lineage or {})
+
+    def resolve_resume_session_id(self, session_id):
+        return self._lineage.get(session_id, session_id)
+
+
+def test_list_finds_child_after_parent_agent_rebuild():
+    """A REBUILT parent object (weakref chain broken) must still see its
+    running child via the durable owner_agent_session_id spine."""
+    old_parent = _StubParentWithSession("sess-durable-1")
+    child = _StubChild(old_parent)
+    _register(
+        "sid-durable-list-1", child, owner_agent_session_id="sess-durable-1"
+    )
+    # Simulate the CLI's `self.agent = None` + rebuild: a NEW object, same
+    # durable conversation/session id. The weakref chain no longer reaches it.
+    rebuilt_parent = _StubParentWithSession("sess-durable-1")
+    assert _is_descendant_of(child, rebuilt_parent) is False  # identity broken
+    try:
+        out = json.loads(_handle_control_action("list", None, None, rebuilt_parent))
+        assert out["count"] == 1
+        assert out["subagents"][0]["subagent_id"] == "sid-durable-list-1"
+    finally:
+        _unregister_subagent("sid-durable-list-1")
+
+
+def test_steer_resolves_after_parent_agent_rebuild():
+    old_parent = _StubParentWithSession("sess-durable-2")
+    child = _StubChild(old_parent)
+    _register(
+        "sid-durable-steer-1", child, owner_agent_session_id="sess-durable-2"
+    )
+    rebuilt_parent = _StubParentWithSession("sess-durable-2")
+    try:
+        out = json.loads(
+            _handle_control_action(
+                "steer", "sid-durable-steer-1", "keep going", rebuilt_parent
+            )
+        )
+        assert out["status"] == "queued"
+        assert child.steered == ["keep going"]
+    finally:
+        _unregister_subagent("sid-durable-steer-1")
+
+
+def test_durable_ownership_does_not_leak_to_foreign_session():
+    """A DIFFERENT conversation (different session id, no identity chain)
+    must still be refused — the durable spine widens recovery, not access."""
+    owner = _StubParentWithSession("sess-durable-3")
+    child = _StubChild(owner)
+    _register(
+        "sid-durable-foreign-1", child, owner_agent_session_id="sess-durable-3"
+    )
+    intruder = _StubParentWithSession("sess-other-99")
+    try:
+        out = _handle_control_action(
+            "steer", "sid-durable-foreign-1", "hijack", intruder
+        )
+        assert "No live subagent" in out
+        assert child.steered == []
+        out2 = json.loads(_handle_control_action("list", None, None, intruder))
+        assert out2["count"] == 0
+    finally:
+        _unregister_subagent("sid-durable-foreign-1")
+
+
+def test_durable_ownership_resolves_compression_lineage():
+    """Delegation registered under a pre-compression session id must match
+    the rotated parent whose SessionDB lineage maps old -> new."""
+    db = _StubSessionDB({"sess-old-tip": "sess-new-tip"})
+    child = _StubChild()  # no identity chain at all
+    _register(
+        "sid-durable-lineage-1", child, owner_agent_session_id="sess-old-tip"
+    )
+    rotated_parent = _StubParentWithSession("sess-new-tip", session_db=db)
+    try:
+        out = json.loads(
+            _handle_control_action("list", None, None, rotated_parent)
+        )
+        assert out["count"] == 1
+    finally:
+        _unregister_subagent("sid-durable-lineage-1")
+
+
+def test_owns_subagent_record_requires_some_spine():
+    """No identity chain AND no durable owner id -> not owned (fail closed)."""
+    child = _StubChild()
+    record = {"subagent_id": "x", "agent": child}
+    assert _owns_subagent_record(record, _StubParentWithSession("sess-a")) is False
+    # And a record with an owner id but a parent with no session_id fails too.
+    record2 = {"subagent_id": "y", "agent": child, "owner_agent_session_id": "s1"}
+    assert _owns_subagent_record(record2, _StubParent()) is False
+
+
+# ---------------------------------------------------------------------------
+# Process-notification attribution: get_subagent_attribution
+# ---------------------------------------------------------------------------
+
+
+def test_attribution_resolves_live_child():
+    parent = _StubParentWithSession("sess-attr-1")
+    child = _StubChild(parent)
+    _register(
+        "sa-0-attr0001",
+        child,
+        delegation_id="deleg_attr_1",
+        owner_agent_session_id="sess-attr-1",
+    )
+    try:
+        info = get_subagent_attribution("sa-0-attr0001")
+        assert info is not None
+        assert info["subagent_id"] == "sa-0-attr0001"
+        assert info["goal"] == "test goal"
+        assert info["delegation_id"] == "deleg_attr_1"
+    finally:
+        _unregister_subagent("sa-0-attr0001")
+
+
+def test_attribution_survives_child_completion():
+    """After the child finishes (unregistered), attribution must still
+    resolve — its background processes can outlive it."""
+    parent = _StubParentWithSession("sess-attr-2")
+    child = _StubChild(parent)
+    _register(
+        "sa-0-attr0002",
+        child,
+        delegation_id="deleg_attr_2",
+        owner_agent_session_id="sess-attr-2",
+    )
+    _unregister_subagent("sa-0-attr0002")
+    info = get_subagent_attribution("sa-0-attr0002")
+    assert info is not None
+    assert info["delegation_id"] == "deleg_attr_2"
+    assert info["goal"] == "test goal"
+
+
+def test_attribution_unknown_task_id_is_none():
+    assert get_subagent_attribution("proc-not-a-subagent") is None
+    assert get_subagent_attribution("") is None
+    assert get_subagent_attribution(None) is None
+
+
+def test_completion_notification_carries_delegation_attribution():
+    """format_process_notification on a child-started process completion must
+    name the subagent + delegation instead of an anonymous output wall."""
+    from tools.process_registry import format_process_notification
+
+    parent = _StubParentWithSession("sess-attr-3")
+    child = _StubChild(parent)
+    _register(
+        "sa-1-attr0003",
+        child,
+        delegation_id="deleg_attr_3",
+        goal="run the npm ci for the desktop app",
+    )
+    try:
+        text = format_process_notification(
+            {
+                "type": "completion",
+                "session_id": "proc_deadbeef0001",
+                "task_id": "sa-1-attr0003",
+                "command": "npm ci",
+                "exit_code": 0,
+                "output": "added 1500 packages",
+            }
+        )
+        assert text is not None
+        assert "Started by subagent sa-1-attr0003" in text
+        assert "deleg_attr_3" in text
+        assert "run the npm ci for the desktop app" in text
+    finally:
+        _unregister_subagent("sa-1-attr0003")
+
+
+def test_completion_notification_trims_subagent_output_wall():
+    from tools.process_registry import format_process_notification
+
+    parent = _StubParentWithSession("sess-attr-4")
+    child = _StubChild(parent)
+    _register("sa-2-attr0004", child, delegation_id="deleg_attr_4")
+    try:
+        big_output = "npm noise line\n" * 500
+        text = format_process_notification(
+            {
+                "type": "completion",
+                "session_id": "proc_deadbeef0002",
+                "task_id": "sa-2-attr0004",
+                "command": "npm ci",
+                "exit_code": 0,
+                "output": big_output,
+            }
+        )
+        assert text is not None
+        assert "output trimmed — subagent-owned process" in text
+        assert len(text) < len(big_output)
+    finally:
+        _unregister_subagent("sa-2-attr0004")
+
+
+def test_parent_owned_process_notification_unchanged():
+    """Processes NOT started by a subagent keep the exact legacy shape."""
+    from tools.process_registry import format_process_notification
+
+    text = format_process_notification(
+        {
+            "type": "completion",
+            "session_id": "proc_parentowned",
+            "task_id": "20260817_154314_30d98f",  # CLI session task_id
+            "command": "make build",
+            "exit_code": 0,
+            "output": "ok",
+        }
+    )
+    assert text is not None
+    assert "Started by subagent" not in text
+    assert text.startswith("[IMPORTANT: Background process proc_parentowned")
+    assert "Command: make build\nOutput:\nok]" in text
+
+
+# ---------------------------------------------------------------------------
+# Guardrail: control actions never consume the spawn cap
+# ---------------------------------------------------------------------------
 def test_spawn_count_zero_for_control_actions():
     from agent.tool_guardrails import _subagent_spawn_count
 

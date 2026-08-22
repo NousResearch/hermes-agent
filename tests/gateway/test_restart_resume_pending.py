@@ -40,6 +40,7 @@ from gateway.run import (
     _coerce_gateway_timestamp,
     _is_fresh_gateway_interruption,
     _last_transcript_timestamp,
+    _prepare_resume_pending_message,
     _should_clear_resume_pending_after_turn,
     build_resume_recovery_note,
 )
@@ -312,6 +313,42 @@ class TestResumePendingSystemNote:
         assert "skip any unfinished work" not in note
         # But still guards against re-running already-recorded tool calls.
         assert "already appear in the history" in note
+
+
+    def test_resume_note_is_persisted_instead_of_original_empty_message(self):
+        """The auto-resume note must not leave an empty row in state.db."""
+        message, persisted = _prepare_resume_pending_message(
+            "restart_timeout", "", interactive=False
+        )
+
+        assert message
+        assert "CONTINUE the interrupted task" in message
+        assert persisted == message
+        assert persisted != ""
+
+    def test_whitespace_only_message_also_persists_the_note(self):
+        """A whitespace-only startup event is as blank as an empty one —
+        persisting it verbatim would recreate the sanitizer loop (#86580)."""
+        message, persisted = _prepare_resume_pending_message(
+            "shutdown_timeout", "   ", interactive=True
+        )
+
+        assert persisted == message
+        assert persisted.strip()
+
+    def test_real_user_text_persists_clean_not_the_scaffolded_note(self):
+        """When the user typed real text while resume was pending, the durable
+        transcript keeps their clean words; only the MODEL sees the wrapped
+        recovery note (transcript stays scaffold-free)."""
+        message, persisted = _prepare_resume_pending_message(
+            "restart_timeout", "what were we doing?", interactive=True
+        )
+
+        assert persisted == "what were we doing?"
+        assert "[System note:" not in persisted
+        assert message != persisted
+        assert "what were we doing?" in message
+        assert "[System note:" in message
 
 
     def test_resume_pending_fires_without_tool_tail(self):
@@ -1038,5 +1075,94 @@ async def test_startup_restore_gate_releases_when_resume_turn_outlives_timeout(
 
     never_finishes.set()
     await slow_task
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_gate_releases_when_boot_path_send_hangs(
+    monkeypatch,
+):
+    """A hung restart notification / obligation redelivery must not freeze inbound.
+
+    Those sends used to run *before* ``_finish_startup_restore`` released the
+    gate. A Telegram flood-control sleep on either call queued inbound on
+    every platform for the full ``retry_after``.
+    """
+    monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "0.05")
+
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._startup_restore_tasks = []
+    runner._background_tasks = set()
+
+    hung = asyncio.Event()
+
+    async def never_returns(*_args, **_kwargs):
+        await hung.wait()
+        return None
+
+    runner._send_restart_notification = never_returns
+    runner._claim_pending_obligations = AsyncMock(return_value=[])
+    runner._redeliver_claimed_obligations = AsyncMock(return_value=0)
+
+    seen: list[str] = []
+
+    async def fake_handle_message(event: MessageEvent) -> None:
+        seen.append(f"inbound:{event.text}")
+
+    adapter.handle_message = fake_handle_message
+
+    inbound = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="restore-chat"),
+    )
+    assert await runner._handle_message(inbound) is None
+    assert runner._startup_restore_queue == [inbound]
+
+    await asyncio.wait_for(
+        runner._await_startup_boot_sends(
+            planned_restart_notification_pending=False,
+        ),
+        timeout=5,
+    )
+    await asyncio.wait_for(runner._finish_startup_restore(), timeout=5)
+
+    assert seen == ["inbound:hello"], (
+        "startup-restore gate never released: queued inbound was not drained "
+        "while a boot-path send was still sleeping"
+    )
+    assert runner._startup_restore_queue == []
+    assert runner._startup_restore_in_progress is False
+    # The DB half (claim + resume clear) runs inline BEFORE the abandonable
+    # send task, so it must have completed even though the boot send hung;
+    # the network half never ran because the hung notification precedes it.
+    runner._claim_pending_obligations.assert_awaited_once()
+    runner._redeliver_claimed_obligations.assert_not_awaited()
+
+    hung.set()
+    leftover = [t for t in list(runner._background_tasks) if not t.done()]
+    if leftover:
+        await asyncio.wait(leftover)
+
+
+@pytest.mark.asyncio
+async def test_startup_boot_sends_still_run_when_they_finish_quickly(monkeypatch):
+    """The bound must not skip restart notification or redelivery on a fast path."""
+    monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "2")
+
+    runner, _adapter = make_restart_runner()
+    runner._background_tasks = set()
+    runner._send_restart_notification = AsyncMock(return_value=None)
+    runner._claim_pending_obligations = AsyncMock(return_value=[])
+    runner._redeliver_claimed_obligations = AsyncMock(return_value=0)
+
+    await runner._await_startup_boot_sends(
+        planned_restart_notification_pending=False,
+    )
+
+    runner._send_restart_notification.assert_awaited_once()
+    runner._claim_pending_obligations.assert_awaited_once()
+    runner._redeliver_claimed_obligations.assert_awaited_once()
 
 

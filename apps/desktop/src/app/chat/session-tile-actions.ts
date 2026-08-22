@@ -478,7 +478,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
           )
         )
       } catch (err) {
-        update(current => ({ ...current, busy: false, awaitingResponse: false }))
+        update(current => ({ ...current, busy: false, awaitingResponse: false, turnLive: false, turnStartedAt: null }))
         notifyError(err, copy.regenerateFailed)
       }
     },
@@ -514,7 +514,14 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
           )
         )
       } catch (err) {
-        update(state => ({ ...state, busy: false, awaitingResponse: false, messages }))
+        update(state => ({
+          ...state,
+          busy: false,
+          awaitingResponse: false,
+          turnLive: false,
+          turnStartedAt: null,
+          messages
+        }))
         throw err
       }
     },
@@ -555,7 +562,14 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
           )
         )
       } catch (err) {
-        update(state => ({ ...state, busy: false, awaitingResponse: false, messages }))
+        update(state => ({
+          ...state,
+          busy: false,
+          awaitingResponse: false,
+          turnLive: false,
+          turnStartedAt: null,
+          messages
+        }))
         notifyError(err, copy.editFailed)
       }
     },

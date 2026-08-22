@@ -132,6 +132,17 @@ _NO_XHIGH_CLAUDE_SUBSTRINGS = (
     "claude-sonnet-4-6", "claude-sonnet-4.6",
 )
 
+# Adaptive Claude families that REJECT a thinking disable — thinking is
+# mandatory and ``thinking: {"type": "disabled"}`` answers HTTP 400. The Portal
+# catalog flags the same families with ``reasoning.mandatory``.
+#
+# Unlike the two lists above, the failure here is asymmetric: a missing entry
+# 400s the turn, while a spurious one only leaves thinking on. When in doubt,
+# add the family.
+_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = (
+    "claude-fable",
+)
+
 
 def _is_claude_model(model: str | None) -> bool:
     return "claude" in (model or "").lower()
@@ -296,6 +307,32 @@ def _supports_xhigh_effort(model: str) -> bool:
         return False
     m = model.lower()
     return not any(v in m for v in _NO_XHIGH_CLAUDE_SUBSTRINGS)
+
+
+def _accepts_thinking_disable(model: str) -> bool:
+    """Return True when *model* accepts an explicit thinking disable.
+
+    Adaptive Claude models default to thinking ON, so "thinking off" only
+    takes effect if we actively send ``thinking: {"type": "disabled"}`` —
+    omitting the parameter leaves the upstream default in place and the model
+    thinks anyway.  Reasoning-mandatory families reject the disable outright
+    with an HTTP 400, so they keep the omit-everything behavior.
+
+    Legacy manual-thinking Claude models are excluded because they need no
+    disable: thinking is opt-in there via ``budget_tokens``, so not sending
+    the block already means off.
+
+    Scoped to Claude deliberately.  Kimi/Moonshot endpoints also speak the
+    adaptive contract, but their documented disable behavior is omission
+    (#13848) and they are not part of this bug; sending them a new parameter
+    on the strength of Claude's contract would be a guess.
+    """
+    if not _is_claude_model(model):
+        return False
+    if not _supports_adaptive_thinking(model):
+        return False
+    m = model.lower()
+    return not any(v in m for v in _MANDATORY_THINKING_CLAUDE_SUBSTRINGS)
 
 
 def _forbids_sampling_params(model: str) -> bool:
@@ -625,6 +662,10 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
         # Hostname match (not substring) so e.g. evil.com/palantirfoundry
         # paths don't trigger Bearer auth.
         or base_url_host_matches(normalized, "palantirfoundry.com")
+        # CommandCode's /provider/v1/messages endpoint uses Bearer auth,
+        # not Anthropic's native x-api-key header. Hostname match for the
+        # same reason as above.
+        or base_url_host_matches(normalized, "api.commandcode.ai")
     )
 
 
@@ -3049,7 +3090,15 @@ def build_anthropic_kwargs(
     # request "summarized" so the reasoning blocks stay populated — matching
     # 4.6 behavior and preserving the activity-feed UX during long tool runs.
     if reasoning_config and isinstance(reasoning_config, dict):
-        if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
+        if reasoning_config.get("enabled") is False:
+            # "Thinking off". Adaptive models think by DEFAULT, so omitting the
+            # parameter is not a disable — it silently leaves thinking on and
+            # the user keeps paying for it. Send the disable explicitly.
+            # Mandatory-thinking models reject it with a 400, so they keep the
+            # omission: a silently-ignored disable beats a dead turn.
+            if _accepts_thinking_disable(model):
+                kwargs["thinking"] = {"type": "disabled"}
+        elif "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
             if _supports_adaptive_thinking(model):

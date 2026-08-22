@@ -9,6 +9,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { PaneTab, PaneTabLabel, PaneTabStrip } from '@/components/ui/pane-tab'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import type { Contribution } from '@/contrib/types'
@@ -16,7 +17,7 @@ import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape
 import { cn } from '@/lib/utils'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '../..'
-import { allPaneIds } from '../model'
+import { allPaneIds, findGroupOfPane } from '../model'
 import { $hiddenTreePanes, $layoutTree, $narrowViewport } from '../store'
 
 import { paneChrome } from './track-model'
@@ -108,6 +109,22 @@ export function NarrowOverlays() {
   const revealed = reveal ? collapsibles.find(p => p.id === reveal.id) : undefined
   const sides = [...new Set(collapsibles.map(sideOf))]
 
+  // The revealed pane's ZONE-mates that also left the grid (the sessions zone
+  // stacks SESSIONS | BOTS): the overlay mirrors the zone's tab strip so a
+  // pane docked into a collapsed zone stays reachable on narrow viewports —
+  // without this, only the zone's first pane ever surfaces again.
+  const zonePanes = (() => {
+    if (!revealed || !tree) {
+      return [revealed].filter((p): p is Contribution => Boolean(p))
+    }
+
+    const zone = findGroupOfPane(tree, revealed.id)
+    const mates = zone ? zone.panes.map(id => collapsibles.find(p => p.id === id)) : []
+    const shown = mates.filter((p): p is Contribution => Boolean(p))
+
+    return shown.length > 0 ? shown : [revealed]
+  })()
+
   return (
     <>
       {/* Hover-intent strips on each edge that has a collapsed pane. */}
@@ -133,11 +150,37 @@ export function NarrowOverlays() {
               ? 'left-0 border-r border-(--ui-stroke-secondary)'
               : 'right-0 border-l border-(--ui-stroke-secondary)'
           )}
+          // Floats OVER the layout, so under glass its surface must mask the
+          // panes beneath it — a see-through overlay reads as text bleeding
+          // through text. Contract: `[data-glass-opaque]` in styles.css.
+          data-glass-opaque=""
           onMouseLeave={() => setReveal(current => (current?.pinned ? current : null))}
           // Match the pane's docked width (sessions ~237px, files its rail
           // width) instead of a fat fixed 20rem — capped for tiny screens.
           style={{ width: `min(${(revealed.data as { width?: string } | undefined)?.width ?? '18rem'}, 85vw)` }}
         >
+          {/* Zone-mates share the overlay through the zone's own tab strip
+              (SESSIONS | BOTS) — a lone pane keeps the stripless form. */}
+          {zonePanes.length > 1 && (
+            <PaneTabStrip>
+              {zonePanes.map(pane => (
+                <PaneTab
+                  active={pane.id === revealed.id}
+                  aria-selected={pane.id === revealed.id}
+                  data-narrow-overlay-tab={pane.id}
+                  key={pane.id}
+                  onPointerDown={event => {
+                    if (event.button === 0) {
+                      event.preventDefault()
+                      setReveal(current => ({ id: pane.id, pinned: current?.pinned ?? false }))
+                    }
+                  }}
+                >
+                  <PaneTabLabel>{pane.title ?? pane.id}</PaneTabLabel>
+                </PaneTab>
+              ))}
+            </PaneTabStrip>
+          )}
           <ContribBoundary id={revealed.id}>
             {revealed.render && <ContribRender render={revealed.render} />}
           </ContribBoundary>

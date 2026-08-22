@@ -443,7 +443,7 @@ class AIAgent:
         command: str = None,
         args: list[str] | None = None,
         model: str = "",
-        max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
+        max_iterations: int = sys.maxsize,  # Default: unlimited tool-calling iterations (shared with subagents)
         tool_delay: float = None,  # Deprecated: accepted for compatibility, ignored
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -470,8 +470,10 @@ class AIAgent:
         clarify_callback: callable = None,
         read_terminal_callback: callable = None,
         read_preview_callback: callable = None,
+        drive_preview_callback: callable = None,
         read_window_below_callback: callable = None,
         setup_mcp_callback: callable = None,
+        tour_callback: callable = None,
         step_callback: callable = None,
         stream_delta_callback: callable = None,
         interim_assistant_callback: callable = None,
@@ -502,6 +504,7 @@ class AIAgent:
         session_db=None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
+        run_budget_seconds: Optional[float] = None,
         fallback_model: Dict[str, Any] = None,
         credential_pool=None,
         checkpoints_enabled: bool = False,
@@ -558,8 +561,10 @@ class AIAgent:
             clarify_callback=clarify_callback,
             read_terminal_callback=read_terminal_callback,
             read_preview_callback=read_preview_callback,
+            drive_preview_callback=drive_preview_callback,
             read_window_below_callback=read_window_below_callback,
             setup_mcp_callback=setup_mcp_callback,
+            tour_callback=tour_callback,
             step_callback=step_callback,
             stream_delta_callback=stream_delta_callback,
             interim_assistant_callback=interim_assistant_callback,
@@ -590,6 +595,7 @@ class AIAgent:
             session_db=session_db,
             parent_session_id=parent_session_id,
             iteration_budget=iteration_budget,
+            run_budget_seconds=run_budget_seconds,
             fallback_model=fallback_model,
             credential_pool=credential_pool,
             checkpoints_enabled=checkpoints_enabled,
@@ -1038,6 +1044,26 @@ class AIAgent:
                 )
             )
 
+    def _warn_uncompressed_context_overflow(
+        self, preflight_tokens: int, context_length: int
+    ) -> None:
+        """Surface a deduped warning when uncompressed context exceeds model limit.
+
+        When compression is explicitly disabled (compression.enabled: false), long
+        sessions can grow past the model context window with no compression to shrink
+        them (#89297). Surface an actionable warning so the user knows to run /compact
+        or enable compression.
+        """
+        _warn_key = ("uncompressed_ctx_overflow", context_length)
+        if getattr(self, "_last_ctx_overflow_warn", None) != _warn_key:
+            self._last_ctx_overflow_warn = _warn_key
+            self._emit_warning(
+                f"⚠️ Session context (~{preflight_tokens:,} tokens) exceeds the model "
+                f"context window (~{context_length:,} tokens) with compression disabled "
+                f"(compression.enabled: false). Use /compact to compress history or "
+                f"enable compression in config.yaml."
+            )
+
     def _clear_context_overflow_warn(self) -> None:
         """Reset the dedup state for the blocked-overflow warning.
 
@@ -1450,10 +1476,40 @@ class AIAgent:
         from agent.chat_completion_helpers import estimate_request_context_tokens
         est_tokens = estimate_request_context_tokens(api_payload)
         if est_tokens > 100_000:
-            return max(stale_base, 240.0)
-        if est_tokens > 50_000:
-            return max(stale_base, 150.0)
-        return stale_base
+            timeout = max(stale_base, 240.0)
+        elif est_tokens > 50_000:
+            timeout = max(stale_base, 150.0)
+        else:
+            timeout = stale_base
+
+        # Wall-clock run budget cap: when a run budget is active, an implicit
+        # (floor-/default-derived) stale timeout is capped at half the
+        # remaining budget (>= 60s) so a single hung provider call cannot eat
+        # the whole run — e.g. deepseek-v4-pro's 600s reasoning floor inside a
+        # 900s eval ceiling. NEVER raises the timeout above what it would
+        # otherwise be, and an explicit user-configured stale_timeout_seconds
+        # (or env var) still wins untouched.
+        run_budget = getattr(self, "run_budget_seconds", None)
+        if run_budget and not self._stale_timeout_is_explicit():
+            started = getattr(self, "_run_budget_started_at", None)
+            if started:
+                remaining = float(run_budget) - (time.time() - started)
+                deadline_cap = max(60.0, remaining * 0.5)
+                if deadline_cap < timeout:
+                    timeout = deadline_cap
+        return timeout
+
+    def _stale_timeout_is_explicit(self) -> bool:
+        """True when the user explicitly configured the non-stream stale timeout.
+
+        Explicit = provider/model ``stale_timeout_seconds`` in config.yaml or
+        the ``HERMES_API_CALL_STALE_TIMEOUT`` env var. Reasoning-model floors
+        and the 90s default are implicit — they yield to the wall-clock run
+        budget cap; explicit user configuration never does.
+        """
+        if get_provider_stale_timeout(self.provider, self.model) is not None:
+            return True
+        return os.getenv("HERMES_API_CALL_STALE_TIMEOUT") is not None
 
     def _codex_silent_hang_hint(self, model: Optional[str] = None) -> Optional[str]:
         """Return an actionable hint when this request matches a known
@@ -1840,22 +1896,37 @@ class AIAgent:
             enabled, task_cfg = load_background_review_settings()
             if not enabled:
                 return
-        from agent.background_review import spawn_background_review_thread
+        from agent.background_review import (
+            finish_background_review_run,
+            prepare_background_review_run,
+            spawn_background_review_thread,
+        )
         from tools.thread_context import propagate_context_to_thread
-        target, _prompt = spawn_background_review_thread(
-            self,
-            messages_snapshot,
-            review_memory=review_memory,
-            review_skills=review_skills,
-            focus=focus,
-            task_cfg=task_cfg,
-        )
-        # Carry the active profile into the review thread so MEMORY.md / skill
-        # review writes land in the right profile (#54937).
-        t = threading.Thread(
-            target=propagate_context_to_thread(target), daemon=True, name="bg-review"
-        )
-        t.start()
+
+        review_run = prepare_background_review_run(self)
+        if review_run is None:
+            return
+        try:
+            target, _prompt = spawn_background_review_thread(
+                self,
+                messages_snapshot,
+                review_memory=review_memory,
+                review_skills=review_skills,
+                focus=focus,
+                task_cfg=task_cfg,
+                review_run=review_run,
+            )
+            # Carry the active profile into the review thread so MEMORY.md /
+            # skill review writes land in the right profile (#54937).
+            t = threading.Thread(
+                target=propagate_context_to_thread(target),
+                daemon=True,
+                name="bg-review",
+            )
+            t.start()
+        except Exception:
+            finish_background_review_run(self, review_run)
+            raise
 
     def _build_memory_write_metadata(
         self,
@@ -3881,8 +3952,12 @@ class AIAgent:
                     + "the turn was stopped because the state database "
                     "reported structural corruption (the transcript would "
                     "have been lost on restart). Freeing disk space will "
-                    "not help — run `hermes doctor` to repair the state "
-                    "database, then send your message again."
+                    "not help. Recovery options:\n"
+                    "1. Run `hermes doctor --fix`\n"
+                    "2. Salvage with: sqlite3 ~/.hermes/state.db \".recover\" "
+                    "(then replace state.db)\n"
+                    "3. Restore from a backup in ~/.hermes/backups/\n"
+                    "Then send your message again."
                 )
             if cause == "disk":
                 return (
@@ -4176,7 +4251,8 @@ class AIAgent:
                 latch = self._credits_latch = new_credits_latch()
             # Free-model gate: a depleted account on a free model can still
             # inference, so the depleted error banner is suppressed. Local-data
-            # only (":free" suffix + pricing-cache peek) — never a network call.
+            # only (":free" suffix, "stealth/" prefix + pricing-cache peek) —
+            # never a network call.
             model_is_free = is_free_tier_model(
                 getattr(self, "model", "") or "",
                 getattr(self, "base_url", "") or "",
@@ -7754,9 +7830,46 @@ class AIAgent:
             self._needs_deepseek_tool_reasoning()
             or self._needs_kimi_tool_reasoning()
             or self._needs_mimo_tool_reasoning()
+            or self._reasoning_echo_opt_in()
         )
         self._thinking_pad_cache = (key, result)
         return result
+
+    def _reasoning_echo_opt_in(self) -> bool:
+        """Return True when the user has opted in to ``reasoning_content``
+        echo-back for the *current* provider via config.
+
+        This covers custom providers and OpenAI-compatible gateways that
+        proxy thinking-mode models (e.g. a reverse proxy fronting Kimi K3
+        or GLM-5.2) but are not matched by the built-in host-based
+        ``_REASONING_ECHO_RULES`` (DeepSeek / Kimi / MiMo).
+
+        The flag is per-active-provider:
+
+        * **Primary** — read from ``model.reasoning_echo`` in config.yaml
+          at agent init and on ``switch_model()``.
+        * **Fallback** — set by ``try_activate_fallback()`` from the
+          fallback entry's ``reasoning_echo`` field.
+        * **Restore** — ``restore_primary_runtime()`` copies the snapshot
+          saved by ``switch_model()``.
+
+        Unlike a global toggle, this flag travels with the active
+        provider, so falling back to a strict provider (Mistral, Groq,
+        Cerebras) correctly strips ``reasoning_content`` even when the
+        primary had the flag enabled.
+        """
+        return bool(getattr(self, "_reasoning_echo_flag", False))
+
+    @staticmethod
+    def _read_reasoning_echo_from_config() -> bool:
+        """Read ``model.reasoning_echo`` from config; False on any error."""
+        try:
+            from hermes_cli.config import load_config_readonly
+            return bool(
+                (load_config_readonly().get("model") or {}).get("reasoning_echo")
+            )
+        except Exception:
+            return False
 
     def _needs_kimi_tool_reasoning(self) -> bool:
         """Return True when the current provider is Kimi / Moonshot thinking mode.
@@ -8144,6 +8257,7 @@ class AIAgent:
         function_result: str,
         *,
         failed: bool,
+        tool_call_id: str = "",
     ) -> str:
         decision = self._tool_guardrails.after_call(
             tool_name,
@@ -8151,11 +8265,47 @@ class AIAgent:
             function_result,
             failed=failed,
         )
+        # Identical-call stall guards (agent.stall_guards): notice-only, no
+        # blocking. Observed on the RAW result (before the loop-warning suffix
+        # below, whose embedded count changes per call and would defeat
+        # result-identity matching). Applied here — at result construction,
+        # before the tool message is built — so it is cache-safe (tool results
+        # are append-only; nothing already sent to the provider is mutated).
+        stall_notice = None
+        result_stub = None
+        if self._stall_guards_enabled():
+            try:
+                observation = self._tool_guardrails.observe_call(
+                    tool_name,
+                    function_args,
+                    function_result if isinstance(function_result, str) else None,
+                    tool_call_id=tool_call_id,
+                    failed=failed,
+                )
+                stall_notice = observation.notice
+                result_stub = observation.stub
+            except Exception as exc:
+                logger.debug("stall-guard identical-call observation failed: %s", exc)
+        # Result-reference stubbing: a 2nd+ consecutive identical call whose
+        # FRESH result is byte-identical enters context as a short reference
+        # stub instead of the duplicate payload. The tool still executed —
+        # this is not a cache; a changed result flows through whole. Only
+        # plain-string results are stubbed (multimodal content lists pass
+        # through untouched), and the current message keeps its role and
+        # tool_call_id — only the content is replaced.
+        if result_stub and isinstance(function_result, str):
+            function_result = result_stub
         if decision.action in {"warn", "halt"}:
             function_result = append_toolguard_guidance(function_result, decision)
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
+        if stall_notice:
+            function_result = (function_result or "") + "\n\n" + stall_notice
         return function_result
+
+    def _stall_guards_enabled(self) -> bool:
+        """Config gate for the runtime anti-stall guards (agent.stall_guards)."""
+        return bool(getattr(self, "_stall_guards", True))
 
     def _guardrail_block_result(self, decision: ToolGuardrailDecision) -> str:
         self._set_tool_guardrail_halt(decision)
@@ -8344,6 +8494,15 @@ class AIAgent:
         moa_config: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
+        # A review deliberately shares this agent's session_id for prompt-cache
+        # parity. Fence review startup or interrupt an admitted request, then
+        # await that request's exit before opening any live-turn Relay or task
+        # instrumentation for the same session. Foreground priority is retained
+        # if the review does not acknowledge within the bounded deadline (#84423).
+        from agent.background_review import cancel_background_review_for_live_turn
+
+        cancel_background_review_for_live_turn(self)
+
         from agent.aux_accounting import (
             reset_accounting_context,
             set_accounting_context,

@@ -107,6 +107,64 @@ logger = logging.getLogger(__name__)
 _INTERRUPT_SCAFFOLD_MARKER = "[This response was interrupted by a user correction.]"
 
 
+# One-time wrap-up notice appended when a wall-clock run budget crosses its
+# 80% threshold (agent.run_budget_seconds / --run-budget). Mirrors the Codex
+# CLI budget wrap-up template: stop new work, deliver from current state.
+RUN_BUDGET_WRAPUP_NOTICE = (
+    "[SYSTEM NOTICE — run time budget nearly exhausted] "
+    "Run time budget nearly exhausted. Stop new discovery/verification work "
+    "now. Produce the required final deliverable (answer/JSON/summary) from "
+    "the state you already have, completing only mandatory writes."
+)
+
+
+def _maybe_inject_run_budget_wrapup(agent: Any, messages: List[Dict[str, Any]]) -> bool:
+    """Inject the one-time wall-clock wrap-up notice when past 80% of budget.
+
+    Cache-safe delivery: the notice is appended to the NEWEST ``role:"tool"``
+    message (the same channel /steer uses) — no synthetic user message is
+    inserted mid-loop and no past context is rewritten, so role alternation
+    and the prompt-cache prefix survive.  Latches ``_run_budget_wrapup_injected``
+    only on a successful append, so a first iteration without tool results
+    retries on the next iteration.  Returns True when the notice was injected.
+
+    Dormant unless ``agent.run_budget_seconds`` is set AND the turn stamped
+    ``_run_budget_started_at`` (see ``turn_context.prepare_conversation_turn``).
+    """
+    budget = getattr(agent, "run_budget_seconds", None)
+    if not budget:
+        return False
+    if getattr(agent, "_run_budget_wrapup_injected", False):
+        return False
+    started = getattr(agent, "_run_budget_started_at", None)
+    if not started:
+        return False
+    if (time.time() - started) < 0.8 * float(budget):
+        return False
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, dict) and msg.get("role") == "tool":
+            existing = msg.get("content", "")
+            if isinstance(existing, str):
+                msg["content"] = existing + f"\n\n{RUN_BUDGET_WRAPUP_NOTICE}"
+            else:
+                # Multimodal content blocks — append a text block.
+                try:
+                    blocks = list(existing) if existing else []
+                    blocks.append({"type": "text", "text": RUN_BUDGET_WRAPUP_NOTICE})
+                    msg["content"] = blocks
+                except Exception:
+                    return False
+            agent._run_budget_wrapup_injected = True
+            logger.info(
+                "Run budget wrap-up notice injected (budget=%.0fs, elapsed=%.0fs)",
+                float(budget),
+                time.time() - started,
+            )
+            return True
+    return False
+
+
 def _restore_user_after_reference_handoff(
     messages: List[Dict[str, Any]], user_message: Any
 ) -> bool:
@@ -331,6 +389,19 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
         }
         if not visible:
             placeholder["display_kind"] = "hidden"
+            # Keep the transcript hidden and empty, but give the historical
+            # API projection a non-empty neutral assistant turn so the
+            # pre-call sanitizer (repair_empty_non_final_messages) does not
+            # re-heal this row on every later call (#88955). display_kind is
+            # stripped before sanitization, while api_content is projected
+            # back into content for historical assistant rows. Use the
+            # canonical neutral interruption placeholder, never
+            # _INTERRUPT_SCAFFOLD_MARKER: replaying the scaffold as assistant
+            # text made the model echo it and self-replicate ghost rows
+            # (#81841).
+            from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+
+            placeholder["api_content"] = _INTERRUPTED_PLACEHOLDER
         append_message(messages, placeholder)
         append_message(
             messages,
@@ -684,6 +755,10 @@ def _billing_failure_result(
         "failed": True,
         "error": summary,
         "failure_reason": classified.reason.value,
+        # The classifier's own retry verdict — carried so UI surfaces
+        # (agent/error_surface.py) show Retry only when a re-run can differ,
+        # instead of re-deriving retryability from a second taxonomy.
+        "failure_retryable": bool(classified.retryable),
         # The billing verdict may rest on an ambiguous body (#82154) — carry
         # that through the structured result, not just the prose.
         "billing_unverified": unverified,
@@ -1749,31 +1824,6 @@ def run_conversation(
     agent._last_compression_attempt_recorded = False
     agent._last_compression_attempt_in_place = None
 
-    # If a background memory/skill review spawned at the end of a PRIOR turn
-    # (agent/background_review.py) is still running its own run_conversation()
-    # when THIS turn starts, cancel it now rather than letting both make
-    # outbound API calls concurrently against the same session_id/credentials.
-    # That concurrency can produce doubled prompt-token accounting on this
-    # turn's own calls and, because the review fork is a fully separate
-    # AIAgent with no route back to THIS agent's interrupt() by default, a
-    # lockup that survives a normal /stop and needs a hard Ctrl+C.
-    # ``review_agent.interrupt()`` is fire-and-forget here — it just flags
-    # cancellation and aborts the review's in-flight socket; it does not
-    # block waiting for the review's daemon thread to exit, so it can't add
-    # latency to this turn. Only ever set on the real owning agent (the
-    # review fork's own copy of this attribute stays None — reviews don't
-    # spawn nested reviews), so this is a no-op on every other run_conversation
-    # caller (subagents, the review fork itself, etc).
-    _pending_review = getattr(agent, "_background_review_agent", None)
-    if _pending_review is not None:
-        try:
-            _pending_review.interrupt("superseded by a new live turn")
-        except Exception:
-            logger.debug(
-                "Failed to cancel in-flight background review for a new turn",
-                exc_info=True,
-            )
-
     # Adopt any ~/.hermes/.env credential/base-url edits made since the last
     # turn — a Settings save updates .env but not this worker's client, which
     # was built at agent init (#67821). No-op when .env is unchanged.
@@ -2028,6 +2078,15 @@ def run_conversation(
                     existing = getattr(agent, "_pending_steer", None)
                     agent._pending_steer = (existing + "\n" + _pre_api_steer) if existing else _pre_api_steer
 
+        # ── Wall-clock run-budget wrap-up notice ───────────────────────
+        # One-shot: when a run budget (agent.run_budget_seconds /
+        # --run-budget) is active and 80% of it has elapsed, ask the model
+        # to wrap up and deliver from the state it already has. Same
+        # cache-safe channel as /steer (appended to the newest tool
+        # result); dormant when no budget is set.
+        if getattr(agent, "run_budget_seconds", None):
+            _maybe_inject_run_budget_wrapup(agent, messages)
+
         # Prepare messages for API call
         # If we have an ephemeral system prompt, prepend it to the messages
         # Note: Reasoning is embedded in content via <think> tags for trajectory storage.
@@ -2123,8 +2182,28 @@ def run_conversation(
             # from every outgoing copy so strict OpenAI-compatible backends
             # don't reject the request after a model switch or resumed typed
             # event row enters the live history.
-            api_msg.pop("display_kind", None)
+            _display_kind = api_msg.pop("display_kind", None)
             api_msg.pop("display_metadata", None)
+
+            # Legacy hidden redirect placeholders (#88955): rows persisted
+            # BEFORE the writer-side api_content stamp in
+            # _apply_active_turn_redirect are content="" with no sidecar.
+            # Once display_kind is stripped the pre-call sanitizer
+            # (repair_empty_non_final_messages) would re-heal such a row on
+            # every call forever, since the durable transcript is never
+            # mutated. Give the wire copy the same neutral payload here so
+            # old sessions converge too. Never the interrupt scaffold —
+            # replaying scaffold bytes as assistant text is #81841.
+            if (
+                _display_kind == "hidden"
+                and api_msg.get("role") == "assistant"
+                and not _api_content
+                and not (api_msg.get("content") or "").strip()
+                and not api_msg.get("tool_calls")
+            ):
+                from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+
+                api_msg["content"] = _INTERRUPTED_PLACEHOLDER
 
             # Durable row identity stamped by _rows_to_conversation so the
             # desktop can address a specific persisted message (reactions).
@@ -2665,7 +2744,34 @@ def run_conversation(
                     request_pressure_tokens,
                     int(getattr(_compressor, "threshold_tokens", 0) or 0),
                 )
-        
+        elif not agent.compression_enabled and len(messages) > 1:
+            # Uncompressed session guard (#89297): compression is disabled, so
+            # nothing shrinks a growing session. Reuse the unconditionally
+            # computed request estimate (zero marginal cost — this site runs
+            # before every provider request, covering turn-start AND mid-turn
+            # tool-result growth) and surface a deduped, actionable warning
+            # when the request exceeds the model context window. The dedup is
+            # re-armed by the turn-context preflight once the session is back
+            # under the window (manual /compress works with compression
+            # disabled), so the guard warns again on a later re-overflow.
+            # context_compressor always exists (agent_init constructs it even
+            # when compression is disabled) and its context_length property
+            # hard-floors at a positive default — no metadata re-resolution
+            # needed here.
+            _ctx_len = getattr(
+                getattr(agent, "context_compressor", None), "context_length", None
+            )
+            if (
+                isinstance(_ctx_len, int)
+                and _ctx_len > 0
+                and request_pressure_tokens > _ctx_len
+            ):
+                _warn_fn = getattr(
+                    agent, "_warn_uncompressed_context_overflow", None
+                )
+                if callable(_warn_fn):
+                    _warn_fn(request_pressure_tokens, _ctx_len)
+
         # Thinking spinner for quiet mode (animated during API call)
         thinking_spinner = None
         
@@ -5204,6 +5310,21 @@ def run_conversation(
                     FailoverReason.billing,
                     FailoverReason.upstream_rate_limit,
                 }
+                # Relay-wrapped output-cap errors: some gateways wrap an
+                # upstream "[400]: max_tokens (...) exceeds model's maximum
+                # output tokens (...)" as HTTP 429, which classifies as
+                # rate_limit. The failure is a deterministic request-shape
+                # problem — falling back to another provider (or burning
+                # generic retries) can't fix it, but the output-cap clamp
+                # below can, in one retry (#72281). Parse once here; the
+                # result gates both the eager-fallback exemption and the
+                # widened is_context_length_error entry, and is reused as
+                # available_out inside the handler.
+                _wrapped_output_cap_budget = (
+                    parse_available_output_tokens_from_error(error_msg)
+                    if classified.reason == FailoverReason.rate_limit
+                    else None
+                )
                 _is_transport_failure = classified.reason in {
                     FailoverReason.timeout,
                     FailoverReason.overloaded,
@@ -5221,7 +5342,7 @@ def run_conversation(
                 if _is_zai_coding_overload:
                     max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
                 _should_fallback = (
-                    is_rate_limited
+                    (is_rate_limited and _wrapped_output_cap_budget is None)
                     or (_is_transport_failure and retry_count >= 2)
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
@@ -5514,6 +5635,11 @@ def run_conversation(
                 # server disconnect + large session pattern (#2153).
                 is_context_length_error = (
                     classified.reason == FailoverReason.context_overflow
+                    # Relay-wrapped output-cap 429s (parsed once above, where
+                    # the eager-fallback exemption is gated) route into the
+                    # output-cap clamp below instead of provider failover or
+                    # generic retries (#72281).
+                    or _wrapped_output_cap_budget is not None
                 )
 
                 if is_context_length_error:
@@ -6317,6 +6443,9 @@ def run_conversation(
                         # different exit code. ``rate_limit`` / ``billing`` here
                         # mean "quota wall, not a task error".
                         "failure_reason": classified.reason.value,
+                        # The classifier's own retry verdict — UI surfaces use
+                        # this instead of re-deriving from the reason string.
+                        "failure_retryable": bool(classified.retryable),
                         # True when the billing verdict rests on an ambiguous
                         # body (#82154) — may be a content-filter rejection.
                         "billing_unverified": _billing_unverified,
@@ -7831,10 +7960,28 @@ def run_conversation(
 
                 from agent.agent_runtime_helpers import (
                     intent_ack_continuation_mode,
+                    trailing_continue_intent,
                 )
 
                 _ack_mode = intent_ack_continuation_mode(agent)
-                if (
+                # Said-continue-but-stopped guard (agent.stall_guards): the
+                # model ended the turn with no tool calls but its short reply
+                # TAILS with an announced next action ("Let me now…",
+                # "I will now…"). Unlike the intent-ack detector below, this
+                # fires mid-task too (after tool results), which is exactly
+                # where eval traces show the stall. It reuses the SAME bounded
+                # continuation path and counter (max 2 per turn), so the
+                # alternation-safe interim-assistant + user-nudge mechanism —
+                # not a new parallel one — carries the recovery.
+                _stall_continue_intent = (
+                    bool(getattr(agent, "_stall_guards", True))
+                    and agent.valid_tool_names
+                    and codex_ack_continuations < 2
+                    and trailing_continue_intent(
+                        agent._strip_think_blocks(final_response or "")
+                    )
+                )
+                if _stall_continue_intent or (
                     _ack_mode != "off"
                     and agent.valid_tool_names
                     and codex_ack_continuations < 2
@@ -7845,6 +7992,12 @@ def run_conversation(
                         require_workspace=(_ack_mode == "codex_only"),
                     )
                 ):
+                    if _stall_continue_intent:
+                        logger.info(
+                            "Stall guard: turn ending on trailing continue-"
+                            "intent with no tool calls — re-prompting to act "
+                            "(%d/2)", codex_ack_continuations + 1,
+                        )
                     codex_ack_continuations += 1
                     interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
                     append_message(messages, interim_msg)

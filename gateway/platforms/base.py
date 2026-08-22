@@ -3082,6 +3082,14 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
+        # Owning profile for a multiplexed secondary adapter, installed by
+        # ``GatewayRunner._configure_profile_adapter``. Adapter-level session
+        # keys must carry the profile namespace, but ``source.profile`` is only
+        # stamped later by the runner's profile message handler — so at adapter
+        # ingress every bot in a multiplexed gateway would otherwise derive the
+        # same ``agent:main:`` key (see ``_session_key_profile``). ``None`` on a
+        # primary/single-profile adapter, which keeps the legacy namespace.
+        self._owner_profile: Optional[str] = None
         # Optional authorization check, registered by GatewayRunner. Used by
         # adapters that fetch external context (e.g. Slack thread history) to
         # mark senders not on the allowlist as unverified in LLM context,
@@ -3216,6 +3224,7 @@ class BasePlatformAdapter(ABC):
         self,
         chat_type: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        chat_id: Optional[str] = None,
     ) -> bool:
         """Whether this adapter supports native streaming-draft updates.
 
@@ -3224,6 +3233,10 @@ class BasePlatformAdapter(ABC):
         same ``draft_id`` and growing text.  Adapters that implement
         ``send_draft`` should return True here for the chat types where the
         platform supports it (Telegram restricts drafts to private DMs).
+
+        ``chat_id`` lets multi-platform adapters (relay) resolve the answer
+        through the chat's own negotiated capability profile instead of the
+        primary identity's; single-platform adapters may ignore it.
 
         Default implementation returns False.  Stream consumers fall back to
         the edit-based path (``send`` + ``edit_message``) when this returns
@@ -3746,6 +3759,57 @@ class BasePlatformAdapter(ABC):
         thread replies without explicit mentions).
         """
         self._session_store = session_store
+
+    def set_owner_profile(self, profile_name: Optional[str]) -> None:
+        """Declare which multiplex profile owns this adapter.
+
+        Installed by ``GatewayRunner._configure_profile_adapter`` for secondary
+        profiles. Read by :meth:`_session_key_profile` so adapter-level keys
+        land in this profile's namespace instead of the shared ``agent:main:``.
+        """
+        name = (profile_name or "").strip() or None
+        self._owner_profile = None if name == "default" else name
+
+    def _session_key_profile(self, source: Optional[Any] = None) -> Optional[str]:
+        """Resolve the profile namespace for an adapter-derived session key.
+
+        Adapter ingress runs BEFORE the runner stamps ``source.profile``
+        (``_make_profile_message_handler``), so the session store's resolver
+        falls back to the *active* profile and every bot in a multiplexed
+        gateway derives the same ``agent:main:`` key. Batching dicts,
+        ``_active_sessions`` and the busy-session guard are keyed on that
+        string, so two profiles sharing a chat id — which is EVERY Telegram DM,
+        where ``chat.id`` is the user's own id — collide on one lane.
+
+        Resolution order:
+          1. ``source.profile`` when already stamped (relay/connector ingress).
+          2. ``self._owner_profile`` — this adapter's own credential owner.
+          3. The session store's resolver (active profile / no-multiplex None).
+
+        ``getattr`` throughout: adapters are routinely constructed without
+        ``BasePlatformAdapter.__init__`` (``object.__new__`` in tests, subclasses
+        that build their own state), so no attribute here may be assumed to
+        exist — see the ``object.__new__`` pitfall in AGENTS.md. Every candidate
+        is also type-checked: a duck-typed/mock session store returns a truthy
+        non-string from ``_resolve_profile_for_key``, which would otherwise be
+        interpolated straight into the key as ``agent:<MagicMock ...>:``.
+        """
+        for candidate in (
+            getattr(source, "profile", None) if source is not None else None,
+            getattr(self, "_owner_profile", None),
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate
+        store = getattr(self, "_session_store", None)
+        resolver = getattr(store, "_resolve_profile_for_key", None) if store else None
+        if callable(resolver):
+            try:
+                resolved = resolver(source)
+            except Exception:
+                return None
+            if isinstance(resolved, str) and resolved.strip():
+                return resolved
+        return None
     
     def _history_media_paths_for_session(self, session_key: str) -> Optional[set]:
         """Return media paths already delivered in prior turns of this session.
@@ -6003,12 +6067,11 @@ class BasePlatformAdapter(ABC):
         if needs_topic_recovery:
             await asyncio.to_thread(self._apply_topic_recovery, event)
 
-        _sk_store = getattr(self, "_session_store", None)
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=_sk_store._resolve_profile_for_key(event.source) if _sk_store else None,
+            profile=self._session_key_profile(event.source),
         )
         expected_session_key = str(
             (event.metadata or {}).get("gateway_session_key") or ""

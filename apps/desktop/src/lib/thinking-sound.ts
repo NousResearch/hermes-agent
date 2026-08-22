@@ -11,39 +11,12 @@
 // stopThinkingSound() — callers fire it the moment TTS starts, the mic re-arms,
 // or the conversation ends.
 
+import { getAudioContext } from '@/lib/audio-context'
 import { $hapticsMuted } from '@/store/haptics'
 import { $thinkingSoundEnabled } from '@/store/voice-prefs'
 
-let ctx: AudioContext | null = null
 let timer: number | null = null
 let blipIndex = 0
-
-function getCtx(): AudioContext | null {
-  if (typeof window === 'undefined') {
-    return null
-  }
-
-  try {
-    if (!ctx) {
-      const Ctor =
-        window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
-
-      if (!Ctor) {
-        return null
-      }
-
-      ctx = new Ctor()
-    }
-
-    if (ctx.state === 'suspended') {
-      void ctx.resume().catch(() => undefined)
-    }
-
-    return ctx
-  } catch {
-    return null
-  }
-}
 
 // One soft "blub": short sine with a gentle downward pitch glide and a smooth
 // attack into an exponential decay — no clicks, deliberately quiet.
@@ -79,7 +52,7 @@ export function startThinkingSound(): void {
 
   const tick = () => {
     if ($hapticsMuted.get() === false) {
-      const ac = getCtx()
+      const ac = getAudioContext()
 
       if (ac) {
         try {

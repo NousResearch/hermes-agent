@@ -70,7 +70,9 @@ function validateSshTarget(host, user, port) {
   }
 
   if (host.includes(',')) {
-    throw new Error(`Invalid SSH host "${host}": commas are not valid in a hostname or IP (use dots, e.g. 192.168.1.10).`)
+    throw new Error(
+      `Invalid SSH host "${host}": commas are not valid in a hostname or IP (use dots, e.g. 192.168.1.10).`
+    )
   }
 
   if (host.includes(':')) {
@@ -986,7 +988,19 @@ function createSshProbeConnection(config, options: any = {}) {
   return new SshConnection(config, { ...options, mux: false })
 }
 
+// Bootstrap loops poll a remote for readiness; a newer attempt aborts the
+// signal so the stale one stops polling and unwinds. `superseded` tells the
+// caller this was replaced, not that it failed.
+function assertBootstrapNotSuperseded(signal) {
+  if (signal?.aborted) {
+    const error: any = new Error('SSH bootstrap was cancelled.')
+    error.kind = 'superseded'
+    throw error
+  }
+}
+
 export {
+  assertBootstrapNotSuperseded,
   baseSshOptions,
   buildControlArgs,
   buildExecArgs,

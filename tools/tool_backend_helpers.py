@@ -290,6 +290,126 @@ def prefers_gateway(config_section: str) -> bool:
     return False
 
 
+# The provider value the managed "Nous Subscription" picker rows write for
+# every category (image_gen.provider: nous, web.backend: nous,
+# browser.cloud_provider: nous, ...). Runtime dispatch is a plain switch on
+# the stored string: "nous" → managed gateway client; any vendor name → that
+# vendor direct with the user's own credentials; no key ever written →
+# legacy credential autodetect.
+NOUS_MANAGED_PROVIDER = "nous"
+
+# Per-capability keys that also count as "this category has been configured".
+_EXTRA_SELECTION_KEYS = {
+    "web": ("search_backend", "extract_backend"),
+}
+
+# Which key(s) carry the category's provider selection. ``browser.backend``
+# is deliberately excluded for the browser section — it is the DRIVER choice
+# ("browser-use" CLI vs built-in tools), not the cloud provider selection.
+_SELECTION_NAME_KEYS = {
+    "browser": ("cloud_provider",),
+    "web": ("backend",),
+}
+_DEFAULT_NAME_KEYS = ("provider", "backend", "cloud_provider")
+
+
+def read_selection(section: str) -> str | None:
+    """Return the stored `hermes tools` provider string for a config section.
+
+    THE single runtime read of the persisted selection. Returns:
+    - ``"nous"`` — the managed Nous Tool Gateway row was selected,
+    - a vendor name (``"fal"``, ``"openai"``, ``"firecrawl"``, ...) — that
+      vendor, direct, with the user's own credentials,
+    - ``None`` — the category has NEVER been configured; the legacy
+      credential autodetect ladder is permitted (and must not be persisted).
+
+    Reads the RAW config.yaml (not the DEFAULT_CONFIG-merged view) so key
+    presence means "a selection was actually written", not "the schema has a
+    default". Never raises; an unreadable config reports ``None``.
+
+    Legacy interpretation (read-time only — nothing is migrated on disk):
+    older picker versions wrote ``<section>.use_gateway`` beside the name
+    key. ``use_gateway: true`` was only ever written by the managed "Nous
+    Subscription" row, so it maps to ``"nous"`` regardless of the name key;
+    ``use_gateway: false`` beside a name key maps to that name.
+    """
+    try:
+        from hermes_cli.config import read_raw_config_readonly
+
+        cfg = read_raw_config_readonly() or {}
+        raw = cfg.get(section) if isinstance(cfg, dict) else None
+    except Exception:
+        raw = None
+    if not isinstance(raw, dict):
+        return None
+
+    def _str_or_none(key: str) -> str | None:
+        value = raw.get(key)
+        if value is None:
+            return None
+        text = str(value).strip().lower()
+        return text or None
+
+    name = None
+    for key in _SELECTION_NAME_KEYS.get(section, _DEFAULT_NAME_KEYS):
+        name = _str_or_none(key)
+        if name:
+            break
+
+    # Legacy shim: a truthy use_gateway means the managed row was picked
+    # (it was the only writer of use_gateway: true).
+    if "use_gateway" in raw and is_truthy_value(raw.get("use_gateway"), default=False):
+        return NOUS_MANAGED_PROVIDER
+
+    # NOTE on the legacy DEFAULT_CONFIG ``stt.provider: local`` seed: it never
+    # reached the raw config.yaml (``save_config`` strips schema defaults),
+    # and the old picker's Local Whisper row always wrote ``use_gateway:
+    # False`` beside it. A raw ``local`` here therefore IS a user selection —
+    # hand-written or picker-written — and is honored like any other vendor
+    # name. The seeded-value ambiguity only exists in DEFAULT_CONFIG-merged
+    # views, which this function never reads.
+
+    if name:
+        return name
+
+    # use_gateway: false with no name key is not a usable selection shape;
+    # per-capability web keys still count as configured elsewhere via
+    # selection_exists(). Fall to autodetect.
+    return None
+
+
+def selection_exists(section: str) -> bool:
+    """True when ANY selection signal has ever been written for the section.
+
+    Wider than ``read_selection() is not None``: per-capability web keys
+    (``search_backend``/``extract_backend``) mark the category as configured
+    even when the shared backend name is empty.
+    """
+    if read_selection(section) is not None:
+        return True
+    extra = _EXTRA_SELECTION_KEYS.get(section, ())
+    if not extra:
+        return False
+    try:
+        from hermes_cli.config import read_raw_config_readonly
+
+        cfg = read_raw_config_readonly() or {}
+        raw = cfg.get(section) if isinstance(cfg, dict) else None
+    except Exception:
+        return False
+    if not isinstance(raw, dict):
+        return False
+    return any(str(raw.get(key) or "").strip() for key in extra)
+
+
+def selection_error(section: str, selection_name: str, failure: str) -> str:
+    """The uniform honest-error contract for a selected-but-broken provider."""
+    return (
+        f"{section} is configured to use {selection_name} (set via hermes "
+        f"tools), but {failure}. Run 'hermes tools' to change it."
+    )
+
+
 def fal_key_is_configured() -> bool:
     """Return True when FAL_KEY is set to a non-whitespace value.
 

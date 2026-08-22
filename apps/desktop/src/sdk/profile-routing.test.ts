@@ -22,10 +22,17 @@ vi.mock('@/store/session', async () => {
 
   return {
     $activeSessionId: atom(null),
+    $connection: atom(null),
     $currentCwd: atom(''),
     $currentModel: atom(''),
     $gatewayState: atom('open'),
-    $selectedStoredSessionId: atom(null)
+    $messages: atom([]),
+    $selectedStoredSessionId: atom(null),
+    $sessions: atom([]),
+    rememberedSessionProfile: (_sessions: unknown, _sessionId: null | string, activeProfile: null | string) =>
+      (activeProfile ?? '').trim() || 'default',
+    requestSessionResume: vi.fn(),
+    setResumeExhaustedSessionId: vi.fn()
   }
 })
 vi.mock('@/store/session-states', async () => {
@@ -55,6 +62,7 @@ vi.mock('@/store/profile', async () => {
 
   return {
     $activeGatewayProfile: atom('remote-worker'),
+    $gatewaySwapTarget: atom(null),
     $profiles: profiles,
     ensureGatewayAgent: vi.fn(),
     ensureGatewayProfile: vi.fn(),
@@ -86,13 +94,33 @@ vi.mock('@/store/gateway', async () => {
       method,
       params,
       profile
-    }))
+    })),
+    retireLocalProfileGateways: vi.fn()
   }
 })
 
 const { host } = await import('./index')
-const { requestGatewayForAgent, requestGatewayForProfile } = await import('@/store/gateway')
-const { $profiles, refreshProfiles } = await import('@/store/profile')
+const { openSession: openSessionCore } = await import('@/app/open-session')
+const { deleteProfile } = await import('@/hermes')
+
+const { openGatewayForProfile, requestGatewayForAgent, requestGatewayForProfile, retireLocalProfileGateways } =
+  await import('@/store/gateway')
+
+const {
+  $activeGatewayProfile,
+  $gatewaySwapTarget,
+  $profiles,
+  ensureGatewayProfile,
+  refreshProfiles,
+  setShowAllProfiles
+} = await import('@/store/profile')
+
+const { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId } = await import('@/store/session-states')
+
+const { $activeSessionId, $messages, $selectedStoredSessionId, requestSessionResume, setResumeExhaustedSessionId } =
+  await import('@/store/session')
+
+const setMockAtom = <T>(store: unknown, value: T) => (store as { set(next: T): void }).set(value)
 
 const profile = (name: string): ProfileInfo => ({
   has_env: false,
@@ -106,11 +134,40 @@ const profile = (name: string): ProfileInfo => ({
 
 afterEach(() => {
   vi.clearAllMocks()
+  $activeGatewayProfile.set('remote-worker')
+  $gatewaySwapTarget.set(null)
+  setMockAtom($focusedRuntimeId, null)
+  setMockAtom($focusedStoredSessionId, null)
+  setMockAtom($focusedSessionState, null)
+  setMockAtom($activeSessionId, null)
+  setMockAtom($selectedStoredSessionId, null)
+  setMockAtom($messages, [])
   $profiles.set([profile('cached-only')])
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
 
 describe('connection-aware plugin host APIs', () => {
+  it('retires a profile gateway before deleting it', async () => {
+    const order: string[] = []
+
+    vi.mocked(retireLocalProfileGateways).mockImplementationOnce(() => {
+      order.push('retire')
+    })
+    vi.mocked(deleteProfile).mockImplementationOnce(async () => {
+      order.push('delete')
+
+      return { ok: true, path: '/profiles/worker' }
+    })
+
+    await host.deleteProfile('worker')
+
+    expect(order).toEqual(['retire', 'delete'])
+    expect(retireLocalProfileGateways).toHaveBeenCalledWith('worker')
+    // The rail paints from $profiles; skipping the refresh leaves a stale
+    // badge whose click hot-loops against the deletion guard (#88769).
+    expect(refreshProfiles).toHaveBeenCalled()
+  })
+
   it('refreshes the profile inventory before asking Electron for routes', async () => {
     const getProfileRoutes = vi.fn(async () => [
       { connectionId: 'connection-local', mode: 'local', profile: 'desktop-primary', targetProfile: 'desktop-primary' },
@@ -236,5 +293,505 @@ describe('connection-aware plugin host APIs', () => {
 
     await expect(host.requestProfile('research', 'profiles.list')).rejects.toThrow(/route descriptor/i)
     expect(requestGatewayForProfile).not.toHaveBeenCalled()
+  })
+})
+
+describe('profile-aware plugin session opens', () => {
+  it('waits until the target Bot Chat runtime and history are on main before resolving', async () => {
+    vi.mocked(openGatewayForProfile).mockImplementationOnce(async () => undefined)
+
+    let resolved = false
+
+    const opening = host
+      .openSession('bot-chat', {
+        profile: 'hyoseob',
+        awaitHydration: true,
+        expectHistory: true,
+        hydrationTimeoutMs: 1_000
+      })
+      .then(() => {
+        resolved = true
+      })
+
+    // Flush a macrotask rather than counting microtask ticks: the profile
+    // activation is now a bounded race, so the number of awaits between the
+    // call and the core open is an implementation detail, and `resolved`
+    // staying false through a full turn of the event loop is the stronger
+    // assertion anyway.
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(openSessionCore).toHaveBeenCalledWith('bot-chat', expect.any(Function), 'in-place')
+    expect(resolved).toBe(false)
+    expect($gatewaySwapTarget.get()).toBe('hyoseob')
+
+    setMockAtom($focusedStoredSessionId, 'bot-chat')
+    setMockAtom($focusedRuntimeId, 'runtime-tile')
+    setMockAtom($focusedSessionState, {
+      messages: [{ id: 'tile-history', parts: [], role: 'assistant' }],
+      storedSessionId: 'bot-chat'
+    } as never)
+
+    await Promise.resolve()
+    expect(resolved).toBe(false)
+
+    setMockAtom($selectedStoredSessionId, 'bot-chat')
+    setMockAtom($activeSessionId, 'runtime-hyoseob')
+    setMockAtom($messages, [])
+
+    await Promise.resolve()
+    expect(resolved).toBe(false)
+
+    setMockAtom($messages, [{ id: 'history-1', parts: [], role: 'user' }] as never)
+
+    await opening
+    expect(resolved).toBe(true)
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
+  it('requests an explicit resume on a cold open where selection has not settled (#89206)', async () => {
+    vi.mocked(openGatewayForProfile).mockImplementationOnce(async () => undefined)
+
+    // Cold-start shape from the field: the persisted route already points at
+    // the bot's stored session, but no selection, no runtime, no transcript.
+    setMockAtom($selectedStoredSessionId, null)
+    setMockAtom($activeSessionId, null)
+    setMockAtom($messages, [])
+
+    const opening = host.openSession('cold-bot-chat', {
+      profile: 'hyoseob',
+      awaitHydration: true,
+      expectHistory: true,
+      hydrationTimeoutMs: 1_000
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // The old pre-open "already selected" precondition skipped this request,
+    // stranding the pane blank until timeout. It must fire now.
+    expect(requestSessionResume).toHaveBeenCalledWith('cold-bot-chat')
+
+    setMockAtom($selectedStoredSessionId, 'cold-bot-chat')
+    setMockAtom($activeSessionId, 'runtime-cold')
+    setMockAtom($messages, [{ id: 'history-cold', parts: [], role: 'assistant' }] as never)
+
+    await opening
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
+  it('requests a fresh resume when the same main Bot Chat lost its transcript', async () => {
+    $activeGatewayProfile.set('hyoseob')
+    setMockAtom($selectedStoredSessionId, 'bot-chat')
+    setMockAtom($activeSessionId, 'runtime-stale')
+    setMockAtom($messages, [])
+
+    const opening = host.openSession('bot-chat', {
+      profile: 'hyoseob',
+      awaitHydration: true,
+      expectHistory: true,
+      hydrationTimeoutMs: 1_000
+    })
+
+    await Promise.resolve()
+    expect(requestSessionResume).toHaveBeenCalledWith('bot-chat')
+
+    setMockAtom($activeSessionId, 'runtime-refreshed')
+    setMockAtom($messages, [{ id: 'history-restored', parts: [], role: 'assistant' }] as never)
+
+    await opening
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
+  it('resolves a history-bearing wake on transcript paint without waiting for the runtime (paint-first)', async () => {
+    vi.mocked(openGatewayForProfile).mockImplementationOnce(async () => undefined)
+
+    setMockAtom($selectedStoredSessionId, null)
+    setMockAtom($activeSessionId, null)
+    setMockAtom($messages, [])
+
+    let resolved = false
+
+    const opening = host
+      .openSession('slow-runtime-chat', {
+        profile: 'hyoseob',
+        awaitHydration: true,
+        expectHistory: true,
+        hydrationTimeoutMs: 1_000
+      })
+      .then(() => {
+        resolved = true
+      })
+
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(resolved).toBe(false)
+
+    // The REST prefetch paints the persisted transcript while the runtime
+    // resume (agent build, MCP discovery, skill load) is still warming — the
+    // exact cold-boot shape where the runtime takes 30s+ on slow machines.
+    // The wake must complete on the paint; the runtime binds in background.
+    setMockAtom($selectedStoredSessionId, 'slow-runtime-chat')
+    setMockAtom($messages, [{ id: 'painted-history', parts: [], role: 'assistant' }] as never)
+
+    await opening
+    expect(resolved).toBe(true)
+    expect($activeSessionId.get()).toBeNull()
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
+  it('accepts an explicitly empty Bot Chat once its main runtime is bound', async () => {
+    $activeGatewayProfile.set('hyoseob')
+
+    const opening = host.openSession('empty-bot-chat', {
+      profile: 'hyoseob',
+      awaitHydration: true,
+      expectHistory: false,
+      hydrationTimeoutMs: 1_000
+    })
+
+    setMockAtom($selectedStoredSessionId, 'empty-bot-chat')
+    setMockAtom($activeSessionId, 'runtime-empty')
+    setMockAtom($messages, [])
+
+    await opening
+    expect($activeSessionId.get()).toBe('runtime-empty')
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
+  it('arms the core Retry surface when Bot Chat hydration times out', async () => {
+    $activeGatewayProfile.set('hyoseob')
+
+    await expect(
+      host.openSession('stranded-bot-chat', {
+        profile: 'hyoseob',
+        awaitHydration: true,
+        expectHistory: true,
+        hydrationTimeoutMs: 1
+      })
+    ).rejects.toThrow(/timed out loading/i)
+
+    expect(setResumeExhaustedSessionId).toHaveBeenCalledWith('stranded-bot-chat')
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
+  it('retries a Bot Chat hydration timeout once without ever arming the Retry surface (#89617)', async () => {
+    $activeGatewayProfile.set('hyoseob')
+
+    // First attempt: leave the surface unhealthy so the hydration wait below
+    // times out, exactly like a profile backend still waking up. Second
+    // attempt: the backend is warm now — hydrate immediately. Queued as two
+    // one-shots (not a standing mockImplementation) so this doesn't leak into
+    // later tests via the shared afterEach's vi.clearAllMocks(), which clears
+    // call history but not a standing implementation.
+    vi.mocked(openSessionCore)
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => {
+        setMockAtom($selectedStoredSessionId, 'waking-bot-chat')
+        setMockAtom($activeSessionId, 'runtime-waking')
+        setMockAtom($messages, [{ id: 'history-waking', parts: [], role: 'assistant' }] as never)
+      })
+
+    await host.openSession('waking-bot-chat', {
+      profile: 'hyoseob',
+      awaitHydration: true,
+      expectHistory: true,
+      hydrationTimeoutMs: 1,
+      retryHydrationTimeoutOnce: true
+    })
+
+    expect(openSessionCore).toHaveBeenCalledTimes(2)
+    // The overlay in apps/desktop/src/app/chat/index.tsx is gated purely on
+    // this atom equalling the routed session id — if it were ever set here,
+    // the user would land on "Couldn't load this session" even though the
+    // retry above succeeded underneath, since only a manual resumeSession()
+    // call clears it for the currently-routed session.
+    expect(setResumeExhaustedSessionId).not.toHaveBeenCalled()
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
+  it('still arms the Retry surface when a retried Bot Chat hydration times out twice', async () => {
+    $activeGatewayProfile.set('hyoseob')
+
+    await expect(
+      host.openSession('stranded-bot-chat', {
+        profile: 'hyoseob',
+        awaitHydration: true,
+        expectHistory: true,
+        hydrationTimeoutMs: 1,
+        retryHydrationTimeoutOnce: true
+      })
+    ).rejects.toThrow(/timed out loading/i)
+
+    expect(openSessionCore).toHaveBeenCalledTimes(2)
+    expect(setResumeExhaustedSessionId).toHaveBeenCalledWith('stranded-bot-chat')
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
+  it('lets the latest rapid bot selection win and cancels the older hydration wait', async () => {
+    vi.mocked(ensureGatewayProfile).mockImplementation(async (target: null | string | undefined) => {
+      $activeGatewayProfile.set(target || 'default')
+    })
+
+    const firstOutcome = host
+      .openSession('chat-a', {
+        profile: 'jimin',
+        awaitHydration: true,
+        expectHistory: true,
+        hydrationTimeoutMs: 1_000
+      })
+      .then(
+        () => 'resolved',
+        error => String(error)
+      )
+
+    await Promise.resolve()
+
+    const second = host.openSession('chat-b', {
+      profile: 'hyoseob',
+      awaitHydration: true,
+      expectHistory: true,
+      hydrationTimeoutMs: 1_000
+    })
+
+    setMockAtom($selectedStoredSessionId, 'chat-b')
+    setMockAtom($activeSessionId, 'runtime-b')
+    setMockAtom($messages, [{ id: 'history-b', parts: [], role: 'assistant' }] as never)
+
+    await second
+    expect(await firstOutcome).toMatch(/superseded/i)
+    expect($activeGatewayProfile.get()).toBe('remote-worker')
+    expect($selectedStoredSessionId.get()).toBe('chat-b')
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
+  it('keeps chrome API home on the previous profile when opening a Bot Chat', async () => {
+    $activeGatewayProfile.set('default')
+
+    await host.openSession('bot-chat', {
+      profile: 'worker',
+      keepAllProfilesScope: true
+    })
+
+    expect(ensureGatewayProfile).not.toHaveBeenCalled()
+    expect(openGatewayForProfile).toHaveBeenCalledWith('worker')
+    expect(setShowAllProfiles).toHaveBeenCalledWith(true)
+    expect($activeGatewayProfile.get()).toBe('default')
+  })
+
+  it('defaults keepAllProfilesScope to navigation instead of a workspace switch', async () => {
+    $activeGatewayProfile.set('default')
+
+    await host.openSession('bot-chat', { profile: 'worker' })
+
+    expect(ensureGatewayProfile).not.toHaveBeenCalled()
+    expect(openGatewayForProfile).toHaveBeenCalledWith('worker')
+    expect(setShowAllProfiles).toHaveBeenCalledWith(true)
+    expect($activeGatewayProfile.get()).toBe('default')
+  })
+
+  it('still switches workspace when keepAllProfilesScope is false', async () => {
+    $activeGatewayProfile.set('default')
+    vi.mocked(openGatewayForProfile).mockImplementationOnce(async () => undefined)
+
+    await host.openSession('stored-worker', {
+      profile: 'worker',
+      keepAllProfilesScope: false
+    })
+
+    expect(ensureGatewayProfile).toHaveBeenCalledWith('worker')
+    expect(openGatewayForProfile).not.toHaveBeenCalled()
+    expect(setShowAllProfiles).toHaveBeenCalledWith(false)
+    expect($activeGatewayProfile.get()).toBe('worker')
+  })
+
+  it('keeps the Sessions sidebar in all-profiles even when the bot is already live', async () => {
+    $activeGatewayProfile.set('hyoseob')
+    setMockAtom($selectedStoredSessionId, 'bot-chat')
+    setMockAtom($activeSessionId, 'runtime-live')
+    setMockAtom($messages, [{ id: 'history', parts: [], role: 'assistant' }] as never)
+
+    await host.openSession('bot-chat', {
+      profile: 'hyoseob',
+      awaitHydration: true,
+      expectHistory: true,
+      hydrationTimeoutMs: 1_000
+    })
+
+    expect(setShowAllProfiles).toHaveBeenCalledWith(true)
+  })
+
+  it('surfaces a wedged profile activation instead of waiting on it forever (#89556)', async () => {
+    // The dial the store is waiting on never settles - a backend that accepts
+    // the socket and then never completes the handshake. Before this was
+    // bounded, openSession's await sat here for the life of the window and the
+    // hydration timer, which is armed downstream, never got a chance to fire:
+    // the pane wedged with no error and no Retry rather than timing out.
+    vi.mocked(ensureGatewayProfile).mockImplementationOnce(() => new Promise<void>(() => undefined))
+
+    setMockAtom($selectedStoredSessionId, 'wedged-chat')
+    setMockAtom($activeSessionId, 'runtime-wedged')
+    setMockAtom($messages, [{ id: 'history-1', parts: [], role: 'user' }] as never)
+
+    await expect(
+      host.openSession('wedged-chat', {
+        profile: 'medicina',
+        intent: 'main',
+        awaitHydration: true,
+        expectHistory: true,
+        keepAllProfilesScope: false,
+        hydrationTimeoutMs: 60
+      })
+    ).rejects.toThrow("Timed out loading medicina's session history.")
+
+    // The stranded-session surface is the point: a bounded failure the user can
+    // retry, not a frozen pane.
+    expect(setResumeExhaustedSessionId).toHaveBeenCalledWith('wedged-chat')
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
+  it('names the phase in the wake log so a stuck dial is not read as a slow transcript', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    vi.mocked(ensureGatewayProfile).mockImplementationOnce(() => new Promise<void>(() => undefined))
+
+    await expect(
+      host.openSession('wedged-chat', {
+        profile: 'medicina',
+        intent: 'main',
+        awaitHydration: true,
+        expectHistory: true,
+        keepAllProfilesScope: false,
+        hydrationTimeoutMs: 60
+      })
+    ).rejects.toThrow('Timed out loading ')
+
+    expect(warn).toHaveBeenCalledWith(
+      '[bot-wake] hydration timed out',
+      expect.objectContaining({ phase: 'activation' })
+    )
+
+    const payload = warn.mock.calls.at(-1)?.[1] as { hydrationWaitMs: number; profileActivationMs: number }
+
+    // The whole budget went to activation. Reporting it as hydration wait time
+    // would send a support bundle reader looking at transcript size.
+    expect(payload.profileActivationMs).toBeGreaterThan(0)
+    expect(payload.hydrationWaitMs).toBe(0)
+
+    warn.mockRestore()
+  })
+
+  it('gives hydration its own full budget after a slow but successful activation', async () => {
+    // Guards the choice of a SEPARATE budget per phase over one shared clock.
+    // A cold profile backend can legitimately spend most of the budget getting
+    // its socket up; if hydration then inherited what was left, this wake would
+    // fail even though the transcript painted well inside the documented
+    // 20s-equivalent window.
+    vi.mocked(ensureGatewayProfile).mockImplementationOnce(
+      async (target: null | string | undefined) =>
+        new Promise<void>(resolve => {
+          setTimeout(() => {
+            $activeGatewayProfile.set(target || 'default')
+            resolve()
+          }, 150)
+        })
+    )
+
+    const opening = host.openSession('slow-dial-chat', {
+      profile: 'medicina',
+      intent: 'main',
+      awaitHydration: true,
+      expectHistory: true,
+      keepAllProfilesScope: false,
+      hydrationTimeoutMs: 200
+    })
+
+    // 300ms total is past a single shared 200ms budget and inside hydration's
+    // own one, which only starts once the profile is actually active.
+    await new Promise(resolve => setTimeout(resolve, 300))
+    setMockAtom($selectedStoredSessionId, 'slow-dial-chat')
+    setMockAtom($activeSessionId, 'runtime-medicina')
+    setMockAtom($messages, [{ id: 'history-1', parts: [], role: 'user' }] as never)
+
+    await expect(opening).resolves.toBeUndefined()
+    expect(setResumeExhaustedSessionId).not.toHaveBeenCalled()
+  })
+
+  it('absorbs an activation that rejects after its budget has already expired', async () => {
+    // The abandoned race loser keeps running - there is no cancellation handle
+    // for an in-flight dial - so a late rejection must not escape as an
+    // unhandled promise rejection long after the caller gave up.
+    // Node's process-level hook, not window's: under jsdom a rejection that
+    // escapes lands on the runner's process, which is where vitest turns it
+    // into an "Unhandled Rejection" run failure.
+    const unhandled: unknown[] = []
+
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason)
+    }
+
+    const existing = process.listeners('unhandledRejection')
+
+    for (const listener of existing) {
+      process.off('unhandledRejection', listener)
+    }
+
+    process.on('unhandledRejection', onUnhandled)
+
+    vi.mocked(ensureGatewayProfile).mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          setTimeout(() => reject(new Error('dial failed after the caller gave up')), 120)
+        })
+    )
+
+    await expect(
+      host.openSession('late-failure-chat', {
+        profile: 'medicina',
+        intent: 'main',
+        awaitHydration: true,
+        expectHistory: true,
+        keepAllProfilesScope: false,
+        hydrationTimeoutMs: 40
+      })
+    ).rejects.toThrow('Timed out loading ')
+
+    await new Promise(resolve => setTimeout(resolve, 200))
+    process.off('unhandledRejection', onUnhandled)
+
+    for (const listener of existing) {
+      process.on('unhandledRejection', listener)
+    }
+
+    expect(unhandled).toEqual([])
+  })
+
+  it('leaves a plain open unbounded, because it has no budget and no Retry surface', async () => {
+    // Deliberate scope line, not an oversight: the activation deadline rides on
+    // the same contract as the hydration one. A caller that never passed
+    // awaitHydration gets exactly the behaviour it had before, since a
+    // rejection here would surface to code with nowhere to render it.
+    vi.mocked(ensureGatewayProfile).mockImplementationOnce(() => new Promise<void>(() => undefined))
+
+    let settled = 'pending'
+
+    void host
+      .openSession('plain-chat', {
+        profile: 'medicina',
+        intent: 'main',
+        keepAllProfilesScope: false,
+        hydrationTimeoutMs: 40
+      })
+      .then(
+        () => {
+          settled = 'resolved'
+        },
+        () => {
+          settled = 'rejected'
+        }
+      )
+
+    await new Promise(resolve => setTimeout(resolve, 200))
+
+    expect(settled).toBe('pending')
+    expect(setResumeExhaustedSessionId).not.toHaveBeenCalled()
   })
 })

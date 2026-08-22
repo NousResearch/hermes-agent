@@ -9,16 +9,18 @@ import { useBackgroundSync } from './use-background-sync'
 const noop = () => undefined
 const requestGateway = async () => ({ sessions: [] })
 
-function render(activeGatewayProfile: string, refreshSessions: () => Promise<void>) {
+function render(activeGatewayProfile: string, activeConnectionId: string, refreshSessions: () => Promise<void>) {
   return renderHook(
-    ({ profile }: { profile: string }) => {
+    ({ connectionId, profile }: { connectionId: string; profile: string }) => {
       useBackgroundSync({
+        activeConnectionId: connectionId,
         activeGatewayProfile: profile,
         activeIsMessaging: false,
         activeSessionId: null,
+        activeStoredSessionId: null,
         freshDraftReady: false,
         gatewayState: 'open',
-        refreshActiveMessagingTranscript: noop,
+        refreshActiveTranscript: noop,
         refreshCronJobs: noop,
         refreshCurrentModel: noop,
         refreshHermesConfig: noop,
@@ -27,7 +29,7 @@ function render(activeGatewayProfile: string, refreshSessions: () => Promise<voi
         requestGateway
       })
     },
-    { initialProps: { profile: activeGatewayProfile } }
+    { initialProps: { connectionId: activeConnectionId, profile: activeGatewayProfile } }
   )
 }
 
@@ -47,13 +49,26 @@ describe('useBackgroundSync profile-scoped session refresh', () => {
 
   it('refreshes the session list after the active gateway profile changes', async () => {
     const refreshSessions = vi.fn(async () => undefined)
-    const hook = render('default', refreshSessions)
+    const hook = render('default', 'local', refreshSessions)
 
     await act(async () => undefined)
     expect(refreshSessions).toHaveBeenCalledTimes(1)
     refreshSessions.mockClear()
 
-    hook.rerender({ profile: 'nova' })
+    hook.rerender({ connectionId: 'local', profile: 'nova' })
+
+    await act(async () => undefined)
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('refreshes the session list when the backend changes but the profile name does not', async () => {
+    const refreshSessions = vi.fn(async () => undefined)
+    const hook = render('default', 'work', refreshSessions)
+
+    await act(async () => undefined)
+    refreshSessions.mockClear()
+
+    hook.rerender({ connectionId: 'homelab', profile: 'default' })
 
     await act(async () => undefined)
     expect(refreshSessions).toHaveBeenCalledTimes(1)

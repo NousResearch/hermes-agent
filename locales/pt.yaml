@@ -142,7 +142,7 @@ gateway:
     no_goal_set:           "Nenhum objetivo definido."
     paused:                "⏸ Objetivo pausado: {goal}"
     no_resume:             "Nenhum objetivo para retomar."
-    resumed:               "▶ Objetivo retomado: {goal}\nEnvia qualquer mensagem para continuar, ou aguarda — darei o próximo passo no próximo turno."
+    resumed:               "▶ Objetivo retomado: {goal}\nContinuando agora — darei o próximo passo imediatamente."
     invalid:               "Objetivo inválido: {error}"
     set:                   "⊙ Objetivo definido (orçamento de {budget} turnos): {goal}\nVou continuar a trabalhar até o objetivo estar concluído, pausares/limpares ou o orçamento esgotar.\nControlos: /goal status · /goal pause · /goal resume · /goal clear"
 

@@ -131,10 +131,24 @@ class TestExplicitProviderRespected:
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
              patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.tool_backend_helpers.read_selection", return_value="local"), \
              patch("tools.transcription_tools._HAS_OPENAI", True):
             from tools.transcription_tools import _get_provider
             result = _get_provider({"provider": "local"})
             assert result == "none", f"Expected 'none' but got {result!r}"
+
+    def test_seeded_local_without_stored_selection_autodetects(self, monkeypatch):
+        """The DEFAULT_CONFIG-seeded stt.provider: local (no raw-config
+        selection) is treated as never-configured: autodetect runs instead of
+        hard-pinning to a missing local backend."""
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.transcription_tools._try_lazy_install_stt", return_value=False), \
+             patch("tools.tool_backend_helpers.read_selection", return_value=None), \
+             patch("tools.transcription_tools._HAS_OPENAI", True):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({"provider": "local"}) == "groq"
 
     def test_explicit_local_uses_local_command_fallback(self, monkeypatch):
         """Local-to-local_command fallback is fine — both are local."""

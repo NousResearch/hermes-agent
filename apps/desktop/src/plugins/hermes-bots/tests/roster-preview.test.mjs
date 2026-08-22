@@ -148,6 +148,19 @@ function textOf(node) {
   return ''
 }
 
+function findNode(node, predicate) {
+  if (node == null || typeof node !== 'object') return null
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findNode(child, predicate)
+      if (found) return found
+    }
+    return null
+  }
+  if (predicate(node)) return node
+  return findNode(node.props?.children, predicate)
+}
+
 const DM_BOT = {
   name: 'scribe',
   title: 'Scribe',
@@ -178,8 +191,8 @@ test('render: BotRow renders plain previews without a badge', () => {
   const text = textOf(tree)
   assert.match(text, /All hosts are healthy/)
   assert.doesNotMatch(text, /@manager/)
-  // The inline session-history chip is gone — stored history lives in the
-  // Sessions workspace (context menu), so the title no longer renders inline.
+  // The inline session-history chip is gone — the conversation lives in the
+  // bot's one canonical chat, so the title no longer renders inline.
   assert.doesNotMatch(text, /Weekly review/)
 })
 
@@ -188,4 +201,57 @@ test('render: BotRow tolerates a fresh bot with no sessions yet', () => {
   const tree = r.__BotRow({ bot: { name: 'newbie', title: '', description: 'Fresh bot' }, onEdit: () => undefined })
   const text = textOf(tree)
   assert.match(text, /Fresh bot/)
+})
+
+test('render: a remote gateway name is not squeezed out by its handle', () => {
+  const r = renderRuntime()
+  const tree = r.__BotRow({
+    bot: {
+      connectionId: 'studio-over-ssh',
+      connectionLabel: 'Studio over SSH',
+      handle: 'default-studio-over-ssh',
+      name: 'default',
+      remoteSource: true
+    },
+    onEdit: () => undefined
+  })
+  const name = findNode(tree, node => node.type === 'span' && textOf(node) === 'Studio over SSH')
+  const handle = findNode(tree, node => node.type === 'span' && textOf(node) === '@default-studio-over-ssh')
+
+  assert.ok(name)
+  assert.match(name.props.className, /shrink-0/)
+  assert.ok(handle)
+  assert.match(handle.props.className, /min-w-0/)
+  assert.match(handle.props.className, /truncate/)
+  assert.doesNotMatch(handle.props.className, /shrink-0/)
+})
+
+test('render: BotRow previews the pinned canonical chat, not an unrelated latest session', () => {
+  // hermes-agent#88200: the row opens the pinned chat on click, so the
+  // preview must describe that same session — not the profile's most recent
+  // (but unrelated) activity.
+  const r = renderRuntime()
+  const tree = r.__BotRow({
+    bot: {
+      name: 'ops',
+      title: 'Ops',
+      description: '',
+      last_session: { id: 'scratch9', title: 'Scratch', preview: 'unrelated scratch content', last_active: 1_800_000_000 },
+      canonical_session: { id: 'pinned1', resolved_id: 'pinned1', title: 'Bot Chat', preview: 'pinned chat content', started_at: 1, last_active: 1_700_000_000, message_count: 5 }
+    },
+    onEdit: () => undefined
+  })
+  const text = textOf(tree)
+  assert.match(text, /pinned chat content/)
+  assert.doesNotMatch(text, /unrelated scratch content/)
+})
+
+test('previewKind: the primary profile surfaces as @hermes, never @default', () => {
+  // botHandle() exists so "the word 'default' never surfaces in the UI"; the
+  // bot-to-bot badge was rendering the raw captured profile name (#89484).
+  assert.equal(fromBotOf("Message from agent 'default': deploy is green"), 'hermes')
+})
+
+test('previewKind: a named profile keeps its own handle', () => {
+  assert.equal(fromBotOf("Message from agent 'ops': deploy is green"), 'ops')
 })

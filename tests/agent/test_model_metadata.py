@@ -518,6 +518,7 @@ class TestCodexOAuthContextLength:
             "gpt-5.6-luna",
             "gpt-5.6-sol-2026-07-09",  # dated snapshot via gpt-5.6 family prefix
             "gpt-5.4",
+            "gpt-daybreak-blue-latest",  # Sol alias; exact verified slug
         ],
     )
     def test_stale_272k_advertisement_bumped_to_live_verified_900k(self, slug):
@@ -590,7 +591,8 @@ class TestCodexOAuthContextLength:
             )
         assert ctx == 272_000
 
-    def test_fallback_table_resolution_also_bumped(self):
+    @pytest.mark.parametrize("slug", ["gpt-5.6-sol", "gpt-daybreak-blue-latest"])
+    def test_fallback_table_resolution_also_bumped(self, slug):
         """When the live probe fails, the 272K fallback-table value for a
         verified slug is bumped the same way (same enforcement applies)."""
         from agent.model_metadata import get_model_context_length
@@ -602,7 +604,7 @@ class TestCodexOAuthContextLength:
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
-                model="gpt-5.6-sol",
+                model=slug,
                 base_url="https://chatgpt.com/backend-api/codex",
                 api_key="expired-token",
                 provider="openai-codex",

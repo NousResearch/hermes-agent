@@ -2,7 +2,7 @@
  * native-auth-decisions.ts
  *
  * Pure decision helpers extracted from main.ts for the RFC 8252 native-app
- * auth flow. These encode three choices that were each the site of a real
+ * auth flow. These encode six choices that were each the site of a real
  * runtime bug — invisible to the mocked flow tests because the tests never
  * exercised the real main.ts internals. Keeping them pure + unit-tested here
  * prevents silent regressions:
@@ -31,7 +31,12 @@
  *      can satisfy neither the native-bearer nor the OAuth-partition-cookie
  *      check by design, so the pre-flight guard must not hard-fail it.
  *
- * All five are trivial once named; the value is the test that pins the
+ *   6. resolveGatedDownloadAuth — file save/read must present the SAME
+ *      credentials as oauth REST. `saveGatewayFile` used to always ride the
+ *      OAuth cookie partition, so a cookieless native (or native-password)
+ *      session could list files via `hermes:api` and still 401 on Download.
+ *
+ * All six are trivial once named; the value is the test that pins the
  * contract so the god-file call sites can't drift back to the buggy shape.
  */
 
@@ -104,6 +109,28 @@ export function resolveReadinessProbeAuth(
   }
 
   return { kind: 'public' }
+}
+
+export type GatedDownloadAuth = OauthRestAuth | { kind: 'token'; token: string | null }
+
+/**
+ * Decide how a gated file download authenticates.
+ *
+ * Must match oauth REST (`resolveOauthRestAuth`): native bearer when present,
+ * else the OAuth cookie partition. Token/local connections keep the static
+ * session-token header. A cookie-only download against a cookieless native
+ * session is the #88987 401 — Files panel listing works, Download does not.
+ */
+export function resolveGatedDownloadAuth(
+  authMode: string | null | undefined,
+  nativeAccessToken?: string | null,
+  connectionToken?: string | null
+): GatedDownloadAuth {
+  if (authMode === 'oauth') {
+    return resolveOauthRestAuth(nativeAccessToken)
+  }
+
+  return { kind: 'token', token: connectionToken ?? null }
 }
 
 export interface AdvertisedAuthProvider {

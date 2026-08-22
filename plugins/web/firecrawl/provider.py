@@ -48,13 +48,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, NoReturn, Optional, TYPE_CHECKING
+
+import httpx
 
 from agent.web_search_provider import WebSearchProvider
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
+
+_FIRECRAWL_CLOUD_API_URL = "https://api.firecrawl.dev"
 
 
 # ---------------------------------------------------------------------------
@@ -121,13 +125,26 @@ Firecrawl = _FirecrawlProxy()
 
 
 def _get_direct_firecrawl_config() -> Optional[tuple]:
-    """Return explicit direct Firecrawl kwargs + cache key, or None when unset."""
+    """Return direct Firecrawl (mode, kwargs, cache key), or None when unavailable.
+
+    ``mode`` is ``"sdk"`` (keyed / self-hosted via the Firecrawl SDK) or
+    ``"keyless"`` (explicit Firecrawl selection with no credentials — served
+    by :class:`_KeylessFirecrawlClient` against the public cloud API, which
+    accepts anonymous rate-limited requests). Keyless requires the explicit
+    selection so an unconfigured install never silently routes to it.
+    """
     from hermes_cli.config import get_env_value
 
     api_key = (get_env_value("FIRECRAWL_API_KEY") or "").strip()
     api_url = (get_env_value("FIRECRAWL_API_URL") or "").strip().rstrip("/")
 
     if not api_key and not api_url:
+        if _is_explicit_firecrawl_selection():
+            return (
+                "keyless",
+                {"api_url": _FIRECRAWL_CLOUD_API_URL},
+                ("direct-keyless", _FIRECRAWL_CLOUD_API_URL, None),
+            )
         return None
 
     kwargs: Dict[str, str] = {}
@@ -136,7 +153,78 @@ def _get_direct_firecrawl_config() -> Optional[tuple]:
     if api_url:
         kwargs["api_url"] = api_url
 
-    return kwargs, ("direct", api_url or None, api_key or None)
+    return "sdk", kwargs, ("direct", api_url or None, api_key or None)
+
+
+def _is_explicit_firecrawl_selection() -> bool:
+    """Return True when config explicitly selects Firecrawl for web tools."""
+    import tools.web_tools as _wt
+
+    cfg = _wt._load_web_config()
+    return any(
+        (cfg.get(key) or "").lower().strip() == "firecrawl"
+        for key in ("backend", "search_backend", "extract_backend")
+    )
+
+
+def _use_keyless_ring() -> bool:
+    """True when Firecrawl calls should route via the keyless ring.
+
+    Ring dispatch applies when there are no direct credentials, the
+    managed Nous gateway isn't the selected path, and the keyless tier
+    isn't disabled or pinned paid. Keyed/self-hosted/gateway setups never
+    reach the ring.
+    """
+    from hermes_cli.config import get_env_value
+
+    if (get_env_value("FIRECRAWL_API_KEY") or "").strip():
+        return False
+    if (get_env_value("FIRECRAWL_API_URL") or "").strip():
+        return False
+    import tools.web_tools as _wt
+    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
+
+    try:
+        if read_selection("web") == NOUS_MANAGED_PROVIDER:
+            return False
+    except Exception:  # noqa: BLE001 — selection helpers optional
+        pass
+    try:
+        if _wt._is_tool_gateway_ready() and not _is_explicit_firecrawl_selection():
+            return False
+    except Exception:  # noqa: BLE001 — probe optional
+        pass
+    from plugins.web.keyless_mcp import use_keyless
+
+    return use_keyless("firecrawl", "")
+
+
+class _KeylessFirecrawlClient:
+    """Minimal REST client for Firecrawl's keyless cloud mode.
+
+    Duck-types the two SDK methods the provider calls (``search`` /
+    ``scrape``) so the rest of the pipeline (result normalizers, caching)
+    is unchanged. No Authorization header is ever sent.
+    """
+
+    def __init__(self, api_url: str = _FIRECRAWL_CLOUD_API_URL):
+        self.api_url = api_url.rstrip("/")
+
+    def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        response = httpx.post(
+            f"{self.api_url}{path}",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=60.0,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def search(self, *, query: str, limit: int = 5) -> Dict[str, Any]:
+        return self._post("/v2/search", {"query": query, "limit": limit})
+
+    def scrape(self, *, url: str, formats: List[str]) -> Dict[str, Any]:
+        return self._post("/v2/scrape", {"url": url, "formats": formats})
 
 
 def _get_firecrawl_gateway_url() -> str:
@@ -168,11 +256,22 @@ def _has_direct_firecrawl_config() -> bool:
 
 
 def check_firecrawl_api_key() -> bool:
-    """Return True when Firecrawl backend (direct or gateway) is usable.
+    """Return True when the Firecrawl backend selected via `hermes tools`
+    (or, on a never-configured install, either route) is usable.
 
     Re-exported by :mod:`tools.web_tools` for backward compatibility with
     existing tests and the ``hermes tools`` setup flow.
     """
+    from tools.tool_backend_helpers import (
+        NOUS_MANAGED_PROVIDER,
+        read_selection,
+    )
+
+    selected = read_selection("web")
+    if selected == NOUS_MANAGED_PROVIDER:
+        return _is_tool_gateway_ready()
+    if selected is not None:
+        return _has_direct_firecrawl_config()
     return _has_direct_firecrawl_config() or _is_tool_gateway_ready()
 
 
@@ -188,7 +287,7 @@ def _firecrawl_backend_help_suffix() -> str:
     )
 
 
-def _raise_web_backend_configuration_error() -> None:
+def _raise_web_backend_configuration_error() -> "NoReturn":
     """Raise a clear error for unsupported web backend configuration."""
     import tools.web_tools as _wt
 
@@ -212,46 +311,98 @@ def _raise_web_backend_configuration_error() -> None:
 def _get_firecrawl_client() -> Any:
     """Get or create the cached Firecrawl client.
 
-    When ``web.use_gateway`` is set in config, the managed Tool Gateway is
-    preferred even if direct Firecrawl credentials are present. Otherwise
-    direct Firecrawl takes precedence when explicitly configured.
+    Strict selection semantics (switch on the stored ``web`` selection):
+    - ``"nous"`` (or legacy ``use_gateway: true``) → managed Tool Gateway
+      ONLY; unavailable is a selection-naming error (a present
+      FIRECRAWL_API_KEY does not reroute).
+    - any other stored web backend → direct Firecrawl ONLY; missing config
+      is a selection-naming error — never a silent managed fallback billed
+      to Nous.
+    - never-configured web section → legacy behavior: direct config when
+      present, else the managed gateway.
 
-    Raises ValueError when neither path is usable.
+    Raises ValueError when the resolved path is unusable.
 
     The cached client is stored on :mod:`tools.web_tools` (as
     ``_firecrawl_client`` and ``_firecrawl_client_config``) rather than on
     this plugin module so that unit tests that reset the cache via
     ``tools.web_tools._firecrawl_client = None`` keep working. Helper
-    functions (``prefers_gateway``, ``resolve_managed_tool_gateway``,
-    ``_read_nous_access_token``, ``Firecrawl``) are also looked up via
-    :mod:`tools.web_tools` for the same reason — see
-    :func:`_is_tool_gateway_ready`.
+    functions (``resolve_managed_tool_gateway``, ``_read_nous_access_token``,
+    ``Firecrawl``) are also looked up via :mod:`tools.web_tools` for the same
+    reason — see :func:`_is_tool_gateway_ready`.
     """
     import tools.web_tools as _wt
+    from tools.tool_backend_helpers import (
+        NOUS_MANAGED_PROVIDER,
+        read_selection,
+        selection_error,
+        selection_exists,
+    )
+
+    selected = read_selection("web")
 
     direct_config = _get_direct_firecrawl_config()
-    if direct_config is not None and not _wt.prefers_gateway("web"):
-        kwargs, client_config = direct_config
-    else:
+
+    def _managed_kwargs():
         managed_gateway = _wt.resolve_managed_tool_gateway(
             "firecrawl", token_reader=_wt._read_nous_access_token
         )
         if managed_gateway is None:
+            return None
+        kwargs = {
+            "api_key": managed_gateway.nous_user_token,
+            "api_url": managed_gateway.gateway_origin,
+        }
+        return kwargs, (
+            "tool-gateway",
+            kwargs["api_url"],
+            managed_gateway.nous_user_token,
+        )
+
+    if selected == NOUS_MANAGED_PROVIDER:
+        managed = _managed_kwargs()
+        if managed is None:
+            logger.error(
+                "Firecrawl client initialization failed: the Nous "
+                "Subscription web selection is stored but the tool gateway "
+                "is unavailable."
+            )
+            raise ValueError(selection_error(
+                "web",
+                NOUS_MANAGED_PROVIDER,
+                "the Nous Tool Gateway is not available (not entitled or "
+                "unreachable)",
+            ))
+        kwargs, client_config = managed
+        client_mode = "sdk"
+    elif selected is not None or selection_exists("web"):
+        # Stored vendor selection (or per-capability web keys routing to
+        # firecrawl): direct Firecrawl only. With no credentials, the
+        # explicit selection unlocks keyless cloud mode instead of erroring.
+        if direct_config is None:
+            logger.error(
+                "Firecrawl client initialization failed: direct Firecrawl "
+                "selected but FIRECRAWL_API_KEY/FIRECRAWL_API_URL is not set."
+            )
+            raise ValueError(selection_error(
+                "web",
+                selected or "firecrawl",
+                "neither FIRECRAWL_API_KEY nor FIRECRAWL_API_URL is set",
+            ))
+        client_mode, kwargs, client_config = direct_config
+    elif direct_config is not None:
+        client_mode, kwargs, client_config = direct_config
+    else:
+        # Never-configured web section: legacy managed fallback.
+        managed = _managed_kwargs()
+        if managed is None:
             logger.error(
                 "Firecrawl client initialization failed: "
                 "missing direct config and tool-gateway auth."
             )
             _raise_web_backend_configuration_error()
-
-        kwargs = {
-            "api_key": managed_gateway.nous_user_token,
-            "api_url": managed_gateway.gateway_origin,
-        }
-        client_config = (
-            "tool-gateway",
-            kwargs["api_url"],
-            managed_gateway.nous_user_token,
-        )
+        kwargs, client_config = managed
+        client_mode = "sdk"
 
     cached = getattr(_wt, "_firecrawl_client", None)
     cached_config = getattr(_wt, "_firecrawl_client_config", None)
@@ -260,7 +411,10 @@ def _get_firecrawl_client() -> Any:
 
     # Construct via the re-exported Firecrawl proxy on tools.web_tools so
     # unit tests patching ``tools.web_tools.Firecrawl`` see their mock.
-    _wt._firecrawl_client = _wt.Firecrawl(**kwargs)
+    if client_mode == "keyless":
+        _wt._firecrawl_client = _KeylessFirecrawlClient(api_url=kwargs["api_url"])
+    else:
+        _wt._firecrawl_client = _wt.Firecrawl(**kwargs)
     _wt._firecrawl_client_config = client_config
     return _wt._firecrawl_client
 
@@ -382,6 +536,17 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         """Return True when direct Firecrawl OR managed-gateway path is configured."""
         return check_firecrawl_api_key()
 
+    def is_keyless_available(self) -> bool:
+        """Firecrawl serves keyless cloud requests (public API, no auth).
+
+        Default-on ring member of the keyless free tier: fresh installs
+        rotate across Exa/Parallel/Tavily/Firecrawl/Keenable. False when
+        the user pinned ``web.provider_tier.firecrawl: paid``.
+        """
+        from plugins.web.keyless_mcp import keyless_enabled, provider_tier
+
+        return keyless_enabled() and provider_tier("firecrawl") != "paid"
+
     def supports_search(self) -> bool:
         return True
 
@@ -406,6 +571,16 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
 
         if is_interrupted():
             return {"success": False, "error": "Interrupted"}
+
+        if _use_keyless_ring():
+            # No credentials and no managed gateway: ring dispatch with
+            # next-in-line failover on rate limits (default-on free tier).
+            from plugins.web.keyless_mcp import search_with_failover
+
+            logger.info(
+                "Firecrawl keyless search: '%s' (limit=%d)", query, limit
+            )
+            return search_with_failover("firecrawl", query, limit)
 
         logger.info("Firecrawl search: '%s' (limit=%d)", query, limit)
         # _get_firecrawl_client() raises ValueError on unconfigured systems —
@@ -439,6 +614,18 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
 
         if _is_interrupted():
             return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
+
+        if _use_keyless_ring():
+            # No credentials and no managed gateway: ring dispatch with
+            # next-in-line failover on rate limits (default-on free tier).
+            import asyncio as _asyncio
+
+            from plugins.web.keyless_mcp import extract_with_failover
+
+            logger.info("Firecrawl keyless extract: %d URL(s)", len(urls))
+            return await _asyncio.to_thread(
+                extract_with_failover, "firecrawl", list(urls)
+            )
 
         format = kwargs.get("format")
         formats: List[str] = []
@@ -602,15 +789,15 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "Firecrawl",
-            "badge": "paid · optional gateway",
+            "badge": "keyless/paid · optional gateway",
             "tag": (
-                "Full search + extract; supports direct API and "
-                "Nous tool-gateway routing."
+                "Full search + extract; supports keyless cloud, direct API, "
+                "and Nous tool-gateway routing."
             ),
             "env_vars": [
                 {
                     "key": "FIRECRAWL_API_KEY",
-                    "prompt": "Firecrawl API key (or leave blank for self-hosted)",
+                    "prompt": "Firecrawl API key (optional; blank = keyless cloud or self-hosted)",
                     "url": "https://docs.firecrawl.dev/introduction",
                 },
             ],

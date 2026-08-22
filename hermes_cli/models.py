@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import json
+import http.client
 import logging
 import os
 import re
@@ -25,8 +26,8 @@ if TYPE_CHECKING:
     from typing import TypeGuard
 
 from hermes_cli import __version__ as _HERMES_VERSION
-from hermes_cli.urllib_security import open_credentialed_url
-from utils import base_url_host_matches
+from hermes_cli.urllib_security import open_credentialed_url, url_origin
+from utils import atomic_json_write, base_url_host_matches
 
 logger = logging.getLogger(__name__)
 
@@ -115,8 +116,8 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     # MiniMax
     ("minimax/minimax-m3",                     ""),
     # Z-AI
+    ("z-ai/glm-5.3",                           ""),
     ("z-ai/glm-5.2",                           "default"),
-    ("z-ai/glm-5.1",                           ""),
     # Xiaomi
     ("xiaomi/mimo-v2.5-pro",                   ""),
     # Tencent
@@ -125,17 +126,21 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("stepfun/step-3.7-flash",                 ""),
     # NVIDIA
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
+    # Meta
+    ("meta/muse-spark-1.2",                    ""),
     # Sakana
     ("sakana/fugu-ultra",                      ""),
     # OpenRouter routers
     ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
     # Free tier
+    ("stealth/ox-alpha",                       "free"),  # "Ox Alpha" stealth reasoning model — 1M ctx
     ("openrouter/elephant-alpha",              "free"),
-    ("poolside/laguna-m.1:free",               "free"),
-    ("tencent/hy3:free",                       "free"),
+    ("z-ai/glm-5.2:free",                      "free"),
+    ("poolside/laguna-s-2.1:free",             "free"),
+    ("poolside/laguna-xs-2.1:free",            "free"),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
     ("nvidia/nemotron-3-ultra-550b-a55b:free", "free"),
-    ("inclusionai/ring-2.6-1t:free",           "free"),
+    ("nvidia/nemotron-3.5-lightning:free",     "free"),
 ]
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
@@ -289,8 +294,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         # MiniMax
         "minimax/minimax-m3",
         # Z-AI
+        "z-ai/glm-5.3",
         "z-ai/glm-5.2",
-        "z-ai/glm-5.1",
         # Xiaomi
         "xiaomi/mimo-v2.5-pro",
         # Tencent
@@ -301,6 +306,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nvidia/nemotron-3-super-120b-a12b",
         # Sakana
         "sakana/fugu-ultra",
+        # Stealth — "Ox Alpha" reasoning model, free ($0/$0 on the portal),
+        # 1M ctx / 131K max output. Same model as OpenCode Zen's
+        # x-preview-f-free; metadata entries live under the bare "ox-alpha"
+        # slug (model_metadata.py / reasoning_timeouts.py).
+        "stealth/ox-alpha",
     ],
     # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
     # provider_model_ids fallback when /v1/models is unavailable.
@@ -363,6 +373,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.1-flash-lite-preview",
     ],
     "zai": [
+        "glm-5.3",
         "glm-5.2",
         "glm-5.1",
         "glm-5",
@@ -377,9 +388,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         # NVIDIA flagship reasoning models
         "nvidia/nemotron-3-ultra-550b-a55b",
         "nvidia/nemotron-3-super-120b-a12b",
+        "nvidia/nemotron-3.5-lightning-30b-a3b",
         "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
         # Third-party agentic models hosted on build.nvidia.com
         # (map to OpenRouter defaults — users get familiar picks on NIM)
+        "z-ai/glm-5.3",
         "z-ai/glm-5.2",
         "moonshotai/kimi-k2.6",
         "minimaxai/minimax-m3",
@@ -478,9 +491,18 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",
     ],
+    # Synced against https://opencode.ai/docs/zen/ + live GET /zen/v1/models
+    # (2026-08-20). Zen/Go are _LIVE_FIRST_PICKER_PROVIDERS, so this list is a
+    # discovery floor — live entries lead in the picker and stale curated
+    # names never pollute the top.
     "opencode-zen": [
+        "x-preview-f-free",  # "Ox Alpha" stealth model — free, 1M ctx, ZDR
+        "kimi-k3",
         "kimi-k2.5",
         "kimi-k2.6",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
         "gpt-5.5",
         "gpt-5.5-pro",
         "gpt-5.4-pro",
@@ -499,22 +521,30 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-5-codex",
         "gpt-5-nano",
         "claude-fable-5",
+        "claude-opus-5",
         "claude-sonnet-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-opus-4-6",
         "claude-opus-4-5",
-        "claude-opus-4-1",
         "claude-sonnet-4-6",
         "claude-sonnet-4-5",
         "claude-sonnet-4",
         "claude-haiku-4-5",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
         "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
         "gemini-3.1-pro",
         "gemini-3-flash",
+        "grok-4.6",
+        "grok-4.5",
+        "grok-build-0.1",
+        "muse-spark-1.2",
         "minimax-m3",
         "minimax-m2.7",
         "minimax-m2.5",
+        "glm-5.3",
         "glm-5.2",
         "glm-5.1",
         "glm-5",
@@ -522,20 +552,41 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek-v4-pro",
         "deepseek-v4-flash",
         "deepseek-v4-flash-free",
-        "qwen3.7-plus",
         "qwen3.6-plus",
         "qwen3.5-plus",
-        "grok-build-0.1",
         "big-pickle",
         "mimo-v2.5-free",
-        "north-mini-code-free",
+        "hy3-free",
+        "laguna-s-2.1-free",
         "nemotron-3-ultra-free",
+        "nemotron-3.5-lightning-free",
+        "muse-spark-1.2-contributor-free",
     ],
+    # OpenCode free tier — keyless (no OpenCode account needed). Synced
+    # against live GET /zen/v1/models + anonymous probes (2026-08-21);
+    # deepseek-v4-flash-free delisted (promo ended, now 401s).
+    # big-pickle + mimo-v2.5-free delisted (UA-gated: the relay 429s
+    # FreeUsageLimitError for every client except User-Agent
+    # "opencode/latest"; we send honest Hermes attribution and don't
+    # impersonate other clients — verified 2026-08-21).
+    "opencode-free": [
+        "x-preview-f-free",  # "Ox Alpha" stealth model — free, 1M ctx, ZDR
+        "hy3-free",
+        "laguna-s-2.1-free",
+        "nemotron-3-ultra-free",
+        "nemotron-3.5-lightning-free",
+        "muse-spark-1.2-contributor-free",
+    ],
+    # Synced against https://opencode.ai/docs/go/ + live GET /zen/go/v1/models
+    # (2026-08-20).
     "opencode-go": [
         "kimi-k3",
         "kimi-k2.7-code",
         "kimi-k2.6",
         "kimi-k2.5",
+        "gpt-5.6-luna",
+        "grok-4.5",
+        "glm-5.3",
         "glm-5.2",
         "glm-5.1",
         "glm-5",
@@ -548,10 +599,17 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "minimax-m2.5",
         "deepseek-v4-pro",
         "deepseek-v4-flash",
+        "qwen3.8-max",
         "qwen3.7-max",
         "qwen3.7-plus",
         "qwen3.6-plus",
         "qwen3.5-plus",
+        "hy3",
+        "hy3-preview",
+        "muse-spark-1.2-contributor",
+        # Go-subscription twin of the Zen keyless Ox Alpha (live go/v1
+        # catalog 2026-08-21; NOT keyless — Go relay requires a Go key).
+        "ox-alpha-free",
     ],
     "kilocode": [
         "anthropic/claude-opus-4.6",
@@ -614,6 +672,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "us.anthropic.claude-opus-4-6-v1",
         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "openai.gpt-5.5",
+        "openai.gpt-5.6-sol",
+        "openai.gpt-5.6-terra",
+        "openai.gpt-5.6-luna",
         "us.amazon.nova-pro-v1:0",
         "us.amazon.nova-lite-v1:0",
         "us.amazon.nova-micro-v1:0",
@@ -1243,7 +1305,7 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
     "openai":   ("OpenAI",          "ChatGPT/Codex subscription or direct OpenAI API", ["openai-codex", "openai-api"]),
     "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan & Qwen CLI OAuth", ["alibaba", "alibaba-coding-plan", "qwen-oauth"]),
-    "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription",            ["opencode-zen", "opencode-go"]),
+    "opencode": ("OpenCode",        "Zen pay-as-you-go, Go subscription, or free tier", ["opencode-zen", "opencode-go", "opencode-free"]),
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
 }
 
@@ -1363,6 +1425,8 @@ _PROVIDER_ALIASES = {
     "zen": "opencode-zen",
     "go": "opencode-go",
     "opencode-go-sub": "opencode-go",
+    "free": "opencode-free",
+    "opencode_free": "opencode-free",
     "aigateway": "ai-gateway",
     "vercel": "ai-gateway",
     "vercel-ai-gateway": "ai-gateway",
@@ -1596,35 +1660,109 @@ _openrouter_reasoning_caps_cache: dict[str, Optional[dict[str, Any]]] | None = N
 _openrouter_reasoning_caps_failed_at: float | None = None
 
 
-def _fetch_openrouter_reasoning_caps(timeout: float = 6.0) -> Optional[dict[str, Optional[dict[str, Any]]]]:
-    """Fetch + cache per-model reasoning capabilities from the live catalog.
+# ── Disk mirror ────────────────────────────────────────────────────────
+#
+# The in-process caches are always cold in a short-lived process, and every
+# consumer is on a hot path that must never block on HTTP — so without a disk
+# copy, `hermes -p`, a cron job, or a freshly booted gateway answers
+# "capability unknown" for its whole first turn and falls back to the
+# conservative wire shape. Persisting the parsed catalog makes every run after
+# the first correct from its first turn.
+#
+# One file holds every catalog, keyed by the URL it came from: OpenRouter and
+# the Nous Portal list different models, and a staging Portal must not answer
+# for production.
+_REASONING_CAPS_DISK_TTL_SECONDS = 24 * 3600
 
-    Returns None (without poisoning the cache) when the catalog is
-    unreachable so callers can retry later and fall back in the meantime.
-    Failed fetches are remembered for 60 seconds so hot per-turn callers
-    don't pay an HTTP round-trip on every call while offline.
-    """
-    global _openrouter_reasoning_caps_cache, _openrouter_reasoning_caps_failed_at
-    if _openrouter_reasoning_caps_cache is not None:
-        return _openrouter_reasoning_caps_cache
-    if (
-        _openrouter_reasoning_caps_failed_at is not None
-        and (time.monotonic() - _openrouter_reasoning_caps_failed_at) < 60
-    ):
-        return None
+
+def _reasoning_caps_disk_path() -> Path:
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "cache" / "reasoning_caps.json"
+
+
+def _read_reasoning_caps_disk() -> dict[str, Any]:
     try:
-        req = urllib.request.Request(
-            "https://openrouter.ai/api/v1/models",
-            headers={"Accept": "application/json"},
-        )
-        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
+        with _reasoning_caps_disk_path().open(encoding="utf-8") as fh:
+            data = json.load(fh)
     except Exception:
-        _openrouter_reasoning_caps_failed_at = time.monotonic()
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _load_reasoning_caps_disk(
+    url: str,
+) -> tuple[Optional[dict[str, Optional[dict[str, Any]]]], float]:
+    """Return ``(caps, age_seconds)`` for *url*, or ``(None, 0.0)``."""
+    entry = _read_reasoning_caps_disk().get(url)
+    if not isinstance(entry, dict):
+        return None, 0.0
+    caps = entry.get("caps")
+    if not isinstance(caps, dict) or not caps:
+        return None, 0.0
+    try:
+        age = max(0.0, time.time() - float(entry.get("ts") or 0))
+    except (TypeError, ValueError):
+        age = float(_REASONING_CAPS_DISK_TTL_SECONDS)
+    return {str(mid): model_caps for mid, model_caps in caps.items()}, age
+
+
+def _save_reasoning_caps_disk(
+    url: str, caps: dict[str, Optional[dict[str, Any]]]
+) -> None:
+    """Merge *url*'s catalog into the shared disk mirror, atomically."""
+    try:
+        data = _read_reasoning_caps_disk()
+        data[url] = {"ts": time.time(), "caps": caps}
+        path = _reasoning_caps_disk_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(path, data, indent=0, separators=(",", ":"))
+    except Exception as exc:
+        logger.debug("Failed to save reasoning-caps disk cache: %s", exc)
+
+
+def _warm_reasoning_caps_async(refresh) -> None:
+    """Run *refresh* in a background thread. Fire-and-forget.
+
+    Called from hot paths that found the cache cold or the disk copy stale, so
+    the next call — or, via the disk mirror, the next process — benefits
+    without this turn ever blocking on HTTP. Callers own the once-per-process
+    guard; the fetch keeps its own failure TTL. Skipped under pytest, where a
+    mid-suite background fetch would make cache state, and therefore test
+    behavior, timing-dependent.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    threading.Thread(
+        target=refresh, name="reasoning-caps-warm", daemon=True
+    ).start()
+
+
+def _hydrate_reasoning_caps_from_disk(url: str, refresh):
+    """The disk copy of *url*'s catalog, queueing *refresh* when it's stale.
+
+    A copy past its TTL is still returned — a stale verdict beats no verdict,
+    and reasoning capabilities change rarely — with a background refresh so
+    the next run is current.
+    """
+    caps, age = _load_reasoning_caps_disk(url)
+    if caps is None:
         return None
-    items = payload.get("data")
+    if age >= _REASONING_CAPS_DISK_TTL_SECONDS:
+        _warm_reasoning_caps_async(refresh)
+    return caps
+
+
+def _seed_reasoning_caps(
+    url: str, items: Any
+) -> Optional[dict[str, Optional[dict[str, Any]]]]:
+    """Parse a ``/v1/models`` ``data`` array and mirror it for *url*.
+
+    Takes the payload rather than fetching it, so the picker and pricing
+    fetches — which pull the same document a capability fetch would — leave the
+    mirror warm at no network cost. None when the array has no usable entries,
+    which callers remember as a failure rather than caching as empty.
+    """
     if not isinstance(items, list):
-        _openrouter_reasoning_caps_failed_at = time.monotonic()
         return None
     caps_by_id: dict[str, Optional[dict[str, Any]]] = {}
     for item in items:
@@ -1635,10 +1773,65 @@ def _fetch_openrouter_reasoning_caps(timeout: float = 6.0) -> Optional[dict[str,
             continue
         caps_by_id[mid] = parse_openrouter_reasoning_capabilities(item)
     if not caps_by_id:
+        return None
+    _save_reasoning_caps_disk(url, caps_by_id)
+    return caps_by_id
+
+
+def _fetch_reasoning_caps_catalog(
+    url: str, timeout: float
+) -> Optional[dict[str, Optional[dict[str, Any]]]]:
+    """Fetch one OpenRouter-shaped ``/v1/models`` catalog → per-model caps.
+
+    Shared by every aggregator that serves OpenRouter's catalog schema
+    (OpenRouter itself, Nous Portal). Returns None when the catalog is
+    unreachable or carries no usable entries, so callers can remember the
+    failure and fall back rather than caching an empty result.
+
+    Sends a User-Agent because the Portal 403s anonymous catalog reads.
+    """
+    headers = {"Accept": "application/json", "User-Agent": _HERMES_USER_AGENT}
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        return None
+    return _seed_reasoning_caps(url, payload.get("data"))
+
+
+_OPENROUTER_CATALOG_URL = "https://openrouter.ai/api/v1/models"
+
+
+def _fetch_openrouter_reasoning_caps(
+    timeout: float = 6.0, *, force: bool = False
+) -> Optional[dict[str, Optional[dict[str, Any]]]]:
+    """Fetch + cache per-model reasoning capabilities from the live catalog.
+
+    Returns None (without poisoning the cache) when the catalog is
+    unreachable so callers can retry later and fall back in the meantime.
+    Failed fetches are remembered for 60 seconds so hot per-turn callers
+    don't pay an HTTP round-trip on every call while offline. *force* refetches
+    past a cache populated from the disk mirror.
+    """
+    global _openrouter_reasoning_caps_cache, _openrouter_reasoning_caps_failed_at
+    if _openrouter_reasoning_caps_cache is not None and not force:
+        return _openrouter_reasoning_caps_cache
+    if (
+        _openrouter_reasoning_caps_failed_at is not None
+        and (time.monotonic() - _openrouter_reasoning_caps_failed_at) < 60
+    ):
+        return None
+    caps_by_id = _fetch_reasoning_caps_catalog(_OPENROUTER_CATALOG_URL, timeout)
+    if caps_by_id is None:
         _openrouter_reasoning_caps_failed_at = time.monotonic()
         return None
     _openrouter_reasoning_caps_cache = caps_by_id
     return caps_by_id
+
+
+def _refresh_openrouter_reasoning_caps() -> None:
+    _fetch_openrouter_reasoning_caps(force=True)
 
 
 def openrouter_model_reasoning_capabilities(
@@ -1661,14 +1854,15 @@ def openrouter_model_reasoning_capabilities(
 
     By default this is a CACHE-ONLY lookup — safe on per-request hot paths
     (never blocks on HTTP). The cache is populated for free whenever
-    ``fetch_openrouter_models()`` runs (model picker, setup), by the
-    non-blocking ``warm_openrouter_reasoning_caps_async()`` warmer, or by
-    passing ``allow_fetch=True`` from non-latency-sensitive callers.
+    ``fetch_openrouter_models()`` runs (model picker, setup), from the disk
+    mirror a previous run left behind, by the non-blocking
+    ``warm_openrouter_reasoning_caps_async()`` warmer, or by passing
+    ``allow_fetch=True`` from non-latency-sensitive callers.
     """
     model = str(model_id or "").strip()
     if not model:
         return None
-    caps_by_id = _openrouter_reasoning_caps_cache
+    caps_by_id = _openrouter_caps_cached()
     if caps_by_id is None and allow_fetch:
         caps_by_id = _fetch_openrouter_reasoning_caps(timeout=timeout)
     if caps_by_id is None:
@@ -1676,37 +1870,128 @@ def openrouter_model_reasoning_capabilities(
     return caps_by_id.get(model)
 
 
+_openrouter_caps_disk_checked = False
 _openrouter_caps_warm_started = False
 
 
-def warm_openrouter_reasoning_caps_async() -> None:
-    """Warm the reasoning-capability cache in a background thread.
+def _openrouter_caps_cached() -> Optional[dict[str, Optional[dict[str, Any]]]]:
+    """Cache-only OpenRouter caps: memory, else the disk mirror. Never HTTP."""
+    global _openrouter_reasoning_caps_cache, _openrouter_caps_disk_checked
+    if _openrouter_reasoning_caps_cache is None and not _openrouter_caps_disk_checked:
+        _openrouter_caps_disk_checked = True
+        _openrouter_reasoning_caps_cache = _hydrate_reasoning_caps_from_disk(
+            _OPENROUTER_CATALOG_URL, _refresh_openrouter_reasoning_caps
+        )
+    return _openrouter_reasoning_caps_cache
 
-    Fire-and-forget: called from hot paths that found the cache cold so the
-    NEXT call benefits, without ever blocking a turn on HTTP. One warm
-    attempt per process (the fetch has its own 60s failure TTL). Skipped
-    under pytest — a mid-suite background fetch would make cache state, and
-    therefore test behavior, timing-dependent.
-    """
+
+def warm_openrouter_reasoning_caps_async() -> None:
+    """Warm the OpenRouter reasoning-capability cache in the background."""
     global _openrouter_caps_warm_started
-    if _openrouter_caps_warm_started or _openrouter_reasoning_caps_cache is not None:
-        return
-    if os.environ.get("PYTEST_CURRENT_TEST"):
+    if _openrouter_caps_warm_started or _openrouter_caps_cached() is not None:
         return
     _openrouter_caps_warm_started = True
-    threading.Thread(
-        target=_fetch_openrouter_reasoning_caps,
-        name="openrouter-reasoning-caps-warm",
-        daemon=True,
-    ).start()
+    _warm_reasoning_caps_async(_refresh_openrouter_reasoning_caps)
 
 
-# Canonical low→high ordering used for nearest-level clamping. Superset of
-# hermes_constants.VALID_REASONING_EFFORTS ("none" included so an explicit
-# disable can be clamped too when a provider publishes it as a level).
-_REASONING_EFFORT_ORDER = (
-    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
-)
+# Nous Portal serves OpenRouter's catalog schema, so the same parser and
+# tri-state contract apply. Kept in its own cache because the two catalogs
+# list different models (and different capabilities for shared ids).
+_nous_reasoning_caps_cache: dict[str, Optional[dict[str, Any]]] | None = None
+_nous_reasoning_caps_failed_at: float | None = None
+
+
+def nous_catalog_url() -> str:
+    """The Portal ``/v1/models`` URL for the endpoint we actually talk to.
+
+    Resolved through the documented ladder rather than pinned to production —
+    ``NOUS_INFERENCE_BASE_URL`` → resolved credential base → prod — so a
+    staging profile reads staging's capabilities. Reading prod's would answer
+    the reasoning-mandatory question for the wrong deployment.
+    """
+    return f"{_resolve_nous_pricing_credentials()[1]}/v1/models"
+
+
+def _fetch_nous_reasoning_caps(
+    timeout: float = 6.0, *, force: bool = False
+) -> Optional[dict[str, Optional[dict[str, Any]]]]:
+    """Nous Portal counterpart of :func:`_fetch_openrouter_reasoning_caps`."""
+    global _nous_reasoning_caps_cache, _nous_reasoning_caps_failed_at
+    if _nous_reasoning_caps_cache is not None and not force:
+        return _nous_reasoning_caps_cache
+    if (
+        _nous_reasoning_caps_failed_at is not None
+        and (time.monotonic() - _nous_reasoning_caps_failed_at) < 60
+    ):
+        return None
+    caps_by_id = _fetch_reasoning_caps_catalog(nous_catalog_url(), timeout)
+    if caps_by_id is None:
+        _nous_reasoning_caps_failed_at = time.monotonic()
+        return None
+    _nous_reasoning_caps_cache = caps_by_id
+    return caps_by_id
+
+
+def _refresh_nous_reasoning_caps() -> None:
+    _fetch_nous_reasoning_caps(force=True)
+
+
+def nous_model_reasoning_capabilities(
+    model_id: Optional[str],
+    *,
+    timeout: float = 6.0,
+    allow_fetch: bool = False,
+) -> Optional[dict[str, Any]]:
+    """Return live-catalog reasoning capabilities for a Nous Portal model.
+
+    Same tri-state contract and cache-only default as
+    :func:`openrouter_model_reasoning_capabilities`; warm the cache with
+    :func:`warm_nous_reasoning_caps_async` from hot paths.
+    """
+    model = str(model_id or "").strip()
+    if not model:
+        return None
+    caps_by_id = _nous_caps_cached()
+    if caps_by_id is None and allow_fetch:
+        caps_by_id = _fetch_nous_reasoning_caps(timeout=timeout)
+    if caps_by_id is None:
+        return None
+    return caps_by_id.get(model)
+
+
+_nous_caps_disk_checked = False
+_nous_caps_warm_started = False
+
+
+def _nous_caps_cached() -> Optional[dict[str, Optional[dict[str, Any]]]]:
+    """Cache-only Portal caps: memory, else the disk mirror. Never HTTP.
+
+    Guarded to one attempt per process because naming the catalog means
+    resolving Portal credentials, which can itself reach the network to
+    refresh a token — far too expensive for a caller that runs every turn.
+    """
+    global _nous_reasoning_caps_cache, _nous_caps_disk_checked
+    if _nous_reasoning_caps_cache is None and not _nous_caps_disk_checked:
+        _nous_caps_disk_checked = True
+        _nous_reasoning_caps_cache = _hydrate_reasoning_caps_from_disk(
+            nous_catalog_url(), _refresh_nous_reasoning_caps
+        )
+    return _nous_reasoning_caps_cache
+
+
+def warm_nous_reasoning_caps_async() -> None:
+    """Nous Portal counterpart of :func:`warm_openrouter_reasoning_caps_async`."""
+    global _nous_caps_warm_started
+    if _nous_caps_warm_started or _nous_caps_cached() is not None:
+        return
+    _nous_caps_warm_started = True
+    _warm_reasoning_caps_async(_refresh_nous_reasoning_caps)
+
+
+# Canonical low→high ordering used for nearest-level clamping. Kept as an
+# alias of the single source of truth in ``agent.reasoning_effort``.
+from agent.reasoning_effort import EFFORT_LADDER as _REASONING_EFFORT_ORDER
+from agent.reasoning_effort import clamp_effort as _clamp_effort
 
 
 def clamp_reasoning_effort_to_supported(
@@ -1715,38 +2000,17 @@ def clamp_reasoning_effort_to_supported(
 ) -> Optional[str]:
     """Clamp a requested reasoning effort to a provider's supported levels.
 
-    Returns the requested effort unchanged when it is supported, when the
-    supported list is unknown (None/empty), or when the effort isn't a
-    recognized level (custom providers may use bespoke names — pass through
-    rather than guess). Otherwise returns the nearest supported level,
-    preferring the closest LOWER level so a clamp never silently escalates
-    cost (requesting ``xhigh`` against ``[low, medium, high]`` yields
-    ``high``; requesting ``minimal`` against ``[low, medium]`` yields
-    ``low`` because no lower level exists).
+    Thin wrapper over the canonical policy in
+    :func:`agent.reasoning_effort.clamp_effort` (single implementation for
+    every transport and provider profile): keep a supported level verbatim,
+    otherwise nearest WEAKER supported level (never silently escalate cost),
+    weakest supported level when nothing weaker exists, pass through unknown
+    supported-sets and bespoke level names unchanged.
 
     Ported from PrimeIntellect-ai/prime-agent#1258's thinking-level-map
     normalization.
     """
-    requested = str(effort or "").strip().lower()
-    if not requested or not supported_efforts:
-        return effort
-    supported = [
-        str(level).strip().lower()
-        for level in supported_efforts
-        if str(level).strip().lower() in _REASONING_EFFORT_ORDER
-    ]
-    if not supported or requested in supported:
-        return effort
-    if requested not in _REASONING_EFFORT_ORDER:
-        return effort
-    requested_idx = _REASONING_EFFORT_ORDER.index(requested)
-    below = [
-        level for level in supported
-        if _REASONING_EFFORT_ORDER.index(level) < requested_idx
-    ]
-    if below:
-        return max(below, key=_REASONING_EFFORT_ORDER.index)
-    return min(supported, key=_REASONING_EFFORT_ORDER.index)
+    return _clamp_effort(effort, supported_efforts)
 
 
 def fetch_openrouter_models(
@@ -1774,7 +2038,7 @@ def fetch_openrouter_models(
 
     try:
         req = urllib.request.Request(
-            "https://openrouter.ai/api/v1/models",
+            _OPENROUTER_CATALOG_URL,
             headers={"Accept": "application/json"},
         )
         with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
@@ -1795,16 +2059,14 @@ def fetch_openrouter_models(
             continue
         live_by_id[mid] = item
 
-    # Free warm-up for the reasoning-capability cache: this is the same
-    # payload _fetch_openrouter_reasoning_caps would fetch, so parse it once
-    # here and hot-path callers (openrouter_model_reasoning_capabilities)
-    # never need their own HTTP round-trip.
+    # Free warm-up for the reasoning-capability cache: this is the same payload
+    # _fetch_openrouter_reasoning_caps would fetch, so parse it once here and
+    # hot-path callers (openrouter_model_reasoning_capabilities) never need
+    # their own HTTP round-trip.
     global _openrouter_reasoning_caps_cache
-    if _openrouter_reasoning_caps_cache is None and live_by_id:
-        _openrouter_reasoning_caps_cache = {
-            mid: parse_openrouter_reasoning_capabilities(item)
-            for mid, item in live_by_id.items()
-        }
+    seeded = _seed_reasoning_caps(_OPENROUTER_CATALOG_URL, live_items)
+    if _openrouter_reasoning_caps_cache is None and seeded is not None:
+        _openrouter_reasoning_caps_cache = seeded
 
     curated: list[tuple[str, str]] = []
     silent_default = get_preferred_silent_default_model("openrouter")
@@ -2048,15 +2310,13 @@ def compute_sale_discount(
     that rounds below 1% is treated as no sale (never render "-0%"). Returns
     ``None`` when there is no sale (missing/equal/invalid original), so UIs
     show normal prices.
+
+    Free / $0 models are a special case: they are always "-100%" sale chrome
+    (Teknium, Aug 2026 — the picker's discount column should say 100% off
+    rather than sit blank on free rows). The ``was_*`` raws come from
+    ``original`` when the gateway serves one and are empty strings otherwise;
+    callers must skip the "was" segment when both are empty.
     """
-    if not isinstance(original, dict):
-        return None
-
-    was_prompt = original.get("prompt")
-    was_completion = original.get("completion")
-    if was_prompt in (None, "") and was_completion in (None, ""):
-        return None
-
     def _finite(raw: Any) -> float | None:
         try:
             n = float(raw)
@@ -2071,11 +2331,26 @@ def compute_sale_discount(
             return None
         return n if n >= 0 and n == n else None
 
-    # Free / $0 models never show sale chrome, even if a leftover list price
-    # is higher (e.g. a :free sibling that inherited pricing.original).
+    orig_dict = original if isinstance(original, dict) else {}
+    was_prompt = orig_dict.get("prompt")
+    was_completion = orig_dict.get("completion")
+
+    # Free / $0 models: flat 100% off, with "was" prices only when the
+    # gateway actually served an original (e.g. a :free sibling); a
+    # natively-free model (stealth/ox-alpha) gets bare "-100%" chrome.
     cur_prompt_any = _nonneg(prompt) if prompt not in (None, "") else None
     cur_comp_any = _nonneg(completion) if completion not in (None, "") else None
-    if cur_prompt_any == 0 and cur_comp_any == 0:
+    if cur_prompt_any == 0 and cur_comp_any in (0, None):
+        return (
+            100,
+            str(was_prompt) if was_prompt not in (None, "") else "",
+            str(was_completion) if was_completion not in (None, "") else "",
+        )
+
+    if not isinstance(original, dict):
+        return None
+
+    if was_prompt in (None, "") and was_completion in (None, ""):
         return None
 
     cur_prompt = _finite(prompt) if prompt not in (None, "") else None
@@ -2146,6 +2421,11 @@ def fetch_models_with_pricing(
             payload = json.loads(resp.read().decode())
     except Exception:
         return _cache_catalog(cache_key, {})
+
+    # Same document the reasoning-capability fetch would pull, and every
+    # picker/pricing surface goes through here — mirror it so a later hot-path
+    # lookup (and the next process) has an answer without its own round-trip.
+    _seed_reasoning_caps(url, payload.get("data"))
 
     result: dict[str, dict[str, Any]] = {}
     for item in payload.get("data", []):
@@ -2281,6 +2561,10 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
         pass
 
     base_url = (env_base or creds_base or _DEFAULT_NOUS_INFERENCE_BASE).rstrip("/")
+    # Credential bases arrive with or without the ``/v1`` suffix. Callers
+    # append their own path, so hand back the bare origin.
+    if base_url.endswith("/v1"):
+        base_url = base_url[:-3]
     return (api_key, base_url)
 
 
@@ -2304,14 +2588,9 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
     if normalized == "nous":
         api_key, base_url = _resolve_nous_pricing_credentials()
         if base_url:
-            # Nous base_url typically looks like https://inference-api.nousresearch.com/v1
-            # We need the part before /v1 for our fetch function
-            stripped = base_url.rstrip("/")
-            if stripped.endswith("/v1"):
-                stripped = stripped[:-3]
             return fetch_models_with_pricing(
                 api_key=api_key,
-                base_url=stripped,
+                base_url=base_url,
                 force_refresh=force_refresh,
                 # Sale chrome (pricing.original) is Nous Portal-only.
                 include_sale_original=True,
@@ -2436,6 +2715,28 @@ _KNOWN_PROVIDER_NAMES: set[str] = (
 )
 
 
+def _configured_custom_provider_ids() -> set[str]:
+    """Return routable custom-provider IDs configured by the user."""
+    ids = {"custom"}
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.providers import custom_provider_slug
+
+        config = load_config()
+        providers = config.get("providers", {})
+        if isinstance(providers, dict):
+            for key, entry in providers.items():
+                if isinstance(entry, dict):
+                    ids.add(custom_provider_slug(str(entry.get("name") or key), str(key)))
+        legacy = config.get("custom_providers", [])
+        if isinstance(legacy, list):
+            for entry in legacy:
+                if isinstance(entry, dict):
+                    ids.add(custom_provider_slug(str(entry.get("name") or "")))
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+    return ids
+
 def list_available_providers() -> list[dict[str, str]]:
     """Return info about all providers the user could use with ``provider:model``.
 
@@ -2503,6 +2804,16 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
         provider_part = stripped[:colon].strip().lower()
         model_part = stripped[colon + 1:].strip()
         if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
+            if provider_part == "custom":
+                lowered = stripped.lower()
+                for custom_id in sorted(
+                    _configured_custom_provider_ids() - {"custom"},
+                    key=len,
+                    reverse=True,
+                ):
+                    prefix = f"{custom_id.lower()}:"
+                    if lowered.startswith(prefix):
+                        return custom_id, stripped[len(custom_id) + 1 :].strip()
             # Support custom:name:model triple syntax for named custom
             # providers.  ``custom:local:qwen`` → ("custom:local", "qwen").
             # Single colon ``custom:qwen`` → ("custom", "qwen") as before.
@@ -2511,7 +2822,10 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
                 custom_name = model_part[:second_colon].strip()
                 actual_model = model_part[second_colon + 1:].strip()
                 if custom_name and actual_model:
-                    return (f"custom:{custom_name}", actual_model)
+                    custom_id = f"custom:{custom_name.lower()}"
+                    if custom_id in _configured_custom_provider_ids():
+                        return (custom_id, actual_model)
+                    return ("custom", model_part)
             return (normalize_provider(provider_part), model_part)
     return (current_provider, stripped)
 
@@ -2520,6 +2834,410 @@ def _get_custom_base_url() -> str:
     """Get the custom endpoint base_url from config.yaml."""
     model_cfg = _get_model_config_dict()
     return str(model_cfg.get("base_url", "")).strip()
+
+
+def _get_provider_config_dict(provider: str) -> dict[str, Any]:
+    """Return config.yaml providers.<provider>, or an empty dict."""
+    key = str(provider or "").strip()
+    if not key:
+        return {}
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        providers_cfg = config.get("providers", {})
+        if isinstance(providers_cfg, dict):
+            entry = providers_cfg.get(key) or providers_cfg.get(key.lower())
+            if isinstance(entry, dict):
+                return entry
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+    return {}
+
+
+def _root_for_ollama_native_api(base_url: str) -> str:
+    """Convert an OpenAI-style Ollama base URL to the native API root."""
+    root = str(base_url or "").strip().rstrip("/")
+    if root.startswith(":"):
+        root = "http://127.0.0.1" + root
+    elif root and "://" not in root:
+        root = "http://" + root
+    for suffix in ("/api/tags", "/v1/models", "/api", "/v1"):
+        if root.endswith(suffix):
+            root = root[: -len(suffix)].rstrip("/")
+            break
+    return root
+
+
+def _normalize_openai_base_url(base_url: Optional[str]) -> str:
+    """Add a usable HTTP scheme without changing an OpenAI API path."""
+    value = str(base_url or "").strip()
+    if value.startswith(":"):
+        return "http://127.0.0.1" + value
+    if value and "://" not in value:
+        return "http://" + value
+    return value
+
+
+def _get_ollama_base_url() -> str:
+    """Resolve the local Ollama-compatible endpoint URL.
+
+    Prefer explicit config under ``providers.ollama.base_url`` because this is
+    how local Ollama-compatible endpoints can be wired without changing the
+    active model provider. Fall back to active ``model.base_url`` only when the
+    active provider is ollama/custom, then to Ollama's local default.
+    """
+    provider_cfg = _get_provider_config_dict("ollama")
+    configured = (
+        provider_cfg.get("base_url", "")
+        or provider_cfg.get("api", "")
+        or provider_cfg.get("url", "")
+        or ""
+    )
+    if configured:
+        return str(configured).strip()
+
+    model_cfg = _get_model_config_dict()
+    model_provider = str(model_cfg.get("provider", "") or "").strip().lower()
+    model_base = str(model_cfg.get("base_url", "") or "").strip()
+    if model_provider == "ollama" and model_base:
+        return model_base
+    if model_provider == "custom" and model_base:
+        # Only reuse the active bare custom endpoint when it is actually
+        # Ollama-compatible. Otherwise a user working against an unrelated
+        # OpenAI-compatible endpoint would make the Ollama picker probe that
+        # endpoint's /api/tags and hide their local Ollama catalog.
+        try:
+            if should_use_ollama_native_catalog("custom", model_base):
+                return model_base
+        except (OSError, RuntimeError, TypeError, ValueError):
+            pass
+
+    env_host = os.getenv("OLLAMA_HOST", "").strip()
+    if env_host:
+        if env_host.startswith(":") and not env_host.startswith("::"):
+            env_host = "127.0.0.1" + env_host
+        elif env_host.startswith("[") and env_host.endswith("]"):
+            env_host = f"{env_host}:11434"
+        elif "://" in env_host:
+            try:
+                parsed = urllib.parse.urlsplit(env_host)
+                if parsed.hostname and parsed.port is None:
+                    hostname = parsed.hostname
+                    if ":" in hostname and not hostname.startswith("["):
+                        hostname = f"[{hostname}]"
+                    userinfo = (
+                        parsed.netloc.rsplit("@", 1)[0] + "@"
+                        if "@" in parsed.netloc
+                        else ""
+                    )
+                    env_host = parsed._replace(
+                        netloc=f"{userinfo}{hostname}:11434"
+                    ).geturl()
+            except ValueError:
+                pass
+        elif env_host.count(":") > 1 and not env_host.startswith("["):
+            env_host = f"[{env_host}]:11434"
+        elif ":" not in env_host:
+            env_host = f"{env_host}:11434"
+        return env_host
+    return "http://localhost:11434"
+
+
+def _get_ollama_request_headers() -> dict[str, str]:
+    """Return configured headers and credentials for native Ollama requests."""
+    entry = _get_provider_config_dict("ollama")
+    raw = entry.get("extra_headers")
+    try:
+        from hermes_cli.config import normalize_extra_headers
+
+        result = normalize_extra_headers(raw)
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+        result = {}
+
+    api_key = str(entry.get("api_key") or "").strip()
+    if not api_key:
+        key_env = str(
+            entry.get("key_env") or entry.get("api_key_env") or ""
+        ).strip()
+        api_key = os.getenv(key_env, "").strip() if key_env else ""
+    if api_key:
+        if not any(key.lower() == "authorization" for key in result):
+            result["Authorization"] = f"Bearer {api_key}"
+    return result
+
+
+def _get_ollama_native_headers(
+    base_url: Optional[str],
+    *,
+    api_key: Optional[str] = None,
+) -> dict[str, str]:
+    """Resolve Ollama credentials and headers for one endpoint origin."""
+    entry = _get_provider_config_dict("ollama")
+    configured_base = str(
+        entry.get("base_url") or entry.get("api") or entry.get("url") or ""
+    ).strip()
+    explicit_key = str(api_key or "").strip()
+    configured_matches = bool(
+        configured_base
+        and base_url
+        and _same_ollama_native_root(base_url, configured_base)
+    )
+    if not configured_matches and not explicit_key:
+        return {}
+    headers = _get_ollama_request_headers() if configured_matches else {}
+    if explicit_key:
+        # A provider-specific key must not inherit any configured Authorization
+        # variant from the Ollama origin when both share a native root.
+        for key in tuple(headers):
+            if key.lower() == "authorization":
+                del headers[key]
+        headers["Authorization"] = f"Bearer {explicit_key}"
+    return headers
+
+
+_OLLAMA_LOCAL_MODELS_CACHE_TTL: int = 300  # seconds (5 minutes)
+_OLLAMA_LOCAL_MODELS_CACHE: dict[str, tuple[tuple[str, ...], float]] = {}
+_OLLAMA_LOCAL_PROBE_FAILURE_CACHE: dict[str, float] = {}
+_OLLAMA_LOCAL_PROBE_REACHABLE: dict[str, bool] = {}
+_OLLAMA_LOCAL_PROBE_FAILURE_TTL: int = 30
+_OLLAMA_LOCAL_CACHE_MAX_ENTRIES: int = 256
+
+
+def _evict_related_ollama_cache_entries(key: str) -> None:
+    _OLLAMA_LOCAL_MODELS_CACHE.pop(key, None)
+    _OLLAMA_LOCAL_PROBE_REACHABLE.pop(key, None)
+    for failure_key in list(_OLLAMA_LOCAL_PROBE_FAILURE_CACHE):
+        if failure_key == key or failure_key.startswith(f"{key}|timeout:"):
+            _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.pop(failure_key, None)
+
+
+def _remember_ollama_cache(cache: dict[str, Any], key: str, value: Any) -> None:
+    if key not in cache and len(cache) >= _OLLAMA_LOCAL_CACHE_MAX_ENTRIES:
+        oldest_key = next(iter(cache))
+        _evict_related_ollama_cache_entries(
+            oldest_key.split("|timeout:", 1)[0]
+        )
+    cache[key] = value
+
+
+def _ollama_probe_cache_key(root: str, headers: Optional[dict[str, str]]) -> str:
+    cache_key = root
+    if headers:
+        import hashlib
+
+        normalized_headers = sorted(
+            (str(key).lower(), str(value)) for key, value in headers.items()
+        )
+        header_blob = json.dumps(
+            normalized_headers, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8", errors="replace")
+        header_fingerprint = hashlib.blake2b(header_blob, digest_size=8).hexdigest()
+        cache_key = f"{root}|headers:{header_fingerprint}"
+    return cache_key
+
+
+def probe_ollama_local_models(
+    base_url: Optional[str] = None,
+    timeout: float = 2.0,
+    headers: Optional[dict[str, str]] = None,
+) -> Optional[list[str]]:
+    """Probe local Ollama-compatible models from native ``/api/tags``.
+
+    Returns ``None`` when the endpoint cannot be reached or returns malformed
+    data, and a list (possibly empty) when ``/api/tags`` was reachable. Stock
+    Ollama exposes its authoritative local model catalog at ``/api/tags``;
+    OpenAI-compatible ``/v1/models`` is not required for local Ollama servers.
+    """
+    root = _root_for_ollama_native_api(base_url or _get_ollama_base_url())
+    if not root:
+        return None
+    cache_key = _ollama_probe_cache_key(root, headers)
+    failure_key = f"{cache_key}|timeout:{float(timeout):.3f}"
+    cached = _OLLAMA_LOCAL_MODELS_CACHE.get(cache_key)
+    if cached is not None:
+        cached_models, cached_at = cached
+        if time.monotonic() - cached_at < _OLLAMA_LOCAL_MODELS_CACHE_TTL:
+            return list(cached_models)
+    failed_at = _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.get(failure_key)
+    if failed_at is not None:
+        if time.monotonic() - failed_at < _OLLAMA_LOCAL_PROBE_FAILURE_TTL:
+            return None
+        _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.pop(failure_key, None)
+
+    try:
+        url = root.rstrip("/") + "/api/tags"
+        request_headers = {"User-Agent": _HERMES_USER_AGENT}
+        request_headers.update(headers or {})
+        req = urllib.request.Request(url, headers=request_headers)
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except (
+        ValueError,
+        OSError,
+        TimeoutError,
+        http.client.HTTPException,
+        urllib.error.URLError,
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+    ):
+        _remember_ollama_cache(
+            _OLLAMA_LOCAL_PROBE_REACHABLE, cache_key, False
+        )
+        _remember_ollama_cache(
+            _OLLAMA_LOCAL_PROBE_FAILURE_CACHE, failure_key, time.monotonic()
+        )
+        return None
+
+    raw_models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(raw_models, list):
+        _remember_ollama_cache(
+            _OLLAMA_LOCAL_PROBE_REACHABLE, cache_key, False
+        )
+        _remember_ollama_cache(
+            _OLLAMA_LOCAL_PROBE_FAILURE_CACHE, failure_key, time.monotonic()
+        )
+        return None
+
+    models: list[str] = []
+    seen: set[str] = set()
+    for item in raw_models:
+        if isinstance(item, dict):
+            model_id = str(item.get("model") or item.get("name") or "").strip()
+        else:
+            _remember_ollama_cache(
+                _OLLAMA_LOCAL_PROBE_REACHABLE, cache_key, False
+            )
+            _remember_ollama_cache(
+                _OLLAMA_LOCAL_PROBE_FAILURE_CACHE, failure_key, time.monotonic()
+            )
+            return None
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        models.append(model_id)
+    if raw_models and not models:
+        _remember_ollama_cache(
+            _OLLAMA_LOCAL_PROBE_REACHABLE, cache_key, False
+        )
+        _remember_ollama_cache(
+            _OLLAMA_LOCAL_PROBE_FAILURE_CACHE, failure_key, time.monotonic()
+        )
+        return None
+    _remember_ollama_cache(_OLLAMA_LOCAL_PROBE_REACHABLE, cache_key, True)
+    _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.pop(failure_key, None)
+    _remember_ollama_cache(
+        _OLLAMA_LOCAL_MODELS_CACHE,
+        cache_key,
+        (tuple(models), time.monotonic()),
+    )
+    return models
+
+
+def fetch_ollama_local_models(
+    base_url: Optional[str] = None,
+    timeout: float = 2.0,
+    headers: Optional[dict[str, str]] = None,
+) -> Optional[list[str]]:
+    """Fetch local Ollama-compatible models, preserving probe failure as ``None``."""
+    return probe_ollama_local_models(base_url, timeout, headers=headers)
+
+
+def _same_ollama_native_root(left: str, right: str) -> bool:
+    """Return True when two Ollama/OpenAI-style base URLs share an API root."""
+    left_root = _root_for_ollama_native_api(left).rstrip("/")
+    right_root = _root_for_ollama_native_api(right).rstrip("/")
+    if not left_root or not right_root:
+        return False
+    try:
+        left_parts = urllib.parse.urlsplit(left_root)
+        right_parts = urllib.parse.urlsplit(right_root)
+        return (
+            url_origin(left_root) == url_origin(right_root)
+            and left_parts.path.rstrip("/") == right_parts.path.rstrip("/")
+        )
+    except (AttributeError, ValueError):
+        return False
+
+
+def should_use_ollama_native_catalog(
+    provider: Optional[str],
+    base_url: Optional[str],
+    headers: Optional[dict[str, str]] = None,
+) -> bool:
+    """Return True when model discovery should use local Ollama ``/api/tags``.
+
+    Bare ``ollama`` is normalized to ``custom`` elsewhere so runtime paths can
+    share the OpenAI-compatible chat client. For model discovery and validation,
+    however, local Ollama's authoritative model list is ``/api/tags``. Use that
+    path when the caller explicitly asked for Ollama, when the base URL matches
+    configured ``providers.ollama.base_url``, or when an ambiguous custom URL on
+    Ollama's default local port actually serves ``/api/tags``. Ordinary custom
+    endpoints stay on the existing OpenAI-compatible ``/models`` probe path.
+    """
+    requested = str(provider or "").strip().lower()
+    root = _root_for_ollama_native_api(base_url or "")
+    if root:
+        try:
+            host = (urllib.parse.urlparse(root).hostname or "").lower()
+            if host == "ollama.com" or host.endswith(".ollama.com"):
+                return False
+        except ValueError:
+            pass
+
+    known_non_local_providers = {
+        "openrouter",
+        "nous",
+        "anthropic",
+        "openai",
+        "openai-codex",
+        "gemini",
+        "ollama-cloud",
+    }
+    if requested in known_non_local_providers:
+        return False
+
+    if requested == "ollama":
+        if not root:
+            return False
+        configured = _get_provider_config_dict("ollama")
+        configured_base = str(
+            configured.get("base_url")
+            or configured.get("api")
+            or configured.get("url")
+            or ""
+        ).strip()
+        if configured_base and not _same_ollama_native_root(root, configured_base):
+            return probe_ollama_local_models(root, timeout=0.5, headers=headers) is not None
+        return True
+
+    provider_cfg = _get_provider_config_dict("ollama")
+    configured_ollama_base_url = str(
+        provider_cfg.get("base_url", "")
+        or provider_cfg.get("api", "")
+        or provider_cfg.get("url", "")
+        or ""
+    ).strip()
+    if configured_ollama_base_url and _same_ollama_native_root(root, configured_ollama_base_url):
+        return True
+
+    if not root:
+        return False
+
+    local_like_providers = {"", "custom", "local", "llamacpp", "llama.cpp", "llama-cpp", "vllm"}
+    if requested not in local_like_providers and not requested.startswith("custom:"):
+        return False
+
+    if requested == "custom:ollama" or requested.endswith("-ollama"):
+        return True
+
+    try:
+        parsed = urllib.parse.urlparse(root)
+        if parsed.port != 11434:
+            return False
+    except ValueError:
+        return False
+
+    return probe_ollama_local_models(root, timeout=0.5, headers=headers) is not None
 
 
 def _get_model_config_dict() -> dict[str, Any]:
@@ -3133,6 +3851,50 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     models.dev entries are merged on top of curated so new models released
     on the platform appear in ``/model`` without a Hermes release.
     """
+    requested = str(provider or "").strip().lower()
+    if requested == "ollama":
+        if force_refresh:
+            _OLLAMA_LOCAL_MODELS_CACHE.clear()
+            _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
+            _OLLAMA_LOCAL_PROBE_REACHABLE.clear()
+        base_url = _get_ollama_base_url()
+        headers = _get_ollama_native_headers(base_url)
+        use_native = should_use_ollama_native_catalog(
+            "ollama", base_url, headers=headers
+        )
+        if use_native:
+            if headers:
+                native_models = fetch_ollama_local_models(base_url, headers=headers)
+            else:
+                native_models = fetch_ollama_local_models(base_url)
+            native_key = _ollama_probe_cache_key(
+                _root_for_ollama_native_api(base_url), headers or None
+            )
+            if native_models or _OLLAMA_LOCAL_PROBE_REACHABLE.get(native_key) is True:
+                return native_models or []
+        else:
+            # Non-native Ollama-compatible endpoints (including Ollama Cloud)
+            # retain the generic OpenAI-compatible catalog path.
+            pass
+        # gateways that expose only OpenAI-style /v1/models.
+        config = _get_provider_config_dict("ollama")
+        fallback_key = str(config.get("api_key") or "").strip()
+        if not fallback_key:
+            key_env = str(config.get("key_env") or "").strip()
+            fallback_key = os.getenv(key_env, "").strip() if key_env else ""
+        fallback_base = _normalize_openai_base_url(
+            config.get("base_url") or base_url
+        )
+        fallback_headers = _get_ollama_native_headers(
+            fallback_base, api_key=fallback_key
+        )
+        fallback_models = fetch_api_models(
+            fallback_key,
+            fallback_base,
+            headers=fallback_headers or None,
+        )
+        return fallback_models or []
+
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
         return model_ids(force_refresh=force_refresh)
@@ -3309,6 +4071,13 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             pass
 
+    # OpenCode Free: curated keyless list only. models.dev's cost.input==0
+    # filter lags reality (deepseek-v4-flash-free stayed "free" there after
+    # its promo ended and the relay began 401ing keyless requests), so the
+    # curated list — synced against anonymous live probes — is authoritative.
+    if normalized == "opencode-free":
+        return list(_PROVIDER_MODELS.get(normalized, []))
+
     # ── Profile-based generic live fetch (all simple api-key providers) ──
     # Handles any provider registered in providers/ with auth_type="api_key".
     # Replaces per-provider copy-paste blocks (stepfun, gmi, zai, etc.).
@@ -3437,6 +4206,18 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
 
     def _default_refresh():
         live = provider_model_ids(cache_key, force_refresh=True)
+        if not live and cache_key == "ollama":
+            base_url = _get_ollama_base_url()
+            headers = _get_ollama_native_headers(base_url) or None
+            probe_key = _ollama_probe_cache_key(
+                _root_for_ollama_native_api(base_url), headers
+            )
+            if _OLLAMA_LOCAL_PROBE_REACHABLE.get(probe_key) is True:
+                return {
+                    "fp": _credential_fingerprint(cache_key),
+                    "at": time.time(),
+                    "models": [],
+                }
         if not live:
             return None
         return {
@@ -3509,6 +4290,28 @@ def _credential_fingerprint(provider: str) -> str:
             parts.append(f"effective_base={_openai_discovery_base_url(provider)}")
         except Exception:
             pass
+
+    if provider == "ollama":
+        parts.append(f"OLLAMA_HOST={_os.environ.get('OLLAMA_HOST', '')}")
+        provider_cfg = _get_provider_config_dict("ollama")
+        parts.append(
+            "providers.ollama.base_url="
+            f"{provider_cfg.get('base_url', '') or provider_cfg.get('api', '') or provider_cfg.get('url', '')}"
+        )
+        parts.append(f"providers.ollama.api_key={provider_cfg.get('api_key', '')}")
+        key_env = provider_cfg.get("key_env") or provider_cfg.get("api_key_env") or ""
+        parts.append(f"providers.ollama.key_env={key_env}")
+        if key_env:
+            parts.append(f"{key_env}={_os.environ.get(str(key_env), '')}")
+        model_cfg = _get_model_config_dict()
+        parts.append(
+            "model.provider="
+            f"{model_cfg.get('provider', '')}|model.base_url={model_cfg.get('base_url', '')}"
+        )
+        parts.append(
+            "providers.ollama.extra_headers="
+            + json.dumps(provider_cfg.get("extra_headers", {}), sort_keys=True, default=str)
+        )
 
     # OAuth / external-file mtimes that change on re-auth
     try:
@@ -3613,20 +4416,27 @@ def cached_provider_model_ids(
     Hits the cache when fresh; otherwise calls the live function and
     persists a non-empty result. Always returns a list (never None).
     """
-    normalized = normalize_provider(provider) or (provider or "")
+    requested = str(provider or "").strip().lower()
+    normalized = requested if requested == "ollama" else (normalize_provider(provider) or (provider or ""))
     if not normalized:
         return []
+    if normalized == "ollama":
+        ttl_seconds = min(ttl_seconds, _OLLAMA_LOCAL_MODELS_CACHE_TTL)
 
     cache = _load_provider_models_cache()
     fp = _credential_fingerprint(normalized)
     entry = cache.get(normalized)
     now = time.time()
 
-    if not force_refresh and _cache_entry_valid(entry, fp):
+    allow_empty_ollama = normalized == "ollama"
+    if not force_refresh and _cache_entry_valid(entry, fp, allow_empty=allow_empty_ollama):
         age = now - entry["at"]
         if age < ttl_seconds:
             return list(entry["models"])
-        if age < _PROVIDER_MODELS_STALE_SERVE_MAX:
+        # Empty native catalogs are authoritative only for the short native
+        # TTL. Re-probe after expiry so newly pulled models become visible;
+        # do not serve an empty row through the generic stale window.
+        if entry["models"] and age < _PROVIDER_MODELS_STALE_SERVE_MAX:
             # Stale-while-revalidate: serve the expired entry immediately so
             # interactive picker opens never block on serial /v1/models
             # round-trips; refresh the cache off-thread for the next open.
@@ -3644,6 +4454,30 @@ def cached_provider_model_ids(
         _save_provider_models_cache(cache)
         return list(live)
 
+    if normalized == "ollama":
+        base_url = _get_ollama_base_url()
+        headers = _get_ollama_native_headers(base_url) or None
+        probe_key = _ollama_probe_cache_key(
+            _root_for_ollama_native_api(base_url), headers
+        )
+        if _OLLAMA_LOCAL_PROBE_REACHABLE.get(probe_key) is True:
+            # A reachable empty native catalog is authoritative for the short
+            # native TTL; do not resurrect a stale disk catalog.
+            cache[normalized] = {"fp": fp, "at": now, "models": []}
+            _save_provider_models_cache(cache)
+            return []
+
+        # A failed/non-native probe is not authoritative. Preserve a stale
+        # catalog rather than blanking the picker during a transient outage.
+        if (
+            isinstance(entry, dict)
+            and entry.get("fp") == fp
+            and isinstance(entry.get("models"), list)
+            and entry["models"]
+        ):
+            return list(entry["models"])
+        return []
+
     # Live fetch returned nothing. If we have a stale entry with the
     # SAME fingerprint, prefer it over an empty result — stale data
     # beats no data when the network is flaky.
@@ -3660,15 +4494,26 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
     ``hermes model --refresh``.
     """
     try:
+        # Native Ollama tags are keyed by root URL rather than provider slug.
+        # A targeted refresh for a custom local-Ollama endpoint cannot identify
+        # the right root from the provider name alone, so clear this small
+        # in-process cache on every explicit provider-cache refresh.
+        _OLLAMA_LOCAL_MODELS_CACHE.clear()
+        _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
+        _OLLAMA_LOCAL_PROBE_REACHABLE.clear()
         if provider is None:
             path = _provider_models_cache_path()
             if path.exists():
                 path.unlink()
             return
         cache = _load_provider_models_cache()
-        normalized = normalize_provider(provider) or provider or ""
+        requested = str(provider or "").strip().lower()
+        normalized = requested if requested == "ollama" else (normalize_provider(provider) or provider or "")
+        changed = False
         if normalized in cache:
             del cache[normalized]
+            changed = True
+        if changed:
             _save_provider_models_cache(cache)
     except Exception:
         pass
@@ -4477,17 +5322,140 @@ def azure_foundry_model_api_mode(model_name: Optional[str]) -> Optional[str]:
     return None
 
 
+def opencode_provider_family(provider_id: Optional[str]) -> Optional[str]:
+    """Resolve a provider id to its OpenCode family, or None.
+
+    Returns ``"opencode-zen"`` or ``"opencode-go"`` for the built-in
+    providers AND for custom providers whose name extends a family slug
+    (e.g. ``opencode-go-bridge`` pointing at ``https://opencode.ai/zen/go/v1``,
+    issue #85589). Matching is case-insensitive. Custom family providers
+    need the same per-model api_mode routing and /v1 base-url normalization
+    as the built-ins — this predicate is the single owner of that
+    family-membership question; do not re-implement it inline.
+
+    ``opencode-go`` is checked before ``opencode-zen`` but the two slugs are
+    not prefixes of each other, so order is cosmetic.
+    """
+    raw = str(provider_id or "").strip().lower()
+    if not raw:
+        return None
+    canonical = normalize_provider(provider_id)
+    if canonical in {"opencode-zen", "opencode-go", "opencode-free"}:
+        return canonical
+    if raw.startswith("opencode-free"):
+        return "opencode-free"
+    if raw.startswith("opencode-go"):
+        return "opencode-go"
+    if raw.startswith("opencode-zen"):
+        return "opencode-zen"
+    return None
+
+
 def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[str]) -> str:
     """Normalize OpenCode config IDs to the bare model slug used in API requests."""
-    provider = normalize_provider(provider_id)
+    family = opencode_provider_family(provider_id)
     current = str(model_id or "").strip()
-    if not current or provider not in {"opencode-zen", "opencode-go"}:
+    if not current or family is None:
         return current
 
-    prefix = f"{provider}/"
-    if current.lower().startswith(prefix):
+    prefix = f"{provider_id}/" if provider_id else f"{family}/"
+    if current.lower().startswith(prefix.lower()):
         return current[len(prefix):]
+    fallback_prefix = f"{family}/"
+    if current.lower().startswith(fallback_prefix.lower()):
+        return current[len(fallback_prefix):]
     return current
+
+
+# OpenCode Zen free-tier models (``*-free`` slugs, e.g. x-preview-f-free /
+# "Ox Alpha", plus unsuffixed free models like big-pickle) are served
+# ANONYMOUSLY on the Zen relay: a request with no Authorization header
+# succeeds, while ANY non-empty bearer the relay doesn't recognize is
+# rejected with 401 "Invalid API key" — including our "no-key-required"
+# placeholder and OpenCode GO subscription keys (the Go relay doesn't serve
+# the free tier at all: "Model x is not supported").
+# Verified live 2026-08-21 against POST /zen/v1/chat/completions.
+OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER = "opencode-zen-free-keyless"
+_OPENCODE_ZEN_FREE_BASE_URL = "https://opencode.ai/zen/v1"
+
+# Free-tier models whose slug does NOT carry the ``-free`` suffix.
+# (big-pickle is OpenCode's rotating free stealth slot.)
+_OPENCODE_KEYLESS_EXTRA_SLUGS = frozenset({"big-pickle"})
+
+
+def is_opencode_zen_free_model(model_id: Optional[str]) -> bool:
+    """True when ``model_id`` is an OpenCode Zen free-tier slug.
+
+    Matches the ``*-free`` suffix plus the known unsuffixed free slugs
+    (``big-pickle``). Tolerates provider-prefixed ids
+    (``opencode-zen/x-preview-f-free``). The Go catalog serves no free
+    models (verified 2026-08-21), so this identifies the Zen free tier
+    across the OpenCode family.
+    """
+    bare = str(model_id or "").strip().rsplit("/", 1)[-1].lower()
+    if not bare:
+        return False
+    return bare.endswith("-free") or bare in _OPENCODE_KEYLESS_EXTRA_SLUGS
+
+
+def opencode_zen_free_headers() -> dict:
+    """Client default_headers for anonymous OpenCode Zen free-tier requests.
+
+    ``Authorization: ""`` overrides the OpenAI SDK's ``Bearer <api_key>``
+    header so the placeholder key never reaches the wire — the Zen relay
+    accepts anonymous requests for free models but 401s any unknown bearer.
+    Attribution headers mirror the opencode provider profile.
+    """
+    try:
+        from hermes_cli import __version__ as _v
+    except Exception:
+        _v = "0"
+    return {
+        "Authorization": "",
+        "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+        "X-Title": "Hermes Agent",
+        "User-Agent": f"HermesAgent/{_v}",
+    }
+
+
+def opencode_zen_free_runtime(provider_id: Optional[str], model_id: Optional[str]) -> Optional[dict]:
+    """Keyless runtime entry for an OpenCode Zen free-tier model, or None.
+
+    Returns a resolve_runtime_provider-shaped dict pinning the request to the
+    Zen relay with the keyless placeholder whenever:
+
+    - ``provider_id`` is ``opencode-free`` (the dedicated keyless provider —
+      EVERY model on it routes anonymously; that is the provider's contract), or
+    - ``provider_id`` is any other OpenCode-family provider and ``model_id``
+      is in the VERIFIED keyless catalog (``_PROVIDER_MODELS["opencode-free"]``)
+      — heals a free-model selection made under opencode-zen/opencode-go,
+      whose keys the free tier rejects.
+
+    Membership, not the ``-free`` suffix, is the heal criterion: the suffix
+    stopped being a reliable keyless signal when ``ox-alpha-free`` appeared
+    on the Go relay as a KEYED subscription model (2026-08-21) — suffix-based
+    healing would have routed it to a Zen relay that doesn't serve it.
+    """
+    family = opencode_provider_family(provider_id)
+    if family is None:
+        return None
+    if family != "opencode-free":
+        bare = normalize_opencode_model_id(provider_id, model_id).strip().lower()
+        if bare not in {m.lower() for m in _PROVIDER_MODELS.get("opencode-free", [])}:
+            return None
+    normalized = normalize_opencode_model_id(provider_id, model_id)
+    api_mode = opencode_model_api_mode("opencode-zen", normalized)
+    base_url = normalize_opencode_base_url(
+        "opencode-zen", api_mode, _OPENCODE_ZEN_FREE_BASE_URL
+    )
+    return {
+        "provider": family,
+        "api_mode": api_mode,
+        "base_url": base_url,
+        "api_key": OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER,
+        "default_headers": opencode_zen_free_headers(),
+        "source": "opencode-zen-free-keyless",
+    }
 
 
 def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str]) -> str:
@@ -4495,8 +5463,9 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
 
     OpenCode routes different models behind different API surfaces:
 
-    - GPT-5 / Codex models on Zen use ``/v1/responses``
-    - GPT models on Go (gpt-5.6-luna) use ``/v1/responses``
+    - GPT-5 / Codex / Grok models on Zen use ``/v1/responses``
+    - GPT / Grok models on Go (gpt-5.6-luna, grok-4.5) use ``/v1/responses``
+    - Muse Spark on Go and Zen uses ``/v1/responses`` (chat/completions 503s)
     - Claude models on Zen use ``/v1/messages``
     - MiniMax and Qwen models on Go use ``/v1/messages``
     - GLM / Kimi / DeepSeek / MiMo on Go use ``/v1/chat/completions``
@@ -4507,16 +5476,25 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
     This follows the published OpenCode docs for Zen and Go endpoints
     (https://opencode.ai/docs/zen/ and https://opencode.ai/docs/go/).
     """
-    provider = normalize_provider(provider_id)
+    family = opencode_provider_family(provider_id)
+    # opencode-free is Zen-hosted (the free tier lives on the Zen relay),
+    # so it shares Zen's per-model endpoint routing.
+    if family == "opencode-free":
+        family = "opencode-zen"
     normalized = normalize_opencode_model_id(provider_id, model_id).lower()
     if not normalized:
         return "chat_completions"
 
-    if provider == "opencode-go":
-        if normalized.startswith("gpt-"):
-            # GPT models on Go (gpt-5.6-luna) are served via /v1/responses
-            # per the published Go endpoint table, same as GPT on Zen:
-            # https://opencode.ai/docs/go/#endpoints
+    if family == "opencode-go":
+        if normalized.startswith("gpt-") or normalized.startswith("grok-"):
+            # GPT and Grok models on Go (gpt-5.6-luna, grok-4.5) are served
+            # via /v1/responses per the published Go endpoint table, same as
+            # GPT/Grok on Zen: https://opencode.ai/docs/go/#endpoints
+            return "codex_responses"
+        if normalized.startswith("muse-spark"):
+            # Muse Spark (standard + contributor) is Responses-only on Go.
+            # /v1/chat/completions returns HTTP 503 with an empty assistant
+            # message; /v1/responses completes. See opencode.ai/docs/go.
             return "codex_responses"
         if normalized.startswith("minimax-"):
             return "anthropic_messages"
@@ -4526,10 +5504,17 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
             return "anthropic_messages"
         return "chat_completions"
 
-    if provider == "opencode-zen":
+    if family == "opencode-zen":
         if normalized.startswith("claude-"):
             return "anthropic_messages"
-        if normalized.startswith("gpt-"):
+        if normalized.startswith("gpt-") or normalized.startswith("grok-"):
+            # GPT-5/Codex and all Grok models on Zen (grok-4.6, grok-4.5,
+            # grok-build-0.1) are served via /v1/responses per the Zen
+            # endpoint table.
+            return "codex_responses"
+        if normalized.startswith("muse-spark"):
+            # Standard Muse Spark on Zen is served via /v1/responses:
+            # https://opencode.ai/docs/zen/#endpoints
             return "codex_responses"
         if normalized.startswith("qwen"):
             # Qwen models on Zen moved to /v1/messages per the published
@@ -4564,8 +5549,7 @@ def normalize_opencode_base_url(
     url = str(base_url or "").strip().rstrip("/")
     if not url:
         return url
-    provider = normalize_provider(provider_id)
-    if provider not in {"opencode-zen", "opencode-go"}:
+    if opencode_provider_family(provider_id) is None:
         return url
 
     import re as _re
@@ -5021,18 +6005,24 @@ def _custom_endpoint_fingerprint(
     return hashlib.blake2b(blob, digest_size=8).hexdigest()
 
 
-def _cache_entry_valid(entry: Any, fp: str) -> "TypeGuard[dict[str, Any]]":
+def _cache_entry_valid(
+    entry: Any,
+    fp: str,
+    *,
+    allow_empty: bool = False,
+) -> "TypeGuard[dict[str, Any]]":
     """True when *entry* is a well-formed cache row for fingerprint *fp*.
 
     Requires a numeric ``at`` so corrupt disk state (hand-edited JSON with
     ``"at": "yesterday"`` or ``null``) degrades to a cache miss / live fetch
-    instead of raising out of the wrapper.
+    instead of raising out of the wrapper. Empty model lists are valid only
+    for callers that explicitly opt into an authoritative empty catalog.
     """
     return (
         isinstance(entry, dict)
         and entry.get("fp") == fp
         and isinstance(entry.get("models"), list)
-        and bool(entry["models"])
+        and (allow_empty or bool(entry["models"]))
         and isinstance(entry.get("at"), (int, float))
         and not isinstance(entry.get("at"), bool)
     )
@@ -5271,6 +6261,7 @@ def validate_requested_model(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     api_mode: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """
     Validate a ``/model`` value for the active provider.
@@ -5363,12 +6354,105 @@ def validate_requested_model(
             "message": f"Model `{requested}` was not found in LM Studio's model listing.",
         }
 
+    if str(provider or "").strip().lower() == "ollama" and not base_url:
+        base_url = _get_ollama_base_url()
+    ollama_base_url = base_url
+    configured_ollama_base_url = str(
+        (
+            _get_provider_config_dict("ollama").get("base_url")
+            or _get_provider_config_dict("ollama").get("api")
+            or _get_provider_config_dict("ollama").get("url")
+            or ""
+        )
+    ).strip()
+    configured_headers_allowed = not (
+        configured_ollama_base_url
+        and not _same_ollama_native_root(ollama_base_url or "", configured_ollama_base_url)
+    )
+    if headers is not None:
+        ollama_headers = {}
+        if configured_headers_allowed:
+            ollama_headers.update(
+                _get_ollama_native_headers(ollama_base_url, api_key=api_key)
+            )
+        for key in tuple(ollama_headers):
+            if key.lower() == "authorization":
+                del ollama_headers[key]
+        ollama_headers.update(headers)
+        caller_has_authorization = any(
+            key.lower() == "authorization" for key in headers
+        )
+        if api_key and not caller_has_authorization:
+            for key in tuple(ollama_headers):
+                if key.lower() == "authorization":
+                    del ollama_headers[key]
+            ollama_headers["Authorization"] = f"Bearer {api_key}"
+    elif configured_headers_allowed:
+        ollama_headers = _get_ollama_native_headers(ollama_base_url, api_key=api_key)
+    else:
+        ollama_headers = {}
+    if should_use_ollama_native_catalog(
+        provider, ollama_base_url, headers=ollama_headers
+    ):
+        ollama_models = probe_ollama_local_models(
+            ollama_base_url, headers=ollama_headers
+        )
+        if ollama_models is None:
+            # A failed native probe is not authoritative; fall back to the
+            # existing OpenAI-compatible catalog before accepting blindly.
+            ollama_models = probe_api_models(
+                api_key,
+                _normalize_openai_base_url(ollama_base_url),
+                request_headers=ollama_headers,
+            ).get("models")
+        if ollama_models is None:
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: could not reach this Ollama endpoint's `/api/tags` model listing to validate `{requested}`. "
+                    "Hermes will save the model name, but local Ollama model discovery could not verify it."
+                ),
+            }
+        if requested_for_lookup in set(ollama_models):
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            }
+        suggestions = get_close_matches(requested_for_lookup, ollama_models, n=3, cutoff=0.5)
+        suggestion_text = ""
+        if suggestions:
+            suggestion_text = "\n  Similar local Ollama models: " + ", ".join(f"`{s}`" for s in suggestions)
+        empty_hint = " No models are currently listed by `/api/tags`." if not ollama_models else ""
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": False,
+            "message": (
+                f"Note: `{requested}` was not found in this Ollama endpoint's `/api/tags` model listing."
+                f"{empty_hint} It may still work if the server supports hidden or aliased models."
+                f"{suggestion_text}"
+            ),
+        }
+
     if normalized == "custom" or normalized.startswith("custom:"):
         # Try probing with correct auth for the api_mode.
         if api_mode == "anthropic_messages":
-            probe = probe_api_models(api_key, base_url, api_mode=api_mode)
+            probe = probe_api_models(
+                api_key,
+                base_url,
+                api_mode=api_mode,
+                request_headers=headers,
+            )
         else:
-            probe = probe_api_models(api_key, base_url)
+            probe = probe_api_models(
+                api_key,
+                base_url,
+                request_headers=headers,
+            )
         api_models = probe.get("models")
         if api_models is not None:
             if requested_for_lookup in set(api_models):
@@ -5724,8 +6808,8 @@ def validate_requested_model(
     # AWS SDK control plane (ListFoundationModels + ListInferenceProfiles).
     if normalized == "bedrock":
         try:
-            from agent.bedrock_adapter import discover_bedrock_models, resolve_bedrock_region
-            region = resolve_bedrock_region()
+            from agent.bedrock_adapter import discover_bedrock_models, resolve_bedrock_runtime_region
+            region = resolve_bedrock_runtime_region()
             discovered = discover_bedrock_models(region)
             discovered_ids = {m["id"] for m in discovered}
             if requested in discovered_ids:

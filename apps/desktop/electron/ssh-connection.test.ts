@@ -74,7 +74,10 @@ test('redactSecrets leaves legitimate ssh target logging untouched', () => {
     redactSecrets('connecting (no-mux) to root@100.84.204.123:22'),
     'connecting (no-mux) to root@100.84.204.123:22'
   )
-  assert.equal(redactSecrets('opening control master to alice@box.example.com:2222'), 'opening control master to alice@box.example.com:2222')
+  assert.equal(
+    redactSecrets('opening control master to alice@box.example.com:2222'),
+    'opening control master to alice@box.example.com:2222'
+  )
 })
 
 test('controlSocketPath is stable, short, and host-distinct', () => {
@@ -686,6 +689,7 @@ test('validateSshTarget rejects whitespace in host (pasted ssh command)', () => 
 test('validateSshTarget rejects a password glued into the host field', () => {
   // Real incident shape: user typed host:PASSWORD (port parsed off upstream).
   assert.throws(() => validateSshTarget('100.84.204.123:hunter2', 'root', 22), /password|":" segment/i)
+
   // The thrown message must not echo the credential verbatim.
   try {
     validateSshTarget('100.84.204.123:hunter2', 'root', 22)

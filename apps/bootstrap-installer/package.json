@@ -32,7 +32,7 @@
     "clsx": "2.1.1",
     "katex": "0.16.47",
     "lucide-react": "0.577.0",
-    "nanostores": "1.4.0",
+    "nanostores": "1.4.2",
     "radix-ui": "1.6.7",
     "react": "19.2.7",
     "react-dom": "19.2.7",

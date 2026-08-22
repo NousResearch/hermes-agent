@@ -793,14 +793,24 @@ def _(rid, params: dict) -> dict:
             state = mgr.resume()
             if state is None:
                 return _ok(rid, {"type": "exec", "output": "No goal to resume."})
+            # Resume must restart work, not just flip persisted state
+            # (#75362). An `exec` result is display-only — nothing would
+            # re-enter the conversation loop until the user typed another
+            # message. Return a `send` dispatch carrying the canonical
+            # continuation prompt so the client fires the next turn
+            # immediately; `display` keeps the transcript showing the
+            # concise invocation instead of the model-facing scaffolding.
+            prompt = mgr.next_continuation_prompt()
+            notice = f"▶ Goal resumed: {state.goal}\nContinuing now — taking the next step."
+            if not prompt:
+                return _ok(rid, {"type": "exec", "output": f"▶ Goal resumed: {state.goal}"})
             return _ok(
                 rid,
                 {
-                    "type": "exec",
-                    "output": (
-                        f"▶ Goal resumed: {state.goal}\n"
-                        "Send any message to continue, or wait — I'll take the next step on the next turn."
-                    ),
+                    "type": "send",
+                    "notice": notice,
+                    "message": prompt,
+                    "display": "/goal resume",
                 },
             )
         if lower in {"clear", "stop", "done"}:
@@ -877,50 +887,55 @@ def _(rid, params: dict) -> dict:
             return _err(
                 rid, 4009, "session busy — /interrupt the current turn before /undo"
             )
-        db = _get_db()
-        if db is None:
-            return _db_unavailable_error(rid, code=5008)
-        session_key = session.get("session_key", "")
-        if not session_key:
-            return _err(rid, 4001, "no session key for undo")
-        # Parse the optional count argument (e.g. "/undo 3" → 3).
-        n = 1
-        arg_str = (arg or "").strip()
-        if arg_str:
-            try:
-                n = int(arg_str.split()[0])
-            except (ValueError, IndexError):
-                return _err(rid, 4004, f"undo: invalid count {arg_str!r} — use /undo or /undo N")
-        if n < 1:
+        # _session_db, not _get_db(): every read and write below is scoped by
+        # session id, and a profile session (app-global remote mode) keeps its
+        # rows in its own profile's state.db. Against the launch handle
+        # list_recent_user_messages finds nothing, so /undo fails closed with
+        # 4018 for the whole session instead of rewinding anything.
+        with _session_db(session) as db:
+            if db is None:
+                return _db_unavailable_error(rid, code=5008)
+            session_key = session.get("session_key", "")
+            if not session_key:
+                return _err(rid, 4001, "no session key for undo")
+            # Parse the optional count argument (e.g. "/undo 3" → 3).
             n = 1
-        try:
-            recents = db.list_recent_user_messages(session_key, limit=max(n, 10))
-        except Exception as e:
-            return _err(rid, 5008, f"undo: failed to load history: {e}")
-        if not recents:
-            return _err(rid, 4018, "no user messages to undo")
-        # recents[0] is the most-recent user turn; pick the Nth-from-last.
-        # If N exceeds the number of user turns, back up to the oldest.
-        target_idx = min(n - 1, len(recents) - 1)
-        target_id = recents[target_idx]["id"]
-        try:
-            result = db.rewind_to_message(session_key, target_id)
-        except ValueError as e:
-            return _err(rid, 4004, f"undo: {e}")
-        except Exception as e:
-            return _err(rid, 5008, f"undo: {e}")
-        # Reload the active-only transcript into the in-memory session
-        # history so subsequent turns see the truncated view.
-        # repair_alternation: this reload feeds LIVE REPLAY — session["history"]
-        # is the working conversation for subsequent turns, and a rewind that
-        # lands on a durable user;user pair would otherwise re-fire the
-        # pre-request repair on every request from here on.
-        try:
-            active = db.get_messages_as_conversation(
-                session_key, repair_alternation=True, include_row_ids=True
-            )
-        except Exception:
-            active = []
+            arg_str = (arg or "").strip()
+            if arg_str:
+                try:
+                    n = int(arg_str.split()[0])
+                except (ValueError, IndexError):
+                    return _err(rid, 4004, f"undo: invalid count {arg_str!r} — use /undo or /undo N")
+            if n < 1:
+                n = 1
+            try:
+                recents = db.list_recent_user_messages(session_key, limit=max(n, 10))
+            except Exception as e:
+                return _err(rid, 5008, f"undo: failed to load history: {e}")
+            if not recents:
+                return _err(rid, 4018, "no user messages to undo")
+            # recents[0] is the most-recent user turn; pick the Nth-from-last.
+            # If N exceeds the number of user turns, back up to the oldest.
+            target_idx = min(n - 1, len(recents) - 1)
+            target_id = recents[target_idx]["id"]
+            try:
+                result = db.rewind_to_message(session_key, target_id)
+            except ValueError as e:
+                return _err(rid, 4004, f"undo: {e}")
+            except Exception as e:
+                return _err(rid, 5008, f"undo: {e}")
+            # Reload the active-only transcript into the in-memory session
+            # history so subsequent turns see the truncated view.
+            # repair_alternation: this reload feeds LIVE REPLAY — session["history"]
+            # is the working conversation for subsequent turns, and a rewind that
+            # lands on a durable user;user pair would otherwise re-fire the
+            # pre-request repair on every request from here on.
+            try:
+                active = db.get_messages_as_conversation(
+                    session_key, repair_alternation=True, include_row_ids=True
+                )
+            except Exception:
+                active = []
         with session["history_lock"]:
             session["history"] = list(active)
             session["history_version"] = int(session.get("history_version", 0)) + 1
@@ -1699,15 +1714,19 @@ def _(rid, params: dict) -> dict:
         if action == "list":
             # Paused jobs are excluded by default, which reads as deletion in
             # any UI with an enable/disable toggle — forward the flag.
-            return _ok(
-                rid,
-                json.loads(
-                    cronjob(
-                        action="list",
-                        include_disabled=is_truthy_value(params.get("include_disabled", False)),
-                    )
-                ),
+            result = json.loads(
+                cronjob(
+                    action="list",
+                    include_disabled=is_truthy_value(params.get("include_disabled", False)),
+                )
             )
+            # This marker proves the gateway honored the optional profile
+            # scope. New clients may therefore treat every returned job as
+            # owned by that profile; older gateways omit it, preserving the
+            # safe [bot:<name>] compatibility filter.
+            if profile:
+                result["scoped"] = profile
+            return _ok(rid, result)
         if action == "add":
             return _ok(
                 rid,
@@ -1733,6 +1752,11 @@ def _(rid, params: dict) -> dict:
                             if params.get("continuity") is not None
                             else None
                         ),
+                        # Optional delivery target — notably 'bot-chat[:name]'
+                        # (canonical Bot Chat injection) from the Desktop Bot
+                        # Mode cronjob dialog. Omitted/empty keeps the
+                        # cronjob() default.
+                        deliver=(str(params.get("deliver") or "").strip() or None),
                     )
                 ),
             )
@@ -2384,8 +2408,18 @@ def _(rid, params: dict) -> dict:
                        status, portable}], "user_count": N, "bundled_count": M}
       - ``toggle`` → flip ``key`` (or ``name``) based on ``enable`` (bool).
                        Returns the refreshed row plus {"ok", "unchanged"}.
+      - ``install`` → git-clone into ``~/.hermes/plugins/`` (non-interactive).
+                       Params: ``identifier`` or ``repo``, optional ``force``,
+                       ``enable`` (default True). Returns dashboard install dict.
+
+    Accepts an optional ``profile`` param (same contract as mcp.servers.*):
+    plugins live under each profile's HERMES_HOME, so a client can list or
+    toggle another profile's plugins without switching the whole app.
     """
     action = params.get("action", "list")
+    token, err = _mcp_resolve_profile(rid, params)
+    if err:
+        return err
     try:
         from hermes_cli.plugins_cmd import (
             _bundled_default_on,
@@ -2469,9 +2503,30 @@ def _(rid, params: dict) -> dict:
                 },
             )
 
+        if action == "install":
+            from hermes_cli.plugins_cmd import dashboard_install_plugin
+
+            ident = (
+                params.get("identifier") or params.get("repo") or ""
+            ).strip()
+            if not ident:
+                return _err(
+                    rid, 4019, "plugins.install requires 'identifier' or 'repo'"
+                )
+            result = dashboard_install_plugin(
+                ident,
+                force=bool(params.get("force")),
+                enable=params.get("enable", True),
+            )
+            if not result.get("ok"):
+                return _err(rid, 5026, result.get("error") or "install failed")
+            return _ok(rid, result)
+
         return _err(rid, 4017, f"unknown plugins action: {action}")
     except Exception as e:
         return _err(rid, 5026, str(e))
+    finally:
+        _mcp_reset_profile(token)
 
 
 @method("shell.exec")

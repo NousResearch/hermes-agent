@@ -13,6 +13,11 @@ const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 function loadTracker(toastsEnabled) {
   const start = source.indexOf('const rosterWatermarks = new Map()')
   const end = source.indexOf('/** Last good cron list', start)
+  // The tracker keys watermarks off the REAL botActivitySession helper
+  // (defined later in plugin.js) — extract it so the harness can't drift.
+  const helperStart = source.indexOf('function botActivitySession(')
+  const helperEnd = source.indexOf('/** Bots that are working', helperStart)
+  assert.ok(helperStart >= 0 && helperEnd > helperStart, 'botActivitySession must remain extractable')
   const notifications = []
   const context = {
     pluginCtx: null,
@@ -30,7 +35,8 @@ function loadTracker(toastsEnabled) {
     displayName: bot => bot.name
   }
   const section = source
-    .slice(start, end)
+    .slice(helperStart, helperEnd)
+    .concat('\n', source.slice(start, end))
     .concat('\nglobalThis.__t = { trackInboundActivity, $activityToasts, setActivityToasts };\n')
   vm.runInNewContext(section, context, { filename: 't.js' })
   if (toastsEnabled) {
@@ -67,4 +73,20 @@ test('pref defaults OFF and persists via ctx.storage under activity-toasts', () 
     /storage\?\.set\?\.\('activity-toasts', enabled\)/
   )
   assert.match(source, /storage\?\.get\?\.\('activity-toasts'\)/)
+})
+
+test('activity in the hidden canonical Bot Chat still badges (the "6d ago" class)', () => {
+  // The canonical Bot Chat is hidden from session lists, so last_session
+  // never advances when a DM lands there — only canonical_session does.
+  const t = loadTracker(false)
+  const at = ts => [
+    {
+      name: 'researcher',
+      last_session: { last_active: 100, preview: 'ancient scratch chat' },
+      canonical_session: { last_active: ts, preview: 'Message from writer: hi' }
+    }
+  ]
+  t.trackInboundActivity(at(150)) // seeding poll
+  t.trackInboundActivity(at(250)) // Bot Chat got a DM; last_session unchanged
+  assert.equal(t.$botUnread.get().researcher, true, 'hidden Bot Chat activity must set unread')
 })

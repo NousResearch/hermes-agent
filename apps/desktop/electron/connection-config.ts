@@ -134,6 +134,18 @@ function gatewayTicketFailure(error, authMessage, transportMessage) {
     ;(err as any).needsOauthLogin = true
   }
 
+  // Preserve structured HTTP context when the source error carried an integer
+  // statusCode (the fetch layer attaches err.statusCode). Downstream Cloud
+  // classification (isServerSideHttpError / makeNousCloudBackendDownError) and
+  // the renderer overlay depend on it surviving the ticket-error wrapper. Auth
+  // semantics are unchanged: 401/403 route to reauth, 5xx stays a transport
+  // failure, everything else keeps current behavior.
+  const sourceStatus = Number(error && typeof error === 'object' ? (error as any).statusCode : NaN)
+
+  if (Number.isInteger(sourceStatus)) {
+    ;(err as any).statusCode = sourceStatus
+  }
+
   err.cause = error
 
   return err
@@ -212,6 +224,27 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps: any = {}) {
 // (default) connection. Shared by the resolver and the IPC layer.
 function connectionScopeKey(profile) {
   return String(profile ?? '').trim() || null
+}
+
+/** Which Hermes profile the remote SSH dashboard should actually run as.
+ *  Registry pool keys (`conn:mac-mini::default`) are desktop routing labels —
+ *  they must never be sent to the remote as a profile name. `default` and
+ *  empty mean the remote root home. */
+function resolveRemoteSshDashboardProfile(configuredRemoteProfile, poolOrProfileKey) {
+  const configured = String(configuredRemoteProfile || '').trim()
+
+  if (configured && configured !== 'default') {
+    return configured
+  }
+
+  const key = String(poolOrProfileKey || '').trim()
+  const requested = key.startsWith('conn:') ? key.split('::').pop() || '' : key
+
+  if (!requested || requested === 'default') {
+    return ''
+  }
+
+  return requested
 }
 
 // Coerce a remote auth mode to one of the two supported values ('token' default).
@@ -481,6 +514,12 @@ export interface ProfileRouteOptions {
   globalRemote?: boolean
   primaryProfile?: null | string
   profileRemoteOverride?: boolean
+  /** The primary profile's own backend resolves to a remote host. */
+  primaryRemoteActive?: boolean
+  /** A stored per-profile entry exists for this profile (local or remote). */
+  ownEntry?: boolean
+  requestMethod?: null | string
+  requestPath?: null | string
 }
 
 export interface ProfileBackendRoute {
@@ -496,16 +535,97 @@ export interface ProfileBackendRoute {
   scopePath: boolean
 }
 
+const LOCAL_PRIMARY_SCOPED_ROUTES = new Set([
+  'GET /api/config',
+  'PUT /api/config',
+  'GET /api/config/raw',
+  'PUT /api/config/raw',
+  'GET /api/config/schema',
+  'DELETE /api/env',
+  'GET /api/env',
+  'PUT /api/env',
+  'POST /api/env/reveal',
+  'GET /api/model/auxiliary',
+  'GET /api/model/info',
+  'GET /api/model/moa',
+  'PUT /api/model/moa',
+  'GET /api/model/options',
+  'POST /api/model/set',
+  'GET /api/skills',
+  'GET /api/skills/content',
+  'PUT /api/skills/toggle',
+  'POST /api/skills/hub/install',
+  'GET /api/skills/hub/preview',
+  'GET /api/skills/hub/scan',
+  'GET /api/skills/hub/search',
+  'GET /api/skills/hub/sources',
+  'POST /api/skills/hub/uninstall',
+  'POST /api/skills/hub/update',
+  // Spawns a background action polled via /api/actions/{name}/status — must
+  // live on the SAME backend as that poll family (below), or the poll asks a
+  // backend that never registered the dynamic action name and 404s.
+  'POST /api/mcp/catalog/install'
+])
+
+function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
+  const rawPath = String(opts.requestPath || '')
+
+  if (!rawPath) {
+    return null
+  }
+
+  let pathname
+
+  try {
+    pathname = new URL(rawPath, 'https://example.invalid').pathname
+  } catch {
+    return null
+  }
+
+  const method = String(opts.requestMethod || 'GET').toUpperCase()
+
+  if (LOCAL_PRIMARY_SCOPED_ROUTES.has(`${method} ${pathname}`)) {
+    return true
+  }
+
+  // Action-status polls MUST land on the same backend as the endpoints that
+  // spawned them: `_spawn_hermes_action` registers the (often dynamic, e.g.
+  // `skills-install-<slug>-<hash>`) action name only in the spawning
+  // process's memory. Every action-spawning route above scopes to the
+  // primary, so the poll family follows — a pooled-backend poll 404s with
+  // "Unknown action" even though the install itself succeeded (#89xxx).
+  if (pathname.startsWith('/api/actions/')) {
+    return true
+  }
+
+  // Every current /api/tools handler accepts `profile`; every /api/profiles
+  // handler either aggregates profiles or names its target in the path/body.
+  // These are the only whole families safe to route through the primary.
+  if (pathname === '/api/tools' || pathname.startsWith('/api/tools/')) {
+    return true
+  }
+
+  if (pathname === '/api/profiles' || pathname.startsWith('/api/profiles/')) {
+    return false
+  }
+
+  return null
+}
+
 /**
  * The one place that answers "which backend serves profile P, and does its
- * REST path need a profile scope?". Four routes, in precedence order:
+ * REST path need a profile scope?". Six routes, in precedence order:
  *
  *  1. The primary profile owns the window backend outright.
  *  2. A profile with its own remote override gets a pooled descriptor for that
  *     host, which is already scoped to it.
  *  3. A profile inheriting the app-global remote shares the primary backend —
  *     one host serves every profile — so it is scoped per request instead.
- *  4. Any other local profile gets its own pooled backend, spawned with
+ *  4. An unknown profile under a remote primary shares that remote backend.
+ *     A stored local profile remains isolated in its own backend.
+ *  5. A local profile REST request that the primary backend can safely scope
+ *     reuses that backend, with `?profile=` when the handler accepts it.
+ *  6. Any other local profile gets its own pooled backend, spawned with
  *     `--profile`, so its `HERMES_HOME` scopes it.
  *
  * Routing used to be spread across three overlapping predicates that each
@@ -526,6 +646,30 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
 
   if (opts.globalRemote) {
     return { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
+  }
+
+  if (opts.primaryRemoteActive) {
+    if (!opts.ownEntry) {
+      // The primary profile's own backend is a remote gateway (per-profile
+      // override or env) and this sub-profile has no stored entry of its own.
+      // Route through that gateway with profile scoping instead of spawning a
+      // fresh local backend that shares nothing but the name (#88296).
+      return { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
+    }
+
+    // A stored local profile must not be redirected into the remote primary,
+    // even when its REST endpoint supports profile scoping.
+    return { backend: 'pool', descriptorProfile: null, scopePath: false }
+  }
+
+  const localScope = localPrimaryRequestScope(opts)
+
+  if (localScope !== null) {
+    return {
+      backend: 'primary',
+      descriptorProfile: localScope ? scopedProfile : null,
+      scopePath: localScope
+    }
   }
 
   return { backend: 'pool', descriptorProfile: null, scopePath: false }
@@ -632,19 +776,43 @@ function pathWithProfileScope(path, profile) {
 
 /**
  * Registry connection a REST request is explicitly pinned to, or null for the
- * legacy profile-routed path. `''`/`'local'` mean the local pool — callers
- * only detour through the registry for a genuinely non-local connection, so
- * single-source users keep the byte-identical v1 route.
+ * legacy profile-routed path. An explicit `local` id must stay registry-scoped:
+ * when the v1 route is remote, only the registry resolver can force the request
+ * back to this device. Single-source users omit the id and keep the
+ * byte-identical v1 route.
  */
 function apiRequestRegistryConnectionId(request): null | string {
   const raw = request && typeof request === 'object' ? (request as { connectionId?: unknown }).connectionId : ''
   const id = String(raw ?? '').trim()
 
-  if (!id || id === 'local') {
+  if (!id) {
     return null
   }
 
   return id
+}
+
+export interface ProfileApiRequestRoute {
+  /** Profile passed to ensureBackend; null selects the primary backend. */
+  backendProfile: null | string
+  requestPath: string
+}
+
+/**
+ * Resolve the two decisions made by the `hermes:api` IPC handler from the same
+ * routing table: which backend serves the request, and whether its URL needs a
+ * profile query scope.
+ */
+function resolveProfileApiRequest(profile, path, opts: ProfileRouteOptions = {}): ProfileApiRequestRoute {
+  const scopedProfile = connectionScopeKey(profile)
+  const requestPath = String(path || '')
+  const routeOpts = { ...opts, requestPath }
+  const route = resolveProfileBackendRoute(scopedProfile, routeOpts)
+
+  return {
+    backendProfile: route.backend === 'pool' ? scopedProfile : null,
+    requestPath: pathWithGlobalRemoteProfile(requestPath, scopedProfile, routeOpts)
+  }
 }
 
 function tokenPreview(value) {
@@ -789,7 +957,9 @@ export {
   profileSshOverride,
   remoteRequestMatchesBaseUrl,
   resolveAuthMode,
+  resolveProfileApiRequest,
   resolveProfileBackendRoute,
+  resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   savedProfileSsh,

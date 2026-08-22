@@ -192,6 +192,25 @@ async def cron_fire_webhook(request: Request):
 
     forwarded = await _forward_cron_fire_to_gateway(profile, job_id, auth)
     if forwarded is None:
+        # Durably stamp the miss on the job record (last_fire_error) so the
+        # user and their agent can see "scheduled fire could not reach the
+        # runner" in `cronjob list` / the dashboard — without this, a dead
+        # 8642 hop is invisible outside gui.log (no execution row is ever
+        # created because the claim never happens). Best-effort: visibility
+        # must never break the retry contract below.
+        try:
+            await _run_cron_dashboard_io(
+                _call_cron_for_profile,
+                profile,
+                "note_fire_forward_failure",
+                job_id,
+                "scheduled fire could not be forwarded to the gateway "
+                "api_server (127.0.0.1 loopback unreachable); the gateway "
+                "process may be down or its api_server adapter not bound "
+                "(missing API_SERVER_KEY)",
+            )
+        except Exception:
+            _log.debug("could not stamp last_fire_error for %s", job_id, exc_info=True)
         # Gateway unreachable. Split by OPERATOR INTENT (OOF-266):
         #
         # - Deliberately stopped gateway (durable desired_state == "stopped",

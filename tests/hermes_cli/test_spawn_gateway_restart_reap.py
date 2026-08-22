@@ -7,6 +7,21 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def reset_restart_cooldown():
+    """Clear the #89034 repeat-restart cooldown between cases.
+
+    ``_spawn_gateway_restart`` now coalesces a second restart request that
+    arrives within ``GATEWAY_RESTART_COOLDOWN_SECONDS`` of the last spawn, so
+    without this the first case's spawn suppresses the second case's.
+    """
+    import hermes_cli.web_server as web_server
+
+    web_server._LAST_GATEWAY_RESTART = None
+    yield
+    web_server._LAST_GATEWAY_RESTART = None
+
+
 class TestSpawnGatewayRestartReapsOrphans:
     """_spawn_gateway_restart must reap orphaned gateways before spawning."""
 

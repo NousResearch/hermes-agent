@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
+import { $previewTabs, closeRightRail } from '@/store/preview'
 
 import { ComposerDirectiveActions } from './directive-actions'
 import { refChipElement } from './rich-editor'
@@ -46,6 +47,7 @@ function pillValue() {
 afterEach(() => {
   cleanup()
   document.body.replaceChildren()
+  closeRightRail()
   delete desktopWindow.hermesDesktop
   openSession.mockReset()
   vi.useRealTimers()
@@ -62,7 +64,7 @@ describe('ComposerDirectiveActions', () => {
     expect(pillValue()).toBe('https://example.com/docs')
   })
 
-  it('opens a url externally rather than navigating the app', () => {
+  it('opens a url in the in-app browser rather than navigating the app', async () => {
     const openExternal = vi.fn().mockResolvedValue(undefined)
 
     desktopWindow.hermesDesktop = { openExternal } as unknown as Window['hermesDesktop']
@@ -72,7 +74,8 @@ describe('ComposerDirectiveActions', () => {
     hover(chips(editor, 'url')[0]!)
     fireEvent.click(screen.getByRole('button'))
 
-    expect(openExternal).toHaveBeenCalledWith('https://example.com/docs')
+    expect(openExternal).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/docs'))
     expect(pillValue()).toBeNull()
   })
 

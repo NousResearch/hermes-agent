@@ -25,11 +25,9 @@ function addSource(id: string, provide: ComposerAtCompletionSource['provide']) {
   )
 }
 
-function gatewayStub() {
+function gatewayStub(items = [{ text: '@file:src/research-notes.md', display: 'research-notes.md', meta: 'file' }]) {
   return {
-    request: vi.fn(async () => ({
-      items: [{ text: '@file:src/research-notes.md', display: 'research-notes.md', meta: 'file' }]
-    }))
+    request: vi.fn(async () => ({ items }))
   }
 }
 
@@ -64,9 +62,7 @@ afterEach(() => {
 describe('contributed @ completion sources', () => {
   it('merges contributed rows ahead of gateway path results', async () => {
     vi.useFakeTimers()
-    addSource('bots', q =>
-      'researcher'.startsWith(q) ? [{ insert: '@researcher', meta: 'Bot · Researcher' }] : []
-    )
+    addSource('bots', q => ('researcher'.startsWith(q) ? [{ insert: '@researcher', meta: 'Bot · Researcher' }] : []))
 
     const { result } = renderHook(() =>
       useAtCompletions({ gateway: gatewayStub() as never, sessionId: 's1', cwd: '/repo' })
@@ -77,11 +73,27 @@ describe('contributed @ completion sources', () => {
     expect(rows.some(l => l.includes('research-notes.md'))).toBe(true)
   })
 
+  it('deduplicates contributed and core profile handles without collapsing distinct references', async () => {
+    vi.useFakeTimers()
+    addSource('bots', q => ('researcher'.startsWith(q) ? [{ insert: '@Researcher', meta: 'Bot · Researcher' }] : []))
+
+    const gateway = gatewayStub([
+      { text: '@researcher', display: '@researcher', meta: 'Research and intelligence analyst' },
+      { text: '@researcher-homelab', display: '@researcher-homelab', meta: 'agent profile' },
+      { text: '@file:src/researcher.md', display: 'researcher.md', meta: 'file' }
+    ])
+
+    const { result } = renderHook(() => useAtCompletions({ gateway: gateway as never, sessionId: 's1', cwd: '/repo' }))
+
+    const rows = await searchAndRead(result, 'rese')
+    expect(rows.filter(label => label.toLowerCase() === '@researcher')).toEqual(['@Researcher'])
+    expect(rows).toContain('@researcher-homelab')
+    expect(rows.some(label => label.includes('researcher.md'))).toBe(true)
+  })
+
   it('drops rows when the query does not match the source filter', async () => {
     vi.useFakeTimers()
-    addSource('bots', q =>
-      'researcher'.startsWith(q) ? [{ insert: '@researcher', meta: 'Bot' }] : []
-    )
+    addSource('bots', q => ('researcher'.startsWith(q) ? [{ insert: '@researcher', meta: 'Bot' }] : []))
 
     const { result } = renderHook(() =>
       useAtCompletions({ gateway: gatewayStub() as never, sessionId: 's1', cwd: '/repo' })

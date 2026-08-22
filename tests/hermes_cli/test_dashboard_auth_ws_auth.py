@@ -176,7 +176,13 @@ def insecure_explicit_host_app():
     web_server.app.state.auth_required = prev_required
 
 
-def _fake_ws(*, query: dict, client_host: str = "127.0.0.1", path: str = "/api/pty"):
+def _fake_ws(
+    *,
+    query: dict,
+    client_host: str = "127.0.0.1",
+    path: str = "/api/pty",
+    protocols: tuple[str, ...] = (),
+):
     """Build a stand-in for starlette.WebSocket good enough for _ws_auth_ok."""
 
     class _QP:
@@ -188,6 +194,7 @@ def _fake_ws(*, query: dict, client_host: str = "127.0.0.1", path: str = "/api/p
 
     return SimpleNamespace(
         query_params=_QP(query),
+        headers={"sec-websocket-protocol": ", ".join(protocols)} if protocols else {},
         client=SimpleNamespace(host=client_host),
         url=SimpleNamespace(path=path),
     )
@@ -212,6 +219,45 @@ class TestWsAuthOkGated:
         assert web_server._ws_auth_ok(ws_one) is True
         # Single-use — second consumption fails.
         assert web_server._ws_auth_ok(ws_two) is False
+
+    def test_ticket_subprotocol_is_single_use_and_selects_only_the_public_protocol(self, gated_app):
+        ticket = mint_ticket(user_id="subprotocol-user", provider="stub")
+        protocols = (
+            web_server._GATEWAY_WS_PROTOCOL,
+            f"{web_server._GATEWAY_WS_TICKET_PROTOCOL_PREFIX}{ticket}",
+        )
+        ws_one = _fake_ws(query={}, path="/api/ws", protocols=protocols)
+        ws_two = _fake_ws(query={}, path="/api/ws", protocols=protocols)
+
+        assert web_server._ws_auth_ok(ws_one) is True
+        assert ws_one._hermes_auth_identity == {
+            "user_id": "subprotocol-user",
+            "provider": "stub",
+        }
+        assert ws_one._hermes_ws_subprotocol == web_server._GATEWAY_WS_PROTOCOL
+        assert ticket not in ws_one._hermes_ws_subprotocol
+        assert web_server._ws_auth_ok(ws_two) is False
+
+    def test_ticket_subprotocol_rejects_missing_public_protocol_or_ambiguous_tickets(self, gated_app):
+        first = mint_ticket(user_id="u1", provider="stub")
+        missing_public = _fake_ws(
+            query={},
+            path="/api/ws",
+            protocols=(f"hermes-gateway-ticket.{first}",),
+        )
+        assert web_server._ws_auth_ok(missing_public) is False
+
+        second = mint_ticket(user_id="u2", provider="stub")
+        ambiguous = _fake_ws(
+            query={},
+            path="/api/ws",
+            protocols=(
+                "hermes-gateway-v1",
+                f"hermes-gateway-ticket.{first}",
+                f"hermes-gateway-ticket.{second}",
+            ),
+        )
+        assert web_server._ws_auth_ok(ambiguous) is False
 
 
     def test_legacy_token_rejected_in_gated_mode(self, gated_app):

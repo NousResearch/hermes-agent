@@ -2,21 +2,30 @@
 
 Hermes includes NeMo Relay as a normal runtime dependency on platforms for
 which Relay publishes a native wheel. The shared-metrics integration is built
-into Hermes and does not require `hermes plugins enable
-observability/nemo_relay`. Hermes remains importable without Relay on other
-native targets. Those targets use an explicit reduced-capability no-op host:
+into Hermes and does not require a Hermes observability plugin. Hermes remains
+importable without Relay on other native targets. Those targets use an
+explicit reduced-capability no-op host:
 Hermes execution remains available, while Relay scopes, middleware, plugins,
 and subscribers are unavailable. The `hermes-agent[nemo-relay]` extra remains
 as a no-op compatibility alias for existing installation commands.
 
-Hermes requires NeMo Relay 0.6.0 or later within the 0.6 release line. That
+> [!WARNING]
+> This removes the Hermes `observability/nemo_relay` plugin. Existing users
+> must remove `observability/nemo_relay` (or its legacy `nemo_relay` alias)
+> from `plugins.enabled` and move exporter configuration into a Relay
+> `plugins.toml` selected with `HERMES_NEMO_RELAY_PLUGINS_TOML`. The legacy
+> `HERMES_NEMO_RELAY_ATOF_*` and `HERMES_NEMO_RELAY_ATIF_*` variables no
+> longer activate exporters. Without the new variable, Hermes does not run
+> Relay plugin discovery, configuration layering, middleware, or exporters.
+
+Hermes requires NeMo Relay 0.7.1 or later within the 0.7 release line. That
 release establishes the lossless provider-codec contract used for Anthropic
 Messages, OpenAI Chat Completions, and OpenAI Responses requests.
 
 ## Runtime Dependency and Data Boundary
 
 Hermes installs the platform-specific `nemo-relay` native wheel from the
-bounded `>=0.6.0,<0.7` dependency range. The published package is built from
+bounded `>=0.7.1,<0.8` dependency range. The published package is built from
 the [NVIDIA NeMo Relay repository](https://github.com/NVIDIA/NeMo-Relay).
 Unsupported platforms use the explicit no-op runtime described above rather
 than downloading a different implementation.
@@ -41,9 +50,71 @@ This choice is read from the profile's own `config.yaml`. A machine-managed
 configuration overlay cannot enable or disable shared metrics on the profile's
 behalf.
 
-The existing `observability/nemo_relay` plugin remains separate. Enable that
-plugin only for its opt-in rich observability exporters, adaptive execution,
-or dynamic Relay plugins.
+Relay plugin activation is owned by the native runtime and remains explicitly
+opt-in. Set `HERMES_NEMO_RELAY_PLUGINS_TOML` to a selected `plugins.toml` to
+activate configured middleware, exporters, or dynamic plugins. When the
+variable is unset, Hermes does not invoke Relay's plugin initializer, so Relay
+does not perform plugin configuration discovery or layering. When it is set
+and the selected file loads successfully, Relay performs its normal static
+`plugins.toml` discovery and layers the selected static configuration over the
+discovered configuration. Dynamic `[[plugins.dynamic]]` records are loaded
+from the selected file only. If the selected file cannot be loaded, Hermes
+reports the error and does not invoke Relay initialization or fall back to
+ambient discovery.
+
+## Session-Span Segmentation for Continuous Sessions
+
+Relay exports a span when its scope closes. A continuous gateway session can
+remain open for days, so its session span remains open even though each turn
+span is exported normally. Optional segmentation rotates only the session
+scope at a turn boundary:
+
+```yaml
+gateway:
+  telemetry:
+    session_segments:
+      on_compaction: false  # rotate after context compaction
+      max_turns: 0          # 0 = unlimited; N = turns per segment
+```
+
+| Key | Default | Behavior |
+|---|---:|---|
+| `on_compaction` | `false` | Rotate after compaction completes, at the next turn boundary. |
+| `max_turns` | `0` | Rotate after every N completed turns; `0` disables the cap. |
+
+Both defaults preserve one session scope for the full session. Rotated spans
+retain the same `session_id` and add `hermes.session.segment` plus
+`hermes.session.segment_reason` (`compaction` or `max_turns`).
+
+## Process-Wide Plugin Policy and Profile Isolation
+
+Relay plugin configuration is a process-level deployment choice, not a Hermes
+profile setting. The first hosted profile triggers lazy initialization, and
+every additional profile hosted by that Hermes process shares the resulting
+static middleware, dynamic plugins, subscribers, exporters, and guardrail
+policy. After initialization succeeds, Hermes logs:
+
+```text
+Relay plugins are active process-wide and apply to all profiles hosted by this Hermes process.
+```
+
+Profile scopes still preserve causal isolation inside that shared policy.
+ATIF groups events by their top-level Agent scope, so simultaneous profile
+sessions produce separate trajectories rather than one mixed trajectory.
+ATOF and other global subscribers observe events from every hosted profile.
+Static and dynamic middleware likewise runs for managed calls from every
+profile.
+
+A worker plugin running in a separate worker process does not create a
+per-profile security boundary. One process-wide activation dispatches calls
+from all hosted profiles to that worker while preserving the invoking
+profile's Relay scope stack. Native dynamic plugins are loaded into the Hermes
+process and share the same policy boundary.
+
+Run profiles in separate Hermes processes when they require different trust
+levels, plugin credentials, exporter destinations, or guardrail policies.
+This process-wide plugin contract does not change each profile's independent
+shared-metrics consent, local SQLite state, or ATIF trajectory grouping.
 
 Hermes core owns one Relay host and one isolated Relay session scope per Hermes
 session. Core lifecycle producers use

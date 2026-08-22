@@ -94,7 +94,7 @@ export function rebindSurvivorRowIds(messages: ChatMessage[], survivorRowIds: Su
 
 /**
  * Renderer-synthetic message ids (`${timestamp}-${index}-${role}` from
- * chat-messages.ts, plus older `user-…` / `assistant-…` shapes). Gateway
+ * chat-messages/hydration.ts, plus older `user-…` / `assistant-…` shapes). Gateway
  * history never carries them — only durable `row_id` / platform message_id.
  */
 export function isSyntheticRendererId(messageId: string | undefined): boolean {
@@ -262,6 +262,18 @@ export async function runRewindSubmit(
     resolvedMessageId = undefined
   }
 
+  // Durable id present (#88082, #89244): drop the client ordinal. Renderer
+  // ordinals and gateway tip ordinals are different spaces — tail-only
+  // prefetch (window-relative), in-place compact (display-lineage scrollback
+  // vs tip, prefix_user_count structurally 0), and any later visibility
+  // skew. The cut is aimed by the resolved durable id; sending a divergent
+  // ordinal trips the gateway's 4030 cross-check. Unknown ids still fail
+  // closed at 4018. The ordinal is only a tripwire, and it is calibrated in
+  // a space the gateway cannot reliably compute.
+  if (wantsTruncation && hasDurableAddress) {
+    resolvedOrdinal = undefined
+  }
+
   const interrupt = async () => {
     try {
       await requestGateway('session.interrupt', { session_id: liveSessionId })
@@ -278,13 +290,11 @@ export async function runRewindSubmit(
         text,
         ...truncateSubmitParams(resolvedOrdinal, resolvedMessageId, resolvedRowId),
         // A first-turn rewind resolves to an empty transcript, which the
-        // gateway additionally gates behind confirm_empty_truncate. In
-        // resolved-row-id mode the ordinal was dropped (see above), so carry
-        // the flag from the caller's ordinal-0 belief: required when right,
-        // ignored by the gateway when the cut isn't actually empty.
-        ...(resolvedRowId !== undefined && resolvedOrdinal === undefined && truncateOrdinal === 0
-          ? { confirm_empty_truncate: true }
-          : {})
+        // gateway additionally gates behind confirm_empty_truncate. When the
+        // client ordinal is dropped (durable-id path), carry the flag from
+        // the caller's ordinal-0 belief: required when right, ignored by the
+        // gateway when the cut isn't actually empty.
+        ...(resolvedOrdinal === undefined && truncateOrdinal === 0 ? { confirm_empty_truncate: true } : {})
       },
       PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
     )
@@ -456,7 +466,13 @@ export function applyReloadOptimistic(state: ClientSessionState, plan: ReloadPla
         .map(m => (m.role === 'assistant' ? { ...m, branchGroupId: plan.branchGroupId, hidden: true } : m))
     ],
     pendingBranchGroup: plan.branchGroupId,
-    sawAssistantPayload: false
+    sawAssistantPayload: false,
+    // Arm the turn clock with the optimistic busy. The clock is what bounds
+    // the no-payload settle gate's pre-start hold (#86795): an armed turn
+    // with no clock is settled by the first running=false heartbeat, so a
+    // regenerate racing a heartbeat would lose its spinner mid-flight.
+    turnLive: false,
+    turnStartedAt: Date.now()
   }
 }
 
@@ -585,7 +601,11 @@ export function applyRewindOptimistic(
       ? [...state.messages.slice(0, sourceIndex), editedMessage]
       : state.messages.slice(0, sourceIndex + 1),
     pendingBranchGroup: null,
-    sawAssistantPayload: false
+    sawAssistantPayload: false,
+    // Same as applyReloadOptimistic: seed the clock so the no-payload settle
+    // gate holds through the submit round trip but never latches (#86795).
+    turnLive: false,
+    turnStartedAt: Date.now()
   }
 }
 

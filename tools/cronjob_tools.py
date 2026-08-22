@@ -352,6 +352,16 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             # send_message, which passes HERMES_SESSION_USER_ID to
             # gateway.mirror.mirror_to_session. Harmless for DMs/shared sessions.
             "user_id": get_session_env("HERMES_SESSION_USER_ID") or None,
+            # Workspace/server scope (Slack team, Discord guild, Matrix
+            # server). build_session_key embeds it in every Slack session key
+            # (dm/group/thread alike), so a continuable cron seed built
+            # WITHOUT it creates a row no scoped reply ever resolves to —
+            # the seeded key is agent:main:slack:dm:<chat>:<thread> while the
+            # reply keys agent:main:slack:dm:<team>:<chat>:<thread>. Captured
+            # here so the scheduler's seed helpers can reproduce the reply's
+            # exact key. Same session-context var async_delegation already
+            # snapshots; None for platforms without scope.
+            "scope_id": get_session_env("HERMES_SESSION_SCOPE_ID") or None,
         }
     return None
 
@@ -449,6 +459,40 @@ def _normalize_deliver_param(value: Any) -> Optional[str]:
         return ",".join(parts) if parts else None
     text = str(value).strip()
     return text or None
+
+
+def _validate_bot_chat_deliver(deliver: Optional[str]) -> Optional[str]:
+    """Validate any ``bot-chat[:<profile>]`` deliver elements at create time.
+
+    Bot Chat delivery is machine-local: the named profile must exist on THIS
+    machine (the one whose scheduler will fire the job). Failing loudly here
+    beats a per-run ``last_delivery_error`` at 3am — especially for Desktop
+    clients whose merged multi-gateway rosters may show same-named profiles
+    from other machines. Returns an error string or None.
+    """
+    if not deliver:
+        return None
+    try:
+        from cron.scheduler import parse_bot_chat_deliver_token
+        from hermes_cli.profiles import normalize_profile_name, profile_exists
+    except Exception:
+        return None  # validation is best-effort; resolution re-checks at fire time
+    for part in str(deliver).split(","):
+        profile_arg = parse_bot_chat_deliver_token(part.strip())
+        if profile_arg is None or not profile_arg:
+            continue  # not a bot-chat token, or bare token (own profile)
+        try:
+            canon = normalize_profile_name(profile_arg)
+        except Exception:
+            return f"invalid bot-chat profile name '{profile_arg}'"
+        if not profile_exists(canon):
+            return (
+                f"bot-chat delivery profile '{profile_arg}' not found on this "
+                "gateway's machine. Bot Chat delivery is machine-local — use a "
+                "profile that exists here (hermes profile list), or omit the "
+                "name (deliver='bot-chat') for the job's own profile."
+            )
+    return None
 
 
 def _resolve_cron_context_deliver(deliver: Optional[str]) -> Optional[str]:
@@ -638,6 +682,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "last_run_at": job.get("last_run_at"),
         "last_status": job.get("last_status"),
         "last_delivery_error": job.get("last_delivery_error"),
+        "last_fire_error": job.get("last_fire_error"),
         "enabled": job.get("enabled", True),
         # Derive from enabled so half-paused records never render as paused.
         "state": effective_job_state(job),
@@ -646,6 +691,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     }
     if job.get("script"):
         result["script"] = job["script"]
+    if job.get("reasoning_effort"):
+        result["reasoning_effort"] = job["reasoning_effort"]
     if job.get("monitor_script"):
         result["monitor_script"] = job["monitor_script"]
     if job.get("monitor_url"):
@@ -1200,6 +1247,7 @@ def cronjob(
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
 ) -> str:
@@ -1251,6 +1299,12 @@ def cronjob(
             if base_url_error:
                 return tool_error(base_url_error, success=False)
 
+            # bot-chat deliver targets are machine-local: named profiles must
+            # exist here, and a bad name should fail the CREATE, not the run.
+            bot_chat_error = _validate_bot_chat_deliver(_normalize_deliver_param(deliver))
+            if bot_chat_error:
+                return tool_error(bot_chat_error, success=False)
+
             # Validate context_from references existing jobs
             if context_from:
                 from cron.jobs import get_job as _get_job
@@ -1300,6 +1354,12 @@ def cronjob(
                     attach_to_session=attach_to_session,
                     monitor_script=_normalize_optional_job_value(monitor_script),
                     monitor_url=_normalize_optional_job_value(monitor_url),
+                    # reasoning_effort reaches here from the CLI
+                    # (hermes cron create --reasoning-effort) ONLY — it is
+                    # deliberately absent from CRONJOB_SCHEMA and the model
+                    # dispatch below: models do not make model-config
+                    # decisions (standing policy).
+                    reasoning_effort=reasoning_effort,
                 )
             except CronSchedulerRegistrationError as exc:
                 _partial = exc.to_dict()
@@ -1469,6 +1529,9 @@ def cronjob(
             if name is not None:
                 updates["name"] = name
             if deliver is not None:
+                bot_chat_error = _validate_bot_chat_deliver(_normalize_deliver_param(deliver))
+                if bot_chat_error:
+                    return tool_error(bot_chat_error, success=False)
                 updates["deliver"] = _resolve_cron_context_deliver(
                     _normalize_deliver_param(deliver)
                 )
@@ -1482,6 +1545,10 @@ def cronjob(
                 updates["provider"] = _normalize_optional_job_value(provider)
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+            if reasoning_effort is not None:
+                # CLI-only lane (see create above): update_job validates
+                # against the canonical grammar; empty string clears the pin.
+                updates["reasoning_effort"] = reasoning_effort
             # Re-validate the EFFECTIVE provider/base_url on EVERY update, not
             # only when this update supplies provider/base_url. A job persisted
             # before this guard (or written directly to the jobs store) may
@@ -1660,7 +1727,7 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
             },
             "deliver": {
                 "type": "string",
-                "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), 'all' (fan out to every connected home channel), or platform:chat_id:thread_id for a specific destination. Combine with comma: 'origin,all' delivers to the origin plus every other connected channel. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567', 'all'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting. 'all' resolves at fire time, so a job created before a channel was wired up will pick it up automatically once connected."
+                "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), 'all' (fan out to every connected home channel), 'bot-chat' (inject the output into this profile's canonical Bot Chat as a real message — the bot reads it, acts on it, and responds in that chat; 'bot-chat:<profile>' targets another local profile's Bot Chat, costing that bot an agent turn per run), or platform:chat_id:thread_id for a specific destination. Combine with comma: 'origin,all' delivers to the origin plus every other connected channel. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567', 'all', 'bot-chat:research'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting. 'all' resolves at fire time (and never includes bot-chat targets), so a job created before a channel was wired up will pick it up automatically once connected."
             },
             "skills": {
                 "type": "array",

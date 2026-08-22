@@ -132,6 +132,14 @@ model:
   #       CF-Access-Client-Id: "xxxx.access"
   #       CF-Access-Client-Secret: "${CF_ACCESS_SECRET}"
   #       X-Client-Name: "hermes-agent"
+# providers:
+#   meta:
+#     base_url: https://api.meta.ai/v1
+#     api_key: ${MODEL_API_KEY}
+#     # api_mode auto-detected as codex_responses for api.meta.ai; no need to set
+#     # (the bundled meta-ai provider covers this — a named custom provider is
+#     # only needed for a non-default Meta-compatible endpoint)
+
 
 # Command-minted credentials (optional): key_cmd
 # ------------------------------------------------------------------
@@ -480,6 +488,11 @@ browser:
   # Inactivity timeout in seconds - browser sessions are automatically closed
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120
+  # Let an authenticated browser extension register as the controller for an
+  # existing Hermes session. Disabled by default. Local API registration also
+  # requires the API server bearer key to be configured.
+  extension_control:
+    enabled: false
 
 # =============================================================================
 # Tool Loop Guardrails
@@ -664,6 +677,19 @@ compression:
   # auxiliary section below (auxiliary.compression.provider / model).
 
 # =============================================================================
+# Tool-result budget (optional)
+# =============================================================================
+# Controls when a large tool result is spilled to disk (full output saved to
+# $HERMES_HOME/cache/spillover, preview + path kept in context). MCP tool
+# results (tools named mcp_*) spill at a tighter 50,000-char threshold than
+# the generic 100K default: MCP servers routinely return un-paginated 20-50K
+# payloads that bloat context and slow every subsequent turn. Nothing is
+# lost — the full result is on disk and readable with read_file.
+#
+# tool_budget:
+#   mcp_result_size_chars: 50000   # per-result spillover threshold for mcp_* tools
+
+# =============================================================================
 # Anthropic prompt caching TTL
 # =============================================================================
 # When prompt caching is active (Claude via OpenRouter or native Anthropic),
@@ -811,11 +837,6 @@ memory:
   # Periodic memory nudge: remind the agent to consider saving memories
   # every N user turns. Set to 0 to disable. Only active when memory is enabled.
   nudge_interval: 10        # Nudge every 10 user turns (0 = disabled)
-
-  # Memory flush: give the agent one turn to save memories before context is
-  # lost (compression, /new, /reset, exit). Set to 0 to disable.
-  # For exit/reset, only fires if the session had at least this many user turns.
-  flush_min_turns: 6        # Min user turns to trigger flush on exit/reset (0 = disabled)
 
 # =============================================================================
 # Session Reset Policy (Messaging Platforms)

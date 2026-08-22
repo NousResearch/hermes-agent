@@ -152,6 +152,44 @@ _active_subagents_lock = threading.Lock()
 # for the lifetime of the run; _run_single_child is the owner.
 _active_subagents: Dict[str, Dict[str, Any]] = {}
 
+# subagent_id -> {goal, delegation_id, parent_session_id} retained AFTER the
+# child finishes (bounded FIFO). Child-started background processes routinely
+# outlive the child itself (its npm ci with notify_on_complete=true finishes
+# after the child's summary was delivered); their completion notifications
+# reach the parent conversation via the shared completion_queue and need
+# delegation attribution even though the live registry entry is gone.
+_RECENT_SUBAGENTS_CAP = 200
+_recent_subagents: Dict[str, Dict[str, Any]] = {}
+
+
+def get_subagent_attribution(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Resolve a process task_id to its originating delegation, if any.
+
+    Children run their terminal sessions under ``task_id == subagent_id``
+    (see _run_single_child's child_task_id), so a background process spawned
+    by a subagent carries that id in ``ProcessSession.task_id``. Returns
+    ``{subagent_id, goal, delegation_id}`` for live AND recently-finished
+    children, or None when the task_id is not a known subagent.
+    """
+    if not task_id or not isinstance(task_id, str):
+        return None
+    with _active_subagents_lock:
+        record = _active_subagents.get(task_id)
+        if record is not None:
+            return {
+                "subagent_id": task_id,
+                "goal": record.get("goal"),
+                "delegation_id": record.get("delegation_id"),
+            }
+        retained = _recent_subagents.get(task_id)
+        if retained is not None:
+            return {
+                "subagent_id": task_id,
+                "goal": retained.get("goal"),
+                "delegation_id": retained.get("delegation_id"),
+            }
+    return None
+
 
 def set_spawn_paused(paused: bool) -> bool:
     """Globally block/unblock new delegate_task spawns.
@@ -179,11 +217,26 @@ def _register_subagent(record: Dict[str, Any]) -> None:
         _active_subagents[sid] = record
 
 
+def _retain_recent_subagent(record: Dict[str, Any]) -> None:
+    """Keep a bounded attribution stub after a child finishes (lock held)."""
+    sid = record.get("subagent_id")
+    if not sid:
+        return
+    _recent_subagents[sid] = {
+        "goal": record.get("goal"),
+        "delegation_id": record.get("delegation_id"),
+        "owner_agent_session_id": record.get("owner_agent_session_id"),
+    }
+    while len(_recent_subagents) > _RECENT_SUBAGENTS_CAP:
+        _recent_subagents.pop(next(iter(_recent_subagents)), None)
+
+
 def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
     with _active_subagents_lock:
         record = _active_subagents.get(subagent_id)
         if record is not None and (agent is None or record.get("agent") is agent):
             _active_subagents.pop(subagent_id, None)
+            _retain_recent_subagent(record)
 
 
 def _close_subagent_steering(subagent_id: str, agent: Any) -> Optional[str]:
@@ -350,6 +403,66 @@ def _is_descendant_of(child_agent: Any, parent_agent: Any, max_hops: int = 8) ->
 _CONTROL_ACTIONS = frozenset({"list", "steer", "stop"})
 
 
+def _resolve_session_lineage(session_id: Optional[str], parent_agent: Any) -> str:
+    """Resolve a session id to the tip of its compression lineage.
+
+    Best-effort: uses the parent's live SessionDB handle when present so a
+    delegation dispatched before a compression rotation still matches the
+    rotated parent. Returns the input unchanged when resolution fails.
+    """
+    sid = str(session_id or "")
+    if not sid:
+        return ""
+    db = getattr(parent_agent, "_session_db", None)
+    if db is None:
+        return sid
+    try:
+        resolved = db.resolve_resume_session_id(sid)
+        return str(resolved) if resolved else sid
+    except Exception:
+        return sid
+
+
+def _owns_subagent_record(record: Dict[str, Any], parent_agent: Any) -> bool:
+    """True when *parent_agent*'s conversation owns this live-child record.
+
+    Two-tier check:
+
+    1. Object identity — the ``_delegate_parent_ref`` weakref chain stamped
+       at build time reaches *parent_agent*. Fast path for the common case
+       where the parent AIAgent object survives the whole run.
+    2. Durable conversation lineage — the child was registered with the
+       owning conversation's durable session id
+       (``owner_agent_session_id``); match it against the calling parent's
+       ``session_id``, resolving compression-rotation lineage on both sides.
+
+    Tier 2 exists because the identity chain is BRITTLE across parent-agent
+    rebuilds: the CLI sets ``self.agent = None`` mid-session (route-signature
+    change, credential refresh, /model, MoA one-shots) and constructs a NEW
+    AIAgent for the next turn while the child keeps running with a weakref to
+    the old object. The delivery path always survived this (it routes by
+    durable session id); the control path must use the same durable spine or
+    running children go invisible/unsteerable (observed live: deleg_88454b70
+    / sa-0-dc0100f4, 2026-08-17).
+    """
+    agent = record.get("agent")
+    if _is_descendant_of(agent, parent_agent):
+        return True
+    owner_sid = str(record.get("owner_agent_session_id") or "")
+    if not owner_sid:
+        return False
+    parent_sid = str(getattr(parent_agent, "session_id", "") or "")
+    if not parent_sid:
+        return False
+    if owner_sid == parent_sid:
+        return True
+    # Compression rotation on either side: compare lineage tips.
+    return _resolve_session_lineage(owner_sid, parent_agent) in {
+        parent_sid,
+        _resolve_session_lineage(parent_sid, parent_agent),
+    }
+
+
 def _handle_control_action(
     action: str,
     subagent_id: Optional[str],
@@ -368,7 +481,7 @@ def _handle_control_action(
         entries = []
         for r in records:
             agent = r.get("agent")
-            if not _is_descendant_of(agent, parent_agent):
+            if not _owns_subagent_record(r, parent_agent):
                 continue
             started = r.get("started_at")
             entries.append(
@@ -409,8 +522,7 @@ def _handle_control_action(
         )
     with _active_subagents_lock:
         record = _active_subagents.get(sid)
-        target_agent = record.get("agent") if record else None
-    if record is None or not _is_descendant_of(target_agent, parent_agent):
+    if record is None or not _owns_subagent_record(record, parent_agent):
         return tool_error(
             f"No live subagent '{sid}' in this conversation's spawn tree. It "
             "may have already finished (its result arrives as a normal "
@@ -2470,12 +2582,24 @@ def _run_single_child(
         _raw_depth = getattr(child, "_delegate_depth", 1)
         _tui_depth = max(0, _raw_depth - 1) if isinstance(_raw_depth, int) else 0
         _parent_sid = getattr(child, "_parent_subagent_id", None)
+        # Durable ownership spine: the OWNING CONVERSATION's session id (the
+        # same lineage the delivery path routes completions by). Sourced from
+        # the child's _parent_session_id stamp so it stays correct even when
+        # parent_agent has been rebuilt between dispatch and this run.
+        _owner_agent_session_id = (
+            str(getattr(child, "_parent_session_id", "") or "")
+            or str(getattr(parent_agent, "session_id", "") or "")
+        )
+        _delegation_id = getattr(child, "_delegation_id", None)
         _register_subagent(
             {
                 "subagent_id": _subagent_id,
                 "parent_id": _parent_sid if isinstance(_parent_sid, str) else None,
                 "depth": _tui_depth,
                 "goal": goal,
+                "delegation_id": (
+                    _delegation_id if isinstance(_delegation_id, str) else None
+                ),
                 "model": (
                     getattr(child, "model", None)
                     if isinstance(getattr(child, "model", None), str)
@@ -2485,6 +2609,11 @@ def _run_single_child(
                 "status": "running",
                 "tool_count": 0,
                 "agent": child,
+                # Durable conversation lineage for the model-facing control
+                # plane (list/steer/stop). The weakref identity chain breaks
+                # when the CLI rebuilds its AIAgent mid-session; this id is
+                # the same spine completion delivery routes by.
+                "owner_agent_session_id": _owner_agent_session_id or None,
                 # Immutable live gateway/TUI session that commissioned this
                 # child. Empty outside those hosts; RPC authority fails closed.
                 "owner_session_id": owner_session_id,
@@ -2508,8 +2637,35 @@ def _run_single_child(
                 subagent_worktree.finalize_subagent_worktree(_worktree_info)
             )
         except Exception as e:
-            logger.debug("worktree finalize failed: %s", e)
-            entry_dict["worktree"] = dict(_worktree_info)
+            # finalize is written hard not to raise, but if it ever does the
+            # state is unknown — emit the SAME schema the parent expects,
+            # flagged, via the shared factory so the two producers of this
+            # payload can never drift.
+            logger.warning("worktree finalize failed: %s", e)
+            try:
+                from tools import subagent_worktree as _sw
+
+                entry_dict["worktree"] = _sw.unproven_worktree_payload(
+                    _worktree_info, f"finalize raised: {e}"
+                )
+            except Exception:
+                # Import itself failed — inline the same shape rather than
+                # dropping the flag (the parent must still see the warning).
+                entry_dict["worktree"] = {
+                    "path": _worktree_info.get("path", ""),
+                    "branch": _worktree_info.get("branch", ""),
+                    "commits": 0,
+                    "dirty": False,
+                    "pruned": False,
+                    "inspection_failed": True,
+                    "note": (
+                        f"worktree finalize raised ({e}) and the reporting "
+                        "helper was unavailable: 'commits' and 'dirty' are "
+                        "UNKNOWN, not zero/clean. Inspect "
+                        f"{_worktree_info.get('path', '')} before assuming "
+                        "no work."
+                    ),
+                }
 
     try:
         _heartbeat_thread.start()
@@ -3725,6 +3881,10 @@ def delegate_task(
                 getattr(child, "tool_progress_callback", None), _writer
             )
             child._live_transcript_path = str(_writer.path)
+        # Delegation identity for the live registry + process-notification
+        # attribution (child-started background processes report under it).
+        if live_deleg_id:
+            setattr(child, "_delegation_id", live_deleg_id)
         children.append((i, t, child))
 
     def _execute_and_aggregate(*, honor_parent_interrupt: bool = True) -> dict:

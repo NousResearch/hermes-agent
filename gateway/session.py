@@ -1235,6 +1235,13 @@ class AsyncSessionStore:
         return _offloaded
 
 
+# Sentinel for "no explicit SessionDB has been pinned on this store", so the
+# ``_db`` property can distinguish "resolve from the active profile scope"
+# from a deliberate ``store._db = None`` (which disables the DB and selects
+# the JSONL fallback).  A plain ``None`` cannot express both.
+_DB_UNPINNED = object()
+
+
 class SessionStore:
     """
     Manages session storage and retrieval.
@@ -1285,21 +1292,121 @@ class SessionStore:
             getattr(config, "write_sessions_json", True)
         )
         
-        # Initialize SQLite session database
-        self._db = None
-        try:
-            from hermes_state import SessionDB
-            self._db = SessionDB()
-        except RuntimeError as e:
-            if "live-system guard" in str(e):
-                # Test-isolation guard fired: a pytest-context process
-                # resolved the developer's production state.db. Never
-                # swallow this into the JSONL fallback — the whole point
-                # is a loud, hard failure.
-                raise
-            print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
-        except Exception as e:
-            print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
+        # Initialize SQLite session database.
+        #
+        # Handles are cached per resolved path and looked up through the
+        # ``_db`` property instead of being bound to one handle here.  A
+        # multiplexed gateway serves every profile from a SINGLE process, so
+        # a handle bound during __init__ is frozen to the process's own root
+        # home; every profile's rows then land in the root state.db even
+        # though ``_profile_runtime_scope`` has already redirected
+        # ``get_hermes_home()`` for the turn (its docstring lists "sessions"
+        # among what it scopes).  The row still carries the right
+        # ``profile_name``, so the damage is invisible in the data and shows
+        # up only as the desktop listing a profile's session under the
+        # default bot -- ``_open_session_db_for_profile`` reads
+        # ``profiles/<name>/state.db``, which never received the write.
+        # See #88532.
+        #
+        # Priming the handle for the current scope here keeps the startup
+        # diagnostics exactly where they were: the live-DB isolation guard
+        # still raises during construction, and the JSONL-fallback warning
+        # is still printed once at startup rather than on first use.
+        self._db_pinned = _DB_UNPINNED
+        self._db_handles: Dict[Path, Any] = {}
+        self._db_handles_lock = threading.Lock()
+        self._open_session_db_for_active_scope()
+
+    def _open_session_db_for_active_scope(self):
+        """Return the SessionDB for the profile scope active on this task.
+
+        ``SessionDB(db_path=None)`` resolves ``_default_db_path()`` at call
+        time, and that helper follows the context-local HERMES_HOME override
+        installed by ``_profile_runtime_scope``.  Resolving here rather than
+        once in ``__init__`` is the whole fix for #88532: it lets the
+        scoping that the multiplexed inbound path already performs actually
+        reach session storage.
+
+        Handles are cached per resolved path, so a hot inbound path opens
+        SQLite once per profile rather than once per message, and two
+        profiles never share a handle.  Construction is done under the lock
+        so a concurrent first message on the same profile cannot open (and
+        then leak) a second handle for the same path.
+
+        A construction failure is cached as ``None`` for that path, matching
+        the previous behavior where a failed startup left ``_db`` None for
+        the life of the store and callers fell back to JSONL.
+        """
+        from hermes_state import SessionDB, _default_db_path
+
+        path = Path(_default_db_path())
+        with self._db_handles_lock:
+            if path in self._db_handles:
+                return self._db_handles[path]
+            db = None
+            try:
+                db = SessionDB()
+            except RuntimeError as e:
+                if "live-system guard" in str(e):
+                    # Test-isolation guard fired: a pytest-context process
+                    # resolved the developer's production state.db. Never
+                    # swallow this into the JSONL fallback — the whole point
+                    # is a loud, hard failure.  Deliberately not cached: the
+                    # guard must fire again on the next attempt.
+                    raise
+                print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
+            except Exception as e:
+                print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
+            self._db_handles[path] = db
+            return db
+
+    @property
+    def _db(self):
+        """The SessionDB for the active profile scope, or a pinned override.
+
+        Assigning ``store._db`` pins that value for every subsequent read,
+        which is what tests rely on to install a fake or to disable the DB
+        with ``store._db = None``.  Unpinned (the production path), each read
+        resolves the scope so a multiplexed profile's writes reach its own
+        store.
+        """
+        if self._db_pinned is not _DB_UNPINNED:
+            return self._db_pinned
+        return self._open_session_db_for_active_scope()
+
+    @_db.setter
+    def _db(self, value) -> None:
+        self._db_pinned = value
+
+    def close_all_db_handles(self) -> None:
+        """Close every SessionDB handle this store opened, one per resolved path.
+
+        A multiplexed gateway accumulates one cached handle per profile it
+        served (see ``_open_session_db_for_active_scope``).  Reading ``_db``
+        at shutdown resolves only the handle for the scope active *then* —
+        the root home — so a shutdown that closes just ``store._db`` would
+        strand every secondary profile's handle with its WAL write lock held
+        until the interpreter exits, recreating the abandoned-handle leak
+        that ``SessionDB.close()`` exists to prevent.  Restart flows
+        (``--replace``) would then hit 'database is locked' opening those
+        profiles' stores.
+
+        Handles are drained under the lock but closed outside it, so a
+        concurrent resolver blocked in ``_open_session_db_for_active_scope``
+        is never made to wait on N ``close()`` calls; it simply opens a
+        fresh handle afterwards.  ``close()`` failures are swallowed the
+        same way the shutdown path treats the primary handle.  A pinned
+        handle (``store._db = fake``) is deliberately not closed here — the
+        pinner owns its lifecycle.
+        """
+        with self._db_handles_lock:
+            handles = [db for db in self._db_handles.values() if db is not None]
+            self._db_handles.clear()
+        for db in handles:
+            try:
+                db.close()
+            except Exception as exc:
+                logger.debug("SessionDB close error during handle sweep: %s", exc)
 
     def _has_active_processes_safe(self, session_key: str, *, context: str) -> bool:
         """Return whether a session has active work, failing closed on registry errors."""
@@ -3768,6 +3875,19 @@ class SessionStore:
         db = self._db
         if db is None or not hasattr(db, "rebuild_fts"):
             return False
+        # Guard against the same WAL split-brain risk as the automatic
+        # rebuild paths: skip when a foreign process holds state.db or
+        # its WAL sidecars open.
+        if hasattr(db, "_foreign_state_db_holders"):
+            foreign_holders = db._foreign_state_db_holders()
+            if foreign_holders:
+                logger.warning(
+                    "Skipping Session DB FTS rebuild while foreign processes "
+                    "hold the database or WAL sidecars (%s); canonical "
+                    "transcript writes remain available.",
+                    foreign_holders,
+                )
+                return False
         try:
             rebuilt = db.rebuild_fts()
         except Exception as exc:

@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
+import { createClientSessionState } from '@/lib/chat-runtime'
 
 import {
   appendMidTurnUserMessage,
+  applyReloadOptimistic,
+  applyRewindOptimistic,
   finalizeInterruptedMessages,
   planEdit,
   planReload,
@@ -136,7 +139,7 @@ describe('truncateSubmitParams', () => {
   })
 
   it('drops renderer-synthetic message ids but keeps durable row ids', () => {
-    // chat-messages.ts: `${timestamp}-${index}-${role}`
+    // chat-messages/hydration.ts: `${timestamp}-${index}-${role}`
     expect(truncateSubmitParams(1, '1723456789-0-user', 456)).toEqual({
       confirm_truncate: true,
       truncate_before_user_ordinal: 1,
@@ -472,7 +475,7 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
     expect(submit?.params?.confirm_truncate).toBeUndefined()
   })
 
-  it('leaves a bound durable rowId untouched (no extra history call)', async () => {
+  it('leaves a bound durable rowId untouched (no extra history call) and drops the client ordinal', async () => {
     const calls: Call[] = []
 
     await runRewindSubmit(makeGateway(calls), 'sid', 'fixed prompt', 1, undefined, false, undefined, 13, 'typo prompt')
@@ -482,6 +485,114 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
     const submit = calls.find(call => call.method === 'prompt.submit')
 
     expect(submit?.params?.truncate_before_row_id).toBe(13)
-    expect(submit?.params?.truncate_before_user_ordinal).toBe(1)
+    expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
+  })
+
+  it('drops the client ordinal whenever a durable row id is present, including a complete live transcript (#88082, #89244)', async () => {
+    const calls: Call[] = []
+
+    await runRewindSubmit(
+      makeGateway(calls),
+      'sid',
+      'fixed prompt',
+      1, // display-lineage / window-relative — not the gateway tip
+      undefined,
+      false,
+      undefined,
+      13,
+      'typo prompt'
+    )
+
+    // No content-resolution read needed — the bubble already holds a durable id.
+    expect(calls.some(call => call.method === 'session.history')).toBe(false)
+
+    const submit = calls.find(call => call.method === 'prompt.submit')
+
+    expect(submit?.params?.confirm_truncate).toBe(true)
+    expect(submit?.params?.truncate_before_row_id).toBe(13)
+    expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
+  })
+
+  it('drops the client ordinal when the cut is addressed by durable message id alone', async () => {
+    const calls: Call[] = []
+
+    await runRewindSubmit(
+      makeGateway(calls),
+      'sid',
+      'fixed prompt',
+      1,
+      'durable-platform-msg-1',
+      false,
+      undefined,
+      undefined,
+      'typo prompt'
+    )
+
+    const submit = calls.find(call => call.method === 'prompt.submit')
+
+    expect(submit?.params?.confirm_truncate).toBe(true)
+    expect(submit?.params?.truncate_before_message_id).toBe('durable-platform-msg-1')
+    expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
+  })
+
+  it('still confirms an empty truncate when the dropped ordinal was 0', async () => {
+    const calls: Call[] = []
+
+    await runRewindSubmit(
+      makeGateway(calls),
+      'sid',
+      'fixed prompt',
+      0,
+      'durable-platform-msg-1',
+      false,
+      undefined,
+      13,
+      'typo prompt'
+    )
+
+    const submit = calls.find(call => call.method === 'prompt.submit')
+
+    expect(submit?.params?.confirm_truncate).toBe(true)
+    expect(submit?.params?.confirm_empty_truncate).toBe(true)
+    expect(submit?.params?.truncate_before_row_id).toBe(13)
+    expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
+  })
+})
+
+describe('optimistic rewind/reload turn-clock seeding (#86795)', () => {
+  // The no-payload settle gate in gateway-event/session-info.ts holds a running=false
+  // heartbeat off while an optimistically armed turn waits for the backend —
+  // but only for a bounded grace window measured from turnStartedAt. These
+  // transforms are the arm sites for restore/edit/regenerate, so they must
+  // seed the clock (and reset turnLive): an armed state without a clock is
+  // settled by the first heartbeat, and a STALE clock from a previous turn
+  // would let a heartbeat settle the fresh arm immediately.
+  const seeded = (extra: Partial<ReturnType<typeof createClientSessionState>>) => ({
+    ...createClientSessionState(null, [row('u1', 'user', 'first'), row('a1', 'assistant', 'answer')]),
+    ...extra
+  })
+
+  it('applyRewindOptimistic arms busy with a fresh turn clock', () => {
+    const before = Date.now()
+    const next = applyRewindOptimistic(seeded({ turnLive: true, turnStartedAt: before - 60_000 }), 0)
+
+    expect(next.busy).toBe(true)
+    expect(next.awaitingResponse).toBe(true)
+    expect(next.turnLive).toBe(false)
+    expect(next.turnStartedAt).toBeGreaterThanOrEqual(before)
+  })
+
+  it('applyReloadOptimistic arms busy with a fresh turn clock', () => {
+    const state = seeded({ turnLive: true, turnStartedAt: Date.now() - 60_000 })
+    const plan = planReload(state.messages, null)
+    const before = Date.now()
+
+    expect(plan).not.toBeNull()
+
+    const next = applyReloadOptimistic(state, plan!)
+
+    expect(next.busy).toBe(true)
+    expect(next.turnLive).toBe(false)
+    expect(next.turnStartedAt).toBeGreaterThanOrEqual(before)
   })
 })

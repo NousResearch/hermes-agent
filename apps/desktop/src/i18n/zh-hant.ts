@@ -52,6 +52,9 @@ export const zhHant = defineLocale({
     revealInSidebar: '在檔案樹中顯示',
     copyPath: '複製路徑',
     copyRelativePath: '複製相對路徑',
+    download: '下載',
+    downloadSaved: '已儲存',
+    downloadFailed: '下載失敗',
     rename: '重新命名…',
     delete: '刪除',
     renameTitle: '重新命名',
@@ -97,6 +100,12 @@ export const zhHant = defineLocale({
         `先登出已儲存的遠端瀏覽器工作階段，然後開啟${signInLabel}。使用本機閘道可切換至內建後端。`,
       signOutAndSignIn: '登出並重新登入',
       remoteFailureHint: '在「閘道設定」中檢查閘道 URL 與登入，或切換至本機閘道。',
+      cloudDownTitle: 'Nous Cloud 代理已停機',
+      cloudDownDescription:
+        '此閘道連線的 Nous 託管雲端代理正在回傳伺服器錯誤。無法在此處重新啟動——請檢查其狀態、切換至本機閘道，或取得支援。',
+      cloudDownHint: '使用下方按鈕開啟 Nous Portal（檢視執行個體狀態與操作）或加入 Discord 取得支援。',
+      cloudDownCheckPortal: '查看 Portal 狀態',
+      cloudDownDiscord: '在 Discord 取得協助',
       hideRecentLogs: '隱藏最近記錄',
       showRecentLogs: '顯示最近記錄',
       signedInTitle: '已登入',
@@ -195,6 +204,29 @@ export const zhHant = defineLocale({
     dismiss: '忽略'
   },
 
+  sendDiagnostics: {
+    title: '向 Nous 傳送診斷資訊',
+    privacyNotice:
+      '這會將偵錯套件上傳到 Nous 內部儲存空間（並非公開貼上板）。內容包括系統資訊（作業系統、版本、服務商、已設定的 API 金鑰種類 — 絕不包含金鑰本身）以及完整的 agent、gateway 與桌面端日誌（每個最多 512 KB，很可能包含對話內容、工具輸出與檔案路徑）。上傳前會先遮罩機密資訊。僅 Nous 員工與獲准的 Discord 版主可檢視，14 天後自動刪除。',
+    upload: '上傳',
+    uploading: '上傳中…',
+    cancel: '取消',
+    close: '關閉',
+    copyLink: '複製連結',
+    uploadIdFallback: id => `未回傳檢視連結 — 請向支援人員提供上傳 ID ${id}`,
+    doneTitle: '診斷資訊已傳送',
+    doneDescription: '偵錯套件已私密上傳。在您的支援討論串中分享以下連結，團隊即可檢視您的日誌。',
+    failedTitle: '上傳失敗',
+    failedHint:
+      '您也可以在終端機執行 `hermes debug share --nous`，或執行 `hermes debug share --local` 在不上傳的情況下檢視報告。',
+    handoffLead: '在以下位置繼續討論:',
+    links: {
+      github: 'GitHub Issues',
+      portal: 'Nous Portal 支援',
+      discord: 'Discord'
+    }
+  },
+
   titlebar: {
     hideSidebar: '隱藏側邊欄',
     showSidebar: '顯示側邊欄',
@@ -203,6 +235,7 @@ export const zhHant = defineLocale({
     swapSidebarSides: '交換側邊欄位置',
     hideRightSidebar: '隱藏右側邊欄',
     showRightSidebar: '顯示右側邊欄',
+    unreadSessions: count => (count === 1 ? '1 個未讀工作階段' : `${count} 個未讀工作階段`),
     muteHaptics: '靜音觸感回饋',
     unmuteHaptics: '開啟觸感回饋',
     openSettings: '開啟設定',
@@ -328,6 +361,11 @@ export const zhHant = defineLocale({
       sessionDensityCompact: '緊湊',
       sessionDensityComfortable: '舒適',
       sessionDensityDetailed: '詳細',
+      tabStripTitle: '分頁列',
+      tabStripDesc: '在分區上方顯示分頁。自動模式會在分區只有一個面板時隱藏分頁。',
+      tabStripAuto: '自動',
+      tabStripAlways: '一律',
+      tabStripNever: '永不',
       terminalFontTitle: '終端機字型',
       terminalFontDesc:
         '選擇已安裝的字型用於桌面端終端機。Nerd Font 可正確顯示 Powerlevel10k 與 Shell 圖示；留空則使用內建的 JetBrains Mono。',
@@ -335,9 +373,28 @@ export const zhHant = defineLocale({
       terminalFontPreview: '字形預覽',
       terminalFontReset: '使用預設字型',
       translucencyTitle: '視窗透明',
-      translucencyDesc: '讓整個視窗透出桌面。僅支援 macOS 與 Windows。',
+      translucencyDesc: '讓整個視窗（包括文字）透出桌面。',
+      translucencyGlassDesc: '霧面玻璃：桌面以柔和模糊透出，文字保持清晰。',
+      translucencyModeClear: '透明',
+      translucencyModeGlass: '玻璃',
+      translucencyTintTitle: '色調',
+      translucencyFadeTitle: '淡出',
+      translucencyFrostTitle: '磨砂質感',
+      translucencyFrost: {
+        'under-window': '深邃',
+        popover: '柔和',
+        titlebar: '明亮',
+        header: '透亮'
+      },
+      translucencyScopeTitle: '套用範圍',
+      translucencyScope: {
+        window: '整個視窗',
+        sidebar: '僅側邊欄'
+      },
       backdropTitle: '聊天背景',
       backdropDesc: '對話後方那張淡淡的雕像圖片。',
+      introSplashTitle: '開場標識',
+      introSplashDesc: '空白對話中顯示的字標和提示語。',
       reactionsTitle: '訊息回應',
       reactionsDesc: 'iMessage 風格的表情回應 — 你可以對訊息做出回應，Hermes 也能回應你的訊息。',
       composerPopoutTitle: '懸浮輸入框',
@@ -631,6 +688,10 @@ export const zhHant = defineLocale({
       heading: 'Hermes Desktop',
       version: value => `版本 ${value}`,
       versionUnavailable: '版本不可用',
+      bundleOutOfSync: '應用程式建置版本過舊',
+      bundleOutOfSyncDesc:
+        'Hermes 執行環境已更新,但桌面應用程式本身仍是舊建置——在應用程式更新之前,新的介面功能(如 Bot Mode)不會顯示。請執行下方的更新以重新建置應用程式。如果此警告仍未消除,請從最新的桌面安裝程式重新安裝。',
+      bundleOutOfSyncAction: '取得安裝程式',
       updates: '更新',
       checkNow: '立即檢查',
       checking: '檢查中…',
@@ -710,17 +771,11 @@ export const zhHant = defineLocale({
       title: '閘道連線',
       envOverride: '環境變數覆寫',
       intro:
-        'Hermes Desktop 預設會啟動自己的本機閘道。如果您希望此應用程式控制另一台機器或可信代理後面已執行的 Hermes 後端，請使用遠端閘道。在下方按設定檔指定各自的遠端主機。',
-      appliesTo: '套用至',
-      allProfiles: '全部設定檔',
-      defaultConnection: '預設連線適用於所有沒有自訂覆寫的設定檔。',
-      profileConnection: profile => `僅當「${profile}」為作用中設定檔時使用此連線。選擇「使用預設閘道」可移除其覆寫。`,
+        'Hermes Desktop 預設會啟動自己的本機閘道。如果您希望此應用程式控制另一台機器或可信代理後面已執行的 Hermes 後端，請使用遠端閘道。閘道連線屬於本機層級設定；設定檔是從已連線的閘道中探索出來的。',
       envOverrideTitle: '環境變數正在控制此桌面工作階段。',
       envOverrideDesc: '取消設定 HERMES_DESKTOP_REMOTE_URL 和 HERMES_DESKTOP_REMOTE_TOKEN 後才會使用下方儲存的設定。',
       localTitle: '本機閘道',
       localDesc: '在 localhost 啟動私有 Hermes 後端。這是預設方式，可離線使用。',
-      inheritTitle: '使用預設閘道',
-      inheritDesc: '移除此設定檔的自訂覆寫並使用預設連線。',
       remoteTitle: '遠端閘道',
       remoteDesc:
         '將此桌面殼層連線至遠端 Hermes 後端。託管閘道使用 OAuth 或帳號密碼；自託管閘道也可使用工作階段 Token。',
@@ -795,8 +850,6 @@ export const zhHant = defineLocale({
       sshHermesPathTitle: 'Hermes 路徑（選用）',
       sshHermesPathDesc: '遠端 hermes 執行檔的完整路徑。留空 = 自動偵測。',
       sshHermesPathPlaceholder: '自動偵測',
-      sshRemoteProfileTitle: '遠端設定檔（選用）',
-      sshRemoteProfileDesc: '遠端主機上的設定檔名稱。留空 = 使用 Desktop 設定檔名稱。',
       sshTestConnection: '測試 SSH',
       sshConnect: '連線',
       sshButtonsHint: '「儲存」會在下次啟動時生效，「連線」則立即重新連線。',
@@ -817,6 +870,14 @@ export const zhHant = defineLocale({
       loading: '正在載入 API 金鑰和憑證...',
       failedLoad: 'API 金鑰載入失敗',
       empty: '此類別尚未有任何設定。'
+    },
+    search: {
+      placeholder: '搜尋所有設定...',
+      pill: '搜尋'
+    },
+    profileScope: {
+      appliesTo: '套用至',
+      editsProfile: profile => `此頁面的變更將套用至「${profile}」設定檔。`
     },
     mcp: {
       loading: '正在載入 MCP 伺服器...',
@@ -1235,8 +1296,10 @@ export const zhHant = defineLocale({
     gatewayStopped: '訊息閘道已停止',
     hermesActiveSessions: (version, count) => `Hermes ${version} · 活躍工作階段 ${count}`,
     restartGateway: '重新啟動閘道',
+    openBrowser: '開啟瀏覽器',
     gatewayRestartFailed: '閘道重新啟動失敗。',
     updateHermes: '更新 Hermes',
+    reloadWindow: '重新載入視窗',
     actionRunning: '執行中',
     actionDone: '完成',
     actionFailed: '失敗',
@@ -1405,6 +1468,8 @@ export const zhHant = defineLocale({
     allProfiles: '全部設定檔',
     showAllProfiles: '顯示全部設定檔',
     switchToProfile: name => `切換至 ${name}`,
+    switchToConnection: name => `切換至 ${name}`,
+    switchConnectionFailed: name => `無法連線至 ${name}`,
     manageProfiles: '管理設定檔…',
     actions: '動作',
     color: '顏色…',
@@ -1862,6 +1927,7 @@ export const zhHant = defineLocale({
     endShort: '結束',
     stopDictation: '停止聽寫',
     transcribingDictation: '正在轉寫聽寫',
+    voiceControls: '語音',
     voiceDictation: '語音聽寫',
     speakReplies: '朗讀回覆',
     stopSpeakingReplies: '停止朗讀回覆',
@@ -2008,6 +2074,7 @@ export const zhHant = defineLocale({
       openPr: '開啟 PR',
       ghMissing: '安裝 GitHub CLI (gh) 並登入後可開啟 PR',
       agentShip: '讓 Hermes 提交並開 PR',
+      agentShipUnavailable: '擁有這些變更的對話目前不在畫面上。',
       agentShipPrompt: '檢查目前的變更，使用清晰的約定式提交訊息提交，推送分支，並開啟一個拉取請求。',
       newBranch: '新增分支',
       branchOffFrom: base => `從 ${base} 建立新分支`,
@@ -2077,6 +2144,13 @@ export const zhHant = defineLocale({
     pidLabel: pid => `PID ${pid}`,
     technicalDetails: '技術詳細資料',
     notNow: '暫不',
+    clientAlsoBehindTitle: '桌面應用版本落後',
+    clientAlsoBehindMessage: '後端已是最新，但此桌面應用仍是舊版本。請更新以取得最新修復。',
+    clientAlsoBehindAction: '更新桌面應用',
+    everythingDispatched: '更新已派送',
+    everythingSkipped: '已略過',
+    everythingRowFailed: '更新失敗',
+    everythingFanoutFailedTitle: '無法更新其他執行個體',
     applyStatus: {
       preparing: '正在更新後端…',
       pulling: '後端更新中…',
@@ -2466,6 +2540,8 @@ export const zhHant = defineLocale({
     web: {
       appFailedToBoot: '預覽應用程式啟動失敗',
       serverNotFound: '找不到伺服器',
+      remoteLoopback:
+        '這個位址指向執行代理的那台機器，而不是本機。瀏覽器窗格會在本機載入頁面，因此遠端開發伺服器需要連接埠轉送或可連線的主機名稱。',
       failedToLoad: '預覽載入失敗',
       tryAgain: '重試',
       restarting: 'Hermes 正在重新啟動...',
@@ -2479,6 +2555,12 @@ export const zhHant = defineLocale({
       showConsole: '顯示預覽主控台',
       hideDevTools: '隱藏預覽 DevTools',
       openDevTools: '開啟預覽 DevTools',
+      goBack: '上一頁',
+      goForward: '下一頁',
+      reload: '重新載入頁面',
+      address: '網址',
+      addressPlaceholder: '輸入網址',
+      blankPageBody: '在上方輸入網址開始瀏覽，或請 Hermes 開啟頁面。',
       finishedRestarting: message => `Hermes 已完成預覽伺服器重新啟動${message ? `：${message}` : ''}`,
       failedRestarting: message => `伺服器重新啟動失敗：${message}`,
       unknownError: '未知錯誤',
@@ -2501,8 +2583,13 @@ export const zhHant = defineLocale({
   },
 
   zones: {
-    showHeader: '顯示標題列',
-    hideHeader: '隱藏標題列',
+    showTabStrip: '顯示分頁',
+    hideTabStrip: '隱藏分頁',
+    showStripTab: title => `顯示 ${title}`,
+    hideStripTab: title => `隱藏 ${title}`,
+    lastTabKeptTitle: '保留最後一個分頁',
+    lastTabKeptBody: '此區域至少需要一個可見分頁。請先顯示另一個分頁，或收合整個側邊欄。',
+    toggleStripTab: title => `切換 ${title} 分頁`,
     minimize: '最小化',
     restore: '還原',
     reload: '重新載入',
@@ -2539,6 +2626,30 @@ export const zhHant = defineLocale({
     tabCount: count => `${count} 個分頁`
   },
 
+  contextMenu: {
+    link: {
+      openInApp: '在應用程式內瀏覽器中開啟',
+      openExternal: '在外部瀏覽器中開啟',
+      copyUrl: '複製 URL',
+      copyResolvedUrl: '複製解析後的 URL'
+    },
+    image: {
+      copyImage: '複製圖片',
+      copyImageAddress: '複製圖片位址',
+      saveImageAs: '圖片另存為…'
+    },
+    edit: {
+      cut: '剪下',
+      paste: '貼上',
+      selectAll: '全選',
+      addToDictionary: '新增至字典'
+    },
+    page: {
+      copyPageUrl: '複製頁面 URL',
+      inspectElement: '檢查元素'
+    }
+  },
+
   assistant: {
     thread: {
       loadingSession: '正在載入工作階段',
@@ -2559,6 +2670,24 @@ export const zhHant = defineLocale({
       branchNewChat: '在新聊天中分支',
       react: '回應',
       dismissError: '关闭错误',
+      errorLayers: {
+        auth: '認證錯誤',
+        billing: '額度不足',
+        disk: '磁碟已滿',
+        endpoint: '自訂端點錯誤',
+        gateway: '閘道錯誤',
+        generic: '本輪失敗',
+        provider: '模型服務商錯誤',
+        runtime: '本機執行環境錯誤',
+        streaming: '串流連線錯誤'
+      },
+      errorRetry: '重試',
+      errorSwitchProvider: '切換服務商',
+      errorOpenLogs: '開啟日誌',
+      errorOpenLogsFailed: '無法開啟日誌資料夾',
+      errorOpenDesktopLogs: '開啟桌面端日誌',
+      errorCopyDiagnostics: '複製錯誤詳細資訊',
+      errorSendDiagnostics: '傳送診斷資訊',
       filesChanged: count => `${count} 個檔案已變更`,
       reviewChanges: '檢視',
       readAloudFailed: '朗讀失敗',
@@ -2603,6 +2732,9 @@ export const zhHant = defineLocale({
       skip: '略過',
       skipped: '已略過',
       continueLabel: '繼續',
+      confirmAndContinueLabel: '確認並繼續',
+      answeredBadge: '已回答',
+      questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       lateAnswer: (question, choice) => `關於「${question}」 — 我的回答: ${choice}`,
       lateAnswerTip: '將此回答起草為後續訊息',
       lateAnswerHint: '此問題已不再等待回答。選擇一個選項會將其起草為後續訊息。'

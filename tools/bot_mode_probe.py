@@ -105,6 +105,90 @@ def _handle(name: str) -> str:
     return "hermes" if name == "default" else name
 
 
+def _profile_role(profile_dir: Path) -> str:
+    """A teammate's role line: Bot Mode title, else profile description.
+
+    The ui_meta['hermes-bots'].title is the name the user gave the bot in
+    Bot Mode; profile.yaml's description is the profile's stated purpose.
+    Either one tells a teammate WHO to message for a given job. Bounded and
+    single-line; empty when neither exists. Never raises.
+    """
+    meta = profile_dir / "profile.yaml"
+    try:
+        if not meta.is_file():
+            return ""
+        raw = meta.read_text(encoding="utf-8", errors="replace")
+        import yaml
+
+        data = yaml.safe_load(raw)
+        if not isinstance(data, dict):
+            return ""
+        parts = []
+        ui_meta = data.get("ui_meta")
+        if isinstance(ui_meta, dict) and isinstance(ui_meta.get("hermes-bots"), dict):
+            title = str(ui_meta["hermes-bots"].get("title") or "").strip()
+            if title:
+                parts.append(title)
+        description = str(data.get("description") or "").strip()
+        if description:
+            parts.append(description)
+        line = " — ".join(parts)
+        return " ".join(line.split())[:160]
+    except Exception:
+        return ""
+
+
+def _roster_lines(root: Path, me: str) -> list[str]:
+    """One '- `@handle` — role' line per teammate (excluding ``me``)."""
+    lines = []
+    for name, profile_dir in _roster(root):
+        if name == me:
+            continue
+        role = _profile_role(profile_dir)
+        handle = _handle(name)
+        lines.append(f"- `@{handle}`" + (f" — {role}" if role else ""))
+    return lines
+
+
+def _peers(root: Path) -> list[str]:
+    """Registered peer gateway names (``hermes peer``), for the protocol text.
+
+    Reads config.yaml directly (cheap, no config-loader import) — the section
+    is optional and absent on most installs. Never raises.
+    """
+    try:
+        cfg_path = root / "config.yaml"
+        if not cfg_path.is_file():
+            return []
+        raw = cfg_path.read_text(encoding="utf-8", errors="replace")
+        if "bot_peers" not in raw:
+            return []
+        import yaml
+
+        data = yaml.safe_load(raw)
+        peers = data.get("bot_peers") if isinstance(data, dict) else None
+        if not isinstance(peers, dict):
+            return []
+        return sorted(str(name) for name in peers if str(name).strip())
+    except Exception:
+        return []
+
+
+def _peer_paragraph(root: Path) -> str:
+    """Protocol addendum for cross-machine DMs — only when peers exist."""
+    peers = _peers(root)
+    if not peers:
+        return ""
+    listed = ", ".join(f"`{p}`" for p in peers)
+    return (
+        "\n\nTeammates on OTHER machines: this install also has peer gateways "
+        f"registered ({listed}). Message an agent on a peer the same way — "
+        'message_agent with target "<peer>/<agent-name>" (or "<peer>" alone '
+        "for the peer's main agent). Run `hermes peer list` for the live "
+        "peer list."
+    )
+
+
 def _build_section(home: Path) -> str:
     root = _hermes_root(home)
     me = _profile_name(home)
@@ -120,24 +204,33 @@ def _build_section(home: Path) -> str:
         return ""
 
     handle = _handle(me)
-    teammates = ", ".join(f"`{n}`" for n, _d in roster if n != me) or "(none yet)"
+    roster_block = "\n".join(_roster_lines(root, me)) or "- (no teammates yet)"
 
     return (
         f"{_PROTOCOL_HEADING}\n"
         "This install runs Bot Mode: each Hermes profile is an agent teammate with "
-        'one canonical "Bot Chat" conversation. To message a teammate, run on the '
-        "terminal tool (background=true, notify_on_complete=true), then finish your "
-        "turn — the reply arrives later as a new message:\n"
-        "```\n"
-        f'hermes -p <agent-name> chat --in ~ -c "Bot Chat" --create-if-missing -Q -q "Message from 🤖 {handle} (@{handle}): your message"\n'
-        "```\n"
-        f'Always open with the "Message from 🤖 {handle} (@{handle}):" prefix so they '
-        "know who is talking. When YOU receive a message with that prefix, you are "
-        "being messaged by a teammate agent — address them (not the user) and reply "
-        "concisely. When the user says \"ask <name>\" or \"tell <name> ...\", that is a "
-        "handoff: message that agent, wait for the reply, and report back, saying "
-        "which agent it came from. Run `hermes profile list` for the LIVE teammate "
-        f"list before a handoff. Teammates at session start: {teammates}."
+        'one canonical "Bot Chat" conversation, and you have the `message_agent` '
+        "tool to DM any of them. It is FIRE-AND-FORGET: it delivers your message "
+        "with your attribution prefixed automatically and returns an acknowledgement "
+        "immediately — it never returns the reply. Send it, finish your turn, and "
+        "the reply arrives later as a background-process completion notification "
+        "that wakes you; relay it to the user then, attributed to that agent. "
+        "COMPOSE every message yourself — say what YOU need from that agent; never "
+        "forward the user's words verbatim, and never reveal private 1:1 chat "
+        "content. When the user says \"ask <name>\" or \"tell <name> ...\", that is "
+        "a handoff: pick the right teammate from the roster below, message them "
+        "with message_agent, and report back naming which agent replied. Message "
+        "ONE clearly relevant teammate; don't fan out to several unless the user "
+        "explicitly asked.\n"
+        f'When YOU receive a "Message from 🤖 <name> (@<handle>):" message, a '
+        "teammate agent is talking to you (not the user): address them, reply "
+        "concisely via message_agent to their handle, and if it is a pure FYI "
+        "with nothing to add, staying silent is fine — never ping-pong "
+        "acknowledgements.\n"
+        f"You are `@{handle}`. Your teammates (live roster; roles from their "
+        "profiles):\n"
+        f"{roster_block}"
+        + _peer_paragraph(root)
     )
 
 
@@ -228,8 +321,25 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     try:
         root = _hermes_root(resolved)
         surface["roster"] = sorted(n for n, d in _roster(root) if _is_bot_managed(d))
+        # Roles are part of the messaging surface: renaming a bot or editing
+        # a profile description must refresh eternal Bot Chat prompts so the
+        # roster block teammates pick recipients from stays current.
+        surface["roster_roles"] = sorted(
+            f"{n}:{_profile_role(d)}" for n, d in _roster(root)
+        )
     except Exception:
         surface["roster"] = []
+    # Protocol-text version salt: bumping this refreshes every eternal Bot
+    # Chat prompt ONCE so existing bots adopt a new protocol section (e.g.
+    # the v2 message_agent tool replacing the shellout instructions).
+    surface["protocol_version"] = 2
+    try:
+        # Peer gateways are part of the messaging surface: registering one
+        # must refresh eternal Bot Chat prompts so the cross-machine DM
+        # paragraph appears on the next message.
+        surface["peers"] = _peers(_hermes_root(resolved))
+    except Exception:
+        surface["peers"] = []
     try:
         blob = json.dumps(surface, sort_keys=True).encode("utf-8")
         return hashlib.sha256(blob).hexdigest()[:12]

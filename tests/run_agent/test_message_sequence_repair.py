@@ -336,6 +336,126 @@ def test_sanitize_preserves_distinct_tool_call_ids():
     assert sorted(m["tool_call_id"] for m in out if m.get("role") == "tool") == ["call_A", "call_B"]
 
 
+# ── tool_call_id reuse by local servers (#70724) ────────────────────────────
+# llama.cpp emits ONE constant tool_call_id for every tool call it returns, so
+# ``tool_call_id`` is not globally unique in practice. The #58327 dedup pass
+# must key off outstanding calls, not "seen at any point", or every result
+# after the first is deleted and the agent stops mid-task.
+
+
+CONSTANT_ID = "ZsSt4SkIFMRz0HtqT7MTlimNvzlKM896"
+
+
+def _call(cid, name="terminal"):
+    return {"role": "assistant", "content": None,
+            "tool_calls": [{"id": cid, "type": "function",
+                            "function": {"name": name, "arguments": "{}"}}]}
+
+
+def _result(cid, content):
+    return {"role": "tool", "tool_call_id": cid, "name": "terminal",
+            "content": content}
+
+
+def test_sanitize_keeps_results_when_server_reuses_one_tool_call_id():
+    """Every answered call survives even when all of them share one id.
+
+    Contract: a tool result is dropped for being unanswerable, never for
+    reusing an id that an earlier call already retired.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [{"role": "user", "content": "do three steps"}]
+    for i in range(3):
+        messages.append(_call(CONSTANT_ID))
+        messages.append(_result(CONSTANT_ID, f"step {i} output"))
+
+    out = sanitize_api_messages(list(messages))
+    results = [m for m in out if m.get("role") == "tool"]
+    assert [m["content"] for m in results] == [
+        "step 0 output", "step 1 output", "step 2 output",
+    ]
+    calls = [m for m in out if m.get("role") == "assistant" and m.get("tool_calls")]
+    assert len(calls) == 3
+
+
+def test_sanitize_still_drops_replayed_result_for_retired_call():
+    """The #58327 protection holds: a second result for an already-answered
+    call answers nothing outstanding and is still dropped."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        _call(CONSTANT_ID),
+        _result(CONSTANT_ID, "real"),
+        _result(CONSTANT_ID, "replayed by a retry/resume glitch"),
+    ]
+    out = sanitize_api_messages(list(messages))
+    assert [m["content"] for m in out if m.get("role") == "tool"] == ["real"]
+
+
+def test_sanitize_preserves_deterministic_local_ids_across_turns():
+    """Hermes' own deterministic call ids (fn-name+args hashes / local
+    counters) legitimately repeat across turns — both must survive.
+
+    Scenario surfaced in #76632: two image_generate rounds emit the same
+    local ids (``image_generate:0``/``:1``) in successive assistant turns.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    def _tc(cid):
+        return {"id": cid, "type": "function",
+                "function": {"name": "image_generate", "arguments": "{}"}}
+
+    messages = [{"role": "user", "content": "make images"}]
+    for turn in ("one", "two"):
+        messages.append({"role": "assistant", "content": turn,
+                         "tool_calls": [_tc("image_generate:0"), _tc("image_generate:1")]})
+        messages.append({"role": "tool", "tool_call_id": "image_generate:0",
+                         "content": f"imgA-{turn}"})
+        messages.append({"role": "tool", "tool_call_id": "image_generate:1",
+                         "content": f"imgB-{turn}"})
+
+    out = sanitize_api_messages(list(messages))
+    assistants = [m for m in out if m.get("role") == "assistant" and m.get("tool_calls")]
+    assert len(assistants) == 2
+    for a in assistants:
+        assert [tc["id"] for tc in a["tool_calls"]] == [
+            "image_generate:0", "image_generate:1"]
+    tool_ids = sorted(m["tool_call_id"] for m in out if m.get("role") == "tool")
+    assert tool_ids == ["image_generate:0", "image_generate:0",
+                        "image_generate:1", "image_generate:1"]
+
+
+def test_sanitize_keeps_all_results_over_fifty_turn_constant_id_session():
+    """Kimi K3 / llama.cpp field repro (#70724, #70734): 50 sequential calls
+    all sharing one id must all survive — stock behavior kept 1/50."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [{"role": "user", "content": "Run 50 steps."}]
+    for step in range(50):
+        messages.append(_call(CONSTANT_ID))
+        messages.append(_result(CONSTANT_ID, f"completed-step-{step}"))
+
+    out = sanitize_api_messages(list(messages))
+    calls = [m for m in out if m.get("role") == "assistant" and m.get("tool_calls")]
+    results = [m for m in out if m.get("role") == "tool"]
+    assert len(calls) == 50
+    assert len(results) == 50
+    assert results[-1]["content"] == "completed-step-49"
+
+
+def test_sanitize_drops_result_with_no_preceding_call():
+    """A tool result that never had a call is an orphan regardless of id."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    out = sanitize_api_messages([
+        {"role": "user", "content": "hi"},
+        _result("id_never_requested", "orphan"),
+    ])
+    assert [m for m in out if m.get("role") == "tool"] == []
+
+
 def test_sanitize_drops_empty_tool_calls_array():
     """sanitize_api_messages strips ``tool_calls: []`` from assistant messages.
 
@@ -409,21 +529,24 @@ def test_sanitize_dedup_drops_tool_calls_key_when_all_removed():
     """
     from agent.agent_runtime_helpers import sanitize_api_messages
 
-    # Simulate a long conversation where the same tool_call_id appears
-    # in multiple assistant messages (e.g., crash/resume glitch or
-    # compression window re-emission). The first occurrence is kept,
-    # later duplicates are removed.
+    # Simulate a crash/resume glitch or compression-window re-emission that
+    # replays the SAME assistant call while the first is still outstanding
+    # (no tool result has answered it yet). That is a true duplicate: the
+    # first occurrence is kept, the replay is removed. NOTE: a reuse AFTER
+    # the call was answered is NOT a duplicate — servers with per-turn or
+    # constant ids (llama.cpp, Kimi K3) legitimately re-issue ids across
+    # turns (#70724), which outstanding-call semantics now preserve.
     messages = [
         {"role": "user", "content": "step 1"},
         {"role": "assistant", "content": "running",
          "tool_calls": [{"id": "call_A", "type": "function",
                          "function": {"name": "foo", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "call_A", "content": "result 1"},
-        # Simulate a later assistant message that reuses call_A
-        # (this would be invalid, but the dedup pass handles it)
+        # Replayed assistant call BEFORE the result answers call_A —
+        # a duplicate of a still-outstanding call, so it must be removed.
         {"role": "assistant", "content": "retrying",
          "tool_calls": [{"id": "call_A", "type": "function",
                          "function": {"name": "foo", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_A", "content": "result 1"},
     ]
 
     out = sanitize_api_messages(list(messages))

@@ -4,7 +4,7 @@ from hermes_state import AsyncSessionDB, SessionDB
 from datetime import datetime
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -461,6 +461,61 @@ async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_p
 
 # ── /context command tests ────────────────────────────────────────────────
 
+
+@pytest.mark.asyncio
+async def test_context_command_keeps_configured_window_without_resident_agent():
+    """The no-agent fallback must not replace a custom-provider context pin."""
+    model = "unsloth/Qwen3.8-27B-GGUF:Q8_0"
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-context-pin",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    session_entry.last_prompt_tokens = 66_570
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {"model": model}
+
+    config = {
+        "model": {
+            "default": model,
+            "provider": "custom-local-qwen",
+            "context_length": 262_144,
+        },
+        "custom_providers": [
+            {
+                "name": "custom-local-qwen",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "models": {},
+            }
+        ],
+    }
+    runtime = {
+        "provider": "custom-local-qwen",
+        "base_url": "http://127.0.0.1:8080/v1",
+        "api_key": "",
+    }
+
+    with patch("gateway.run._load_gateway_config", return_value=config), patch(
+        "gateway.run._resolve_runtime_agent_kwargs", return_value=runtime
+    ), patch(
+        "hermes_cli.config.get_compatible_custom_providers",
+        return_value=config["custom_providers"],
+    ), patch(
+        "agent.model_metadata.get_model_context_length",
+        side_effect=lambda *args, **kwargs: kwargs.get("config_context_length") or 131_072,
+    ) as context_lookup:
+        result = await runner._handle_context_command(_make_event("/context"))
+
+    assert "Window: 262,144 tokens" in result
+    assert "In use: 66,570 / 262,144 (25%)" in result
+    assert "131,072" not in result
+    assert context_lookup.call_count == 1
+    assert context_lookup.call_args.kwargs["config_context_length"] == 262_144
+
+
 def _stub_agent(**overrides) -> SimpleNamespace:
     """Build a stub agent with the attributes _handle_context_command reads."""
     props = dict(
@@ -534,5 +589,3 @@ async def test_context_all_appends_expanded_listings():
     assert "hermes-agent" in result
     # Expanded view drops the hint
     assert "Use /context all" not in result
-
-

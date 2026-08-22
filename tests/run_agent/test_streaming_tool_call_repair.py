@@ -31,7 +31,7 @@ class TestStreamingAssemblyRepair:
         """Model stops mid-JSON, common with output length limits."""
         raw = '{"command": "ls -la", "timeout": 30'
         result = _repair_tool_call_arguments(raw, "terminal")
-        parsed = json.loads(result)
+        parsed = json.loads(result.arguments)
         assert parsed["command"] == "ls -la"
         assert parsed["timeout"] == 30
 
@@ -47,7 +47,7 @@ class TestStreamingAssemblyRepair:
     # -- Empty arguments (some models emit empty string) --
 
     def test_empty_string(self):
-        assert _repair_tool_call_arguments("", "test") == "{}"
+        assert _repair_tool_call_arguments("", "test").arguments == "{}"
 
 
     # -- Already-valid JSON passes through unchanged --
@@ -57,5 +57,4 @@ class TestStreamingAssemblyRepair:
 
 
     # -- Real-world GLM-5.1 truncation pattern --
-
 

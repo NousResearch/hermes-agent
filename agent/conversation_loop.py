@@ -48,6 +48,7 @@ from agent.turn_context import (
 from agent.turn_retry_state import TurnRetryState
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.message_sanitization import (
+    TOOL_CALL_ARGUMENTS_ERROR,
     close_interrupted_tool_sequence,
     _repair_tool_call_arguments,
     _sanitize_messages_non_ascii,
@@ -1339,12 +1340,13 @@ def _canonicalize_api_tool_calls(api_messages) -> None:
                     # stream that died mid ``write_file`` lost the file
                     # content it had already streamed, with only a WARNING
                     # to show for it (#80498).
+                    repaired = _repair_tool_call_arguments(
+                        tc["function"]["arguments"],
+                        tc["function"].get("name", "?"),
+                    )
                     tc = {**tc, "function": {
                         **tc["function"],
-                        "arguments": _repair_tool_call_arguments(
-                            tc["function"]["arguments"],
-                            tc["function"].get("name", "?"),
-                        ),
+                        "arguments": repaired.arguments,
                     }}
             new_tcs.append(tc)
         am["tool_calls"] = new_tcs
@@ -7107,12 +7109,7 @@ def run_conversation(
                         invalid_names = {name for name, _ in invalid_json_args}
                         for tc in assistant_message.tool_calls:
                             if tc.function.name in invalid_names:
-                                err = next(e for n, e in invalid_json_args if n == tc.function.name)
-                                tool_result = (
-                                    f"Error: Invalid JSON arguments. {err}. "
-                                    f"For tools with no required parameters, use an empty object: {{}}. "
-                                    f"Please retry with valid JSON."
-                                )
+                                tool_result = TOOL_CALL_ARGUMENTS_ERROR
                             else:
                                 tool_result = "Skipped: other tool call in this response had invalid JSON."
                             append_message(messages, {

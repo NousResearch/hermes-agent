@@ -1089,6 +1089,58 @@ def test_dashboard_created_task_subscribes_all_configured_home_channels(
     assert {sub["notifier_profile"] for sub in subscriptions} == {"default"}
 
 
+def test_dashboard_task_persists_when_home_channel_probe_fails(
+    client, monkeypatch, caplog,
+):
+    plugin_api = sys.modules["hermes_dashboard_plugin_kanban_test"]
+    monkeypatch.setattr(
+        plugin_api,
+        "_configured_home_channels",
+        lambda: (_ for _ in ()).throw(RuntimeError("broken channels config")),
+    )
+
+    with caplog.at_level("WARNING"):
+        response = client.post(
+            "/api/plugins/kanban/tasks",
+            json={"title": "Persist despite broken channels config"},
+        )
+
+    assert response.status_code == 200, response.text
+    task_id = response.json()["task"]["id"]
+    with kb.connect() as conn:
+        assert kb.get_task(conn, task_id) is not None
+    assert "kanban dashboard auto-subscribe failed" in caplog.text
+    assert "broken channels config" in caplog.text
+
+
+def test_dashboard_task_subscribes_other_homes_after_one_fails(
+    client, with_home_channels, monkeypatch, caplog,
+):
+    original_add_notify_sub = kb.add_notify_sub
+
+    def fail_telegram(conn, **kwargs):
+        if kwargs["platform"] == "telegram":
+            raise RuntimeError("telegram subscription failed")
+        return original_add_notify_sub(conn, **kwargs)
+
+    monkeypatch.setattr(kb, "add_notify_sub", fail_telegram)
+
+    with caplog.at_level("WARNING"):
+        response = client.post(
+            "/api/plugins/kanban/tasks",
+            json={"title": "Subscribe every working home"},
+        )
+
+    assert response.status_code == 200, response.text
+    task_id = response.json()["task"]["id"]
+    with kb.connect() as conn:
+        assert kb.get_task(conn, task_id) is not None
+        subscriptions = kb.list_notify_subs(conn, task_id)
+    assert [sub["platform"] for sub in subscriptions] == ["discord"]
+    assert "kanban dashboard auto-subscribe failed" in caplog.text
+    assert "telegram subscription failed" in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # Recovery endpoints (reclaim + reassign) and warnings field
 # ---------------------------------------------------------------------------

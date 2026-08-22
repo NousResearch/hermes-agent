@@ -2097,26 +2097,38 @@ def _active_profile_name() -> str:
 
 def _subscribe_task_to_configured_homes(conn: sqlite3.Connection, task_id: str) -> None:
     """Best-effort subscribe a dashboard-created task to every home channel."""
-    notifier_profile = _active_profile_name()
-    for home in _configured_home_channels():
-        try:
-            kanban_db.add_notify_sub(
-                conn,
-                task_id=task_id,
-                platform=home["platform"],
-                chat_id=home["chat_id"],
-                thread_id=home["thread_id"] or None,
-                notifier_profile=notifier_profile,
-            )
-        except Exception as exc:
-            # A stale channel configuration must not turn a successfully
-            # persisted task into a misleading HTTP 500 response.
-            log.warning(
-                "kanban dashboard auto-subscribe failed for task %s on %s: %s",
-                task_id,
-                home["platform"],
-                exc,
-            )
+    try:
+        notifier_profile = _active_profile_name()
+        for home in _configured_home_channels():
+            try:
+                kanban_db.add_notify_sub(
+                    conn,
+                    task_id=task_id,
+                    platform=home["platform"],
+                    chat_id=home["chat_id"],
+                    thread_id=home["thread_id"] or None,
+                    notifier_profile=notifier_profile,
+                )
+            except Exception as exc:
+                platform = (
+                    home.get("platform", "unknown")
+                    if isinstance(home, dict)
+                    else "unknown"
+                )
+                log.warning(
+                    "kanban dashboard auto-subscribe failed for task %s on %s: %s",
+                    task_id,
+                    platform,
+                    exc,
+                )
+    except Exception as exc:
+        # A stale channel configuration must not turn a successfully
+        # persisted task into a misleading HTTP 500 response.
+        log.warning(
+            "kanban dashboard auto-subscribe failed for task %s: %s",
+            task_id,
+            exc,
+        )
 
 
 def _home_sub_matches(sub: dict, home: dict) -> bool:

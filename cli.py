@@ -4737,7 +4737,7 @@ def _build_compact_banner() -> str:
         return f"\n[{title_color}]{tiny_line}[/] [dim {dim_color}]- Nous Research[/]\n"
 
     inner = w - 2  # inside the box border
-    bar = "═" * w
+    bar = "═" * inner
     content_width = inner - 2
 
     # Truncate and pad to fit

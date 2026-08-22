@@ -3219,11 +3219,46 @@ class APIServerAdapter(BasePlatformAdapter):
                 "parent": None,
             }
         ]
+        # The OpenAI-compatible catalog uses the same redacted selection
+        # inventory as /api/model/options, the CLI/TUI picker, and gateway
+        # /model. This is config-only and never probes provider catalogs.
+        try:
+            from hermes_cli.inventory import (
+                build_selection_inventory,
+                load_picker_context,
+            )
+
+            selection_inventory = build_selection_inventory(
+                load_picker_context().model_aliases
+            )
+        except Exception:
+            selection_inventory = {
+                "selection_order": [],
+                "selection_metadata": {},
+            }
+
+        seen_ids = {model_name}
+        for selection_id in selection_inventory["selection_order"]:
+            if selection_id in seen_ids:
+                continue
+            metadata = selection_inventory["selection_metadata"][selection_id]
+            models.append({
+                "id": selection_id,
+                "object": "model",
+                "created": now,
+                "owned_by": "hermes",
+                "permission": [],
+                "root": selection_id,
+                "parent": model_name,
+                **metadata,
+            })
+            seen_ids.add(selection_id)
+
         # Expose configured model route aliases so clients can discover them.
         # Only the alias and resolved model name are exposed — never provider
         # credentials.
         for alias, route_cfg in self._model_routes.items():
-            if alias == model_name:
+            if alias in seen_ids:
                 continue  # already listed above
             models.append({
                 "id": alias,
@@ -3234,8 +3269,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 "root": route_cfg.get("model", alias),
                 "parent": model_name,
             })
+            seen_ids.add(alias)
 
-        return web.json_response({"object": "list", "data": models})
+        return web.json_response({
+            "object": "list",
+            "data": models,
+            **selection_inventory,
+        })
 
     async def _handle_model_options(self, request: "web.Request") -> "web.Response":
         """GET /api/model/options — return Hermes provider/model inventory.

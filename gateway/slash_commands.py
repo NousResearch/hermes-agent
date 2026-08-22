@@ -1764,7 +1764,6 @@ class GatewaySlashCommandsMixin:
         from hermes_cli.model_switch import (
             switch_model as _switch_model, parse_model_switch_args,
             resolve_persist_behavior,
-            list_authenticated_providers,
             list_picker_providers,
         )
         from hermes_cli.providers import get_label
@@ -1812,6 +1811,7 @@ class GatewaySlashCommandsMixin:
         user_provs = None
         custom_provs = None
         excluded_provs = []
+        model_aliases = {}
         config_path = (_command_profile_home or _hermes_home) / "config.yaml"
         try:
             cfg = _load_gateway_config(config_path=config_path)
@@ -1830,6 +1830,9 @@ class GatewaySlashCommandsMixin:
                 _excl = cfg.get("model_catalog", {}).get("excluded_providers")
                 if isinstance(_excl, list):
                     excluded_provs = _excl
+                _aliases = cfg.get("model_aliases")
+                if isinstance(_aliases, dict):
+                    model_aliases = _aliases
         except Exception:
             pass
 
@@ -1874,6 +1877,7 @@ class GatewaySlashCommandsMixin:
                         max_models=50,
                         include_moa=True,
                         excluded_providers=excluded_provs,
+                        model_aliases=model_aliases,
                     )
                 except Exception:
                     providers = []
@@ -2173,16 +2177,27 @@ class GatewaySlashCommandsMixin:
             try:
                 # Offload blocking provider-listing off the event loop so the
                 # gateway doesn't freeze on a stale-cache HTTP fetch. See #41289.
-                providers = await asyncio.to_thread(
-                    list_authenticated_providers,
+                from hermes_cli.inventory import ConfigContext, build_models_payload
+
+                ctx = ConfigContext(
                     current_provider=current_provider,
-                    current_base_url=current_base_url,
                     current_model=current_model,
-                    user_providers=user_provs,
-                    custom_providers=custom_provs,
-                    max_models=5,
+                    current_base_url=current_base_url,
+                    user_providers=user_provs or {},
+                    custom_providers=custom_provs or [],
                     excluded_providers=excluded_provs,
+                    model_aliases=model_aliases,
                 )
+                providers = (
+                    await asyncio.to_thread(
+                        build_models_payload,
+                        ctx,
+                        max_models=5,
+                        probe_custom_providers=False,
+                        probe_current_custom_provider=True,
+                        for_picker=True,
+                    )
+                )["providers"]
                 for p in providers:
                     tag = t("gateway.model.current_tag") if p["is_current"] else ""
                     lines.append(f"**{p['name']}** `--provider {p['slug']}`{tag}:")

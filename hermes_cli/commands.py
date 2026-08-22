@@ -243,6 +243,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
     CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
+               aliases=("models",),
                args_hint="[model] [--provider name] [--global|--session] [--refresh]",
                busy_policy="reject", busy_handler="model"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
@@ -1651,7 +1652,8 @@ class SlashCommandCompleter(Completer):
         if cmd_name != word:
             return cmd_name
         # Don't add space for picker commands — allows Enter to execute them
-        if cmd_name in SlashCommandCompleter._PICKER_COMMANDS:
+        command = resolve_command(cmd_name)
+        if command and command.name in SlashCommandCompleter._PICKER_COMMANDS:
             return cmd_name
         return f"{cmd_name} "
 

@@ -789,6 +789,51 @@ class TestModelsEndpoint:
             assert data["data"][0]["id"] == "lucas"
             assert data["data"][0]["root"] == "lucas"
 
+    @pytest.mark.asyncio
+    async def test_models_uses_shared_redacted_selection_inventory(self, adapter):
+        aliases = {
+            "minimax-m3-light": {
+                "model": "minimax-m3-light",
+                "provider": "litellm-local",
+                "credential_ref": "MINIMAX_LIGHT_KEY",
+                "display_name": "MiniMax M3",
+                "account_label": "lightcloud007",
+                "route_kind": "primary",
+                "priority": 1,
+            },
+            "MiniMax-M3": {
+                "model": "minimax-m3-light",
+                "provider": "litellm-local",
+                "visible": False,
+            },
+        }
+        app = _create_app(adapter)
+        with patch(
+            "hermes_cli.inventory.load_picker_context",
+            return_value=types.SimpleNamespace(model_aliases=aliases),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/models")
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["selection_order"] == ["minimax-m3-light"]
+        assert data["selection_metadata"] == {
+            "minimax-m3-light": {
+                "display_name": "MiniMax M3",
+                "account_label": "lightcloud007",
+                "route_kind": "primary",
+                "priority": 1,
+            }
+        }
+        selection = next(
+            row for row in data["data"] if row["id"] == "minimax-m3-light"
+        )
+        assert selection["account_label"] == "lightcloud007"
+        rendered = json.dumps(data)
+        assert "MINIMAX_LIGHT_KEY" not in rendered
+        assert "MiniMax-M3" not in data["selection_order"]
+
 
     def test_resolve_model_name_default_profile(self):
         """Default profile falls back to 'hermes-agent'."""
@@ -796,8 +841,11 @@ class TestModelsEndpoint:
             assert APIServerAdapter._resolve_model_name("") == "hermes-agent"
 
 
-    @pytest.mark.asyncio
-    async def test_model_options_returns_shared_inventory(self, adapter, monkeypatch):
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("anyio_backend", ["asyncio"])
+    async def test_model_options_returns_shared_inventory(
+        self, adapter, monkeypatch, anyio_backend
+    ):
         """GET /api/model/options builds the shared picker payload off-loop."""
         from hermes_cli import inventory
 

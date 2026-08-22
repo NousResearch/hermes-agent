@@ -99,6 +99,13 @@ class TestResolveCommand:
         assert not ctx.cli_only and not ctx.gateway_only
         assert "context" in GATEWAY_KNOWN_COMMANDS
 
+    def test_models_alias_resolves_to_model(self):
+        model = resolve_command("model")
+        models = resolve_command("models")
+        assert model is not None
+        assert models is model
+        assert models.name == "model"
+
 
 
 
@@ -116,6 +123,7 @@ class TestDerivedDicts:
         assert "/exit" in COMMANDS
         assert "/reload_mcp" in COMMANDS
         assert "/gateway" in COMMANDS
+        assert COMMANDS["/models"].endswith("(alias for /model)")
 
     def test_commands_by_category_covers_all_categories(self):
         registry_categories = {cmd.category for cmd in COMMAND_REGISTRY if not cmd.gateway_only}
@@ -317,6 +325,11 @@ class TestSlashCommandCompleter:
 
 
     # -- exact-match trailing space --------------------------------------
+
+    def test_models_alias_keeps_picker_submit_behavior(self):
+        completions = _completions(SlashCommandCompleter(), "/models")
+        models = next(item for item in completions if item.display_text == "/models")
+        assert models.text == "models"
 
 
     # -- non-slash input returns nothing ---------------------------------

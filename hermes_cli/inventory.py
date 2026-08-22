@@ -33,7 +33,7 @@ Substrate facts (verified May 2026):
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Optional
 
 
@@ -53,6 +53,7 @@ class ConfigContext:
     user_providers: dict
     custom_providers: list
     excluded_providers: list = None
+    model_aliases: dict = field(default_factory=dict)
 
     def with_overrides(
         self,
@@ -105,7 +106,156 @@ def load_picker_context() -> ConfigContext:
         user_providers=raw if isinstance(raw, dict) else {},
         custom_providers=get_compatible_custom_providers(cfg),
         excluded_providers=excluded if isinstance(excluded, list) else [],
+        model_aliases=(
+            dict(cfg.get("model_aliases") or {})
+            if isinstance(cfg.get("model_aliases"), dict)
+            else {}
+        ),
     )
+
+
+# Only these operator-safe fields may leave the config through inventory APIs.
+# Route targets, base URLs, credential references, and provider secrets stay in
+# the resolver/config layer and are deliberately excluded.
+_SELECTION_METADATA_FIELDS = (
+    "display_name",
+    "account_label",
+    "route_kind",
+    "priority",
+)
+
+
+def build_selection_inventory(model_aliases: Any) -> dict:
+    """Return the deterministic, redacted selection catalog.
+
+    A config alias becomes visible only when it supplies every safe metadata
+    field with the right type. Compatibility aliases can therefore keep doing
+    exact runtime resolution while setting ``visible: false`` (or omitting the
+    metadata entirely) so they never create duplicate picker entries.
+    """
+    if not isinstance(model_aliases, dict):
+        return {"selection_order": [], "selection_metadata": {}}
+
+    accepted: list[tuple[int, str, dict]] = []
+    for selection_id, entry in model_aliases.items():
+        if not isinstance(selection_id, str) or not selection_id.strip():
+            continue
+        if not isinstance(entry, dict) or entry.get("visible", True) is False:
+            continue
+        display_name = entry.get("display_name")
+        account_label = entry.get("account_label")
+        route_kind = entry.get("route_kind")
+        priority = entry.get("priority")
+        if not all(isinstance(value, str) and value.strip() for value in (
+            display_name,
+            account_label,
+            route_kind,
+        )):
+            continue
+        # bool is an int subclass, but accepting it would make True priority 1.
+        if isinstance(priority, bool) or not isinstance(priority, int) or priority < 0:
+            continue
+        clean_id = selection_id.strip()
+        safe = {
+            "display_name": display_name.strip(),
+            "account_label": account_label.strip(),
+            "route_kind": route_kind.strip(),
+            "priority": priority,
+        }
+        accepted.append((priority, clean_id, safe))
+
+    accepted.sort(key=lambda item: (item[0], item[1].lower(), item[1]))
+    return {
+        "selection_order": [selection_id for _, selection_id, _ in accepted],
+        "selection_metadata": {
+            selection_id: safe for _, selection_id, safe in accepted
+        },
+    }
+
+
+def apply_selection_inventory(rows: list[dict], model_aliases: Any) -> tuple[list[dict], dict]:
+    """Overlay visible selection IDs onto provider rows without dropping raw models.
+
+    Provider placement uses only config-local route identity. The returned
+    metadata remains redacted by :func:`build_selection_inventory`.
+    """
+    inventory = build_selection_inventory(model_aliases)
+    if not inventory["selection_order"]:
+        return rows, inventory
+
+    aliases = model_aliases if isinstance(model_aliases, dict) else {}
+    copied = [dict(row) for row in rows]
+    row_priority: dict[int, int] = {}
+
+    def _identities(row: dict) -> set[str]:
+        slug = str(row.get("slug") or "").strip().lower()
+        name = str(row.get("name") or "").strip().lower().replace(" ", "-")
+        values = {slug, name}
+        for value in tuple(values):
+            if value.startswith("custom:"):
+                values.add(value.split(":", 1)[1])
+        return {value for value in values if value}
+
+    for selection_id in inventory["selection_order"]:
+        entry = aliases.get(selection_id)
+        if not isinstance(entry, dict):
+            continue
+        provider = str(entry.get("provider") or "").strip().lower()
+        provider_ids = {provider}
+        if provider.startswith("custom:"):
+            provider_ids.add(provider.split(":", 1)[1])
+        elif provider:
+            provider_ids.add(f"custom:{provider}")
+        matched_index = next(
+            (
+                index
+                for index, row in enumerate(copied)
+                if _identities(row) & provider_ids
+            ),
+            None,
+        )
+        if matched_index is None:
+            continue
+        row = copied[matched_index]
+        raw_models = list(row.get("models") or [])
+        if selection_id not in raw_models:
+            raw_models.insert(0, selection_id)
+        row["models"] = raw_models
+        row["total_models"] = max(int(row.get("total_models") or 0), len(raw_models))
+        ids = list(row.get("selection_ids") or [])
+        if selection_id not in ids:
+            ids.append(selection_id)
+        row["selection_ids"] = ids
+        row_priority[matched_index] = min(
+            row_priority.get(matched_index, 1 << 30),
+            inventory["selection_metadata"][selection_id]["priority"],
+        )
+
+    def _is_local(row: dict) -> bool:
+        selection_ids = list(row.get("selection_ids") or [])
+        if selection_ids:
+            route_kinds = {
+                inventory["selection_metadata"].get(selection_id, {}).get("route_kind")
+                for selection_id in selection_ids
+            }
+            if route_kinds - {"local", None}:
+                return False
+            if "local" in route_kinds:
+                return True
+        joined = " ".join(
+            str(row.get(key) or "") for key in ("slug", "name", "api_url")
+        ).lower()
+        return any(token in joined for token in ("ollama", "localhost", "127.0.0.1"))
+
+    indexed = list(enumerate(copied))
+    indexed.sort(
+        key=lambda item: (
+            2 if _is_local(item[1]) else (0 if item[0] in row_priority else 1),
+            row_priority.get(item[0], 1 << 30),
+            item[0],
+        )
+    )
+    return [row for _, row in indexed], inventory
 
 
 # ─── Public: payload builder ────────────────────────────────────────────
@@ -274,11 +424,16 @@ def build_models_payload(
         _apply_featured(rows)
     _apply_custom_aliases(rows)
 
-    return {
+    rows, selection_inventory = apply_selection_inventory(rows, ctx.model_aliases)
+
+    payload = {
         "providers": rows,
         "model": ctx.current_model,
         "provider": ctx.current_provider,
     }
+    if selection_inventory["selection_order"]:
+        payload.update(selection_inventory)
+    return payload
 
 
 def build_model_options_payload(

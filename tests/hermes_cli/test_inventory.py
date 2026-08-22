@@ -24,6 +24,8 @@ from unittest.mock import patch
 
 from hermes_cli.inventory import (
     ConfigContext,
+    apply_selection_inventory,
+    build_selection_inventory,
     build_models_payload,
     load_picker_context,
 )
@@ -55,6 +57,126 @@ def _empty_ctx(provider="orig", model="orig-model", base_url="orig-url"):
         user_providers={},
         custom_providers=[],
     )
+
+
+def test_selection_inventory_is_deterministic_and_redacted():
+    aliases = {
+        "local-mac-qwen-mlx": {
+            "model": "qwen3.8:27b-mlx",
+            "provider": "ollama-mlx",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key": "must-not-leak",
+            "display_name": "Qwen MLX",
+            "account_label": "local",
+            "route_kind": "local",
+            "priority": 100,
+        },
+        "minimax-m3-light": {
+            "model": "minimax-m3-light",
+            "provider": "litellm-local",
+            "credential_ref": "MINIMAX_LIGHT_KEY",
+            "display_name": "MiniMax M3",
+            "account_label": "lightcloud007",
+            "route_kind": "primary",
+            "priority": 1,
+        },
+        "MiniMax-M3": {
+            "model": "minimax-m3-light",
+            "provider": "litellm-local",
+            "visible": False,
+        },
+    }
+
+    payload = build_selection_inventory(aliases)
+
+    assert payload["selection_order"] == [
+        "minimax-m3-light",
+        "local-mac-qwen-mlx",
+    ]
+    assert set(payload["selection_metadata"]["minimax-m3-light"]) == {
+        "display_name",
+        "account_label",
+        "route_kind",
+        "priority",
+    }
+    rendered = repr(payload)
+    assert "MINIMAX_LIGHT_KEY" not in rendered
+    assert "must-not-leak" not in rendered
+    assert "127.0.0.1" not in rendered
+    assert "MiniMax-M3" not in payload["selection_order"]
+
+
+def test_selection_inventory_preserves_raw_models_and_places_local_rows_last():
+    rows = [
+        {
+            "slug": "custom:ollama-mlx",
+            "name": "ollama-mlx",
+            "models": ["qwen3.8:27b-mlx", "raw-local"],
+            "total_models": 2,
+        },
+        {
+            "slug": "custom:litellm-local",
+            "name": "litellm-local",
+            "models": ["raw-m3"],
+            "total_models": 1,
+        },
+        {
+            "slug": "openrouter",
+            "name": "OpenRouter",
+            "models": ["stealth/ox-alpha", "raw-openrouter"],
+            "total_models": 2,
+        },
+    ]
+    aliases = {
+        "minimax-m3-light": {
+            "model": "minimax-m3-light",
+            "provider": "litellm-local",
+            "display_name": "MiniMax M3",
+            "account_label": "lightcloud007",
+            "route_kind": "primary",
+            "priority": 1,
+        },
+        "ox-alpha": {
+            "model": "stealth/ox-alpha",
+            "provider": "openrouter",
+            "display_name": "Ox Alpha",
+            "account_label": "OpenRouter",
+            "route_kind": "failover",
+            "priority": 3,
+        },
+        "local-mac-qwen-mlx": {
+            "model": "qwen3.8:27b-mlx",
+            "provider": "ollama-mlx",
+            "display_name": "Qwen MLX",
+            "account_label": "local",
+            "route_kind": "local",
+            "priority": 100,
+        },
+    }
+
+    ordered, inventory = apply_selection_inventory(rows, aliases)
+
+    assert inventory["selection_order"] == [
+        "minimax-m3-light",
+        "ox-alpha",
+        "local-mac-qwen-mlx",
+    ]
+    assert [row["slug"] for row in ordered] == [
+        "custom:litellm-local",
+        "openrouter",
+        "custom:ollama-mlx",
+    ]
+    assert ordered[0]["models"] == ["minimax-m3-light", "raw-m3"]
+    assert ordered[1]["models"] == [
+        "ox-alpha",
+        "stealth/ox-alpha",
+        "raw-openrouter",
+    ]
+    assert ordered[-1]["models"] == [
+        "local-mac-qwen-mlx",
+        "qwen3.8:27b-mlx",
+        "raw-local",
+    ]
 
 
 
@@ -541,7 +663,6 @@ def _apply_featured_with_dates(rows, dates: dict[str, str]):
 
     with patch("agent.models_dev.get_model_info", side_effect=_fake_get_model_info):
         inventory._apply_featured(rows)
-
 
 
 

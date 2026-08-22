@@ -2,6 +2,7 @@
 /venv/
 /venv.old/
 /venv.stale.runtime-*/
+/bin/
 /.hermes-runtime/
 /_pycache/
 *.pyc*

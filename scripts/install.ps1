@@ -2987,31 +2987,60 @@ function Set-PathVariable {
         # venv\Scripts directory. venv\Scripts contains python.exe /
         # pythonw.exe / pip.exe, and putting it on the user PATH silently
         # hijacks the `python` command in every terminal on the machine
-        # (#83797): unrelated projects start resolving python to Hermes'
-        # runtime interpreter. A dedicated bin dir with copies of the
-        # launcher exes keeps `hermes` globally available without
-        # shadowing anything. (Launcher exes embed the venv interpreter
-        # path, so they work from any location and survive updates.)
-        $hermesBin = "$InstallDir\bin"
+        # (#83797). And never a directory inside the git checkout:
+        # `hermes update`'s autostash (git stash push --include-untracked)
+        # deletes untracked files from the working tree, which silently
+        # removed the launchers an earlier installer staged under
+        # hermes-agent\bin. $HermesHome\bin is the managed binary dir
+        # (shared with the managed uv), outside the checkout, where no git
+        # operation can ever touch it. (Launcher exes embed the venv
+        # interpreter path, so they work from any location and survive
+        # updates.)
+        $hermesBin = "$HermesHome\bin"
         New-Item -ItemType Directory -Force -Path $hermesBin | Out-Null
-        foreach ($launcher in @("hermes.exe", "hermes-acp.exe")) {
-            $src = "$InstallDir\venv\Scripts\$launcher"
-            if (Test-Path $src) {
-                Copy-Item -Force $src "$hermesBin\$launcher"
+        # Launcher form depends on the venv (keep in lockstep with
+        # hermes_cli/_install_repair.py): a normal venv's exe trampoline
+        # embeds an absolute interpreter path and survives copying; a
+        # relocatable venv's trampoline (managed_uv rebuilds use
+        # --relocatable) resolves relative to its own location, and a copy
+        # dies with 'uv trampoline failed to canonicalize script path' --
+        # those get a .cmd delegator invoking the in-venv exe instead.
+        $pyvenvCfg = "$InstallDir\venv\pyvenv.cfg"
+        $venvRelocatable = $false
+        if (Test-Path $pyvenvCfg) {
+            $venvRelocatable = [bool](Select-String -Path $pyvenvCfg -Pattern '^\s*relocatable\s*=\s*true\s*$' -Quiet)
+        }
+        foreach ($launcher in @("hermes", "hermes-acp")) {
+            $src = "$InstallDir\venv\Scripts\$launcher.exe"
+            if (-not (Test-Path $src)) { continue }
+            if ($venvRelocatable) {
+                Remove-Item "$hermesBin\$launcher.exe" -Force -ErrorAction SilentlyContinue
+                Set-Content -Path "$hermesBin\$launcher.cmd" -Value "@echo off`r`n`"$src`" %*" -Encoding Ascii
+            } else {
+                Remove-Item "$hermesBin\$launcher.cmd" -Force -ErrorAction SilentlyContinue
+                Copy-Item -Force $src "$hermesBin\$launcher.exe"
             }
         }
     }
     
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
 
-    # Migrate installs that got venv\Scripts onto PATH from earlier
-    # installer versions -- remove it so the python shadowing stops.
-    $legacyBin = "$InstallDir\venv\Scripts"
-    if ((-not $NoVenv) -and $currentPath -like "*$legacyBin*") {
-        $cleaned = ($currentPath -split ';' | Where-Object { $_ -and $_ -ne $legacyBin }) -join ';'
-        [Environment]::SetEnvironmentVariable("Path", $cleaned, "User")
-        $currentPath = $cleaned
-        Write-Info "Removed legacy venv\Scripts from user PATH (kept hermes via $hermesBin)"
+    # Migrate older layouts off the user PATH:
+    #   venv\Scripts     -- shadowed the user's python (#83797)
+    #   hermes-agent\bin -- lived inside the git checkout, where the update
+    #                       autostash could sweep the launchers off disk
+    # The hermes-agent\bin FILES are left in place on purpose: editor/ACP
+    # configs that captured absolute launcher paths keep working, and the
+    # dir is git-ignored so it cannot dirty the checkout.
+    if (-not $NoVenv) {
+        $legacyEntries = @("$InstallDir\venv\Scripts", "$InstallDir\bin")
+        $items = @(($currentPath -split ';') | Where-Object { $_ })
+        $cleaned = @($items | Where-Object { $legacyEntries -notcontains $_ })
+        if ($cleaned.Count -ne $items.Count) {
+            $currentPath = $cleaned -join ";"
+            [Environment]::SetEnvironmentVariable("Path", $currentPath, "User")
+            Write-Info "Removed legacy launcher entries from user PATH (kept hermes via $hermesBin)"
+        }
     }
     
     if ($currentPath -notlike "*$hermesBin*") {

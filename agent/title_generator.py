@@ -184,6 +184,28 @@ def _auto_title_enabled() -> bool:
         return True
 
 
+def _model_title_upgrade_enabled() -> bool:
+    """Return whether the optional model-backed title upgrade may run.
+
+    This gate is intentionally distinct from ``enabled``. Operators can keep
+    the instant deterministic title while disabling all automatic model work,
+    retries, and unavailable-endpoint warnings. Missing values preserve the
+    historical two-stage behavior.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        from utils import is_truthy_value
+
+        config = load_config_readonly()
+        title_config = (config.get("auxiliary") or {}).get("title_generation") or {}
+        return is_truthy_value(title_config.get("model_upgrade_enabled"), default=True)
+    except Exception:
+        logger.debug(
+            "Failed to read title_generation.model_upgrade_enabled", exc_info=True,
+        )
+        return True
+
+
 def strip_control_wrappers(text: str) -> str:
     """Remove leading machine-authored control wrappers, including nested ones.
 
@@ -369,6 +391,12 @@ def generate_title(
     """
     if not _auto_title_enabled():
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
+        return None
+    if not _model_title_upgrade_enabled():
+        logger.debug(
+            "Model title upgrade skipped: "
+            "auxiliary.title_generation.model_upgrade_enabled=false"
+        )
         return None
 
     if runtime_validator is not None:
@@ -746,6 +774,13 @@ def maybe_auto_title(
         return
 
     apply_instant_title(session_db, session_id, user_message, title_callback)
+
+    if not _model_title_upgrade_enabled():
+        logger.debug(
+            "Instant title persisted; model upgrade disabled by "
+            "auxiliary.title_generation.model_upgrade_enabled=false"
+        )
+        return
 
     thread = threading.Thread(
         target=auto_title_session,

@@ -301,6 +301,39 @@ class TestMaybeAutoTitle:
         assert db.get_session_title("sess-1") == "fix the flaky auth test in login"
         assert db.get_session_title_source("sess-1") == "derived"
 
+    def test_model_upgrade_disabled_keeps_derived_title_and_spawns_no_thread(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        config = {
+            "auxiliary": {"title_generation": {
+                "enabled": True, "model_upgrade_enabled": False,
+            }}
+        }
+        with patch("hermes_cli.config.load_config_readonly", return_value=config), \
+             patch("agent.title_generator.threading.Thread") as thread, \
+             patch("agent.title_generator.call_llm") as call_llm:
+            maybe_auto_title(db, "sess-1", "repair startup memory routing", [])
+        assert db.get_session_title("sess-1") == "repair startup memory routing"
+        assert db.get_session_title_source("sess-1") == "derived"
+        thread.assert_not_called()
+        call_llm.assert_not_called()
+
+    def test_enabled_false_still_disables_derived_and_model_titles(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        config = {
+            "auxiliary": {"title_generation": {
+                "enabled": False, "model_upgrade_enabled": True,
+            }}
+        }
+        with patch("hermes_cli.config.load_config_readonly", return_value=config), \
+             patch("agent.title_generator.threading.Thread") as thread, \
+             patch("agent.title_generator.call_llm") as call_llm:
+            maybe_auto_title(db, "sess-1", "repair startup memory routing", [])
+        assert db.get_session_title("sess-1") is None
+        thread.assert_not_called()
+        call_llm.assert_not_called()
+
     def test_skips_machine_authored_opening_messages(self, tmp_path):
         """A compaction handoff is not a user request and must not title."""
         db = SessionDB(tmp_path / "state.db")

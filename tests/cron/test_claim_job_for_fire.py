@@ -141,10 +141,12 @@ def test_reclaimed_fire_uses_new_owner_token(temp_home, monkeypatch):
     assert jobs.claim_job_for_fire(job["id"]) is True
     original = dict(jobs.get_job(job["id"])["fire_claim"])
     original_at = datetime.fromisoformat(original["at"])
+    # Advance past the fire-claim TTL (derived from ONESHOT_RUN_CLAIM_TTL_SECONDS)
+    # so the original claim is stale and a re-claim succeeds with a new owner.
     monkeypatch.setattr(
         jobs,
         "_hermes_now",
-        lambda: original_at + timedelta(seconds=301),
+        lambda: original_at + timedelta(seconds=jobs.ONESHOT_RUN_CLAIM_TTL_SECONDS + 1),
     )
 
     assert jobs.claim_job_for_fire(job["id"]) is True

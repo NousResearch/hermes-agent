@@ -2865,7 +2865,7 @@ def _machine_id() -> str:
 def claim_job_for_fire(
     job_id: str,
     *,
-    claim_ttl_seconds: int = 300,
+    claim_ttl_seconds: int = ONESHOT_RUN_CLAIM_TTL_SECONDS,
     force: bool = False,
     return_job: bool = False,
 ) -> Union[bool, Dict[str, Any]]:
@@ -2883,7 +2883,7 @@ def claim_job_for_fire(
 def _claim_job_for_fire_locked(
     job_id: str,
     *,
-    claim_ttl_seconds: int = 300,
+    claim_ttl_seconds: int = ONESHOT_RUN_CLAIM_TTL_SECONDS,
     force: bool = False,
     return_job: bool = False,
 ) -> Union[bool, Dict[str, Any]]:

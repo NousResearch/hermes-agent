@@ -40,6 +40,12 @@ function renderRow(variant: 'detail' | 'sidebar') {
 }
 
 describe('CronRunRow', () => {
+  it('names the sidebar run button with both its title and time', () => {
+    renderRow('sidebar')
+
+    expect(screen.getByRole('button', { name: 'Nightly report — Aug 21, 10:00' })).toBeTruthy()
+  })
+
   it.each(['detail', 'sidebar'] as const)(
     'deletes one %s run after confirmation and preserves its profile',
     async variant => {

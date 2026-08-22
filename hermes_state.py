@@ -13099,6 +13099,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     ) -> List[Dict[str, Any]]:
         """All Telegram DM topic bindings for one chat, newest first.
 
+        ``updated_at`` alone is not a total order: it is a ``time.time()``
+        float written by :meth:`bind_telegram_topic`, so two topics bound in
+        the same tick tie and SQLite may return them in either order.  The
+        sole caller (``_recover_telegram_topic_thread_id``) takes the *first*
+        row for a user as "most-recent topic", so a tie there routes a lobby
+        reply into an arbitrary lane.  ``rowid`` breaks it deterministically:
+        the table is upserted via ``ON CONFLICT(chat_id, thread_id) DO
+        UPDATE``, so rowids are stable and ascend with insertion order.
+
         Read-only; returns [] if the bindings table doesn't exist yet
         (does not trigger the topic-mode migration).
         """
@@ -13106,7 +13115,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             try:
                 rows = self._conn.execute(
                     "SELECT * FROM telegram_dm_topic_bindings "
-                    "WHERE chat_id = ? ORDER BY updated_at DESC",
+                    "WHERE chat_id = ? ORDER BY updated_at DESC, rowid DESC",
                     (str(chat_id),),
                 ).fetchall()
             except sqlite3.OperationalError:

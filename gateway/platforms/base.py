@@ -2383,10 +2383,18 @@ class MessageEvent:
     timestamp: datetime = field(default_factory=datetime.now)
 
     # Whether this event may resolve gateway commands or pending control
-    # prompts. Kept last to preserve positional construction compatibility.
+    # prompts. Retained in its existing position for positional construction
+    # compatibility.
     # Proactive plugin events set this to False so untrusted payload text
     # remains conversational input.
     allow_gateway_control: bool = True
+
+    # Exact provenance for the synthetic empty event created by gateway
+    # startup recovery. ``internal`` is broader (background completions,
+    # handoffs, plugin injections), so recovery policy must not use it as the
+    # discriminator. Kept last to preserve positional construction
+    # compatibility for all existing fields.
+    startup_resume: bool = False
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

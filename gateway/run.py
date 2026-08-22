@@ -1274,14 +1274,16 @@ def build_resume_recovery_note(
     message: str = "",
     *,
     interactive: bool = True,
+    startup_resume: bool = False,
 ) -> str:
     """Build the resume-pending recovery system note for an interrupted turn.
 
     ``reason`` is the session's ``resume_reason`` (``restart_timeout``,
     ``shutdown_timeout``, or anything else → generic interruption phrasing).
-    ``message`` is the user's NEW message text; empty means this is the
-    startup auto-resume turn synthesized by
-    ``_schedule_resume_pending_sessions`` with no human message attached.
+    ``message`` is the user's NEW message text. ``startup_resume`` is exact
+    event provenance: true only for the synthetic turn created by
+    ``_schedule_resume_pending_sessions``. Real inbound events remain new user
+    input even when their text is empty (for example captionless media).
 
     ``interactive`` selects the empty-message guidance: on interactive
     platforms a human is present, so "report the restore and ask what next"
@@ -1298,7 +1300,7 @@ def build_resume_recovery_note(
         if reason == "shutdown_timeout"
         else "a gateway interruption"
     )
-    if message:
+    if not startup_resume:
         resume_guidance = (
             "Address the user's NEW message below FIRST and focus "
             "on what the user is asking now."
@@ -1343,12 +1345,13 @@ def _prepare_resume_pending_message(
     message: Optional[str],
     *,
     interactive: bool = True,
-) -> tuple[str, str]:
+    startup_resume: bool = False,
+) -> tuple[str, Optional[str]]:
     """Return the recovery message and the user text to persist.
 
-    Resume turns replace the startup event's text with a recovery note before
-    entering the agent. When the original message is empty (the synthesized
-    auto-resume turn), persist the note too — persisting the empty string
+    Resume turns replace the event's text with a recovery note before entering
+    the agent. For a synthesized startup turn, persist the note too —
+    persisting the empty string
     left a blank user row in state.db that the pre-call sanitizer re-healed
     on every later call forever (#86580). When the user sent REAL text while
     the resume was pending, keep persisting their clean words: the transcript
@@ -1356,10 +1359,22 @@ def _prepare_resume_pending_message(
     non-empty row never trips the sanitizer.
     """
     recovery_message = build_resume_recovery_note(
-        reason, message or "", interactive=interactive,
+        reason,
+        message or "",
+        interactive=interactive,
+        startup_resume=startup_resume,
     )
+    # A real captionless media event may have no string to persist; ``None``
+    # leaves the native multimodal content path in control. Only the synthetic
+    # startup wake persists the recovery scaffold itself.
     persist_message = (
-        message if isinstance(message, str) and message.strip() else recovery_message
+        recovery_message
+        if startup_resume
+        else (
+            message
+            if isinstance(message, str) and message.strip()
+            else None
+        )
     )
     return recovery_message, persist_message
 
@@ -6295,9 +6310,9 @@ class TurnRunner:
 
         if _is_resume_pending:
             _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
-            # The empty-message case is the auto-resume startup turn
-            # synthesized by _schedule_resume_pending_sessions — there is
-            # no NEW user message to address.  Guidance is adapter-aware:
+            # ``startup_resume`` distinguishes the synthetic startup wake
+            # from a real inbound event whose text happens to be empty (for
+            # example captionless media). Guidance is adapter-aware:
             # interactive platforms report the restore and ask what next;
             # non-interactive event platforms (webhook, API server)
             # continue the interrupted work instead, because nobody is
@@ -6308,7 +6323,10 @@ class TurnRunner:
                 getattr(_resume_adapter, "interactive_resume", True)
             )
             ctx.message, _persist_user_message_override = _prepare_resume_pending_message(
-                _reason, ctx.message, interactive=_interactive_resume,
+                _reason,
+                ctx.message,
+                interactive=_interactive_resume,
+                startup_resume=ctx.startup_resume,
             )
         elif _has_fresh_tool_tail:
             _persist_user_message_override = ctx.message
@@ -6331,8 +6349,8 @@ class TurnRunner:
             if _srn:
                 ctx.message = _srn + "\n\n" + ctx.message
 
-        # Safety net: a startup auto-resume event carries empty
-        # text and relies on the resume_pending branch above to supply the
+        # Safety net: a startup auto-resume event carries empty text and relies
+        # on the resume_pending branch above to supply the
         # recovery note.  If that branch did not fire for any reason (e.g.
         # both freshness signals disagreed, or the marker was cleared
         # between scheduling and dispatch) we must NOT hand the model a
@@ -6341,7 +6359,8 @@ class TurnRunner:
         # legitimately empty user turns (e.g. an image with no caption,
         # wrapped as native content below) are untouched.
         if (
-            isinstance(ctx.message, str)
+            ctx.startup_resume
+            and isinstance(ctx.message, str)
             and not ctx.message.strip()
             and _resume_entry is not None
             and getattr(_resume_entry, "resume_pending", False)
@@ -12281,6 +12300,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
+                startup_resume=True,
             )
             task = asyncio.create_task(
                 self._run_startup_resume_event(adapter, event, entry.session_key)
@@ -20381,6 +20401,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=event.message_type,
+                startup_resume=bool(getattr(event, "startup_resume", False)),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -28094,6 +28115,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        startup_resume: bool = False,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -28114,6 +28136,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                startup_resume=startup_resume,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -28127,6 +28150,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                startup_resume=startup_resume,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -28270,6 +28294,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        startup_resume: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -28578,6 +28603,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             moa_config=moa_config,
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
+            startup_resume=startup_resume,
             persist_user_display_kind=persist_user_display_kind,
         )
         turn_runner = TurnRunner(self, turn_ctx)

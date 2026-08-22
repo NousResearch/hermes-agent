@@ -11,6 +11,7 @@ Model families (most expose both t2v + i2v; gemini-omni-flash is image-to-video 
 
   Cheap tier:
     ltx-2.3            fal-ai/ltx-2.3-22b/text-to-video           /  fal-ai/ltx-2.3-22b/image-to-video
+    ltx-2.5            lightricks/ltx-2.5/text-to-video/fast      /  lightricks/ltx-2.5/image-to-video/fast
     pixverse-v6        fal-ai/pixverse/v6/text-to-video           /  fal-ai/pixverse/v6/image-to-video
     seedance-2.0-mini  bytedance/seedance-2.0/mini/text-to-video  /  bytedance/seedance-2.0/mini/image-to-video
 
@@ -22,7 +23,8 @@ Model families (most expose both t2v + i2v; gemini-omni-flash is image-to-video 
     flux-3             blackforestlabs/flux-3/text-to-video       /  blackforestlabs/flux-3/image-to-video
     grok-imagine-1.5   xai/grok-imagine-video/v1.5/text-to-video  /  xai/grok-imagine-video/v1.5/image-to-video
     kling-v3-4k        fal-ai/kling-video/v3/4k/text-to-video     /  fal-ai/kling-video/v3/4k/image-to-video
-    happy-horse        alibaba/happy-horse/text-to-video          /  alibaba/happy-horse/image-to-video
+    kling-o3           fal-ai/kling-video/o3/standard/text-to-video / fal-ai/kling-video/o3/standard/image-to-video
+    happy-horse        alibaba/happy-horse/v1.1/text-to-video     /  alibaba/happy-horse/v1.1/image-to-video
 
   Image-to-video only (no text_endpoint):
     gemini-omni-flash  google/gemini-omni-flash/image-to-video
@@ -122,6 +124,28 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "durations": (4, 15),
         "audio": True,
         "negative": False,
+        "seed": False,
+    },
+    "ltx-2.5": {
+        "display": "LTX 2.5",
+        "speed": "~30-90s",
+        "price": "cheap",
+        "strengths": "Lightricks open-source audio-video model. Native audio, up to 20s / 4K (i2v), camera-motion presets.",
+        "tier": "cheap",
+        # Fast endpoints: wider duration enum (6-20s) and cheaper than /pro
+        # ($0.09/s 720p vs $0.12/s), with the same 720p-2160p ladder on i2v.
+        "text_endpoint": "lightricks/ltx-2.5/text-to-video/fast",
+        "image_endpoint": "lightricks/ltx-2.5/image-to-video/fast",
+        # Duration is an enum of JSON integers (6..20 even) plus "auto"; we
+        # send integers and let omission fall back to the endpoint default.
+        "duration_int": True,
+        "aspect_ratios": ("16:9", "9:16"),
+        "resolutions": ("720p", "1080p", "1440p", "2160p"),
+        "resolution_aliases": {"2k": "1440p", "4k": "2160p"},
+        "durations": (6, 8, 10, 12, 14, 16, 18, 20),
+        "audio": True,
+        "negative": False,
+        # No `seed` field in the LTX 2.5 input schema.
         "seed": False,
     },
     # ─── Expensive / premium tier ──────────────────────────────────────
@@ -274,20 +298,44 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "negative": True,
     },
     "happy-horse": {
-        "display": "Happy Horse 1.0",
+        "display": "Happy Horse 1.1",
         "speed": "~60-120s",
         "price": "premium",
-        "strengths": "Alibaba. New model, sparse public docs — conservative defaults.",
+        "strengths": "Alibaba flagship. 1080p, native audio + multilingual lip-sync, 3-15s, nine aspect ratios.",
         "tier": "premium",
-        "text_endpoint": "alibaba/happy-horse/text-to-video",
-        "image_endpoint": "alibaba/happy-horse/image-to-video",
-        # Docs don't expose duration/aspect/resolution — let the endpoint
-        # apply its own defaults.
-        "aspect_ratios": None,
-        "resolutions": None,
-        "durations": None,
+        "text_endpoint": "alibaba/happy-horse/v1.1/text-to-video",
+        "image_endpoint": "alibaba/happy-horse/v1.1/image-to-video",
+        # Duration is typed as a JSON integer enum (3..15).
+        "duration_int": True,
+        # i2v derives the aspect ratio from the input image (no key).
+        "image_drop_keys": ("aspect_ratio",),
+        "aspect_ratios": ("16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "9:21", "5:4", "4:5"),
+        "resolutions": ("720p", "1080p"),
+        "durations": (3, 15),
+        # Audio is native/always-on; no generate_audio key in the schema.
         "audio": False,
         "negative": False,
+        # `seed` IS in the 1.1 input schema (0-2147483647).
+    },
+    "kling-o3": {
+        "display": "Kling O3 (Standard)",
+        "speed": "~60-180s",
+        "price": "premium",
+        "strengths": "Kuaishou frontier. Multi-shot native storytelling, optional audio, 3-15s.",
+        "tier": "premium",
+        "text_endpoint": "fal-ai/kling-video/o3/standard/text-to-video",
+        "image_endpoint": "fal-ai/kling-video/o3/standard/image-to-video",
+        # i2v schema has no aspect_ratio key (derived from the input image).
+        "image_drop_keys": ("aspect_ratio",),
+        "aspect_ratios": ("16:9", "9:16", "1:1"),
+        # No resolution key in the O3 schema.
+        "resolutions": None,
+        "durations": (3, 15),
+        # generate_audio is a real bool (default false; audio-on costs more).
+        "audio": True,
+        "negative": False,
+        # No `seed` field in the O3 input schema.
+        "seed": False,
     },
 }
 
@@ -759,7 +807,7 @@ class FALVideoGenProvider(VideoGenProvider):
         return {
             "name": "FAL",
             "badge": "paid",
-            "tag": "LTX, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 4K, Happy Horse, Grok Imagine, Gemini Omni — text-to-video & image-to-video",
+            "tag": "LTX 2.3/2.5, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 4K/O3, Happy Horse, Grok Imagine, Gemini Omni — text-to-video & image-to-video",
             "env_vars": [
                 {
                     "key": "FAL_KEY",

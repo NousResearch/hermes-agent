@@ -2079,3 +2079,164 @@ class TestCredentialPoolQueryLocking:
             inner.release()
 
         assert done.wait(timeout=2.0), f"{method}() did not complete after lock release"
+
+
+def test_copilot_pool_priority_normalization_honors_token_source_precedence():
+    from agent.credential_pool import PooledCredential, _normalize_pool_priorities
+
+    entries = [
+        PooledCredential(
+            provider="copilot",
+            id="gh-cli",
+            label="gh cli",
+            auth_type="api_key",
+            priority=0,
+            source="gh_cli",
+            access_token="gho_old",
+        ),
+        PooledCredential(
+            provider="copilot",
+            id="copilot-env",
+            label="copilot env",
+            auth_type="api_key",
+            priority=1,
+            source="env:COPILOT_GITHUB_TOKEN",
+            access_token="gho_new",
+        ),
+        PooledCredential(
+            provider="copilot",
+            id="manual",
+            label="manual",
+            auth_type="api_key",
+            priority=2,
+            source="manual",
+            access_token="gho_manual",
+        ),
+    ]
+
+    assert _normalize_pool_priorities("copilot", entries) is True
+
+    priorities = {entry.id: entry.priority for entry in entries}
+    # Manual entries keep precedence over auto-seeded singleton sources.
+    assert priorities["manual"] == 0
+    # Among auto-seeded Copilot sources, match resolve_copilot_token precedence.
+    assert priorities["copilot-env"] == 1
+    assert priorities["gh-cli"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Copilot pool source-precedence — end-to-end load_pool regressions
+# ---------------------------------------------------------------------------
+
+
+def _load_copilot_pool_with_stale_gh_cli(tmp_path, monkeypatch, *, strategy=None, extra_entries=None):
+    """Seed a persisted stale gh_cli row, then load with an env token available.
+
+    Mirrors the real failure: `gh auth token` seeded a Copilot entry from one
+    GitHub account, then the user set COPILOT_GITHUB_TOKEN for another. The
+    env-sourced credential must win at selection time, matching
+    ``resolve_copilot_token`` precedence.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "credential_pool": {
+            "copilot": [
+                {
+                    "id": "gh-cli-stale",
+                    "label": "gh cli",
+                    "auth_type": "api_key",
+                    "priority": 0,
+                    "source": "gh_cli",
+                    "access_token": "gho_stale_from_gh_cli",
+                },
+                *(extra_entries or []),
+            ]
+        },
+    })
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_provider_explicitly_configured",
+        lambda pid: pid == "copilot",
+    )
+    # The resolver reports the env-sourced token as the winning source.
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_fresh_from_env", "COPILOT_GITHUB_TOKEN"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        lambda token: (token, None),
+    )
+    if strategy is not None:
+        monkeypatch.setattr(
+            "agent.credential_pool.get_pool_strategy",
+            lambda provider: strategy,
+        )
+
+    from agent.credential_pool import load_pool
+    return load_pool("copilot")
+
+
+def test_load_pool_copilot_env_token_outranks_persisted_gh_cli(tmp_path, monkeypatch):
+    """A persisted stale gh_cli row must not outrank a resolver env token."""
+    pool = _load_copilot_pool_with_stale_gh_cli(tmp_path, monkeypatch)
+
+    entries = {entry.source: entry.priority for entry in pool._entries}
+    assert "env:COPILOT_GITHUB_TOKEN" in entries, (
+        f"env-sourced credential should be seeded (got {sorted(entries)})"
+    )
+
+    selected = pool.select()
+    assert selected is not None
+    assert selected.source == "env:COPILOT_GITHUB_TOKEN", (
+        "selection must follow resolve_copilot_token precedence, not the "
+        f"persisted insertion order (got {selected.source})"
+    )
+    # When the stale gh_cli row is still present it must rank below the env
+    # token rather than keeping its persisted priority 0.
+    if "gh_cli" in entries:
+        assert entries["env:COPILOT_GITHUB_TOKEN"] < entries["gh_cli"]
+
+
+def test_load_pool_copilot_round_robin_rotation_is_preserved(tmp_path, monkeypatch):
+    """Normalization must not reset a persisted round_robin rotation.
+
+    The rotation lives in the persisted *priority order*: ``select()`` moves
+    the used entry to the end and re-numbers. The regression only appears
+    across a reload — ``load_pool()`` re-runs ``_normalize_pool_priorities``,
+    and without the round_robin guard that rewrites priorities back to static
+    source precedence, pinning every process to the same credential forever.
+    """
+    from agent.credential_pool import STRATEGY_ROUND_ROBIN, load_pool
+
+    extra = [
+        {
+            "id": "manual-second",
+            "label": "manual second key",
+            "auth_type": "api_key",
+            "priority": 1,
+            "source": "manual",
+            "access_token": "gho_manual_second",
+        },
+    ]
+    pool = _load_copilot_pool_with_stale_gh_cli(
+        tmp_path,
+        monkeypatch,
+        strategy=STRATEGY_ROUND_ROBIN,
+        extra_entries=extra,
+    )
+
+    first = pool.select()
+    assert first is not None
+
+    # Reload from disk, exactly as the next process/turn would.
+    reloaded = load_pool("copilot")
+    second = reloaded.select()
+    assert second is not None
+
+    assert second.id != first.id, (
+        "round_robin rotation must survive a load_pool() reload; static "
+        "source-precedence normalization would reset the persisted order and "
+        f"re-select {first.id} every time"
+    )

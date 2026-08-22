@@ -5274,6 +5274,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
             invalid = [t for t in toolsets if not validate_toolset(t) and t not in mcp_names]
             if invalid:
+                # Plugin toolsets are likewise unknown until discover_plugins()
+                # has populated the registry (_get_platform_tools enables a
+                # newly installed plugin's toolset by default, so it arrives
+                # here before discovery on a cold start). Re-validate after a
+                # one-time discovery pass before declaring anything unknown —
+                # mirror of the TUI gateway's approach (tui_gateway/server.py).
+                try:
+                    from hermes_cli.plugins import discover_plugins
+
+                    discover_plugins()
+                    invalid = [t for t in invalid if not validate_toolset(t)]
+                except Exception:
+                    pass
+            if invalid:
                 self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
         
         # Filesystem checkpoints: CLI flag > config

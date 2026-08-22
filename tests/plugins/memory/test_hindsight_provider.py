@@ -333,6 +333,25 @@ class TestConfig:
         assert p._retain_source == "cogoport"
         assert p._build_metadata(message_count=2, turn_index=1)["source"] == "cogoport"
 
+    def test_embedded_profile_env_includes_database_url_from_config(self):
+        env = _build_embedded_profile_env({
+            "llm_provider": "ollama",
+            "llm_model": "qwen2.5:7b",
+            "database_url": "pg0://hindsight-embed-infra:55449",
+        })
+
+        assert env["HINDSIGHT_EMBED_API_DATABASE_URL"] == "pg0://hindsight-embed-infra:55449"
+
+    def test_embedded_profile_env_includes_database_url_from_env(self, monkeypatch):
+        monkeypatch.setenv("HINDSIGHT_EMBED_API_DATABASE_URL", "pg0://hindsight-embed-test:55450")
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "ollama",
+            "llm_model": "qwen2.5:7b",
+        })
+
+        assert env["HINDSIGHT_EMBED_API_DATABASE_URL"] == "pg0://hindsight-embed-test:55450"
+
     def test_embedded_profile_env_includes_idle_timeout_from_config(self):
         env = _build_embedded_profile_env({
             "llm_provider": "openai",

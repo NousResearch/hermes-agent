@@ -1,6 +1,7 @@
 import type { MouseTrackingMode } from '@hermes/ink'
 import { useEffect, useRef } from 'react'
 
+import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
@@ -283,7 +284,15 @@ export const applyDisplay = (
     focusView: !!d.focus_view,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
-    mouseTracking: normalizeMouseTracking(d),
+    // The dashboard embeds this TUI in an xterm.js surface. While ANY mouse
+    // protocol is active, xterm.js 6.x disables its SelectionService entirely,
+    // so plain click-drag can never select text in the browser. The PTY
+    // launcher already sets HERMES_TUI_DISABLE_MOUSE=1 (boot-time default),
+    // but this config fan-out re-enables `all` whenever display.mouse_tracking
+    // is unset (normalizeMouseTracking's default). Force `off` on the
+    // dashboard surface regardless of config; native terminals keep the full
+    // config-driven presets. See #25720 (macOS variant of the same gap).
+    mouseTracking: DASHBOARD_TUI_MODE ? 'off' : normalizeMouseTracking(d),
     pasteCollapseLines: _pasteCollapseLinesFromConfig(cfg),
     pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),
     sections: resolveSections(d.sections),

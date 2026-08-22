@@ -1,4 +1,20 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type * as EnvModule from '../config/env.js'
+
+// Mutable dashboard-mode flag so tests can flip HERMES_TUI_DASHBOARD per case
+// (env.ts evaluates it once at module load, so a static mock cannot toggle).
+const envState = vi.hoisted(() => ({ dashboard: false }))
+vi.mock('../config/env.js', async importOriginal => {
+  const actual = await importOriginal<EnvModule>()
+
+  return {
+    ...actual,
+    get DASHBOARD_TUI_MODE() {
+      return envState.dashboard
+    }
+  }
+})
 
 import { $uiState, resetUiState } from '../app/uiStore.js'
 import {
@@ -266,6 +282,40 @@ describe('normalizeMouseTracking', () => {
 
   it('falls back to all for unknown strings', () => {
     expect(normalizeMouseTracking({ mouse_tracking: 'rainbows' })).toBe('all')
+  })
+})
+
+describe('applyDisplay dashboard mouse override', () => {
+  beforeEach(() => {
+    resetUiState()
+    envState.dashboard = false
+  })
+  afterEach(() => {
+    envState.dashboard = false
+  })
+
+  it('forces mouse tracking off on the dashboard surface when config is unset', () => {
+    envState.dashboard = true
+    applyDisplay({ config: { display: {} } }, vi.fn())
+    expect($uiState.get().mouseTracking).toBe('off')
+  })
+
+  it('forces mouse tracking off on the dashboard surface even when config requests all', () => {
+    envState.dashboard = true
+    applyDisplay({ config: { display: { mouse_tracking: 'all' } } }, vi.fn())
+    expect($uiState.get().mouseTracking).toBe('off')
+  })
+
+  it('keeps the config-driven default on native terminals', () => {
+    applyDisplay({ config: { display: {} } }, vi.fn())
+    expect($uiState.get().mouseTracking).toBe('all')
+  })
+
+  it('keeps config-driven presets on native terminals', () => {
+    applyDisplay({ config: { display: { mouse_tracking: 'wheel' } } }, vi.fn())
+    expect($uiState.get().mouseTracking).toBe('wheel')
+    applyDisplay({ config: { display: { mouse_tracking: 'off' } } }, vi.fn())
+    expect($uiState.get().mouseTracking).toBe('off')
   })
 })
 

@@ -11290,7 +11290,7 @@ def _collect_kanban_notifications(session: dict) -> list:
                 # blocked/crashed subs stay live so a respawned task's next
                 # terminal event still reaches the user (same rule as the
                 # gateway notifier).
-                if task and getattr(task, "status", "") in {"done", "archived"}:
+                if task and getattr(task, "status", "") in {"done", "archived", "cancelled"}:
                     try:
                         _kb.remove_notify_sub(
                             conn,

@@ -744,3 +744,42 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     finally:
         conn.close()
     assert remaining == []
+
+
+def test_notifier_claim_quarantines_legacy_malformed_event_fields(tmp_path, monkeypatch):
+    """One legacy malformed event must not pin a subscription cursor forever."""
+    db_path = tmp_path / "malformed-event.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="legacy event", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.complete_task(conn, tid, result="done")
+        event_id = conn.execute(
+            "SELECT MAX(id) FROM task_events WHERE task_id=? AND kind='completed'",
+            (tid,),
+        ).fetchone()[0]
+        # Reproduce the production corruption: empty TEXT run_id and ISO TEXT
+        # timestamp in columns that current code writes as INTEGER/NULL.
+        conn.execute(
+            "UPDATE task_events SET run_id='', created_at=? WHERE id=?",
+            ("2026-08-14T09:00:00+09:00", event_id),
+        )
+        conn.commit()
+
+        old_cursor, new_cursor, events = kb.claim_unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            kinds=["completed"],
+        )
+        assert old_cursor < event_id
+        assert new_cursor == event_id
+        assert len(events) == 1
+        assert events[0].run_id is None
+        assert isinstance(events[0].created_at, int)
+    finally:
+        conn.close()

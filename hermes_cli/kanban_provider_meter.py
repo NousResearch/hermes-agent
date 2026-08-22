@@ -11,7 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
-from agent.account_usage import AccountUsageSnapshot, fetch_account_usage
+from agent.account_usage import AccountUsageSnapshot
+from agent import account_usage
 
 
 @dataclass(frozen=True)
@@ -72,7 +73,10 @@ def remediate_candidate(
     for provider in {candidate.provider.strip().lower() for candidate in candidates}:
         if provider == "nous":
             continue
-        readings[provider] = fetch_account_usage(provider)
+        # Resolve through the module at call time so the dispatcher observes
+        # refreshed meters and tests/operators can replace the live lookup
+        # without re-importing this policy module.
+        readings[provider] = account_usage.fetch_account_usage(provider)
     return choose_available_candidate(
         candidates, readings, minimum_remaining_percent=minimum_remaining_percent
     )

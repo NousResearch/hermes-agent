@@ -1165,9 +1165,37 @@ def test_complete_records_result(kanban_home):
         t = kb.create_task(conn, title="x")
         assert kb.complete_task(conn, t, result="done and dusted")
         task = kb.get_task(conn, t)
-    assert task.status == "done"
-    assert task.result == "done and dusted"
-    assert task.completed_at is not None
+        assert task.status == "done"
+        assert task.result == "done and dusted"
+        assert task.completed_at is not None
+
+
+def test_complete_rejects_explicit_failed_quality_verdict(kanban_home):
+    """A worker cannot turn an explicit QA/review failure into ``done``."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="[Bright review] verify change")
+        with pytest.raises(kb.FailedCompletionVerdictError):
+            kb.complete_task(
+                conn,
+                t,
+                result="REVIEW FAILED (passed=false): atomicity regression",
+                metadata={"passed": False, "outcome": "failed"},
+            )
+        task = kb.get_task(conn, t)
+        assert task.status != "done"
+        assert task.result is None
+
+
+def test_complete_allows_explicit_positive_quality_verdict(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="[QA] verify change")
+        assert kb.complete_task(
+            conn,
+            t,
+            result="PASS: regression suite is green",
+            metadata={"passed": True, "outcome": "passed"},
+        )
+        assert kb.get_task(conn, t).status == "done"
 
 
 def test_block_then_unblock(kanban_home):
@@ -4041,6 +4069,94 @@ def test_dispatch_review_skips_nonspawnable(kanban_home, monkeypatch):
 def test_review_status_in_valid_statuses():
     """'review' is a valid task status."""
     assert "review" in kb.VALID_STATUSES
+
+
+def test_cancelled_is_terminal_and_hidden_from_active_views(kanban_home):
+    """Superseded cards remain queryable but never appear in active views."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="superseded", assignee="worker")
+        assert kb.cancel_task(
+            conn,
+            tid,
+            reason="replaced by canonical implementation",
+            successor_id="t_successor",
+            evidence="independent QA PASS",
+        ) is True
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "cancelled"
+        assert kb.delete_task(conn, tid) is False
+        assert tid not in {t.id for t in kb.list_tasks(conn)}
+        assert tid in {t.id for t in kb.list_tasks(conn, include_archived=True)}
+        stats = kb.board_stats(conn)
+        assert "cancelled" not in stats["by_status"]
+        events = kb.list_events(conn, tid)
+        assert any(
+            e.kind == "cancelled"
+            and e.payload["successor_id"] == "t_successor"
+            for e in events
+        )
+
+
+def test_cancelled_parent_unblocks_dependents(kanban_home):
+    """A cancelled superseded parent satisfies the dependency gate."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="old implementation")
+        child = kb.create_task(conn, title="canonical implementation", parents=[parent])
+        assert kb.cancel_task(conn, parent, reason="superseded") is True
+        assert kb.get_task(conn, child).status == "ready"
+
+
+def test_cancelled_audit_trail_is_preserved(kanban_home):
+    """cancel_task must NOT destroy comments, events, or runs — they are audit records."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="will-be-cancelled", assignee="worker")
+        kb.claim_task(conn, tid)
+        kb.add_comment(conn, tid, "user", "initial investigation note")
+        kb.add_comment(conn, tid, "worker", "work-in-progress note")
+
+        pre_events = kb.list_events(conn, tid)
+        pre_runs = kb.list_runs(conn, tid)
+        assert len(pre_runs) >= 1
+
+        assert kb.cancel_task(conn, tid, reason="superseded by t_new", successor_id="t_new") is True
+
+        # All comments must survive cancellation
+        comments = kb.list_comments(conn, tid)
+        assert len(comments) == 2
+        assert comments[0].body == "initial investigation note"
+
+        # All events (including the new 'cancelled' event) must survive
+        post_events = kb.list_events(conn, tid)
+        assert len(post_events) > len(pre_events)
+        assert any(e.kind == "cancelled" for e in post_events)
+
+        # Runs must survive — they are the worker's execution history
+        post_runs = kb.list_runs(conn, tid)
+        assert len(post_runs) >= len(pre_runs)
+
+
+def test_cancel_task_idempotent_returns_false_on_already_cancelled(kanban_home):
+    """Calling cancel_task on an already-cancelled card must return False (no double-write)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="once-cancelled", assignee="worker")
+        assert kb.cancel_task(conn, tid, reason="first cancel") is True
+        assert kb.cancel_task(conn, tid, reason="second cancel attempt") is False
+        # Only one 'cancelled' event should exist
+        events = kb.list_events(conn, tid)
+        cancel_events = [e for e in events if e.kind == "cancelled"]
+        assert len(cancel_events) == 1
+
+
+def test_cancel_done_task_returns_false(kanban_home):
+    """cancel_task must refuse to cancel already-done tasks to protect their integrity."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="done-task", assignee="worker")
+        kb.claim_task(conn, tid)
+        kb.complete_task(conn, tid, summary="finished successfully")
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.status == "done"
+        assert kb.cancel_task(conn, tid, reason="attempt to cancel done task") is False
 
 
 def test_dispatch_review_does_not_claim_ready_tasks(

@@ -135,14 +135,36 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_dependency_block_routes_to_todo(kanban_home: Path) -> None:
-    """Dependency waits never enter the human 'blocked' bucket."""
+def test_parentless_dependency_block_routes_to_triage(kanban_home: Path) -> None:
+    """A dependency claim without an unresolved parent must fail closed.
+
+    Sending such a task back to ``todo`` makes it immediately dispatchable and
+    creates a claim/spawn/dependency_wait loop.  Keep it out of the worker pool
+    until an operator supplies a real dependency edge.
+    """
     with kb.connect_closing() as conn:
         tid = _running_task(conn)
         assert kb.block_task(conn, tid, reason="need X first", kind="dependency")
         t = kb.get_task(conn, tid)
-        assert t.status == "todo"
+        assert t.status == "triage"
         assert t.block_kind == "dependency"
+        events = [e for e in kb.list_events(conn, tid)
+                  if e.kind == "dependency_wait_rejected"]
+        assert events
+        assert (events[-1].payload or {}).get("unresolved_parent_count") == 0
+
+
+def test_dependency_with_only_terminal_parents_routes_to_triage(kanban_home: Path) -> None:
+    """A completed parent cannot justify parking an active task as dependency."""
+    with kb.connect_closing() as conn:
+        parent = kb.create_task(conn, title="done parent", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (parent,))
+        kb.complete_task(conn, parent, result="done")
+        child = _running_task(conn, title="child")
+        kb.link_tasks(conn, parent_id=parent, child_id=child)
+        assert kb.block_task(conn, child, reason="stale dependency", kind="dependency")
+        assert kb.get_task(conn, child).status == "triage"
 
 
 def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:

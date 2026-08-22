@@ -699,6 +699,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         default=None,
         help="Permanently delete already-archived task ids from the board",
     )
+    p_cancel = sub.add_parser("cancel", help="Cancel superseded tasks without deleting their audit trail")
+    p_cancel.add_argument("task_ids", nargs="+")
+    p_cancel.add_argument("--reason", required=True, help="Why the task was superseded")
+    p_cancel.add_argument("--successor-id", default=None, help="Canonical successor task id")
+    p_cancel.add_argument("--evidence", default=None, help="Verification evidence for the replacement")
 
     # --- tail ---
     p_tail = sub.add_parser("tail", help="Follow a task's event stream")
@@ -1069,6 +1074,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "unblock":  _cmd_unblock,
             "promote":  _cmd_promote,
             "archive":  _cmd_archive,
+            "cancel":   _cmd_cancel,
             "tail":     _cmd_tail,
             "dispatch": _cmd_dispatch,
             "daemon":   _cmd_daemon,
@@ -2413,6 +2419,21 @@ def _cmd_archive(args: argparse.Namespace) -> int:
                 print(f"cannot archive {tid}", file=sys.stderr)
             else:
                 print(f"Archived {tid}")
+    return 0 if not failed else 1
+
+
+def _cmd_cancel(args: argparse.Namespace) -> int:
+    failed: list[str] = []
+    with kb.connect_closing() as conn:
+        for tid in args.task_ids:
+            if not kb.cancel_task(
+                conn, tid, reason=args.reason,
+                successor_id=args.successor_id, evidence=args.evidence,
+            ):
+                failed.append(tid)
+                print(f"cannot cancel {tid} (unknown id or terminal state)", file=sys.stderr)
+            else:
+                print(f"Cancelled {tid}")
     return 0 if not failed else 1
 
 

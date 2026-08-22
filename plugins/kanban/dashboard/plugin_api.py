@@ -274,7 +274,7 @@ def _compute_task_diagnostics(
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM tasks WHERE status != 'archived'",
+            "SELECT * FROM tasks WHERE status NOT IN ('archived', 'cancelled')",
         ).fetchall()
 
     if not rows:
@@ -452,6 +452,7 @@ def get_board(
         columns: dict[str, list[dict]] = {c: [] for c in BOARD_COLUMNS}
         if include_archived:
             columns["archived"] = []
+            columns["cancelled"] = []
 
         # Batch-fetch the latest non-null run summary per task in one
         # window-function query (avoids N+1 ``latest_summary`` calls
@@ -822,6 +823,8 @@ class UpdateTaskBody(BaseModel):
     body: Optional[str] = None
     result: Optional[str] = None
     block_reason: Optional[str] = None
+    successor_id: Optional[str] = None
+    cancellation_evidence: Optional[str] = None
     # Structured handoff fields — forwarded to complete_task when status
     # transitions to 'done'. Dashboard parity with ``hermes kanban
     # complete --summary ... --metadata ...``.
@@ -881,6 +884,12 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     ok = _set_status_direct(conn, task_id, "ready")
             elif s == "archived":
                 ok = kanban_db.archive_task(conn, task_id)
+            elif s == "cancelled":
+                ok = kanban_db.cancel_task(
+                    conn, task_id, reason=payload.block_reason,
+                    successor_id=payload.successor_id,
+                    evidence=payload.cancellation_evidence,
+                )
             elif s == "running":
                 raise HTTPException(
                     status_code=400,
@@ -1186,6 +1195,9 @@ class BulkTaskBody(BaseModel):
     assignee: Optional[str] = None  # "" or None = unassign
     priority: Optional[int] = None
     archive: bool = False
+    cancel: bool = False
+    successor_id: Optional[str] = None
+    cancellation_evidence: Optional[str] = None
     result: Optional[str] = None
     summary: Optional[str] = None
     metadata: Optional[dict] = None
@@ -1221,6 +1233,13 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                 if payload.archive:
                     if not kanban_db.archive_task(conn, tid):
                         entry.update(ok=False, error="archive refused")
+                if payload.cancel and not payload.archive and payload.status is None:
+                    if not kanban_db.cancel_task(
+                        conn, tid, reason=payload.result,
+                        successor_id=payload.successor_id,
+                        evidence=payload.cancellation_evidence,
+                    ):
+                        entry.update(ok=False, error="cancel refused")
                 if payload.status is not None and not payload.archive:
                     s = payload.status
                     if s == "done":
@@ -1250,6 +1269,12 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         continue
                     elif s == "scheduled":
                         ok = kanban_db.schedule_task(conn, tid)
+                    elif s == "cancelled":
+                        ok = kanban_db.cancel_task(
+                            conn, tid, reason=payload.result,
+                            successor_id=payload.successor_id,
+                            evidence=payload.cancellation_evidence,
+                        )
                     elif s in {"todo", "triage"}:
                         ok = _set_status_direct(conn, tid, s)
                     else:

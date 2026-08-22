@@ -3022,6 +3022,16 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # Conservative, opt-in worker-only business fallback. Profile names
+        # select separately authenticated auth.json stores; credentials never
+        # belong here. The dispatcher requires a known exhausted personal pool.
+        "night_business_fallback": {
+            "enabled": False,
+            "timezone": "Asia/Seoul",
+            "start_time": "21:00",
+            "end_time": "06:00",
+            "profiles": {"anthropic": "", "openai-codex": ""},
+        },
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

@@ -542,7 +542,7 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     "failed Nx", which reads as a current failure. It re-fires if the new
     run fails too (status leaves ``running`` with a recorded outcome).
     """
-    if _task_field(task, "status") in ("done", "archived", "running"):
+    if _task_field(task, "status") in ("done", "archived", "cancelled", "running"):
         return []
     threshold = _positive_int(cfg.get(
         "failure_threshold",
@@ -674,7 +674,7 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
     so a retried card kept showing "crashed Nx" over an active run. The
     banner re-fires if the new attempt also crashes.
     """
-    if _task_field(task, "status") in ("done", "archived", "running"):
+    if _task_field(task, "status") in ("done", "archived", "cancelled", "running"):
         return []
     failure_threshold = int(cfg.get(
         "failure_threshold",

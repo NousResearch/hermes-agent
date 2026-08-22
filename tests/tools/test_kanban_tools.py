@@ -814,10 +814,10 @@ def test_block_goal_mode_allows_dependency_kind(monkeypatch, tmp_path):
     """`dependency` and `needs_input` represent a genuine external blocker
     the worker cannot resolve itself — these remain ungated.
 
-    `dependency` routes to status='todo' (not 'blocked') per block_task's
-    own kind-routing — the goal loop still treats anything outside
-    running/ready/done/blocked as a stop, so this is still a legitimate,
-    judge-free exit; it's just not the literal 'blocked' status."""
+    A parentless `dependency` claim routes to status='triage' so it cannot
+    re-enter the dispatcher without an explicit unresolved parent edge. The
+    goal loop still treats this as a legitimate, judge-free external-blocker
+    exit; it is just fail-closed instead of immediately redispatchable."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
 
@@ -828,7 +828,7 @@ def test_block_goal_mode_allows_dependency_kind(monkeypatch, tmp_path):
 
     conn = kb.connect()
     try:
-        assert kb.get_task(conn, tid).status == "todo"
+        assert kb.get_task(conn, tid).status == "triage"
     finally:
         conn.close()
 

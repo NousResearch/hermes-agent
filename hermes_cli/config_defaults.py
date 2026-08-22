@@ -1717,6 +1717,11 @@ DEFAULT_CONFIG = {
             "voice": "default",
             # "base_url": "",  # override DEEPINFRA_BASE_URL for TTS only
         },
+        "cartesia": {
+            "model": "sonic-2",
+            "voice_id": "25d7abcb-4d6d-4aca-adce-8a1c85620c8b",  # Jessica
+            "sample_rate": 24000,
+        },
     },
 
     "stt": {

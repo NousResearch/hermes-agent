@@ -231,7 +231,8 @@ const BUILTIN_TTS_PROVIDERS = new Set([
   'neutts',
   'kittentts',
   'piper',
-  'deepinfra'
+  'deepinfra',
+  'cartesia'
 ])
 
 const BUILTIN_STT_PROVIDERS = new Set([

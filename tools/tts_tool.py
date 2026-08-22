@@ -261,6 +261,12 @@ GEMINI_TTS_SAMPLE_WIDTH = 2  # 16-bit PCM (L16)
 TTS_RESPONSE_BODY_LIMIT_BYTES = 16 * 1024 * 1024
 TTS_RESPONSE_BODY_CHUNK_BYTES = 64 * 1024
 
+DEFAULT_CARTESIA_MODEL = "sonic-2"
+DEFAULT_CARTESIA_VOICE_ID = "25d7abcb-4d6d-4aca-adce-8a1c85620c8b"  # Jessica
+DEFAULT_CARTESIA_BASE_URL = "https://api.cartesia.ai/tts/bytes"
+DEFAULT_CARTESIA_VERSION = "2024-06-10"
+DEFAULT_CARTESIA_SAMPLE_RATE = 24000
+
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
     return str(get_hermes_dir("cache/audio", "audio_cache"))
@@ -285,6 +291,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
     "piper": 5000,        # local VITS model, phoneme-based; practical cap
+    "cartesia": 5000,     # https://docs.cartesia.ai/
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
@@ -789,6 +796,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "kittentts",
     "piper",
     "deepinfra",
+    "cartesia",
 })
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
@@ -2415,6 +2423,118 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
 
 # ===========================================================================
+# Provider: Cartesia TTS
+# ===========================================================================
+def _generate_cartesia_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using Cartesia TTS API.
+
+    Uses the Cartesia /tts/bytes endpoint with model selection (default sonic-2),
+    voice selection (default Jessica), container selection, speed, and emotion controls.
+    """
+    import requests
+
+    api_key = _resolve_provider_key("CARTESIA_API_KEY", "cartesia")
+    if not api_key:
+        raise ValueError(
+            "CARTESIA_API_KEY not set. Get one at https://play.cartesia.ai/console"
+        )
+
+    cartesia_config = tts_config.get("cartesia") or {}
+    if not isinstance(cartesia_config, dict):
+        cartesia_config = {}
+
+    model = cartesia_config.get("model", DEFAULT_CARTESIA_MODEL)
+    voice_id = cartesia_config.get("voice_id", DEFAULT_CARTESIA_VOICE_ID)
+    base_url = cartesia_config.get("base_url", DEFAULT_CARTESIA_BASE_URL)
+    version = cartesia_config.get("version", DEFAULT_CARTESIA_VERSION)
+    sample_rate = int(cartesia_config.get("sample_rate", DEFAULT_CARTESIA_SAMPLE_RATE))
+    language = cartesia_config.get("language")
+
+    if output_path.endswith(".ogg") or output_path.endswith(".opus"):
+        container = "ogg"
+        encoding = "opus"
+    elif output_path.endswith(".wav"):
+        container = "wav"
+        encoding = "pcm_s16le"
+    elif output_path.endswith(".flac"):
+        container = "flac"
+        encoding = None
+    else:
+        container = "mp3"
+        encoding = None
+
+    output_format: Dict[str, Any] = {
+        "container": container,
+        "sample_rate": sample_rate,
+    }
+    if encoding:
+        output_format["encoding"] = encoding
+
+    voice_spec: Dict[str, Any] = {
+        "mode": "id",
+        "id": voice_id,
+    }
+
+    experimental_controls: Dict[str, Any] = {}
+    speed = cartesia_config.get("speed")
+    if speed is not None:
+        try:
+            experimental_controls["speed"] = float(speed)
+        except (TypeError, ValueError):
+            pass
+
+    emotion = cartesia_config.get("emotion")
+    if emotion:
+        if isinstance(emotion, list):
+            experimental_controls["emotion"] = emotion
+        elif isinstance(emotion, str):
+            experimental_controls["emotion"] = [emotion]
+
+    if experimental_controls:
+        voice_spec["__experimental_controls"] = experimental_controls
+
+    payload: Dict[str, Any] = {
+        "model_id": model,
+        "transcript": text,
+        "voice": voice_spec,
+        "output_format": output_format,
+    }
+    if language:
+        payload["language"] = str(language).strip()
+
+    headers = {
+        "X-API-Key": api_key,
+        "Cartesia-Version": version,
+        "Content-Type": "application/json",
+    }
+
+    try:
+        response = requests.post(
+            base_url,
+            json=payload,
+            headers=headers,
+            timeout=60,
+            stream=True,
+        )
+    except Exception as e:
+        logger.error("Cartesia TTS network request failed: %s", e, exc_info=True)
+        raise RuntimeError(f"Cartesia TTS failed: {type(e).__name__} ({e})") from e
+
+    if response.status_code != 200:
+        error_msg = f"HTTP {response.status_code}"
+        try:
+            err_json = response.json()
+            if isinstance(err_json, dict):
+                error_msg = err_json.get("error") or err_json.get("message") or str(err_json)
+        except Exception:
+            error_msg = response.text or error_msg
+        raise RuntimeError(f"Cartesia TTS API error ({response.status_code}): {error_msg}")
+
+    _write_tts_response_to_file(response, output_path, label="Cartesia TTS")
+    return output_path
+
+
+# ===========================================================================
 # Provider: Google Gemini TTS
 # ===========================================================================
 def _wrap_pcm_as_wav(
@@ -3337,6 +3457,10 @@ def _text_to_speech_single(
             logger.info("Generating speech with Mistral Voxtral TTS...")
             _generate_mistral_tts(text, file_str, tts_config)
 
+        elif provider == "cartesia":
+            logger.info("Generating speech with Cartesia TTS...")
+            _generate_cartesia_tts(text, file_str, tts_config)
+
         elif provider == "gemini":
             logger.info("Generating speech with Google Gemini TTS...")
             _generate_gemini_tts(text, file_str, tts_config)
@@ -3457,7 +3581,7 @@ def _text_to_speech_single(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in {"elevenlabs", "openai", "mistral", "gemini"}:
+        elif provider in {"elevenlabs", "openai", "mistral", "gemini", "cartesia"}:
             voice_compatible = want_opus and file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
@@ -3771,6 +3895,8 @@ def check_tts_requirements() -> bool:
         except ImportError:
             return False
         return bool(_resolve_provider_key("MISTRAL_API_KEY", "mistral"))
+    if provider == "cartesia":
+        return bool(_resolve_provider_key("CARTESIA_API_KEY", "cartesia"))
     if provider == "neutts":
         return _check_neutts_available()
     if provider == "kittentts":

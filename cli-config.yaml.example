@@ -1402,12 +1402,17 @@ stt:
   #   # live result. Pin only when you need a specific Whisper variant.
   #   model: ""
 
-# Text-to-speech. Only the deepinfra block is documented here — the
+# Text-to-speech. Examples for deepinfra and cartesia — the
 # remaining providers (edge, openai, xai, minimax, mistral, gemini,
 # elevenlabs, neutts, kittentts, piper) inherit sensible defaults from
 # DEFAULT_CONFIG in hermes_cli/config.py.
 # tts:
-#   provider: "deepinfra"
+#   provider: "cartesia"    # requires: CARTESIA_API_KEY
+#   cartesia:
+#     model: "sonic-2"       # sonic-2 | sonic-turbo | sonic-multilingual
+#     voice_id: "25d7abcb-4d6d-4aca-adce-8a1c85620c8b"  # Jessica
+#     sample_rate: 24000
+#     # emotion: ["positivity:high"]  # optional emotion control tags
 #   deepinfra:
 #     # Model id is discovered live from the DeepInfra catalog filtered
 #     # by the `tts` surface tag — leave `model` blank to take the first

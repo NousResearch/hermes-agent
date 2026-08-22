@@ -94,7 +94,7 @@ class TestBuiltinAlwaysWins:
     @pytest.mark.parametrize(
         "builtin",
         ["edge", "openai", "elevenlabs", "minimax", "gemini",
-         "mistral", "xai", "piper", "kittentts", "neutts"],
+         "mistral", "xai", "piper", "kittentts", "neutts", "deepinfra", "cartesia"],
     )
     def test_dispatcher_short_circuits_builtin(self, builtin):
         result = tts_tool._dispatch_to_plugin_provider(
@@ -153,13 +153,13 @@ class TestPluginDispatch:
     """Happy path: configured name matches a registered plugin, dispatcher fires."""
 
     def test_registered_plugin_called(self):
-        provider = _FakeTTSProvider(name="cartesia")
+        provider = _FakeTTSProvider(name="custom_tts_plugin")
         tts_registry.register_provider(provider)
 
         result = tts_tool._dispatch_to_plugin_provider(
             text="hello world",
             output_path="/tmp/out.mp3",
-            provider="cartesia",
+            provider="custom_tts_plugin",
             tts_config={},
         )
         assert result == "/tmp/out.mp3"
@@ -183,7 +183,7 @@ class TestPluginDispatch:
         the standard error envelope. Matches command-provider failure
         behavior."""
         provider = _FakeTTSProvider(
-            name="cartesia",
+            name="custom_tts_plugin",
             raise_exc=RuntimeError("network down"),
         )
         tts_registry.register_provider(provider)
@@ -192,7 +192,7 @@ class TestPluginDispatch:
             tts_tool._dispatch_to_plugin_provider(
                 text="hi",
                 output_path="/tmp/out.mp3",
-                provider="cartesia",
+                provider="custom_tts_plugin",
                 tts_config={},
             )
 
@@ -205,9 +205,9 @@ class TestPluginDispatch:
 class TestVoiceCompatibleHelper:
     def test_voice_compatible_true(self):
         tts_registry.register_provider(
-            _FakeTTSProvider(name="cartesia", voice_compat=True)
+            _FakeTTSProvider(name="custom_tts_plugin", voice_compat=True)
         )
-        assert tts_tool._plugin_provider_is_voice_compatible("cartesia") is True
+        assert tts_tool._plugin_provider_is_voice_compatible("custom_tts_plugin") is True
 
 
     def test_unregistered_provider_returns_false(self):
@@ -223,5 +223,5 @@ class TestVoiceCompatibleHelper:
             def voice_compatible(self) -> bool:
                 raise RuntimeError("boom")
 
-        tts_registry.register_provider(_ExplodingProvider(name="cartesia"))
-        assert tts_tool._plugin_provider_is_voice_compatible("cartesia") is False
+        tts_registry.register_provider(_ExplodingProvider(name="custom_tts_plugin"))
+        assert tts_tool._plugin_provider_is_voice_compatible("custom_tts_plugin") is False

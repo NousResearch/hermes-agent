@@ -81,7 +81,7 @@ class TestVisibleProvidersInjectsTTSPlugins:
     category alongside the hardcoded built-in rows."""
 
     def test_tts_category_includes_plugin_rows(self):
-        tts_registry.register_provider(_FakeTTSProvider(name="cartesia"))
+        tts_registry.register_provider(_FakeTTSProvider(name="fishaudio"))
 
         tts_cat = tools_config.TOOL_CATEGORIES["tts"]
         visible = tools_config._visible_providers(tts_cat, config={})
@@ -90,20 +90,20 @@ class TestVisibleProvidersInjectsTTSPlugins:
         # Hardcoded rows (sample — check at least one is present)
         assert "Microsoft Edge TTS" in names
         # Plugin row injected at the end
-        assert "Cartesia" in names
+        assert "Fishaudio" in names
 
         # Plugin row has tts_provider key for write-path compat
         plugin_rows = [r for r in visible if r.get("tts_plugin_name")]
         assert len(plugin_rows) == 1
-        assert plugin_rows[0]["tts_provider"] == "cartesia"
+        assert plugin_rows[0]["tts_provider"] == "fishaudio"
 
     def test_other_categories_unaffected_by_tts_plugins(self):
         """Registering a TTS plugin must not leak into the Image Generation
         or Browser pickers."""
-        tts_registry.register_provider(_FakeTTSProvider(name="cartesia"))
+        tts_registry.register_provider(_FakeTTSProvider(name="fishaudio"))
 
         img_cat = tools_config.TOOL_CATEGORIES["image_gen"]
         visible = tools_config._visible_providers(img_cat, config={})
         names = [row.get("name") for row in visible]
-        assert "Cartesia" not in names
+        assert "Fishaudio" not in names
 

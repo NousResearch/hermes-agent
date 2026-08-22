@@ -412,6 +412,15 @@ TOOL_CATEGORIES = {
                 ],
                 "tts_provider": "deepinfra",
             },
+            {
+                "name": "Cartesia",
+                "badge": "paid",
+                "tag": "Ultra-low latency streaming, Sonic 2, emotion-adaptive",
+                "env_vars": [
+                    {"key": "CARTESIA_API_KEY", "prompt": "Cartesia API key", "url": "https://play.cartesia.ai/console"},
+                ],
+                "tts_provider": "cartesia",
+            },
         ],
     },
     "stt": {

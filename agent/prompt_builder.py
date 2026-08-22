@@ -464,6 +464,39 @@ PARALLEL_TOOL_CALL_GUIDANCE = (
     "in doubt and the calls are independent, batch them."
 )
 
+# Neutral tool-calling guidance for custom/local providers (#56360).
+#
+# The hosted-tuned blocks above (TOOL_USE_ENFORCEMENT_GUIDANCE et al.)
+# describe tool-calling *behavior* in imperative prose ("you MUST
+# immediately make the corresponding tool call in the same response").
+# Frontier hosted models read that as intent; quantized local models
+# served behind an OpenAI-compatible endpoint (provider="custom" — vLLM,
+# LM Studio, llama.cpp with --tool-call-parser / native tool calling)
+# follow it literally and print the described call format into their
+# reply text (<tool_call>{...}</tool_call>, bare JSON, mcp.foo() prose).
+# Nothing can execute that text: the chat-completions loop runs ONLY on
+# structured ``tool_calls`` produced by the serving stack's tool-call
+# parser (there is no Hermes-side text parser on this path), so the tool
+# never fires (#56360: 0/8 structured with the boilerplate vs 6/6 with a
+# minimal prompt; disabling the three flags → 30/30 clean).
+#
+# This block states the mechanic neutrally — use the API's native
+# function-calling channel, never write invocations into message text —
+# without describing any wire format the model might imitate as prose.
+# Injected for provider="custom" whenever tool-use enforcement falls to
+# its "auto" default (see agent/system_prompt.py); explicit config
+# (true/false/list) still wins. Short on purpose — shipped in the cached
+# system prompt; token cost amortised via prefix caching.
+NATIVE_TOOL_CALL_GUIDANCE = (
+    "# Tool calls\n"
+    "Call tools through your native function-calling channel — the "
+    "structured tool_calls mechanism this API provides — never by writing "
+    "tool invocations into your reply text. Text that describes or encodes "
+    "a call inside message content cannot be executed. When action is "
+    "needed, emit real tool calls; once the work is done, reply to the "
+    "user normally."
+)
+
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.

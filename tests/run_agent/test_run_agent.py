@@ -27,6 +27,7 @@ from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
 from agent.memory_manager import MemoryManager
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from hermes_cli.config_defaults import DEFAULT_CONFIG
 
 
 # ---------------------------------------------------------------------------
@@ -1223,6 +1224,87 @@ class TestExecutionGuidanceConfig:
             model="openai/gpt-4.1", execution_guidance=["kimi"]
         )
         assert OPENAI_MODEL_EXECUTION_GUIDANCE not in agent._build_system_prompt()
+
+
+class TestCustomProviderGuidanceResolution:
+    """Config -> agent_init -> built system prompt for provider="custom"
+    (#56360): local OpenAI-compatible endpoints host quantized models that
+    follow the hosted-tuned guidance blocks literally and print tool calls
+    as reply text (nothing on this path parses text back into tool calls),
+    so the blocks are forced off and the neutral native-tool-calling block
+    is injected instead. Hosted providers keep every block.
+    """
+
+    def _make_agent(self, provider="custom", model="Qwen/Qwen3.6-35B-A3B",
+                    overrides=None):
+        # Start from the shipped defaults (load_config_readonly deep-merges
+        # DEFAULT_CONFIG in production), then apply explicit user overrides.
+        agent_cfg = dict(DEFAULT_CONFIG.get("agent", {}))
+        if overrides:
+            agent_cfg.update(overrides)
+        full_cfg = {"agent": agent_cfg}
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal", "web_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value=full_cfg,
+            ), patch(
+                "hermes_cli.config.load_config_readonly",
+                return_value=full_cfg,
+            ),
+        ):
+            a = AIAgent(
+                model=model,
+                provider=provider,
+                api_key="test-key-1234567890",
+                base_url="http://localhost:8000/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_custom_defaults_drop_hosted_blocks_and_add_native_block(self):
+        from agent.prompt_builder import NATIVE_TOOL_CALL_GUIDANCE
+        agent = self._make_agent()
+        assert agent._task_completion_guidance is False
+        assert agent._parallel_tool_call_guidance is False
+        prompt = agent._build_system_prompt()
+        assert NATIVE_TOOL_CALL_GUIDANCE in prompt
+        assert "# Tool-use enforcement" not in prompt
+        assert "# Finishing the job" not in prompt
+        assert "# Parallel tool calls" not in prompt
+
+    def test_hosted_defaults_keep_all_guidance(self):
+        agent = self._make_agent(provider="openai", model="openai/gpt-5.5")
+        assert agent._task_completion_guidance is True
+        assert agent._parallel_tool_call_guidance is True
+        prompt = agent._build_system_prompt()
+        assert "# Tool-use enforcement" in prompt
+        assert "# Finishing the job" in prompt
+        assert "# Parallel tool calls" in prompt
+
+    def test_custom_enforcement_true_override_wins(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(
+            overrides={"tool_use_enforcement": True})
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_custom_completion_flag_ignored_with_debug_note(self):
+        # Explicit task_completion_guidance=true cannot re-enable the block
+        # on provider="custom" (#56360) — resolved once at init so the flag
+        # (and the prompt) stay stable for the conversation.
+        agent = self._make_agent(
+            overrides={"task_completion_guidance": True})
+        assert agent._task_completion_guidance is False
+        assert "# Finishing the job" not in agent._build_system_prompt()
 
 
 class TestTaskCompletionGuidance:

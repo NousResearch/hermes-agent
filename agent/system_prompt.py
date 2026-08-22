@@ -39,6 +39,7 @@ from agent.prompt_builder import (
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
     USER_PROFILE_GUIDANCE,
+    NATIVE_TOOL_CALL_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE,
     PLATFORM_HINTS,
@@ -471,8 +472,21 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     #   true  — always inject (all models)
     #   false — never inject
     #   list  — custom model-name substrings to match
+    #
+    # provider="custom" exception (#56360): under "auto", custom/local
+    # providers get NATIVE_TOOL_CALL_GUIDANCE instead of the hosted-tuned
+    # enforcement boilerplate. Quantized local models follow the "MUST make
+    # the corresponding tool call" prose literally and print tool calls as
+    # reply text, where nothing can execute them. The neutral block matches
+    # parser ground truth: only structured tool_calls from the serving
+    # stack's tool-call parser are executed. Explicit true/false/list still
+    # win over the provider-aware default. Provider is fixed at agent
+    # construction, so this keeps the prompt byte-stable per conversation.
     if agent.valid_tool_names:
         _enforce = agent._tool_use_enforcement
+        _custom_provider = (
+            str(getattr(agent, "provider", "") or "").strip().lower() == "custom"
+        )
         _inject = False
         if _enforce is True or (isinstance(_enforce, str) and _enforce.lower() in {"true", "always", "yes", "on"}):
             _inject = True
@@ -482,9 +496,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             model_lower = (agent.model or "").lower()
             _inject = any(p.lower() in model_lower for p in _enforce if isinstance(p, str))
         else:
-            # "auto" or any unrecognised value — use hardcoded defaults
-            model_lower = (agent.model or "").lower()
-            _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
+            # "auto" or any unrecognised value — use hardcoded defaults.
+            # Custom providers never substring-match into the enforcement
+            # block; they receive the neutral native-channel guidance
+            # instead. Explicit true/false/list above always win.
+            if _custom_provider:
+                stable_parts.append(NATIVE_TOOL_CALL_GUIDANCE)
+            else:
+                _inject = any(
+                    p in (agent.model or "").lower() for p in TOOL_USE_ENFORCEMENT_MODELS
+                )
         if _inject:
             stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
             _model_lower = (agent.model or "").lower()

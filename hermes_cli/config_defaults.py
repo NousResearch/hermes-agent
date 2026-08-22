@@ -155,6 +155,10 @@ DEFAULT_CONFIG = {
         # Values: "auto" (default — applies to gpt/codex models), true/false
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
+        # provider="custom" exception (#56360): under "auto" custom/local
+        # providers get neutral native-tool-calling guidance instead — the
+        # enforcement prose makes quantized local models print tool calls as
+        # reply text. true/false/list still force the classic behavior.
         "tool_use_enforcement": "auto",
         # Execution-discipline guidance: injects a system prompt block covering
         # tool persistence, mandatory tool use for arithmetic/system facts,
@@ -189,6 +193,9 @@ DEFAULT_CONFIG = {
         # after a stub instead of finishing the artifact, (2) fabricating
         # plausible-looking output when a real path is blocked.  Costs ~80
         # tokens in the cached system prompt.  Set False to disable globally.
+        # Ignored for provider="custom" (#56360): quantized local models read
+        # these hosted-tuned blocks as format instructions and print tool
+        # calls into reply text, where nothing can execute them.
         "task_completion_guidance": True,
         # Universal parallel-tool-call guidance — short prompt block applied to
         # all models that tells the model to batch independent tool calls
@@ -198,6 +205,8 @@ DEFAULT_CONFIG = {
         # batch — cutting round-trips and the resent-context cost that
         # compounds over a long conversation.  Costs ~70 tokens in the cached
         # system prompt.  Set False to disable globally.
+        # Ignored for provider="custom" (#56360) — see
+        # task_completion_guidance above.
         "parallel_tool_call_guidance": True,
         # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
         # state in the system prompt when something non-default is detected

@@ -2002,17 +2002,40 @@ def init_agent(
     # Single boolean gate, default True. Notice-only — never blocks a call.
     agent._stall_guards = bool(_agent_section.get("stall_guards", True))
 
-    # Universal task-completion guidance toggle.  Default True.  Surfaced
-    # as a separate flag from tool_use_enforcement because the guidance
-    # applies to ALL models, not just the model families enforcement
-    # targets.
-    agent._task_completion_guidance = bool(_agent_section.get("task_completion_guidance", True))
-
-    # Universal parallel-tool-call guidance toggle.  Default True.  Separate
-    # flag from task_completion_guidance because a user may want one but not
-    # the other.  Steers the model to batch independent tool calls into a
-    # single turn; the runtime already executes such batches concurrently.
-    agent._parallel_tool_call_guidance = bool(_agent_section.get("parallel_tool_call_guidance", True))
+    # Universal task-completion / parallel-tool-call guidance toggles.
+    # Default True for hosted providers — surfaced as separate flags
+    # because a user may want one but not the other. For provider="custom"
+    # they are forced OFF (#56360): local OpenAI-compatible endpoints
+    # (vLLM, LM Studio, llama.cpp + --tool-call-parser) host quantized
+    # models that follow these hosted-tuned blocks literally and print
+    # tool calls as reply text, where nothing can execute them — the
+    # runtime only executes structured ``tool_calls`` produced by the
+    # serving stack's parser. Reporter-measured effect of dropping the
+    # three hosted guidance blocks on such a setup: 30/30 clean structured
+    # calls (vs ~0-40% with them). Resolved once here (provider is fixed
+    # at construction), so the system prompt stays byte-stable for the
+    # life of the conversation.
+    _custom_provider = (
+        str(getattr(agent, "provider", "") or "").strip().lower() == "custom"
+    )
+    if _custom_provider:
+        if _agent_section.get("task_completion_guidance") or _agent_section.get(
+            "parallel_tool_call_guidance"
+        ):
+            logger.debug(
+                "agent.task_completion_guidance / agent.parallel_tool_call_"
+                "guidance are ignored for provider='custom' (#56360): local "
+                "models leak tool calls into reply text under this guidance."
+            )
+        agent._task_completion_guidance = False
+        agent._parallel_tool_call_guidance = False
+    else:
+        agent._task_completion_guidance = bool(
+            _agent_section.get("task_completion_guidance", True)
+        )
+        agent._parallel_tool_call_guidance = bool(
+            _agent_section.get("parallel_tool_call_guidance", True)
+        )
 
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt

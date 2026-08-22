@@ -483,6 +483,12 @@ def test_honcho_sync_turn_same_instance_config_flip_gates_writes():
             manager_calls.append(session_key)
             return SimpleNamespace(add_message=lambda role, content: None)
 
+        def new_source_record_id(self):
+            return "source-record"
+
+        def add_source_message(self, session, role, content, **kwargs):
+            session.add_message(role, content)
+
         def save(self, session):
             write_done.set()
 

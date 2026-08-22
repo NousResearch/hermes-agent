@@ -263,8 +263,9 @@ class TestConcludeToolDispatch:
         )
         provider._sync_thread.join(timeout=1.0)
 
-        assert session.add_message.call_args_list[0].args == ("user", "hello")
-        assert session.add_message.call_args_list[1].args == ("assistant", "Visible answer")
+        calls = provider._manager.add_source_message.call_args_list
+        assert calls[0].args == (session, "user", "hello")
+        assert calls[1].args == (session, "assistant", "Visible answer")
 
 
 # ---------------------------------------------------------------------------

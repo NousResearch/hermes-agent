@@ -16,6 +16,7 @@ chosen ``user_peer_id`` can be asserted without touching the network.
 
 import hashlib
 import json
+import os
 from unittest.mock import MagicMock
 
 
@@ -524,7 +525,12 @@ class TestPinTransition:
         cfg_path.write_text(json.dumps({"apiKey": "k", "peerName": "Igor", "pinPeerName": True}))
         sig_pinned = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
+        previous_mtime = cfg_path.stat().st_mtime_ns
         cfg_path.write_text(json.dumps({"apiKey": "k", "peerName": "Igor", "pinPeerName": False}))
+        # The expanded focused suite can rewrite this tiny file within one
+        # filesystem timestamp tick. Force a distinct signature so this
+        # existing cache-busting contract remains deterministic.
+        os.utime(cfg_path, ns=(previous_mtime + 1, previous_mtime + 1))
         sig_unpinned = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
         assert sig_pinned["honcho.pin_peer_name"] != sig_unpinned["honcho.pin_peer_name"]

@@ -211,6 +211,14 @@ def _parse_string_map(host_obj: dict, root_obj: dict, key: str) -> dict[str, str
     return result
 
 
+def _parse_json_object(host_obj: dict, root_obj: dict, key: str) -> dict[str, Any]:
+    """Parse a JSON object with host-level whole-object override."""
+    source: Any = host_obj[key] if key in host_obj else root_obj.get(key)
+    if not isinstance(source, dict):
+        return {}
+    return {str(item_key): item_value for item_key, item_value in source.items()}
+
+
 def _parse_optional_string(
     host_obj: dict, root_obj: dict, key: str, default: str = ""
 ) -> str:
@@ -405,6 +413,9 @@ class HonchoClientConfig:
     user_peer_aliases: dict[str, str] = field(default_factory=dict)
     # Optional prefix for unknown gateway runtime user IDs, e.g. "telegram_".
     runtime_peer_prefix: str = ""
+    # Static/default provider-native message metadata. Runtime provenance
+    # fields are added by HonchoSessionManager and always win on conflicts.
+    message_metadata: dict[str, Any] = field(default_factory=dict)
     # Toggles
     enabled: bool = False
     save_messages: bool = True
@@ -700,6 +711,7 @@ class HonchoClientConfig:
                 raw,
                 "runtimePeerPrefix",
             ),
+            message_metadata=_parse_json_object(host_block, raw, "messageMetadata"),
             enabled=enabled,
             save_messages=save_messages,
             write_frequency=write_frequency,

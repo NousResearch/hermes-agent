@@ -11,6 +11,39 @@ from plugins.memory.honcho.client import HonchoClientConfig
 from plugins.memory.honcho import HonchoMemoryProvider
 
 
+def test_message_metadata_parses_from_root_and_host_override(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "messageMetadata": {"schema": "root/v1", "authority": "root"},
+        "hosts": {
+            "hermes": {
+                "messageMetadata": {
+                    "schema": "agador.provenance/v1",
+                    "authority": "user",
+                    "extensions": {"agador": {"policy": "synthetic"}},
+                }
+            }
+        },
+    }))
+
+    cfg = HonchoClientConfig.from_global_config(config_path=config_path, host="hermes")
+
+    assert cfg.message_metadata == {
+        "schema": "agador.provenance/v1",
+        "authority": "user",
+        "extensions": {"agador": {"policy": "synthetic"}},
+    }
+
+
+def test_malformed_message_metadata_falls_back_to_empty_mapping(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"messageMetadata": "not-an-object"}))
+
+    cfg = HonchoClientConfig.from_global_config(config_path=config_path, host="hermes")
+
+    assert cfg.message_metadata == {}
+
+
 class TestHonchoClientConfigAutoEnable:
     """Test auto-enable behavior when API key is present."""
 

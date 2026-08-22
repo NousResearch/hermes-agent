@@ -125,6 +125,7 @@ When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and 
 | `recallMode` | `'hybrid'` | `hybrid` (auto-inject + tools), `context` (inject only), `tools` (tools only) |
 | `writeFrequency` | `'async'` | When to flush messages: `async` (background thread), `turn` (sync), `session` (batch on end), or integer N |
 | `saveMessages` | `true` | Whether to persist messages to Honcho API |
+| `messageMetadata` | `{}` | Static JSON defaults merged into provider-native message metadata. Runtime identity, session, timestamp, event, source, channel, and chunk fields always override conflicts; metadata is force-redacted before writes |
 | `observationMode` | `'directional'` | `directional` (all on) or `unified` (shared pool). Override with `observation` object for granular control |
 | `messageMaxChars` | `25000` | Max chars per message sent via `add_messages()`. Chunked if exceeded |
 | `dialecticMaxInputChars` | `10000` | Max chars for dialectic query input to `peer.chat()` |
@@ -132,6 +133,12 @@ When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and 
 | `pinUserPeer` | `false` | Gateway only. When `true`, every platform user collapses to `peerName` |
 | `userPeerAliases` | `{}` | Gateway only. Map of runtime IDs to peers (`{"7654321": "alice"}`). Many-to-one |
 | `runtimePeerPrefix` | `""` | Gateway only. Namespaces unknown runtime IDs (`telegram_7654321`) when no alias matches |
+
+Honcho message writes use the SDK's bounded transport retries. When they are
+exhausted, Hermes stays fail-open, logs a content-free delivery failure, and
+keeps the messages unsynchronized for a later in-process flush. Hermes does not
+currently provide restart-safe durable replay; its canonical session transcript
+remains the source of truth.
 
 **Session strategy** controls how Honcho sessions map to your work:
 - `per-session` — each `hermes` run gets a fresh session. Clean starts, memory via tools. Recommended for new users.

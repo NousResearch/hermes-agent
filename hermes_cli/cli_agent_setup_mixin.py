@@ -533,6 +533,7 @@ class CLIAgentSetupMixin:
                 pass_session_id=self.pass_session_id,
                 skip_context_files=self.ignore_rules,
                 skip_memory=self.ignore_rules,
+                skip_background_review=getattr(self, "_single_query_mode", False),
                 tool_progress_callback=self._on_tool_progress,
                 tool_start_callback=self._on_tool_start if self._inline_diffs_enabled else None,
                 tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,

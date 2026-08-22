@@ -910,6 +910,7 @@ def run_codex_app_server_turn(
     if (
         turn.final_text
         and not turn.interrupted
+        and not getattr(agent, "skip_background_review", False)
         and (should_review_memory or should_review_skills)
     ):
         try:

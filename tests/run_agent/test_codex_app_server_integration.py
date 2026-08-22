@@ -305,6 +305,21 @@ class TestRunConversationCodexPath:
         # Counter should be reset after the review fires
         assert agent._iters_since_skill == 0
 
+    def test_background_review_skip_flag_suppresses_trigger(self, fake_session):
+        """Short-lived agents must not spawn review work on the early-return path."""
+        agent = _make_codex_agent(skip_background_review=True)
+        agent._skill_nudge_interval = 1
+        agent._iters_since_skill = 0
+        agent.valid_tool_names = set(getattr(agent, "valid_tool_names", set()))
+        agent.valid_tool_names.add("skill_manage")
+
+        with patch.object(
+            agent, "_spawn_background_review", return_value=None
+        ) as spawn:
+            agent.run_conversation("do tool work")
+
+        spawn.assert_not_called()
+
     def test_background_review_signature_never_breaks(self, fake_session):
         """Even when no trigger fires, the helper must never call
         _spawn_background_review with the wrong signature. Run a turn,

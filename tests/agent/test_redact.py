@@ -295,6 +295,51 @@ class TestApiKeyHeaders:
         assert "anotherOpaqueSecret" not in result
 
 
+class TestCookieCredentials:
+    def test_cookie_assignment_masked(self):
+        text = "cookie=opaque-session-value"
+        result = redact_sensitive_text(text)
+        assert "opaque-session-value" not in result
+
+    def test_set_cookie_header_masked(self):
+        text = "set-cookie: opaque-session-value"
+        result = redact_sensitive_text(text)
+        assert "opaque-session-value" not in result
+
+    def test_set_cookie_camelcase_header_masked(self):
+        text = "Set-Cookie: opaque-session-value"
+        result = redact_sensitive_text(text)
+        assert "opaque-session-value" not in result
+
+    def test_cookie_header_masked(self):
+        text = "Cookie: sid=opaque-value"
+        result = redact_sensitive_text(text)
+        assert "sid=opaque-value" not in result
+
+    def test_cookie_assignment_keeps_other_assignments(self):
+        # A cookie line can carry multiple attributes; only the value is masked.
+        text = "cookie=opaque-value; Path=/"
+        result = redact_sensitive_text(text)
+        assert "opaque-value" not in result
+        assert "Path=/" in result
+
+    def test_prose_unchanged(self):
+        # Ordinary prose must never be mangled (#80936 false positives).
+        for text in (
+            "cookies enabled now",
+            "cookie_policy: strict",
+            "mycookiejar=1",
+            'Cookie.set("name", value)',
+        ):
+            assert redact_sensitive_text(text) == text, text
+
+    def test_cookie_not_in_prose_word_masked(self):
+        # A word that merely EMBEDS ``cookie`` followed by ``=`` is not a
+        # credential marker — the word boundary guard must hold.
+        text = "mycookiejar=1"
+        assert redact_sensitive_text(text) == text
+
+
 class TestTelegramTokens:
     def test_bot_token(self):
         text = "bot123456789:ABCDEfghij-KLMNopqrst_UVWXyz12345"

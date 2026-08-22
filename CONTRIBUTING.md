@@ -486,6 +486,46 @@ platforms: [windows]          # Windows only
 
 If the field is omitted or empty, the skill loads on all platforms (backward compatible). See `skills/apple/` for examples of macOS-only skills.
 
+### Skill trigger phrases
+
+Free text typed at the prompt is routed by the model, which means invoking a
+skill competes with every other skill for the model's attention. A cheap model
+loses that race sometimes, and the failure is quiet: a plausible answer from
+the wrong skill rather than an error.
+
+A skill that knows its own invocation phrases can declare them, taking the
+decision away from the model:
+
+```yaml
+triggers:
+  - deploy
+  - roll back
+```
+
+Input that *begins* with a declared phrase is rewritten to that skill's slash
+command before the model sees it, so `deploy the api to staging` dispatches as
+`/release deploy the api to staging`. The skill receives the user's original
+text, not the normalized form used for matching.
+
+Rules worth knowing before you add them:
+
+- **Leading position only.** `deploy the api` matches; `can you tell me how to
+  deploy this` does not. A trigger anywhere in a sentence would capture ordinary
+  prose that merely mentions the word.
+- **Whole words only.** The trigger `deploy` does not match `deployment guide`.
+- **Literal phrases, never regex.** Skills can be agent-authored or installed
+  from the hub, so trigger strings are untrusted input. They are matched
+  literally — a skill cannot declare `.*` and capture everything.
+- **Minimum three characters.** Shorter fragments match too much prose.
+- **Longest match wins** when skills overlap, so `deploy staging` beats
+  `deploy`. Equal-length ties resolve by slug, so the winner does not depend on
+  filesystem scan order.
+- **Opt-in.** With no skill declaring `triggers:`, nothing changes — which is
+  every install today.
+
+Prefer a handful of unambiguous phrases over broad ones. A trigger is a
+commitment that the phrase means *this skill and nothing else*.
+
 ### Conditional skill activation
 
 Skills can declare conditions that control when they appear in the system prompt, based on which tools and toolsets are available in the current session. This is primarily used for **fallback skills** — alternatives that should only be shown when a primary tool is unavailable.

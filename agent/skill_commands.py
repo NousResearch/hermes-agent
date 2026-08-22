@@ -33,6 +33,98 @@ _publish_lock = threading.Lock()
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
+# A trigger shorter than this is rejected. Single letters and two-character
+# fragments match far too much ordinary prose to be a safe routing signal, and
+# a skill that declares one would quietly capture unrelated input.
+_MIN_TRIGGER_LEN = 3
+
+# What may follow a trigger for it to count as a match: end of input, or a
+# character that ends a word. Without this, the trigger "deploy" would also
+# capture "deployment guide, section 3".
+_TRIGGER_BOUNDARY = re.compile(r"[\s\W]")
+
+
+def _normalize_triggers(frontmatter: Dict[str, Any]) -> "list[str]":
+    """Return the cleaned ``triggers:`` list declared by a skill, or [].
+
+    Triggers are matched as LITERAL phrases, never compiled as user regex.
+    Skills can be written by the agent itself (``skills.write_approval``) and
+    installed from the hub, so a trigger string is untrusted input; treating it
+    as a pattern would hand any skill author a ReDoS or a catch-all ``.*``.
+    """
+    raw = frontmatter.get("triggers")
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+
+    cleaned = []
+    seen = set()
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        phrase = " ".join(item.split()).strip().lower()
+        if len(phrase) < _MIN_TRIGGER_LEN:
+            continue
+        if phrase in seen:
+            continue
+        seen.add(phrase)
+        cleaned.append(phrase)
+    return cleaned
+
+
+def match_skill_trigger(text: str, commands: Optional[Dict[str, Any]] = None):
+    """Map free text onto a skill's slash command via declared ``triggers:``.
+
+    Returns ``"/<skill-slug> <original text>"`` when *text* opens with a
+    declared trigger phrase, else ``None``.
+
+    Free text typed at the prompt is otherwise routed by the model, which is a
+    race: a cheap model asked to pick between a task skill and a search skill
+    can pick the wrong one, and the failure is silent — a plausible answer from
+    the wrong source. A skill that knows its own invocation phrases can declare
+    them and take that decision away from the model entirely.
+
+    Only skills that opt in by declaring ``triggers:`` participate, so this is
+    inert for every existing install.
+
+    Longest trigger wins, so a specific phrase beats a generic one when two
+    skills overlap ("deploy staging" over "deploy"). Equal-length ties go to the
+    first slug alphabetically -- the winner must not depend on scan order, which
+    varies with the filesystem.
+    """
+    if not text or not isinstance(text, str):
+        return None
+    stripped = text.strip()
+    if not stripped or stripped.startswith("/"):
+        return None
+
+    if commands is None:
+        commands = scan_skill_commands()
+
+    haystack = " ".join(stripped.split()).lower()
+    best_len = -1
+    best_cmd = None
+    for cmd_key, info in (commands or {}).items():
+        if not isinstance(info, dict):
+            continue
+        for trigger in info.get("triggers") or ():
+            if not haystack.startswith(trigger):
+                continue
+            rest = haystack[len(trigger):]
+            if rest and not _TRIGGER_BOUNDARY.match(rest[0]):
+                continue
+            length = len(trigger)
+            if length > best_len or (length == best_len and cmd_key < best_cmd):
+                best_len, best_cmd = length, cmd_key
+
+    if best_cmd is None:
+        return None
+    return f"{best_cmd} {stripped}"
+
+
 # ---------------------------------------------------------------------------
 # Skill-scaffolding markers and the canonical extractor.
 #
@@ -528,6 +620,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
                         "skill_dir": str(skill_md.parent),
+                        "triggers": _normalize_triggers(frontmatter),
                     }
                 except Exception:
                     continue

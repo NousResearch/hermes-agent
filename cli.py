@@ -4802,6 +4802,22 @@ def build_skill_invocation_message(*args, **kwargs):
     return _impl(*args, **kwargs)
 
 
+def match_skill_trigger(text: str):
+    """Rewrite free text into a skill slash command via declared triggers.
+
+    Returns None when nothing matches, which is the case for every install
+    where no skill declares ``triggers:``.
+    """
+    try:
+        from agent.skill_commands import match_skill_trigger as _impl
+
+        return _impl(text, get_skill_commands())
+    except Exception:
+        # Routing is an optimisation, never a gate: if the skill scan fails
+        # the input must still reach the model unchanged.
+        return None
+
+
 def build_preloaded_skills_prompt(*args, **kwargs):
     from agent.skill_commands import build_preloaded_skills_prompt as _impl
 
@@ -20238,6 +20254,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         and self.handle_bang_shell(user_input)
                     ):
                         continue
+
+                    # Skill-declared trigger phrases resolve to that skill's
+                    # slash command BEFORE the model sees the text, so a skill
+                    # that knows its own invocation phrases isn't competing with
+                    # every other skill for the model's attention. Runs after
+                    # file-drop detection (a dropped path is not an invocation)
+                    # and before dispatch, so the rewrite is dispatched normally.
+                    if (
+                        not _file_drop
+                        and isinstance(user_input, str)
+                        and not _looks_like_slash_command(user_input)
+                    ):
+                        _trigger_rewrite = match_skill_trigger(user_input)
+                        if _trigger_rewrite:
+                            user_input = _trigger_rewrite
 
                     if not _file_drop and isinstance(user_input, str) and _looks_like_slash_command(user_input):
                         _cprint(f"\n⚙️  {user_input}")

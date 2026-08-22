@@ -161,7 +161,9 @@ Both `silence_threshold` and `silence_duration` are configurable in `config.yaml
 
 ### Ending a voice chat by voice
 
-Say **"stop"** — and nothing else — to end the voice conversation hands-free. The match is deliberately strict: the whole utterance (case-insensitive, surrounding punctuation ignored) must equal a configured phrase, so "stop doing that and try X instead" still reaches the agent normally. Customize the phrase list with `voice.stop_phrases` in `config.yaml` (e.g. `["stop", "goodbye hermes"]`), or set it to `[]` to disable. A voice chat also ends on its own after three consecutive silent cycles (no speech detected).
+Say **"stop"** — and nothing else — to end the voice conversation hands-free. The match is deliberately strict: the whole utterance (case-insensitive, surrounding punctuation ignored) must equal a configured phrase, so "stop doing that and try X instead" still reaches the agent normally. Customize the phrase list with `voice.stop_phrases` in `config.yaml` (e.g. `["stop", "goodbye hermes"]`), or set it to `[]` to disable.
+
+On **desktop**, a hands-free multi-turn voice chat also ends on its own if you do not start speaking within `voice.follow_up_idle_seconds` (default **60**) after the agent finishes. That closes only the voice conversation — it does not reset messaging sessions — and the wake word can start a new one. Set `voice.follow_up_idle_seconds: 0` to keep the legacy always-rearm loop. On **CLI**, a voice chat still ends after three consecutive silent cycles (no speech detected).
 
 **Typing** a bare stop phrase while a voice chat is active works the same way on every surface (CLI, TUI, desktop): the message ends the voice chat instead of being sent to the agent. Outside a voice chat, typed "stop" is an ordinary message.
 
@@ -416,6 +418,7 @@ voice:
   silence_threshold: 200           # RMS level (0-32767) below which counts as silence
   silence_duration: 3.0            # Seconds of silence before auto-stop
   stop_phrases: ["stop"]           # Saying exactly one of these ends the voice chat; [] disables
+  follow_up_idle_seconds: 60       # Desktop: end multi-turn voice chat if no speech starts in this window; 0 = always re-arm
 
 # Speech-to-Text
 stt:

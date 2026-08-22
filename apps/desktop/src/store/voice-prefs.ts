@@ -48,6 +48,35 @@ export function applyThinkingSoundFromConfig(
   $thinkingSoundEnabled.set(config?.voice?.thinking_sound !== false)
 }
 
+// `voice.follow_up_idle_seconds` — how long a desktop hands-free voice chat
+// waits for the next utterance after the agent speaks. No speech ends the
+// voice conversation so multi-turn can't stay armed forever. 0 keeps the
+// legacy always-rearm loop. Default 60 matches config_defaults.
+export const DEFAULT_FOLLOW_UP_IDLE_SECONDS = 60
+export const $voiceFollowUpIdleSeconds = atom<number>(DEFAULT_FOLLOW_UP_IDLE_SECONDS)
+
+/** Normalize a config value to a non-negative finite number of seconds. */
+export function parseFollowUpIdleSeconds(raw: unknown): number {
+  if (raw === undefined || raw === null || raw === '') {
+    return DEFAULT_FOLLOW_UP_IDLE_SECONDS
+  }
+
+  const value = typeof raw === 'number' ? raw : Number(raw)
+
+  if (!Number.isFinite(value) || value < 0) {
+    return DEFAULT_FOLLOW_UP_IDLE_SECONDS
+  }
+
+  return value
+}
+
+/** Seed the follow-up idle window from a loaded config payload. */
+export function applyFollowUpIdleFromConfig(
+  config: { voice?: { follow_up_idle_seconds?: unknown } | null } | null | undefined
+) {
+  $voiceFollowUpIdleSeconds.set(parseFollowUpIdleSeconds(config?.voice?.follow_up_idle_seconds))
+}
+
 /**
  * Flip the preference and persist it. Optimistic — the atom updates instantly and
  * reverts if the config write fails. Read-modify-writes the whole record (the

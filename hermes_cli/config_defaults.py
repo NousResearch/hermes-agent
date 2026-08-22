@@ -1800,6 +1800,11 @@ DEFAULT_CONFIG = {
         # voice chat instead of being sent to the agent. Case-insensitive,
         # surrounding punctuation ignored. Set [] to disable.
         "stop_phrases": ["stop"],
+        # Desktop hands-free multi-turn: seconds to wait for the user to start
+        # speaking after the agent finishes. No speech in this window ends the
+        # voice conversation (wake word can start a new one). 0 = legacy
+        # always-rearm behavior. Does not affect messaging session_reset.
+        "follow_up_idle_seconds": 60,
     },
 
     # "Hey Hermes" hands-free wake word. Always-on, on-device hotword

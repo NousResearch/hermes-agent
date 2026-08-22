@@ -1422,7 +1422,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Consequence classification is the dispatch trust boundary. New tasks
+    -- default to read-only, but auto-generated consequential work is
+    -- explicitly classified and held for human approval before it can run.
+    side_effect_class    TEXT NOT NULL DEFAULT 'read-only',
+    audit_status         TEXT NOT NULL DEFAULT 'pending'
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2677,6 +2682,22 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "tasks",
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
+        )
+
+    if "side_effect_class" not in cols:
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "side_effect_class",
+            "side_effect_class TEXT NOT NULL DEFAULT 'read-only'",
+        )
+
+    if "audit_status" not in cols:
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "audit_status",
+            "audit_status TEXT NOT NULL DEFAULT 'pending'",
         )
 
     # Indexes over additive ``tasks`` columns must be created after the
@@ -7277,6 +7298,30 @@ def specify_triage_task(
     return True
 
 
+def _decomposed_child_requires_human_approval(title: str, body: Optional[str]) -> bool:
+    """Conservatively classify consequential LLM-generated task intent.
+
+    The auto-decomposer's output is execution intent, not authorization. A
+    child that names an irreversible, production, financial, or third-party
+    action must be held before it reaches the ready queue. Read-only Sentry
+    investigation remains runnable; mutating Sentry actions are held by the
+    action verbs below.
+    """
+    intent = f"{title}\n{body or ''}".lower()
+    patterns = (
+        r"\bdeploy(?:ment|ing|ed)?\b",
+        r"\bproduction\b",
+        r"\bmerge\b",
+        r"\b(?:refund|charge|payment|invoice|stripe)\b",
+        r"\b(?:dns|nameserver|domain transfer)\b",
+        r"\b(?:delete|destroy|purge)\b",
+        r"\b(?:send|email|message|notify)\b",
+        r"\b(?:resolve|close|comment|mark)\b.{0,80}\bsentry\b",
+        r"\bsentry\b.{0,80}\b(?:resolve|close|comment|mark)\b",
+    )
+    return any(re.search(pattern, intent) for pattern in patterns)
+
+
 def decompose_triage_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -7416,27 +7461,51 @@ def decompose_triage_task(
                 child_ws_path = root_ws_path
             else:
                 child_ws_path = None
+            child_requires_approval = _decomposed_child_requires_human_approval(
+                title, body if isinstance(body, str) else None
+            )
+            child_status = "blocked" if child_requires_approval else "todo"
+            child_block_kind = "needs_input" if child_requires_approval else None
+            child_side_effect_class = "external" if child_requires_approval else "read-only"
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                " workspace_path, tenant, created_at, created_by, block_kind, "
+                " side_effect_class) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
                     body if isinstance(body, str) else None,
                     assignee,
+                    child_status,
                     child_ws_kind,
                     child_ws_path,
                     tenant,
                     now,
                     (author or "decomposer"),
+                    child_block_kind,
+                    child_side_effect_class,
                 ),
             )
             _append_event(
                 conn, new_id, "created",
                 {"by": author or "decomposer", "from_decompose_of": task_id},
             )
+            if child_requires_approval:
+                _append_event(
+                    conn,
+                    new_id,
+                    "blocked",
+                    {
+                        "reason": (
+                            "Auto-decomposer classified this child as consequential; "
+                            "explicit human approval is required before dispatch."
+                        ),
+                        "kind": "needs_input",
+                        "source_status": "todo",
+                    },
+                )
             _inherit_notify_subs(conn, new_id, (task_id,), created_at=now)
             child_ids.append(new_id)
 
@@ -10034,7 +10103,7 @@ def _dispatch_once_locked(
             spawn_budget = 1
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, side_effect_class, audit_status FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -10114,6 +10183,26 @@ def _dispatch_once_locked(
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
             break
+        if (
+            row["side_effect_class"] == "external"
+            and row["audit_status"] != "approved"
+        ):
+            # A card's body is execution intent, never approval. Even if a
+            # stale/manual writer put a consequential card back in ready, keep
+            # it out of a worker until the dedicated approval path records an
+            # approved audit state.
+            if not dry_run:
+                if block_task(
+                    conn,
+                    row["id"],
+                    kind="needs_input",
+                    reason=(
+                        "Consequential task requires explicit approval before "
+                        "dispatch."
+                    ),
+                ):
+                    result.auto_blocked.append(row["id"])
+            continue
         row_assignee = row["assignee"]
         if not row_assignee:
             # Honour kanban.default_assignee: when the dispatcher hits an

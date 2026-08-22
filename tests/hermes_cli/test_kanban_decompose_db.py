@@ -88,5 +88,70 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
     assert any(ev.kind == "decomposed" for ev in events)
 
 
+def test_new_board_schema_has_consequence_fields(kanban_home):
+    with kb.connect() as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+
+    assert {"side_effect_class", "audit_status", "block_kind"} <= columns
+
+
+def test_decompose_blocks_production_deploy_child_pending_human_approval(kanban_home):
+    with kb.connect() as conn:
+        root_id = _create_triage(conn, title="Sentry issue")
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root_id,
+            root_assignee="orchestrator",
+            children=[
+                {
+                    "title": "Deploy fix to production and resolve Sentry issue",
+                    "body": "Merge the PR, deploy to production, then mark the Sentry issue resolved.",
+                    "assignee": "dev",
+                }
+            ],
+            author="auto-decomposer",
+        )
+        assert child_ids is not None
+        child = conn.execute(
+            "SELECT status, block_kind, side_effect_class, audit_status "
+            "FROM tasks WHERE id = ?",
+            (child_ids[0],),
+        ).fetchone()
+
+    assert dict(child) == {
+        "status": "blocked",
+        "block_kind": "needs_input",
+        "side_effect_class": "external",
+        "audit_status": "pending",
+    }
+
+
+def test_dispatch_reblocks_external_task_without_approval(kanban_home):
+    spawned = []
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="Deploy production fix", assignee="dev")
+        conn.execute(
+            "UPDATE tasks SET side_effect_class = 'external', audit_status = 'pending' "
+            "WHERE id = ?",
+            (task_id,),
+        )
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, workspace: spawned.append(task.id),
+        )
+        task = conn.execute(
+            "SELECT status, block_kind FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+
+    assert spawned == []
+    assert task["status"] == "blocked"
+    assert task["block_kind"] == "needs_input"
+    assert task_id in result.auto_blocked
+
+
 
 

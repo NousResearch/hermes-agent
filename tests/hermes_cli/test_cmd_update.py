@@ -885,7 +885,15 @@ class TestNodeRuntimeNpmResolution:
         )
 
     def test_git_failure_zip_fallback_rebuilds_missing_desktop(self, tmp_path, monkeypatch):
-        """The Windows ZIP fallback restores Desktop after replacing ``apps/``."""
+        """The Windows ZIP fallback keeps Desktop intact when replacing ``apps/``.
+
+        Contract updated for the #70337/#87331 release-dir graft: the built
+        desktop app (release/win-unpacked/Hermes.exe) is preserved THROUGH
+        the swap — previously this test pinned the old repair shape (exe
+        deleted by the swap, then rebuilt from scratch). The rebuild hook
+        still runs (mocked _desktop_build_needed=True), but it now finds
+        the packaged exe alive rather than missing.
+        """
         import zipfile
 
         from hermes_cli import main as hm
@@ -971,7 +979,12 @@ class TestNodeRuntimeNpmResolution:
                 gateway_mode=False,
             )
 
-        assert desktop_builds == [True]
+        # Release-dir graft (#70337): the packaged exe SURVIVES the swap, so
+        # the rebuild hook observed it present (False), and the bytes are the
+        # original build — never deleted, never rebuilt from nothing.
+        assert desktop_builds == [False]
+        assert packaged_exe.exists()
+        assert packaged_exe.read_bytes() == b"desktop"
 
 
 class TestUpdateNodeDependencies:

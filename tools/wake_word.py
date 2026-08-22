@@ -264,19 +264,17 @@ def resolve_capture_mode(
     cfg = cfg if cfg is not None else load_wake_word_config()
     if force_local:
         return "local"
+    # A GUI owns its microphone through the renderer, regardless of where the
+    # backend runs or which backend capture mode was configured.
+    if prefer_client:
+        return "client"
     raw = str(_get(cfg, "capture") or "auto").strip().lower()
     if raw in ("client", "remote", "external"):
         return "client"
     if raw == "local":
         return "local"
-    # auto: a working backend input always wins so local desktops keep
-    # PortAudio and the configured ``input_device`` selection. Client capture
-    # is the fallback for a preferring surface (desktop remote) on a backend
-    # with no usable mic — the headless VPS/Cloud case.
     if _local_input_device_ready():
         return "local"
-    if prefer_client:
-        return "client"
     # No local mic and no client preference (CLI/TUI): stay local so status
     # reports the real requirement instead of advertising a capture path
     # nothing will feed.

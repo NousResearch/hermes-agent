@@ -15037,7 +15037,9 @@ def _(rid, params: dict) -> dict:
         owned_by_caller = owns_listener(transport)
         listening = owned_by_caller and is_listening()
         silent = listening and audio_is_silent()
-        input_device = get_input_device_status(cfg)
+        input_device = (
+            get_input_device_status(cfg) if probe_cfg["capture"] == "local" else {}
+        )
         hint = reqs.get("hint", "")
         if input_device.get("error") and not hint:
             hint = f"Wake-word input device could not be resolved: {input_device['error']}"

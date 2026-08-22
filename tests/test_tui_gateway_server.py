@@ -2210,6 +2210,43 @@ def test_wake_status_reports_configured_input_device_and_windows_silence_hint(mo
         server._wake_owner_surface = ""
 
 
+def test_wake_status_uses_desktop_capture_without_probing_backend_mic(monkeypatch):
+    from tools import wake_word
+
+    config = {"enabled": True, "capture": "local", "surface": "gui"}
+    monkeypatch.setattr(wake_word, "load_wake_word_config", lambda: config)
+    monkeypatch.setattr(
+        wake_word,
+        "check_wake_word_requirements",
+        lambda cfg: {
+            "available": True,
+            "hint": "",
+            "phrase": "hey hermes",
+            "provider": "openwakeword",
+            "capture": cfg["capture"],
+        },
+    )
+    monkeypatch.setattr(
+        wake_word,
+        "get_input_device_status",
+        lambda _cfg: pytest.fail("desktop status must not probe the backend mic"),
+    )
+    monkeypatch.setattr(wake_word, "owns_listener", lambda _owner: False)
+
+    response = _dispatch_sync(
+        {
+            "id": "wake-status-client",
+            "method": "wake.status",
+            "params": {"surface": "gui"},
+        },
+        transport=types.SimpleNamespace(_closed=False),
+    )
+
+    assert response["result"]["capture"] == "client"
+    assert response["result"]["input_device"] == {}
+    assert response["result"]["hint"] == ""
+
+
 def test_voice_record_start_forwards_max_recording_seconds(monkeypatch):
     """voice.max_recording_seconds must reach start_continuous from the TUI.
 

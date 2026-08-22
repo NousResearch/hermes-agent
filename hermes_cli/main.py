@@ -3880,7 +3880,15 @@ def select_provider_and_model(args=None):
         else:
             ordered.append((key, label, members))
 
+    # Deduplicate: skip custom providers whose provider_key matches a
+    # canonical slug — they are already shown in the built-in catalog.
+    # Fixes #7524.
+    _canonical_slugs = {p.slug.lower() for p in CANONICAL_PROVIDERS}
+
     for key, provider_info in _custom_provider_map.items():
+        provider_key = provider_info.get("provider_key", "").lower()
+        if provider_key and provider_key in _canonical_slugs:
+            continue
         name = provider_info["name"]
         base_url = provider_info["base_url"]
         short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")

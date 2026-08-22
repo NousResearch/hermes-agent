@@ -1,0 +1,58 @@
+{
+  "link.title.Docs": {
+    "message": "ドキュメント",
+    "description": "The title of the footer links column with title=Docs in the footer"
+  },
+  "link.title.Community": {
+    "message": "コミュニティ",
+    "description": "The title of the footer links column with title=Community in the footer"
+  },
+  "link.title.More": {
+    "message": "その他",
+    "description": "The title of the footer links column with title=More in the footer"
+  },
+  "link.item.label.Getting Started": {
+    "message": "はじめに",
+    "description": "The label of footer link with label=Getting Started linking to /getting-started/quickstart"
+  },
+  "link.item.label.User Guide": {
+    "message": "ユーザーガイド",
+    "description": "The label of footer link with label=User Guide linking to /user-guide/cli"
+  },
+  "link.item.label.Developer Guide": {
+    "message": "開発者ガイド",
+    "description": "The label of footer link with label=Developer Guide linking to /developer-guide/architecture"
+  },
+  "link.item.label.Reference": {
+    "message": "リファレンス",
+    "description": "The label of footer link with label=Reference linking to /reference/cli-commands"
+  },
+  "link.item.label.Discord": {
+    "message": "Discord",
+    "description": "The label of footer link with label=Discord linking to https://discord.gg/NousResearch"
+  },
+  "link.item.label.GitHub Issues": {
+    "message": "GitHub Issues",
+    "description": "The label of footer link with label=GitHub Issues linking to https://github.com/NousResearch/hermes-agent/issues"
+  },
+  "link.item.label.Skills Hub": {
+    "message": "Skills Hub",
+    "description": "The label of footer link with label=Skills Hub linking to https://agentskills.io"
+  },
+  "link.item.label.Desktop Download": {
+    "message": "デスクトップ版のダウンロード",
+    "description": "The label of footer link with label=Desktop Download linking to https://hermes-agent.nousresearch.com/"
+  },
+  "link.item.label.GitHub": {
+    "message": "GitHub",
+    "description": "The label of footer link with label=GitHub linking to https://github.com/NousResearch/hermes-agent"
+  },
+  "link.item.label.Nous Research": {
+    "message": "Nous Research",
+    "description": "The label of footer link with label=Nous Research linking to https://nousresearch.com"
+  },
+  "copyright": {
+    "message": "Built by <a href=\"https://nousresearch.com\">Nous Research</a> · MIT License · 2026",
+    "description": "The footer copyright"
+  }
+}

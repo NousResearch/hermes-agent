@@ -1,0 +1,34 @@
+{
+  "title": {
+    "message": "Hermes Agent",
+    "description": "The title in the navbar"
+  },
+  "logo.alt": {
+    "message": "Hermes Agent",
+    "description": "The alt text of navbar logo"
+  },
+  "item.label.Docs": {
+    "message": "ドキュメント",
+    "description": "Navbar item with label Docs"
+  },
+  "item.label.Skills": {
+    "message": "スキル",
+    "description": "Navbar item with label Skills"
+  },
+  "item.label.Download": {
+    "message": "ダウンロード",
+    "description": "Navbar item with label Download"
+  },
+  "item.label.Home": {
+    "message": "ホーム",
+    "description": "Navbar item with label Home"
+  },
+  "item.label.GitHub": {
+    "message": "GitHub",
+    "description": "Navbar item with label GitHub"
+  },
+  "item.label.Discord": {
+    "message": "Discord",
+    "description": "Navbar item with label Discord"
+  }
+}

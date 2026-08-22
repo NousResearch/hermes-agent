@@ -27,7 +27,12 @@ instead, which:
      no-op relay, not a bytes-in-the-middle proxy;
   3. runs a background thread that polls the direct POSIX parent identity:
      compare current ``getppid()`` against the parent PID recorded when the
-     wrapper was created;
+     wrapper was created, AND — when a startup identity snapshot of that PID
+     is available — verify the process now occupying the PID is the same
+     incarnation. The second check closes the PID-recycling race: after a
+     crash the OS can hand the original PID to an unrelated new process
+     before this watchdog notices, which would otherwise defeat the whole
+     point of the supervisor;
   4. the instant the original parent is gone, terminates the real child's
      process group (SIGTERM, grace period, then SIGKILL) and exits.
 
@@ -53,10 +58,159 @@ import time
 _POLL_INTERVAL_S = 2.0
 _TERM_GRACE_S = 3.0
 
+# Snapshot of the original parent's process identity, taken once at startup.
+# ``getppid() == original_ppid`` is necessary but not sufficient: after an
+# ungraceful Hermes crash the kernel may recycle the PID onto a brand-new
+# process before this supervisor notices, and the orphaned MCP child would
+# then keep holding its upstream SSE session forever. The identity snapshot
+# lets the loop tell "same process, still alive" apart from "PID recycled".
+_original_parent_identity: Optional[str] = None
+
+
+def _macos_process_identity(pid: int) -> Optional[str]:
+    """macOS start-time identity via ``proc_pidinfo`` (libproc, in libSystem).
+
+    Pure in-process call — no subprocess, so it works even where the ``ps``
+    binary is unavailable (sandboxes, minimal PATH), and it returns
+    second+microsecond start times, far finer than ``ps -o lstart``'s seconds.
+    Returns None on any failure (caller falls back).
+    """
+    try:
+        import ctypes
+    except ImportError:  # pragma: no cover — ctypes is stdlib
+        return None
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)  # current process's symbols
+        proc_pidinfo = libc.proc_pidinfo
+        proc_pidinfo.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        proc_pidinfo.restype = ctypes.c_int
+
+        class _ProcBsdInfo(ctypes.Structure):
+            # struct proc_bsdinfo from <sys/proc_info.h>, up to the two
+            # start-time fields we need (ctypes handles alignment itself).
+            _fields_ = [
+                ("pbi_flags", ctypes.c_uint32),
+                ("pbi_status", ctypes.c_uint32),
+                ("pbi_xstatus", ctypes.c_uint32),
+                ("pbi_pid", ctypes.c_uint32),
+                ("pbi_ppid", ctypes.c_uint32),
+                ("pbi_uid", ctypes.c_uint32),
+                ("pbi_gid", ctypes.c_uint32),
+                ("pbi_ruid", ctypes.c_uint32),
+                ("pbi_rgid", ctypes.c_uint32),
+                ("pbi_svuid", ctypes.c_uint32),
+                ("pbi_svgid", ctypes.c_uint32),
+                ("pbi_rfu", ctypes.c_uint32),
+                ("pbi_comm", ctypes.c_char * 16),
+                ("pbi_name", ctypes.c_char * 32),
+                ("pbi_nfiles", ctypes.c_uint32),
+                ("pbi_pgid", ctypes.c_uint32),
+                ("pbi_pjobc", ctypes.c_uint32),
+                ("e_tdev", ctypes.c_uint32),
+                ("e_tpgid", ctypes.c_uint32),
+                ("pbi_nice", ctypes.c_int32),
+                ("pbi_start_tvsec", ctypes.c_uint64),
+                ("pbi_start_tvusec", ctypes.c_uint64),
+            ]
+
+        info = _ProcBsdInfo()
+        # PROC_PIDTBSDINFO == 3
+        n = proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
+        if n <= 0:
+            return None  # ESRCH (process gone) or permission error
+        return f"{info.pbi_start_tvsec}.{info.pbi_start_tvusec:06d}"
+    except (AttributeError, OSError, ctypes.ArgumentError):  # pragma: no cover
+        return None
+
+
+def _parse_starttime_from_proc_stat(data: str) -> Optional[str]:
+    """Extract the ``starttime`` field (22nd) from a ``/proc/<pid>/stat`` line.
+
+    ``comm`` (field 2) may itself contain ')' and spaces, so split on the
+    LAST ')'.  Fields after it begin at field #3 (state); ``starttime`` is
+    field #22, i.e. index 19 of that tail. Returns None on malformed data.
+    """
+    try:
+        return data.rsplit(")", 1)[1].split()[22 - 3]
+    except (IndexError, ValueError):
+        return None
+
+
+def _read_process_identity(pid: int) -> Optional[str]:
+    """Return a stable, comparable identity string for *pid*, or None.
+
+    Linux: read the kernel ``starttime`` field of ``/proc/<pid>/stat`` — a
+    monotonic jiffies counter since boot. Cheap (no subprocess), immune to
+    wall-clock skew, and effectively unique per process incarnation, so a
+    recycled PID can never collide with a live parent's value.
+
+    macOS (no procfs): ``proc_pidinfo`` via libproc — an in-process ctypes
+    call, no subprocess, second+microsecond resolution.
+
+    Last-resort fallback for other POSIX platforms: spawn ``ps -o lstart=``
+    with a forced ``LC_ALL=C`` so the emitted date string is
+    locale-independent and therefore comparable across calls.
+
+    Returns None when the process is already gone or the platform can't be
+    queried. Callers MUST treat None as "cannot verify", never as "recycled",
+    so a transient read failure can't cause a false kill.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", encoding="ascii", errors="replace") as fh:
+            data = fh.read()
+    except OSError:
+        data = None
+    if data:
+        parsed = _parse_starttime_from_proc_stat(data)
+        if parsed is not None:
+            return parsed
+    if sys.platform == "darwin":
+        macos_ident = _macos_process_identity(pid)
+        if macos_ident is not None:
+            return macos_ident
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            env={"LC_ALL": "C", "PATH": os.environ.get("PATH") or "/bin:/usr/bin"},
+            timeout=1.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    line = out.stdout.strip()
+    return line or None
+
+
+def _snapshot_parent_identity(original_ppid: int) -> None:
+    """Record the original parent's identity for later recycling checks."""
+    global _original_parent_identity
+    _original_parent_identity = _read_process_identity(original_ppid)
+
 
 def _is_orphaned(original_ppid: int, getppid=os.getppid) -> bool:
-    """Return whether this process no longer has its original POSIX parent."""
-    return getppid() != original_ppid
+    """Return whether this process no longer has its original POSIX parent.
+
+    Two-tier check: the direct parent PID must still match AND — when a
+    startup identity snapshot exists — the process now occupying that PID
+    must be the same incarnation (guards against PID recycling after a
+    crash). Identity read failures are conservative: never kill on
+    uncertainty, fall back to the legacy PID-only behavior instead.
+    """
+    if getppid() != original_ppid:
+        return True
+    if _original_parent_identity is None:
+        return False  # no snapshot → legacy PID-only behavior
+    current = _read_process_identity(original_ppid)
+    if current is None:
+        return False  # transient read failure — cannot verify, do not kill
+    return current != _original_parent_identity
 
 
 def _terminate_process_group(proc: subprocess.Popen) -> None:
@@ -125,6 +279,11 @@ def main(argv: list[str] | None = None) -> int:
         stderr=sys.stderr,
         start_new_session=True,
     )
+
+    # Snapshot the parent's process identity NOW, while the original parent
+    # is (almost certainly) still alive, so the loop can later distinguish a
+    # live original parent from a recycled PID after a crash.
+    _snapshot_parent_identity(args.ppid)
 
     # Because the real server lives in its OWN process group (above), the
     # parent's graceful-shutdown killpg of *our* group no longer reaches it.

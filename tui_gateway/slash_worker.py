@@ -30,6 +30,7 @@ import cli as cli_mod
 from cli import HermesCLI
 from tui_gateway._stdin_recovery import handle_spurious_eof
 from rich.console import Console
+from tools.mcp_stdio_watchdog import _read_process_identity as _read_parent_identity
 
 # Env-overridable so the integration test can drive sub-second timing.
 def _env_float(name: str, default: float) -> float:
@@ -51,10 +52,36 @@ _ORPHAN_GRACE_S = max(0.0, _env_float("HERMES_SLASH_WATCHDOG_GRACE_S", 5.0))
 _in_flight = threading.Event()  # set while a command is executing
 logger = logging.getLogger(__name__)
 
+# Snapshot of the original parent's process identity, taken when the watchdog
+# starts. ``getppid() == original_ppid`` alone is vulnerable to PID recycling:
+# after the parent dies hard (kill -9 / crash) the OS can reuse the PID before
+# this worker notices, keeping the worker alive indefinitely. The snapshot
+# lets the loop verify the PID is occupied by the SAME process incarnation.
+_original_parent_identity = None
+
+
+def _snapshot_parent_identity(original_ppid) -> None:
+    global _original_parent_identity
+    _original_parent_identity = _read_parent_identity(original_ppid)
+
 
 def _is_orphaned(original_ppid, getppid=os.getppid) -> bool:
-    """Return whether this worker no longer has its original POSIX parent."""
-    return getppid() != original_ppid
+    """Return whether this worker no longer has its original POSIX parent.
+
+    Two-tier check: the direct parent PID must still match AND — when a
+    startup identity snapshot exists — the process now occupying that PID
+    must be the same incarnation (guards against PID recycling after a
+    crash). Identity read failures are conservative: never kill on
+    uncertainty, fall back to the legacy PID-only behavior instead.
+    """
+    if getppid() != original_ppid:
+        return True
+    if _original_parent_identity is None:
+        return False  # no snapshot → legacy PID-only behavior
+    current = _read_parent_identity(original_ppid)
+    if current is None:
+        return False  # transient read failure — cannot verify, do not kill
+    return current != _original_parent_identity
 
 
 def _prepare_slash_worker_runtime() -> None:
@@ -79,6 +106,10 @@ def _prepare_slash_worker_runtime() -> None:
 
 
 def _start_parent_death_watchdog(original_ppid) -> None:
+    # Snapshot the parent's identity NOW so the loop can tell "same process,
+    # still alive" apart from "PID recycled onto an unrelated process".
+    _snapshot_parent_identity(original_ppid)
+
     def _loop():
         while not _is_orphaned(original_ppid):
             time.sleep(_WATCHDOG_POLL_S)

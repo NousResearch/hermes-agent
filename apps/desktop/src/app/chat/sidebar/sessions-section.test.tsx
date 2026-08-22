@@ -12,12 +12,15 @@ afterEach(cleanup)
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
+      common: {
+        collapse: 'Collapse',
+        expand: 'Expand'
+      },
       sidebar: {
         dateDivider: {
-          earlierThisMonth: 'Earlier this month',
-          lastMonth: 'Last month',
           lastWeek: 'Last week',
-          older: 'Older',
+          thisMonth: 'Earlier this month',
+          thisWeek: 'Earlier this week',
           today: 'Today',
           yesterday: 'Yesterday'
         }

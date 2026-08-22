@@ -38,6 +38,8 @@ export interface VirtualSessionListProps {
   /** Render every session row as the three-line inbox card. */
   card?: boolean
   className?: string
+  collapsedDateGroupKeys?: ReadonlySet<string>
+  dateGroupToggleLabel?: (label: string, open: boolean) => string
   /** Hover-revealed control for date dividers (the group-level "+"). */
   dividerAction?: React.ReactNode
   rows: SidebarListRow[]
@@ -45,6 +47,7 @@ export interface VirtualSessionListProps {
   onBranchSession?: (sessionId: string, profile?: string) => void
   onDeleteSession: (sessionId: string) => void
   onResumeSession: (sessionId: string) => void
+  onToggleDateGroup?: (key: string) => void
   onTogglePin: (sessionId: string) => void
   onToggleUnread: (sessionId: string) => void
   pinned: boolean
@@ -63,12 +66,15 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   activeSessionId,
   card = false,
   className,
+  collapsedDateGroupKeys,
+  dateGroupToggleLabel,
   dividerAction,
   rows: listRows,
   onArchiveSession,
   onBranchSession,
   onDeleteSession,
   onResumeSession,
+  onToggleDateGroup,
   onTogglePin,
   onToggleUnread,
   pinned,
@@ -94,7 +100,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     getItemKey: index => {
       const row = listRows[index]
 
-      return row ? (row.kind === 'divider' ? row.key : row.entry.session.id) : index
+      return row ? (row.kind === 'divider' ? (row.rowKey ?? row.key) : row.entry.session.id) : index
     },
     getScrollElement: () => scrollerRef.current,
     // jsdom-friendly default; the real rect takes over on first observe.
@@ -126,11 +132,23 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
 
     // Dividers are non-sortable, self-measured rows interleaved with sessions.
     if (row.kind === 'divider') {
+      const label = 'label' in row ? row.label : sessionBucketLabel(row.bucket, dividerLabels)
+      const open = !collapsedDateGroupKeys?.has(row.key)
+
       return (
-        <div data-index={virtualItem.index} key={row.key} ref={virtualizer.measureElement} style={itemStyle}>
+        <div data-index={virtualItem.index} key={row.rowKey ?? row.key} ref={virtualizer.measureElement} style={itemStyle}>
           <SidebarDateDivider
             action={dividerAction}
-            label={'label' in row ? row.label : sessionBucketLabel(row.bucket, dividerLabels)}
+            label={label}
+            toggle={
+              onToggleDateGroup && dateGroupToggleLabel
+                ? {
+                    ariaLabel: dateGroupToggleLabel(label, open),
+                    onToggle: () => onToggleDateGroup(row.key),
+                    open
+                  }
+                : undefined
+            }
           />
         </div>
       )

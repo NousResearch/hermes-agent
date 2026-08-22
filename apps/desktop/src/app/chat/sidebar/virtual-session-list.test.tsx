@@ -25,10 +25,9 @@ vi.mock('@/i18n', () => ({
     t: {
       sidebar: {
         dateDivider: {
-          earlierThisMonth: 'Earlier this month',
-          lastMonth: 'Last month',
           lastWeek: 'Last week',
-          older: 'Older',
+          thisMonth: 'Earlier this month',
+          thisWeek: 'Earlier this week',
           today: 'Today',
           yesterday: 'Yesterday'
         }

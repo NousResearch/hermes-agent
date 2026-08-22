@@ -24,8 +24,9 @@ fresh. It is cached until shortly before expiry, so the command runs about
 once per token lifetime rather than once per request.
 
 Output contract: print ONLY the token on stdout, either bare or as JSON with
-an ``access_token`` field (``expires_in`` is honoured when present) — the
-shape OAuth 2.0 token endpoints and the helpers above already emit.
+an ``access_token`` field — the shape OAuth 2.0 token endpoints and the helpers
+above already emit. A lifetime may arrive as a relative ``expires_in``, as an
+absolute ``expiry``/``expiresOn``, or both; the shortest one is honoured.
 
 Precedence: an explicit ``--api-key`` still wins (the one-off recovery escape
 hatch); otherwise ``key_cmd`` is preferred over a static ``api_key`` /
@@ -115,24 +116,26 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
                     f"key_cmd for provider {label!r} returned JSON without an "
                     "'access_token' field"
                 )
-            ttl = payload.get("expires_in")
-            if isinstance(ttl, (int, float)) and ttl > 0:
-                return token, float(ttl)
-            # A relative lifetime is the OAuth 2.0 field, but CLI token helpers
-            # commonly print an absolute ISO 8601 deadline instead. Treating
-            # that as "no TTL advertised" caches the token for the life of the
-            # process, so every request 401s once the deadline passes.
+            # Honour the SHORTEST advertised lifetime. A helper answering from
+            # its own credential cache reprints the original ``expires_in``
+            # while the absolute deadline keeps counting down, so reading only
+            # the relative field caches past the credential's real life.
+            #
             # Imported lazily: hermes_cli.auth imports from agent.* at module
             # level, so a top-level import here would risk a cycle.
             from hermes_cli.auth import _parse_iso_timestamp
 
+            lifetimes = []
+            relative = payload.get("expires_in")
+            if isinstance(relative, (int, float)):
+                lifetimes.append(float(relative))
             for field in ("expiry", "expiresOn"):
                 deadline = _parse_iso_timestamp(payload.get(field))
                 if deadline is not None:
-                    remaining = deadline - time.time()
-                    if remaining > 0:
-                        return token, remaining
-            return token, None
+                    lifetimes.append(deadline - time.time())
+
+            usable = [ttl for ttl in lifetimes if ttl > 0]
+            return token, (min(usable) if usable else None)
 
     # Bare token. The contract every comparable helper documents is "stdout
     # carries the token and nothing else" — extra output would be consumed as

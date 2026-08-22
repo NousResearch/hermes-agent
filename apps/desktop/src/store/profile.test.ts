@@ -26,6 +26,7 @@ const {
   ensureGatewayProfile,
   invalidateProfileListFetches,
   prewarmProfileBackend,
+  refreshActiveProfile,
   refreshProfiles
 } = await import('./profile')
 
@@ -114,6 +115,44 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     expect(getConnection).not.toHaveBeenCalled()
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
     expect($connection.get()?.mode).toBe('remote')
+  })
+})
+
+describe('stale profile self-heal', () => {
+  // The remote dropped `teacher`, but a restored session / saved route still
+  // points at it. Without a guard every profile-scoped call answers
+  // 404 `Profile 'teacher' does not exist.` and the app wedges.
+  it('activates default instead of a profile the backend does not report', async () => {
+    $profiles.set([profile('default', true), profile('hermes-cardinal')])
+    $activeGatewayProfile.set('hermes-cardinal')
+    getConnection.mockResolvedValue(localConn())
+
+    await ensureGatewayProfile('teacher')
+
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('default')
+    expect(ensureGatewayForProfile).not.toHaveBeenCalledWith('teacher')
+    expect($activeGatewayProfile.get()).toBe('default')
+  })
+
+  it('drops an already-active profile once the real list omits it', async () => {
+    $activeGatewayProfile.set('teacher')
+    getConnection.mockResolvedValue(localConn())
+    vi.mocked(getProfiles).mockResolvedValueOnce({
+      profiles: [profile('default', true), profile('hermes-cardinal')]
+    })
+
+    await refreshActiveProfile()
+
+    expect($activeGatewayProfile.get()).toBe('default')
+  })
+
+  it('leaves the target alone while the profile list is still empty', async () => {
+    // Pre-list boot: an unfetched list must not be read as "nothing exists".
+    getConnection.mockResolvedValue(remoteConn())
+
+    await ensureGatewayProfile('vps-remote')
+
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('vps-remote')
   })
 })
 

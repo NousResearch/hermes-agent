@@ -19,16 +19,62 @@
  *   - packager.appInfo.productFilename: the exe basename (e.g. 'Hermes')
  */
 
+import { execFile } from 'node:child_process'
 import path from 'node:path'
+import { promisify } from 'node:util'
 
 import { stampExeIdentity } from './set-exe-identity.mjs'
 
+const run = promisify(execFile)
+
+/**
+ * Re-sign the macOS bundle ad-hoc when electron-builder left it unsigned.
+ *
+ * Without a Developer ID, electron-builder skips signing and the bundle keeps
+ * Electron's own linker-signed signature — which our resources invalidate
+ * ("code has no resources but signature indicates they must be present"), and
+ * whose identifier is the generic `Electron`. macOS binds a keychain ACL to a
+ * VERIFIED code identity, so an invalid signature means "Always Allow" on the
+ * safeStorage prompt can never stick: every launch and every token read
+ * re-prompts for the login keychain password.
+ *
+ * An ad-hoc signature is enough to fix that — it yields a stable identity
+ * (com.nousresearch.hermes) with sealed resources. We only touch a bundle that
+ * FAILS verification, so a real Developer ID signature is never clobbered.
+ */
+async function adhocSignMac(appPath) {
+  try {
+    await run('codesign', ['--verify', '--deep', '--strict', appPath])
+
+    return
+  } catch {
+    // Unsigned or invalid — fall through and ad-hoc sign.
+  }
+
+  await run('codesign', ['--force', '--deep', '--sign', '-', appPath])
+  await run('codesign', ['--verify', '--deep', '--strict', appPath])
+}
+
 export default async function afterPack(context) {
+  const productName = context.packager?.appInfo?.productFilename || 'Hermes'
+
+  if (context.electronPlatformName === 'darwin') {
+    const appPath = path.join(context.appOutDir, `${productName}.app`)
+
+    try {
+      await adhocSignMac(appPath)
+    } catch (err) {
+      // Never fail the build; the cost is the recurring keychain prompt.
+      console.warn(`[after-pack] ad-hoc codesign failed (${err.message}); expect repeated keychain prompts`)
+    }
+
+    return
+  }
+
   if (context.electronPlatformName !== 'win32') {
     return
   }
 
-  const productName = context.packager?.appInfo?.productFilename || 'Hermes'
   const exe = path.join(context.appOutDir, `${productName}.exe`)
   const desktopRoot = path.resolve(import.meta.dirname, '..')
 

@@ -157,6 +157,7 @@ export async function refreshActiveProfile(): Promise<void> {
 
   try {
     await refreshProfiles()
+    await reconcileGatewayProfile()
   } catch {
     // Leave the cached list in place.
   }
@@ -188,6 +189,27 @@ export async function switchProfile(name: string): Promise<void> {
 // eviction fallbacks (idle reap, connection removal, profile delete) can never
 // leave this naming a profile the active socket no longer serves (#89206).
 export const $activeGatewayProfile = atom<string>('default')
+
+// True when `key` is a profile the backend actually reports. "default" is the
+// root home so it always passes, and an empty list means "not fetched yet" —
+// neither is second-guessed, so a pre-list boot behaves exactly as before.
+function profileIsKnown(key: string): boolean {
+  const profiles = $profiles.get()
+
+  return (
+    key === 'default' || profiles.length === 0 || profiles.some(entry => normalizeProfileKey(entry.name) === key)
+  )
+}
+
+// Drop an active profile the backend no longer has. A profile deleted or
+// renamed on the remote otherwise stays pinned here, and every profile-scoped
+// REST call 404s `Profile 'x' does not exist` — unhandled, so the whole app
+// wedges behind a name nothing can serve. Fall back to the root home.
+async function reconcileGatewayProfile(): Promise<void> {
+  if (!profileIsKnown(normalizeProfileKey($activeGatewayProfile.get()))) {
+    await ensureGatewayProfile('default')
+  }
+}
 
 // Profile for the NEXT new chat (chosen via the new-chat picker). null = primary
 // / default, so single-profile users are unaffected.
@@ -319,7 +341,11 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     return
   }
 
-  const target = normalizeProfileKey(profile)
+  const requested = normalizeProfileKey(profile)
+  // A stale target — a restored session, saved route, or plugin pointing at a
+  // profile the backend no longer has — would pin every profile-scoped request
+  // to a 404. Activate the root home instead of a name that doesn't exist.
+  const target = profileIsKnown(requested) ? requested : 'default'
 
   if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()) {
     return

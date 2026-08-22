@@ -1349,6 +1349,13 @@ class GatewayStreamConsumer:
                             and self._message_id != "__no_edit__"
                         ):
                             await self._flush_segment_tail_on_edit_failure()
+                        else:
+                            # Clean break: whatever the finalize edit above
+                            # did, seal the on-screen bubble stripped and
+                            # marked — otherwise it keeps the streaming
+                            # cursor and the fresh continuation bubble below
+                            # reads like a duplicate send (#92063).
+                            await self._seal_segment_for_continuation()
                         self._reset_segment_state(preserve_no_edit=True)
 
                 # Flush barrier satisfied: the buffered segment (if any) has now
@@ -2062,6 +2069,34 @@ class GatewayStreamConsumer:
                 self._last_sent_text = prefix
         except Exception:
             pass  # best-effort — don't let this block the fallback path
+
+    async def _seal_segment_for_continuation(self) -> None:
+        """Best-effort final edit on the bubble a segment break seals.
+
+        A clean segment break leaves the on-screen bubble at its last
+        streaming edit — cursor (▉) still attached when the break arrives
+        between edit ticks. The fresh continuation bubble below then reads
+        like a duplicate send of the same prefix (#92063). Re-edit the sealed
+        bubble with the cursor stripped and a continuation marker appended,
+        so the pair reads as one continued answer.
+        """
+        if self.cfg.buffer_only:
+            return  # uneditable platform — nothing to seal
+        if not self._message_id or self._message_id == "__no_edit__":
+            return
+        prefix = self._visible_prefix()
+        if not prefix or not prefix.strip():
+            return
+        sealed = f"{prefix.rstrip()}\n\n(continued below)"
+        try:
+            result = await self._edit_message(
+                message_id=self._message_id,
+                content=sealed,
+            )
+            if getattr(result, "success", False):
+                self._last_sent_text = sealed
+        except Exception:
+            pass  # best-effort — a failing seal edit must not stall the break
 
     async def _send_commentary(self, text: str) -> bool:
         """Send a completed interim assistant commentary message."""

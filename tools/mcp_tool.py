@@ -975,8 +975,8 @@ def _mcp_types():
 def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     """Resolve a stdio MCP command against the exact subprocess environment.
 
-    This primarily exists to make bare ``npx``/``npm``/``node`` commands work
-    reliably even when MCP subprocesses run under a filtered PATH.
+    This primarily exists to make bare Node and uv launchers work reliably
+    even when MCP subprocesses run under a filtered PATH.
     """
     resolved_command = os.path.expanduser(str(command).strip())
     resolved_env = dict(env or {})
@@ -1007,26 +1007,28 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
                         os.environ["PATHEXT"] = _saved
         if which_hit:
             resolved_command = which_hit
-        elif resolved_command in {"npx", "npm", "node"}:
-            hermes_home = os.path.expanduser(
-                os.getenv(
-                    "HERMES_HOME", os.path.join(os.path.expanduser("~"), ".hermes")
-                )
+        elif resolved_command in {"npx", "npm", "node", "uv", "uvx"}:
+            from hermes_constants import get_hermes_home
+
+            hermes_home = str(get_hermes_home())
+            if resolved_command in {"npx", "npm", "node"}:
+                managed_bin = os.path.join(hermes_home, "node", "bin")
+            else:
+                managed_bin = os.path.join(hermes_home, "bin")
+            candidate_name = (
+                f"{resolved_command}.exe"
+                if sys.platform == "win32" and resolved_command in {"uv", "uvx"}
+                else resolved_command
             )
             candidates = [
-                os.path.join(hermes_home, "node", "bin", resolved_command),
-                os.path.join(os.path.expanduser("~"), ".local", "bin", resolved_command),
-                # /usr/local/bin is the canonical install location for Node on
-                # Linux from-source builds, the upstream node:bookworm-slim
-                # image (which the Hermes Docker image copies node + npm +
-                # corepack from since #4977), and macOS Homebrew on Intel.
-                # Without this candidate, any MCP server configured with an
-                # env.PATH that omits /usr/local/bin (a common pattern when
-                # users hand-author PATH for sandboxing) fails with ENOENT
-                # at execvp, and a naive symlink workaround into the user's
-                # PATH only fails one layer deeper because npx's shebang
-                # re-execs /usr/bin/env node which needs the same directory.
-                os.path.join(os.sep, "usr", "local", "bin", resolved_command),
+                os.path.join(managed_bin, candidate_name),
+                os.path.join(os.path.expanduser("~"), ".local", "bin", candidate_name),
+                # Apple Silicon Homebrew uses /opt/homebrew; Intel Homebrew,
+                # Linux source installs, and the Hermes Docker image use
+                # /usr/local. GUI and hand-authored MCP environments commonly
+                # omit both from PATH.
+                os.path.join(os.sep, "opt", "homebrew", "bin", candidate_name),
+                os.path.join(os.sep, "usr", "local", "bin", candidate_name),
             ]
             for candidate in candidates:
                 if os.path.isfile(candidate) and os.access(candidate, os.X_OK):

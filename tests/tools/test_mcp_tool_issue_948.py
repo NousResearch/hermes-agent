@@ -4,7 +4,9 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tools.mcp_tool import MCPServerTask, _format_connect_error, _resolve_stdio_command, _MCP_AVAILABLE
 
 # Ensure the mcp module symbols exist for patching even when the SDK isn't installed
@@ -31,6 +33,140 @@ def test_resolve_stdio_command_falls_back_to_hermes_node_bin(tmp_path):
 
     assert command == str(npx_path)
     assert env["PATH"].split(os.pathsep)[0] == str(node_bin)
+
+
+def _resolver_home_env(user_home, hermes_home):
+    return {
+        "HOME": str(user_home),
+        "USERPROFILE": str(user_home),
+        "HERMES_HOME": str(hermes_home),
+    }
+
+
+def _launcher_filename(command_name):
+    if sys.platform == "win32" and command_name in {"uv", "uvx"}:
+        return f"{command_name}.exe"
+    return command_name
+
+
+def test_resolve_stdio_command_falls_back_to_user_uvx_bin(tmp_path):
+    user_home = tmp_path / "home"
+    hermes_home = tmp_path / "hermes"
+    user_bin = user_home / ".local" / "bin"
+    user_bin.mkdir(parents=True)
+    uvx_path = user_bin / _launcher_filename("uvx")
+    uvx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    uvx_path.chmod(0o755)
+
+    with patch("tools.mcp_tool.shutil.which", return_value=None), \
+         patch.dict("os.environ", _resolver_home_env(user_home, hermes_home), clear=False):
+        command, env = _resolve_stdio_command("uvx", {"PATH": "/usr/bin"})
+
+    assert command == str(uvx_path)
+    assert env["PATH"].split(os.pathsep)[0] == str(user_bin)
+
+
+def test_resolve_stdio_command_uses_scoped_hermes_home(tmp_path):
+    process_home = tmp_path / "process-home"
+    scoped_home = tmp_path / "profile-home"
+    scoped_bin = scoped_home / "bin"
+    scoped_bin.mkdir(parents=True)
+    uvx_path = scoped_bin / _launcher_filename("uvx")
+    uvx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    uvx_path.chmod(0o755)
+
+    with patch("tools.mcp_tool.shutil.which", return_value=None), \
+         patch.dict("os.environ", {"HERMES_HOME": str(process_home)}, clear=False):
+        token = set_hermes_home_override(scoped_home)
+        try:
+            command, env = _resolve_stdio_command("uvx", {"PATH": "/usr/bin"})
+        finally:
+            reset_hermes_home_override(token)
+
+    assert command == str(uvx_path)
+    assert env["PATH"].split(os.pathsep)[0] == str(scoped_bin)
+
+
+@pytest.mark.parametrize(
+    ("command_name", "selected_index"),
+    [
+        pytest.param("uv", 0, id="uv-managed"),
+        pytest.param("uvx", 0, id="uvx-managed"),
+        pytest.param("uv", 1, id="uv-user-local"),
+        pytest.param("uvx", 1, id="uvx-user-local"),
+        pytest.param("uv", 2, id="uv-apple-homebrew"),
+        pytest.param("uvx", 2, id="uvx-apple-homebrew"),
+        pytest.param("uv", 3, id="uv-usr-local"),
+        pytest.param("uvx", 3, id="uvx-usr-local"),
+    ],
+)
+def test_resolve_stdio_command_uv_fallback_order(tmp_path, command_name, selected_index):
+    user_home = tmp_path / "home"
+    hermes_home = tmp_path / "hermes"
+    candidate_name = _launcher_filename(command_name)
+    expected_candidates = [
+        os.path.join(hermes_home, "bin", candidate_name),
+        os.path.join(user_home, ".local", "bin", candidate_name),
+        os.path.join(os.sep, "opt", "homebrew", "bin", candidate_name),
+        os.path.join(os.sep, "usr", "local", "bin", candidate_name),
+    ]
+    seen_candidates = []
+
+    def _fake_access(path, mode):
+        assert mode == os.X_OK
+        seen_candidates.append(path)
+        return path == expected_candidates[selected_index]
+
+    with patch("tools.mcp_tool.shutil.which", return_value=None), \
+         patch("tools.mcp_tool.os.path.isfile", return_value=True), \
+         patch("tools.mcp_tool.os.access", side_effect=_fake_access), \
+         patch.dict("os.environ", _resolver_home_env(user_home, hermes_home), clear=False):
+        command, env = _resolve_stdio_command(command_name, {"PATH": "/usr/bin"})
+
+    assert seen_candidates == expected_candidates[:selected_index + 1]
+    assert command == expected_candidates[selected_index]
+    assert env["PATH"].split(os.pathsep)[0] == os.path.dirname(command)
+
+
+def test_resolve_stdio_command_uses_windows_uvx_executable(tmp_path):
+    user_home = tmp_path / "home"
+    hermes_home = tmp_path / "hermes"
+    expected = os.path.join(hermes_home, "bin", "uvx.exe")
+
+    with patch("tools.mcp_tool.sys.platform", "win32"), \
+         patch("tools.mcp_tool.shutil.which", return_value=None), \
+         patch("tools.mcp_tool.os.path.isfile", return_value=True), \
+         patch("tools.mcp_tool.os.access", return_value=True), \
+         patch.dict("os.environ", _resolver_home_env(user_home, hermes_home), clear=False):
+        command, env = _resolve_stdio_command("uvx", {"PATH": r"C:\Windows\System32"})
+
+    assert command == expected
+    assert env["PATH"].split(os.pathsep)[0] == os.path.dirname(expected)
+
+
+def test_resolve_stdio_command_prefers_filtered_path_hit():
+    target = os.path.join(os.sep, "custom", "bin", "uvx")
+
+    with patch("tools.mcp_tool.shutil.which", return_value=target) as mock_which, \
+         patch("tools.mcp_tool.os.path.isfile") as mock_isfile:
+        command, env = _resolve_stdio_command("uvx", {"PATH": "/custom/bin"})
+
+    assert command == target
+    assert env["PATH"].split(os.pathsep)[0] == os.path.dirname(target)
+    mock_which.assert_called_once_with("uvx", path="/custom/bin")
+    mock_isfile.assert_not_called()
+
+
+def test_resolve_stdio_command_does_not_fallback_for_unknown_command():
+    with patch("tools.mcp_tool.shutil.which", return_value=None), \
+         patch("tools.mcp_tool.os.path.isfile") as mock_isfile:
+        command, env = _resolve_stdio_command(
+            "custom-mcp-launcher", {"PATH": "/usr/bin"}
+        )
+
+    assert command == "custom-mcp-launcher"
+    assert env["PATH"] == "/usr/bin"
+    mock_isfile.assert_not_called()
 
 
 def test_resolve_stdio_command_falls_back_to_usr_local_bin():

@@ -485,6 +485,12 @@ def load_hermes_dotenv(
       dependencies into the process that replaces that same environment.
     """
     loaded: list[Path] = []
+    # This token is minted/injected by the process launcher (Desktop, a
+    # companion app, or a service wrapper).  A profile dotenv is persistent
+    # configuration and must not replace the launcher's current pairing.
+    process_dashboard_session_token = os.environ.get(
+        "HERMES_DASHBOARD_SESSION_TOKEN"
+    )
 
     home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
     user_env = home_path / ".env"
@@ -551,6 +557,11 @@ def load_hermes_dotenv(
     # so the merged config (which already carries the managed overlay) is
     # what lands in the env.
     _reapply_terminal_config_bridge(home_path)
+
+    if process_dashboard_session_token is not None:
+        os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] = (
+            process_dashboard_session_token
+        )
 
     return loaded
 

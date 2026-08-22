@@ -511,6 +511,14 @@ def _apply_ssh_session_token(token: str) -> None:
         _SESSION_TOKEN = token
 
 
+def _apply_startup_session_token(ssh_session_token: Optional[str]) -> None:
+    """Reconcile the auth token at listen time after all bootstrap paths ran."""
+    token = ssh_session_token or os.environ.get(
+        "HERMES_DASHBOARD_SESSION_TOKEN", ""
+    )
+    _apply_ssh_session_token(token)
+
+
 def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
     global _SSH_OWNER_NONCE
     _SSH_OWNER_NONCE = nonce
@@ -18926,7 +18934,7 @@ def start_server(
     ``ssh_session_token`` and ``ssh_owner_nonce`` are process-local Desktop SSH
     bootstrap state. Neither is persisted or exported to child processes.
     """
-    _apply_ssh_session_token(ssh_session_token or "")
+    _apply_startup_session_token(ssh_session_token)
     _apply_ssh_owner_nonce(ssh_owner_nonce)
 
     # Raise RLIMIT_NOFILE for dashboard-mode starts that don't route through

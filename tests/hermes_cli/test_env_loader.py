@@ -6,6 +6,20 @@ import sys
 from hermes_cli.env_loader import load_hermes_dotenv
 
 
+def test_process_dashboard_session_token_survives_profile_dotenv(tmp_path, monkeypatch):
+    home = tmp_path / "profile"
+    home.mkdir()
+    (home / ".env").write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=stale-profile-token\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "process-token")
+
+    load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
+
+    assert os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] == "process-token"
+
+
 def test_recovered_update_retry_skips_external_secret_sources(tmp_path, monkeypatch):
     """The post-recovery updater must not remap native vault dependencies."""
     import hermes_cli.env_loader as env_loader

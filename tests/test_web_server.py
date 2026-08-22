@@ -73,6 +73,7 @@ def _stub_uvicorn(monkeypatch):
 
 def test_start_server_applies_process_local_ssh_bootstrap_state(monkeypatch):
     captured = _stub_uvicorn(monkeypatch)
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "stable-app-token")
 
     web_server.start_server(
         host="127.0.0.1",
@@ -85,6 +86,26 @@ def test_start_server_applies_process_local_ssh_bootstrap_state(monkeypatch):
     assert web_server._SESSION_TOKEN == "s" * 64
     assert web_server._SSH_OWNER_NONCE == "0123456789abcdef"
     assert captured["port"] == 0
+
+
+def test_start_server_reapplies_environment_session_token(monkeypatch):
+    _stub_uvicorn(monkeypatch)
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "stable-app-token")
+    monkeypatch.setattr(web_server, "_SESSION_TOKEN", "stale-import-token")
+
+    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    assert web_server._SESSION_TOKEN == "stable-app-token"
+
+
+def test_start_server_without_configured_token_keeps_current_token(monkeypatch):
+    _stub_uvicorn(monkeypatch)
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+    monkeypatch.setattr(web_server, "_SESSION_TOKEN", "process-local-token")
+
+    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    assert web_server._SESSION_TOKEN == "process-local-token"
 
 
 def test_start_server_disables_ws_ping_on_loopback(monkeypatch):

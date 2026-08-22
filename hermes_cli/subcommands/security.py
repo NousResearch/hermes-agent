@@ -59,4 +59,46 @@ def build_security_parser(subparsers, *, cmd_security: Callable) -> None:
         help="Skip scanning pinned MCP servers in config.yaml",
     )
     audit_parser.set_defaults(func=cmd_security)
+
+    scan_parser = security_subparsers.add_parser(
+        "scan",
+        help="Scan instruction files for persistent config poisoning",
+        description=(
+            "Run tirith's AI-config scanner against HERMES_HOME (or explicit paths) "
+            "and report only findings not present in the accepted baseline."
+        ),
+    )
+    scan_parser.add_argument(
+        "paths",
+        nargs="*",
+        help="Files or directories to scan (default: the active HERMES_HOME)",
+    )
+    scan_parser.add_argument(
+        "--baseline",
+        default=None,
+        help="Baseline file (default: HERMES_HOME/security/tirith-scan-baseline.json)",
+    )
+    scan_parser.add_argument(
+        "--update-baseline",
+        action="store_true",
+        help="Accept the current findings as the new baseline after review",
+    )
+    scan_parser.add_argument(
+        "--fail-on",
+        default="high",
+        choices=["low", "medium", "high", "critical"],
+        help="Exit non-zero for a new finding at this severity (default: high)",
+    )
+    scan_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        help="Per-path tirith timeout in seconds (default: security.tirith_scan_timeout)",
+    )
+    scan_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON",
+    )
+    scan_parser.set_defaults(func=cmd_security)
     security_parser.set_defaults(func=cmd_security)

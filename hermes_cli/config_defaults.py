@@ -2456,6 +2456,7 @@ DEFAULT_CONFIG = {
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,
+        "tirith_scan_timeout": 120,
         "tirith_fail_open": True,
         "website_blocklist": {
             "enabled": False,

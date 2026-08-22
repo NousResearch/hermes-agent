@@ -59,6 +59,11 @@ def build_write_denied_paths(home: str) -> set[str]:
             # Bitwarden Secrets Manager encrypted disk cache.
             str(hermes_home / "cache" / "bws_cache.enc.json"),
             str(hermes_root / "cache" / "bws_cache.enc.json"),
+            # Operator-accepted tirith config-scan baseline. Generic agent file
+            # tools must not rewrite this application-owned security state to
+            # hide a newly poisoned instruction file; update it only through
+            # the explicit ``hermes security scan --update-baseline`` command.
+            str(hermes_home / "security" / "tirith-scan-baseline.json"),
             os.path.join(home, ".netrc"),
             os.path.join(home, ".pgpass"),
             os.path.join(home, ".npmrc"),

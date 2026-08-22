@@ -71,6 +71,7 @@ def _load_security_config() -> dict:
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,
+        "tirith_scan_timeout": 120,
         "tirith_fail_open": True,
     }
     try:
@@ -83,6 +84,7 @@ def _load_security_config() -> dict:
         "tirith_enabled": _env_bool("TIRITH_ENABLED", cfg.get("tirith_enabled", defaults["tirith_enabled"])),
         "tirith_path": os.getenv("TIRITH_BIN", cfg.get("tirith_path", defaults["tirith_path"])),
         "tirith_timeout": _env_int("TIRITH_TIMEOUT", cfg.get("tirith_timeout", defaults["tirith_timeout"])),
+        "tirith_scan_timeout": cfg.get("tirith_scan_timeout", defaults["tirith_scan_timeout"]),
         "tirith_fail_open": _env_bool("TIRITH_FAIL_OPEN", cfg.get("tirith_fail_open", defaults["tirith_fail_open"])),
     }
 
@@ -718,6 +720,25 @@ def ensure_installed(*, log_failures: bool = True):
         _install_thread.start()
 
     return None  # Not available yet; commands will fail-open until ready
+
+
+def resolve_tirith_for_scan() -> tuple[str | None, dict]:
+    """Resolve tirith synchronously for an explicit on-demand file scan.
+
+    Interactive startup uses :func:`ensure_installed` so downloads never delay
+    chat. ``hermes security scan`` is already an explicit blocking operation,
+    so it may use the synchronous resolver and either return an executable path
+    or report that scanning is unavailable.
+    """
+    cfg = _load_security_config()
+    if not cfg["tirith_enabled"]:
+        return None, cfg
+
+    path = _resolve_tirith_path(cfg["tirith_path"])
+    if os.path.isfile(path) and os.access(path, os.X_OK):
+        return path, cfg
+    found = shutil.which(path)
+    return found, cfg
 
 
 # ---------------------------------------------------------------------------

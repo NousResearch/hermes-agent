@@ -5637,6 +5637,10 @@ def cmd_verify(args):
 def cmd_security(args):
     """Dispatch `hermes security <subcmd>`."""
     sub = getattr(args, "security_command", None)
+    if sub == "scan":
+        from hermes_cli.security_config_scan import cmd_security_scan
+
+        sys.exit(int(cmd_security_scan(args) or 0))
     if sub in ("audit", None):
         from hermes_cli.security_audit import cmd_security_audit
 

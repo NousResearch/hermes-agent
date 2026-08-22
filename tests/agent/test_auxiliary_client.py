@@ -4623,3 +4623,139 @@ class TestFastModelTier:
             _FAST_MODEL_TASKS
         )
         assert not overlap
+
+
+# ── response_format downgrade for json_object-only providers ──────────────
+
+
+class TestResponseFormatDowngrade:
+    """json_schema response_format must be downgraded to json_object for
+    providers that reject it with HTTP 400 (DeepSeek, Moonshot/Kimi), while
+    every other provider keeps the schema."""
+
+    @pytest.mark.parametrize(
+        "provider,expected",
+        [
+            ("deepseek", True),
+            ("DEEPSEEK", True),
+            ("moonshot", True),
+            ("kimi", True),
+            ("kimi-coding-cn", True),
+            ("openai", False),
+            ("openrouter", False),
+            ("zai", False),
+            ("nous", False),
+            ("custom", False),
+            (None, False),
+            ("", False),
+        ],
+    )
+    def test_provider_rejects_json_schema(self, provider, expected):
+        from agent.auxiliary_client import _provider_rejects_json_schema
+
+        assert _provider_rejects_json_schema(provider) is expected
+
+    @pytest.mark.parametrize(
+        "provider,expected_type",
+        [
+            # json_object-only providers get the downgrade
+            ("deepseek", "json_object"),
+            ("kimi-coding-cn", "json_object"),
+            # schema-capable providers keep json_schema
+            ("openai", "json_schema"),
+            ("openrouter", "json_schema"),
+            ("zai", "json_schema"),
+        ],
+    )
+    def test_call_llm_downgrades_response_format_on_wire(
+        self, provider, expected_type
+    ):
+        """The response_format that actually reaches the provider SDK must be
+        downgraded for json_object-only providers and untouched otherwise."""
+        from agent.auxiliary_client import call_llm
+
+        fake_client = MagicMock()
+        fake_client.base_url = "https://example.invalid/v1"
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = '{"title": "hello"}'
+        fake_client.chat.completions.create.return_value = resp
+
+        schema_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "session_title",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {"title": {"type": "string"}},
+                    "required": ["title"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=(provider, "test-model", None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client._get_cached_client",
+                return_value=(fake_client, "test-model"),
+            ),
+            patch(
+                "agent.auxiliary_client._validate_llm_response",
+                side_effect=lambda resp, _task, **_kw: resp,
+            ),
+        ):
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hi"}],
+                extra_body={"response_format": schema_format},
+            )
+
+        assert result is resp
+        call_kwargs = fake_client.chat.completions.create.call_args.kwargs
+        sent_format = call_kwargs["extra_body"]["response_format"]
+        assert sent_format["type"] == expected_type
+        if expected_type == "json_schema":
+            assert sent_format["json_schema"]["name"] == "session_title"
+
+    def test_call_llm_leaves_other_extra_body_fields_untouched(self):
+        """Downgrading must not clobber unrelated extra_body keys."""
+        from agent.auxiliary_client import call_llm
+
+        fake_client = MagicMock()
+        fake_client.base_url = "https://api.deepseek.com/v1"
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = '{"title": "hello"}'
+        fake_client.chat.completions.create.return_value = resp
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("deepseek", "deepseek-v4-flash", None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client._get_cached_client",
+                return_value=(fake_client, "deepseek-v4-flash"),
+            ),
+            patch(
+                "agent.auxiliary_client._validate_llm_response",
+                side_effect=lambda resp, _task, **_kw: resp,
+            ),
+        ):
+            call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hi"}],
+                extra_body={
+                    "response_format": {"type": "json_schema", "json_schema": {}},
+                    "user": "keep-me",
+                },
+            )
+
+        call_kwargs = fake_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["extra_body"]["user"] == "keep-me"
+        assert call_kwargs["extra_body"]["response_format"]["type"] == "json_object"

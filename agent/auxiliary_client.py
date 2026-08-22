@@ -1192,6 +1192,29 @@ NOUS_EXTRA_BODY = _nous_extra_body()
 # Set at resolve time — True if the auxiliary client points to Nous Portal
 auxiliary_is_nous: bool = False
 
+# Providers whose Chat Completions endpoint rejects ``response_format`` type
+# ``json_schema`` with HTTP 400 — they only accept ``json_object``. DeepSeek's
+# API docs list only ``json_object``; Moonshot/Kimi likewise. Substring match
+# so both bare names ("deepseek") and branded labels ("kimi-coding-cn") are
+# caught. Callers that pass a schema (title generation) already pin the JSON
+# shape in the prompt and parse locally, so downgrading to ``json_object``
+# keeps those providers working without losing the structured output.
+_JSON_OBJECT_ONLY_PROVIDERS = ("deepseek", "moonshot", "kimi")
+
+
+def _provider_rejects_json_schema(provider: Optional[str]) -> bool:
+    """True for providers documented to reject ``json_schema`` response_format.
+
+    Unknown providers fail open (return False): we only downgrade providers
+    with *known* json_object-only support, so a brand-new provider never
+    loses schema-constrained output because of this list.
+    """
+    if not provider:
+        return False
+    p = str(provider).strip().lower()
+    return any(tok in p for tok in _JSON_OBJECT_ONLY_PROVIDERS)
+
+
 # Default auxiliary models per provider
 _OPENROUTER_MODEL = "google/gemini-3.6-flash"
 _NOUS_MODEL = "google/gemini-3.6-flash"
@@ -9509,6 +9532,19 @@ def _call_llm_impl(
     _record_route_info(
         route_info, _fallback_provider_from_label(request_provider), final_model
     )
+
+    # json_schema response_format is rejected with HTTP 400 by json_object-only
+    # providers (DeepSeek, Moonshot/Kimi — "This response_format_type is
+    # unavailable now"). Downgrade to json_object so schema-constrained tasks
+    # (title generation) keep working: the prompt already pins the expected
+    # JSON shape, and callers parse locally (e.g. _extract_title_text).
+    _response_format = (effective_extra_body or {}).get("response_format")
+    if (
+        isinstance(_response_format, dict)
+        and _response_format.get("type") == "json_schema"
+        and _provider_rejects_json_schema(request_provider)
+    ):
+        effective_extra_body["response_format"] = {"type": "json_object"}
 
     # Log what we're about to do — makes auxiliary operations visible
     _base_info = str(getattr(client, "base_url", resolved_base_url) or "")

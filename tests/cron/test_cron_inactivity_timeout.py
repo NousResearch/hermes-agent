@@ -185,6 +185,42 @@ class TestInactivityTimeout:
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         assert _cron_inactivity_limit == 1200.0
 
+    def test_config_drives_scheduler_lock_and_claim_ttl(self, monkeypatch):
+        from cron import jobs, scheduler
+
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"cron": {"inactivity_timeout_seconds": 3600}},
+        )
+
+        assert scheduler._cron_inactivity_seconds() == 3600.0
+        assert scheduler._cwd_lock_timeout_seconds() == 3660.0
+        assert jobs._oneshot_run_claim_ttl_seconds() == 10800.0
+
+    def test_env_override_wins_across_all_timeout_consumers(self, monkeypatch):
+        from cron import jobs, scheduler
+
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "1200")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"cron": {"inactivity_timeout_seconds": 3600}},
+        )
+
+        assert scheduler._cron_inactivity_seconds() == 1200.0
+        assert scheduler._cwd_lock_timeout_seconds() == 1260.0
+        assert jobs._oneshot_run_claim_ttl_seconds() == 3600.0
+
+    def test_zero_means_unlimited_with_bounded_lock_and_claim_fallback(
+        self, monkeypatch
+    ):
+        from cron import jobs, scheduler
+
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
+
+        assert scheduler._cron_inactivity_seconds() == 0.0
+        assert scheduler._cwd_lock_timeout_seconds() == 660.0
+        assert jobs._oneshot_run_claim_ttl_seconds() == 1800.0
 
     def test_agent_without_activity_summary_uses_wallclock_fallback(self):
         """If agent lacks get_activity_summary, idle_secs stays 0 (never times out).

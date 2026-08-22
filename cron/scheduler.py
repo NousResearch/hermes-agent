@@ -202,6 +202,17 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     text = (error or "unknown error").strip()
     lower = text.lower()
 
+    # The scheduler inactivity watchdog is not a provider failure. Classify its
+    # explicit error contract first and preserve the last-activity detail.
+    if "cron job" in lower and "idle for" in lower and "last activity:" in lower:
+        activity = text.rsplit("last activity:", 1)[-1].strip()
+        if len(activity) > 100:
+            activity = activity[:97].rstrip() + "..."
+        return (
+            f"⚠️ Cron '{job_name}' failed: agent inactivity timeout"
+            f" while {activity}. Full details saved in cron output."
+        )
+
     if "skipped to prevent unintended spend: global inference config drifted" in lower:
         if "finite one-shot job is consumed" in lower:
             remediation = (
@@ -310,7 +321,12 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
         )
 
     if provider_reachable and (
-        "readtimeout" in lower or "timed out" in lower or "timeout" in lower
+        "readtimeout" in lower
+        or "apitimeouterror" in lower
+        or "provider timeout" in lower
+        or "provider timed out" in lower
+        or "upstream timed out" in lower
+        or "request timed out" in lower
     ):
         return (
             f"⚠️ Cron '{job_name}' failed: provider timeout. "
@@ -543,6 +559,7 @@ from cron.jobs import (
     heartbeat_fire_claim,
     heartbeat_run_claim,
     mark_job_run,
+    resolve_cron_inactivity_timeout,
     save_job_output,
     use_cron_store,
 )
@@ -1313,21 +1330,14 @@ _CWD_LOCK_TIMEOUT_MARGIN_SECONDS = 60.0
 
 
 def _cron_inactivity_seconds() -> float:
-    """Parse HERMES_CRON_TIMEOUT (seconds). 0 = unlimited; bad input = 600.
+    """Resolve cron inactivity seconds. 0 = unlimited; bad input = 600.
 
     Shared by run_job's inactivity monitor (which maps 0 to "no limit") and
     the cwd-lock bound below (which keeps the wait bounded regardless) so
     the two sites cannot drift apart — the lock bound must stay at or above
     the inactivity limit or waiters would fail while a healthy holder runs.
     """
-    raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
-    if not raw:
-        return 600.0
-    try:
-        return float(raw)
-    except (ValueError, TypeError):
-        logger.warning("Invalid HERMES_CRON_TIMEOUT=%r; using default 600s", raw)
-        return 600.0
+    return resolve_cron_inactivity_timeout()
 
 
 def _cwd_lock_timeout_seconds() -> float:

@@ -209,6 +209,47 @@ _ONESHOT_RUN_CLAIM_TTL_HEADROOM = 3
 _DEFAULT_CRON_INACTIVITY_TIMEOUT = 600.0
 
 
+def resolve_cron_inactivity_timeout(config: Optional[dict] = None) -> float:
+    """Resolve the shared cron inactivity budget in seconds.
+
+    ``HERMES_CRON_TIMEOUT`` remains the highest-precedence compatibility
+    override. Otherwise use ``cron.inactivity_timeout_seconds`` from config;
+    all scheduler, lock, and one-shot claim calculations call this resolver so
+    their safety horizons cannot drift.
+    """
+    raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+    if raw:
+        candidate: Any = raw
+    else:
+        if config is None:
+            try:
+                from hermes_cli.config import load_config
+
+                config = load_config() or {}
+            except Exception:
+                config = {}
+        cron_config = (
+            config.get("cron", {}) if isinstance(config, dict) else {}
+        )
+        candidate = (
+            cron_config.get(
+                "inactivity_timeout_seconds",
+                _DEFAULT_CRON_INACTIVITY_TIMEOUT,
+            )
+            if isinstance(cron_config, dict)
+            else _DEFAULT_CRON_INACTIVITY_TIMEOUT
+        )
+    try:
+        return float(candidate)
+    except (ValueError, TypeError):
+        logger.warning(
+            "Invalid cron inactivity timeout %r; using default %.0fs",
+            candidate,
+            _DEFAULT_CRON_INACTIVITY_TIMEOUT,
+        )
+        return _DEFAULT_CRON_INACTIVITY_TIMEOUT
+
+
 def _oneshot_run_claim_ttl_seconds() -> float:
     """Resolve the one-shot running-claim stale-recovery TTL.
 
@@ -222,13 +263,7 @@ def _oneshot_run_claim_ttl_seconds() -> float:
     - positive N → ``max(N * headroom, ONESHOT_RUN_CLAIM_TTL_SECONDS)`` so a
       tiny configured timeout can never expire a claim mid-run.
     """
-    raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
-    timeout = _DEFAULT_CRON_INACTIVITY_TIMEOUT
-    if raw:
-        try:
-            timeout = float(raw)
-        except (ValueError, TypeError):
-            timeout = _DEFAULT_CRON_INACTIVITY_TIMEOUT
+    timeout = resolve_cron_inactivity_timeout()
     if timeout <= 0:
         # Unlimited runs — cannot bound; use the fixed fallback floor.
         return float(ONESHOT_RUN_CLAIM_TTL_SECONDS)

@@ -2567,6 +2567,10 @@ DEFAULT_CONFIG = {
         # 1 = serial (pre-v0.9 behaviour).
         # Also overridable via HERMES_CRON_MAX_PARALLEL env var.
         "max_parallel_jobs": None,
+        # Stop an agent cron run only after this many seconds with no model or
+        # tool activity. Active jobs may run indefinitely. Set 0 to disable.
+        # HERMES_CRON_TIMEOUT remains a backward-compatible env override.
+        "inactivity_timeout_seconds": 600,
         # Per-job output-file retention: save_job_output keeps the N most
         # recent .md files and prunes older ones. 0 or negative disables
         # pruning (for operators who manage cleanup externally). Default 50.

@@ -2026,6 +2026,16 @@ DEFAULT_CONFIG = {
         #   "full"    — additionally redact the advisor text injected into
         #               the aggregator prompt (issue #59959).
         "privacy_filter": "",
+        # Per-preset fields (see hermes_cli/moa_config.py::_normalize_preset
+        # for the full schema). Notable advisory-view knobs:
+        #   reference_view: "digest" (default) renders the acting agent's
+        #     tool activity as prose narration with substance results (file
+        #     reads, search hits) preserved as quoted artifacts — this stops
+        #     small advisors imitating tool-call transcripts. "transcript"
+        #     is the legacy full bracket-log rendering.
+        #   reference_detail_tools: optional list of tool names overriding
+        #     which tools count as substance in the digest (e.g. add
+        #     "terminal" for a review preset where linter output matters).
         "presets": {
             "default": {
                 "reference_models": [

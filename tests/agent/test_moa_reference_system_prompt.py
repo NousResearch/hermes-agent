@@ -1,57 +1,50 @@
 """
-Test that the MoA reference system prompt contains explicit warnings
-against claiming tool execution.
+Test that the MoA reference system prompt frames the advisor role safely.
 
-Related issue: #61452
+Related issues: #61452 (advisors fabricating tool execution). The heavy
+anti-imitation lifting is now structural — the digest advisory view removes
+the tool-call transcript advisors used to imitate — so the prompt is short
+and must NOT reintroduce the old confabulation license.
 """
 
 from agent.moa_loop import _REFERENCE_SYSTEM_PROMPT
 
 
 def test_reference_system_prompt_prohibits_claiming_execution():
-    """
-    Verify that the reference system prompt contains explicit warnings
-    against claiming tool execution.
+    """The prompt must state the advisor executes nothing and never claims to.
 
-    The prompt should:
-    1. State that reference models cannot execute anything
-    2. Warn against claiming/implying execution
-    3. Provide bad/good examples
-
-    This addresses #61452 where reference models were fabricating
-    tool execution in their text output.
+    This addresses #61452 where reference models were fabricating tool
+    execution in their text output.
     """
     prompt_lower = _REFERENCE_SYSTEM_PROMPT.lower()
 
-    # Critical constraints
-    assert "you cannot call tools" in prompt_lower or "you do not execute" in prompt_lower, \
-        "Prompt must explicitly state that reference models cannot execute"
+    assert "you have no tools" in prompt_lower or "cannot call tools" in prompt_lower, \
+        "Prompt must explicitly state that reference models have no tools"
+
+    assert "execute nothing" in prompt_lower or "do not execute" in prompt_lower, \
+        "Prompt must explicitly state that reference models execute nothing"
 
     assert "never claim" in prompt_lower or "never imply" in prompt_lower, \
         "Prompt must warn against claiming/implying execution"
 
-    # Check for examples (helps models understand what NOT to do)
-    assert "bad:" in prompt_lower or "avoid:" in prompt_lower, \
-        "Prompt should provide negative examples"
+    # Fabricated action logs / invented results are the observed failure mode.
+    assert "action logs" in prompt_lower or "tool syntax" in prompt_lower, \
+        "Prompt must prohibit writing action logs / tool syntax"
+    assert "invent" in prompt_lower, \
+        "Prompt must prohibit inventing results"
 
-    # Specific action verbs that should NOT appear as claimed actions
-    # (these are common patterns of hallucinated execution)
-    forbidden_patterns = [
-        "i ran", "i executed", "i downloaded", "i accessed",
-        "i checked", "i called", "i browsed"
-    ]
 
-    # The prompt should mention these as bad examples
-    # (i.e., in the context of what to avoid, not as instruction)
-    has_any_forbidden = any(
-        f"bad: \"{pattern}" in _REFERENCE_SYSTEM_PROMPT.lower() or
-        f"avoid \"{pattern}" in _REFERENCE_SYSTEM_PROMPT.lower()
-        for pattern in forbidden_patterns
-    )
+def test_reference_system_prompt_no_confabulation_license():
+    """The old prompt told advisors to "assume any referenced files ... exist",
+    which licensed invented verification ("SUCCESS — the fix is working").
+    It must stay gone, replaced by an ask-the-agent-to-check rule.
+    """
+    prompt_lower = _REFERENCE_SYSTEM_PROMPT.lower()
 
-    # At least one bad example pattern should exist
-    assert has_any_forbidden or "examples" in _REFERENCE_SYSTEM_PROMPT.lower(), \
-        "Prompt should contain examples of what to avoid"
+    assert "assume any referenced" not in prompt_lower, \
+        "The confabulation license must not return"
+    assert "do not invent the answer" in prompt_lower, \
+        "Prompt must direct advisors to name what the agent should check"
 
 
 def test_reference_system_prompt_structure():
@@ -71,3 +64,19 @@ def test_reference_system_prompt_structure():
     # Should contain the word "advisor" (defines role)
     assert "advisor" in _REFERENCE_SYSTEM_PROMPT.lower(), \
         "Prompt should clearly define the advisor role"
+
+    # It should describe the digest the advisor is reading.
+    assert "digest" in _REFERENCE_SYSTEM_PROMPT.lower(), \
+        "Prompt should describe the digest format the advisor receives"
+
+
+def test_reference_system_prompt_premise_audit():
+    """Advisors must audit the user's premise, not obey it.
+
+    A false-premise request ("fix the inverted logic" when nothing is
+    inverted) had an advisor proposing to break correct code. The prompt
+    directs advisors to flag contradicted assumptions instead.
+    """
+    prompt_lower = _REFERENCE_SYSTEM_PROMPT.lower()
+    assert "audit the request" in prompt_lower
+    assert "contradicts an assumption" in prompt_lower

@@ -1203,6 +1203,12 @@ def _run_review_in_thread(
             )
             review_agent._memory_write_origin = "background_review"
             review_agent._memory_write_context = "background_review"
+            # On a MoA parent this fork inherits provider="moa": suppress the
+            # advisor fan-out for its harness-generated review prompt (the
+            # aggregator acts alone). Advisors on a housekeeping turn burn
+            # ~100K+ tokens and sometimes answer the harness prompt instead
+            # of the user's task; see MoAChatCompletions.create().
+            review_agent._moa_suppress_references = True
             # The review fork pins the parent's cached system prompt and keeps
             # ``tools[]`` byte-identical to the parent so its outbound request
             # hits the same provider cache prefix (see the toolset-parity note

@@ -2321,7 +2321,16 @@ def run_conversation(
         if moa_config:
             try:
                 from agent.message_content import flatten_message_text as _flatten_mt
-                from agent.moa_loop import _preset_temperature, aggregate_moa_context
+                from agent.moa_loop import (
+                    _preset_temperature,
+                    _reference_view_fields,
+                    aggregate_moa_context,
+                )
+
+                # Same resolution helper as MoAChatCompletions.create — keeps
+                # this flattened-config path and the per-preset path reading
+                # the advisory-view fields identically.
+                _view_fields = _reference_view_fields(moa_config)
 
                 _moa_context = aggregate_moa_context(
                     user_prompt=(
@@ -2350,6 +2359,9 @@ def run_conversation(
                         moa_config.get("degraded_reference_policy") or "loud"
                     ),
                     agent=agent,
+                    reference_view=_view_fields["view"],
+                    reference_detail_tools=_view_fields["detail_tools"],
+                    reference_prose_budget=_view_fields["prose_budget"],
                 )
                 if _moa_context:
                     for _msg in reversed(api_messages):

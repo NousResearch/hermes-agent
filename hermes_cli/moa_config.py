@@ -71,6 +71,37 @@ def _coerce_degraded_reference_policy(value: Any) -> str:
     return policy if policy in {"loud", "silent"} else "loud"
 
 
+def _coerce_reference_view(value: Any) -> str:
+    """Normalize the advisory-view rendering; unknown values use the digest.
+
+    "digest" (default): tool activity narrated as prose, substance results
+    quoted — the rendering that stops small advisors imitating tool-call
+    transcripts. "transcript": the legacy full bracket rendering, kept as an
+    explicit escape hatch.
+    """
+    view = str(value or "digest").strip().lower()
+    return view if view in {"digest", "transcript"} else "digest"
+
+
+def _coerce_reference_detail_tools(value: Any) -> list[str] | None:
+    """Normalize the optional substance-tool override for the digest view.
+
+    None (default) = use the built-in substance set (read-only content
+    fetchers). A list (or comma-separated string, for hand-edited configs)
+    of tool names widens/narrows which tools' results are preserved as
+    quoted artifacts in the advisory digest — e.g. a code-review preset may
+    add "terminal" so linter output stays visible to advisors.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        value = [part for part in value.split(",")]
+    if not isinstance(value, list):
+        return None
+    tools = [str(t).strip().lower() for t in value if str(t).strip()]
+    return tools or None
+
+
 def _coerce_int(value: Any, default: int) -> int:
     if value is None or value == "":
         return default
@@ -305,6 +336,9 @@ def _default_preset() -> dict[str, Any]:
         "degraded_reference_policy": "loud",
         "max_tokens": 4096,
         "reference_max_tokens": None,
+        "reference_view": "digest",
+        "reference_detail_tools": None,
+        "reference_prose_budget": None,
         "fanout": "user_turn",
         "enabled": True,
     }
@@ -352,7 +386,25 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         # tokens), and the aggregator only needs the gist of each advisor's
         # judgement, so capping roughly halves per-turn wall time. Does NOT cap
         # the acting aggregator (its output is the user-visible answer).
+        # CAUTION: thinking advisors spend reasoning tokens from this same
+        # budget BEFORE any visible text — a tight cap (e.g. 800) can be
+        # fully consumed by reasoning, yielding zero advice. Give thinking
+        # models headroom (>= ~1024) or lower the slot's reasoning_effort.
         "reference_max_tokens": _coerce_int_or_none(raw.get("reference_max_tokens")),
+        # How the advisory view renders the acting agent's tool activity —
+        # see _coerce_reference_view. "digest" narrates actions as prose and
+        # quotes substance results; "transcript" is the legacy bracket log.
+        "reference_view": _coerce_reference_view(raw.get("reference_view")),
+        # Optional override of which tools count as "substance" in the
+        # digest (results preserved as quoted artifacts) — see
+        # _coerce_reference_detail_tools. None = built-in read-only set.
+        "reference_detail_tools": _coerce_reference_detail_tools(
+            raw.get("reference_detail_tools")
+        ),
+        # Optional per-turn cap (chars) on assistant prose in the digest view.
+        # None = the built-in default (~4K). Prose-centric presets (writing,
+        # drafting) raise it so advisors see whole drafts, not excerpts.
+        "reference_prose_budget": _coerce_int_or_none(raw.get("reference_prose_budget")),
         # When the reference fan-out runs. "user_turn" (default) runs the
         # advisors ONCE per user turn (the original MoA shape, and the
         # cheapest cadence — #67199): the aggregator gets their upfront
@@ -414,6 +466,9 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "degraded_reference_policy": active["degraded_reference_policy"],
         "max_tokens": active["max_tokens"],
         "reference_max_tokens": active.get("reference_max_tokens"),
+        "reference_view": active.get("reference_view", "digest"),
+        "reference_detail_tools": active.get("reference_detail_tools"),
+        "reference_prose_budget": active.get("reference_prose_budget"),
         "fanout": active.get("fanout", "user_turn"),
         "enabled": active["enabled"],
         # MoA-level (not per-preset) toggles ride at the top level alongside

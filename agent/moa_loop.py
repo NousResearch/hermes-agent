@@ -9,6 +9,7 @@ iteration.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import threading
@@ -19,6 +20,7 @@ from typing import Any
 
 from agent.auxiliary_client import call_llm
 from agent.message_content import flatten_message_text
+from agent.tool_result_classification import NO_EFFECT_TOOL_NAMES
 from agent.transports import get_transport
 
 logger = logging.getLogger(__name__)
@@ -243,42 +245,62 @@ class _RefAccounting:
 # untrimmed transcript; this budget only shapes the advisory copy.
 _REFERENCE_TOOL_RESULT_BUDGET = 4000
 
+# --- Digest advisory view budgets (view="digest", the default) -------------
+#
+# The digest view replaces the legacy bracket-transcript rendering
+# ("[called tool: ...]" / "[tool result: ...]") that made 79-82% of every
+# reference prompt an imitable tool-call log (measured on a 5-turn trace:
+# small advisors next-token-predicted the dominant pattern — fabricating
+# tool transcripts, adopting the acting agent's first person, inventing
+# results). The digest keeps the *content* and removes the *format*:
+# operational tool activity becomes one-line prose narration, while
+# substance results (file reads, search hits — the task material an advisor
+# genuinely needs, e.g. the code under review) stay visible as quoted
+# artifacts attributed to the acting agent.
+_REFERENCE_ASSISTANT_PROSE_BUDGET = 4000   # head+tail cap on assistant prose per turn
+_REFERENCE_DETAIL_RESULTS = 3              # last-K tool interactions shown in detail
+_REFERENCE_DETAIL_RESULT_BUDGET = 2000     # per-result head+tail chars in detail window
+_REFERENCE_DETAIL_ARGS_BUDGET = 300        # head_chars for _truncate_tool_call_args_json
+_REFERENCE_SUBSTANCE_RESULT_BUDGET = 8000  # head+tail cap per substance artifact
+
+# Tools whose RESULT is task substance rather than operational noise: what
+# they return (file contents, search matches, fetched pages) is often the
+# very material the advisor must reason about — a code-review advisor that
+# cannot see the code is useless. Results from these tools are preserved in
+# the digest as quoted artifacts; every other tool's result is collapsed to
+# a one-line narration. Seeded from NO_EFFECT_TOOL_NAMES (the read-only
+# content-fetching tools); presets may override via reference_detail_tools.
+_REFERENCE_SUBSTANCE_TOOLS = frozenset(NO_EFFECT_TOOL_NAMES)
+
 # System prompt prepended to every reference-model call. References are
-# advisory — they do NOT act, call tools, or own the task. Without this
-# framing a reference receives the bare trimmed conversation and assumes it is
-# the acting agent: it then refuses ("I can't access repositories / URLs from
-# here") or tries to call tools it doesn't have. The prompt reframes the model
-# as an analyst whose job is to reason about the presented state and hand its
-# best thinking to the aggregator/orchestrator that will actually act.
+# advisory — they do NOT act, call tools, or own the task. The heavy lifting
+# against role confusion is now structural (the digest view removes the
+# imitable tool-call transcript), so this prompt only needs to frame the
+# digest and the advisor role, not fight the content. The old long version
+# also told advisors to "assume any referenced files ... exist", which
+# licensed confabulated results ("SUCCESS — the fix is working") — replaced
+# by an explicit ask-the-agent-to-check rule.
 _REFERENCE_SYSTEM_PROMPT = (
-    "You are a reference advisor in a Mixture of Agents (MoA) process. You are "
-    "NOT the acting agent and you do NOT execute anything: you cannot call "
-    "tools, run commands, browse, or access files, repositories, or URLs, and "
-    "you should not try to or apologize for being unable to. A separate "
-    "aggregator/orchestrator model holds those capabilities and will take the "
-    "actual actions.\n\n"
-    "CRITICAL: You must NEVER claim or imply that you have executed a command, "
-    "downloaded a file, accessed a URL, or performed any action. You can only "
-    "analyze and advise based on the conversation context. Examples of what to "
-    "avoid:\n"
-    "- Bad: \"I ran curl and got 404.\"\n"
-    "- Bad: \"I downloaded the file successfully.\"\n"
-    "- Bad: \"I checked the repository and found...\"\n"
-    "- Good: \"Based on the error pattern, a curl request to that URL would likely return 404.\"\n"
-    "- Good: \"The conversation suggests downloading this file may help.\"\n"
-    "- Good: \"From the context, checking the repository would reveal...\"\n\n"
-    "The conversation below is the current state of a task handled by that "
-    "acting agent. Your job is to give your most intelligent analysis of that "
-    "state: understand the goal, reason about the problem, and advise on what "
-    "to do next. Surface the best approach, concrete next steps and tool-use "
-    "strategy, likely pitfalls and risks, and anything the acting agent may "
-    "have missed or gotten wrong. Assume any referenced files, URLs, or "
-    "systems exist and reason about them from the context given rather than "
-    "asking for access.\n\n"
-    "Respond with your advice directly — no preamble, no disclaimers about "
-    "tools or access. Your response is private guidance handed to the "
-    "aggregator, not an answer shown to the user. NEVER claim to have executed "
-    "anything."
+    "You are an advisor to an acting agent, in a Mixture of Agents (MoA) "
+    "process. Below is a digest of its session: user requests and the "
+    "agent's replies verbatim, the agent's tool actions summarized as "
+    "one-line narrations, retrieved content quoted in fenced blocks, and "
+    "the most recent tool results quoted in the final message. At the "
+    "start of a task the digest may be nothing more than the user's "
+    "request — the agent has not acted yet.\n\n"
+    "You have no tools and you execute nothing — the acting agent holds "
+    "those capabilities. Never claim to have run, fetched, or verified "
+    "anything yourself; never write action logs, tool syntax, or invented "
+    "results or benchmarks. If the digest lacks information you need, name "
+    "what the acting agent should check — do not invent the answer.\n\n"
+    "Give your best analysis of the current state: what is going on, the "
+    "best approach, concrete next steps and tool-use strategy, likely "
+    "pitfalls, and anything the acting agent missed or got wrong. Audit "
+    "the request itself: if evidence in the digest contradicts an "
+    "assumption in the user's request, say so plainly — do not proceed as "
+    "if the assumption were true. Respond "
+    "with the advice directly, no preamble. Your response is private "
+    "guidance handed to the acting agent, not an answer shown to the user."
 )
 
 
@@ -622,6 +644,22 @@ def _run_reference(
         except Exception:  # pragma: no cover - defensive
             pass
         _output_text = _extract_text(response) or "(empty response)"
+        if (
+            _output_text == "(empty response)"
+            and _effective_max_tokens is not None
+            and (usage.output_tokens or 0) >= _effective_max_tokens
+        ):
+            # The advisor generated a full output budget with zero visible
+            # text: a thinking model burned the whole cap on reasoning before
+            # producing its answer (observed: output_tokens == cap exactly,
+            # 16-char visible output). Return an actionable failure note
+            # instead of a bare placeholder so the degraded notice tells the
+            # user what to tune.
+            _output_text = (
+                f"[failed: advisor hit reference_max_tokens={_effective_max_tokens} "
+                "with no visible text (reasoning likely consumed the budget; raise "
+                "reference_max_tokens or lower the slot's reasoning_effort)]"
+            )
         acct = _RefAccounting(
             usage,
             cost_usd,
@@ -1016,6 +1054,117 @@ def _render_tool_calls(tool_calls: Any) -> str:
     return "\n".join(lines)
 
 
+def _extract_tool_call_entries(tool_calls: Any) -> list[tuple[str, str, str]]:
+    """Extract ``(call_id, name, args_text)`` triples from an assistant turn.
+
+    Shape-tolerant the same way ``_render_tool_calls`` is (dict entries and
+    SimpleNamespace-shaped stream-stitched entries), but returns structured
+    data for the digest view instead of rendered bracket lines.
+    """
+    entries: list[tuple[str, str, str]] = []
+    for tc in tool_calls or []:
+        if isinstance(tc, dict):
+            fn = tc.get("function") or {}
+            fn_name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
+            fn_args = fn.get("arguments") if isinstance(fn, dict) else getattr(fn, "arguments", None)
+            top_name = tc.get("name")
+            call_id = tc.get("id")
+        else:
+            fn = getattr(tc, "function", None)
+            fn_name = getattr(fn, "name", None) if fn is not None else None
+            fn_args = getattr(fn, "arguments", None) if fn is not None else None
+            top_name = getattr(tc, "name", None)
+            call_id = getattr(tc, "id", None)
+        name = str(fn_name or top_name or "tool")
+        if isinstance(fn_args, str):
+            args_text = fn_args
+        elif fn_args is not None:
+            try:
+                args_text = json.dumps(fn_args, ensure_ascii=False)
+            except Exception:
+                args_text = str(fn_args)
+        else:
+            args_text = ""
+        entries.append((str(call_id or ""), name, args_text))
+    return entries
+
+
+def _narrate_tool_action(name: str, args_text: str, result_text: str) -> str:
+    """One prose narration line for a tool interaction in the digest view.
+
+    Reuses the compressor's tool-aware summarizer and reshapes its
+    ``[terminal] ran `cmd` -> exit 0`` output into ``- terminal: ran `cmd`
+    -> exit 0`` prose — no bracket transcript syntax an advisor could
+    imitate. Never raises: a malformed historical call must not abort the
+    advisory fan-out.
+    """
+    try:
+        from agent.context_compressor import _summarize_tool_result
+
+        summary = _summarize_tool_result(name, args_text or "", result_text or "")
+        tag = f"[{name}]"
+        if summary.startswith(tag):
+            summary = f"{name}:{summary[len(tag):]}"
+        return f"- {summary}"
+    except Exception:  # pragma: no cover - defensive
+        _len = len(result_text) if isinstance(result_text, str) else 0
+        return f"- {name}: called ({_len:,} chars result)"
+
+
+def _render_substance_artifact(name: str, args_text: str, result_text: str) -> str:
+    """Render a substance-tool result as a quoted artifact block.
+
+    Substance results (file reads, search hits, fetched pages) ARE the task
+    material an advisor reasons about — a code-review advisor must see the
+    code. The content is preserved (head+tail capped) but framed as material
+    the ACTING agent retrieved, fenced off from the narrative — not as a
+    tool-call log line the advisor might imitate.
+    """
+    line = _narrate_tool_action(name, args_text, result_text)
+    body = _truncate_tool_result(result_text or "", _REFERENCE_SUBSTANCE_RESULT_BUDGET)
+    if not body.strip():
+        return line
+    return f"{line}; retrieved content quoted below:\n~~~\n{body}\n~~~"
+
+
+def _detail_section(recent: list[tuple[str, str, str]]) -> str:
+    """Build the recency-detail block for the trailing synthetic user turn.
+
+    The last few tool interactions matter most to an advisor (the latest
+    error, the file just read), so they are shown with args and a larger
+    result preview. The block lives in the synthetic advisory turn — which
+    already varies every iteration — so the stable digest prefix stays
+    append-only and advisor prompt caching keeps working. Results are
+    ``> ``-quoted: quoted material, not an output format to reproduce.
+    """
+    if not recent:
+        return ""
+    lines = ["Recent tool interactions in detail (latest last; output quoted with '>'):"]
+    for idx, (name, args_text, result_text) in enumerate(recent, start=1):
+        args_view = args_text or ""
+        if args_view:
+            try:
+                from agent.context_compressor import _truncate_tool_call_args_json
+
+                args_view = _truncate_tool_call_args_json(
+                    args_view, head_chars=_REFERENCE_DETAIL_ARGS_BUDGET
+                )
+            except Exception:  # pragma: no cover - defensive
+                pass
+            # Non-JSON args pass through the shrinker unchanged; hard-cap them
+            # so a megabyte arg blob cannot ride into every advisory prompt.
+            if len(args_view) > 2 * _REFERENCE_DETAIL_ARGS_BUDGET:
+                args_view = args_view[: _REFERENCE_DETAIL_ARGS_BUDGET] + "…"
+        lines.append("")
+        lines.append(f"{idx}. {name}({args_view})")
+        body = _truncate_tool_result(result_text or "", _REFERENCE_DETAIL_RESULT_BUDGET)
+        if body.strip():
+            lines.extend("> " + ln for ln in body.splitlines())
+        else:
+            lines.append("> (no result recorded)")
+    return "\n".join(lines)
+
+
 _ADVISORY_INSTRUCTION = (
     "[The conversation above is the current state of the task. Give your "
     "most intelligent judgement: what is going on, what should happen next, "
@@ -1024,8 +1173,46 @@ _ADVISORY_INSTRUCTION = (
 )
 
 
-def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _reference_messages(
+    messages: list[dict[str, Any]],
+    view: str = "digest",
+    detail_tools: Any = None,
+    prose_budget: int | None = None,
+) -> list[dict[str, Any]]:
     """Build an advisory view of the conversation for reference models.
+
+    Two renderings share the same contract (text-only user/assistant frames,
+    zero ``tool``-role messages, zero ``tool_calls`` arrays, ends on a user
+    turn, deterministic for identical input):
+
+      - ``view="digest"`` (default): user turns and assistant prose kept
+        (prose head+tail capped), tool activity collapsed into per-turn prose
+        narration, substance-tool results preserved as quoted artifacts, and
+        the last few interactions detailed inside the trailing synthetic
+        advisory turn. This removes the imitable bracket transcript that made
+        ~80% of a reference prompt exemplary tool-call syntax (small advisors
+        next-token-predicted it: fabricated transcripts, first-person role
+        confusion, invented results).
+      - ``view="transcript"``: the legacy full bracket rendering, kept as an
+        explicit escape hatch (preset field ``reference_view``).
+
+    ``detail_tools`` optionally overrides which tools count as substance
+    (preset field ``reference_detail_tools``); None uses
+    ``_REFERENCE_SUBSTANCE_TOOLS``. ``prose_budget`` optionally overrides the
+    per-turn assistant-prose cap (preset field ``reference_prose_budget``) —
+    prose-centric presets (writing, drafting) raise it so advisors see whole
+    drafts instead of a head+tail excerpt; None uses
+    ``_REFERENCE_ASSISTANT_PROSE_BUDGET``.
+    """
+    if str(view or "digest").strip().lower() == "transcript":
+        return _reference_messages_transcript(messages)
+    return _reference_messages_digest(
+        messages, detail_tools=detail_tools, prose_budget=prose_budget
+    )
+
+
+def _reference_messages_transcript(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Legacy advisory view: full transcript with bracket-rendered tool flow.
 
     A reference gives an INFORMED judgement on the current state, so it must
     see what the agent actually did — its tool calls AND the tool results that
@@ -1153,6 +1340,141 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rendered
 
 
+def _reference_messages_digest(
+    messages: list[dict[str, Any]],
+    detail_tools: Any = None,
+    prose_budget: int | None = None,
+) -> list[dict[str, Any]]:
+    """Digest advisory view: prose narration + quoted substance artifacts.
+
+    Built in two passes: messages are first grouped into intermediate turns
+    (user turns; assistant turns holding prose + an ordered list of action
+    blocks), then materialized into text frames. Tool-role results are
+    matched to their originating call by ``tool_call_id`` when present, else
+    FIFO. The rendering is append-only across iterations — new activity only
+    ever ADDS turns/blocks after existing content — so the advisor
+    prompt-cache prefix survives (see the cache note in ``_run_reference``).
+    """
+    if detail_tools:
+        substance = frozenset(
+            str(t).strip().lower() for t in detail_tools if str(t).strip()
+        )
+    else:
+        substance = _REFERENCE_SUBSTANCE_TOOLS
+
+    _ACTIONS_HEADER = "Actions taken (summarized):"
+
+    # Intermediate turns: {"role": "user", "text": str} or
+    # {"role": "assistant", "prose": str, "actions": [str], "pending": [...]}
+    turns: list[dict[str, Any]] = []
+    last_user_content: str | None = None
+    # Rolling window of (name, args_text, result_text) for the detail block.
+    recent: list[tuple[str, str, str]] = []
+
+    def _current_assistant() -> dict[str, Any]:
+        if not turns or turns[-1].get("role") != "assistant":
+            # Leading tool result with no assistant turn to attach to: hold it
+            # on a bare assistant turn (mirrors the legacy fallback).
+            turns.append({"role": "assistant", "prose": "", "actions": [], "pending": []})
+        return turns[-1]
+
+    def _flush_pending() -> None:
+        # Calls whose result never arrived (interrupted/truncated history).
+        if turns and turns[-1].get("role") == "assistant":
+            for _id, name, _args in turns[-1]["pending"]:
+                turns[-1]["actions"].append(f"- {name}: called (no result recorded)")
+            turns[-1]["pending"] = []
+
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content")
+        text = flatten_message_text(content)
+
+        if role == "system":
+            # Dropped: 8K of acting-agent boilerplate, not advisory signal.
+            continue
+        if role == "user":
+            _flush_pending()
+            if not text.strip() and isinstance(content, list) and content:
+                # Image-only turn — same placeholder rationale as the legacy
+                # view (strict providers reject empty text blocks).
+                text = "[user sent non-text content (e.g. an image attachment)]"
+            if not text.strip():
+                # Genuinely empty user turn: nothing advisory, and strict
+                # providers 400 on empty user content.
+                continue
+            last_user_content = text
+            turns.append({"role": "user", "text": text})
+        elif role == "assistant":
+            _flush_pending()
+            prose = _truncate_tool_result(
+                text.strip(), prose_budget or _REFERENCE_ASSISTANT_PROSE_BUDGET
+            )
+            pending = _extract_tool_call_entries(msg.get("tool_calls"))
+            if prose or pending:
+                turns.append(
+                    {"role": "assistant", "prose": prose, "actions": [], "pending": pending}
+                )
+        elif role == "tool":
+            turn = _current_assistant()
+            call_id = str(msg.get("tool_call_id") or "")
+            match_idx = 0 if turn["pending"] else None
+            if call_id:
+                for _i, (pid, _name, _args) in enumerate(turn["pending"]):
+                    if pid and pid == call_id:
+                        match_idx = _i
+                        break
+            if match_idx is not None:
+                _pid, name, args_text = turn["pending"].pop(match_idx)
+            else:
+                # Result with no recorded call (sanitized/foreign history).
+                name, args_text = str(msg.get("name") or "tool"), ""
+            if name.strip().lower() in substance:
+                turn["actions"].append(_render_substance_artifact(name, args_text, text))
+            else:
+                turn["actions"].append(_narrate_tool_action(name, args_text, text))
+            recent.append((name, args_text, text))
+            # Only the last K entries feed the detail section; trim on append
+            # so a long session doesn't retain every raw result text in
+            # memory for the whole render.
+            del recent[:-_REFERENCE_DETAIL_RESULTS]
+        # Any other role is ignored.
+    _flush_pending()
+
+    # Materialize intermediate turns into text frames.
+    rendered: list[dict[str, Any]] = []
+    for turn in turns:
+        if turn["role"] == "user":
+            rendered.append({"role": "user", "content": turn["text"]})
+            continue
+        parts: list[str] = []
+        if turn["prose"]:
+            parts.append(turn["prose"])
+        if turn["actions"]:
+            parts.append(_ACTIONS_HEADER + "\n" + "\n".join(turn["actions"]))
+        if parts:
+            rendered.append({"role": "assistant", "content": "\n\n".join(parts)})
+
+    # End on a user turn (same provider constraint as the legacy view). The
+    # synthetic advisory turn also carries the recency detail: it varies
+    # every iteration anyway, so the detail rides here instead of rewriting
+    # stable frames (which would break the advisor cache prefix).
+    if rendered and rendered[-1].get("role") == "assistant":
+        detail = _detail_section(recent)  # already trimmed to the last K
+        content = _ADVISORY_INSTRUCTION + ("\n\n" + detail if detail else "")
+        rendered.append({"role": "user", "content": content})
+
+    if not rendered:
+        # Degenerate case: nothing rendered. Fall back to the latest user turn.
+        if last_user_content is not None:
+            return [{"role": "user", "content": last_user_content}]
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                fallback_text = flatten_message_text(msg.get("content"))
+                if fallback_text.strip():
+                    return [{"role": "user", "content": fallback_text}]
+    return rendered
+
 
 def _extract_text(response: Any) -> str:
     try:
@@ -1199,16 +1521,87 @@ def _preset_temperature(preset: dict[str, Any], key: str) -> float | None:
         return None
 
 
-def _is_failed_reference(text: str) -> bool:
-    """Return whether a reference output is an internal failure/skip sentinel.
+# Interrupt scaffold marker the conversation loop injects into history when a
+# user interrupts a streaming answer. Degraded advisors have echoed it back
+# verbatim as their entire "advice". Local literal on purpose — importing
+# conversation_loop from here isn't worth the coupling for one string.
+_INTERRUPT_SCAFFOLD_MARKER = "[This response was interrupted by a user correction.]"
 
-    Covers both the ``[failed: …]`` notes produced when a reference call
-    raises (which may embed raw provider error text) and the
-    ``[skipped: …]`` recursion-guard notes — neither is real advice, so
-    neither belongs in the aggregator prompt.
+# Echo detection matches on this many leading chars of the advisory
+# instruction rather than the whole string: degraded advisors echo the
+# marker with truncated/reworded tails, but the head survives verbatim.
+# Long enough that legitimate advice cannot start with it by accident,
+# short enough to catch tail-mangled echoes. Echoes truncated below this
+# length slip through here and are caught by the whole-string equality
+# checks instead.
+_ADVISORY_ECHO_ANCHOR_LEN = 60
+
+
+def _contains_fabricated_action_log(text: str) -> bool:
+    """True when advisor output contains bracket action-log lines as its OWN
+    prose — the fabricated ``[called tool:]``/``[tool result:]`` transcripts
+    degraded advisors emit (they have no tools, so any such log is invented).
+
+    Line-anchored and quote-aware: the digest itself hands advisors substance
+    artifacts inside ``~~~``/`` ``` `` fences and ``> ``-quoted detail lines,
+    so an advisor legitimately QUOTING task material that contains those
+    tokens (reviewing a log file or an agent transcript) must not be
+    misclassified. Only an unquoted line that *starts* with a bracket marker
+    counts — the shape of an action log, not a mention or a quotation.
     """
-    sentinel = text.lstrip().lower()
-    return sentinel.startswith("[failed:") or sentinel.startswith("[skipped:")
+    fence: str | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            marker = stripped[:3]
+            if fence is None:
+                fence = marker
+            elif fence == marker:
+                fence = None
+            continue
+        if fence is not None or stripped.startswith(">"):
+            continue
+        if stripped.startswith("[called tool:") or stripped.startswith("[tool result:"):
+            return True
+    return False
+
+
+def _is_failed_reference(text: str) -> bool:
+    """Return whether a reference output is unusable as advice.
+
+    Covers the internal sentinels — ``[failed: …]`` notes produced when a
+    reference call raises (which may embed raw provider error text) and the
+    ``[skipped: …]`` recursion-guard notes — plus degenerate outputs a
+    degraded advisor produces instead of advice:
+
+      - blank text / the ``(empty response)`` placeholder (observed when a
+        thinking advisor burns its whole output cap on reasoning);
+      - fabricated action transcripts (unquoted lines starting with
+        ``[called tool:`` / ``[tool result:`` — an advisor has no tools, so
+        an action log in its own voice is confabulated and, injected into
+        the aggregator prompt, reads as a fake action log; quoted/fenced
+        occurrences are task material and pass — see
+        ``_contains_fabricated_action_log``);
+      - verbatim echoes of context scaffolding (the advisory instruction or
+        the interrupt marker) instead of actual analysis.
+
+    None of these are real advice, so none belong in the aggregator prompt;
+    they are surfaced through ``degraded_reference_policy`` instead.
+    """
+    stripped = text.strip()
+    if not stripped or stripped == "(empty response)":
+        return True
+    sentinel = stripped.lower()
+    if sentinel.startswith("[failed:") or sentinel.startswith("[skipped:"):
+        return True
+    if _contains_fabricated_action_log(text):
+        return True
+    if (
+        stripped.startswith(_ADVISORY_INSTRUCTION[:_ADVISORY_ECHO_ANCHOR_LEN])
+        or stripped == _INTERRUPT_SCAFFOLD_MARKER
+    ):
+        return True
+    return False
 
 
 def _successful_references(
@@ -1230,6 +1623,24 @@ def _degraded_notice(failed_labels: list[str], policy: str) -> str:
     return f"[Reference models unavailable: {', '.join(failed_labels)}]"
 
 
+def _reference_view_fields(cfg: dict[str, Any] | None) -> dict[str, Any]:
+    """Resolve the advisory-view fields from a preset (or flattened moa
+    config) into ``_reference_messages`` kwargs.
+
+    Two call paths read these fields: ``MoAChatCompletions.create`` from the
+    per-preset dict, and the one-shot ``/moa`` path in ``conversation_loop``
+    from the flattened top-level config. Keeping key names and defaults in
+    one place stops the two from silently diverging (e.g. one falling back
+    to "digest" while the other honors an override).
+    """
+    cfg = cfg or {}
+    return {
+        "view": str(cfg.get("reference_view") or "digest"),
+        "detail_tools": cfg.get("reference_detail_tools"),
+        "prose_budget": cfg.get("reference_prose_budget"),
+    }
+
+
 def aggregate_moa_context(
     *,
     user_prompt: str,
@@ -1242,6 +1653,9 @@ def aggregate_moa_context(
     reference_timeout: float | None = None,
     degraded_reference_policy: str = "loud",
     agent: Any = None,
+    reference_view: str = "digest",
+    reference_detail_tools: Any = None,
+    reference_prose_budget: int | None = None,
 ) -> str:
     """Run configured reference models and synthesize their advice.
 
@@ -1267,7 +1681,12 @@ def aggregate_moa_context(
     """
     reference_models = [slot for slot in reference_models if slot.get("enabled", True)]
     reference_outputs: list[tuple[str, str, Any]] = []
-    ref_messages = _reference_messages(api_messages)
+    ref_messages = _reference_messages(
+        api_messages,
+        view=reference_view,
+        detail_tools=reference_detail_tools,
+        prose_budget=reference_prose_budget,
+    )
     reference_outputs = _run_references_parallel(
         reference_models,
         ref_messages,
@@ -1990,10 +2409,20 @@ class MoAChatCompletions:
         if not preset.get("enabled", True):
             reference_models = []
 
+        # Internal harness forks (agent/background_review.py, agent/curator.py)
+        # inherit the MoA provider from the parent agent but run harness-generated prompts,
+        # not the user's task. Fanning advisors out on those burned ~100K+
+        # tokens per housekeeping turn, and advisors sometimes answered the
+        # harness prompt instead of the task (observed in traces). The fork
+        # sets this flag to run the aggregator alone — same path as a
+        # disabled preset.
+        if getattr(self._agent, "_moa_suppress_references", False):
+            reference_models = []
+
         from agent.usage_pricing import CanonicalUsage
 
         reference_outputs: list[tuple[str, str, Any]] = []
-        ref_messages = _reference_messages(messages)
+        ref_messages = _reference_messages(messages, **_reference_view_fields(preset))
 
         # Fan-out cadence. "user_turn" (default — cheapest cadence, #67199):
         # advisors run ONCE per user turn; subsequent tool iterations reuse
@@ -2038,7 +2467,12 @@ class MoAChatCompletions:
             last_user_idx = None
             for _i in range(len(ref_messages) - 1, -1, -1):
                 _m = ref_messages[_i]
-                if _m.get("role") == "user" and _m.get("content") != _ADVISORY_INSTRUCTION:
+                # startswith, not equality: the digest view appends a recency
+                # detail section to the synthetic advisory turn, so its
+                # content is prefixed by — not equal to — the marker.
+                if _m.get("role") == "user" and not str(
+                    _m.get("content") or ""
+                ).startswith(_ADVISORY_INSTRUCTION):
                     last_user_idx = _i
                     break
             if last_user_idx is not None:
@@ -2288,11 +2722,34 @@ class MoAChatCompletions:
         elif joined or degraded:
             if degraded:
                 joined = f"{joined}\n\n{degraded}" if joined else degraded
+            # Freshness framing (upstream #82541): under user_turn/every_n
+            # cadence the SAME guidance is re-attached on every tool
+            # iteration. Without a marker the aggregator reads each replay as
+            # a new injection — observed: an aggregator re-flagging one stale
+            # advisory as live "drift" five times in a single turn. Label
+            # replays as replays, and fresh advice as blind to later work.
+            if _refs_from_cache:
+                freshness = (
+                    "Freshness: REPLAYED — this advice was gathered earlier in "
+                    f"this user turn (fanout cadence: {fanout_mode}) and has NOT "
+                    "been refreshed against your tool activity since. It is the "
+                    "same advice you already saw, re-attached for context. Treat "
+                    "it as a replay, not a new message; do not re-evaluate or "
+                    "re-flag it."
+                )
+            else:
+                freshness = (
+                    "Freshness: FRESH — gathered at this iteration, from a digest "
+                    "of the conversation so far. Advisors cannot see any tool "
+                    "activity that happens after this point "
+                    f"(fanout cadence: {fanout_mode})."
+                )
             guidance = (
                 "[Mixture of Agents reference context]\n"
                 f"Preset: {self.preset_name}\n"
                 f"Aggregator/acting model: {_slot_label(aggregator)}\n"
-                f"References: {', '.join(label for label, _, _ in _agg_refs)}\n\n"
+                f"References: {', '.join(label for label, _, _ in _agg_refs)}\n"
+                f"{freshness}\n\n"
                 "Use the reference responses below as private context. You are the aggregator and acting model: "
                 "answer the user directly or call tools as needed.\n\n"
                 f"{joined}"

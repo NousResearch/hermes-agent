@@ -181,3 +181,68 @@ def test_validate_moa_payload_agrees_with_clean_slot():
 
 
 
+
+
+# --- reference_view / reference_detail_tools normalization ---
+
+
+def test_reference_view_defaults_to_digest():
+    cfg = normalize_moa_config({})
+    preset = cfg["presets"][DEFAULT_MOA_PRESET_NAME]
+    assert preset["reference_view"] == "digest"
+    assert preset["reference_detail_tools"] is None
+    # Flattened compat view carries the fields too.
+    assert cfg["reference_view"] == "digest"
+    assert cfg["reference_detail_tools"] is None
+
+
+def test_reference_view_coercion():
+    from hermes_cli.moa_config import _coerce_reference_view
+
+    assert _coerce_reference_view(None) == "digest"
+    assert _coerce_reference_view("") == "digest"
+    assert _coerce_reference_view("Transcript") == "transcript"
+    assert _coerce_reference_view("digest") == "digest"
+    # Unknown values degrade to the default, matching other scalar fields.
+    assert _coerce_reference_view("verbose") == "digest"
+    assert _coerce_reference_view(123) == "digest"
+
+
+def test_reference_detail_tools_coercion():
+    from hermes_cli.moa_config import _coerce_reference_detail_tools
+
+    assert _coerce_reference_detail_tools(None) is None
+    assert _coerce_reference_detail_tools("") is None
+    assert _coerce_reference_detail_tools([]) is None
+    assert _coerce_reference_detail_tools(["Terminal", " read_file "]) == ["terminal", "read_file"]
+    # Comma-separated string form for hand-edited configs.
+    assert _coerce_reference_detail_tools("terminal, read_file") == ["terminal", "read_file"]
+    # Bad types degrade to None (built-in substance set).
+    assert _coerce_reference_detail_tools(42) is None
+
+
+def test_reference_view_survives_normalize():
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "review": {
+                    "reference_view": "transcript",
+                    "reference_detail_tools": ["terminal"],
+                }
+            },
+            "default_preset": "review",
+        }
+    )
+    preset = cfg["presets"]["review"]
+    assert preset["reference_view"] == "transcript"
+    assert preset["reference_detail_tools"] == ["terminal"]
+
+
+def test_reference_prose_budget_coercion():
+    cfg = normalize_moa_config(
+        {"presets": {"prose": {"reference_prose_budget": 16000}}, "default_preset": "prose"}
+    )
+    assert cfg["presets"]["prose"]["reference_prose_budget"] == 16000
+    assert cfg["reference_prose_budget"] == 16000
+    # Default: None (built-in cap).
+    assert normalize_moa_config({})["presets"][DEFAULT_MOA_PRESET_NAME]["reference_prose_budget"] is None

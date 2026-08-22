@@ -115,9 +115,12 @@ def test_every_n_off_cadence_iterations_reuse_cached_guidance(monkeypatch, tmp_p
     # Every iteration's aggregator request carries reference guidance...
     assert all(p["guidance"] for p in prepared)
     # ...and the off-cadence ones reuse iteration 1's exact advice text.
-    assert "advice #1" in prepared[0]["guidance"]
-    assert prepared[1]["guidance"] == prepared[0]["guidance"]
-    assert prepared[2]["guidance"] == prepared[0]["guidance"]
+    assert all("advice #1" in p["guidance"] for p in prepared)
+    # The freshness marker (#82541) distinguishes the on-cadence run from the
+    # replays, so the aggregator never mistakes stale advice for new input.
+    assert "Freshness: FRESH" in prepared[0]["guidance"]
+    assert "Freshness: REPLAYED" in prepared[1]["guidance"]
+    assert "Freshness: REPLAYED" in prepared[2]["guidance"]
 
 
 

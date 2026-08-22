@@ -416,14 +416,17 @@ def test_retry_same_provider_sync_preserves_extra_headers(monkeypatch):
 
 
 
-def test_reference_messages_drops_system_but_renders_tools_as_text():
-    """System prompt is dropped, but tool calls + results are RENDERED as text.
+def test_reference_messages_drops_system_and_digests_tools_as_prose():
+    """System prompt is dropped; tool activity is DIGESTED, not transcript-dumped.
 
     A reference must see what the agent did (tool calls) and what came back
-    (tool results) to give an informed judgement — so neither is stripped. They
-    are flattened to text so the view carries zero tool-role messages / no
-    tool_calls arrays (strict providers reject those), while the reference
-    still has the full picture. The view ends on a user turn.
+    (tool results) to give an informed judgement — so neither is stripped. But
+    the legacy bracket rendering ("[called tool: ...]" / "[tool result: ...]")
+    made ~80% of a reference prompt an imitable tool-call log that small
+    advisors reproduced (fabricated transcripts, role confusion). The digest
+    view narrates actions as prose and quotes recent results instead. The view
+    still carries zero tool-role messages / no tool_calls arrays (strict
+    providers reject those) and ends on a user turn.
     """
     from agent.moa_loop import _reference_messages
 
@@ -446,12 +449,42 @@ def test_reference_messages_drops_system_but_renders_tools_as_text():
     assert all("tool_calls" not in m for m in view)
     # System prompt is gone.
     assert all("huge hermes system prompt" not in m["content"] for m in view)
-    # The agent's action and the tool result are PRESERVED as text.
+    joined = "\n".join(m["content"] for m in view)
+    # No imitable bracket transcript syntax anywhere in the digest.
+    assert "[called tool:" not in joined
+    assert "[tool result:" not in joined
+    # The agent's action is narrated and the result is quoted in the trailing
+    # detail section, so the reference still has the full picture.
+    assert "Actions taken (summarized):" in joined
+    assert "- f:" in joined
+    assert "> tool result" in view[-1]["content"]
+    assert "here is my answer" in joined
+    # Ends on a user turn (advisory request appended after the final assistant).
+    assert view[-1]["role"] == "user"
+
+
+def test_reference_messages_transcript_view_preserves_legacy_rendering():
+    """view="transcript" is the explicit legacy escape hatch, byte-compatible."""
+    from agent.moa_loop import _reference_messages
+
+    messages = [
+        {"role": "system", "content": "huge hermes system prompt"},
+        {"role": "user", "content": "do the thing"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "c1", "function": {"name": "f", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "tool result"},
+        {"role": "assistant", "content": "here is my answer"},
+    ]
+
+    view = _reference_messages(messages, view="transcript")
+
     joined = "\n".join(m["content"] for m in view)
     assert "[called tool: f(" in joined
     assert "[tool result: tool result]" in joined
     assert "here is my answer" in joined
-    # Ends on a user turn (advisory request appended after the final assistant).
     assert view[-1]["role"] == "user"
 
 
@@ -484,10 +517,11 @@ def test_reference_messages_ends_with_user_not_assistant_prefill():
     assert view, "advisory view should not be empty"
     assert view[-1]["role"] == "user"
     joined = "\n".join(m["content"] for m in view)
-    # The agent's latest action and its result are preserved, not dropped.
+    # The agent's latest action and its result are preserved, not dropped:
+    # narrated in the digest and quoted in the trailing detail section.
     assert "let me reason then call a tool" in joined
-    assert "[called tool: f(" in joined
-    assert "[tool result: the tool output]" in joined
+    assert "- f:" in joined
+    assert "> the tool output" in view[-1]["content"]
     # Earlier context preserved too.
     assert "q1" in joined and "a1" in joined and "q2 current" in joined
 

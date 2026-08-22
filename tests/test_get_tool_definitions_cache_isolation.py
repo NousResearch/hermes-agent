@@ -55,6 +55,56 @@ class TestQuietModeCacheIsolation:
         cached = next(iter(model_tools._tool_defs_cache.values()))
         assert second is not cached
 
+    def test_cache_hit_does_not_share_nested_schemas(self, monkeypatch):
+        """A caller must not be able to alter schemas seen by later callers."""
+        computed = [{
+            "type": "function",
+            "content": [{"type": "text", "text": "original content"}],
+            "function": {
+                "name": "example",
+                "description": "original description",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"message": {"type": "string"}},
+                },
+            },
+        }]
+        compute_calls = 0
+
+        def compute(*args, **kwargs):
+            nonlocal compute_calls
+            compute_calls += 1
+            return computed
+
+        monkeypatch.setattr(model_tools, "_compute_tool_definitions", compute)
+
+        first = model_tools.get_tool_definitions(quiet_mode=True)
+        first[0]["function"]["description"] = "caller mutation"
+        first[0]["function"]["parameters"]["properties"]["message"]["type"] = "integer"
+        first[0]["content"][0]["text"] = "caller content mutation"
+        first.append({"type": "function", "function": {"name": "added"}})
+
+        second = model_tools.get_tool_definitions(quiet_mode=True)
+
+        assert compute_calls == 1
+        assert len(second) == 1
+        assert second[0]["function"]["description"] == "original description"
+        assert second[0]["function"]["parameters"]["properties"]["message"]["type"] == "string"
+        assert second[0]["content"][0]["text"] == "original content"
+
+        second[0]["function"]["description"] = "cache-hit caller mutation"
+        second[0]["function"]["parameters"]["properties"]["message"]["type"] = "number"
+        second[0]["content"][0]["text"] = "cache-hit content mutation"
+        second.append({"type": "function", "function": {"name": "cache-hit added"}})
+
+        third = model_tools.get_tool_definitions(quiet_mode=True)
+
+        assert compute_calls == 1
+        assert len(third) == 1
+        assert third[0]["function"]["description"] == "original description"
+        assert third[0]["function"]["parameters"]["properties"]["message"]["type"] == "string"
+        assert third[0]["content"][0]["text"] == "original content"
+
 
 
     def test_cache_bounded_by_eviction(self):

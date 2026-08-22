@@ -6243,6 +6243,30 @@ def edit_completed_task_result(
     return True
 
 
+def update_task_body(conn: sqlite3.Connection, task_id: str, body: str) -> bool:
+    """Replace a task's body (goal/instructions) in ANY state.
+
+    Store-level primitive behind ``hermes kanban edit --body`` and the
+    dashboard PATCH title/body editor. An empty string clears the body
+    (the field is nullable but falsy reads the same everywhere). Returns
+    False for an unknown task id.
+    """
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT 1 FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if not row:
+            return False
+        conn.execute(
+            "UPDATE tasks SET body = ? WHERE id = ?", (body, task_id),
+        )
+        _append_event(conn, task_id, "edited", {"fields": ["body"]})
+    # Task-mutation observer (RFC #58548), fired AFTER the txn has committed
+    # so subscribers always observe durable board state.
+    notify_task_updated(conn, task_id, ("body",))
+    return True
+
+
 def block_task(
     conn: sqlite3.Connection,
     task_id: str,

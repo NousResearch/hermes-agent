@@ -179,3 +179,92 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# /kanban edit --body (issue #52371) — update a task body after creation
+# ---------------------------------------------------------------------------
+
+
+def _show_task(kanban_home, task_id: str) -> dict:
+    return json.loads(kc.run_slash(f"show {task_id} --json"))
+
+
+def re_search_task_id(created_output: str) -> str:
+    import re
+
+    m = re.search(r"(t_[a-f0-9]+)", created_output)
+    assert m, created_output
+    return m.group(1)
+
+
+def test_kanban_edit_body_replaces_body_in_any_state(kanban_home):
+    """`kanban edit --body` corrects the goal/instructions of a task that was
+    never completed (ready state), and the change is durable + audited."""
+    created = kc.run_slash("create 'refine me' --body 'initial description'")
+    tid = re_search_task_id(created)
+
+    out = kc.run_slash(f"edit {tid} --body 'updated goal description'")
+    assert f"Edited {tid}" in out
+
+    payload = _show_task(kanban_home, tid)
+    assert payload["task"]["body"] == "updated goal description"
+    # The body rewrite leaves an audit trail like every other task edit.
+    assert any(e["kind"] == "edited" for e in payload["events"])
+
+
+def test_kanban_edit_body_empty_string_clears_body(kanban_home):
+    created = kc.run_slash("create 'clear my body' --body 'soon gone'")
+    tid = re_search_task_id(created)
+
+    out = kc.run_slash(f'edit {tid} --body ""')
+    assert f"Edited {tid}" in out
+
+    payload = _show_task(kanban_home, tid)
+    assert not payload["task"]["body"]
+
+
+def test_kanban_edit_without_body_flag_leaves_body_unchanged(kanban_home):
+    """The pre-existing recovery path (--result on a done task) must not
+    disturb the body."""
+    created = kc.run_slash("create 'legacy edit' --body 'body stays'")
+    tid = re_search_task_id(created)
+    kc.run_slash(f"complete {tid} --result 'done once'")
+
+    out = kc.run_slash(f"edit {tid} --result 'backfilled result'")
+    assert f"Edited {tid}" in out
+
+    payload = _show_task(kanban_home, tid)
+    assert payload["task"]["result"] == "backfilled result"
+    assert payload["task"]["body"] == "body stays"
+
+
+def test_kanban_edit_unknown_task_id_errors_unchanged(kanban_home):
+    out = kc.run_slash("edit t_doesnotexist --body 'nope'")
+    assert "cannot edit t_doesnotexist (unknown id)" in out
+    # And the legacy message is untouched for the recovery path.
+    out = kc.run_slash("edit t_doesnotexist --result 'nope'")
+    assert "cannot edit t_doesnotexist (unknown id or task is not done)" in out
+
+
+def test_kanban_edit_no_flags_is_a_usage_error(kanban_home):
+    created = kc.run_slash("create 'untouched'")
+    tid = re_search_task_id(created)
+
+    out = kc.run_slash(f"edit {tid}")
+    assert "nothing to edit" in out
+
+    payload = _show_task(kanban_home, tid)
+    assert payload["task"]["status"] != "done"
+
+
+def test_kanban_edit_mixed_invocation_never_half_applies(kanban_home):
+    """--result stays done-only: mixing it with --body on a non-done task
+    fails the whole edit instead of silently applying only the body."""
+    created = kc.run_slash("create 'mixed edit' --body 'original body'")
+    tid = re_search_task_id(created)
+
+    out = kc.run_slash(f"edit {tid} --body 'should not stick' --result 'premature'")
+    assert "cannot edit" in out
+
+    payload = _show_task(kanban_home, tid)
+    assert payload["task"]["body"] == "original body"
+

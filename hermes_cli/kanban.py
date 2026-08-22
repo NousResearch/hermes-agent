@@ -603,12 +603,18 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 
     p_edit = sub.add_parser(
         "edit",
-        help="Edit recovery fields on an already-completed task",
+        help="Edit a task body (any state) or a completed task's recovery fields",
     )
     p_edit.add_argument("task_id")
     p_edit.add_argument(
+        "--body",
+        default=None,
+        help="Replace the task body (goal/instructions). Works in any state; "
+             "pass an empty string to clear it.",
+    )
+    p_edit.add_argument(
         "--result",
-        required=True,
+        default=None,
         help="Backfilled task result text for a done task",
     )
     p_edit.add_argument(
@@ -2317,8 +2323,41 @@ def _cmd_edit(args: argparse.Namespace) -> int:
         except (ValueError, json.JSONDecodeError) as exc:
             print(f"kanban: --metadata: {exc}", file=sys.stderr)
             return 2
+    body = getattr(args, "body", None)  # "" clears; None = unchanged
+    wants_recovery = (
+        getattr(args, "result", None) is not None
+        or getattr(args, "summary", None) is not None
+        or metadata is not None
+    )
+    if body is None and not wants_recovery:
+        print(
+            "kanban edit: nothing to edit "
+            "(pass --body, or --result/--summary/--metadata for a done task)",
+            file=sys.stderr,
+        )
+        return 2
+    if wants_recovery and getattr(args, "result", None) is None:
+        print(
+            "kanban edit: --summary/--metadata require --result "
+            "(they revise a completed task's handoff)",
+            file=sys.stderr,
+        )
+        return 2
     with kb.connect_closing() as conn:
-        if not kb.edit_completed_task_result(
+        # Recovery fields stay done-only; check BEFORE applying a body edit so
+        # a mixed invocation can never half-apply.
+        if wants_recovery:
+            task = kb.get_task(conn, args.task_id)
+            if not task or task.status != "done":
+                print(
+                    f"cannot edit {args.task_id} (unknown id or task is not done)",
+                    file=sys.stderr,
+                )
+                return 1
+        if body is not None and not kb.update_task_body(conn, args.task_id, body):
+            print(f"cannot edit {args.task_id} (unknown id)", file=sys.stderr)
+            return 1
+        if wants_recovery and not kb.edit_completed_task_result(
             conn,
             args.task_id,
             result=args.result,

@@ -29,8 +29,13 @@ def _no_aws(monkeypatch):
 
 
 def _clear_provider_env(monkeypatch):
+    # ANTHROPIC_*/CLAUDE_CODE_OAUTH_TOKEN included: on a developer machine
+    # with a live Claude Code login these are exported, and without clearing
+    # them the auto-detect tests below pass or fail for the wrong reason.
     for var in ("OPENAI_API_KEY", "OPENROUTER_API_KEY", "GLM_API_KEY", "ZAI_API_KEY",
-                "KIMI_API_KEY", "MINIMAX_API_KEY", "HERMES_INFERENCE_PROVIDER"):
+                "KIMI_API_KEY", "MINIMAX_API_KEY", "HERMES_INFERENCE_PROVIDER",
+                "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "ANTHROPIC_AUTH_TOKEN",
+                "CLAUDE_CODE_OAUTH_TOKEN"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -90,3 +95,63 @@ class TestProviderPrecedence:
 
         monkeypatch.setattr("agent.credential_pool.load_pool", lambda name: _Pool())
         assert resolve_provider("auto") == "openrouter"
+
+
+class TestImplicitOAuthTokenNotAutoSelected:
+    """CLAUDE_CODE_OAUTH_TOKEN is written by Claude Code's own login, not by
+    the user configuring Hermes. The is_provider_explicitly_configured
+    doctrine (PR #7156) already excludes it from explicit-config detection;
+    the auto-detect scan must apply the same posture — ambient presence must
+    not route inference onto the Anthropic HTTP lane (metered overage per
+    Anthropic's third-party policy; see #58546, #70039)."""
+
+    @staticmethod
+    def _no_oauth_login(monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {})
+        monkeypatch.setattr("hermes_cli.auth.get_auth_status",
+                            lambda p: {"logged_in": False})
+
+    def test_token_alone_does_not_auto_select_anthropic(self, monkeypatch):
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        self._no_oauth_login(monkeypatch)
+        _config(monkeypatch, {})
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-ambient")
+        with pytest.raises(AuthError) as exc_info:
+            resolve_provider("auto")
+        # The error must tell the user the token was seen and how to use it
+        # deliberately — silence here would just look broken.
+        assert "CLAUDE_CODE_OAUTH_TOKEN" in str(exc_info.value)
+
+    def test_profile_scoped_token_is_reported_but_not_auto_selected(self, monkeypatch):
+        """Multiplex profile secrets follow the same implicit-token posture."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        self._no_oauth_login(monkeypatch)
+        _config(monkeypatch, {})
+        monkeypatch.setattr(
+            "agent.auxiliary_client._scoped_key_env",
+            lambda name: "sk-ant-oat01-profile" if name == "CLAUDE_CODE_OAUTH_TOKEN" else "",
+        )
+        with pytest.raises(AuthError) as exc_info:
+            resolve_provider("auto")
+        assert "CLAUDE_CODE_OAUTH_TOKEN" in str(exc_info.value)
+
+    def test_explicit_anthropic_key_still_auto_selects(self, monkeypatch):
+        """No over-exclusion: ANTHROPIC_API_KEY is a user-exported credential
+        and keeps auto-selecting anthropic."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        self._no_oauth_login(monkeypatch)
+        _config(monkeypatch, {})
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-test")
+        assert resolve_provider("auto") == "anthropic"
+
+    def test_explicit_provider_still_uses_the_token(self, monkeypatch):
+        """Explicit selection is untouched: provider=anthropic with only the
+        Claude Code token resolves to anthropic (credential resolution then
+        finds the token via get_anthropic_key as before)."""
+        _clear_provider_env(monkeypatch)
+        self._no_oauth_login(monkeypatch)
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-ambient")
+        assert resolve_provider("anthropic") == "anthropic"

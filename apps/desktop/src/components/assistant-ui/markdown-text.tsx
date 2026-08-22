@@ -20,6 +20,7 @@ import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/extern
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
+import { obsidianHrefFromMarkdownHref, remarkObsidianLinks } from '@/lib/obsidian-link'
 import {
   downloadGatewayMediaFile,
   isFileMediaPath,
@@ -56,6 +57,8 @@ import { paragraphPlainText, TranscriptDirectiveLeaf, useIsClaimedDirective } fr
 // `singleDollarTextMath: true` enables `$x^2$` for inline math (de-facto
 // LLM convention). The default false-setting only accepts `$$...$$`.
 const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
+
+const markdownRemarkPlugins = [remarkObsidianLinks]
 
 // `@streamdown/code` statically imports ALL of shiki (every grammar + theme —
 // the single largest chunk in the renderer), so it must never sit on the
@@ -255,6 +258,25 @@ function childrenToText(children: unknown): string {
 }
 
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
+  const obsidianHref = obsidianHrefFromMarkdownHref(href)
+
+  if (obsidianHref) {
+    return (
+      <a
+        className={cn('ref wrap-anywhere', className)}
+        href={obsidianHref}
+        onClick={event => {
+          event.preventDefault()
+          openExternalLink(obsidianHref)
+        }}
+        rel="noopener noreferrer"
+        {...props}
+      >
+        {children}
+      </a>
+    )
+  }
+
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {
@@ -682,6 +704,7 @@ function MarkdownTextSurface({
         parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
         plugins={plugins}
         preprocess={preprocessWithTailRepair}
+        remarkPlugins={markdownRemarkPlugins}
       />
     </ErrorBoundary>
   )

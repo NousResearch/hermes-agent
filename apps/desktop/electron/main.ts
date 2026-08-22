@@ -141,6 +141,7 @@ import {
   terminalScriptExtension,
   tuiResumeArgs
 } from './external-terminal'
+import { isAllowedShellExternalProtocol } from './external-url-policy'
 import { type FaviconIo, resolveFavicon } from './favicon'
 import { findGitBash as _findGitBash } from './find-git-bash'
 import {
@@ -1591,7 +1592,7 @@ function openExternalUrl(rawUrl) {
     return true
   }
 
-  if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) {
+  if (!isAllowedShellExternalProtocol(parsed.protocol)) {
     return false
   }
 

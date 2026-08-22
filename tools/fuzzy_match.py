@@ -444,11 +444,15 @@ def _reindent_replacement(file_region: str, old_string: str, new_string: str) ->
             out_lines.append(line)
             continue
         line_indent = _leading_whitespace(line)
-        if line_indent.startswith(old_indent):
+        if old_indent and line_indent.startswith(old_indent):
             # Common case: line has the LLM's base indent (possibly plus
             # extra). Swap base prefix for the file's base prefix.
             remainder = line[len(old_indent):]
             out_lines.append(file_indent + remainder)
+        elif old_indent == "":
+            # No base prefix to swap — preserve the line's own indentation,
+            # anchored to the file's base for lines at column 0.
+            out_lines.append(file_indent + line.lstrip(" \t") if not line_indent else line)
         else:
             # Line is less-indented than the LLM's base — e.g. a dedent at
             # the start of new_string. Anchor to the file's base.

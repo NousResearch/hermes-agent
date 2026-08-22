@@ -1529,8 +1529,9 @@ def apply_database_pragmas(
 # The canonical ``sessions`` / ``messages`` data is intact in these cases —
 # only the derived schema is broken — so recovery preserves all transcripts
 # and merely rebuilds the FTS layer.
-_MALFORMED_SCHEMA_MARKERS = (
-    "malformed database schema",
+_MALFORMED_SCHEMA_MARKERS = ("malformed database schema",)
+_MALFORMED_DB_MARKERS = (
+    *_MALFORMED_SCHEMA_MARKERS,
     "database disk image is malformed",
 )
 
@@ -1542,30 +1543,27 @@ _repair_attempt_lock = threading.Lock()
 
 
 def is_malformed_db_error(exc: BaseException) -> bool:
-    """True if *exc* is a SQLite 'malformed schema / disk image' error.
+    """True for explicit malformed-schema or generic corrupt-image errors.
 
-    These are the corruption classes where the schema fails to parse, so
-    targeted ``sqlite_master`` surgery (not an ordinary FTS rebuild) is the
-    only recovery path.
+    This broad classifier is for diagnostics and explicit offline recovery
+    dispatch. Runtime repair must use :func:`is_malformed_schema_error`, since
+    a generic corrupt-image error does not identify the damaged object.
+    """
+    if not isinstance(exc, sqlite3.DatabaseError):
+        return False
+    return any(marker in str(exc).lower() for marker in _MALFORMED_DB_MARKERS)
+
+
+def is_malformed_schema_error(exc: BaseException) -> bool:
+    """True only when SQLite explicitly reports malformed schema text.
+
+    A generic ``database disk image is malformed`` error is SQLITE_CORRUPT
+    and may come from any B-tree or freelist page.  It does not prove that
+    canonical rows are intact, so runtime schema/FTS repair must fail closed.
     """
     if not isinstance(exc, sqlite3.DatabaseError):
         return False
     return any(marker in str(exc).lower() for marker in _MALFORMED_SCHEMA_MARKERS)
-
-
-def _is_not_a_database_error(exc: BaseException) -> bool:
-    """True if *exc* is SQLite's 'file is not a database' error.
-
-    Raised when a connection's backing file is not a SQLite database — the
-    runtime connection-corruption class: a sibling process (forked curator
-    agent, external repair pass) replaced/truncated the file out from under
-    the live connection.  The file on disk may be perfectly healthy; the
-    CONNECTION is broken.  Distinct from the malformed-schema class: the fix
-    is a reconnect, not schema surgery.
-    """
-    if not isinstance(exc, sqlite3.DatabaseError):
-        return False
-    return "file is not a database" in str(exc).lower()
 
 
 # Markers that mean the host filesystem cannot accept another write. Kept as
@@ -3781,13 +3779,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # in place at most once per SessionDB instance so a genuinely
         # unrecoverable database can't put writers into a rebuild loop.
         self._fts_runtime_rebuild_attempted = False
-        # One-shot guard for the runtime connection-reopen recovery on the
-        # write path. A connection whose backing file was replaced/truncated
-        # by a sibling process surfaces as "file is not a database" on every
-        # write; we close and reopen the connection at most once per
-        # SessionDB instance so a genuinely unrecoverable database can't put
-        # writers into a reconnect loop.
-        self._notadb_reconnect_attempted = False
         # One-shot guard for the usermerge-floor config write on the
         # incremental FTS merge cadence (see _merge_fts_incrementally).
         self._fts_usermerge_floor_applied = False
@@ -3973,7 +3964,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # place (backup first; canonical sessions/messages preserved),
                 # then reopen once. This is what lets Desktop/Dashboard
                 # self-heal instead of silently showing "no sessions".
-                if not is_malformed_db_error(exc) or not _claim_repair_attempt(self.db_path):
+                if not is_malformed_schema_error(exc) or not _claim_repair_attempt(self.db_path):
                     raise
                 logger.error(
                     "state.db schema is malformed (%s) — attempting automatic "
@@ -4566,20 +4557,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             except sqlite3.DatabaseError as exc:
                 if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
                     continue
-                # Runtime connection-corruption self-heal: a connection whose
-                # backing file was replaced/truncated by a sibling process
-                # (e.g. a forked curator agent inheriting and closing the
-                # write fd, or an external repair pass) surfaces as "file is
-                # not a database" on EVERY subsequent write. Without a
-                # reconnect branch the gateway wedges permanently: every
-                # transcript/routing write raises, messages stay in memory,
-                # and swap grows without bound until the process is killed.
-                # Close the broken connection, reopen the DB file, and retry
-                # the write once.
-                if _is_not_a_database_error(exc):
-                    if not self._reconnect_after_notadb():
-                        raise
-                    continue
                 # Corrupt FTS shadow tables make every write raise the
                 # malformed/corrupt error class through the FTS sync triggers
                 # while the canonical messages table is intact. Recover here,
@@ -4630,74 +4607,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         time.sleep(min(jitter, max(deadline - now, 0.001)))
         return True
 
-    def _reconnect_after_notadb(self) -> bool:
-        """Close the corrupted write connection and reopen state.db.
-
-        Returns True when the connection was successfully replaced and the
-        failed write should be retried.  Mirrors the constructor's
-        ``_connect_and_init`` so WAL/schema reconciliation runs on the fresh
-        connection.  Never raises — logs and returns False on failure so the
-        original error propagates.
-
-        One-shot per instance: a genuinely unrecoverable database must not
-        put writers into a reconnect loop that pins CPU on every write.
-        """
-        if self._notadb_reconnect_attempted:
-            return False
-        self._notadb_reconnect_attempted = True
-        logger.warning(
-            "state.db connection reported 'file is not a database' — closing "
-            "and reopening the connection to self-heal (one-shot)."
-        )
-        try:
-            with self._lock:
-                if self._conn is not None:
-                    try:
-                        self._conn.close()
-                    except Exception:
-                        pass
-                    self._conn = None
-                new_conn = _connect_tracked_db(
-                    str(self.db_path),
-                    tracking_path=self.db_path,
-                    check_same_thread=False,
-                    timeout=1.0,
-                    isolation_level=None,
-                )
-                new_conn.row_factory = sqlite3.Row
-                # Publish BEFORE schema init: _init_schema/_reconcile_columns
-                # operate on self._conn, not on the local variable.
-                self._conn = new_conn
-                self._wal_active = (
-                    apply_wal_with_fallback(new_conn, db_label="state.db")
-                    == "wal"
-                )
-                apply_database_pragmas(new_conn, db_label="state.db")
-                new_conn.execute("PRAGMA foreign_keys=ON")
-                self._fts_cjk_loaded = load_fts5_cjk_extension(new_conn)
-                self._init_schema()
-        except Exception as exc:
-            logger.error(
-                "state.db reconnect after 'file is not a database' failed (%s); "
-                "the database may need the full offline repair path.",
-                exc,
-            )
-            return False
-        logger.warning(
-            "state.db connection reopened successfully; retrying the failed write."
-        )
-        return True
-
     @staticmethod
     def _is_fts_write_corruption_error(exc: sqlite3.DatabaseError) -> bool:
         """True for the error class a corrupt FTS index raises on writes.
 
-        The message varies by SQLite version: older builds raise the generic
-        ``database disk image is malformed`` (covered by
-        ``is_malformed_db_error``); newer builds (e.g. ubuntu-latest CI)
-        raise the FTS5-specific ``fts5: corrupt structure record for table
-        "messages_fts"``. Both mean the same thing for the write path: the
-        canonical rows are fine, the FTS shadow tables are not.
+        SQLite's message for a corrupt FTS index varies by version: older
+        builds raise the generic ``database disk image is malformed`` (covered
+        by :func:`is_malformed_db_error`); newer builds raise the FTS5-specific
+        ``fts5: corrupt structure record for table "messages_fts"``. Both mean
+        the same thing for the write path: the canonical rows are fine, the
+        FTS shadow tables are not.  The FTS-only rebuild and fail-open
+        detach are safe here because they only touch derived indexes; if the
+        damage is actually in a canonical B-tree, the rebuild itself fails and
+        the write propagates.
         """
         if is_malformed_db_error(exc):
             return True

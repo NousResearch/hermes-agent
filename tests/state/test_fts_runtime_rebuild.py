@@ -557,4 +557,3 @@ class TestRuntimeFtsRebuild:
             assert recovered.search_messages("canonical survives")
         finally:
             recovered.close()
-

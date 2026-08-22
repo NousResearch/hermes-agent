@@ -1321,6 +1321,15 @@ class TestIsPaymentError:
         exc.status_code = 402
         assert _is_payment_error(exc) is True
 
+    @pytest.mark.parametrize("spelling", [
+        "resource exhausted",
+        "RESOURCE_EXHAUSTED",
+        "ResourceExhausted",
+        "resource-exhausted",
+    ])
+    def test_resource_exhausted_separator_variants(self, spelling):
+        assert _is_payment_error(Exception(f"{spelling}: provider capacity reached")) is True
+
 
 
 
@@ -1761,6 +1770,42 @@ class TestAuxiliaryFallbackLayering:
 
 
 
+
+    def test_compression_falls_back_on_compact_resource_exhausted(self):
+        """Separator-free quota signals must still reach configured fallback."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = Exception(
+            "ResourceExhausted: Worker local total request limit reached (32/32)"
+        )
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="summary from fallback"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "nvidia/nemotron-3-ultra-550b-a55b")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("nvidia", "nvidia/nemotron-3-ultra-550b-a55b", None, None, None)), \
+             patch("agent.auxiliary_client._recoverable_pool_provider",
+                   return_value=None), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(fallback_client, "fallback-model", "fallback_chain[0](openrouter)")) as mock_chain, \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback") as mock_main, \
+             patch("agent.auxiliary_client._mark_provider_unhealthy"):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert result.choices[0].message.content == "summary from fallback"
+        mock_chain.assert_called_once_with(
+            "compression",
+            "nvidia",
+            reason="payment error",
+            failed_model=None,
+        )
+        mock_main.assert_not_called()
 
     def test_explicit_provider_rate_limit_triggers_fallback(self, monkeypatch):
         """429 rate-limit on an explicit provider must trigger fallback (not be ignored).

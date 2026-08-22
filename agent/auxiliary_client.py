@@ -4164,7 +4164,13 @@ def _is_payment_error(exc: Exception) -> bool:
     # Daily quota exhaustion from Bedrock, Vertex AI, and similar providers
     # uses different language but is semantically identical to credit exhaustion.
     if status in {402, 403, 404, 429, None}:
-        if any(kw in err_lower for kw in (
+        # Providers serialize this capacity signal with spaces, underscores,
+        # hyphens, or no separator (for example RESOURCE_EXHAUSTED and
+        # ResourceExhausted). Treat every spelling as the same quota error.
+        has_resource_exhausted = re.search(
+            r"\bresource[\s_-]*exhausted\b", err_lower,
+        ) is not None
+        if has_resource_exhausted or any(kw in err_lower for kw in (
             "credits", "insufficient funds",
             "can only afford", "billing",
             "payment required",
@@ -4178,7 +4184,6 @@ def _is_payment_error(exc: Exception) -> bool:
             "quota exceeded", "quota_exceeded",
             "too many tokens per day", "daily limit",
             "tokens per day", "daily quota",
-            "resource exhausted",  # Vertex AI / gRPC quota errors
             "weekly usage limit", "weekly limit",  # OpenCode Go weekly subscription cap
         )):
             return True

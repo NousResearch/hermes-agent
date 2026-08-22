@@ -2544,6 +2544,8 @@ export const ja = defineLocale({
     changeCwdTitle: '作業ディレクトリを変更',
     remotePickerTitle: 'リモートフォルダーを選択',
     remotePickerDescription: '接続中のバックエンド上のフォルダーを参照します。',
+    remotePickerPathLabel: 'フォルダーのパス',
+    remotePickerPathPlaceholder: 'パスまたはフォルダー名を入力',
     remotePickerSelect: 'フォルダーを選択',
     folderTip: cwd => cwd,
     openFolder: 'フォルダーを開く',

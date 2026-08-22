@@ -3057,6 +3057,8 @@ export const zh: Translations = {
     changeCwdTitle: '更改工作目录',
     remotePickerTitle: '选择远程文件夹',
     remotePickerDescription: '浏览已连接后端上的文件夹。',
+    remotePickerPathLabel: '文件夹路径',
+    remotePickerPathPlaceholder: '输入路径或文件夹名称',
     remotePickerSelect: '选择文件夹',
     folderTip: cwd => cwd,
     openFolder: '打开文件夹',

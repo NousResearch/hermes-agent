@@ -2458,6 +2458,8 @@ export const zhHant = defineLocale({
     changeCwdTitle: '變更工作目錄',
     remotePickerTitle: '選擇遠端資料夾',
     remotePickerDescription: '瀏覽已連線後端上的資料夾。',
+    remotePickerPathLabel: '資料夾路徑',
+    remotePickerPathPlaceholder: '輸入路徑或資料夾名稱',
     remotePickerSelect: '選擇資料夾',
     folderTip: cwd => cwd,
     openFolder: '開啟資料夾',

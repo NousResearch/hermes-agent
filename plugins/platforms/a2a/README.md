@@ -63,6 +63,15 @@ via `tasks/get`.
 - Inbound text — including `/`-prefixed text — is run through
   prompt-injection filters and framed as untrusted peer input; remote peers
   cannot invoke operator slash commands.
+- To let a designated peer request local/private work, list its named-token
+  identity under `a2a.trusted_operator_peers` in `config.yaml`:
+  ```yaml
+  a2a:
+    trusted_operator_peers: [alice]
+  ```
+  Entries must match names in `A2A_PEER_TOKENS`; shared-token/IP identities
+  and authorization claims in message bodies never qualify. Filtering,
+  slash-command wrapping, and outbound credential redaction remain active.
 - Outbound text is scrubbed of credential-shaped strings.
 - Push callbacks are SSRF-guarded and HMAC-SHA256 signed (`X-A2A-Signature`).
 - Every exchange is logged to `~/.hermes/a2a_audit.jsonl`.

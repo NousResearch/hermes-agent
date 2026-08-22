@@ -103,10 +103,15 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
   body can assert identity. Comparisons are constant-time.
 - **Trust gate:** `A2A_TRUSTED_PEERS` (or config `a2a.trusted_peers`)
   optionally restricts which authenticated identities may run tasks.
+- **Trusted operator tier:** config `a2a.trusted_operator_peers` may relax the
+  privacy frame only for identities backed by named `A2A_PEER_TOKENS` entries.
+  Shared-token/IP identities and request-body claims cannot grant operator
+  authority. Injection filtering, slash-command wrapping, and outbound
+  credential redaction remain mandatory.
 - **Injection filters:** ALL inbound text (including `/`-prefixed — remote
   peers can never reach operator slash commands) is defanged (ChatML /
-  role-prefix / override patterns → `[filtered]`) and framed with a privacy
-  prefix marking it untrusted peer input.
+  role-prefix / override patterns → `[filtered]`) and framed according to the
+  authenticated peer tier.
 - **Outbound redaction:** credential-shaped strings (`sk-…`, `ghp_…`, JWTs,
   bearer tokens, emails) scrubbed before anything leaves.
 - **Rate limiting:** sliding window per authenticated identity
@@ -138,6 +143,7 @@ them (#11025 requirement). The `a2a_history` tool recalls them by context id.
 | #11025 | Conversation persistence outside compaction | `protocol.persist_message`, `a2a_history` |
 | #514, #11025 | Auth, localhost-default | `security.authenticate`, `resolve_bind_host` |
 | #56434 | Trusted peer approval | `security.is_trusted_peer` |
+| #91168 | Trusted operator peer tier | `security.is_trusted_operator_peer`, `security.wrap_inbound` |
 | #56435 | Task completion notifications | push notifications (`_send_push_notification`) |
 | #25176, #689 | Agent↔agent messaging across machines | client tools + inbound adapter |
 | #7517 et al. | Multi-peer orchestration | `a2a_orchestrate` |

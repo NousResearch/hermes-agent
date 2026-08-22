@@ -970,6 +970,10 @@ def _ensure_hermes_home_managed(home: Path):
 
 from hermes_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS  # noqa: F401
 
+# Keep Mattermost's historical per-post limit as the merged config default;
+# deployments can raise it through ``mattermost.max_post_length``.
+DEFAULT_CONFIG["mattermost"]["max_post_length"] = 4000
+
 # =============================================================================
 # Config Migration System
 # =============================================================================

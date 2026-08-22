@@ -231,6 +231,45 @@ class TestProviderEnvBlocklist:
         for var in leaked_vars:
             assert var not in result_env, f"{var} leaked into subprocess env"
 
+    def test_dashboard_basic_auth_vars_are_stripped(self):
+        """dashboard_auth/basic provider credentials must not leak into
+        subprocess env.
+
+        Regression: HERMES_DASHBOARD_SESSION_TOKEN (the opaque per-session
+        token) was blocked, but the four env vars the ``basic`` dashboard
+        auth provider itself reads (plugins/dashboard_auth/basic/__init__.py)
+        were not: HERMES_DASHBOARD_BASIC_AUTH_SECRET, _PASSWORD_HASH,
+        _PASSWORD, and _USERNAME. SECRET is the HMAC key that signs every
+        dashboard session token (_sign()/_unsign()) — a terminal command
+        that can read it can forge an arbitrary admin session offline and
+        bypass dashboard login entirely, confirmed exploitable against a
+        live dashboard (not theoretical). PASSWORD_HASH/PASSWORD are the
+        stored/plaintext-fallback login credential itself.
+        """
+        leaked_vars = {
+            "HERMES_DASHBOARD_BASIC_AUTH_SECRET": "hmac-signing-secret",
+            "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH": "scrypt$16384$8$1$salt$hash",
+            "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD": "plaintext-fallback-password",
+            "HERMES_DASHBOARD_BASIC_AUTH_USERNAME": "admin",
+        }
+        result_env = _run_with_env(extra_os_env=leaked_vars)
+
+        for var in leaked_vars:
+            assert var not in result_env, f"{var} leaked into subprocess env"
+
+    def test_dashboard_oidc_and_drain_secrets_are_stripped(self):
+        """dashboard_auth/self_hosted (OIDC) and dashboard_auth/drain
+        secrets must not leak into subprocess env — same class of gap as
+        the basic-auth vars above, closed in the same pass."""
+        leaked_vars = {
+            "HERMES_DASHBOARD_OIDC_CLIENT_SECRET": "oidc-confidential-secret",
+            "HERMES_DASHBOARD_DRAIN_SECRET": "drain-bearer-secret",
+        }
+        result_env = _run_with_env(extra_os_env=leaked_vars)
+
+        for var in leaked_vars:
+            assert var not in result_env, f"{var} leaked into subprocess env"
+
     def test_safe_vars_are_preserved(self):
         """Standard env vars (PATH, HOME, USER) must still be passed through."""
         result_env = _run_with_env()

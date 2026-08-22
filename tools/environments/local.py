@@ -306,6 +306,29 @@ def _build_provider_env_blocklist() -> frozenset:
         "EMAIL_HOME_ADDRESS",
         "EMAIL_HOME_ADDRESS_NAME",
         "HERMES_DASHBOARD_SESSION_TOKEN",
+        # dashboard_auth/basic provider (plugins/dashboard_auth/basic) —
+        # HERMES_DASHBOARD_BASIC_AUTH_SECRET is the HMAC key that SIGNS every
+        # dashboard session token (see _sign()/_unsign() in that plugin). A
+        # model-authored shell command that can read this value can forge an
+        # arbitrary admin session offline and bypass dashboard login entirely
+        # — confirmed exploitable in practice, not theoretical (a terminal
+        # session with this var present minted a token accepted by a live
+        # dashboard on protected endpoints). PASSWORD_HASH is a scrypt hash
+        # of the login password (offline-crackable if leaked) and PASSWORD is
+        # the plaintext fallback; both are credential material the same as
+        # any other provider's stored password. USERNAME is included too —
+        # it halves the credential-guessing search space and mirrors the
+        # EMAIL_ADDRESS precedent above (identifier alongside its secret is
+        # blocked as a pair, not just the secret half).
+        "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
+        "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH",
+        "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
+        "HERMES_DASHBOARD_BASIC_AUTH_USERNAME",
+        # dashboard_auth/self_hosted (OIDC) — confidential-client secret.
+        "HERMES_DASHBOARD_OIDC_CLIENT_SECRET",
+        # dashboard_auth/drain — shared bearer secret for the gateway
+        # drain-control endpoint (NAS-provisioned, >=256-bit).
+        "HERMES_DASHBOARD_DRAIN_SECRET",
         "GATEWAY_ALLOWED_USERS",
         "GH_TOKEN",
         "GITHUB_APP_ID",

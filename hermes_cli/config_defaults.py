@@ -917,6 +917,8 @@ DEFAULT_CONFIG = {
                                       # session_search and recoverable, not deleted.
                                       # Default True since 2107b86024; set False to
                                       # restore the legacy rotating-compaction path.
+        "warn_after_compressions": 2, # Show "Session compressed N times…" after this
+                                      # many compactions (0 = disable the warning).
         "model_thresholds": {},       # Per-model threshold overrides. Keys are
                                       # substring-matched against the model name
                                       # (longest match wins); values replace the

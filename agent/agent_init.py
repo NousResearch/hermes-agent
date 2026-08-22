@@ -2255,6 +2255,12 @@ def init_agent(
     compression_in_place = is_truthy_value(
         _compression_cfg.get("in_place"), default=True
     )
+    try:
+        compression_warn_after_compressions = max(
+            0, int(_compression_cfg.get("warn_after_compressions", 2))
+        )
+    except (TypeError, ValueError):
+        compression_warn_after_compressions = 2
     # Opt-in (default False): a micro-compaction pass rewrites already-sent
     # history every turn, which breaks the provider prompt-cache prefix on a
     # per-turn cadence rather than at an episodic boundary. That is the cost
@@ -2765,6 +2771,7 @@ def init_agent(
             pass
     agent.compression_enabled = compression_enabled
     agent.compression_in_place = compression_in_place
+    agent.compression_warn_after_compressions = compression_warn_after_compressions
     # Apply micro-compaction settings to the compressor (feature is opt-in)
     _cc = getattr(agent, "context_compressor", None)
     if _cc is not None and hasattr(_cc, "_micro_compact_enabled"):

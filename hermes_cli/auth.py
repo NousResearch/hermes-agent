@@ -2186,10 +2186,13 @@ def resolve_provider(
         _model_cfg = (load_config() or {}).get("model")
         if isinstance(_model_cfg, dict):
             _cfg_provider = _model_cfg.get("provider")
-            if isinstance(_cfg_provider, str) and _cfg_provider.strip().lower() in PROVIDER_REGISTRY:
-                return _cfg_provider.strip().lower()
+            if isinstance(_cfg_provider, str):
+                _cfg_provider = _cfg_provider.strip().lower()
+                _cfg_provider = _PROVIDER_ALIASES.get(_cfg_provider, _cfg_provider)
+                if _cfg_provider in PROVIDER_REGISTRY:
+                    return _cfg_provider
     except Exception as e:
-        logger.debug("Could not read config.yaml model.provider for auto-resolution: %s", e)
+        logger.warning("Could not read config.yaml model.provider for auto-resolution: %s", e)
 
     # Scope-aware key reads: under multiplex a secondary profile's API keys
     # live only in its secret scope, not os.environ — a bare getenv here
@@ -2243,7 +2246,12 @@ def resolve_provider(
     except Exception as e:
         logger.debug("Could not pre-read active auth provider: %s", e)
 
-    # Auto-detect API-key providers by checking their env vars
+    # Auto-detect API-key providers by checking their env vars. Collect every
+    # match before selecting the first so ambiguous environments are visible.
+    # Providers may share an env var (for example, the two Alibaba entries
+    # accept DASHSCOPE_API_KEY), so each env var represents only one candidate.
+    _api_key_candidates: List[Tuple[str, str]] = []
+    _seen_api_key_env_vars: set[str] = set()
     for pid, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key":
             continue
@@ -2256,20 +2264,39 @@ def resolve_provider(
         if pid in {"copilot", "lmstudio"}:
             continue
         for env_var in pconfig.api_key_env_vars:
+            if env_var in _seen_api_key_env_vars:
+                continue
+            _seen_api_key_env_vars.add(env_var)
             if has_usable_secret(_scoped_key_env(env_var)):
-                # An exported API key now wins over a logged-in OAuth provider
-                # (the #29285 fix). Surface that so a user who deliberately uses
-                # OAuth but has a stale key in ~/.hermes/.env isn't silently
-                # switched without knowing why.
-                if _oauth_active and _oauth_active != pid:
-                    logger.warning(
-                        "Provider resolved to %r via %s, preempting your "
-                        "logged-in OAuth provider %r. If you meant to use the "
-                        "OAuth login, unset %s or set `model.provider` "
-                        "explicitly.",
-                        pid, env_var, _oauth_active, env_var,
-                    )
-                return pid
+                _api_key_candidates.append((pid, env_var))
+                break  # one candidate per provider, even with multiple env vars
+
+    if _api_key_candidates:
+        pid, env_var = _api_key_candidates[0]
+        if len(_api_key_candidates) >= 2:
+            logger.warning(
+                "Multiple provider API keys detected: %s. Selected %r based "
+                "on provider registry order. Set `model.provider` explicitly "
+                "to choose a different provider.",
+                ", ".join(
+                    f"{candidate_pid} ({candidate_env_var})"
+                    for candidate_pid, candidate_env_var in _api_key_candidates
+                ),
+                pid,
+            )
+        # An exported API key now wins over a logged-in OAuth provider
+        # (the #29285 fix). Surface that so a user who deliberately uses
+        # OAuth but has a stale key in ~/.hermes/.env isn't silently
+        # switched without knowing why.
+        if _oauth_active and _oauth_active != pid:
+            logger.warning(
+                "Provider resolved to %r via %s, preempting your "
+                "logged-in OAuth provider %r. If you meant to use the "
+                "OAuth login, unset %s or set `model.provider` "
+                "explicitly.",
+                pid, env_var, _oauth_active, env_var,
+            )
+        return pid
 
     # Logged-in OAuth provider (auth.json `active_provider`) — a LAST-RESORT
     # fallback, chosen only when the user expressed no other preference above.

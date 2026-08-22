@@ -97,7 +97,8 @@ def _truncate_to_char_budget(content: str, max_chars: int) -> tuple[str, int, bo
     (forcing the model to guess a smaller ``limit`` and burn a round-trip
     returning nothing), this trims the content to the last *complete line*
     that fits within ``max_chars`` and reports how many lines were kept so
-    the caller can offer a ``next_offset`` continuation.
+    the caller can offer a `
+ext_offset`` continuation.
 
     ``content`` is the gutter-rendered text (``LINE_NUM|CONTENT`` joined by
     ``\\n``). Individual lines are already clamped to ``get_max_line_length()``
@@ -1536,6 +1537,8 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "docker_forward_env": config.get("docker_forward_env", []),
                     "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                     "docker_network": config.get("docker_network", True),
+                    "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+                    "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
                 }
 
             ssh_config = None
@@ -1878,7 +1881,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             # Instead of rejecting the whole read — which forces the model to
             # guess a smaller `limit` and wastes a round-trip returning nothing
             # — trim to the last complete line that fits and offer a
-            # `next_offset` so the model can paginate forward. This rescues the
+            # 
+ext_offset` so the model can paginate forward. This rescues the
             # "few but very long lines" case (logs, wide CSVs, minified data)
             # that sails past the line-count `limit` but blows the char budget.
             total_lines = result_dict.get("total_lines", "unknown")

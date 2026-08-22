@@ -965,10 +965,12 @@ Two mechanisms make permanent failures visible:
 
 - **Terminal classification.** Failures whose exception *type* proves they can never self-heal — rejected/revoked tokens (`telegram_auth_error`, `discord_auth_error`, `email_auth_error`), missing privileged intents (`discord_intents_required`), a Photon sidecar whose dependencies cannot install (`SIDECAR_DEPS_MISSING`) or whose node binary is missing (`SIDECAR_NODE_MISSING`) — are marked fatal instead of entering the retry queue. Classification is strictly type-based; ambiguous errors always keep retrying.
 - **Needs-attention escalation.** A platform continuously in the retry queue past `agent.reconnect_attention_after` (default `7200` seconds = 2 hours, `0` disables) gets `needs_attention: true` and a `retrying_since` timestamp in gateway runtime status (`hermes status`), plus a WARNING log. Retries continue unchanged — this is a signal, not a circuit breaker. The flag clears on successful reconnect.
+- **Flap horizon.** The escalation clock above only resets when a reconnect *holds*. A platform must stay connected for `agent.reconnect_stable_after` (default `900` seconds = 15 minutes) before its next failure starts a fresh clock; reconnect sooner than that and the original clock is carried forward. Without it, a link that binds successfully every few minutes never accumulates queue time and never escalates, however long the underlying problem lasts (the reported case was two units racing one bot token for four days). Set it to `0` to make every successful bind count as a recovery. Raise it for a link that reconnects often but healthily.
 
 ```yaml
 agent:
   reconnect_attention_after: 7200   # seconds; 0 disables the escalation flag
+  reconnect_stable_after: 900       # seconds connected before a reconnect counts as recovery
 ```
 
 ## Gateway Agent Cache

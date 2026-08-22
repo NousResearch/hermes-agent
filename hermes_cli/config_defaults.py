@@ -301,6 +301,15 @@ DEFAULT_CONFIG = {
         # `hermes status` / fleet monitoring). Retries never stop — this is a
         # signal, not a circuit breaker. 0 = disable.
         "reconnect_attention_after": 7200,
+        # How long a platform must stay connected before a reconnect
+        # counts as a real recovery rather than a flap (seconds). Under
+        # this, the platform carries its original instability clock
+        # forward when it fails again, so repeated brief binds still
+        # escalate via reconnect_attention_after instead of resetting it
+        # on every blip. Raise it if a link reconnects often but healthily.
+        # 0 = every successful bind counts as a recovery (pre-#92178
+        # behaviour).
+        "reconnect_stable_after": 900,
         # Freshness window for the gateway auto-continue note (seconds).
         # After a gateway crash/restart/SIGTERM mid-run, the next user
         # message gets a "[System note: your previous turn was

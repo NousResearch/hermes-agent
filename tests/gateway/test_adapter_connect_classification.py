@@ -448,3 +448,186 @@ class TestRuntimeStatusAttentionFields:
         platform = payload["platforms"]["telegram"]
         assert platform["needs_attention"] is False
         assert platform["retrying_since"] is None
+
+
+# -- Gateway: the flap that defeats the escalation (#92178) -------------
+
+
+class TestReconnectClockCarriesAcrossFlaps:
+    """A brief reconnect is instability, not recovery.
+
+    The escalation above is per queue-spell: a successful reconnect deletes the
+    queue entry, and the next failure re-enters with a fresh ``queued_at``. Two
+    systemd units racing the same bot token is exactly the workload that keeps
+    winning briefly, so the 2-hour clock never accumulates and a four-day
+    outage presents as ordinary ``retrying`` the whole time (#92178).
+
+    ``_reconnect_clock_start`` hands the old clock back when the "recovery" was
+    shorter than the stability window, so cumulative instability escalates
+    while a genuine outage-then-recovery still starts over.
+    """
+
+    def test_no_history_starts_the_clock_now(self):
+        runner = _make_runner()
+        runner._recent_platform_recoveries = {}
+
+        now = time.monotonic()
+        assert runner._reconnect_clock_start(Platform.TELEGRAM, now) == now
+
+    def test_a_brief_recovery_carries_the_old_clock_forward(self):
+        """The reporter's shape: down for hours, up for seconds, down again."""
+        runner = _make_runner()
+        runner._recent_platform_recoveries = {}
+
+        unstable_since = time.monotonic() - 9000  # 2.5 hours of trouble
+        runner._note_reconnect_recovery(
+            Platform.TELEGRAM, {"queued_at": unstable_since}
+        )
+
+        # It loses the token again five seconds later.
+        carried = runner._reconnect_clock_start(Platform.TELEGRAM)
+
+        assert carried == unstable_since, (
+            "a reconnect that lasted seconds must not reset the instability "
+            "clock; resetting it is what kept #92178 silent for four days"
+        )
+
+    def test_a_sustained_recovery_starts_a_fresh_clock(self):
+        """The behaviour the escalation was designed around is preserved.
+
+        A platform that fails, comes back, and *stays* back for longer than the
+        stability window has genuinely recovered. Its next outage is a new
+        episode and must not inherit an ancient start time, or a single blip a
+        month ago would flag the next one instantly.
+        """
+        import gateway.run as run_module
+
+        runner = _make_runner()
+        runner._recent_platform_recoveries = {}
+
+        now = time.monotonic()
+        window = run_module._RECONNECT_STABLE_AFTER_SECONDS
+        runner._recent_platform_recoveries[Platform.TELEGRAM] = (
+            now - 9000,            # unstable_since, long ago
+            now - window - 1,      # recovered_at, just past the window
+        )
+
+        assert runner._reconnect_clock_start(Platform.TELEGRAM, now) == now
+        assert Platform.TELEGRAM not in runner._recent_platform_recoveries, (
+            "a mark past its window is dead weight and must be pruned"
+        )
+
+    def test_zero_window_disables_the_carry_over(self, monkeypatch):
+        import gateway.run as run_module
+
+        monkeypatch.setattr(run_module, "_RECONNECT_STABLE_AFTER_SECONDS", 0)
+        runner = _make_runner()
+        runner._recent_platform_recoveries = {}
+
+        runner._note_reconnect_recovery(
+            Platform.TELEGRAM, {"queued_at": time.monotonic() - 9000}
+        )
+        now = time.monotonic()
+
+        assert runner._recent_platform_recoveries == {}
+        assert runner._reconnect_clock_start(Platform.TELEGRAM, now) == now
+
+    def test_a_requeue_after_a_flap_is_immediately_escalatable(self, monkeypatch):
+        """End to end over the two calls the flap actually goes through.
+
+        Recover, drop the entry, fail again, re-enter via
+        ``_queue_retryable_fatal_platform`` -- and the new entry must already be
+        past the attention threshold, because the platform has been in trouble
+        for hours even though this particular spell is seconds old.
+        """
+        import gateway.run as run_module
+
+        runner = _make_runner()
+        runner._recent_platform_recoveries = {}
+        monkeypatch.setattr(runner, "_adapter_credential_claim", lambda p, a: None)
+        monkeypatch.setattr(runner, "_adapter_listener_claim", lambda p, a: None)
+        monkeypatch.setattr(runner, "_ensure_reconnect_watcher_running", lambda: None)
+
+        threshold = run_module._RECONNECT_ATTENTION_AFTER_SECONDS
+        info = {
+            "config": PlatformConfig(enabled=True, token="test"),
+            "attempts": 3,
+            "next_retry": time.monotonic(),
+            "queued_at": time.monotonic() - threshold - 10,
+        }
+        runner._failed_platforms[Platform.TELEGRAM] = info
+
+        # One of the brief successful binds: the watcher notes it, then drops
+        # the entry (and with it, before this fix, the whole clock).
+        runner._note_reconnect_recovery(Platform.TELEGRAM, info)
+        del runner._failed_platforms[Platform.TELEGRAM]
+
+        adapter = MagicMock()
+        adapter.platform = Platform.TELEGRAM
+        adapter.fatal_error_retryable = True
+        assert runner._queue_retryable_fatal_platform(adapter) is True
+
+        requeued = runner._failed_platforms[Platform.TELEGRAM]
+        assert _reconnect_needs_attention(requeued, time.monotonic()) is True, (
+            "the platform has been failing for over the threshold; a five "
+            "second reconnect in the middle does not make it healthy"
+        )
+
+    @pytest.mark.asyncio
+    async def test_watcher_flags_a_flapping_platform(self, monkeypatch):
+        """The signal the reporter never got, through the real watcher."""
+        import gateway.run as run_module
+
+        runner = _make_runner()
+        runner._recent_platform_recoveries = {}
+        monkeypatch.setattr(runner, "_adapter_credential_claim", lambda p, a: None)
+        monkeypatch.setattr(runner, "_adapter_listener_claim", lambda p, a: None)
+        monkeypatch.setattr(runner, "_ensure_reconnect_watcher_running", lambda: None)
+        status_writes = []
+        monkeypatch.setattr(
+            runner,
+            "_update_platform_runtime_status",
+            lambda platform, **kw: status_writes.append((platform, kw)),
+        )
+
+        threshold = run_module._RECONNECT_ATTENTION_AFTER_SECONDS
+        info = {
+            "config": PlatformConfig(enabled=True, token="test"),
+            "attempts": 3,
+            "next_retry": time.monotonic(),
+            "queued_at": time.monotonic() - threshold - 10,
+        }
+        runner._failed_platforms[Platform.TELEGRAM] = info
+        runner._note_reconnect_recovery(Platform.TELEGRAM, info)
+        del runner._failed_platforms[Platform.TELEGRAM]
+
+        adapter = MagicMock()
+        adapter.platform = Platform.TELEGRAM
+        adapter.fatal_error_retryable = True
+        runner._queue_retryable_fatal_platform(adapter)
+        # Hold off the retry itself so the pass exercises escalation only.
+        runner._failed_platforms[Platform.TELEGRAM]["next_retry"] = (
+            time.monotonic() + 300
+        )
+
+        real_sleep = asyncio.sleep
+        call_count = 0
+
+        async def fake_sleep(n):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                runner._running = False
+            await real_sleep(0)
+
+        with patch("asyncio.sleep", side_effect=fake_sleep):
+            await runner._platform_reconnect_watcher()
+
+        attention = [kw for _p, kw in status_writes if kw.get("needs_attention")]
+        assert attention, (
+            "a platform flapping past the attention threshold must be flagged; "
+            f"got {status_writes!r}"
+        )
+        assert attention[0]["platform_state"] == "retrying"
+        # Still queued: escalation is a signal, never a circuit breaker.
+        assert Platform.TELEGRAM in runner._failed_platforms

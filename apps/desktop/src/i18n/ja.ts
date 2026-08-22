@@ -2833,6 +2833,8 @@ export const ja = defineLocale({
     },
     tool: {
       copyCode: 'コードをコピー',
+      wordWrap: '折り返し',
+      toggleWordWrap: '折り返しを切り替え',
       renderingImage: '画像をレンダリング中',
       copyOutput: '出力をコピー',
       copyCommand: 'コマンドをコピー',

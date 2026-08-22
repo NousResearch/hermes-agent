@@ -1871,6 +1871,18 @@ body.guest-pointer-lock :is(webview, iframe) {
   padding: 0 !important;
 }
 
+/* Word-wrap mode: when a code card's wrap toggle is on, reflow long lines
+   instead of scrolling horizontally. Mirrors the prose-fence treatment
+   (`white-space: pre-wrap` + `overflow-wrap: anywhere`) but is per-block and
+   user-controlled. `!important` overrides the `pre` UA default, Tailwind's
+   `whitespace-pre` on the plain path, and Streamdown's `white-space: inherit`
+   chrome-strip on the nested `code`. */
+[data-slot='code-card'][data-wrap] pre,
+[data-slot='code-card'][data-wrap] pre code {
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+}
+
 [data-slot='aui_assistant-message-content'] .aui-md .aui-md-table {
   border-spacing: 0;
 }

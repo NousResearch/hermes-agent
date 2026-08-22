@@ -1,12 +1,13 @@
 'use client'
 
 import type { SyntaxHighlighterProps } from '@assistant-ui/react-streamdown'
-import { type ComponentProps, type FC, lazy, Suspense, useMemo } from 'react'
+import { type ComponentProps, type FC, lazy, Suspense, useId, useMemo, useState } from 'react'
 import type ShikiHighlighter from 'react-shiki'
 
 import { CodeCard, CodeCardBody } from '@/components/chat/code-card'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { CopyButton } from '@/components/ui/copy-button'
+import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
 import { isLikelyProseCodeBlock } from '@/lib/markdown-code'
 
@@ -123,6 +124,35 @@ const PlainCode: FC<{ code: string }> = ({ code }) => {
   )
 }
 
+/** Hover-revealed word-wrap switch shown in a code card's header, to the left
+ *  of the copy button. It is the only per-block control; wrapping is applied
+ *  via the card's `data-wrap` attribute in styles.css. */
+function WordWrapToggle({
+  checked,
+  onCheckedChange
+}: {
+  checked: boolean
+  onCheckedChange: (checked: boolean) => void
+}) {
+  const { t } = useI18n()
+  const id = useId()
+
+  return (
+    <span className="inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[0.7rem] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+      <Switch
+        aria-label={t.assistant.tool.toggleWordWrap}
+        checked={checked}
+        id={id}
+        onCheckedChange={onCheckedChange}
+        size="xs"
+      />
+      <label className="cursor-pointer select-none" htmlFor={id}>
+        {t.assistant.tool.wordWrap}
+      </label>
+    </span>
+  )
+}
+
 export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
   components: { Pre },
   language,
@@ -131,6 +161,7 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
 }) => {
   const { t } = useI18n()
   const trimmed = (code ?? '').replace(/^\n+/, '').trimEnd()
+  const [wrap, setWrap] = useState(false)
 
   // Streaming may hand us empty/incomplete fences — render nothing rather
   // than a transient empty card.
@@ -145,15 +176,18 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
   const plain = defer || exceedsHighlightBudget(trimmed)
 
   return (
-    <CodeCard data-streaming={defer ? 'true' : undefined}>
-      <CopyButton
-        appearance="inline"
-        className="absolute right-1.5 top-1.5 z-10 h-5 gap-0 rounded-md px-1 opacity-0 transition-opacity group-hover/code:opacity-100 focus-visible:opacity-100"
-        iconClassName="size-2.5"
-        label={t.assistant.tool.copyCode}
-        showLabel={false}
-        text={trimmed}
-      />
+    <CodeCard data-streaming={defer ? 'true' : undefined} data-wrap={wrap || undefined}>
+      <div className="absolute right-1.5 top-1.5 z-10 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/code:opacity-100 focus-within:opacity-100">
+        <WordWrapToggle checked={wrap} onCheckedChange={setWrap} />
+        <CopyButton
+          appearance="inline"
+          className="h-5 gap-0 rounded-md px-1"
+          iconClassName="size-2.5"
+          label={t.assistant.tool.copyCode}
+          showLabel={false}
+          text={trimmed}
+        />
+      </div>
       <CodeCardBody className="[&_pre]:px-3 [&_pre]:py-2.5">
         <ExpandableBlock>
           <Pre className="aui-shiki m-0 overflow-hidden bg-transparent p-0">

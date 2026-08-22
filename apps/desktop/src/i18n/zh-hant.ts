@@ -2741,6 +2741,8 @@ export const zhHant = defineLocale({
     },
     tool: {
       copyCode: '複製程式碼',
+      wordWrap: '自動換行',
+      toggleWordWrap: '切換自動換行',
       renderingImage: '正在渲染圖片',
       copyOutput: '複製輸出',
       copyCommand: '複製指令',

@@ -3206,6 +3206,8 @@ export const en: Translations = {
     },
     tool: {
       copyCode: 'Copy code',
+      wordWrap: 'Word wrap',
+      toggleWordWrap: 'Toggle word wrap',
       renderingImage: 'Rendering image',
       copyOutput: 'Copy output',
       copyCommand: 'Copy command',

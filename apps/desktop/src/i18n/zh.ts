@@ -3367,6 +3367,8 @@ export const zh: Translations = {
     },
     tool: {
       copyCode: '复制代码',
+      wordWrap: '自动换行',
+      toggleWordWrap: '切换自动换行',
       renderingImage: '正在渲染图片',
       copyOutput: '复制输出',
       copyCommand: '复制命令',

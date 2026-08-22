@@ -217,12 +217,22 @@ def _ensure_uv_path(
     # Verify
     result = resolve_uv()
     if result:
-        version = subprocess.run(
-            [result, "--version"],
-            capture_output=True,
-            text=True, encoding='utf-8', errors='replace',
-            check=False,
-        ).stdout.strip()
+        try:
+            version = subprocess.run(
+                [result, "--version"],
+                capture_output=True,
+                text=True, encoding='utf-8', errors='replace',
+                check=False,
+                timeout=UV_VERSION_TIMEOUT_SECONDS,
+            ).stdout.strip()
+        except subprocess.TimeoutExpired:
+            # Non-fatal: the binary is present and usable; only the label probe
+            # hung. Callers (e.g. ``hermes update``) invoke ensure_uv unguarded.
+            logger.debug(
+                "uv --version timed out after %ss after install",
+                UV_VERSION_TIMEOUT_SECONDS,
+            )
+            version = "version unavailable"
         print(f"  ✓ Managed uv installed ({version})")
         # Compatibility boundary: an older, already-imported updater calls the
         # freshly pulled ``ensure_uv()`` after bootstrapping uv.  Repair here so
@@ -310,6 +320,17 @@ UV_SELF_UPDATE_INTERVAL_SECONDS = 7 * 24 * 3600
 # `uv self update` is a network call; unbounded it can hang forever on a
 # blackholed connection (no default timeout in uv's downloader path).
 UV_SELF_UPDATE_TIMEOUT_SECONDS = 60
+# Network-bound uv python provisioning can hang forever on blackholed
+# connectivity (observed on restricted networks during every-update
+# SQLite-runtime repair). Bound every download/install/find/sync step.
+UV_PYTHON_LIST_TIMEOUT_SECONDS = 30
+UV_PYTHON_INSTALL_TIMEOUT_SECONDS = 180
+UV_PYTHON_FIND_TIMEOUT_SECONDS = 30
+UV_VENV_TIMEOUT_SECONDS = 60
+UV_SYNC_TIMEOUT_SECONDS = 300
+UV_VERSION_TIMEOUT_SECONDS = 15
+UV_BOOTSTRAP_DOWNLOAD_TIMEOUT_SECONDS = 120
+UV_BOOTSTRAP_INSTALL_TIMEOUT_SECONDS = 180
 
 
 def update_managed_uv(
@@ -348,12 +369,22 @@ def update_managed_uv(
             result = None
         if result is not None and result.returncode == 0:
             _touch_uv_self_update_stamp()
-            version = subprocess.run(
-                [existing, "--version"],
-                capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                check=False,
-            ).stdout.strip()
+            try:
+                version = subprocess.run(
+                    [existing, "--version"],
+                    capture_output=True,
+                    text=True, encoding='utf-8', errors='replace',
+                    check=False,
+                    timeout=UV_VERSION_TIMEOUT_SECONDS,
+                ).stdout.strip()
+            except subprocess.TimeoutExpired:
+                # Non-fatal: self-update already succeeded; only the label probe
+                # hung. ``hermes update`` calls this unguarded.
+                logger.debug(
+                    "uv --version timed out after %ss after self update",
+                    UV_VERSION_TIMEOUT_SECONDS,
+                )
+                version = "version unavailable"
             print(f"  ✓ Managed uv updated ({version})")
         elif result is not None:
             # Non-fatal — old uv still works fine.
@@ -477,7 +508,7 @@ def _list_available_patches(
             capture_output=True,
             text=True,
             check=False,
-            timeout=15,
+            timeout=UV_PYTHON_LIST_TIMEOUT_SECONDS,
         )
         if result.returncode != 0 or not result.stdout.strip():
             return []
@@ -536,23 +567,39 @@ def _attempt_install_generation(
     _make_world_traversable(generation)
 
     env = managed_python_env(project_root, install_dir=generation)
-    install = subprocess.run(
-        [
-            uv_bin,
-            "python",
-            "install",
+    try:
+        install = subprocess.run(
+            [
+                uv_bin,
+                "python",
+                "install",
+                request,
+                "--reinstall",
+                "--no-bin",
+                "--no-registry",
+                "--no-config",
+            ],
+            cwd=project_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=UV_PYTHON_INSTALL_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "private Python install timed out for %s after %ss",
             request,
-            "--reinstall",
-            "--no-bin",
-            "--no-registry",
-            "--no-config",
-        ],
-        cwd=project_root,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+            UV_PYTHON_INSTALL_TIMEOUT_SECONDS,
+        )
+        # Immediate operator feedback (stdout may be quiet under logging-only).
+        print(
+            f"  ✗ uv python install timed out after {UV_PYTHON_INSTALL_TIMEOUT_SECONDS}s"
+            " — check your network connection.",
+            file=sys.stderr,
+        )
+        _remove_tree(generation, boundary=python_root)
+        return None
     if install.returncode != 0:
         logger.warning(
             "private Python install failed for %s (rc=%d): %s",
@@ -563,21 +610,36 @@ def _attempt_install_generation(
         _remove_tree(generation, boundary=python_root)
         return None
 
-    found = subprocess.run(
-        [
-            uv_bin,
-            "python",
-            "find",
+    try:
+        found = subprocess.run(
+            [
+                uv_bin,
+                "python",
+                "find",
+                request,
+                "--managed-python",
+                "--no-config",
+            ],
+            cwd=project_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=UV_PYTHON_FIND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "private Python lookup timed out for %s after %ss",
             request,
-            "--managed-python",
-            "--no-config",
-        ],
-        cwd=project_root,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+            UV_PYTHON_FIND_TIMEOUT_SECONDS,
+        )
+        print(
+            f"  ✗ uv python find timed out after {UV_PYTHON_FIND_TIMEOUT_SECONDS}s"
+            " — check your network connection.",
+            file=sys.stderr,
+        )
+        _remove_tree(generation, boundary=python_root)
+        return None
     if found.returncode != 0 or not found.stdout.strip():
         logger.warning(
             "private Python lookup failed for %s (rc=%d): %s",
@@ -815,24 +877,38 @@ def _stage_candidate_venv(
     })
 
     print("  → Building a relocatable replacement environment...")
-    created = subprocess.run(
-        [
-            uv_bin,
-            "venv",
-            str(candidate),
-            "--python",
-            str(python),
-            "--managed-python",
-            "--no-python-downloads",
-            "--relocatable",
-            "--no-config",
-        ],
-        cwd=project_root,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        created = subprocess.run(
+            [
+                uv_bin,
+                "venv",
+                str(candidate),
+                "--python",
+                str(python),
+                "--managed-python",
+                "--no-python-downloads",
+                "--relocatable",
+                "--no-config",
+            ],
+            cwd=project_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=UV_VENV_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "candidate venv creation timed out after %ss",
+            UV_VENV_TIMEOUT_SECONDS,
+        )
+        print(
+            f"  ✗ uv venv timed out after {UV_VENV_TIMEOUT_SECONDS}s"
+            " — check your network connection.",
+            file=sys.stderr,
+        )
+        _remove_tree(candidate, boundary=runtime_root)
+        return None
     if created.returncode != 0:
         logger.warning(
             "candidate venv creation failed (rc=%d): %s",
@@ -850,20 +926,34 @@ def _stage_candidate_venv(
     # UV_NO_CONFIG drops it and uv 0.12+ refuses --locked.
     sync_env = dict(env)
     sync_env.pop("UV_NO_CONFIG", None)
-    synced = subprocess.run(
-        [
-            uv_bin,
-            "sync",
-            "--extra",
-            "all",
-            "--locked",
-            "--python",
-            str(_venv_python(candidate)),
-        ],
-        cwd=project_root,
-        env=sync_env,
-        check=False,
-    )
+    try:
+        synced = subprocess.run(
+            [
+                uv_bin,
+                "sync",
+                "--extra",
+                "all",
+                "--locked",
+                "--python",
+                str(_venv_python(candidate)),
+            ],
+            cwd=project_root,
+            env=sync_env,
+            check=False,
+            timeout=UV_SYNC_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "candidate dependency sync timed out after %ss",
+            UV_SYNC_TIMEOUT_SECONDS,
+        )
+        print(
+            f"  ✗ uv sync timed out after {UV_SYNC_TIMEOUT_SECONDS}s"
+            " — check your network connection.",
+            file=sys.stderr,
+        )
+        _remove_tree(candidate, boundary=runtime_root)
+        return None
     if synced.returncode != 0:
         logger.warning("candidate dependency sync failed (rc=%d)", synced.returncode)
         _remove_tree(candidate, boundary=runtime_root)
@@ -1038,7 +1128,7 @@ def _uv_version_string(uv_bin: str) -> str:
             encoding="utf-8",
             errors="replace",
             check=False,
-            timeout=15,
+            timeout=UV_VERSION_TIMEOUT_SECONDS,
         )
     except Exception:
         return ""
@@ -1345,12 +1435,14 @@ def _install_uv_posix(env: dict[str, str]) -> None:
             ["curl", "-LsSf", "https://astral.sh/uv/install.sh", "-o", installer_path],
             check=True,
             capture_output=True,
+            timeout=UV_BOOTSTRAP_DOWNLOAD_TIMEOUT_SECONDS,
         )
         subprocess.run(
             ["sh", installer_path],
             env=env,
             check=True,
             capture_output=True,
+            timeout=UV_BOOTSTRAP_INSTALL_TIMEOUT_SECONDS,
         )
     finally:
         try:
@@ -1367,6 +1459,7 @@ def _install_uv_windows(env: dict[str, str]) -> None:
         env=env,
         check=True,
         capture_output=True,
+        timeout=UV_BOOTSTRAP_INSTALL_TIMEOUT_SECONDS,
     )
 
 

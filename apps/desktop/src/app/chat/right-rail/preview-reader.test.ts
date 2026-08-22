@@ -1,9 +1,16 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
+import { findGroup, findGroupOfPane } from '@/components/pane-shell/tree/model'
+import * as tree from '@/components/pane-shell/tree/store'
 import { $rightRailActiveTabId, selectRightRailTab } from '@/store/layout'
 import { closeRightRail, openPreview, type PreviewTarget } from '@/store/preview'
 
-import { PREVIEW_READ_MAX_CHARS, readActivePreview, registerPreviewPageReader } from './preview-reader'
+import {
+  PREVIEW_READ_MAX_CHARS,
+  readActivePreview,
+  registerPreviewPageReader,
+  resolveActivePreviewTab
+} from './preview-reader'
 
 function urlTarget(url: string): PreviewTarget {
   return { kind: 'url', label: 'Browser', source: url, url }
@@ -34,6 +41,8 @@ describe('readActivePreview (read_preview tool)', () => {
     cleanups = []
     closeRightRail()
     window.localStorage.clear()
+    tree.noteActiveTreeGroup(null)
+    tree.noteHoveredTreeGroup(null)
   })
 
   it('answers null when nothing is open, so the tool reports it cleanly', async () => {
@@ -49,6 +58,7 @@ describe('readActivePreview (read_preview tool)', () => {
     }))
 
     expect(await readActivePreview()).toMatchObject({
+      active_tab_id: 'url:browser',
       kind: 'url',
       text: 'Top stories…',
       title: 'Hacker News',
@@ -136,5 +146,131 @@ describe('readActivePreview (read_preview tool)', () => {
     first()
 
     expect(await readActivePreview()).toMatchObject({ text: 'second' })
+  })
+
+  it('includes tabs[] metadata when more than one preview is open', async () => {
+    openPreview(fileTarget('/work/project-network.html'), 'tool-result')
+    const fileId = $rightRailActiveTabId.get()!
+    openPreview(urlTarget('https://example.com/tickets'), 'tool-result')
+
+    const result = await readActivePreview()
+    expect(result).toMatchObject({
+      active_tab_id: 'url:browser',
+      kind: 'url',
+      url: 'https://example.com/tickets'
+    })
+    expect(result?.tabs?.map(t => t.id).sort()).toEqual([fileId, 'url:browser'].sort())
+    expect(result?.note).toMatch(/Multiple preview tabs/i)
+  })
+
+  it('honors the hovered preview zone over a stale global file selection', async () => {
+    const model = await import('@/components/pane-shell/tree/model')
+
+    openPreview(fileTarget('/work/a.md'), 'file-browser')
+    const fileId = $rightRailActiveTabId.get()!
+    openPreview(urlTarget('https://example.com'), 'tool-result')
+    // Stale global active (pre-fix clobber) while Browser remains open.
+    selectRightRailTab(fileId)
+
+    tree.declareDefaultTree(
+      model.split('row', [
+        model.group([`preview-tile:url:browser`], {
+          active: 'preview-tile:url:browser',
+          id: 'grp-browser'
+        }),
+        model.group([`preview-tile:${fileId}`], { active: `preview-tile:${fileId}`, id: 'grp-file' })
+      ])
+    )
+
+    tree.noteHoveredTreeGroup('grp-browser')
+    expect(resolveActivePreviewTab()?.id).toBe('url:browser')
+    expect(await readActivePreview()).toMatchObject({ active_tab_id: 'url:browser', kind: 'url' })
+  })
+
+  it('honors the focused preview zone over a stale global file selection', async () => {
+    const model = await import('@/components/pane-shell/tree/model')
+
+    openPreview(fileTarget('/work/a.md'), 'file-browser')
+    const fileId = $rightRailActiveTabId.get()!
+    openPreview(urlTarget('https://example.com'), 'tool-result')
+    selectRightRailTab(fileId)
+
+    tree.declareDefaultTree(
+      model.split('row', [
+        model.group([`preview-tile:url:browser`], {
+          active: 'preview-tile:url:browser',
+          id: 'grp-browser'
+        }),
+        model.group([`preview-tile:${fileId}`], { active: `preview-tile:${fileId}`, id: 'grp-file' })
+      ])
+    )
+
+    tree.noteActiveTreeGroup('grp-browser')
+    expect(resolveActivePreviewTab()?.id).toBe('url:browser')
+  })
+})
+
+describe('openPreview reveal retargets activeTreeGroup (split-zone clobber)', () => {
+  beforeEach(() => {
+    closeRightRail()
+    window.localStorage.clear()
+    tree.noteActiveTreeGroup(null)
+    tree.noteHoveredTreeGroup(null)
+  })
+
+  it('notes the Browser zone on reveal so follow cannot snap global active back to a file sibling', async () => {
+    const model = await import('@/components/pane-shell/tree/model')
+
+    openPreview(fileTarget('/work/project-network.html'), 'tool-result')
+    const fileId = $rightRailActiveTabId.get()!
+
+    const browserPane = 'preview-tile:url:browser'
+    const filePane = `preview-tile:${fileId}`
+
+    // File zone is what the user last touched; Browser will land in a sibling zone.
+    tree.declareDefaultTree(
+      model.split('row', [
+        model.group([browserPane], { active: browserPane, id: 'grp-browser' }),
+        model.group([filePane], { active: filePane, id: 'grp-file' })
+      ])
+    )
+    tree.noteActiveTreeGroup('grp-file')
+
+    // Mirror watchPreviewTiles reveal (noteActiveTreeGroup after revealTreePane).
+    const reveal = (tabId: string) => {
+      const paneId = `preview-tile:${tabId}`
+      tree.revealTreePane(paneId)
+      const t = tree.$layoutTree.get()
+      const group = t ? findGroupOfPane(t, paneId) : null
+      if (group) {
+        tree.noteActiveTreeGroup(group.id)
+      }
+    }
+
+    openPreview(urlTarget('https://example.com/tickets'), 'tool-result')
+    expect($rightRailActiveTabId.get()).toBe('url:browser')
+    reveal('url:browser')
+
+    // follow from layout would previously use stale grp-file and clobber Browser.
+    const follow = () => {
+      const t = tree.$layoutTree.get()
+      const groupId = tree.$activeTreeGroup.get()
+      const active = groupId && t ? findGroup(t, groupId)?.active : undefined
+      if (!active?.startsWith('preview-tile:')) return
+      const tabId = active.slice('preview-tile:'.length)
+      if ($rightRailActiveTabId.get() !== tabId) {
+        selectRightRailTab(tabId as typeof fileId)
+      }
+    }
+
+    follow()
+
+    expect(tree.$activeTreeGroup.get()).toBe('grp-browser')
+    expect($rightRailActiveTabId.get()).toBe('url:browser')
+    expect(await readActivePreview()).toMatchObject({
+      active_tab_id: 'url:browser',
+      kind: 'url',
+      url: 'https://example.com/tickets'
+    })
   })
 })

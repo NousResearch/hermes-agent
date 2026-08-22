@@ -229,3 +229,36 @@ def test_render_handles_all_none_stats():
     empty["fts_tables"] = None
     lines = _render_state_db_stats(empty, holders=None)
     assert isinstance(lines, list)  # must not raise
+
+
+def test_render_large_db_with_auto_prune_enabled_suggests_retention_not_enable():
+    """#83933: when sessions.auto_prune is already enabled, the advisory must
+    not suggest enabling it — it points at retention_days instead."""
+    from hermes_cli.doctor import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
+
+    big = STATE_DB_SIZE_WARN_BYTES + 1
+    lines = _render_state_db_stats(
+        _base_stats(logical_size_bytes=big, page_count=big // 4096, page_size=4096),
+        holders=None,
+        auto_prune_enabled=True,
+        retention_days=90,
+    )
+    warns = [" ".join(str(p) for p in line) for line in lines if line[0] == "warn"]
+    blob = " ".join(warns)
+    assert "auto_prune is enabled" in blob
+    assert "retention_days=90" in blob
+    assert "consider enabling" not in blob
+
+
+def test_render_large_db_with_auto_prune_disabled_still_suggests_enabling():
+    """#83933: default path unchanged — advisory still suggests enabling."""
+    from hermes_cli.doctor import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
+
+    big = STATE_DB_SIZE_WARN_BYTES + 1
+    lines = _render_state_db_stats(
+        _base_stats(logical_size_bytes=big, page_count=big // 4096, page_size=4096),
+        holders=None,
+        auto_prune_enabled=False,
+    )
+    blob = " ".join(" ".join(str(p) for p in line) for line in lines)
+    assert "consider enabling sessions.auto_prune" in blob

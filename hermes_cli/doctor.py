@@ -414,7 +414,12 @@ STATE_DB_SIZE_WARN_BYTES = 1 * 1024 * 1024 * 1024   # 1 GiB logical size
 from hermes_cli.sizefmt import format_bytes as _human_bytes
 
 
-def _render_state_db_stats(stats: dict, holders=None) -> list:
+def _render_state_db_stats(
+    stats: dict,
+    holders=None,
+    auto_prune_enabled: bool = False,
+    retention_days: int | None = None,
+) -> list:
     """Turn a collect_state_db_stats() dict into doctor output lines.
 
     Returns a list of ``(kind, text, detail)`` tuples where kind is one of
@@ -466,10 +471,17 @@ def _render_state_db_stats(stats: dict, holders=None) -> list:
     # trigram layout (fts_storage_version marker absent) — the offline
     # optimize-storage pass that migrates/compacts the FTS indexes.
     if logical is not None and logical > STATE_DB_SIZE_WARN_BYTES:
-        detail = (
-            "consider enabling sessions.auto_prune in config.yaml "
-            "to bound growth"
-        )
+        if auto_prune_enabled:
+            detail = (
+                "sessions.auto_prune is enabled"
+                + (f" (retention_days={retention_days})" if retention_days is not None else "")
+                + "; reduce retention_days for further compaction"
+            )
+        else:
+            detail = (
+                "consider enabling sessions.auto_prune in config.yaml "
+                "to bound growth"
+            )
         legacy_trigram = (
             fts is not None
             and fts.get("messages_fts_trigram")
@@ -1932,15 +1944,37 @@ def run_doctor(args):
 
             _db_stats = collect_state_db_stats(state_db_path)
             _db_holders = count_db_holders(state_db_path)
+            # #83933: make the large-DB advisory config-aware — when
+            # sessions.auto_prune is already enabled, do not suggest enabling it.
+            _auto_prune = False
+            _retention_days = None
+            try:
+                from hermes_cli.config import load_config
+                _cfg = load_config()
+                _sess = (_cfg.get("sessions") or {}) if isinstance(_cfg, dict) else {}
+                _auto_prune = bool(_sess.get("auto_prune", False))
+                _rd = _sess.get("retention_days")
+                _retention_days = int(_rd) if isinstance(_rd, (int, float)) else None
+            except Exception:
+                pass
             for _kind, _text, _detail in _render_state_db_stats(
-                _db_stats, holders=_db_holders
+                _db_stats,
+                holders=_db_holders,
+                auto_prune_enabled=_auto_prune,
+                retention_days=_retention_days,
             ):
                 if _kind == "warn":
                     check_warn(_text, _detail)
                     if "auto_prune" in _detail:
                         issues.append(
-                            "state.db is large — enable sessions.auto_prune "
-                            "in config.yaml"
+                            (
+                                "state.db is large — sessions.auto_prune is "
+                                "enabled; reduce retention_days for further "
+                                "compaction"
+                                if _auto_prune
+                                else "state.db is large — enable "
+                                "sessions.auto_prune in config.yaml"
+                            )
                             + (
                                 " and run 'hermes sessions optimize-storage' "
                                 "offline (gateway stopped)"

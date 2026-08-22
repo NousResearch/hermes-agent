@@ -37,6 +37,50 @@ class TestCodexTransportBasic:
         assert result[0]["name"] == "terminal"
 
 
+class TestCodexReasoningEffortClamp:
+    """Regression guard for the Codex Responses reasoning-effort contract.
+
+    Current main routes effort through ``agent.reasoning_effort.clamp_effort``
+    with a per-model supported set (``codex_supported_efforts``). Two invariants
+    matter here and a stale ``max``->``xhigh`` hand-map (PR #50038's first draft)
+    would silently break both:
+
+    - ``max`` is a real gpt-5.6 wire level and MUST be preserved, not rewritten
+      to ``xhigh`` (commit 7550c594ce maps the Codex ``ultra`` tier onto it).
+    - The Hermes-internal ``ultra`` tier MUST clamp down to ``max`` on gpt-5.6
+      (it is never sent to the wire; #89503 class).
+
+    Legacy Codex models (no ``max`` support) still clamp ``max`` -> ``xhigh``,
+    which is the nearest weaker supported level, not a hand-coded rewrite.
+    """
+
+    def _effort(self, transport, model, effort):
+        kw = transport.build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            reasoning_config={"effort": effort},
+        )
+        return kw.get("reasoning", {}).get("effort")
+
+    def test_max_preserved_on_gpt56(self, transport):
+        # gpt-5.6 accepts ``max`` natively; it must reach the wire unchanged.
+        assert self._effort(transport, "gpt-5.6", "max") == "max"
+
+    def test_ultra_clamps_to_max_on_gpt56(self, transport):
+        # ``ultra`` is internal ladder vocabulary; on a set topping out at
+        # ``max`` it clamps down to ``max`` (never leaks ``ultra`` to the wire).
+        assert self._effort(transport, "gpt-5.6", "ultra") == "max"
+
+    def test_max_clamps_to_xhigh_on_legacy_codex(self, transport):
+        # gpt-5.5/5.4 reject ``max``; nearest weaker supported level is xhigh.
+        assert self._effort(transport, "gpt-5.5", "max") == "xhigh"
+
+    def test_supported_levels_pass_through(self, transport):
+        for level in ("low", "medium", "high", "xhigh"):
+            assert self._effort(transport, "gpt-5.6", level) == level
+
+
 class TestCodexBuildKwargs:
 
 

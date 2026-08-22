@@ -2519,10 +2519,13 @@ def _fetch_codex_oauth_context_lengths_with_source(
     if acct_id:
         headers["ChatGPT-Account-Id"] = acct_id
 
+    from agent.codex_version import get_codex_cli_version
+
     try:
         _ensure_requests()
         resp = requests.get(
-            "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
+            "https://chatgpt.com/backend-api/codex/models"
+            f"?client_version={get_codex_cli_version()}",
             headers=headers,
             timeout=(5, 10),
             verify=_resolve_requests_verify(),

@@ -20052,6 +20052,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                 self,
                                                 session_key,
                                             )
+                                    # Compression made progress (rows or tokens
+                                    # reduced) but the session is STILL above the
+                                    # hard message-count limit — record a cooldown
+                                    # so the next inbound message does not
+                                    # immediately re-trigger the same expensive
+                                    # compression that cannot push below the floor
+                                    # (#79540).  Without this guard, every message
+                                    # burns 75-187 s compressing 416→404→416→…
+                                    # forever.
+                                    if (
+                                        not _hyg_aborted
+                                        and _new_count >= _HARD_MSG_LIMIT
+                                        and _hyg_failure_cooldown_seconds >= 0
+                                    ):
+                                        _still_over_cooldown = max(
+                                            _hyg_failure_cooldown_seconds, 60.0
+                                        )
+                                        _record_hygiene_cooldown(
+                                            self,
+                                            session_entry.session_id,
+                                            _still_over_cooldown,
+                                        )
+                                        logger.warning(
+                                            "Session hygiene: compressed %s → %s msgs "
+                                            "but still >= hard limit (%s); "
+                                            "cooling down for %.0fs to avoid "
+                                            "re-trigger loop (#79540)",
+                                            _msg_count, _new_count,
+                                            _HARD_MSG_LIMIT,
+                                            _still_over_cooldown,
+                                        )
                                     if _hyg_aborted:
                                         if _hyg_failure_cooldown_seconds >= 0:
                                             _hyg_cooldown = await asyncio.to_thread(

@@ -42,3 +42,41 @@ def test_current_checkout_healthy_node_deps_reports_up_to_date():
     # The refresh pairs with the web build like every other call site.
     m.return_value._build_web_ui.assert_called_once()
     completion.assert_called_once_with("✓ Already up to date!")
+
+
+def test_current_checkout_migrates_config_from_already_pulled_code(capsys):
+    """An interrupted-install retry must not leave old config unbootable."""
+    with (
+        patch.object(update_cmd, "_run_config_check_fresh", return_value=(37, 38)),
+        patch.object(
+            update_cmd,
+            "_run_migrate_config_fresh",
+            return_value={"config_added": [], "warnings": []},
+        ) as migrate,
+    ):
+        update_cmd._repair_config_on_current_checkout()
+
+    migrate.assert_called_once_with(interactive=False, quiet=True)
+    assert "Updating config format (v37 → v38)" in capsys.readouterr().out
+
+
+def test_current_checkout_skips_config_migration_when_current(capsys):
+    with (
+        patch.object(update_cmd, "_run_config_check_fresh", return_value=(38, 38)),
+        patch.object(update_cmd, "_run_migrate_config_fresh") as migrate,
+    ):
+        update_cmd._repair_config_on_current_checkout()
+
+    migrate.assert_not_called()
+    assert "Configuration is up to date" in capsys.readouterr().out
+
+
+def test_current_checkout_config_migration_failure_is_actionable(capsys):
+    with patch.object(
+        update_cmd, "_run_config_check_fresh", side_effect=RuntimeError("broken")
+    ):
+        update_cmd._repair_config_on_current_checkout()
+
+    out = capsys.readouterr().out
+    assert "Config format update failed: broken" in out
+    assert "hermes config migrate" in out

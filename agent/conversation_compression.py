@@ -3512,6 +3512,7 @@ def compress_context(
                         },
                         watermark=_commit_watermark,
                         lock_holder=_lock_holder,
+                        system_prompt=new_system_prompt,
                     )
                     split_status = "in_place_committed"
                     # Reset the flush identity set so the next turn's appends are
@@ -3741,12 +3742,10 @@ def compress_context(
                                         _src_err,
                                     )
 
-                # In-place mode still updates/replaces the current row here.
-                # Rotation already published prompt + compacted handoff atomically.
+                # In-place prompt is persisted inside archive_and_compact
+                # (same BEGIN IMMEDIATE as the transcript rewrite). Rotation
+                # already published prompt + compacted handoff atomically.
                 if in_place:
-                    agent._session_db.update_system_prompt(
-                        agent.session_id, new_system_prompt
-                    )
                     agent._last_flushed_db_idx = 0
                 else:
                     agent._last_flushed_db_idx = len(compressed)

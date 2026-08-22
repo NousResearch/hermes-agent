@@ -10565,6 +10565,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         model_config_patch: Optional[Dict[str, Any]] = None,
         watermark: Optional[int] = None,
         lock_holder: Optional[str] = None,
+        system_prompt: Optional[str] = None,
     ) -> int:
         """Non-destructive in-place compaction for a single durable session id.
 
@@ -10607,7 +10608,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         ``message_count`` is set to the ACTIVE count after commit, matching
         what the live load returns. ``model_config_patch`` is merged into the
         session's JSON config in the same transaction; a ``None`` value
-        removes that key. Returns the new active count.
+        removes that key. ``system_prompt``, when given, is stored in that
+        same write so an in-place compaction cannot leave transcript and
+        prompt on opposite sides of a crash (#84722). Returns the new
+        active count.
         """
 
         def _do(conn):
@@ -10695,17 +10699,25 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
             # message_count / tool_call_count reflect the LIVE (active) set —
             # the archived rows are still on disk but not part of the live count.
-            if model_config_patch is None:
-                conn.execute(
-                    "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
-                    (inserted, tool_calls_total, session_id),
-                )
-            else:
-                conn.execute(
-                    "UPDATE sessions SET message_count = ?, tool_call_count = ?, "
-                    "model_config = ? WHERE id = ?",
-                    (inserted, tool_calls_total, patched_model_config, session_id),
-                )
+            system_prompt_hash = None
+            if system_prompt is not None:
+                system_prompt_hash = self._store_system_prompt(conn, system_prompt)
+            sets = ["message_count = ?", "tool_call_count = ?"]
+            params: list = [inserted, tool_calls_total]
+            if model_config_patch is not None:
+                sets.append("model_config = ?")
+                params.append(patched_model_config)
+            if system_prompt is not None:
+                sets.append("system_prompt_hash = ?")
+                sets.append("system_prompt = NULL")
+                params.append(system_prompt_hash)
+            params.append(session_id)
+            conn.execute(
+                f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?",
+                params,
+            )
+            if system_prompt is not None:
+                self._delete_unreferenced_system_prompts(conn)
             return inserted
 
         return self._execute_write(_do)

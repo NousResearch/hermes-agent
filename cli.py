@@ -5760,8 +5760,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         per ``min_interval`` seconds.
         """
         now = time.monotonic()
-        last = getattr(self, "_last_focus_regain_redraw", 0.0)
-        if now - last < min_interval:
+        # monotonic() is time-since-boot, not an epoch. A 0.0 default would
+        # rate-limit the first redraw on a machine that has been up for less
+        # than min_interval (fresh CI VMs often sit at 10-40s).
+        last = getattr(self, "_last_focus_regain_redraw", None)
+        if last is not None and now - last < min_interval:
             return
         self._last_focus_regain_redraw = now
         self._force_full_redraw()

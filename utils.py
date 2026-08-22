@@ -176,8 +176,84 @@ def _rewrite_in_place(tmp_str: str, real_path: str) -> None:
     os.unlink(tmp_str)
 
 
+def _unlink_quietly(path: str) -> None:
+    """Best-effort removal of a staging temp file."""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
 def _copy_fallback(tmp_str: str, real_path: str) -> None:
-    """Copy/fsync/unlink fallback for cross-device and bind-mount renames."""
+    """Cross-device / bind-mount fallback: stage beside the target, then rename.
+
+    The new content is staged into the *resolved target's own directory* and
+    renamed from there, so the replace that actually lands on the target is
+    same-filesystem and therefore still atomic.
+
+    Copying straight onto the target — what this did before — opens it ``"wb"``
+    and truncates it before the first replacement byte exists.  That is exactly
+    the window ``_rewrite_in_place`` above was written to close, and it says so
+    in its own docstring: *"Unlike ``shutil.copyfile`` this never truncates the
+    target to zero first — a concurrent reader would otherwise be able to
+    observe an empty ``auth.json`` / ``gateway_state.json`` mid-write."*  The
+    same argument applies here, and with a wider blast radius: a crash, ENOSPC
+    or SIGKILL partway through the copy does not merely expose a transient
+    empty read, it leaves the file empty or partial **on disk**.
+
+    ``EXDEV`` is not an exotic path — it is every ``/tmp``-on-tmpfs, container
+    bind-mount and NAS deployment — and every caller of this module routes
+    ``config.yaml`` / ``auth.json`` / ``gateway_state.json`` through it via
+    ``atomic_write_text`` / ``atomic_json_write`` / ``atomic_yaml_write``.
+
+    The staged content is written through the ``mkstemp`` descriptor itself, so
+    the staging file is never reopened by path between creation and rename —
+    it holds the full plaintext of a credential file, and not reopening it
+    means there is no window in which the name could resolve to a different
+    inode.
+
+    The plain copy survives only as the residual case: the target's directory
+    refuses a staging temp, or ``os.replace(staged, target)`` fails (a busy or
+    bind-mounted inode is the motivating case, but a permission/ACL,
+    read-only-filesystem or symlink-loop failure lands there too).  That
+    residual remains non-atomic.
+    """
+    try:
+        staged_fd, staged = tempfile.mkstemp(
+            dir=os.path.dirname(real_path) or ".",
+            prefix=".tmp_xdev_",
+            suffix=".tmp",
+        )
+    except OSError:
+        # The target's directory will not take a staging temp; the plain copy
+        # below is the only remaining option.
+        staged = None
+
+    if staged is not None:
+        try:
+            with os.fdopen(staged_fd, "wb") as staged_handle:
+                with open(tmp_str, "rb") as source:
+                    shutil.copyfileobj(source, staged_handle)
+                staged_handle.flush()
+                try:
+                    shutil.copystat(tmp_str, staged)
+                except OSError:
+                    pass
+                os.fsync(staged_handle.fileno())
+        except OSError:
+            # The copy failed (ENOSPC, I/O error, ...).  Only the staging temp
+            # is damaged, so surface the failure with the target's existing
+            # contents still intact rather than having overwritten them.
+            _unlink_quietly(staged)
+            raise
+        try:
+            os.replace(staged, real_path)
+        except OSError:
+            _unlink_quietly(staged)
+        else:
+            os.unlink(tmp_str)
+            return
+
     shutil.copyfile(tmp_str, real_path)
     try:
         shutil.copystat(tmp_str, real_path)
@@ -207,8 +283,9 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     ``os.replace`` call unless the rename fails with:
 
     * ``EXDEV`` / ``EBUSY`` (any platform) — cross-device, bind-mount, and
-      busy-file deployments fall back to copy/fsync/unlink immediately.
-      These never clear on retry.
+      busy-file deployments stage the content beside the resolved target and
+      rename from there immediately, so the write stays atomic.  These never
+      clear on retry.
     * A Windows rename contended by another open handle (winerror 5/32/33).
       CPython opens files without ``FILE_SHARE_DELETE``, so *any* concurrent
       reader of the target blocks the rename.  The rename is retried with

@@ -280,6 +280,57 @@ class TestPersistence:
 
 
 
+    def test_save_persists_routable_custom_identity(self, manager):
+        """save_session must not persist the bare 'custom' billing class —
+        it is not routable on restore (resolve_runtime_provider falls through
+        to OpenRouter with no key -> "No LLM provider configured")."""
+        state = manager.create_session(cwd="/work")
+        state.model = "qwen3.5:9b-mlx"
+        state.agent.provider = "custom"
+        state.agent.base_url = "http://127.0.0.1:11434/v1"
+        state.agent.api_mode = "chat_completions"
+        with patch(
+            "hermes_cli.runtime_provider.canonical_custom_identity",
+            return_value="custom:ollama-local",
+        ):
+            manager.save_session(state.session_id)
+        row = manager._get_db().get_session(state.session_id)
+        meta = json.loads(row["model_config"])
+        assert meta["provider"] == "custom:ollama-local"
+        assert meta["base_url"] == "http://127.0.0.1:11434/v1"
+
+    def test_restore_heals_bare_custom_provider(self, manager):
+        """Rows persisted with a bare 'custom' provider (pre-fix writers)
+        must be healed to their custom:<name> identity before agent rebuild."""
+        state = manager.create_session(cwd="/work")
+        sid = state.session_id
+        state.model = "qwen3.5:9b-mlx"
+        state.agent.provider = "custom"
+        state.agent.base_url = "http://127.0.0.1:11434/v1"
+        # Persist a PRE-FIX row: bypass the save-side heal.
+        with patch(
+            "hermes_cli.runtime_provider.canonical_custom_identity",
+            return_value=None,
+        ):
+            manager.save_session(sid)
+        meta = json.loads(manager._get_db().get_session(sid)["model_config"])
+        assert meta["provider"] == "custom"
+        with manager._lock:
+            del manager._sessions[sid]
+        captured = {}
+
+        def _capture_make_agent(**kwargs):
+            captured.update(kwargs)
+            return _mock_agent()
+
+        with patch(
+            "hermes_cli.runtime_provider.canonical_custom_identity",
+            return_value="custom:ollama-local",
+        ), patch.object(manager, "_make_agent", side_effect=_capture_make_agent):
+            restored = manager.get_session(sid)
+        assert restored is not None
+        assert captured.get("requested_provider") == "custom:ollama-local"
+        assert captured.get("base_url") == "http://127.0.0.1:11434/v1"
 
     def test_only_restores_acp_sessions(self, manager):
         """get_session should not restore non-ACP sessions from DB."""

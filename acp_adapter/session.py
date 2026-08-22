@@ -442,6 +442,29 @@ class SessionManager:
             session_meta["base_url"] = base_url.strip()
         if isinstance(api_mode, str) and api_mode.strip():
             session_meta["api_mode"] = api_mode.strip()
+        # The agent's resolved provider for a named ``providers:`` entry is the
+        # bare billing class ``"custom"``, which is not routable on restore
+        # (resolve_runtime_provider falls through to the OpenRouter default
+        # with no api_key -> "No LLM provider configured"). Persist the durable
+        # ``custom:<name>`` identity instead, recovered from the endpoint URL /
+        # model — same contract as the TUI/desktop heal (runtime_provider.
+        # canonical_custom_identity docstring: every persist/restore path must
+        # run bare "custom" through this helper).
+        if str(session_meta.get("provider") or "").strip().lower() == "custom":
+            try:
+                from hermes_cli.runtime_provider import canonical_custom_identity
+
+                healed = canonical_custom_identity(
+                    base_url=session_meta.get("base_url") or None,
+                    model=model_str or None,
+                )
+                if healed:
+                    session_meta["provider"] = healed
+            except Exception:
+                logger.debug(
+                    "ACP save: custom provider identity recovery failed",
+                    exc_info=True,
+                )
         cwd_json = json.dumps(session_meta)
 
         try:
@@ -545,6 +568,31 @@ class SessionManager:
                 pass
 
         model = row.get("model") or None
+
+        # Heal rows persisted before the save-side fix above (and rows written
+        # by other writers): a bare ``"custom"`` provider cannot be routed by
+        # resolve_runtime_provider — recover the ``custom:<name>`` identity
+        # from the persisted endpoint URL / session model before rebuilding
+        # the agent, mirroring the TUI/desktop restore heal.
+        if str(requested_provider or "").strip().lower() == "custom":
+            try:
+                from hermes_cli.runtime_provider import canonical_custom_identity
+
+                healed = canonical_custom_identity(
+                    base_url=restored_base_url or None,
+                    model=model,
+                )
+                if healed:
+                    logger.info(
+                        "ACP restore: healed bare 'custom' provider for %s -> %s",
+                        session_id, healed,
+                    )
+                    requested_provider = healed
+            except Exception:
+                logger.debug(
+                    "ACP restore: custom provider identity recovery failed",
+                    exc_info=True,
+                )
 
         # Load conversation history. repair_alternation: this restore feeds
         # LIVE REPLAY — the loaded list becomes the resumed agent's working

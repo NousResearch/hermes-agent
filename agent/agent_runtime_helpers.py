@@ -3431,6 +3431,15 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     if normalized in agent.valid_tool_names:
         return normalized
 
+    # Tool-calling models sometimes ask to search skills even though the
+    # available operation is the skills catalog.  Only repair the observed
+    # names, and only when the catalog tool is available in this session.
+    if (
+        normalized in {"skill_search", "skills_search"}
+        and "skills_list" in agent.valid_tool_names
+    ):
+        return "skills_list"
+
     # Build the full candidate set for class-like emissions.
     cands: set[str] = {tool_name, lowered, normalized, _camel_snake(tool_name)}
     # Strip trailing tool-suffix up to twice — TodoTool_tool needs it.

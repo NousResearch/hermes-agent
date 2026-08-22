@@ -6673,6 +6673,62 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     return current_hash != saved_hash
 
 
+def _warn_if_gateway_stale() -> None:
+    """Check whether the running gateway was started before the last desktop
+    build and warn if so — a stale gateway means the backend is running old
+    code while the desktop app.asar is new, which surfaces as a blank page.
+
+    Best-effort only: never raises, never blocks the desktop launch.
+    """
+    from datetime import datetime, timezone
+
+    try:
+        stamp_file = _desktop_stamp_path()
+        stamp = json.loads(stamp_file.read_text(encoding="utf-8"))
+        built_at = stamp.get("builtAt")
+
+        if not isinstance(built_at, str) or not built_at:
+            return
+
+        stamp_dt = datetime.fromisoformat(built_at)
+        # A naive builtAt has no UTC offset, so `.timestamp()` would interpret
+        # it as LOCAL time while psutil returns epoch seconds — reject it to
+        # avoid off-by-hours false positives/negatives away from UTC.
+        if stamp_dt.tzinfo is None or stamp_dt.utcoffset() is None:
+            return
+
+        # Read the gateway PID file — same source of truth the rest of the
+        # codebase uses (gateway/status.py get_running_pid).
+        from hermes_constants import get_hermes_home
+        pid_file = get_hermes_home() / "gateway.pid"
+        pid_data = json.loads(pid_file.read_text(encoding="utf-8"))
+        gateway_pid = int(pid_data["pid"])
+    except (OSError, json.JSONDecodeError, KeyError, ValueError, TypeError):
+        return
+
+    # Verify the process is alive and get its start time via psutil
+    # (cross-platform, returns epoch seconds — no timezone ambiguity).
+    try:
+        import psutil
+        proc = psutil.Process(gateway_pid)
+        if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
+            return
+        gateway_start_epoch = proc.create_time()
+    except Exception:
+        return
+
+    if gateway_start_epoch >= stamp_dt.timestamp():
+        return  # gateway is newer than or equal to stamp — fine
+
+    start_str = datetime.fromtimestamp(gateway_start_epoch, tz=timezone.utc).isoformat()
+
+    print()
+    print(f"⚠ Gateway (PID {gateway_pid}) was started at {start_str}")
+    print(f"  The last desktop build was at {built_at}")
+    print("  The gateway may be running an older version than the desktop app.")
+    print("  Run: hermes gateway restart")
+
+
 def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None:
     """Write the desktop build stamp after a successful build."""
     stamp_file = _desktop_stamp_path()
@@ -7905,6 +7961,7 @@ def cmd_gui(args: argparse.Namespace):
         if not build_needed:
             build_label = "source build" if source_mode else "packaged app"
             print(f"✓ Desktop {build_label} is up to date (content stamp matches)")
+            _warn_if_gateway_stale()
         else:
             print("→ Installing desktop workspace dependencies...")
             # Put the Hermes-managed Node on PATH so npm's child scripts (which

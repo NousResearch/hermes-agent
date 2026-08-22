@@ -779,3 +779,379 @@ def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
     mock_detect.assert_not_called()
     launch_env = mock_run.call_args_list[1].kwargs["env"]
     assert "HERMES_DESKTOP_PASSWORD_STORE" not in launch_env
+
+    # ── Gateway-stale detection tests ──────────────────────────────────────
+
+
+class _FakeGatewayProc:
+    """Minimal psutil.Process stand-in for ``_warn_if_gateway_stale`` tests."""
+
+    def __init__(self, pid: int, *, create_time: float, status_alive: bool = True):
+        self.pid = pid
+        self._create_time = create_time
+        self._alive = status_alive
+
+    def is_running(self) -> bool:
+        return self._alive
+
+    def status(self) -> str:
+        return "running" if self._alive else "zombie"
+
+    def create_time(self) -> float:
+        return self._create_time
+
+
+def _write_stamp(home: Path, built_at: str) -> Path:
+    """Write a minimal desktop-build-stamp.json with a ``builtAt`` field."""
+    stamp = home / "desktop-build-stamp.json"
+    import json
+
+    stamp.write_text(
+        json.dumps({"contentHash": "abc123", "sourceMode": False, "builtAt": built_at}) + "\n",
+        encoding="utf-8",
+    )
+    return stamp
+
+
+def _write_gateway_pid(home: Path, pid: int) -> Path:
+    """Write a minimal gateway.pid with a ``pid`` field."""
+    pid_file = home / "gateway.pid"
+    import json
+
+    pid_file.write_text(json.dumps({"pid": pid}) + "\n", encoding="utf-8")
+    return pid_file
+
+
+def _freeze_hermes_home(tmp_path: Path, monkeypatch) -> Path:
+    """Point ``get_hermes_home()`` at a throwaway directory inside tmp_path."""
+    home = tmp_path / "hermes_test"
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    # The conftest autouse fixture already rewires HERMES_HOME to a per-test
+    # tempdir; this fixture lets a test author pin a *specific known* home
+    # inside tmp_path so that stamps and pid files can be written next to it.
+    return home
+
+
+def test_warn_if_gateway_stale_no_stamp_file(tmp_path, monkeypatch, capsys):
+    """No stamp file → silent return (best-effort, never raises)."""
+    home = _freeze_hermes_home(tmp_path, monkeypatch)
+    # Ensure no stamp file exists
+    assert not (home / "desktop-build-stamp.json").exists()
+
+    cli_main._warn_if_gateway_stale()
+
+    out = capsys.readouterr().out
+    assert out == ""
+
+
+def test_warn_if_gateway_stale_stamp_missing_built_at(tmp_path, monkeypatch, capsys):
+    """Stamp file exists but has no ``builtAt`` field → silent return."""
+    home = _freeze_hermes_home(tmp_path, monkeypatch)
+    import json
+
+    stamp = home / "desktop-build-stamp.json"
+    stamp.write_text(json.dumps({"contentHash": "abc123"}) + "\n", encoding="utf-8")
+
+    cli_main._warn_if_gateway_stale()
+
+    out = capsys.readouterr().out
+    assert out == ""
+
+
+def test_warn_if_gateway_stale_invalid_built_at(tmp_path, monkeypatch, capsys):
+    """Stamp has a ``builtAt`` that isn't parseable ISO → silent return."""
+    home = _freeze_hermes_home(tmp_path, monkeypatch)
+    _write_stamp(home, "not-a-valid-iso-date")
+
+    cli_main._warn_if_gateway_stale()
+
+    out = capsys.readouterr().out
+    assert out == ""
+
+
+def test_warn_if_gateway_stale_built_at_not_string(tmp_path, monkeypatch, capsys):
+    """Stamp has a non-string ``builtAt`` (e.g. numeric) → silent return."""
+    home = _freeze_hermes_home(tmp_path, monkeypatch)
+    import json
+    (home / "desktop-build-stamp.json").write_text(
+        json.dumps({"contentHash": "abc123", "sourceMode": False, "builtAt": 12345}) + "\n",
+        encoding="utf-8",
+    )
+
+    cli_main._warn_if_gateway_stale()
+
+    out = capsys.readouterr().out
+    assert out == ""
+
+
+def test_warn_if_gateway_stale_naive_built_at(tmp_path, monkeypatch, capsys):
+    """Stamp has a naive ``builtAt`` (no UTC offset) → rejected to avoid
+    timezone confusion between local-time interpretation and epoch seconds."""
+    home = _freeze_hermes_home(tmp_path, monkeypatch)
+    _write_stamp(home, "2026-08-22T12:00:00")  # no +00:00 suffix
+
+    cli_main._warn_if_gateway_stale()
+
+    out = capsys.readouterr().out
+    assert out == ""
+
+
+def test_warn_if_gateway_stale_malformed_stamp_json(tmp_path, monkeypatch, capsys):
+    """Stamp file is not valid JSON → silent return."""
+    home = _freeze_hermes_home(tmp_path, monkeypatch)
+    (home / "desktop-build-stamp.json").write_text("not json", encoding="utf-8")
+
+    cli_main._warn_if_gateway_stale()
+
+    out = capsys.readouterr().out
+    assert out == ""
+
+
+def test_warn_if_gateway_stale_no_gateway_pid_file(tmp_path, monkeypatch, capsys):
+    """Stamp is valid but no gateway.pid exists → silent return."""
+    home = _freeze_hermes_home(tmp_path, monkeypatch)
+    _write_stamp(home, "2026-08-22T12:00:00+00:00")
+
+    cli_main._warn_if_gateway_stale()
+
+    out = capsys.readouterr().out
+    assert out == ""
+
+
+def test_warn_if_gateway_stale_malformed_pid_file(tmp_path, monkeypatch, capsys):
+    """Gateway pid file exists but is not valid JSON → silent return."""
+    home = _freeze_hermes_home(tmp_path, monkeypatch)
+    _write_stamp(home, "2026-08-22T12:00:00+00:00")
+    (home / "gateway.pid").write_text("not json", encoding="utf-8")
+
+    cli_main._warn_if_gateway_stale()
+
+    out = capsys.readouterr().out
+    assert out == ""
+
+
+def test_warn_if_gateway_stale_pid_file_missing_pid_key(tmp_path, monkeypatch, capsys):
+    """Gateway pid file is valid JSON but has no ``pid`` key → silent return."""
+    home = _freeze_hermes_home(tmp_path, monkeypatch)
+    _write_stamp(home, "2026-08-22T12:00:00+00:00")
+    import json
+
+    (home / "gateway.pid").write_text(json.dumps({"kind": "gateway"}) + "\n", encoding="utf-8")
+
+    cli_main._warn_if_gateway_stale()
+
+    out = capsys.readouterr().out
+    assert out == ""
+
+
+def test_warn_if_gateway_stale_pid_not_integer(tmp_path, monkeypatch, capsys):
+    """Gateway pid file has a ``pid`` that is not a valid integer → silent return."""
+    home = _freeze_hermes_home(tmp_path, monkeypatch)
+    _write_stamp(home, "2026-08-22T12:00:00+00:00")
+    import json
+
+    (home / "gateway.pid").write_text(json.dumps({"pid": "not-a-number"}) + "\n", encoding="utf-8")
+
+    cli_main._warn_if_gateway_stale()
+
+    out = capsys.readouterr().out
+    assert out == ""
+
+
+def test_warn_if_gateway_stale_process_not_running(tmp_path, monkeypatch, capsys):
+    """Gateway pid file is valid but the process is not alive → silent return."""
+    home = _freeze_hermes_home(tmp_path, monkeypatch)
+    _write_stamp(home, "2026-08-22T12:00:00+00:00")
+    _write_gateway_pid(home, 99999)
+
+    fake_proc = _FakeGatewayProc(99999, create_time=1000000000.0, status_alive=False)
+
+    with patch("psutil.Process", return_value=fake_proc):
+        cli_main._warn_if_gateway_stale()
+
+    out = capsys.readouterr().out
+    assert out == ""
+
+
+def test_warn_if_gateway_stale_process_is_zombie(tmp_path, monkeypatch, capsys):
+    """Gateway process is a zombie → silent return (zombies cannot serve)."""
+    home = _freeze_hermes_home(tmp_path, monkeypatch)
+    _write_stamp(home, "2026-08-22T12:00:00+00:00")
+    _write_gateway_pid(home, 99999)
+
+    import psutil
+
+    fake_proc = _FakeGatewayProc(99999, create_time=1000000000.0, status_alive=False)
+    # Override status() to return the psutil zombie constant
+    fake_proc.status = lambda: psutil.STATUS_ZOMBIE
+
+    with patch("psutil.Process", return_value=fake_proc):
+        cli_main._warn_if_gateway_stale()
+
+    out = capsys.readouterr().out
+    assert out == ""
+
+
+def test_warn_if_gateway_stale_gateway_newer_than_stamp(tmp_path, monkeypatch, capsys):
+    """Gateway was started AFTER the last build → no warning."""
+    home = _freeze_hermes_home(tmp_path, monkeypatch)
+    from datetime import datetime, timezone
+
+    # builtAt = 2026-08-22T12:00:00 UTC
+    _write_stamp(home, "2026-08-22T12:00:00+00:00")
+    _write_gateway_pid(home, 12345)
+
+    stamp_dt = datetime(2026, 8, 22, 12, 0, 0, tzinfo=timezone.utc)
+    # Gateway start time is 1 hour AFTER the build
+    fake_proc = _FakeGatewayProc(12345, create_time=stamp_dt.timestamp() + 3600.0)
+
+    with patch("psutil.Process", return_value=fake_proc):
+        cli_main._warn_if_gateway_stale()
+
+    out = capsys.readouterr().out
+    assert out == ""
+
+
+def test_warn_if_gateway_stale_gateway_same_as_stamp(tmp_path, monkeypatch, capsys):
+    """Gateway started at the exact same time as the build → no warning."""
+    home = _freeze_hermes_home(tmp_path, monkeypatch)
+    _write_stamp(home, "2026-08-22T12:00:00+00:00")
+    _write_gateway_pid(home, 12345)
+
+    # All times in seconds since epoch
+    from datetime import datetime, timezone
+
+    stamp_dt = datetime(2026, 8, 22, 12, 0, 0, tzinfo=timezone.utc)
+    stamp_epoch = stamp_dt.timestamp()
+
+    fake_proc = _FakeGatewayProc(12345, create_time=stamp_epoch)
+
+    with patch("psutil.Process", return_value=fake_proc):
+        cli_main._warn_if_gateway_stale()
+
+    out = capsys.readouterr().out
+    assert out == ""
+
+
+def test_warn_if_gateway_stale_triggers_warning(tmp_path, monkeypatch, capsys):
+    """Gateway was started BEFORE the last build → warning IS printed."""
+    home = _freeze_hermes_home(tmp_path, monkeypatch)
+    from datetime import datetime, timezone
+
+    stamp_dt = datetime(2026, 8, 22, 12, 0, 0, tzinfo=timezone.utc)
+    _write_stamp(home, "2026-08-22T12:00:00+00:00")
+    _write_gateway_pid(home, 12345)
+
+    # Gateway started 1 hour BEFORE the build
+    fake_proc = _FakeGatewayProc(12345, create_time=stamp_dt.timestamp() - 3600.0)
+
+    with patch("psutil.Process", return_value=fake_proc):
+        cli_main._warn_if_gateway_stale()
+
+    out = capsys.readouterr().out
+    assert "⚠ Gateway (PID 12345)" in out
+    assert "The last desktop build was at" in out
+    assert "The gateway may be running an older version" in out
+    assert "Run: hermes gateway restart" in out
+
+
+def test_warn_if_gateway_stale_never_raises_on_psutil_error(tmp_path, monkeypatch, capsys):
+    """psutil.Process raises an arbitrary exception → silent return, never raises."""
+    home = _freeze_hermes_home(tmp_path, monkeypatch)
+    _write_stamp(home, "2026-08-22T12:00:00+00:00")
+    _write_gateway_pid(home, 12345)
+
+    def boom(*args, **kwargs):
+        raise psutil.AccessDenied(12345)
+
+    import psutil
+
+    with patch("psutil.Process", side_effect=boom):
+        cli_main._warn_if_gateway_stale()
+
+    out = capsys.readouterr().out
+    assert out == ""
+
+
+def test_warn_if_gateway_stale_never_raises_on_import_error(tmp_path, monkeypatch, capsys):
+    """psutil is not importable → silent return, never raises."""
+    home = _freeze_hermes_home(tmp_path, monkeypatch)
+    _write_stamp(home, "2026-08-22T12:00:00+00:00")
+    _write_gateway_pid(home, 12345)
+
+    # Create a module-like object that raises ImportError on Process
+    import sys
+
+    fake_psutil = type(sys)("psutil")
+
+    with patch.dict("sys.modules", {"psutil": fake_psutil}):
+        cli_main._warn_if_gateway_stale()
+
+    out = capsys.readouterr().out
+    assert out == ""
+
+
+# ── Integration: _warn_if_gateway_stale is called from cmd_gui ─────────
+
+
+def test_cmd_gui_calls_warn_if_gateway_stale_when_build_not_needed(
+    tmp_path, monkeypatch
+):
+    """``_warn_if_gateway_stale`` is invoked when the desktop build is already
+    up-to-date.  Regression: the stale-gateway check must run on the
+    "no build needed" path (the most common path for the blank-page bug).
+
+    This test does NOT exercise the full warning path — that is covered by
+    the unit tests above.  It only asserts the call is made in the right
+    branch of ``cmd_gui``.
+    """
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    with patch("hermes_cli.main._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main._warn_if_gateway_stale") as mock_warn, \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok), \
+         pytest.raises(SystemExit):
+        cli_main.cmd_gui(_ns())
+
+    mock_warn.assert_called_once()
+
+
+def test_cmd_gui_does_not_call_warn_if_gateway_stale_when_build_needed(
+    tmp_path, monkeypatch
+):
+    """``_warn_if_gateway_stale`` is NOT invoked when a build is needed.
+
+    The stamp match path already covers the stale-gateway warning.  After
+    a fresh build the desktop app launches immediately, so a terminal
+    warning would flash past before the user can read it — the real check
+    happens on the next launch when the stamp matches.
+    """
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main._register_linux_desktop_entry"), \
+         patch("hermes_cli.main._warn_if_gateway_stale") as mock_warn, \
+         patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]), \
+         pytest.raises(SystemExit):
+        cli_main.cmd_gui(_ns())
+
+    mock_warn.assert_not_called()

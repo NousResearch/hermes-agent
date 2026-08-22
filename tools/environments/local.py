@@ -321,6 +321,14 @@ def _build_provider_env_blocklist() -> frozenset:
         "VERCEL_TOKEN",
         "VERCEL_PROJECT_ID",
         "VERCEL_TEAM_ID",
+        # Package-registry / publish tokens — high value if a tool subprocess
+        # exfiltrates env; not part of the user shell AWS posture exception.
+        "NPM_TOKEN",
+        "NPM_AUTH_TOKEN",
+        "NODE_AUTH_TOKEN",
+        "PYPI_TOKEN",
+        "TWINE_PASSWORD",
+        "CARGO_REGISTRY_TOKEN",
     })
     # CLAUDE_CODE_OAUTH_TOKEN is deliberately NOT stripped.  It is set and
     # owned by the user's Claude Code install (subscription OAuth), not a
@@ -467,6 +475,49 @@ def _inject_session_context_env(env: dict) -> None:
             env.pop(var_name, None)
 
 
+
+def _apply_terminal_env_hardening(env: dict) -> None:
+    """Force non-interactive git + drop package-publish tokens on *env*.
+
+    Called at the end of every local spawn-env builder so an inherited
+    ``GIT_TERMINAL_PROMPT=1`` (or a restored package token) cannot survive on
+    the process environment. Shell-level session snapshots can still overwrite
+    these after ``source``; that path is re-hardened in
+    :meth:`BaseEnvironment._wrap_command` via
+    :func:`_post_source_env_hardening_script`.
+    """
+    for key in (
+        "NPM_TOKEN",
+        "NPM_AUTH_TOKEN",
+        "NODE_AUTH_TOKEN",
+        "PYPI_TOKEN",
+        "TWINE_PASSWORD",
+        "CARGO_REGISTRY_TOKEN",
+    ):
+        env.pop(key, None)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    # Git Credential Manager (Windows default helper) — match internal git
+    # policy in hermes_cli._subprocess_compat.
+    env["GCM_INTERACTIVE"] = "Never"
+
+
+def _post_source_env_hardening_script() -> str:
+    """Shell snippet re-applied *after* session-snapshot ``source``.
+
+    Login-profile / session-snapshot state is dumped with ``export -p`` and
+    re-sourced before each command. That can restore package-registry tokens
+    and re-enable git prompting even when the Popen env was sanitized. Re-run
+    the filters immediately before the user command so the trust boundary
+    holds at execution time.
+    """
+    return (
+        "unset -v NPM_TOKEN NPM_AUTH_TOKEN NODE_AUTH_TOKEN "
+        "PYPI_TOKEN TWINE_PASSWORD CARGO_REGISTRY_TOKEN 2>/dev/null || true\n"
+        "export GIT_TERMINAL_PROMPT=0\n"
+        "export GCM_INTERACTIVE=Never"
+    )
+
+
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment."""
     try:
@@ -526,6 +577,9 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     _apply_windows_msys_bash_env_defaults(sanitized)
 
     sanitized = _scrub_delegated_child_kanban_env(sanitized)
+
+    # Non-interactive git + package-token posture (see _apply_terminal_env_hardening).
+    _apply_terminal_env_hardening(sanitized)
 
     return sanitized
 
@@ -1338,6 +1392,10 @@ def _make_run_env(env: dict) -> dict:
     _apply_windows_msys_bash_env_defaults(run_env)
 
     run_env = _scrub_delegated_child_kanban_env(run_env)
+
+    # See _sanitize_subprocess_env — same non-interactive git / token policy
+    # for the primary terminal run path.
+    _apply_terminal_env_hardening(run_env)
 
     return run_env
 

@@ -144,6 +144,41 @@ async def test_request_restart_defers_stop_until_active_turn_finishes():
 
 
 @pytest.mark.asyncio
+async def test_request_restart_waits_for_final_delivery_after_agent_finishes():
+    """The adapter still owns the turn while it sends the final response."""
+    runner, adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._restart_after_turn_timeout = 5.0
+    session_key = "agent:main:telegram:dm:123"
+    runner._running_agents[session_key] = MagicMock()
+    delivery_complete = asyncio.Event()
+
+    async def deliver_final_response():
+        await delivery_complete.wait()
+
+    delivery_task = asyncio.create_task(deliver_final_response())
+    adapter._session_tasks[session_key] = delivery_task
+
+    assert runner.request_restart(detached=False, via_service=True) is True
+    await asyncio.sleep(0.1)
+    runner.stop.assert_not_awaited()
+
+    # The runner has produced a response, but the adapter has not yet made its
+    # durable delivery record or sent the message.
+    del runner._running_agents[session_key]
+    await asyncio.sleep(0.2)
+    runner.stop.assert_not_awaited()
+
+    delivery_complete.set()
+    await delivery_task
+    await runner._restart_task
+
+    runner.stop.assert_awaited_once_with(
+        restart=True, detached_restart=False, service_restart=True
+    )
+
+
+@pytest.mark.asyncio
 async def test_request_restart_after_turn_timeout_zero_enters_stop_immediately():
     """restart_after_turn_timeout=0 preserves legacy immediate drain."""
     runner, _adapter = make_restart_runner()

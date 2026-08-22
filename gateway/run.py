@@ -8568,9 +8568,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """All agent work the gateway must expose and drain as one total."""
         return (
             self._running_agent_count()
+            + self._active_adapter_session_task_count()
             + self._active_cron_job_count()
             + self._active_api_run_count()
         )
+
+    def _active_adapter_session_task_count(self) -> int:
+        """Count adapter-owned session tasks after their runner turn finishes.
+
+        A message handler remains alive while its adapter records and delivers
+        the final response. The runner removes its ``_running_agents`` entry
+        before that work completes, so an after-turn restart must continue to
+        wait for the adapter task. Tasks belonging to still-running agents are
+        already represented by ``_running_agents`` and are not counted twice.
+        """
+        running_agents = getattr(self, "_running_agents", {}) or {}
+        adapters = getattr(self, "adapters", {}) or {}
+        active = 0
+        for adapter in adapters.values():
+            session_tasks = getattr(adapter, "_session_tasks", {}) or {}
+            if not isinstance(session_tasks, dict):
+                continue
+            for session_key, task in session_tasks.items():
+                if session_key in running_agents or task is None:
+                    continue
+                done = getattr(task, "done", None)
+                if not callable(done) or done():
+                    continue
+                active += 1
+        return active
 
     def _active_cron_job_count(self) -> int:
         """Count of cron jobs currently executing, from the cron scheduler's

@@ -131,6 +131,60 @@ def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_succes
         assert controller.after_call("custom_tool", {"x": 1}, "ok", failed=False).action == "allow"
 
 
+def test_mcp_filesystem_tools_are_classified_as_idempotent():
+    """MCP tools using the mcp__<server>__<tool> naming are in the idempotent set."""
+    from agent.tool_guardrails import IDEMPOTENT_TOOL_NAMES
+
+    mcp_read_tools = [
+        "mcp__filesystem__read_file",
+        "mcp__filesystem__read_text_file",
+        "mcp__filesystem__read_multiple_files",
+        "mcp__filesystem__list_directory",
+        "mcp__filesystem__list_directory_with_sizes",
+        "mcp__filesystem__directory_tree",
+        "mcp__filesystem__get_file_info",
+        "mcp__filesystem__search_files",
+    ]
+    for name in mcp_read_tools:
+        assert name in IDEMPOTENT_TOOL_NAMES, f"{name} should be in IDEMPOTENT_TOOL_NAMES"
+
+    # Old-style single-underscore names must NOT be present (they never match)
+    for name in [
+        "mcp_filesystem_read_file",
+        "mcp_filesystem_list_directory",
+    ]:
+        assert name not in IDEMPOTENT_TOOL_NAMES, f"{name} (old format) should NOT be in IDEMPOTENT_TOOL_NAMES"
+
+    # The guardrail controller actually fires for mcp__ tools
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)
+    )
+    args = {"path": "/tmp/same.txt"}
+    result = "same contents"
+    assert controller.before_call("mcp__filesystem__read_file", args).action == "allow"
+    assert controller.after_call("mcp__filesystem__read_file", args, result, failed=False).action == "allow"
+    assert controller.before_call("mcp__filesystem__read_file", args).action == "allow"
+    warn = controller.after_call("mcp__filesystem__read_file", args, result, failed=False)
+    assert warn.action == "warn"
+    assert warn.code == "idempotent_no_progress_warning"
+
+
+def test_reset_for_turn_clears_bounded_guardrail_state():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, exact_failure_block_after=2, no_progress_block_after=2)
+    )
+    controller.after_call("web_search", {"query": "same"}, '{"error":"boom"}', failed=True)
+    controller.after_call("web_search", {"query": "same"}, '{"error":"boom"}', failed=True)
+    controller.after_call("read_file", {"path": "/tmp/x"}, "same", failed=False)
+    controller.after_call("read_file", {"path": "/tmp/x"}, "same", failed=False)
+
+    assert controller.before_call("web_search", {"query": "same"}).action == "block"
+    assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "block"
+
+    controller.reset_for_turn()
+
+    assert controller.before_call("web_search", {"query": "same"}).action == "allow"
+    assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
 
 
 

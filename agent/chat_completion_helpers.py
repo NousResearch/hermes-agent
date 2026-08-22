@@ -26,6 +26,7 @@ import time
 import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
@@ -45,6 +46,7 @@ from agent.message_sanitization import (
 )
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.text_verbosity import supports_openai_text_verbosity
 from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
@@ -1882,14 +1884,20 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             base_url_host_matches(agent.base_url, "models.github.ai")
             or base_url_host_matches(agent.base_url, "githubcopilot.com")
         )
-        is_codex_backend = (
-            agent.provider == "openai-codex"
-            or (
-                agent._base_url_hostname == "chatgpt.com"
-                and "/backend-api/codex" in agent._base_url_lower
-            )
+        codex_route_path = urlsplit(str(agent.base_url or "")).path.rstrip("/")
+        is_canonical_codex_route = (
+            agent._base_url_hostname == "chatgpt.com"
+            and codex_route_path == "/backend-api/codex"
         )
+        is_codex_backend = agent.provider == "openai-codex" or is_canonical_codex_route
         is_xai_responses = agent.provider in {"xai", "xai-oauth"} or agent._base_url_hostname == "api.x.ai"
+        text_verbosity_target_supported = supports_openai_text_verbosity(
+            "gpt-5",
+            base_url_hostname=agent._base_url_hostname,
+            is_canonical_codex_route=is_canonical_codex_route,
+            is_xai_responses=is_xai_responses,
+            is_github_responses=is_github_responses,
+        )
         _msgs_for_codex = agent._prepare_messages_for_non_vision_model(api_messages)
 
         # Native server-side compaction (gpt-5.6 on direct OpenAI API /
@@ -1940,6 +1948,8 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             messages=_msgs_for_codex,
             tools=tools_for_api,
             reasoning_config=agent.reasoning_config,
+            text_verbosity=getattr(agent, "text_verbosity", None),
+            text_verbosity_target_supported=text_verbosity_target_supported,
             session_id=getattr(agent, "session_id", None),
             cache_scope_id=_cache_scope_id,
             base_url=agent.base_url,

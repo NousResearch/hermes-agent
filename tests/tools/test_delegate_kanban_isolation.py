@@ -5,6 +5,7 @@ import json
 import os
 import shlex
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -296,3 +297,134 @@ def test_child_attempting_default_complete_does_not_finish_parent_or_delete_work
     assert task.status == "running"
     assert run.status == "running"
     assert workspace.is_dir()
+
+
+def test_real_child_cannot_heartbeat_or_trigger_parent_stop_guard(monkeypatch, tmp_path):
+    """Child lifecycle calls are blocked while parent supervision stays active."""
+    kb, tid, _workspace, _attachments_root = _make_running_kanban_task(
+        monkeypatch,
+        tmp_path,
+    )
+    from agent.delegation_context import is_delegated_child_process_context
+    from agent.kanban_stop import (
+        build_kanban_stop_nudge,
+        kanban_stop_nudge_enabled,
+    )
+    from tools import delegate_tool
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        heartbeat_events_before = len(
+            [event for event in kb.list_events(conn, tid) if event.kind == "heartbeat"]
+        )
+    finally:
+        conn.close()
+
+    real_connect = kt._connect
+    connect_contexts = []
+
+    def tracked_connect(*args, **kwargs):
+        connect_contexts.append(is_delegated_child_process_context())
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(kt, "_connect", tracked_connect)
+    monkeypatch.setattr(kt, "_AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(kt, "_auto_heartbeat_last_attempt", 0.0)
+    monkeypatch.setattr(delegate_tool, "_HEARTBEAT_INTERVAL", 0.01)
+    child_observations = {}
+    parent_heartbeat = threading.Event()
+    parent_touch_results = []
+    parent_touch_threads = []
+    child_thread = []
+    review = "independent review accepted"
+
+    class Parent:
+        _current_task_id = tid
+
+        def _touch_activity(self, _desc):
+            kt._auto_heartbeat_last_attempt = 0.0
+            result = kt.heartbeat_current_worker_from_env()
+            parent_touch_results.append(result)
+            parent_touch_threads.append(threading.get_ident())
+            if result:
+                parent_heartbeat.set()
+            return result
+
+    class Child:
+        tool_progress_callback = None
+        _delegate_saved_tool_names = []
+        _credential_pool = None
+        _subagent_id = "sa-lifecycle-test"
+        _delegate_depth = 1
+        _parent_subagent_id = None
+        model = "test-model"
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_estimated_cost_usd = 0.0
+        session_reasoning_tokens = 0
+
+        def get_activity_summary(self):
+            return {"api_call_count": 0, "max_iterations": 1, "current_tool": None}
+
+        def run_conversation(self, user_message, task_id, **_kwargs):
+            child_thread.append(threading.get_ident())
+            # Make the inherited-env heartbeat attempt observable even if the
+            # supervising parent just consumed the process-wide rate limit.
+            kt._auto_heartbeat_last_attempt = 0.0
+            child_observations["heartbeat"] = kt.heartbeat_current_worker_from_env()
+            child_observations["stop_guard"] = kanban_stop_nudge_enabled()
+            child_observations["parent_heartbeat"] = parent_heartbeat.wait(1.0)
+            nudge = build_kanban_stop_nudge(messages=[])
+            return {
+                "final_response": nudge or review,
+                "completed": True,
+                "api_calls": 0,
+                "messages": [],
+            }
+
+        def close(self):
+            return None
+
+    result = delegate_tool._run_single_child(0, "review parent work", Child(), Parent())
+
+    assert result["status"] == "completed"
+    assert result["summary"] == review
+    assert child_observations == {
+        "heartbeat": False,
+        "stop_guard": False,
+        "parent_heartbeat": True,
+    }
+    assert parent_touch_results
+    assert all(parent_touch_results)
+    assert child_thread
+    assert parent_touch_threads
+    assert all(thread_id != child_thread[0] for thread_id in parent_touch_threads)
+    assert connect_contexts
+    assert not any(connect_contexts)
+
+    conn = kb.connect()
+    try:
+        heartbeat_events_after_child = len(
+            [event for event in kb.list_events(conn, tid) if event.kind == "heartbeat"]
+        )
+    finally:
+        conn.close()
+
+    # The supervising parent is expected to keep its own claim alive while it
+    # waits. The forbidden operation is a DB connection from child context.
+    assert heartbeat_events_after_child > heartbeat_events_before
+
+    assert kanban_stop_nudge_enabled() is True
+    assert build_kanban_stop_nudge(messages=[]) is not None
+    kt._auto_heartbeat_last_attempt = 0.0
+    assert kt.heartbeat_current_worker_from_env() is True
+
+    conn = kb.connect()
+    try:
+        heartbeat_events_after_parent = len(
+            [event for event in kb.list_events(conn, tid) if event.kind == "heartbeat"]
+        )
+    finally:
+        conn.close()
+    assert heartbeat_events_after_parent == heartbeat_events_after_child + 1

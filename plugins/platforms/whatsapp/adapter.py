@@ -1584,6 +1584,34 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if quoted_participant:
                     reply_to_author_id = quoted_participant
                 reply_to_is_own_message = self._message_is_reply_to_bot(data)
+
+                # contextInfo.quotedMessage only ever carries a thumbnail-sized
+                # stub for media (or nothing for an uncaptioned attachment) —
+                # never a way to fetch the original file. The bridge resolves
+                # the quoted message's already-downloaded media via its own
+                # cache and hands back real local paths in quotedMediaUrls.
+                # Append them to this event's own media so the existing
+                # vision/audio pipeline (which reads media_urls/media_types)
+                # picks up the quoted attachment exactly like a direct one —
+                # no separate reply-media code path needed.
+                quoted_media_urls = data.get("quotedMediaUrls") or []
+                quoted_media_type = str(data.get("quotedMediaType") or "").strip()
+                _quoted_mime_map = {
+                    "image": "image/jpeg",
+                    "video": "video/mp4",
+                    "gif": "video/mp4",
+                    "audio": "audio/ogg",
+                    "ptt": "audio/ogg",
+                    "document": "application/octet-stream",
+                    "sticker": "image/webp",
+                }
+                for _qurl in quoted_media_urls:
+                    if not (isinstance(_qurl, str) and os.path.isabs(_qurl) and _is_allowed_bridge_path(_qurl)):
+                        print(f"[{self.name}] Rejected quoted-media path outside cache dir: {_qurl}", flush=True)
+                        continue
+                    cached_urls.append(_qurl)
+                    media_types.append(_quoted_mime_map.get(quoted_media_type, "application/octet-stream"))
+                    print(f"[{self.name}] Attached quoted-reply media: {_qurl}", flush=True)
             MAX_TEXT_INJECT_BYTES = 100 * 1024
             if msg_type == MessageType.DOCUMENT and cached_urls:
                 for doc_path in cached_urls:

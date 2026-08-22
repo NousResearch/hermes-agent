@@ -62,6 +62,15 @@ logger = logging.getLogger(__name__)
 _OWNER_REPLY_PREFIX = "[owner reply] "
 
 
+def _is_command_text(body: str) -> bool:
+    """Mirror MessageEvent.get_command() grammar: /cmd or /cmd@bot, never /path."""
+    stripped = body.lstrip()
+    if not stripped.startswith("/"):
+        return False
+    token = stripped.split(maxsplit=1)[0][1:].split("@", 1)[0]
+    return "/" not in token
+
+
 def _listener_pids_on_port(port: int) -> list:
     """PIDs of processes *listening* on ``port`` (POSIX) — never clients.
 
@@ -1630,7 +1639,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # so a future producer can set it without adapter changes.
             if data.get("fromOwner"):
                 metadata["whatsapp_from_owner"] = True
-                if not body.startswith(_OWNER_REPLY_PREFIX):
+                # Don't prefix slash commands: "[owner reply] /new" breaks
+                # MessageEvent.is_command() and routes the command to the
+                # LLM as free text. Mirror get_command() grammar so slash
+                # paths like /tmp/file keep the tag. Metadata above still
+                # marks owner-typed.
+                if not _is_command_text(body) and not body.startswith(_OWNER_REPLY_PREFIX):
                     body = f"{_OWNER_REPLY_PREFIX}{body}"
 
             return MessageEvent(

@@ -13774,24 +13774,33 @@ def main():
 
     sessions_import = sessions_subparsers.add_parser(
         "import",
-        help="Import a Claude Code or Codex CLI session into Hermes",
+        help="Import a Claude Code, Codex CLI, or exported Hermes session",
         description=(
             "Pull a conversation started in Claude Code (~/.claude/projects) "
             "or Codex CLI (~/.codex/sessions) into the Hermes session store "
             "so it can be resumed with 'hermes --resume <id>'. The foreign "
-            "files are only read, never modified."
+            "files are only read, never modified.\n\n"
+            "'--from hermes <file>' restores Hermes's own backups — the "
+            "output of 'hermes sessions export --format jsonl'. Sessions "
+            "whose id is already present are skipped, never overwritten."
         ),
     )
     sessions_import.add_argument(
         "--from",
         dest="from_source",
-        choices=["claude", "codex"],
-        help="Which tool to import from (default: pick across both)",
+        choices=["claude", "codex", "hermes"],
+        help=(
+            "Which tool to import from (default: sniff the file, or pick "
+            "across Claude Code and Codex CLI)"
+        ),
     )
     sessions_import.add_argument(
         "path",
         nargs="?",
-        help="Path to a specific session JSONL file (skips the picker)",
+        help=(
+            "Path to a specific session JSONL file (skips the picker; "
+            "required for --from hermes)"
+        ),
     )
 
 

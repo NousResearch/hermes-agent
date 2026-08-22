@@ -30,6 +30,12 @@ role-alternation invariant Hermes enforces everywhere else:
   never fabricate ``tool_calls`` structures);
 * consecutive same-role turns are merged rather than stubbed;
 * system/developer payloads are never imported.
+
+``--from hermes`` is the odd one out: it reads Hermes's *own*
+``sessions export --format jsonl`` backups, which need no conversion at
+all. ``SessionDB.import_sessions`` already restores that payload — it was
+simply unreachable from the CLI, leaving `sessions export` a one-way
+door with the dashboard's HTTP endpoint as the only way back in.
 """
 
 from __future__ import annotations
@@ -387,6 +393,152 @@ def import_foreign_session(source: str, path, db=None) -> str:
                 pass
 
 
+# ── Hermes's own export ──────────────────────────────────────────────────
+
+
+def read_hermes_export(path: Path) -> List[Dict[str, Any]]:
+    """Load session objects from a ``sessions export --format jsonl`` file.
+
+    The exporter writes one session object per line. A hand-assembled file
+    holding a JSON array, or a single object, is accepted too — the shape
+    that matters is that each entry carries an ``id`` and ``messages``.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace").strip()
+    if not text:
+        return []
+
+    # A whole-file array or object (what the dashboard's import endpoint
+    # takes) rather than JSONL.
+    if text[0] == "[" or (text[0] == "{" and "\n" not in text.strip()):
+        try:
+            blob = json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            blob = None
+        if isinstance(blob, list):
+            return [s for s in blob if isinstance(s, dict)]
+        if isinstance(blob, dict):
+            return [blob]
+
+    sessions: List[Dict[str, Any]] = []
+    for line_no, line in enumerate(text.splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise ValueError(f"{path}:{line_no}: not valid JSON ({exc})") from exc
+        if isinstance(obj, dict):
+            sessions.append(obj)
+    return sessions
+
+
+def looks_like_hermes_export(path: Path) -> bool:
+    """True when *path*'s first record has the shape of a Hermes export.
+
+    Hermes exports have no filename convention — the user names the output
+    — so the source is sniffed from content rather than guessed from the
+    path the way the Claude/Codex stores are.
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                head = line[0]
+                if head == "[":
+                    line = line.lstrip("[").strip().rstrip(",")
+                elif head != "{":
+                    return False
+                try:
+                    obj = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    return False
+                return (
+                    isinstance(obj, dict)
+                    and isinstance(obj.get("id"), str)
+                    and isinstance(obj.get("messages"), list)
+                )
+    except OSError:
+        return False
+    return False
+
+
+def import_hermes_export(path, db=None) -> Dict[str, Any]:
+    """Restore sessions from a Hermes export via ``SessionDB.import_sessions``.
+
+    Returns that method's report unchanged:
+    ``{ok, imported, skipped, detached, imported_ids, errors}``.
+    Sessions whose id already exists are skipped, never overwritten.
+    """
+    path = Path(path).expanduser()
+    if not path.is_file():
+        raise ValueError(f"Export file not found: {path}")
+
+    sessions = read_hermes_export(path)
+    if not sessions:
+        raise ValueError(f"No session records found in {path}")
+    missing = [
+        s.get("id") or "<no id>"
+        for s in sessions
+        if not isinstance(s.get("messages"), list)
+    ]
+    if missing:
+        raise ValueError(
+            f"{path} is not a Hermes session export "
+            f"(no 'messages' on {len(missing)} record(s), e.g. {missing[0]!r}). "
+            "For a Claude Code or Codex CLI transcript pass --from claude|codex."
+        )
+
+    owns_db = db is None
+    if owns_db:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+    try:
+        return db.import_sessions(sessions)
+    finally:
+        if owns_db:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+
+def _report_hermes_import(result: Dict[str, Any]) -> Optional[str]:
+    """Print the import report. Returns the single imported id, if exactly one."""
+    imported_ids = result.get("imported_ids") or []
+    imported = result.get("imported", 0)
+    skipped = result.get("skipped", 0)
+    detached = result.get("detached", 0)
+    errors = result.get("errors") or []
+
+    if not result.get("ok", False):
+        print("Error: import rejected; nothing was written.")
+        for err in errors[:10]:
+            print(f"  - {err}")
+        if len(errors) > 10:
+            print(f"  ... {len(errors) - 10} more")
+        return None
+
+    print(f"✓ Imported {imported} session(s) from the Hermes export")
+    if skipped:
+        print(f"  {skipped} already present (kept as-is, never overwritten)")
+    if detached:
+        print(f"  {detached} detached from a parent session not in this file")
+    for err in errors[:10]:
+        print(f"  ! {err}")
+
+    if imported == 1 and imported_ids:
+        sid = imported_ids[0]
+        print(f"  Continue it with:  hermes --resume {sid}")
+        return sid
+    if imported_ids:
+        print("  List them with:    hermes sessions list")
+    return None
+
+
 # ── Picker / CLI helpers ─────────────────────────────────────────────────
 
 
@@ -468,15 +620,33 @@ def run_sessions_import(args, db=None) -> Optional[str]:
                 source = "claude"
             if "/.codex/" in p or Path(p).name.startswith("rollout-"):
                 source = "codex"
+            # Content wins over the path: a Hermes export is named by the
+            # user, so it can easily sit at a path that looks foreign.
+            if looks_like_hermes_export(Path(path).expanduser()):
+                source = "hermes"
         if not source:
-            print("Cannot infer source from path; pass --from claude|codex.")
+            print("Cannot infer source from path; pass --from claude|codex|hermes.")
             return None
         chosen_path = Path(path)
+    elif source == "hermes":
+        # There is no well-known location to scan: the export path is
+        # wherever the user pointed `sessions export`.
+        print("--from hermes needs the export file: "
+              "hermes sessions import --from hermes <file.jsonl>")
+        return None
     else:
         picked = pick_foreign_session(source)
         if picked is None:
             return None
         source, chosen_path = picked.source, picked.path
+
+    if source == "hermes":
+        try:
+            result = import_hermes_export(chosen_path, db=db)
+        except ValueError as e:
+            print(f"Error: {e}")
+            return None
+        return _report_hermes_import(result)
 
     try:
         session_id = import_foreign_session(source, chosen_path, db=db)

@@ -66,6 +66,7 @@ import logging
 import os
 import sqlite3
 import threading
+import weakref
 from pathlib import Path
 from typing import Optional
 
@@ -81,6 +82,32 @@ _HEADER_PAGE_COUNT_OFFSET = 28
 _live_lock = threading.RLock()
 # canonical path -> number of live connections opened by this process
 _live_connections: dict[str, int] = {}
+# Weak references avoid changing normal connection lifetime, while still
+# letting the at-fork callback promote every live handle to child-owned strong
+# retention — including a reader checked out by a different parent thread.
+_tracked_connection_objects: "weakref.WeakValueDictionary[int, sqlite3.Connection]" = (
+    weakref.WeakValueDictionary()
+)
+_fork_retained_connections: list[sqlite3.Connection] = []
+
+
+def _reset_tracking_lock_after_fork() -> None:
+    """Replace a potentially orphaned registry lock in a fork child.
+
+    Another thread may own ``_live_lock`` when the process forks. That thread
+    does not exist in the child, so reusing the inherited lock can deadlock the
+    child's first tracked connection forever. Keep the inherited connection
+    counts — their file descriptors remain open until child exit — but give
+    the child an unlocked registry guard for connections it opens itself.
+    """
+    global _live_lock, _tracked_connection_objects
+    _fork_retained_connections.extend(_tracked_connection_objects.values())
+    _tracked_connection_objects = weakref.WeakValueDictionary()
+    _live_lock = threading.RLock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_tracking_lock_after_fork)
 
 
 class UntrackableConnectionError(RuntimeError):
@@ -161,6 +188,7 @@ class _TrackingMixin:
             super().close()  # type: ignore[misc]
             if path is not None:
                 self._hermes_tracked_path = None
+                _tracked_connection_objects.pop(id(self), None)
                 untrack_connection(path)
 
 
@@ -262,6 +290,7 @@ def connect_tracked(
                 conn = _retrofit_tracking(conn, resolved)
             conn._hermes_tracked_path = resolved
             _live_connections[resolved] = _live_connections.get(resolved, 0) + 1
+            _tracked_connection_objects[id(conn)] = conn
             return conn
         except Exception:
             try:

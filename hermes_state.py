@@ -96,6 +96,54 @@ MAX_SAFE_RESUME_MESSAGES = 20_000
 MAX_SAFE_EXPORT_MESSAGES = 20_000
 
 
+_SESSION_DB_INSTANCES: "weakref.WeakSet[SessionDB]" = weakref.WeakSet()
+# A child must not sqlite3_close() handles inherited from a multi-threaded
+# parent: another parent thread may have been inside SQLite when fork happened.
+# Keep the original writer connection and read pool alive until child exit;
+# the SessionDB instance itself is rebound to a fail-fast sentinel below.
+_FORK_RETAINED_SESSION_DB_RESOURCES: List[Tuple[Any, Any]] = []
+
+
+class _ForkedSessionDBConnection:
+    """Reject use of a SQLite connection inherited across ``fork()``."""
+
+    def __init__(self, owner_pid: int, child_pid: int) -> None:
+        self.owner_pid = owner_pid
+        self.child_pid = child_pid
+
+    def __getattr__(self, _name):
+        raise RuntimeError(
+            "SessionDB instances cannot be reused after fork; "
+            "construct a new SessionDB in the child process"
+        )
+
+
+def _invalidate_sessiondb_instances_after_fork() -> None:
+    """Make inherited SessionDB instances unusable without closing their FDs."""
+    child_pid = os.getpid()
+    for db in list(_SESSION_DB_INSTANCES):
+        try:
+            if getattr(db, "_owner_pid", child_pid) == child_pid:
+                continue
+            inherited_conn = getattr(db, "_conn", None)
+            inherited_read_pool = getattr(db, "_read_pool", None)
+            _FORK_RETAINED_SESSION_DB_RESOURCES.append(
+                (inherited_conn, inherited_read_pool)
+            )
+            db._conn = _ForkedSessionDBConnection(db._owner_pid, child_pid)
+            # A vanished parent thread may have owned the instance lock. Some
+            # older/direct read helpers take it before touching _conn, so reset
+            # it as defense in depth; the sentinel then raises deterministically.
+            db._lock = threading.Lock()
+        except Exception:
+            # An at-fork callback must never prevent the child from starting.
+            pass
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_invalidate_sessiondb_instances_after_fork)
+
+
 def _configured_transcript_limit(key: str, fallback: int) -> int:
     """Resolve a transcript safety limit from config at call time.
 
@@ -3391,6 +3439,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # live-DB test-isolation guard block near _default_db_path().
         _ensure_test_isolation(self.db_path)
         self.read_only = read_only
+        self._owner_pid = os.getpid()
+        _SESSION_DB_INSTANCES.add(self)
 
         self._lock = threading.Lock()
         # Read-path split (WAL only): recall/browse queries borrow a
@@ -3690,6 +3740,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
     # ── Read-path split ──
 
+    def _assert_owner_process(self) -> None:
+        """Fail before an inherited SQLite handle or Python lock is touched."""
+        if self._owner_pid != os.getpid():
+            raise RuntimeError(
+                "SessionDB instances cannot be reused after fork; "
+                "construct a new SessionDB in the child process"
+            )
+
     def _get_read_conn(self) -> Optional[sqlite3.Connection]:
         """Open a fresh read-only connection, or None when unavailable.
 
@@ -3706,6 +3764,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         query observes everything committed so far — read-your-writes holds
         for the flush-then-search patterns in a turn.
         """
+        self._assert_owner_process()
         if not self._wal_active or self.read_only:
             return None
         with self._read_conns_lock:
@@ -3862,6 +3921,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         slower under a burst, and the alternative is EMFILE, which takes the
         whole process down in a way a restart-on-exit supervisor cannot see.
         """
+        self._assert_owner_process()
         conn = self._checkout_read_conn()
         if conn is not None:
             try:
@@ -4158,6 +4218,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         Returns whatever *fn* returns.
         """
+        self._assert_owner_process()
         if patience_s is None:
             patience_s = self._WRITE_PATIENCE_S
         deadline = time.monotonic() + patience_s
@@ -4678,6 +4739,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         races the gateway's live writer and tears B-tree pages — issue
         #45383). Read-only connections never request a checkpoint.
         """
+        if self._owner_pid != os.getpid():
+            # The original connection and pooled readers are intentionally
+            # retained until child exit. sqlite3_close() is unsafe after a
+            # multi-threaded fork and the child does not own these handles.
+            return
         self._stop_token_writer()
         hook, self._token_atexit_hook = self._token_atexit_hook, None
         if hook is not None:
@@ -7515,6 +7581,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         API call.  After close() has stopped the writer, falls back to the
         synchronous path and may raise like :meth:`update_token_counts`.
         """
+        self._assert_owner_process()
         with self._token_queue_cond:
             thread = self._token_writer_thread
             writer_stopped = self._token_writer_stop and (
@@ -7567,6 +7634,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         deltas — no worse than reading before the flush existed).
         Never raises: apply failures are logged by the writer.
         """
+        self._assert_owner_process()
         # Fast path — nothing queued, nothing in flight.
         if not self._token_queue and not self._token_writer_busy:
             return True
@@ -7749,6 +7817,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     self._token_queue_cond.notify_all()
 
     def _drain_token_queue_at_exit(self) -> None:
+        if self._owner_pid != os.getpid():
+            return
         try:
             self._stop_token_writer()
         except Exception:

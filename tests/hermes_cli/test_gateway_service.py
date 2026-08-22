@@ -5,6 +5,7 @@ import plistlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from xml.etree import ElementTree
 
 import pytest
 
@@ -261,6 +262,42 @@ class TestGeneratedSystemdUnits:
         plist = gateway_cli.generate_launchd_plist()
 
         assert "SoftResourceLimits" not in plist
+
+    def test_launchd_plist_omits_log_redirection_for_external_volume_home(self, monkeypatch):
+        """External HERMES_HOME must not make xpcproxy open log files on /Volumes."""
+        external_home = Path("/Volumes/ExternalSSD/Hermes")
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: external_home)
+        monkeypatch.setattr(gateway_cli.Path, "mkdir", lambda self, *a, **k: None)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>StandardOutPath</key>" not in plist
+        assert "<key>StandardErrorPath</key>" not in plist
+        assert "External-volume HERMES_HOME" in plist
+        assert "<key>ThrottleInterval</key>" in plist
+        assert "<key>ExitTimeOut</key>" in plist
+
+    def test_launchd_plist_keeps_log_redirection_for_internal_home(self, monkeypatch):
+        """Internal homes retain launchd-level stdout/stderr redirection."""
+        internal_home = Path("/Users/alexandre/Hermes")
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: internal_home)
+        monkeypatch.setattr(gateway_cli.Path, "mkdir", lambda self, *a, **k: None)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>StandardOutPath</key>" in plist
+        assert "<key>StandardErrorPath</key>" in plist
+
+    def test_launchd_log_redirection_escapes_xml_path_characters(self):
+        """User-chosen internal homes must not make the generated plist invalid XML."""
+        log_dir = Path("/Users/alexandre/Work & Personal/Hermes/logs")
+
+        fragment = gateway_cli._launchd_log_redirection_xml(
+            "/Users/alexandre/Work & Personal/Hermes", log_dir
+        )
+
+        assert "Work &amp; Personal" in fragment
+        ElementTree.fromstring(f"<dict>{fragment}</dict>")
 
 
 

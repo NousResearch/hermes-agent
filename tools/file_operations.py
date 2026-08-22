@@ -29,6 +29,7 @@ import base64
 import binascii
 import os
 import re
+import secrets
 import difflib
 import hashlib
 import json
@@ -801,6 +802,72 @@ DEFAULT_SEARCH_LIMIT = 50
 # `wc -c` prints only digits, so this can never collide with a real size.
 NOT_REGULAR_SENTINEL = "__hermes_not_regular__"
 
+# Per-call fence between metadata and payload on the coalesced read scripts.
+# Hex suffix is random so a file that happens to contain the token cannot
+# collide with the first (only) occurrence we split on.
+_READ_SENTINEL_PREFIX = "__HERMES_READ_"
+
+
+def _new_read_sentinel() -> str:
+    return f"{_READ_SENTINEL_PREFIX}{secrets.token_hex(8)}__"
+
+
+def _split_sentinel_payload(stdout: str, sentinel: str) -> Optional[tuple[str, str]]:
+    """Split ``header + sentinel + body``. Body keeps every byte after the fence."""
+    raw = _strip_terminal_fence_leaks(stdout or "")
+    idx = raw.find(sentinel)
+    if idx < 0:
+        return None
+    header = raw[:idx]
+    body = raw[idx + len(sentinel):]
+    if body.startswith("\r\n"):
+        body = body[2:]
+    elif body.startswith("\n"):
+        body = body[1:]
+    return header, body
+
+
+def _parse_size_header(header: str) -> Optional[int]:
+    text = (header or "").strip()
+    if not text:
+        return 0
+    try:
+        return int(text)
+    except ValueError:
+        for line in reversed(text.splitlines()):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                return int(line)
+            except ValueError:
+                continue
+        return None
+
+
+def _parse_page_header(header: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for line in (header or "").splitlines():
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key:
+            fields[key] = value.strip()
+    return fields
+
+
+def _decode_base64_sample(encoded: str) -> Optional[bytes]:
+    compact = "".join((encoded or "").split())
+    if not compact:
+        return b""
+    if not re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", compact):
+        return None
+    try:
+        return base64.b64decode(compact, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+
 
 def _coerce_int(value: Any, default: int) -> int:
     """Best-effort integer coercion for tool pagination inputs."""
@@ -985,16 +1052,7 @@ class ShellFileOperations(FileOperations):
         )
         if result.exit_code != 0:
             return None
-        encoded = _strip_terminal_fence_leaks(result.stdout)
-        encoded = "".join(encoded.split())
-        if not encoded:
-            return b""
-        if not re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", encoded):
-            return None
-        try:
-            return base64.b64decode(encoded, validate=True)
-        except (binascii.Error, ValueError):
-            return None
+        return _decode_base64_sample(_strip_terminal_fence_leaks(result.stdout))
 
     @staticmethod
     def _is_likely_binary_bytes(sample: bytes) -> bool:
@@ -1341,6 +1399,73 @@ class ShellFileOperations(FileOperations):
             f"else exit 1; fi"
         )
 
+    def _probe_regular_file_cmd(self, path: str, sentinel: str) -> str:
+        """Size-probe a regular file, then sample its first 1000 bytes.
+
+        Missing and not-regular paths short-circuit *before* ``head``, so a
+        FIFO / socket / device is never opened. Image / binary / UTF-16
+        decisions stay in Python after this returns.
+        """
+        arg = self._escape_shell_arg(path)
+        # Regular-file arm always exits 0 so a failed ``head|base64`` cannot
+        # be mistaken for "file not found". Status lives in the header;
+        # the sample payload is after the sentinel.
+        return (
+            f"if [ -f {arg} ]; then "
+            f"size=$(wc -c < {arg} 2>/dev/null); size_rc=$?; "
+            f"set -o pipefail; "
+            f"sample=$(head -c 1000 {arg} 2>/dev/null | base64); sample_rc=$?; "
+            f"set +o pipefail; "
+            f"printf 'size=%s\\nsize_rc=%s\\nsample_rc=%s\\n' "
+            f"\"$size\" \"$size_rc\" \"$sample_rc\"; "
+            f"echo {sentinel}; "
+            f"printf '%s' \"$sample\"; "
+            f"exit 0; "
+            f"elif [ -e {arg} ]; then echo {NOT_REGULAR_SENTINEL}; exit 0; "
+            f"else exit 1; fi"
+        )
+
+    def _page_text_file_cmd(
+        self,
+        path: str,
+        *,
+        offset: int,
+        end_line: int,
+        line_clamp_bytes: int,
+        sentinel: str,
+    ) -> str:
+        """Page a text file, count lines, and optionally probe the last byte.
+
+        Metadata (status + ``wc -l`` + tail probe) is printed *before* a
+        per-call sentinel; the raw ``sed|cut`` page follows so a file that
+        contains the sentinel cannot steal the header. ``tail -c 1`` runs
+        only when the page is the last one *and* it ends in a newline —
+        the same skip the previous sequential path used.
+
+        ``mktemp`` assignment succeeds even when mktemp is missing (empty
+        tmp); refuse that so we never redirect onto a file named ``$tmp``.
+        """
+        arg = self._escape_shell_arg(path)
+        return (
+            f"tmp=$(mktemp -t hermes-read.XXXXXX 2>/dev/null || mktemp); "
+            f"if [ -z \"$tmp\" ] || [ ! -f \"$tmp\" ]; then exit 1; fi; "
+            f"set -o pipefail; "
+            f"sed -n '{offset},{end_line}p' {arg} "
+            f"| cut -b1-{line_clamp_bytes} > \"$tmp\"; "
+            f"sed_rc=$?; "
+            f"set +o pipefail; "
+            f"total=$(wc -l < {arg}); wc_rc=$?; "
+            f"tail_ran=0; tail_nl=1; "
+            f"if [ \"$wc_rc\" -eq 0 ] && [ \"${{total:-0}}\" -le {end_line} ] "
+            f"&& [ \"$(tail -c 1 \"$tmp\" | wc -l)\" -eq 1 ]; then "
+            f"tail_nl=$(tail -c 1 {arg} | wc -l); tail_ran=1; "
+            f"fi; "
+            f"printf 'sed_rc=%s\\nwc_rc=%s\\ntotal=%s\\ntail_ran=%s\\ntail_nl=%s\\n' "
+            f"\"$sed_rc\" \"$wc_rc\" \"$total\" \"$tail_ran\" \"$tail_nl\"; "
+            f"echo {sentinel}; "
+            f"cat \"$tmp\"; rm -f \"$tmp\""
+        )
+
     @staticmethod
     def _not_regular_error(path: str) -> ReadResult:
         """Error for a path that exists but would block if read."""
@@ -1473,11 +1598,13 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
         
         offset, limit = normalize_read_pagination(offset, limit)
-        
-        # Check if file exists and get size (POSIX, works on Linux + macOS)
-        stat_result = self._exec(self._size_probe_cmd(path))
 
-        if stat_result.exit_code != 0:
+        # One exec: [ -f ] size probe, then sample. Missing / not-regular
+        # paths never reach ``head``, so FIFOs stay unopened.
+        probe_sentinel = _new_read_sentinel()
+        probe_result = self._exec(self._probe_regular_file_cmd(path, probe_sentinel))
+
+        if probe_result.exit_code != 0:
             # File not found. Before failing, try unicode-equivalent
             # spellings — NFC/NFD, narrow no-break space, curly quotes
             # render identically in a terminal, so the model retyping a
@@ -1497,19 +1624,43 @@ class ShellFileOperations(FileOperations):
             # No equivalent spelling — suggest similar files
             return self._suggest_similar_files(path)
 
-        stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
-        if stat_output.strip() == NOT_REGULAR_SENTINEL:
+        probe_stdout = _strip_terminal_fence_leaks(probe_result.stdout)
+        if probe_stdout.strip() == NOT_REGULAR_SENTINEL:
             return self._not_regular_error(path)
-        try:
-            file_size = int(stat_output.strip())
-        except ValueError:
-            file_size = 0
-        
+        probe_parts = _split_sentinel_payload(probe_stdout, probe_sentinel)
+        if probe_parts is None:
+            # Size-only output (or a transport that ate the fence): treat
+            # the whole stdout as the byte count and fall back to a
+            # separate sample, matching the old two-call path.
+            file_size = _parse_size_header(probe_stdout) or 0
+            sample_bytes = self._sample_file_bytes(path)
+        else:
+            size_header, sample_encoded = probe_parts
+            probe_fields = _parse_page_header(size_header)
+            if "size" in probe_fields:
+                try:
+                    file_size = int(probe_fields.get("size") or "0")
+                except ValueError:
+                    file_size = 0
+                if probe_fields.get("size_rc", "0") != "0":
+                    return ReadResult(
+                        error=f"Failed to read file: {path}",
+                        file_size=file_size,
+                    )
+                if probe_fields.get("sample_rc", "0") == "0":
+                    sample_bytes = _decode_base64_sample(sample_encoded)
+                else:
+                    sample_bytes = self._sample_file_bytes(path)
+            else:
+                parsed_size = _parse_size_header(size_header)
+                file_size = 0 if parsed_size is None else parsed_size
+                sample_bytes = _decode_base64_sample(sample_encoded)
+
         # Check if file is too large
         if file_size > MAX_FILE_SIZE:
             # Still try to read, but warn
             pass
-        
+
         # Images are never inlined — redirect to the vision tool
         if self._is_image(path):
             return ReadResult(
@@ -1521,10 +1672,9 @@ class ShellFileOperations(FileOperations):
                     "Use vision_analyze with this file path to inspect the image contents."
                 ),
             )
-        
-        # Read a sample to check for binary content — at the byte layer when
-        # the transport allows, falling back to the legacy text heuristic.
-        sample_bytes = self._sample_file_bytes(path)
+
+        # Byte-layer binary detection when the sample survived the
+        # transport; otherwise the legacy text heuristic (one extra exec).
         if sample_bytes is not None:
             ext_binary = os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS
             is_binary = ext_binary or self._is_likely_binary_bytes(sample_bytes)
@@ -1550,13 +1700,8 @@ class ShellFileOperations(FileOperations):
                 file_size=file_size,
                 error=describe_binary_file(sample_bytes, file_size),
             )
-        
-        # Read with pagination using sed, clamping each line to a byte
-        # budget IN THE SHELL so a pathological single-line file (e.g. one
-        # 400MB minified line) never crosses the exec transport. The Python
-        # clamp in _add_line_numbers still runs afterwards; the shell clamp
-        # only bounds what reaches it.
-        #
+
+        # Second exec, text only: page + wc -l + optional last-byte probe.
         # Why 4*max_line_length + 1 bytes (not max_line_length + 1):
         # ``cut -c`` on GNU coreutils is byte-based despite its name, and a
         # byte clamp can split a multibyte UTF-8 codepoint at the boundary.
@@ -1578,31 +1723,42 @@ class ShellFileOperations(FileOperations):
         from tools.tool_output_limits import get_max_line_length
         line_clamp_bytes = 4 * get_max_line_length() + 1
         end_line = offset + limit - 1
-        read_cmd = (
-            f"sed -n '{offset},{end_line}p' {self._escape_shell_arg(path)}"
-            f" | cut -b1-{line_clamp_bytes}"
+        page_sentinel = _new_read_sentinel()
+        page_result = self._exec(
+            self._page_text_file_cmd(
+                path,
+                offset=offset,
+                end_line=end_line,
+                line_clamp_bytes=line_clamp_bytes,
+                sentinel=page_sentinel,
+            )
         )
-        read_result = self._exec(read_cmd)
-        
-        if read_result.exit_code != 0:
-            return ReadResult(error=f"Failed to read file: {read_result.stdout}")
-        read_output = _strip_terminal_fence_leaks(read_result.stdout)
+        if page_result.exit_code != 0:
+            return ReadResult(error=f"Failed to read file: {page_result.stdout}")
+        page_parts = _split_sentinel_payload(page_result.stdout, page_sentinel)
+        if page_parts is None:
+            return ReadResult(error=f"Failed to read file: {page_result.stdout}")
+        page_header, read_output = page_parts
+        fields = _parse_page_header(page_header)
+        try:
+            sed_rc = int(fields.get("sed_rc", "1"))
+        except ValueError:
+            sed_rc = 1
+        if sed_rc != 0:
+            return ReadResult(error=f"Failed to read file: {read_output}")
+        try:
+            total_lines = int(fields.get("total", "0"))
+        except ValueError:
+            total_lines = 0
+        if fields.get("wc_rc", "1") != "0":
+            total_lines = 0
+
         # Strip a leading UTF-8 BOM so the model never sees a phantom U+FEFF
         # before the first real character. Only meaningful on the first
         # chunk (the marker lives at byte 0); later pages can't carry it.
         if offset == 1:
             read_output, _ = _strip_bom(read_output)
-        
-        # Get total line count
-        wc_cmd = f"wc -l < {self._escape_shell_arg(path)}"
-        wc_result = self._exec(wc_cmd)
-        wc_output = _strip_terminal_fence_leaks(wc_result.stdout)
-        try:
-            total_lines = int(wc_output.strip())
-        except ValueError:
-            total_lines = 0
-        
-        # Check if truncated
+
         truncated = total_lines > end_line
         hint = None
         if truncated:
@@ -1610,14 +1766,12 @@ class ShellFileOperations(FileOperations):
 
         # ``cut`` (unlike sed -n p) always newline-terminates its output,
         # so a file whose final line has no trailing newline would grow a
-        # phantom empty last line. Only possible when this page reaches the
-        # file's final line; probe the last byte and strip the artifact.
-        if not truncated and read_output.endswith('\n'):
-            tail_cmd = f"tail -c 1 {self._escape_shell_arg(path)} | wc -l"
-            tail_result = self._exec(tail_cmd)
-            tail_output = _strip_terminal_fence_leaks(tail_result.stdout)
-            if tail_result.exit_code == 0 and tail_output.strip() == "0":
-                read_output = read_output[:-1]
+        # phantom empty last line. The page script already skipped the
+        # last-byte probe unless this is the final page *and* the page
+        # ends in a newline; apply the strip only when that probe ran
+        # and reported no trailing newline on disk.
+        if fields.get("tail_ran") == "1" and fields.get("tail_nl") == "0" and read_output.endswith("\n"):
+            read_output = read_output[:-1]
 
         # Ambiguous-silence guards: an empty content string is
         # indistinguishable, from inside the model, from a broken tool —

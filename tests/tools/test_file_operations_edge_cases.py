@@ -5,6 +5,8 @@ Covers:
 - ``_check_lint()`` robustness against file paths containing curly braces
 """
 
+import re
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -205,14 +207,23 @@ class TestPaginationBounds:
 
         def fake_exec(command, *args, **kwargs):
             commands.append(command)
-            if command.startswith("if [ -f ") or command.startswith("wc -c"):
-                return MagicMock(exit_code=0, stdout="12")
-            if command.startswith("head -c"):
-                return MagicMock(exit_code=0, stdout="line1\nline2\n")
-            if command.startswith("sed -n"):
-                return MagicMock(exit_code=0, stdout="line1\n")
-            if command.startswith("wc -l"):
-                return MagicMock(exit_code=0, stdout="2")
+            match = re.search(r"__HERMES_READ_[0-9a-f]+__", command)
+            sentinel = match.group(0) if match else None
+            if command.startswith("if [ -f ") and sentinel:
+                import base64 as b64
+                sample = b64.b64encode(b"line1\n").decode()
+                return MagicMock(
+                    exit_code=0,
+                    stdout=f"size=12\nsize_rc=0\nsample_rc=0\n{sentinel}\n{sample}",
+                )
+            if "sed -n" in command and sentinel:
+                return MagicMock(
+                    exit_code=0,
+                    stdout=(
+                        f"sed_rc=0\nwc_rc=0\ntotal=2\ntail_ran=1\ntail_nl=1\n"
+                        f"{sentinel}\nline1\n"
+                    ),
+                )
             return MagicMock(exit_code=0, stdout="")
 
         with patch.object(ops, "_exec", side_effect=fake_exec):
@@ -220,8 +231,9 @@ class TestPaginationBounds:
 
         assert result.error is None
         assert "1|line1" in result.content
-        sed_commands = [cmd for cmd in commands if cmd.startswith("sed -n")]
-        assert sed_commands == ["sed -n '1,1p' 'notes.txt' | cut -b1-8001"]
+        page_commands = [cmd for cmd in commands if "sed -n" in cmd]
+        assert page_commands, commands
+        assert "sed -n '1,1p' 'notes.txt' | cut -b1-8001" in page_commands[0]
 
     def test_search_clamps_offset_and_limit_before_building_head_pipeline(self):
         env = MagicMock()

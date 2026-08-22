@@ -9,6 +9,10 @@ from unittest.mock import MagicMock
 
 from tools.file_operations import (
     _is_write_denied,
+    _decode_base64_sample,
+    _parse_page_header,
+    _parse_size_header,
+    _split_sentinel_payload,
     ReadResult,
     WriteResult,
     PatchResult,
@@ -20,6 +24,40 @@ from tools.file_operations import (
     normalize_read_pagination,
     normalize_search_pagination,
 )
+
+
+def _sentinel_in(command: str) -> str | None:
+    match = re.search(r"__HERMES_READ_[0-9a-f]+__", command)
+    return match.group(0) if match else None
+
+
+def _probe_ok(size: int, sample: bytes, sentinel: str) -> dict:
+    import base64 as b64
+    return {
+        "output": (
+            f"size={size}\nsize_rc=0\nsample_rc=0\n"
+            f"{sentinel}\n{b64.b64encode(sample).decode()}"
+        ),
+        "returncode": 0,
+    }
+
+
+def _page_ok(
+    content: str,
+    sentinel: str,
+    *,
+    total: int,
+    tail_ran: int = 1,
+    tail_nl: int = 1,
+) -> dict:
+    return {
+        "output": (
+            f"sed_rc=0\nwc_rc=0\ntotal={total}\n"
+            f"tail_ran={tail_ran}\ntail_nl={tail_nl}\n"
+            f"{sentinel}\n{content}"
+        ),
+        "returncode": 0,
+    }
 
 
 # =========================================================================
@@ -303,19 +341,12 @@ class TestShellFileOpsHelpers:
 
         def side_effect(command, **kwargs):
             commands.append(command)
-            # The size probe gates `wc -c` behind `[ -f ]` so a FIFO or device
-            # cannot block the read; it still reports a plain byte count.
-            if command.startswith("if [ -f ") or command.startswith("wc -c"):
-                return {"output": "5\n", "returncode": 0}
-            if command.startswith("head -c") and "| base64" in command:
-                import base64 as b64
-                return {"output": b64.b64encode(b"hello").decode(), "returncode": 0}
-            if command.startswith("head -c"):
-                return {"output": "hello", "returncode": 0}
-            if command.startswith("sed -n"):
-                return {"output": "hello\n", "returncode": 0}
-            if command.startswith("wc -l"):
-                return {"output": "1\n", "returncode": 0}
+            sentinel = _sentinel_in(command)
+            # Probe: [ -f ] size + sample. Page: sed|cut + wc -l + optional tail.
+            if command.startswith("if [ -f ") and sentinel:
+                return _probe_ok(5, b"hello", sentinel)
+            if "sed -n" in command and sentinel:
+                return _page_ok("hello\n", sentinel, total=1)
             return {"output": "", "returncode": 0}
 
         mock_env.execute.side_effect = side_effect
@@ -323,16 +354,13 @@ class TestShellFileOpsHelpers:
         result = ops.read_file(r"C:\Users\alice\notes.txt")
 
         assert result.error is None
-        assert commands[0] == (
-            "if [ -f '/c/Users/alice/notes.txt' ]; "
-            "then wc -c < '/c/Users/alice/notes.txt' 2>/dev/null; "
-            "elif [ -e '/c/Users/alice/notes.txt' ]; "
-            "then echo __hermes_not_regular__; "
-            "else exit 1; fi"
-        )
-        assert commands[1] == "head -c 1000 '/c/Users/alice/notes.txt' 2>/dev/null | base64"
-        assert commands[2] == "sed -n '1,2000p' '/c/Users/alice/notes.txt' | cut -b1-8001"
-        assert commands[3] == "wc -l < '/c/Users/alice/notes.txt'"
+        assert len(commands) == 2
+        assert "if [ -f '/c/Users/alice/notes.txt' ]" in commands[0]
+        assert "wc -c < '/c/Users/alice/notes.txt'" in commands[0]
+        assert "head -c 1000 '/c/Users/alice/notes.txt'" in commands[0]
+        assert "sed -n '1,2000p' '/c/Users/alice/notes.txt' | cut -b1-8001" in commands[1]
+        assert "wc -l < '/c/Users/alice/notes.txt'" in commands[1]
+        assert "tail -c 1" in commands[1]
 
     def test_is_likely_binary_by_extension(self, file_ops):
         assert file_ops._is_likely_binary("photo.png") is True
@@ -355,14 +383,11 @@ class TestShellFileOpsHelpers:
         )
 
         def side_effect(command, **kwargs):
-            if command.startswith("if [ -f ") or command.startswith("wc -c"):
-                return {"output": "12\n", "returncode": 0}
-            if command.startswith("head -c"):
-                return {"output": "print('ok')\n", "returncode": 0}
-            if command.startswith("sed -n"):
-                return {"output": leaked, "returncode": 0}
-            if command.startswith("wc -l"):
-                return {"output": "1\n", "returncode": 0}
+            sentinel = _sentinel_in(command)
+            if command.startswith("if [ -f ") and sentinel:
+                return _probe_ok(12, b"print('ok')\n", sentinel)
+            if "sed -n" in command and sentinel:
+                return _page_ok(leaked, sentinel, total=1)
             return {"output": "", "returncode": 0}
 
         mock_env.execute.side_effect = side_effect
@@ -776,14 +801,15 @@ class TestByteLayerBinaryDetection:
         import base64 as b64
 
         def side_effect(command, **kwargs):
-            if command.startswith("if [ -f ") or command.startswith("wc -c"):
-                return {"output": f"{len(cjk_bytes)}\n", "returncode": 0}
-            if command.startswith("head -c") and "| base64" in command:
-                return {"output": b64.b64encode(cjk_bytes[:1000]).decode(), "returncode": 0}
-            if command.startswith("sed -n"):
-                return {"output": cjk_bytes.decode("utf-8", errors="replace"), "returncode": 0}
-            if command.startswith("wc -l"):
-                return {"output": "1\n", "returncode": 0}
+            sentinel = _sentinel_in(command)
+            if command.startswith("if [ -f ") and sentinel:
+                return _probe_ok(len(cjk_bytes), cjk_bytes[:1000], sentinel)
+            if "sed -n" in command and sentinel:
+                return _page_ok(
+                    cjk_bytes.decode("utf-8", errors="replace"),
+                    sentinel,
+                    total=1,
+                )
             return {"output": "", "returncode": 0}
 
         return side_effect

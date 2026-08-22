@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { getLatestSessionMessages } from '@/hermes'
 import { preserveLocalAssistantErrors, sealOpenToolParts, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
@@ -105,13 +106,22 @@ export async function reconcileActiveTranscript({
 
     updateSessionState(
       runtimeSessionId,
-      state => ({
-        ...state,
+      state => {
         // The refresh re-reads only the newest tail page; graft it onto any
         // older pages "Show earlier" already backfilled instead of clobbering
         // them (see transcript-backfill).
-        messages: preserveLocalAssistantErrors(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages)
-      }),
+        const refreshed = graftRefreshedTailOntoBackfill(messages, state.messages)
+        // sessions.changed is global, so its REST read can lag the stream that
+        // just settled locally. Keep that newest stream turn until a matching
+        // durable row arrives; the session resume path uses the same identity /
+        // ordinal proof and still lets rewinds replace unrelated stale history.
+        const withLiveTurn = preserveLocalPendingTurnMessages(refreshed, state.messages)
+
+        return {
+          ...state,
+          messages: preserveLocalAssistantErrors(withLiveTurn, state.messages)
+        }
+      },
       storedSessionId
     )
   } catch {

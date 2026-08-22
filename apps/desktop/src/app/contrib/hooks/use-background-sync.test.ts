@@ -267,6 +267,69 @@ describe('reconcileActiveTranscript', () => {
     expect(fixture.updateSessionState).toHaveBeenCalledTimes(1)
   })
 
+  it('does not delete a just-completed assistant when the persisted tail is stale', async () => {
+    const fixture = makeRefresh()
+    fixture.state.messages = [
+      { id: '1-0-user', parts: [{ text: 'question', type: 'text' }], role: 'user' },
+      {
+        completedAt: 3,
+        id: 'assistant-stream-1',
+        parts: [{ completedAt: 3, text: 'just completed', timestamp: 2, type: 'text' }],
+        pending: false,
+        role: 'assistant',
+        timestamp: 2
+      }
+    ]
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [{ content: 'question', role: 'user', timestamp: 1 }],
+      session_id: ACTIVE_STORED_ID
+    } as never)
+
+    await fixture.refresh()
+
+    expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.map(message => message.id)).toEqual([
+      '1-0-user',
+      'assistant-stream-1'
+    ])
+  })
+
+  it('keeps a completed stream through stale refreshes, then converges on its durable row', async () => {
+    const fixture = makeRefresh()
+    fixture.state.messages = [
+      { id: '1-0-user', parts: [{ text: 'question', type: 'text' }], role: 'user' },
+      {
+        completedAt: 3,
+        id: 'assistant-stream-1',
+        parts: [{ completedAt: 3, text: 'just completed', timestamp: 2, type: 'text' }],
+        pending: false,
+        role: 'assistant',
+        timestamp: 2
+      }
+    ]
+
+    const stale = {
+      messages: [{ content: 'question', role: 'user', timestamp: 1 }],
+      session_id: ACTIVE_STORED_ID
+    }
+
+    vi.mocked(getLatestSessionMessages)
+      .mockResolvedValueOnce(stale as never)
+      .mockResolvedValueOnce(stale as never)
+      .mockResolvedValueOnce(transcript('just completed') as never)
+
+    await fixture.refresh()
+    await fixture.refresh()
+
+    expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.at(-1)?.id).toBe('assistant-stream-1')
+
+    await fixture.refresh()
+
+    const messages = fixture.states.get(ACTIVE_RUNTIME_ID)?.messages ?? []
+    expect(messages.map(message => message.role)).toEqual(['user', 'assistant'])
+    expect(messages.at(-1)?.id).not.toBe('assistant-stream-1')
+    expect(messages.at(-1)?.parts).toContainEqual(expect.objectContaining({ text: 'just completed' }))
+  })
+
   it('preserves a local assistant error while hydrating authoritative messages', async () => {
     const fixture = makeRefresh()
     fixture.state.messages = [

@@ -61,12 +61,34 @@ export function ReorderableList({
   )
 }
 
+/** Pointer-only dnd listeners for a sortable row shell. The full handle
+ *  (attributes + keyboard activator) stays on the grabber; the shell must
+ *  never receive role/tabIndex or onKeyDown — a focused shell descendant
+ *  would otherwise start a dnd-kit keyboard drag or feed its Space/Enter
+ *  end codes (#83617). */
+export type ShellDragProps = {
+  onPointerDown?: (event: React.PointerEvent) => void
+}
+
 export function useSortableBindings(id: string) {
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id })
+
+  // The grabber carries the FULL handle (role/tabIndex, keyboard + pointer
+  // activators) so keyboard reorder stays accessible. The row SHELL must only
+  // ever receive the pointer activator: spreading attributes + onKeyDown onto
+  // the shell made the whole row a focusable dnd-kit activator. A focused
+  // shell started keyboard drags on Space/Enter, and while a drag session was
+  // active dnd-kit's KeyboardSensor arms a window keydown listener whose
+  // default `end` codes include Space — swallowing the keystroke in ANY text
+  // input (session rename dialog, first composer keystroke after launch).
+  const shellDragProps: ShellDragProps | undefined = listeners
+    ? { onPointerDown: event => listeners.onPointerDown(event) }
+    : undefined
 
   return {
     dragging: isDragging,
     dragHandleProps: { ...attributes, ...listeners },
+    shellDragProps,
     ref: setNodeRef,
     reorderable: true as const,
     style: {

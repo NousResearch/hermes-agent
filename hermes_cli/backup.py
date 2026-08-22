@@ -96,18 +96,37 @@ _EXCLUDED_DIRS = {
     ".ruff_cache",
 }
 
+# Extensions Hermes uses for its SQLite stores. Almost every one is ``.db``,
+# but the observability metrics store is ``metrics.sqlite3``; keyed off ``.db``
+# alone it was neither snapshotted nor had its sidecars dropped — the exact
+# pairing the sidecar comment below warns about.
+_SQLITE_DB_SUFFIXES = (".db", ".sqlite", ".sqlite3")
+
+# SQLite derives sidecar names from the FULL database filename
+# (``state.db`` -> ``state.db-wal``), so the skip list needs every database
+# extension rather than a bare ``-wal``/``-shm`` match, which would also drop
+# unrelated user files.
+_SQLITE_SIDECAR_SUFFIXES = tuple(
+    f"{_db}{_sidecar}"
+    for _db in _SQLITE_DB_SUFFIXES
+    for _sidecar in ("-wal", "-shm", "-journal")
+)
+
+def _is_sqlite_db_path(path: "Path") -> bool:
+    """True when *path* names one of Hermes' SQLite stores."""
+    return path.suffix.lower() in _SQLITE_DB_SUFFIXES
+
+
 # File-name suffixes to skip
 _EXCLUDED_SUFFIXES = (
     ".pyc",
     ".pyo",
-    # SQLite sidecar files — the backup takes a consistent snapshot of ``*.db``
-    # via ``sqlite3.backup()``, so shipping the live WAL / shared-memory /
-    # rollback-journal alongside would pair a fresh snapshot with stale sidecar
-    # state and produce a torn restore on the next open. They're transient and
-    # regenerated on first connection anyway.
-    ".db-wal",
-    ".db-shm",
-    ".db-journal",
+    # SQLite sidecar files — the backup takes a consistent snapshot of the
+    # database via ``sqlite3.backup()``, so shipping the live WAL /
+    # shared-memory / rollback-journal alongside would pair a fresh snapshot
+    # with stale sidecar state and produce a torn restore on the next open.
+    # They're transient and regenerated on first connection anyway.
+    *_SQLITE_SIDECAR_SUFFIXES,
 )
 
 # File names to skip (runtime state that's meaningless on another machine)
@@ -768,7 +787,7 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
         for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
             try:
                 # Safe copy for SQLite databases (handles WAL mode)
-                if abs_path.suffix == ".db":
+                if _is_sqlite_db_path(abs_path):
                     # Stage the snapshot alongside the output zip so that the
                     # temp file lives on the same filesystem.  The system
                     # default (/tmp) may be a small tmpfs that cannot hold
@@ -1438,7 +1457,7 @@ def _create_quick_snapshot_locked(
                 if "/workspaces/" in f"/{sub_rel}/" or "/attachments/" in f"/{sub_rel}/":
                     continue
                 if _too_large(sub, sub_rel):
-                    if sub.suffix == ".db":
+                    if _is_sqlite_db_path(sub):
                         oversized_skipped.append(sub_rel)
                     continue
                 dst = staging_dir / sub_rel
@@ -1447,7 +1466,7 @@ def _create_quick_snapshot_locked(
                     # Route SQLite DBs through the WAL-safe backup() path so a
                     # board DB with an open WAL (the gateway may hold it at
                     # snapshot time) is captured consistently.
-                    if sub.suffix == ".db":
+                    if _is_sqlite_db_path(sub):
                         if not _safe_copy_db(sub, dst):
                             failed_dbs.append(sub_rel)
                             print(
@@ -1471,7 +1490,7 @@ def _create_quick_snapshot_locked(
             continue
 
         if _too_large(src, rel):
-            if src.suffix == ".db":
+            if _is_sqlite_db_path(src):
                 oversized_skipped.append(rel)
             continue
 
@@ -1479,7 +1498,7 @@ def _create_quick_snapshot_locked(
         dst.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            if src.suffix == ".db":
+            if _is_sqlite_db_path(src):
                 if not _safe_copy_db(src, dst):
                     failed_dbs.append(rel)
                     print(
@@ -1662,7 +1681,7 @@ def restore_quick_snapshot(
         dst.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            if dst.suffix == ".db":
+            if _is_sqlite_db_path(dst):
                 # Atomic-ish replace for databases
                 tmp = dst.parent / f".{dst.name}.snap_restore"
                 shutil.copy2(src, tmp)
@@ -1996,7 +2015,7 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
         ) as zf:
             for index, (abs_path, rel_path) in enumerate(files_to_add, 1):
                 try:
-                    if abs_path.suffix == ".db":
+                    if _is_sqlite_db_path(abs_path):
                         # Stage the snapshot alongside the output zip so that the
                         # temp file lives on the same filesystem.  The system
                         # default (/tmp) may be a small tmpfs that cannot hold

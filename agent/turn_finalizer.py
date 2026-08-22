@@ -132,6 +132,7 @@ def finalize_turn(
     original_user_message,
     _should_review_memory,
     _turn_exit_reason,
+    failure_reason=None,
     _pending_verification_response=None,
     _pending_verification_response_previewed=False,
 ):
@@ -726,6 +727,9 @@ def finalize_turn(
         ).get("service_tier"),
         "session_id": agent.session_id,
     }
+    if failure_reason:
+        result["failure_reason"] = str(failure_reason)
+        result["error"] = final_response or str(failure_reason)
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
     # Persistence failures already set failed=True + an explanation in

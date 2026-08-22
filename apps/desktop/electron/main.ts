@@ -1052,10 +1052,13 @@ function getTitleBarOverlayOptions() {
     return { height: macTitleBarOverlayHeight({ darwinMajor: DARWIN_MAJOR, titlebarHeight: TITLEBAR_HEIGHT }) }
   }
 
-  // WSLg paints WCO via the RDP host's own min/max/close, so requesting
-  // an Electron overlay there just leaves a dead gap. Plain Linux (KDE,
-  // GNOME) can use the native overlay — let it through.
-  if (!IS_WINDOWS && IS_WSL) {
+  // WSLg usually paints WCO via the RDP host's own min/max/close, so
+  // requesting an Electron overlay there can double up or dead-gap.
+  // Some WSLg hosts paint NO controls at all (observed: Windows 10 build
+  // 19045 WSLg) — the shortcut launcher sets HERMES_DESKTOP_WSL_WCO=1 to
+  // opt into the Electron overlay there. Plain Linux (KDE, GNOME) always
+  // gets the native overlay.
+  if (!IS_WINDOWS && IS_WSL && process.env.HERMES_DESKTOP_WSL_WCO !== '1') {
     return false
   }
 

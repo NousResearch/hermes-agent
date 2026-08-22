@@ -14195,7 +14195,7 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         _apply_compute_host_metadata_mirror(session, ack)
         return str(ack.get("output") or "")
     if name in _MUTATES_WHILE_RUNNING and session.get("running"):
-        return f"session busy — /interrupt the current turn before running /{name}"
+        return f"session busy — press Ctrl+C to interrupt the current turn before running /{name}"
 
     try:
         if name == "model" and arg and agent:
